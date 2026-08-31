@@ -188,7 +188,9 @@ fn format_cfg_inst_data_impl(
                 .unwrap_or(name);
             format!("call @{}({})", name, args.join(", "))
         }
-        CfgInstData::Intrinsic { runtime, name, .. } => {
+        CfgInstData::Intrinsic {
+            operation, name, ..
+        } => {
             let args: Vec<String> = cfg
                 .get_intrinsic_args(data)
                 .iter()
@@ -197,10 +199,7 @@ fn format_cfg_inst_data_impl(
             let name = interner
                 .map(|interner| interner.resolve(name).to_string())
                 .unwrap_or_else(|| name.into_usize().to_string());
-            let prefix = runtime
-                .map(|runtime| format!("runtime.{runtime:?} "))
-                .unwrap_or_default();
-            format!("{prefix}intrinsic @{}({})", name, args.join(", "))
+            format!("intrinsic {operation:?} @{}({})", name, args.join(", "))
         }
         CfgInstData::StructInit { struct_id, .. } => {
             let fields: Vec<String> = cfg

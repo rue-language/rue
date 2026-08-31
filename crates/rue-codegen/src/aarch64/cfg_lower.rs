@@ -1751,18 +1751,6 @@ impl<'a> CfgLower<'a> {
         }
     }
 
-    fn lower_option_intrinsic(
-        &mut self,
-        plan: &crate::value_plan::IntrinsicPlan,
-        _intrinsic: crate::value_plan::OptionIntrinsic,
-    ) -> crate::value_plan::MaterializedValue {
-        self.lower_runtime_call(
-            plan.runtime_call
-                .clone()
-                .expect("option intrinsic runtime call plan"),
-        )
-    }
-
     fn lower_intrinsic_plan(
         &mut self,
         plan: crate::value_plan::IntrinsicPlan,
@@ -1770,33 +1758,39 @@ impl<'a> CfgLower<'a> {
         let operation = plan.operation;
         let mut slots = Vec::new();
         let primary = match operation {
-            crate::value_plan::IntrinsicOperation::Option { intrinsic, .. } => {
-                let result = self.lower_option_intrinsic(&plan, intrinsic);
+            rue_air::IntrinsicOperation::ReadLine
+            | rue_air::IntrinsicOperation::ParseI32
+            | rue_air::IntrinsicOperation::ParseI64
+            | rue_air::IntrinsicOperation::ParseU32
+            | rue_air::IntrinsicOperation::ParseU64 => {
+                let result = self.lower_runtime_call(
+                    plan.runtime_call
+                        .clone()
+                        .expect("option intrinsic runtime call plan"),
+                );
                 slots = result.slots;
                 result.primary
             }
-            crate::value_plan::IntrinsicOperation::RandomU32
-            | crate::value_plan::IntrinsicOperation::RandomU64 => {
+            rue_air::IntrinsicOperation::RandomU32 | rue_air::IntrinsicOperation::RandomU64 => {
                 self.lower_runtime_call(
                     plan.runtime_call
                         .expect("random intrinsic runtime call plan"),
                 )
                 .primary
             }
-            crate::value_plan::IntrinsicOperation::ArgCount
-            | crate::value_plan::IntrinsicOperation::ArgPtr
-            | crate::value_plan::IntrinsicOperation::ArgLen
-            | crate::value_plan::IntrinsicOperation::EnvCount
-            | crate::value_plan::IntrinsicOperation::EnvPtr
-            | crate::value_plan::IntrinsicOperation::EnvLen => {
+            rue_air::IntrinsicOperation::ArgCount
+            | rue_air::IntrinsicOperation::ArgPtr
+            | rue_air::IntrinsicOperation::ArgLen
+            | rue_air::IntrinsicOperation::EnvCount
+            | rue_air::IntrinsicOperation::EnvPtr
+            | rue_air::IntrinsicOperation::EnvLen => {
                 self.lower_runtime_call(
                     plan.runtime_call
                         .expect("process arg/env intrinsic runtime call plan"),
                 )
                 .primary
             }
-            crate::value_plan::IntrinsicOperation::PtrToInt
-            | crate::value_plan::IntrinsicOperation::IntToPtr => {
+            rue_air::IntrinsicOperation::PtrToInt | rue_air::IntrinsicOperation::IntToPtr => {
                 let dst = self.mir.alloc_vreg();
                 self.mir.push(Aarch64Inst::MovRR {
                     dst: Operand::Virtual(dst),
@@ -1808,8 +1802,11 @@ impl<'a> CfgLower<'a> {
             // rebuilds only the bits above the shared width, which belong to the
             // source type's register image. The shared planner picked the form
             // from the target type; this leaf just spells it.
-            crate::value_plan::IntrinsicOperation::BitCast(form) => {
+            rue_air::IntrinsicOperation::BitCast => {
                 use crate::value_plan::BitCastForm;
+                let form = plan
+                    .bit_cast_form
+                    .expect("bitCast intrinsic must carry its contextual form");
                 let dst = self.mir.alloc_vreg();
                 self.mir.push(Aarch64Inst::MovRR {
                     dst: Operand::Virtual(dst),
@@ -1843,7 +1840,8 @@ impl<'a> CfgLower<'a> {
                 }
                 dst
             }
-            crate::value_plan::IntrinsicOperation::PtrRead => {
+            rue_air::IntrinsicOperation::PtrRead
+            | rue_air::IntrinsicOperation::PtrReadUnaligned => {
                 let ptr = plan.args[0].primary;
                 let count = plan.result_slots;
                 if let Some(map) = &plan.physical_slots {
@@ -1887,7 +1885,8 @@ impl<'a> CfgLower<'a> {
                     dst
                 }
             }
-            crate::value_plan::IntrinsicOperation::PtrWrite => {
+            rue_air::IntrinsicOperation::PtrWrite
+            | rue_air::IntrinsicOperation::PtrWriteUnaligned => {
                 let ptr = plan.args[0].primary;
                 let value = &plan.args[1];
                 if let Some(map) = &plan.physical_slots {
@@ -1941,7 +1940,7 @@ impl<'a> CfgLower<'a> {
                 });
                 dst
             }
-            crate::value_plan::IntrinsicOperation::PtrOffset => {
+            rue_air::IntrinsicOperation::PtrOffset => {
                 let offset = plan.args[1].primary;
                 let offset = match plan.args[1].integer_extension {
                     crate::value_plan::IntegerExtension::None => offset,
@@ -1987,39 +1986,41 @@ impl<'a> CfgLower<'a> {
             // The unified allocation family and the bulk byte primitives are
             // pure runtime calls: the shared plan already carries their
             // operands in helper order (ADR-0059 Phase 3, RUE-961).
-            crate::value_plan::IntrinsicOperation::Alloc => {
+            rue_air::IntrinsicOperation::Alloc => {
                 self.lower_runtime_call(plan.runtime_call.expect("alloc runtime call plan"))
                     .primary
             }
-            crate::value_plan::IntrinsicOperation::AllocZeroed => {
+            rue_air::IntrinsicOperation::AllocZeroed => {
                 self.lower_runtime_call(plan.runtime_call.expect("alloc-zeroed runtime call plan"))
                     .primary
             }
-            crate::value_plan::IntrinsicOperation::Free => {
+            rue_air::IntrinsicOperation::Free => {
                 self.lower_runtime_call(plan.runtime_call.expect("free runtime call plan"))
                     .primary
             }
-            crate::value_plan::IntrinsicOperation::Realloc => {
+            rue_air::IntrinsicOperation::Realloc => {
                 self.lower_runtime_call(plan.runtime_call.expect("realloc runtime call plan"))
                     .primary
             }
-            crate::value_plan::IntrinsicOperation::Resize => {
+            rue_air::IntrinsicOperation::Resize => {
                 self.lower_runtime_call(plan.runtime_call.expect("resize runtime call plan"))
                     .primary
             }
-            crate::value_plan::IntrinsicOperation::ByteCopy => {
+            rue_air::IntrinsicOperation::ByteCopy => {
                 self.lower_runtime_call(plan.runtime_call.expect("byte-copy runtime call plan"))
                     .primary
             }
-            crate::value_plan::IntrinsicOperation::ByteMove => {
+            rue_air::IntrinsicOperation::ByteMove => {
                 self.lower_runtime_call(plan.runtime_call.expect("byte-move runtime call plan"))
                     .primary
             }
-            crate::value_plan::IntrinsicOperation::ByteSet => {
+            rue_air::IntrinsicOperation::ByteSet => {
                 self.lower_runtime_call(plan.runtime_call.expect("byte-set runtime call plan"))
                     .primary
             }
-            crate::value_plan::IntrinsicOperation::PlaceAddress => {
+            rue_air::IntrinsicOperation::Raw
+            | rue_air::IntrinsicOperation::RawMut
+            | rue_air::IntrinsicOperation::FieldPtr => {
                 let place = plan.args[0]
                     .place
                     .as_ref()
@@ -2028,11 +2029,14 @@ impl<'a> CfgLower<'a> {
                 crate::place_lower::lower_place_addr_plan(self, dst, place);
                 dst
             }
-            crate::value_plan::IntrinsicOperation::Debug => {
+            rue_air::IntrinsicOperation::DebugI64
+            | rue_air::IntrinsicOperation::DebugU64
+            | rue_air::IntrinsicOperation::DebugBool
+            | rue_air::IntrinsicOperation::DebugStr => {
                 self.lower_runtime_call(plan.runtime_call.expect("debug runtime call plan"))
                     .primary
             }
-            crate::value_plan::IntrinsicOperation::Syscall => {
+            rue_air::IntrinsicOperation::Syscall => {
                 let stack_space = i32::try_from(
                     checked_aligned_cell_region_bytes(
                         u64::try_from(plan.args.len())
@@ -2115,6 +2119,13 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Physical(Reg::X0),
                 });
                 dst
+            }
+            rue_air::IntrinsicOperation::PanicNoMessage
+            | rue_air::IntrinsicOperation::Panic
+            | rue_air::IntrinsicOperation::AssertFailed
+            | rue_air::IntrinsicOperation::AssertWithMessage
+            | rue_air::IntrinsicOperation::BoundsCheck => {
+                unreachable!("trap handled above")
             }
         };
         crate::value_plan::MaterializedValue { primary, slots }
@@ -3109,9 +3120,6 @@ impl crate::value_plan::ValueLowerAdapter for CfgLower<'_> {
     fn resolve_symbol(&self, symbol: lasso::Spur) -> String {
         self.symbols.resolve(self.interner.resolve(&symbol))
     }
-    fn resolve_intrinsic_symbol(&self, symbol: lasso::Spur) -> String {
-        self.interner.resolve(&symbol).to_owned()
-    }
     fn resolve_named_symbol(&self, symbol: &str) -> String {
         self.symbols.resolve(symbol)
     }
@@ -3833,8 +3841,8 @@ impl crate::aggregate_eq::AggregateEqPlanBackend for CfgLower<'_> {
 mod tests {
     use super::*;
     use rue_air::{
-        EnumDef, EnumId, ParamSlotModes, RuntimeCallKind, SourceParamAbi, StructDef, StructField,
-        StructId, TypeInternPool,
+        EnumDef, EnumId, ParamSlotModes, SourceParamAbi, StructDef, StructField, StructId,
+        TypeInternPool,
     };
     use rue_cfg::{CfgArgMode, CfgCallArg, CfgInst, CfgInstData, PlaceBase, Projection};
     use rue_span::{FileId, Span};
@@ -4115,16 +4123,16 @@ mod tests {
 
         fn intrinsic(
             &mut self,
-            runtime: Option<RuntimeCallKind>,
+            operation: rue_air::IntrinsicOperation,
             name: &str,
             args: &[CfgValue],
             ty: Type,
         ) -> CfgValue {
             let name = self.interner.get_or_intern(name);
             self.cfg
-                .append_intrinsic(
+                .append_intrinsic_operation(
                     self.current,
-                    runtime,
+                    operation,
                     name,
                     args.iter().copied(),
                     ty,
@@ -4241,13 +4249,23 @@ mod tests {
         let align_i32 = fixture.konst(align, Type::I32);
         let align = fixture.cast(align_i32, Type::I32, Type::U64);
         let raw = fixture.intrinsic(
-            Some(RuntimeCallKind::Alloc),
+            rue_air::IntrinsicOperation::Alloc,
             "alloc",
             &[size, align],
             raw_ptr_ty,
         );
-        let address = fixture.intrinsic(None, "ptr_to_int", &[raw], Type::U64);
-        let pointer = fixture.intrinsic(None, "int_to_ptr", &[address], ptr_ty);
+        let address = fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrToInt,
+            "ptr_to_int",
+            &[raw],
+            Type::U64,
+        );
+        let pointer = fixture.intrinsic(
+            rue_air::IntrinsicOperation::IntToPtr,
+            "int_to_ptr",
+            &[address],
+            ptr_ty,
+        );
         fixture.alloc(slot, pointer);
     }
 
@@ -4261,14 +4279,24 @@ mod tests {
         ptr_ty: Type,
     ) {
         let pointer = fixture.load(slot, ptr_ty);
-        let address = fixture.intrinsic(None, "ptr_to_int", &[pointer], Type::U64);
-        let laundered = fixture.intrinsic(None, "int_to_ptr", &[address], raw_ptr_ty);
+        let address = fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrToInt,
+            "ptr_to_int",
+            &[pointer],
+            Type::U64,
+        );
+        let laundered = fixture.intrinsic(
+            rue_air::IntrinsicOperation::IntToPtr,
+            "int_to_ptr",
+            &[address],
+            raw_ptr_ty,
+        );
         let size_i32 = fixture.konst(size, Type::I32);
         let size = fixture.cast(size_i32, Type::I32, Type::U64);
         let align_i32 = fixture.konst(align, Type::I32);
         let align = fixture.cast(align_i32, Type::I32, Type::U64);
         fixture.intrinsic(
-            Some(RuntimeCallKind::Free),
+            rue_air::IntrinsicOperation::Free,
             "free",
             &[laundered, size, align],
             Type::UNIT,
@@ -4432,11 +4460,26 @@ mod tests {
         checked_alloc(&mut fixture, 0, 4, 4, raw_ptr_ty, ptr_ty);
         let pointer = fixture.load(0, ptr_ty);
         let five = fixture.konst(5, Type::I32);
-        fixture.intrinsic(None, "ptr_write", &[pointer, five], Type::UNIT);
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrWrite,
+            "ptr_write",
+            &[pointer, five],
+            Type::UNIT,
+        );
         fixture.unit();
         let pointer = fixture.load(0, ptr_ty);
-        let read = fixture.intrinsic(None, "ptr_read", &[pointer], Type::I32);
-        fixture.intrinsic(Some(RuntimeCallKind::DebugI64), "dbg", &[read], Type::UNIT);
+        let read = fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrRead,
+            "ptr_read",
+            &[pointer],
+            Type::I32,
+        );
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::DebugI64,
+            "dbg",
+            &[read],
+            Type::UNIT,
+        );
         fixture.unit();
         checked_free(&mut fixture, 0, 4, 4, raw_ptr_ty, ptr_ty);
         fixture.unit();
@@ -4498,11 +4541,21 @@ mod tests {
         let pointer = fixture.load(0, ptr_ty);
         let forty_two = fixture.konst(42, Type::I32);
         let variant = fixture.enum_variant(opt_id, 0, &[forty_two], opt_ty);
-        fixture.intrinsic(None, "ptr_write", &[pointer, variant], Type::UNIT);
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrWrite,
+            "ptr_write",
+            &[pointer, variant],
+            Type::UNIT,
+        );
         fixture.unit();
         fixture.live(1, opt_ty);
         let pointer = fixture.load(0, ptr_ty);
-        let read = fixture.intrinsic(None, "ptr_read", &[pointer], opt_ty);
+        let read = fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrRead,
+            "ptr_read",
+            &[pointer],
+            opt_ty,
+        );
         fixture.alloc(1, read);
         let scrutinee = fixture.load(1, opt_ty);
         let some_arm = fixture.cfg.new_block();
@@ -4525,14 +4578,24 @@ mod tests {
         );
         fixture.alloc(3, payload);
         let x = fixture.load(3, Type::I32);
-        fixture.intrinsic(Some(RuntimeCallKind::DebugI64), "dbg", &[x], Type::UNIT);
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::DebugI64,
+            "dbg",
+            &[x],
+            Type::UNIT,
+        );
         fixture.unit();
         fixture.dead(3, Type::I32);
         fixture.cfg.set_goto(some_arm, join, []);
 
         fixture.current = none_arm;
         let zero = fixture.konst(0, Type::I32);
-        fixture.intrinsic(Some(RuntimeCallKind::DebugI64), "dbg", &[zero], Type::UNIT);
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::DebugI64,
+            "dbg",
+            &[zero],
+            Type::UNIT,
+        );
         fixture.unit();
         fixture.cfg.set_goto(none_arm, join, []);
 
@@ -4605,7 +4668,12 @@ mod tests {
         let z = fixture.konst(3, Type::I32);
         let point = fixture.struct_init(point_id, &[x, y, z], point_ty);
         let variant = fixture.enum_variant(r_id, 0, &[point], r_ty);
-        fixture.intrinsic(None, "ptr_write", &[pointer, variant], Type::UNIT);
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrWrite,
+            "ptr_write",
+            &[pointer, variant],
+            Type::UNIT,
+        );
         fixture.unit();
         fixture.unit();
         fixture.unit();
@@ -4662,11 +4730,21 @@ mod tests {
         let b = fixture.konst(1000, Type::I32);
         let c = fixture.konst(9, Type::U8);
         let padded = fixture.struct_init(padded_id, &[a, b, c], padded_ty);
-        fixture.intrinsic(None, "ptr_write", &[pointer, padded], Type::UNIT);
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrWrite,
+            "ptr_write",
+            &[pointer, padded],
+            Type::UNIT,
+        );
         fixture.unit();
         fixture.live(1, padded_ty);
         let pointer = fixture.load(0, ptr_ty);
-        let read = fixture.intrinsic(None, "ptr_read", &[pointer], padded_ty);
+        let read = fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrRead,
+            "ptr_read",
+            &[pointer],
+            padded_ty,
+        );
         fixture.alloc(1, read);
         let b = fixture.place_read(
             PlaceBase::Local(1),
@@ -4677,7 +4755,12 @@ mod tests {
             }],
             Type::I32,
         );
-        fixture.intrinsic(Some(RuntimeCallKind::DebugI64), "dbg", &[b], Type::UNIT);
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::DebugI64,
+            "dbg",
+            &[b],
+            Type::UNIT,
+        );
         fixture.unit();
         checked_free(&mut fixture, 0, 12, 4, raw_ptr_ty, ptr_ty);
         fixture.unit();
@@ -4741,11 +4824,21 @@ mod tests {
         let twenty = fixture.konst(20, Type::I32);
         let xs = fixture.array_init(&[ten, twenty], xs_ty);
         let has_arr = fixture.struct_init(has_arr_id, &[tag, xs], has_arr_ty);
-        fixture.intrinsic(None, "ptr_write", &[pointer, has_arr], Type::UNIT);
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrWrite,
+            "ptr_write",
+            &[pointer, has_arr],
+            Type::UNIT,
+        );
         fixture.unit();
         fixture.live(1, has_arr_ty);
         let pointer = fixture.load(0, ptr_ty);
-        let read = fixture.intrinsic(None, "ptr_read", &[pointer], has_arr_ty);
+        let read = fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrRead,
+            "ptr_read",
+            &[pointer],
+            has_arr_ty,
+        );
         fixture.alloc(1, read);
         checked_free(&mut fixture, 0, 12, 4, raw_ptr_ty, ptr_ty);
         let mut elements = Vec::new();
@@ -4772,7 +4865,12 @@ mod tests {
         fixture.dead(0, ptr_ty);
         fixture.alloc(4, sum);
         let r = fixture.load(4, Type::I32);
-        fixture.intrinsic(Some(RuntimeCallKind::DebugI64), "dbg", &[r], Type::UNIT);
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::DebugI64,
+            "dbg",
+            &[r],
+            Type::UNIT,
+        );
         fixture.unit();
         let result = fixture.konst(0, Type::I32);
         fixture.dead(4, Type::I32);
@@ -4831,11 +4929,21 @@ mod tests {
         let y = fixture.konst(2, Type::I32);
         let point = fixture.struct_init(point_id, &[x, y], point_ty);
         let variant = fixture.enum_variant(opt_id, 0, &[point], opt_ty);
-        fixture.intrinsic(None, "ptr_write", &[pointer, variant], Type::UNIT);
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrWrite,
+            "ptr_write",
+            &[pointer, variant],
+            Type::UNIT,
+        );
         fixture.unit();
         fixture.live(1, opt_ty);
         let pointer = fixture.load(0, ptr_ty);
-        let read = fixture.intrinsic(None, "ptr_read", &[pointer], opt_ty);
+        let read = fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrRead,
+            "ptr_read",
+            &[pointer],
+            opt_ty,
+        );
         fixture.alloc(1, read);
         checked_free(&mut fixture, 0, 12, 4, raw_ptr_ty, ptr_ty);
         let scrutinee = fixture.load(1, opt_ty);
@@ -4892,7 +5000,12 @@ mod tests {
         fixture.dead(0, ptr_ty);
         fixture.alloc(6, join_value);
         let r = fixture.load(6, Type::I32);
-        fixture.intrinsic(Some(RuntimeCallKind::DebugI64), "dbg", &[r], Type::UNIT);
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::DebugI64,
+            "dbg",
+            &[r],
+            Type::UNIT,
+        );
         fixture.unit();
         let result = fixture.konst(0, Type::I32);
         fixture.dead(6, Type::I32);
@@ -4944,7 +5057,12 @@ mod tests {
         let five = fixture.konst(5, Type::I64);
         let variant = fixture.enum_variant(bad_id, 0, &[five], bad_ty);
         let has_bad = fixture.struct_init(has_bad_id, &[variant], has_bad_ty);
-        fixture.intrinsic(None, "ptr_write", &[pointer, has_bad], Type::UNIT);
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrWrite,
+            "ptr_write",
+            &[pointer, has_bad],
+            Type::UNIT,
+        );
         fixture.unit();
         checked_free(&mut fixture, 0, 16, 8, raw_ptr_ty, ptr_ty);
         fixture.unit();
@@ -5000,7 +5118,12 @@ mod tests {
             }],
             Type::I32,
         );
-        fixture.intrinsic(Some(RuntimeCallKind::DebugI64), "dbg", &[b], Type::UNIT);
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::DebugI64,
+            "dbg",
+            &[b],
+            Type::UNIT,
+        );
         fixture.unit();
         let result = fixture.konst(0, Type::I32);
         fixture.dead(0, padded_ty);
@@ -5205,7 +5328,12 @@ mod tests {
         let pointer = fixture.load(0, ptr_ty);
         let five = fixture.konst(5, Type::I64);
         let variant = fixture.enum_variant(bad_id, 0, &[five], bad_ty);
-        fixture.intrinsic(None, "ptr_write", &[pointer, variant], Type::UNIT);
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrWrite,
+            "ptr_write",
+            &[pointer, variant],
+            Type::UNIT,
+        );
         fixture.unit();
         checked_free(&mut fixture, 0, 16, 8, raw_ptr_ty, ptr_ty);
         fixture.unit();
@@ -5642,7 +5770,7 @@ mod tests {
         let size = fixture.konst(3, Type::U64);
         let align = fixture.konst(1, Type::U64);
         let p = fixture.intrinsic(
-            Some(RuntimeCallKind::Alloc),
+            rue_air::IntrinsicOperation::Alloc,
             "alloc",
             &[size, align],
             ptr_ty,
@@ -5650,9 +5778,19 @@ mod tests {
         fixture.alloc(0, p);
         let p = fixture.load(0, ptr_ty);
         let one = fixture.konst(1, Type::I32);
-        let offset = fixture.intrinsic(None, "ptr_offset", &[p, one], ptr_ty);
+        let offset = fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrOffset,
+            "ptr_offset",
+            &[p, one],
+            ptr_ty,
+        );
         let byte = fixture.konst(255, Type::U8);
-        fixture.intrinsic(None, "ptr_write", &[offset, byte], Type::UNIT);
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrWrite,
+            "ptr_write",
+            &[offset, byte],
+            Type::UNIT,
+        );
         fixture.unit();
         fixture.live(1, ptr_ty);
         let p = fixture.load(0, ptr_ty);
@@ -5660,7 +5798,7 @@ mod tests {
         let old_align = fixture.konst(1, Type::U64);
         let new_size = fixture.konst(5, Type::U64);
         let q = fixture.intrinsic(
-            Some(RuntimeCallKind::Realloc),
+            rue_air::IntrinsicOperation::Realloc,
             "realloc",
             &[p, old_size, old_align, new_size],
             ptr_ty,
@@ -5669,14 +5807,24 @@ mod tests {
         fixture.live(2, Type::U8);
         let q = fixture.load(1, ptr_ty);
         let one = fixture.konst(1, Type::I32);
-        let offset = fixture.intrinsic(None, "ptr_offset", &[q, one], ptr_ty);
-        let byte = fixture.intrinsic(None, "ptr_read", &[offset], Type::U8);
+        let offset = fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrOffset,
+            "ptr_offset",
+            &[q, one],
+            ptr_ty,
+        );
+        let byte = fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrRead,
+            "ptr_read",
+            &[offset],
+            Type::U8,
+        );
         fixture.alloc(2, byte);
         let q = fixture.load(1, ptr_ty);
         let size = fixture.konst(5, Type::U64);
         let align = fixture.konst(1, Type::U64);
         fixture.intrinsic(
-            Some(RuntimeCallKind::Free),
+            rue_air::IntrinsicOperation::Free,
             "free",
             &[q, size, align],
             Type::UNIT,
@@ -5748,7 +5896,7 @@ mod tests {
         let size = fixture.konst(2, Type::U64);
         let align = fixture.konst(1, Type::U64);
         let p = fixture.intrinsic(
-            Some(RuntimeCallKind::Alloc),
+            rue_air::IntrinsicOperation::Alloc,
             "alloc",
             &[size, align],
             ptr_ty,
@@ -5756,21 +5904,41 @@ mod tests {
         fixture.alloc(0, p);
         let p = fixture.load(0, ptr_ty);
         let zero = fixture.konst(0, Type::I32);
-        let offset = fixture.intrinsic(None, "ptr_offset", &[p, zero], ptr_ty);
+        let offset = fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrOffset,
+            "ptr_offset",
+            &[p, zero],
+            ptr_ty,
+        );
         let byte = fixture.konst(65, Type::U8);
-        fixture.intrinsic(None, "ptr_write", &[offset, byte], Type::UNIT);
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrWrite,
+            "ptr_write",
+            &[offset, byte],
+            Type::UNIT,
+        );
         fixture.unit();
         fixture.live(1, Type::U8);
         let p = fixture.load(0, ptr_ty);
         let one = fixture.konst(1, Type::I32);
-        let offset = fixture.intrinsic(None, "ptr_offset", &[p, one], ptr_ty);
-        let byte = fixture.intrinsic(None, "ptr_read", &[offset], Type::U8);
+        let offset = fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrOffset,
+            "ptr_offset",
+            &[p, one],
+            ptr_ty,
+        );
+        let byte = fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrRead,
+            "ptr_read",
+            &[offset],
+            Type::U8,
+        );
         fixture.alloc(1, byte);
         let p = fixture.load(0, ptr_ty);
         let size = fixture.konst(2, Type::U64);
         let align = fixture.konst(1, Type::U64);
         fixture.intrinsic(
-            Some(RuntimeCallKind::Free),
+            rue_air::IntrinsicOperation::Free,
             "free",
             &[p, size, align],
             Type::UNIT,

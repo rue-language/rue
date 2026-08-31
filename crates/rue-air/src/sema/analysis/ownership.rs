@@ -4385,7 +4385,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             });
             Some(air.add_intrinsic(
-                Some(crate::RuntimeCallKind::BoundsCheck),
+                crate::IntrinsicOperation::BoundsCheck,
                 self.known_symbols().assert,
                 &[lower_bound_ref],
                 Type::UNIT,
@@ -4426,7 +4426,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             span,
         });
         let upper_check_ref = air.add_intrinsic(
-            Some(crate::RuntimeCallKind::BoundsCheck),
+            crate::IntrinsicOperation::BoundsCheck,
             self.known_symbols().assert,
             &[upper_bound_ref],
             Type::UNIT,
@@ -4435,14 +4435,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // element = @ptr_read(@ptr_offset(ptr, index)).
         let off_ref = air.add_intrinsic(
-            None,
+            crate::IntrinsicOperation::PtrOffset,
             self.known_symbols().ptr_offset,
             &[ptr_ref, index_result.air_ref],
             ptr_ty,
             span,
         )?;
         let elem_ref = air.add_intrinsic(
-            None,
+            crate::IntrinsicOperation::PtrRead,
             self.known_symbols().ptr_read,
             &[off_ref],
             elem_ty,
@@ -7335,14 +7335,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // A zero-length slice never dereferences its pointer: every read is
             // guarded by `i < len`, and `len` is 0. Do not form `@raw(arr[0])`
             // for `[T; 0]`; that is not a valid place and underflows in some
-            // codegen paths. Use a conventional null pointer word instead.
-            air.add_intrinsic(
-                None,
-                self.known_symbols().int_to_ptr,
-                &[zero_ref],
-                ptr_ty,
+            // codegen paths. Use a conventional null pointer word with the
+            // slice field's exact const-pointer type. This is compiler-owned
+            // representation data, not the source `@int_to_ptr` operation,
+            // whose single semantic contract remains `u64 -> ptr mut T`.
+            air.add_inst(AirInst {
+                data: AirInstData::Const(0),
+                ty: ptr_ty,
                 span,
-            )?
+            })
         } else {
             // ptr word = @raw(arr[0]) : ptr const T. Build a place read of
             // element 0 and take its address, exactly as source `@raw(arr[0])`
@@ -7358,7 +7359,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ty: arr_elem,
                 span,
             });
-            air.add_intrinsic(None, self.known_symbols().raw, &[elem0_read], ptr_ty, span)?
+            air.add_intrinsic(
+                crate::IntrinsicOperation::Raw,
+                self.known_symbols().raw,
+                &[elem0_read],
+                ptr_ty,
+                span,
+            )?
         };
 
         // len word = N (compile-time array length).

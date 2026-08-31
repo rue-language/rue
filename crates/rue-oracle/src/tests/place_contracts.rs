@@ -711,7 +711,7 @@ fn validated_cfg_requires_exact_type_and_writable_storage_for_whole_place_writes
                         return None;
                     };
                     let CfgInstData::Intrinsic {
-                        runtime: Some(RuntimeCallKind::RandomU32),
+                        operation: rue_air::IntrinsicOperation::RandomU32,
                         ..
                     } = cfg.get_inst(rhs).data
                     else {

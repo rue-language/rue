@@ -581,11 +581,11 @@ mod tests {
     use aarch64::MAX_ADD_SUB_IMMEDIATE;
     use lasso::ThreadedRodeo;
     use rue_air::{
-        AirEditor, AirValidationContext, FrozenTypeInternPool, Type, TypeInternPool,
-        layout::SLOT_BYTES,
+        AirEditor, AirValidationContext, FrozenTypeInternPool, IntrinsicOperation, StructDef,
+        StructField, Type, TypeInternPool, layout::SLOT_BYTES,
     };
-    use rue_cfg::{CfgBuilder, ValidatedCfg};
-    use rue_span::Span;
+    use rue_cfg::{Cfg, CfgBuilder, CfgInst, CfgInstData, ValidatedCfg};
+    use rue_span::{FileId, Span};
 
     #[test]
     fn stable_atom_aliases_compact_to_one_dense_string_deterministically() {
@@ -742,10 +742,10 @@ mod tests {
         let interner = ThreadedRodeo::new();
         let mut air = AirEditor::new(Type::I64);
         let span = Span::new(0, 2);
-        let number = air.add_const(1, Type::I64, span);
+        let number = air.add_const(1, Type::U64, span);
         let result = air
             .add_intrinsic(
-                None,
+                rue_air::IntrinsicOperation::Syscall,
                 interner.get_or_intern("syscall"),
                 &[number],
                 Type::I64,
@@ -770,6 +770,207 @@ mod tests {
             rue_air::AnalyzedCallableKind::Ordinary,
         );
         (cfg_output.cfg.unwrap(), type_pool, interner)
+    }
+
+    fn diagnostic_intrinsic_cfg(
+        operation: IntrinsicOperation,
+        diagnostic_name: &str,
+    ) -> (
+        ValidatedCfg,
+        FrozenTypeInternPool,
+        ThreadedRodeo,
+        Vec<String>,
+    ) {
+        let type_pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::new();
+        let ptr_u8 = Type::new_ptr_const(type_pool.intern_ptr_const_from_type(Type::U8));
+        let (str_id, _) = type_pool.register_struct(
+            interner.get_or_intern("str"),
+            StructDef {
+                name: "str".into(),
+                fields: vec![
+                    StructField {
+                        name: "ptr".into(),
+                        ty: ptr_u8,
+                    },
+                    StructField {
+                        name: "len".into(),
+                        ty: Type::U64,
+                    },
+                ],
+                is_copy: true,
+                is_linear: false,
+                declared_linear: false,
+                destructor: None,
+                is_builtin: true,
+                is_pub: true,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        let str_ty = Type::new_struct(str_id);
+        let result_ty = if matches!(
+            operation,
+            IntrinsicOperation::PanicNoMessage | IntrinsicOperation::Panic
+        ) {
+            Type::NEVER
+        } else {
+            Type::UNIT
+        };
+        let type_pool = type_pool.freeze();
+        let mut cfg = Cfg::new(
+            result_ty,
+            0,
+            0,
+            "typed_intrinsic_dispatch".to_owned(),
+            Vec::<bool>::new(),
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let span = Span::new(0, 1);
+        let mut append = |data, ty| cfg.append_inst(entry, CfgInst { data, ty, span });
+        let args = match operation {
+            IntrinsicOperation::PanicNoMessage => vec![],
+            IntrinsicOperation::Panic | IntrinsicOperation::DebugStr => {
+                vec![append(CfgInstData::StringConst(0), str_ty)]
+            }
+            IntrinsicOperation::AssertFailed | IntrinsicOperation::BoundsCheck => {
+                vec![append(CfgInstData::BoolConst(false), Type::BOOL)]
+            }
+            IntrinsicOperation::AssertWithMessage => vec![
+                append(CfgInstData::BoolConst(false), Type::BOOL),
+                append(CfgInstData::StringConst(0), str_ty),
+            ],
+            IntrinsicOperation::DebugI64 => vec![append(CfgInstData::Const(7), Type::I64)],
+            IntrinsicOperation::DebugU64 => vec![append(CfgInstData::Const(7), Type::U64)],
+            IntrinsicOperation::DebugBool => {
+                vec![append(CfgInstData::BoolConst(true), Type::BOOL)]
+            }
+            IntrinsicOperation::ReadLine
+            | IntrinsicOperation::ParseI32
+            | IntrinsicOperation::ParseI64
+            | IntrinsicOperation::ParseU32
+            | IntrinsicOperation::ParseU64
+            | IntrinsicOperation::RandomU32
+            | IntrinsicOperation::RandomU64
+            | IntrinsicOperation::PtrToInt
+            | IntrinsicOperation::IntToPtr
+            | IntrinsicOperation::PtrRead
+            | IntrinsicOperation::PtrReadUnaligned
+            | IntrinsicOperation::PtrWrite
+            | IntrinsicOperation::PtrWriteUnaligned
+            | IntrinsicOperation::PtrOffset
+            | IntrinsicOperation::Alloc
+            | IntrinsicOperation::AllocZeroed
+            | IntrinsicOperation::Free
+            | IntrinsicOperation::Realloc
+            | IntrinsicOperation::Resize
+            | IntrinsicOperation::ByteCopy
+            | IntrinsicOperation::ByteMove
+            | IntrinsicOperation::ByteSet
+            | IntrinsicOperation::ArgCount
+            | IntrinsicOperation::ArgPtr
+            | IntrinsicOperation::ArgLen
+            | IntrinsicOperation::EnvCount
+            | IntrinsicOperation::EnvPtr
+            | IntrinsicOperation::EnvLen
+            | IntrinsicOperation::Raw
+            | IntrinsicOperation::RawMut
+            | IntrinsicOperation::FieldPtr
+            | IntrinsicOperation::Syscall
+            | IntrinsicOperation::BitCast => {
+                panic!("fixture only accepts trap and debug operations")
+            }
+        };
+        let _intrinsic = cfg
+            .append_intrinsic_operation(
+                entry,
+                operation,
+                interner.get_or_intern(diagnostic_name),
+                args,
+                result_ty,
+                span,
+            )
+            .unwrap();
+        if result_ty == Type::NEVER {
+            cfg.set_unreachable(entry);
+        } else {
+            cfg.set_return(entry, None);
+        }
+        (
+            cfg.finish(&type_pool)
+                .expect("typed intrinsic fixture must validate"),
+            type_pool,
+            interner,
+            vec!["typed diagnostic payload".to_owned()],
+        )
+    }
+
+    fn pointer_zero_cfgs() -> (
+        ValidatedCfg,
+        ValidatedCfg,
+        FrozenTypeInternPool,
+        ThreadedRodeo,
+    ) {
+        let type_pool = TypeInternPool::new();
+        let ptr_const = Type::new_ptr_const(type_pool.intern_ptr_const_from_type(Type::I32));
+        let ptr_mut = Type::new_ptr_mut(type_pool.intern_ptr_mut_from_type(Type::I32));
+        let type_pool = type_pool.freeze();
+        let interner = ThreadedRodeo::new();
+        let span = Span::new(0, 1);
+
+        let build = |synthesized_const: bool| {
+            let mut cfg = Cfg::new(
+                Type::U64,
+                0,
+                0,
+                "empty_slice_pointer_bytes".to_owned(),
+                Vec::<bool>::new(),
+            );
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let pointer = if synthesized_const {
+                cfg.append_inst(
+                    entry,
+                    CfgInst {
+                        data: CfgInstData::Const(0),
+                        ty: ptr_const,
+                        span,
+                    },
+                )
+            } else {
+                let zero = cfg.append_inst(
+                    entry,
+                    CfgInst {
+                        data: CfgInstData::Const(0),
+                        ty: Type::U64,
+                        span,
+                    },
+                );
+                cfg.append_intrinsic_operation(
+                    entry,
+                    IntrinsicOperation::IntToPtr,
+                    interner.get_or_intern("int_to_ptr"),
+                    [zero],
+                    ptr_mut,
+                    span,
+                )
+                .unwrap()
+            };
+            let address = cfg
+                .append_intrinsic_operation(
+                    entry,
+                    IntrinsicOperation::PtrToInt,
+                    interner.get_or_intern("ptr_to_int"),
+                    [pointer],
+                    Type::U64,
+                    span,
+                )
+                .unwrap();
+            cfg.set_return(entry, Some(address));
+            cfg.finish(&type_pool)
+                .expect("pointer fixture must validate")
+        };
+        (build(true), build(false), type_pool, interner)
     }
 
     /// Assert that a `--emit regalloc` projection exercises the widened
@@ -923,6 +1124,107 @@ mod tests {
                 with_authority.machine_code.relocations.len(),
                 without_authority.machine_code.relocations.len()
             );
+        }
+    }
+
+    fn generate_machine_code_for_target(
+        cfg: &ValidatedCfg,
+        type_pool: &FrozenTypeInternPool,
+        strings: &[String],
+        interner: &ThreadedRodeo,
+        target: rue_target::Target,
+    ) -> MachineCode {
+        match target.arch() {
+            rue_target::Arch::X86_64 => x86_64::generate(cfg, type_pool, strings, interner, target),
+            rue_target::Arch::Aarch64 => {
+                aarch64::generate(cfg, type_pool, strings, interner, target)
+            }
+        }
+        .expect("production backend generation should succeed")
+    }
+
+    #[test]
+    fn typed_trap_and_debug_dispatch_ignores_counterfeit_diagnostic_names_on_every_target() {
+        let operations = [
+            IntrinsicOperation::PanicNoMessage,
+            IntrinsicOperation::Panic,
+            IntrinsicOperation::AssertFailed,
+            IntrinsicOperation::AssertWithMessage,
+            IntrinsicOperation::BoundsCheck,
+            IntrinsicOperation::DebugI64,
+            IntrinsicOperation::DebugU64,
+            IntrinsicOperation::DebugBool,
+            IntrinsicOperation::DebugStr,
+        ];
+        for operation in operations {
+            let (canonical, canonical_types, canonical_interner, canonical_strings) =
+                diagnostic_intrinsic_cfg(operation, operation.expected_spelling());
+            let (counterfeit, counterfeit_types, counterfeit_interner, counterfeit_strings) =
+                diagnostic_intrinsic_cfg(operation, "counterfeit_diagnostic_name");
+            for target in [
+                rue_target::Target::X86_64Linux,
+                rue_target::Target::Aarch64Linux,
+                rue_target::Target::Aarch64Macos,
+            ] {
+                let canonical_code = generate_machine_code_for_target(
+                    &canonical,
+                    &canonical_types,
+                    &canonical_strings,
+                    &canonical_interner,
+                    target,
+                );
+                let counterfeit_code = generate_machine_code_for_target(
+                    &counterfeit,
+                    &counterfeit_types,
+                    &counterfeit_strings,
+                    &counterfeit_interner,
+                    target,
+                );
+                assert_same_machine_code(&canonical_code, &counterfeit_code);
+
+                let helper = operation
+                    .runtime_call_kind()
+                    .expect("trap/debug operation is runtime backed")
+                    .helper()
+                    .symbol();
+                assert!(
+                    canonical_code
+                        .relocations
+                        .iter()
+                        .any(|relocation| relocation.symbol == helper),
+                    "{operation:?} on {target:?} must select {helper}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn synthesized_empty_slice_pointer_const_preserves_previous_native_bytes() {
+        let (pointer_const, previous_int_to_ptr, type_pool, interner) = pointer_zero_cfgs();
+        for target in [
+            rue_target::Target::X86_64Linux,
+            rue_target::Target::Aarch64Linux,
+            rue_target::Target::Aarch64Macos,
+        ] {
+            let current = generate_product_for_target(
+                &pointer_const,
+                &type_pool,
+                &[],
+                &interner,
+                target,
+                BackendArtifactRequest::default(),
+            )
+            .machine_code;
+            let previous = generate_product_for_target(
+                &previous_int_to_ptr,
+                &type_pool,
+                &[],
+                &interner,
+                target,
+                BackendArtifactRequest::default(),
+            )
+            .machine_code;
+            assert_same_machine_code(&current, &previous);
         }
     }
 

@@ -1455,6 +1455,7 @@ fn comptime_instdata_evaluation_has_one_production_authority() {
         ),
         ("integer_semantics", include_str!("integer_semantics.rs")),
         ("intern_pool", include_str!("intern_pool.rs")),
+        ("intrinsic", include_str!("intrinsic.rs")),
         ("layout", include_str!("layout.rs")),
         ("lib", include_str!("lib.rs")),
         ("module_registry", include_str!("module_registry.rs")),
@@ -3865,4 +3866,86 @@ fn sema_diagnostics_use_the_friendly_type_display_authority() {
         1,
         "canonical comptime display interleaving must have one AIR owner"
     );
+}
+
+#[test]
+fn intrinsic_semantics_have_one_typed_authority_across_sema_and_durable_air() {
+    let known = include_str!("sema/known_symbols.rs");
+    let analysis = include_str!("sema/analysis/intrinsics.rs");
+    let pointers = include_str!("sema/analysis/pointers.rs");
+    let ownership = include_str!("sema/analysis/ownership.rs");
+    let air = include_str!("inst.rs");
+    let durable = include_str!("semantic_body.rs");
+    let export = include_str!("sema/semantic_body_export.rs");
+    let import = include_str!("semantic_import.rs");
+
+    assert_eq!(
+        known
+            .matches("pub fn get_parse_intrinsic_operation(")
+            .count(),
+        1,
+        "parse intrinsic symbols must have one typed classifier"
+    );
+    assert_eq!(
+        analysis
+            .matches("known.get_parse_intrinsic_operation(name)")
+            .count(),
+        1,
+        "sema must consume the one parse classifier exactly once"
+    );
+    assert!(analysis.contains("\"arg_ptr\",\n                crate::IntrinsicOperation::ArgPtr"));
+    assert!(analysis.contains("\"env_ptr\",\n                crate::IntrinsicOperation::EnvPtr"));
+
+    assert!(air.contains(
+        "Intrinsic {\n        /// Typed intrinsic semantics selected by semantic analysis.\n        operation: crate::IntrinsicOperation,"
+    ));
+    assert!(durable.contains(
+        "Intrinsic {\n        operation: crate::IntrinsicOperation,\n        name: Arc<str>,"
+    ));
+    assert!(durable.contains(
+        "D::Intrinsic {\n                operation,\n                name,\n                args,\n            } => D::Intrinsic {\n                operation: *operation,"
+    ));
+    assert!(export.contains("operation: *operation"));
+    assert!(import.contains("operation.validate_call(type_pool, &arguments, ty)"));
+    assert!(import.contains("source_name != operation.expected_spelling()"));
+    assert!(
+        import
+            .find("operation.validate_call(type_pool, &arguments, ty)")
+            .unwrap()
+            < import.find("let name = intern(source_name)?").unwrap(),
+        "durable import must validate before publishing the diagnostic symbol"
+    );
+
+    let empty_slice = ownership
+        .split("if arr_len == 0 {")
+        .nth(1)
+        .and_then(|source| source.split("} else {").next())
+        .expect("empty-slice lowering branch");
+    assert!(empty_slice.contains("data: AirInstData::Const(0)"));
+    assert!(empty_slice.contains("ty: ptr_ty"));
+    assert!(!empty_slice.contains("IntrinsicOperation::IntToPtr"));
+
+    for (name, source) in [
+        ("known symbols", known),
+        ("sema intrinsic analysis", analysis),
+        ("sema pointer analysis", pointers),
+        ("sema ownership analysis", ownership),
+        ("AIR", air),
+        ("durable AIR", durable),
+        ("durable export", export),
+        ("durable import", import),
+    ] {
+        for forbidden in [
+            "IntrinsicSelector",
+            "resolve_intrinsic_operation",
+            "intrinsic_operation_from_name",
+            "operation_from_name",
+            "expect(\"parse intrinsic",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{name} contains a second intrinsic selection path: {forbidden}"
+            );
+        }
+    }
 }

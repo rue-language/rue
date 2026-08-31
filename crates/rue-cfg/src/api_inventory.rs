@@ -210,3 +210,30 @@ fn validated_cfg_consuming_editor_conversion_does_not_copy_payloads() {
     assert!(conversion.contains("self.0"));
     assert!(!conversion.contains("clone("));
 }
+
+#[test]
+fn cfg_intrinsics_revalidate_and_preserve_the_semantic_operation() {
+    let build = include_str!("build.rs");
+    let production = build
+        .split("\n#[cfg(test)]\nmod ")
+        .next()
+        .expect("CFG production prefix");
+    assert_eq!(
+        production.matches("operation.validate_call(").count(),
+        1,
+        "CFG construction must have one shared intrinsic call-shape defense"
+    );
+    assert!(production.contains("operation: *operation"));
+    for forbidden in [
+        "expected_spelling",
+        "resolve_intrinsic",
+        "intrinsic_operation_from_name",
+        "match self.interner.resolve(name)",
+        "unsupported intrinsic",
+    ] {
+        assert!(
+            !production.contains(forbidden),
+            "CFG construction regained intrinsic name dispatch or fallback: {forbidden}"
+        );
+    }
+}

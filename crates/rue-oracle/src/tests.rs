@@ -23,6 +23,49 @@ fn oracle_uses_air_synthetic_type_identity_policy() {
     }
 }
 
+#[test]
+fn oracle_intrinsic_contracts_and_evaluation_use_only_the_typed_operation() {
+    let source = include_str!("lib.rs");
+    assert!(source.contains(
+        "fn unsupported_intrinsic_kind_for_operation(\n    operation: rue_air::IntrinsicOperation"
+    ));
+    assert!(source.contains("CfgInstData::Intrinsic { operation, .. }"));
+    assert!(source.contains("match *operation {"));
+
+    let pointer_eval = source
+        .split("fn eval_pointer_intrinsic(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn expect_ptr(").next())
+        .expect("typed pointer-intrinsic evaluator");
+    assert!(pointer_eval.contains("match operation {"));
+    assert!(!pointer_eval.contains("_ => Ok(None)"));
+
+    let debug_eval = source
+        .split("fn eval_debug_intrinsic(")
+        .nth(1)
+        .and_then(|source| source.split("\n    fn write_dbg(").next())
+        .expect("typed debug-intrinsic evaluator");
+    assert!(debug_eval.contains("operation.validate_call("));
+    assert!(debug_eval.contains("match operation {"));
+    assert!(!debug_eval.contains("_ =>"));
+
+    for forbidden in [
+        "IntrinsicSelector",
+        "impl From<&str>",
+        "fn unsupported_intrinsic_kind(name",
+        "unsupported_intrinsic_kind(name",
+        "intrinsic_operation_from_name",
+        "operation_from_name",
+        "match name.as_str()",
+        "match name {\n            \"ptr_",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "oracle regained intrinsic string selection or compatibility fallback: {forbidden}"
+        );
+    }
+}
+
 mod call_contracts;
 mod place_contracts;
 
@@ -834,77 +877,83 @@ fn valid_unmodeled_program_is_unsupported_not_a_compile_error() {
 #[test]
 fn every_known_unsupported_intrinsic_has_a_closed_kind() {
     use UnsupportedIntrinsicKind as Intrinsic;
+    use rue_air::IntrinsicOperation as Operation;
 
-    for (name, intrinsic) in [
-        ("parse_i32", Intrinsic::ParseI32),
-        ("parse_i64", Intrinsic::ParseI64),
-        ("parse_u32", Intrinsic::ParseU32),
-        ("parse_u64", Intrinsic::ParseU64),
-        ("ptr_read", Intrinsic::PointerRead),
-        ("ptr_write", Intrinsic::PointerWrite),
-        ("ptr_offset", Intrinsic::PointerOffset),
-        ("ptr_to_int", Intrinsic::PointerToInt),
-        ("int_to_ptr", Intrinsic::IntToPointer),
-        ("raw", Intrinsic::RawAddress),
-        ("raw_mut", Intrinsic::RawMutableAddress),
-        ("field_ptr", Intrinsic::FieldPointer),
-        ("alloc", Intrinsic::Allocate),
-        ("free", Intrinsic::Free),
-        ("realloc", Intrinsic::Reallocate),
-        ("alloc_zeroed", Intrinsic::AllocateZeroed),
-        ("resize", Intrinsic::Resize),
-        ("byte_move", Intrinsic::ByteMove),
-        ("byte_copy", Intrinsic::ByteCopy),
-        ("byte_set", Intrinsic::ByteSet),
+    for (operation, intrinsic) in [
+        (Operation::ParseI32, Intrinsic::ParseI32),
+        (Operation::ParseI64, Intrinsic::ParseI64),
+        (Operation::ParseU32, Intrinsic::ParseU32),
+        (Operation::ParseU64, Intrinsic::ParseU64),
+        (Operation::PtrRead, Intrinsic::PointerRead),
+        (Operation::PtrReadUnaligned, Intrinsic::PointerRead),
+        (Operation::PtrWrite, Intrinsic::PointerWrite),
+        (Operation::PtrWriteUnaligned, Intrinsic::PointerWrite),
+        (Operation::PtrOffset, Intrinsic::PointerOffset),
+        (Operation::PtrToInt, Intrinsic::PointerToInt),
+        (Operation::IntToPtr, Intrinsic::IntToPointer),
+        (Operation::Raw, Intrinsic::RawAddress),
+        (Operation::RawMut, Intrinsic::RawMutableAddress),
+        (Operation::FieldPtr, Intrinsic::FieldPointer),
+        (Operation::Alloc, Intrinsic::Allocate),
+        (Operation::Free, Intrinsic::Free),
+        (Operation::Realloc, Intrinsic::Reallocate),
+        (Operation::AllocZeroed, Intrinsic::AllocateZeroed),
+        (Operation::Resize, Intrinsic::Resize),
+        (Operation::ByteMove, Intrinsic::ByteMove),
+        (Operation::ByteCopy, Intrinsic::ByteCopy),
+        (Operation::ByteSet, Intrinsic::ByteSet),
     ] {
         let expected = UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(intrinsic));
-        assert_eq!(unsupported_intrinsic_kind(name), expected, "@{name}");
+        assert_eq!(
+            unsupported_intrinsic_kind_for_operation(operation),
+            expected,
+            "{operation:?}"
+        );
         assert!(
             expected.model_gap().is_some(),
-            "@{name} must be registrable"
+            "{operation:?} must be registrable"
         );
     }
 
-    for (name, dependency) in [
-        ("read_line", ExternalDependencyKind::StandardInput),
-        ("random_u32", ExternalDependencyKind::RandomU32),
-        ("random_u64", ExternalDependencyKind::RandomU64),
-        ("syscall", ExternalDependencyKind::SystemCall),
-        ("arg_count", ExternalDependencyKind::ArgCount),
-        ("arg_ptr", ExternalDependencyKind::ArgPtr),
-        ("arg_len", ExternalDependencyKind::ArgLen),
-        ("env_count", ExternalDependencyKind::EnvCount),
-        ("env_ptr", ExternalDependencyKind::EnvPtr),
-        ("env_len", ExternalDependencyKind::EnvLen),
+    for (operation, dependency) in [
+        (Operation::ReadLine, ExternalDependencyKind::StandardInput),
+        (Operation::RandomU32, ExternalDependencyKind::RandomU32),
+        (Operation::RandomU64, ExternalDependencyKind::RandomU64),
+        (Operation::Syscall, ExternalDependencyKind::SystemCall),
+        (Operation::ArgCount, ExternalDependencyKind::ArgCount),
+        (Operation::ArgPtr, ExternalDependencyKind::ArgPtr),
+        (Operation::ArgLen, ExternalDependencyKind::ArgLen),
+        (Operation::EnvCount, ExternalDependencyKind::EnvCount),
+        (Operation::EnvPtr, ExternalDependencyKind::EnvPtr),
+        (Operation::EnvLen, ExternalDependencyKind::EnvLen),
     ] {
         assert_eq!(
-            unsupported_intrinsic_kind(name),
+            unsupported_intrinsic_kind_for_operation(operation),
             UnsupportedKind::ExternalDependency(dependency),
-            "@{name}"
+            "{operation:?}"
         );
     }
 
-    for name in [
-        "dbg",
-        "panic",
-        "assert",
-        "drop",
-        "intCast",
-        "cast",
-        "to_string",
-        "test_preview_gate",
-        "import",
-        "target_arch",
-        "target_os",
-        "__rue_char_next",
-        "unknown_future_intrinsic",
+    for operation in [
+        Operation::PanicNoMessage,
+        Operation::Panic,
+        Operation::AssertFailed,
+        Operation::AssertWithMessage,
+        Operation::BoundsCheck,
+        Operation::DebugI64,
+        Operation::DebugU64,
+        Operation::DebugBool,
+        Operation::DebugStr,
+        Operation::BitCast,
     ] {
         assert_eq!(
-            unsupported_intrinsic_kind(name),
+            unsupported_intrinsic_kind_for_operation(operation),
             UnsupportedKind::ContractViolation(ContractViolationKind::UnexpectedIntrinsic),
-            "@{name} must fail closed if it unexpectedly survives lowering"
+            "{operation:?} must fail closed if it unexpectedly reaches gap classification"
         );
     }
+
+    assert_eq!(Operation::ALL.len(), 42);
 }
 
 #[test]

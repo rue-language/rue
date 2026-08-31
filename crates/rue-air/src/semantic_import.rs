@@ -985,17 +985,40 @@ where
                 }
                 SemanticBodyInstData::CallGeneric => return Err(F::UnsupportedGenericCall),
                 SemanticBodyInstData::Intrinsic {
-                    runtime,
+                    operation,
                     name,
                     args,
                 } => {
-                    let name = intern(name.as_ref())?;
+                    let source_name = name.as_ref();
                     if args.iter().any(|arg| arg.mode != crate::AirArgMode::Normal) {
                         return Err(F::InvalidParameterModes);
                     }
                     let values = args.iter().map(|arg| arg.value).collect::<Vec<_>>();
                     let values = refs(&values, current)?;
-                    air.add_intrinsic(*runtime, name, &values, ty, span)?;
+                    if source_name != operation.expected_spelling() {
+                        return Err(F::InvalidIntrinsicOperation);
+                    }
+                    let arguments = values
+                        .iter()
+                        .map(|value| {
+                            crate::intrinsic_air_argument_with_place_lookup(
+                                &air,
+                                *value,
+                                crate::AirArgMode::Normal,
+                                |place| {
+                                    matches!(
+                                        body.places[place.as_u32() as usize].projections.last(),
+                                        Some(SemanticBodyProjection::Field { .. })
+                                    )
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    if !operation.validate_call(type_pool, &arguments, ty) {
+                        return Err(F::InvalidIntrinsicOperation);
+                    }
+                    let name = intern(source_name)?;
+                    air.add_intrinsic(*operation, name, &values, ty, span)?;
                     continue;
                 }
                 SemanticBodyInstData::Param { index } => AirInstData::Param { index: *index },
@@ -3213,9 +3236,13 @@ mod tests {
         let mut input = body(vec![
             D::Const(42),
             D::Intrinsic {
-                runtime: None,
-                name: Arc::from("compiler-intrinsic"),
-                args: Arc::new([]),
+                operation: crate::IntrinsicOperation::BitCast,
+                name: Arc::from("bitCast"),
+                args: vec![crate::SemanticBodyCallArg {
+                    value: 0,
+                    mode: crate::AirArgMode::Normal,
+                }]
+                .into(),
             },
             D::Ret(Some(1)),
         ]);
@@ -3261,7 +3288,7 @@ mod tests {
         assert_eq!(output.body_span.file_id, FileId::new(7));
         assert!(output.completeness.is_complete());
         assert_eq!(output.interner.get("main"), output.interner.get("main"));
-        assert!(output.interner.get("compiler-intrinsic").is_some());
+        assert!(output.interner.get("bitCast").is_some());
         assert_eq!(output.num_locals, 3);
         assert_eq!(output.num_param_slots, 2);
         assert_eq!(output.param_modes.by_ref(), [true, false]);
@@ -3984,10 +4011,15 @@ mod tests {
         assert_eq!(after_failure.interner().len(), baseline_symbols);
 
         let invalid = body(vec![
+            D::Const(0),
             D::Intrinsic {
-                runtime: None,
-                name: Arc::from("failed_import_symbol"),
-                args: Arc::new([]),
+                operation: crate::IntrinsicOperation::BitCast,
+                name: Arc::from("bitCast"),
+                args: vec![crate::SemanticBodyCallArg {
+                    value: 0,
+                    mode: crate::AirArgMode::Normal,
+                }]
+                .into(),
             },
             D::Add(3, 0),
         ]);
@@ -4001,11 +4033,18 @@ mod tests {
             "preflight must not publish an intrinsic symbol before a later failure"
         );
 
-        let valid = body(vec![D::Intrinsic {
-            runtime: None,
-            name: Arc::from("successful_import_symbol"),
-            args: Arc::new([]),
-        }]);
+        let valid = body(vec![
+            D::Const(0),
+            D::Intrinsic {
+                operation: crate::IntrinsicOperation::BitCast,
+                name: Arc::from("bitCast"),
+                args: vec![crate::SemanticBodyCallArg {
+                    value: 0,
+                    mode: crate::AirArgMode::Normal,
+                }]
+                .into(),
+            },
+        ]);
         let after_failure_body = after_failure
             .import_body(&valid, Span::with_file(FileId::DEFAULT, 0, 100))
             .unwrap();
@@ -4015,13 +4054,13 @@ mod tests {
         let crate::AirInstData::Intrinsic {
             name: after_failure_name,
             ..
-        } = after_failure_body.air.instructions()[0].data
+        } = after_failure_body.air.instructions()[1].data
         else {
             panic!("expected reconstructed intrinsic")
         };
         let crate::AirInstData::Intrinsic {
             name: fresh_name, ..
-        } = fresh_body.air.instructions()[0].data
+        } = fresh_body.air.instructions()[1].data
         else {
             panic!("expected reconstructed intrinsic")
         };
@@ -4031,6 +4070,532 @@ mod tests {
             format!("{:?}", fresh_body.air),
             "a failed import must not perturb any packed AIR word"
         );
+    }
+
+    #[test]
+    fn intrinsic_counterfeit_matrix_rolls_back_before_symbols_types_or_air_are_published() {
+        use crate::{
+            SemanticBodyImportFailure as F, SemanticBodyInstData as D, SemanticImportType,
+        };
+        let after_failures = Epoch::new(vec![], vec![], vec![]).unwrap();
+        let fresh = Epoch::new(vec![], vec![], vec![]).unwrap();
+        let valid = body(vec![
+            D::Const(0),
+            D::Intrinsic {
+                operation: crate::IntrinsicOperation::BitCast,
+                name: Arc::from("bitCast"),
+                args: vec![crate::SemanticBodyCallArg {
+                    value: 0,
+                    mode: crate::AirArgMode::Normal,
+                }]
+                .into(),
+            },
+        ]);
+
+        let mutate =
+            |mut body: crate::SemanticBody<&'static str, &'static str>,
+             edit: fn(&mut [crate::SemanticBodyInst<&'static str, &'static str>])| {
+                let mut instructions = body.instructions.to_vec();
+                edit(&mut instructions);
+                body.instructions = instructions.into();
+                body
+            };
+        let counterfeits = [
+            (
+                "operation",
+                mutate(valid.clone(), |instructions| {
+                    let D::Intrinsic { operation, .. } = &mut instructions[1].data else {
+                        unreachable!()
+                    };
+                    *operation = crate::IntrinsicOperation::PtrRead;
+                }),
+                F::InvalidIntrinsicOperation,
+            ),
+            (
+                "diagnostic name",
+                mutate(valid.clone(), |instructions| {
+                    let D::Intrinsic { name, .. } = &mut instructions[1].data else {
+                        unreachable!()
+                    };
+                    *name = Arc::from("counterfeit");
+                }),
+                F::InvalidIntrinsicOperation,
+            ),
+            (
+                "missing argument",
+                mutate(valid.clone(), |instructions| {
+                    let D::Intrinsic { args, .. } = &mut instructions[1].data else {
+                        unreachable!()
+                    };
+                    *args = Arc::new([]);
+                }),
+                F::InvalidIntrinsicOperation,
+            ),
+            (
+                "extra argument",
+                mutate(valid.clone(), |instructions| {
+                    let D::Intrinsic { args, .. } = &mut instructions[1].data else {
+                        unreachable!()
+                    };
+                    *args = vec![
+                        crate::SemanticBodyCallArg {
+                            value: 0,
+                            mode: crate::AirArgMode::Normal,
+                        },
+                        crate::SemanticBodyCallArg {
+                            value: 0,
+                            mode: crate::AirArgMode::Normal,
+                        },
+                    ]
+                    .into();
+                }),
+                F::InvalidIntrinsicOperation,
+            ),
+            (
+                "argument mode",
+                mutate(valid.clone(), |instructions| {
+                    let D::Intrinsic { args, .. } = &mut instructions[1].data else {
+                        unreachable!()
+                    };
+                    *args = vec![crate::SemanticBodyCallArg {
+                        value: 0,
+                        mode: crate::AirArgMode::Borrow,
+                    }]
+                    .into();
+                }),
+                F::InvalidParameterModes,
+            ),
+            (
+                "operand type",
+                mutate(valid.clone(), |instructions| {
+                    instructions[0].ty = SemanticImportType::U64;
+                }),
+                F::InvalidIntrinsicOperation,
+            ),
+            (
+                "result type",
+                mutate(valid.clone(), |instructions| {
+                    instructions[1].ty = SemanticImportType::U64;
+                }),
+                F::InvalidIntrinsicOperation,
+            ),
+        ];
+
+        let initial_symbols = after_failures.interner().len();
+        let initial_types = after_failures.type_pool().stats();
+        for (counterfeit, body, expected) in counterfeits {
+            let result = after_failures
+                .import_body(&body, Span::with_file(FileId::DEFAULT, 0, 100))
+                .expect_err(counterfeit);
+            assert_eq!(result, expected, "counterfeit {counterfeit}");
+            assert_eq!(
+                after_failures.interner().len(),
+                initial_symbols,
+                "counterfeit {counterfeit} published a diagnostic name"
+            );
+            assert_eq!(
+                after_failures.type_pool().stats(),
+                initial_types,
+                "counterfeit {counterfeit} published a type"
+            );
+        }
+
+        let after_failures_body = after_failures
+            .import_body(&valid, Span::with_file(FileId::DEFAULT, 0, 100))
+            .unwrap();
+        let fresh_body = fresh
+            .import_body(&valid, Span::with_file(FileId::DEFAULT, 0, 100))
+            .unwrap();
+        assert_eq!(
+            format!("{:?}", after_failures_body.air),
+            format!("{:?}", fresh_body.air)
+        );
+        assert_eq!(
+            after_failures.interner().get("bitCast"),
+            fresh.interner().get("bitCast")
+        );
+    }
+
+    #[test]
+    fn address_taking_intrinsics_validate_durable_place_provenance_before_publication() {
+        use crate::{
+            AirArgMode, AirPlaceBase, IntrinsicOperation, NominalInstanceKey, SemanticBodyCallArg,
+            SemanticBodyImportFailure as F, SemanticBodyInstData as D, SemanticBodyPlace,
+            SemanticBodyProjection,
+        };
+
+        let epoch = Epoch::new(
+            vec![nominal(
+                "record",
+                "Record",
+                SemanticImportNominalKind::Struct,
+            )],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        epoch
+            .complete_struct(
+                &"record",
+                &[
+                    (Arc::from("field"), ImportType::I32),
+                    (Arc::from("bottom"), ImportType::Never),
+                ],
+                false,
+                false,
+                false,
+            )
+            .unwrap();
+
+        let intrinsic_body = |source: D<&'static str, &'static str>,
+                              source_ty: ImportType,
+                              operation: IntrinsicOperation,
+                              result_ty: ImportType| {
+            let spelling = operation.expected_spelling();
+            let mut input = body(vec![
+                source,
+                D::Intrinsic {
+                    operation,
+                    name: Arc::from(spelling),
+                    args: vec![SemanticBodyCallArg {
+                        value: 0,
+                        mode: AirArgMode::Normal,
+                    }]
+                    .into(),
+                },
+            ]);
+            input.return_type = result_ty.clone();
+            let instructions = Arc::make_mut(&mut input.instructions);
+            instructions[0].ty = source_ty;
+            instructions[1].ty = result_ty;
+            input
+        };
+        let local = |mut input: crate::SemanticBody<&'static str, &'static str>| {
+            input.num_locals = 1;
+            input
+        };
+        let param = |mut input: crate::SemanticBody<&'static str, &'static str>| {
+            input.num_param_slots = 1;
+            input.param_by_ref = Arc::from([false]);
+            input.param_writable = Arc::from([true]);
+            input
+        };
+        let bare_place = |mut input: crate::SemanticBody<&'static str, &'static str>| {
+            input.num_locals = 1;
+            input.places = Arc::from([SemanticBodyPlace {
+                base: AirPlaceBase::Local(0),
+                base_type: ImportType::I32,
+                projections: Arc::new([]),
+            }]);
+            input
+        };
+        let field_place = |mut input: crate::SemanticBody<&'static str, &'static str>| {
+            input.num_locals = 1;
+            input.places = Arc::from([SemanticBodyPlace {
+                base: AirPlaceBase::Local(0),
+                base_type: ImportType::Nominal("record"),
+                projections: Arc::from([SemanticBodyProjection::Field {
+                    struct_key: NominalInstanceKey::Named("record"),
+                    field_index: 0,
+                }]),
+            }]);
+            input
+        };
+        let bottom_place = |mut input: crate::SemanticBody<&'static str, &'static str>| {
+            input.num_locals = 1;
+            input.places = Arc::from([SemanticBodyPlace {
+                base: AirPlaceBase::Local(0),
+                base_type: ImportType::Never,
+                projections: Arc::new([]),
+            }]);
+            input
+        };
+        let bottom_field_place = |mut input: crate::SemanticBody<&'static str, &'static str>| {
+            input.num_locals = 1;
+            input.places = Arc::from([SemanticBodyPlace {
+                base: AirPlaceBase::Local(0),
+                base_type: ImportType::Nominal("record"),
+                projections: Arc::from([SemanticBodyProjection::Field {
+                    struct_key: NominalInstanceKey::Named("record"),
+                    field_index: 1,
+                }]),
+            }]);
+            input
+        };
+        let ptr_const_i32 = ImportType::PtrConst(Arc::new(ImportType::I32));
+        let ptr_mut_i32 = ImportType::PtrMut(Arc::new(ImportType::I32));
+        let ptr_const_never = ImportType::PtrConst(Arc::new(ImportType::Never));
+        let ptr_mut_never = ImportType::PtrMut(Arc::new(ImportType::Never));
+
+        let invalid = [
+            (
+                "const to raw",
+                intrinsic_body(
+                    D::Const(0),
+                    ImportType::I32,
+                    IntrinsicOperation::Raw,
+                    ptr_const_i32.clone(),
+                ),
+            ),
+            (
+                "const to raw_mut",
+                intrinsic_body(
+                    D::Const(0),
+                    ImportType::I32,
+                    IntrinsicOperation::RawMut,
+                    ptr_mut_i32.clone(),
+                ),
+            ),
+            (
+                "load to field_ptr",
+                local(intrinsic_body(
+                    D::Load { slot: 0 },
+                    ImportType::I32,
+                    IntrinsicOperation::FieldPtr,
+                    ptr_mut_i32.clone(),
+                )),
+            ),
+            (
+                "param to field_ptr",
+                param(intrinsic_body(
+                    D::Param { index: 0 },
+                    ImportType::I32,
+                    IntrinsicOperation::FieldPtr,
+                    ptr_mut_i32.clone(),
+                )),
+            ),
+            (
+                "non-field place to field_ptr",
+                bare_place(intrinsic_body(
+                    D::PlaceRead { place: 0 },
+                    ImportType::I32,
+                    IntrinsicOperation::FieldPtr,
+                    ptr_mut_i32.clone(),
+                )),
+            ),
+        ];
+        let initial_symbols = epoch.interner().len();
+        let initial_types = epoch.type_pool().stats();
+        for (label, input) in invalid {
+            assert_eq!(
+                epoch
+                    .import_body(&input, Span::with_file(FileId::DEFAULT, 0, 100))
+                    .expect_err(label),
+                F::InvalidIntrinsicOperation,
+                "counterfeit {label}"
+            );
+            assert_eq!(epoch.interner().len(), initial_symbols, "{label} symbols");
+            assert_eq!(epoch.type_pool().stats(), initial_types, "{label} types");
+        }
+
+        let accepted = [
+            (
+                "load to raw",
+                local(intrinsic_body(
+                    D::Load { slot: 0 },
+                    ImportType::I32,
+                    IntrinsicOperation::Raw,
+                    ptr_const_i32.clone(),
+                )),
+            ),
+            (
+                "param to raw",
+                param(intrinsic_body(
+                    D::Param { index: 0 },
+                    ImportType::I32,
+                    IntrinsicOperation::Raw,
+                    ptr_const_i32.clone(),
+                )),
+            ),
+            (
+                "place to raw",
+                bare_place(intrinsic_body(
+                    D::PlaceRead { place: 0 },
+                    ImportType::I32,
+                    IntrinsicOperation::Raw,
+                    ptr_const_i32.clone(),
+                )),
+            ),
+            (
+                "bottom place to raw",
+                bottom_place(intrinsic_body(
+                    D::PlaceRead { place: 0 },
+                    ImportType::Never,
+                    IntrinsicOperation::Raw,
+                    ptr_const_never,
+                )),
+            ),
+            (
+                "load to raw_mut",
+                local(intrinsic_body(
+                    D::Load { slot: 0 },
+                    ImportType::I32,
+                    IntrinsicOperation::RawMut,
+                    ptr_mut_i32.clone(),
+                )),
+            ),
+            (
+                "param to raw_mut",
+                param(intrinsic_body(
+                    D::Param { index: 0 },
+                    ImportType::I32,
+                    IntrinsicOperation::RawMut,
+                    ptr_mut_i32.clone(),
+                )),
+            ),
+            (
+                "place to raw_mut",
+                bare_place(intrinsic_body(
+                    D::PlaceRead { place: 0 },
+                    ImportType::I32,
+                    IntrinsicOperation::RawMut,
+                    ptr_mut_i32.clone(),
+                )),
+            ),
+            (
+                "terminal field to field_ptr",
+                field_place(intrinsic_body(
+                    D::PlaceRead { place: 0 },
+                    ImportType::I32,
+                    IntrinsicOperation::FieldPtr,
+                    ptr_mut_i32,
+                )),
+            ),
+            (
+                "terminal bottom field to field_ptr",
+                bottom_field_place(intrinsic_body(
+                    D::PlaceRead { place: 0 },
+                    ImportType::Never,
+                    IntrinsicOperation::FieldPtr,
+                    ptr_mut_never,
+                )),
+            ),
+        ];
+        for (label, input) in accepted {
+            epoch
+                .import_body(&input, Span::with_file(FileId::DEFAULT, 0, 100))
+                .unwrap_or_else(|error| panic!("canonical {label} rejected: {error:?}"));
+        }
+    }
+
+    #[test]
+    fn runtime_option_result_counterfeits_roll_back_before_publication() {
+        use crate::{
+            IntrinsicOperation, SemanticBodyImportFailure as F, SemanticBodyInstData as D,
+        };
+
+        let shapes = [
+            ("valid", "ValidOption"),
+            ("payload_none_extra", "PayloadNoneExtra"),
+            ("payload_none", "PayloadNone"),
+            ("extra", "ExtraOption"),
+            ("duplicate", "DuplicateOption"),
+            ("wide_some", "WideSomeOption"),
+        ];
+        let epoch = Epoch::new(
+            shapes
+                .iter()
+                .map(|(key, name)| nominal(key, name, SemanticImportNominalKind::Enum))
+                .collect(),
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        let variants = |values: &[(&'static str, &[ImportType])]| {
+            values
+                .iter()
+                .map(|(name, payload)| (Arc::from(*name), Arc::from(*payload)))
+                .collect::<Vec<_>>()
+        };
+        epoch
+            .complete_enum(
+                &"valid",
+                &variants(&[("Some", &[ImportType::I32]), ("None", &[])]),
+            )
+            .unwrap();
+        epoch
+            .complete_enum(
+                &"payload_none_extra",
+                &variants(&[
+                    ("Some", &[ImportType::I32]),
+                    ("None", &[ImportType::I64, ImportType::I64]),
+                    ("Extra", &[]),
+                ]),
+            )
+            .unwrap();
+        epoch
+            .complete_enum(
+                &"payload_none",
+                &variants(&[("Some", &[ImportType::I32]), ("None", &[ImportType::I64])]),
+            )
+            .unwrap();
+        epoch
+            .complete_enum(
+                &"extra",
+                &variants(&[("Some", &[ImportType::I32]), ("None", &[]), ("Extra", &[])]),
+            )
+            .unwrap();
+        epoch
+            .complete_enum(
+                &"duplicate",
+                &variants(&[("Some", &[ImportType::I32]), ("Some", &[])]),
+            )
+            .unwrap();
+        epoch
+            .complete_enum(
+                &"wide_some",
+                &variants(&[("Some", &[ImportType::I32, ImportType::I32]), ("None", &[])]),
+            )
+            .unwrap();
+
+        let parse_i32 = |key: &'static str| {
+            let result = ImportType::Nominal(key);
+            let text = ImportType::BuiltinNominal {
+                name: Arc::from("str"),
+                kind: SemanticImportNominalKind::Struct,
+            };
+            let mut input = body(vec![
+                D::StringConst(0),
+                D::Intrinsic {
+                    operation: IntrinsicOperation::ParseI32,
+                    name: Arc::from("parse_i32"),
+                    args: Arc::from([crate::SemanticBodyCallArg {
+                        value: 0,
+                        mode: crate::AirArgMode::Normal,
+                    }]),
+                },
+            ]);
+            input.return_type = result.clone();
+            let instructions = Arc::make_mut(&mut input.instructions);
+            instructions[0].ty = text;
+            instructions[1].ty = result;
+            input.strings = Arc::from([Arc::from("0")]);
+            input
+        };
+        let initial_symbols = epoch.interner().len();
+        let initial_types = epoch.type_pool().stats();
+        for key in [
+            "payload_none_extra",
+            "payload_none",
+            "extra",
+            "duplicate",
+            "wide_some",
+        ] {
+            assert_eq!(
+                epoch
+                    .import_body(&parse_i32(key), Span::with_file(FileId::DEFAULT, 0, 100),)
+                    .expect_err(key),
+                F::InvalidIntrinsicOperation
+            );
+            assert_eq!(epoch.interner().len(), initial_symbols, "{key} symbols");
+            assert_eq!(epoch.type_pool().stats(), initial_types, "{key} types");
+        }
+        epoch
+            .import_body(
+                &parse_i32("valid"),
+                Span::with_file(FileId::DEFAULT, 0, 100),
+            )
+            .expect("exact Option body must still import after counterfeits");
     }
 
     #[test]

@@ -329,7 +329,7 @@ pub enum SemanticBodyInstData<K, M> {
     },
     CallGeneric,
     Intrinsic {
-        runtime: Option<crate::RuntimeCallKind>,
+        operation: crate::IntrinsicOperation,
         name: Arc<str>,
         args: Arc<[SemanticBodyCallArg]>,
     },
@@ -673,11 +673,11 @@ impl<K, M> SemanticBodyInstData<K, M> {
             },
             D::CallGeneric => D::CallGeneric,
             D::Intrinsic {
-                runtime,
+                operation,
                 name,
                 args,
             } => D::Intrinsic {
-                runtime: *runtime,
+                operation: *operation,
                 name: name.clone(),
                 args: args.clone(),
             },
@@ -1182,6 +1182,7 @@ pub enum SemanticBodyImportFailure {
     InvalidStringReference,
     InvalidSourceOrder,
     InvalidParameterModes,
+    InvalidIntrinsicOperation,
     InvalidParameterDrop,
     InvalidBorrowSlot,
     InvalidAnchor,
@@ -1316,8 +1317,8 @@ mod schema_tests {
             },
             D::CallGeneric,
             D::Intrinsic {
-                runtime: None,
-                name: Arc::from("intrinsic"),
+                operation: crate::IntrinsicOperation::AssertFailed,
+                name: Arc::from("assert"),
                 args: call_args(&[1]),
             },
             D::Param { index: 0 },
@@ -1556,6 +1557,48 @@ mod schema_tests {
                 ..
             } if key == "mapped:accessor"
         ));
+    }
+
+    #[test]
+    fn every_intrinsic_operation_is_durable_and_survives_identity_remapping() {
+        for operation in crate::IntrinsicOperation::ALL {
+            let durable = SemanticBodyInstData::<&str, &str>::Intrinsic {
+                operation,
+                name: Arc::from(operation.expected_spelling()),
+                args: call_args(&[1]),
+            };
+            let remapped = durable
+                .try_map_keys(&|key| Ok::<_, ()>(format!("mapped:{key}")), &|module| {
+                    Ok::<_, ()>(format!("mapped:{module}"))
+                })
+                .unwrap();
+            let SemanticBodyInstData::Intrinsic {
+                operation: remapped_operation,
+                name,
+                args,
+            } = remapped
+            else {
+                panic!("intrinsic remapping changed the durable instruction kind")
+            };
+            assert_eq!(remapped_operation, operation);
+            assert_eq!(name.as_ref(), operation.expected_spelling());
+            assert_eq!(args.as_ref(), call_args(&[1]).as_ref());
+        }
+
+        let assert = SemanticBodyInstData::<(), ()>::Intrinsic {
+            operation: crate::IntrinsicOperation::AssertFailed,
+            name: Arc::from("assert"),
+            args: call_args(&[1]),
+        };
+        let bounds = SemanticBodyInstData::<(), ()>::Intrinsic {
+            operation: crate::IntrinsicOperation::BoundsCheck,
+            name: Arc::from("assert"),
+            args: call_args(&[1]),
+        };
+        assert_ne!(
+            assert, bounds,
+            "retained body equality must include the typed semantic operation even when name and shape agree"
+        );
     }
 
     #[test]

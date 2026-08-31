@@ -269,7 +269,6 @@ pub struct CfgBuilder<'a> {
     /// Canonical pool for struct, enum, array, and pointer definitions.
     type_pool: &'a FrozenTypeInternPool,
     /// Interner for resolving symbols to strings
-    interner: &'a ThreadedRodeo,
     /// Compiler-owned projection of legacy live callable names to canonical
     /// machine symbols. Cleanup lowering consumes this same authority as AIR.
     source_symbol_resolver: Box<dyn Fn(&str) -> Option<Spur> + 'a>,
@@ -451,85 +450,11 @@ impl<'a> CfgBuilder<'a> {
     }
 
     fn runtime_air_type(&self, ty: Type) -> Option<rue_air::RuntimeAirType> {
-        use rue_air::RuntimeAirType as R;
-
-        if ty == Type::UNIT {
-            return Some(R::Unit);
-        }
-        if ty == Type::I64 {
-            return Some(R::I64);
-        }
-        if ty == Type::U64 {
-            return Some(R::U64);
-        }
-        if ty == Type::U32 {
-            return Some(R::U32);
-        }
-        if ty == Type::BOOL {
-            return Some(R::Bool);
-        }
-        if ty == Type::NEVER {
-            return Some(R::Never);
-        }
-        if ty.is_signed() {
-            return Some(R::SignedInteger);
-        }
-        if ty.is_unsigned() {
-            return Some(R::UnsignedInteger);
-        }
-        if let TypeKind::Struct(struct_id) = ty.kind() {
-            let name: &str = &self.type_pool.struct_def(struct_id).name;
-            if self.type_pool.is_strbuf(struct_id) || rue_air::is_string_view_struct_name(name) {
-                return Some(R::Text);
-            }
-        }
-        if let Some(ptr) = ty.as_ptr_const()
-            && self.type_pool.ptr_const_def(ptr) == Type::U8
-        {
-            return Some(R::ConstBytePointer);
-        }
-        if let Some(ptr) = ty.as_ptr_mut() {
-            return Some(if self.type_pool.ptr_mut_def(ptr) == Type::U8 {
-                R::MutBytePointer
-            } else {
-                R::MutPointer
-            });
-        }
-        None
+        rue_air::runtime_air_type(self.type_pool, ty)
     }
 
     fn runtime_air_result_type(&self, ty: Type) -> Option<rue_air::RuntimeAirType> {
-        use rue_air::RuntimeAirType as R;
-
-        if ty == Type::U8 {
-            return Some(R::U8);
-        }
-        if let TypeKind::Struct(struct_id) = ty.kind()
-            && self.type_pool.is_strbuf(struct_id)
-        {
-            return Some(R::StrBuf);
-        }
-        if let TypeKind::Enum(enum_id) = ty.kind() {
-            let definition = self.type_pool.enum_def(enum_id);
-            let some = definition.find_variant("Some")?;
-            definition.find_variant("None")?;
-            let [payload] = definition.variant_payload(some) else {
-                return None;
-            };
-            if let TypeKind::Struct(struct_id) = payload.kind()
-                && self.type_pool.is_strbuf(struct_id)
-            {
-                return Some(R::OptionStrBuf);
-            }
-            return Some(match *payload {
-                Type::I32 => R::OptionI32,
-                Type::I64 => R::OptionI64,
-                Type::U32 => R::OptionU32,
-                Type::U64 => R::OptionU64,
-                _ => return None,
-            });
-        }
-        self.runtime_air_type(ty)
+        rue_air::runtime_air_result_type(self.type_pool, ty)
     }
 
     fn assert_valid_runtime_call_args(
@@ -593,7 +518,7 @@ impl<'a> CfgBuilder<'a> {
         fn_name: &str,
         type_pool: &'a FrozenTypeInternPool,
         param_modes: impl Into<ParamSlotModes>,
-        interner: &'a ThreadedRodeo,
+        _interner: &'a ThreadedRodeo,
         allow_unreachable_code: bool,
         callable_kind: AnalyzedCallableKind,
         source_symbol_resolver: impl Fn(&str) -> Option<Spur> + 'a,
@@ -608,7 +533,6 @@ impl<'a> CfgBuilder<'a> {
                 param_modes,
             ),
             type_pool,
-            interner,
             source_symbol_resolver: Box::new(source_symbol_resolver),
             current_block: BlockId(0),
             loop_stack: Vec::new(),
@@ -1361,19 +1285,19 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Intrinsic {
-                runtime,
+                operation,
                 name,
                 args,
             } => {
-                if let Some(runtime) = runtime {
-                    self.assert_valid_runtime_call_args(
-                        *runtime,
-                        self.air
-                            .get_intrinsic_args(args)
-                            .map(|arg| (arg, AirArgMode::Normal)),
-                        ty,
-                    );
-                }
+                let arguments = self
+                    .air
+                    .get_intrinsic_args(args)
+                    .map(|arg| rue_air::intrinsic_air_argument(self.air, arg, AirArgMode::Normal))
+                    .collect::<Vec<_>>();
+                assert!(
+                    operation.validate_call(self.type_pool, &arguments, ty),
+                    "intrinsic {operation:?} has invalid AIR call shape"
+                );
                 let mut arg_vals = Vec::new();
                 for arg in self.air.get_intrinsic_args(args) {
                     let Some(val) = self.lower_value(arg) else {
@@ -1387,7 +1311,7 @@ impl<'a> CfgBuilder<'a> {
                 // operand's base slot so optimization passes (constopt) never
                 // rewrite its loads into constants — a `Const` operand would be
                 // dereferenced as an address (RUE-521 O1+ segfault).
-                if matches!(self.interner.resolve(name), "raw" | "raw_mut" | "field_ptr")
+                if operation.takes_place_address()
                     && let Some(&place_val) = arg_vals.first()
                 {
                     match &self.cfg.get_inst(place_val).data {
@@ -1416,7 +1340,7 @@ impl<'a> CfgBuilder<'a> {
                 let args = self.payload_or(args_result, CfgIntrinsicArgs::EMPTY, span);
                 let intrinsic_value = self.emit(
                     CfgInstData::Intrinsic {
-                        runtime: *runtime,
+                        operation: *operation,
                         name: *name,
                         args,
                     },
@@ -4135,6 +4059,278 @@ mod tests {
             .unwrap()
             .into_editor()
         }
+    }
+
+    #[test]
+    fn durable_intrinsic_bottom_coercions_build_cfg_in_every_sema_position() {
+        use SemanticBodyInstData as D;
+
+        #[derive(Clone)]
+        enum Operand {
+            Diverge,
+            Value(ImportTy),
+        }
+
+        let ptr_const_i32 = ImportTy::PtrConst(Arc::new(ImportTy::I32));
+        let ptr_mut_i32 = ImportTy::PtrMut(Arc::new(ImportTy::I32));
+        let cases = [
+            (
+                "ptr_to_int arg",
+                rue_air::IntrinsicOperation::PtrToInt,
+                vec![Operand::Diverge],
+                ImportTy::U64,
+            ),
+            (
+                "int_to_ptr arg",
+                rue_air::IntrinsicOperation::IntToPtr,
+                vec![Operand::Diverge],
+                ptr_mut_i32.clone(),
+            ),
+            (
+                "int_to_ptr contextual result",
+                rue_air::IntrinsicOperation::IntToPtr,
+                vec![Operand::Value(ImportTy::U64)],
+                ImportTy::Never,
+            ),
+            (
+                "ptr_write value",
+                rue_air::IntrinsicOperation::PtrWrite,
+                vec![Operand::Value(ptr_mut_i32.clone()), Operand::Diverge],
+                ImportTy::Unit,
+            ),
+            (
+                "ptr_offset pointer",
+                rue_air::IntrinsicOperation::PtrOffset,
+                vec![Operand::Diverge, Operand::Value(ImportTy::I64)],
+                ImportTy::Never,
+            ),
+            (
+                "ptr_offset offset",
+                rue_air::IntrinsicOperation::PtrOffset,
+                vec![Operand::Value(ptr_const_i32.clone()), Operand::Diverge],
+                ptr_const_i32.clone(),
+            ),
+            (
+                "ptr_offset both",
+                rue_air::IntrinsicOperation::PtrOffset,
+                vec![Operand::Diverge, Operand::Diverge],
+                ImportTy::Never,
+            ),
+            (
+                "syscall first",
+                rue_air::IntrinsicOperation::Syscall,
+                vec![Operand::Diverge],
+                ImportTy::I64,
+            ),
+            (
+                "syscall later",
+                rue_air::IntrinsicOperation::Syscall,
+                vec![Operand::Value(ImportTy::U64), Operand::Diverge],
+                ImportTy::I64,
+            ),
+        ];
+
+        for (label, operation, operands, result) in cases {
+            let mut fixture = BodyFixture::new(result.clone());
+            let mut args = Vec::new();
+            for operand in operands {
+                let value = match operand {
+                    Operand::Diverge => fixture.inst(
+                        D::Intrinsic {
+                            operation: rue_air::IntrinsicOperation::PanicNoMessage,
+                            name: Arc::from("panic"),
+                            args: Arc::new([]),
+                        },
+                        ImportTy::Never,
+                    ),
+                    Operand::Value(ty) => fixture.inst(D::Const(0), ty),
+                };
+                args.push(SemanticBodyCallArg {
+                    value,
+                    mode: AirArgMode::Normal,
+                });
+            }
+            let call = fixture.inst(
+                D::Intrinsic {
+                    operation,
+                    name: Arc::from(operation.expected_spelling()),
+                    args: args.into(),
+                },
+                result.clone(),
+            );
+            fixture.inst(D::Ret(Some(call)), result);
+            let cfg = fixture.build_cfg();
+            assert_all_blocks_terminated(&cfg);
+            assert!(
+                cfg.blocks()
+                    .iter()
+                    .any(|block| { matches!(block.terminator, Terminator::Unreachable) }),
+                "{label} must preserve operand divergence"
+            );
+        }
+    }
+
+    fn build_forged_address_source(operation: rue_air::IntrinsicOperation, place_read: bool) {
+        let interner = ThreadedRodeo::default();
+        let type_pool = rue_air::TypeInternPool::new();
+        let ptr_const_i32 = Type::new_ptr_const(type_pool.intern_ptr_const_from_type(Type::I32));
+        let ptr_mut_i32 = Type::new_ptr_mut(type_pool.intern_ptr_mut_from_type(Type::I32));
+        let type_pool = type_pool.freeze();
+        let span = rue_span::Span::new(0, 1);
+        let result_ty = if operation == rue_air::IntrinsicOperation::Raw {
+            ptr_const_i32
+        } else {
+            ptr_mut_i32
+        };
+        let mut air = AirEditor::new(result_ty);
+        let source = if place_read {
+            let place = air
+                .make_place(AirPlaceBase::Local(0), Type::I32, [])
+                .unwrap();
+            air.add_place_read(place, Type::I32, span)
+        } else {
+            air.add_const(0, Type::I32, span)
+        };
+        let intrinsic = air
+            .add_intrinsic(
+                operation,
+                interner.get_or_intern(operation.expected_spelling()),
+                &[source],
+                result_ty,
+                span,
+            )
+            .unwrap();
+        air.add_ret(Some(intrinsic), result_ty, span);
+        build_editor_cfg(
+            air,
+            u32::from(place_read),
+            0,
+            "forged address source",
+            &type_pool,
+            vec![],
+            &interner,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "intrinsic Raw has invalid AIR call shape")]
+    fn cfg_rejects_const_as_raw_source_before_backend_lowering() {
+        build_forged_address_source(rue_air::IntrinsicOperation::Raw, false);
+    }
+
+    #[test]
+    #[should_panic(expected = "intrinsic RawMut has invalid AIR call shape")]
+    fn cfg_rejects_const_as_raw_mut_source_before_backend_lowering() {
+        build_forged_address_source(rue_air::IntrinsicOperation::RawMut, false);
+    }
+
+    #[test]
+    #[should_panic(expected = "intrinsic FieldPtr has invalid AIR call shape")]
+    fn cfg_rejects_non_field_place_as_field_ptr_source_before_backend_lowering() {
+        build_forged_address_source(rue_air::IntrinsicOperation::FieldPtr, true);
+    }
+
+    fn build_frozen_cfg_runtime_option_result(use_counterfeit: bool) -> Cfg {
+        let interner = ThreadedRodeo::default();
+        let type_pool = rue_air::TypeInternPool::new();
+        let byte_ptr = Type::new_ptr_const(type_pool.intern_ptr_const_from_type(Type::U8));
+        let text_id = register_fixture_struct(
+            &type_pool,
+            &interner,
+            "str",
+            vec![
+                rue_air::StructField {
+                    name: "ptr".into(),
+                    ty: byte_ptr,
+                },
+                rue_air::StructField {
+                    name: "len".into(),
+                    ty: Type::U64,
+                },
+            ],
+            None,
+        );
+        let text = Type::new_struct(text_id);
+        let option = |name: &str, variants: Vec<(&str, Vec<Type>)>| {
+            let (id, _) = type_pool.register_enum(
+                interner.get_or_intern(name),
+                rue_air::EnumDef {
+                    name: Arc::from(name),
+                    variants: variants
+                        .iter()
+                        .map(|(name, _)| Arc::<str>::from(*name))
+                        .collect::<Vec<_>>()
+                        .into(),
+                    variant_payloads: variants.into_iter().map(|(_, payload)| payload).collect(),
+                    is_pub: true,
+                    is_non_exhaustive: false,
+                    file_id: FileId::DEFAULT,
+                },
+            );
+            Type::new_enum(id)
+        };
+        let exact = option(
+            "ExactOption",
+            vec![("Some", vec![Type::I32]), ("None", vec![])],
+        );
+        let counterfeit_ty = option(
+            "CounterfeitOption",
+            vec![
+                ("Some", vec![Type::I32]),
+                ("None", vec![Type::I64, Type::I64]),
+                ("Extra", vec![]),
+            ],
+        );
+        let type_pool = type_pool.freeze();
+        let span = rue_span::Span::new(0, 1);
+        let result_ty = if use_counterfeit {
+            counterfeit_ty
+        } else {
+            exact
+        };
+        let mut air = AirEditor::new(result_ty);
+        let input = air.add_param(0, text, span);
+        let intrinsic = air
+            .add_intrinsic(
+                rue_air::IntrinsicOperation::ParseI32,
+                interner.get_or_intern("parse_i32"),
+                &[input],
+                result_ty,
+                span,
+            )
+            .unwrap();
+        air.add_ret(Some(intrinsic), result_ty, span);
+        build_editor_cfg(
+            air,
+            0,
+            2,
+            "parse_i32",
+            &type_pool,
+            vec![false, false],
+            &interner,
+        )
+    }
+
+    #[test]
+    fn frozen_cfg_accepts_the_exact_runtime_option_shape() {
+        let exact_cfg = build_frozen_cfg_runtime_option_result(false);
+        assert!(exact_cfg.blocks().iter().any(|block| {
+            block.insts.iter().any(|value| {
+                matches!(
+                    exact_cfg.get_inst(*value).data,
+                    CfgInstData::Intrinsic {
+                        operation: rue_air::IntrinsicOperation::ParseI32,
+                        ..
+                    }
+                )
+            })
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "intrinsic ParseI32 has invalid AIR call shape")]
+    fn frozen_cfg_rejects_a_counterfeit_runtime_option_shape() {
+        build_frozen_cfg_runtime_option_result(true);
     }
 
     /// Declare the fixtures' droppable resource nominal: `StrBuf`-shaped with

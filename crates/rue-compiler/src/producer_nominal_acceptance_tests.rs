@@ -121,17 +121,14 @@ fn fallible_intrinsic_option_enums(
     let mut found = Vec::new();
     for function in semantic.functions() {
         for (_, inst) in function.record.air.iter() {
-            if let rue_air::AirInstData::Intrinsic {
-                runtime: Some(runtime),
-                ..
-            } = &inst.data
+            if let rue_air::AirInstData::Intrinsic { operation, .. } = &inst.data
                 && matches!(
-                    runtime,
-                    rue_air::RuntimeCallKind::ParseI32
-                        | rue_air::RuntimeCallKind::ParseI64
-                        | rue_air::RuntimeCallKind::ParseU32
-                        | rue_air::RuntimeCallKind::ParseU64
-                        | rue_air::RuntimeCallKind::ReadLine
+                    operation,
+                    rue_air::IntrinsicOperation::ParseI32
+                        | rue_air::IntrinsicOperation::ParseI64
+                        | rue_air::IntrinsicOperation::ParseU32
+                        | rue_air::IntrinsicOperation::ParseU64
+                        | rue_air::IntrinsicOperation::ReadLine
                 )
                 && let rue_air::TypeKind::Enum(enum_id) = inst.ty.kind()
             {
@@ -141,7 +138,7 @@ fn fallible_intrinsic_option_enums(
                     ["Some", "None"],
                     "the intrinsic result must be Option-shaped",
                 );
-                found.push((*runtime, def.name.to_string()));
+                found.push((operation.runtime_call().unwrap(), def.name.to_string()));
             }
         }
     }

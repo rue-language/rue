@@ -348,12 +348,12 @@ impl SlotReferences {
 fn collect_slot_references(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
-    interner: &ThreadedRodeo,
+    _interner: &ThreadedRodeo,
 ) -> Option<SlotReferences> {
     let num_locals = cfg.num_locals();
     let span_of = |ty: Type| crate::types::type_slot_span(type_pool, ty);
     let mut per_value = vec![None; cfg.value_count()];
-    let escaping = address_escaping_operands(cfg, interner);
+    let escaping = address_escaping_operands(cfg);
 
     for block in cfg.blocks() {
         for &value in &block.insts {
@@ -421,15 +421,15 @@ fn collect_slot_references(
 /// operation in `value_plan`). The pointer those produce is a first-class
 /// value that can outlive the operand's storage window, so the slot behind it
 /// never shares.
-fn address_escaping_operands(cfg: &Cfg, interner: &ThreadedRodeo) -> Vec<bool> {
+fn address_escaping_operands(cfg: &Cfg) -> Vec<bool> {
     let mut escaping = vec![false; cfg.value_count()];
     for block in cfg.blocks() {
         for &value in &block.insts {
             let data = &cfg.get_inst(value).data;
-            let CfgInstData::Intrinsic { name, .. } = data else {
+            let CfgInstData::Intrinsic { operation, .. } = data else {
                 continue;
             };
-            if !matches!(interner.resolve(name), "raw" | "raw_mut" | "field_ptr") {
+            if !operation.takes_place_address() {
                 continue;
             }
             for &arg in cfg.get_intrinsic_args(data) {

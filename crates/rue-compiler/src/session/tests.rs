@@ -2721,7 +2721,7 @@ fn reused_parse_runtime_symbol_relocates_to_the_current_interner() {
                     .flat_map(|block| block.insts.iter())
                     .filter_map(|value| match cfg.get_inst(*value).data {
                         rue_cfg::CfgInstData::Intrinsic {
-                            runtime: Some(rue_air::RuntimeCallKind::ParseI64),
+                            operation: rue_air::IntrinsicOperation::ParseI64,
                             name,
                             ..
                         } => Some(function.record.interner.resolve(&name).to_owned()),

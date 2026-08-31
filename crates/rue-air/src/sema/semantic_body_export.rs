@@ -408,11 +408,11 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
             },
             AirInstData::CallGeneric { .. } => return Err(F::UnsupportedGenericCall),
             AirInstData::Intrinsic {
-                runtime,
+                operation,
                 name,
                 args,
             } => SemanticBodyInstData::Intrinsic {
-                runtime: *runtime,
+                operation: *operation,
                 name: Arc::from(host.resolve_publication_symbol(name)),
                 args: intrinsic_args(args)?,
             },

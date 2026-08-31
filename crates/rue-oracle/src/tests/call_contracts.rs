@@ -35,6 +35,21 @@ fn expect_observed(result: Step<()>) {
     }
 }
 
+fn contract_interp(state: &CompileState) -> Interp<'_> {
+    Interp {
+        state,
+        stdout_trace: Vec::new(),
+        stdout_bytes: 0,
+        stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
+        budget: STEP_BUDGET,
+        depth: 0,
+        heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
+        heap_metadata_bytes: 0,
+    }
+}
+
 fn find_call_metadata(
     state: &CompileState,
     expected_name: &str,
@@ -356,15 +371,33 @@ fn random_intrinsic_requires_exact_arity_and_result_type() {
         heap_metadata_bytes: 0,
     };
     assert_eq!(
-        interp.classify_unsupported_intrinsic(cfg, inst, "random_u32", &args, result),
+        interp.classify_unsupported_intrinsic(
+            cfg,
+            inst,
+            rue_air::IntrinsicOperation::RandomU32,
+            &args,
+            result,
+        ),
         UnsupportedKind::ExternalDependency(ExternalDependencyKind::RandomU32)
     );
     assert_eq!(
-        interp.classify_unsupported_intrinsic(cfg, inst, "random_u32", &[inst], result),
+        interp.classify_unsupported_intrinsic(
+            cfg,
+            inst,
+            rue_air::IntrinsicOperation::RandomU32,
+            &[inst],
+            result,
+        ),
         UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicArity)
     );
     assert_eq!(
-        interp.classify_unsupported_intrinsic(cfg, inst, "random_u32", &args, Type::U64),
+        interp.classify_unsupported_intrinsic(
+            cfg,
+            inst,
+            rue_air::IntrinsicOperation::RandomU32,
+            &args,
+            Type::U64,
+        ),
         UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature)
     );
 }
@@ -402,6 +435,47 @@ fn find_intrinsic_in_function<'a>(
     let (value, args, ty) =
         found.unwrap_or_else(|| panic!("missing @{expected_name} in {function_name}"));
     (cfg, value, args, ty)
+}
+
+fn find_empty_slice_pointer_in_function<'a>(
+    state: &'a CompileState,
+    function_name: &str,
+) -> (&'a Cfg, CfgValue, CfgValue) {
+    let function = state
+        .functions
+        .iter()
+        .position(|function| function.is_source_named(function_name))
+        .unwrap_or_else(|| panic!("missing CFG for {function_name}"));
+    let cfg = &state.functions[function].cfg;
+    let pool = &state.functions[function].type_pool;
+    let mut found = None;
+    for init in cfg
+        .blocks()
+        .iter()
+        .flat_map(|block| block.insts.iter().copied())
+    {
+        let data = &cfg.get_inst(init).data;
+        let CfgInstData::StructInit { struct_id, .. } = data else {
+            continue;
+        };
+        let fields = cfg.get_struct_fields(data);
+        if !rue_air::is_slice_struct_name(&pool.struct_def(*struct_id).name)
+            || fields.len() != 2
+            || !matches!(cfg.get_inst(fields[0]).data, CfgInstData::Const(0))
+            || !cfg.get_inst(fields[0]).ty.is_ptr_const()
+            || cfg.get_inst(fields[1]).ty != Type::U64
+            || !matches!(cfg.get_inst(fields[1]).data, CfgInstData::Const(0))
+        {
+            continue;
+        }
+        assert!(
+            found.replace((fields[0], init)).is_none(),
+            "expected exactly one empty-slice pointer in {function_name}"
+        );
+    }
+    let (pointer, init) =
+        found.unwrap_or_else(|| panic!("missing empty-slice pointer in {function_name}"));
+    (cfg, pointer, init)
 }
 
 #[test]
@@ -535,19 +609,24 @@ fn panic_never_signature_is_an_oracle_contract_for_both_arities() {
         state.select_source_function(function_name);
         let (cfg, _intrinsic, args, result_ty) =
             find_intrinsic_in_function(&state, function_name, "panic");
+        let operation = if function_name == "panic_no_message" {
+            rue_air::IntrinsicOperation::PanicNoMessage
+        } else {
+            rue_air::IntrinsicOperation::Panic
+        };
         // `@panic` diverges, so the compiler types it `!` (never) (RUE-512).
         assert_eq!(result_ty, Type::NEVER, "{function_name} compiler metadata");
         // The abort preflight (the oracle's panic contract since RUE-589)
         // accepts exactly the never-typed shape...
         assert!(
             matches!(
-                interp.preflight_abort_intrinsic(cfg, "panic", &args, result_ty),
+                interp.preflight_abort_intrinsic(cfg, operation, &args, result_ty,),
                 Ok(Some(AbortIntrinsic::Panic))
             ),
             "{function_name} never signature must pass preflight"
         );
         // ...and rejects stale unit-typed metadata as a contract violation.
-        match interp.preflight_abort_intrinsic(cfg, "panic", &args, Type::UNIT) {
+        match interp.preflight_abort_intrinsic(cfg, operation, &args, Type::UNIT) {
             Err(Flow::Unsupported(unsupported)) => assert_eq!(
                 unsupported.kind(),
                 UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
@@ -556,6 +635,22 @@ fn panic_never_signature_is_an_oracle_contract_for_both_arities() {
             _ => panic!("{function_name}: stale unit-typed metadata must be a contract violation"),
         }
     }
+}
+
+#[test]
+fn oracle_intrinsic_execution_is_operation_selected() {
+    let source = include_str!("../lib.rs");
+    let intrinsic_branch = source
+        .split("CfgInstData::Intrinsic {")
+        .nth(1)
+        .expect("oracle intrinsic execution branch");
+    assert!(intrinsic_branch.contains("operation.expected_spelling()"));
+    assert!(intrinsic_branch.contains("self.classify_unsupported_intrinsic(cfg, v, *operation"));
+    assert!(
+        intrinsic_branch.contains(".eval_pointer_intrinsic(cfg, frame, *operation, &args, ty)")
+    );
+    assert!(!intrinsic_branch.contains("self.interner().resolve(name)"));
+    assert!(!intrinsic_branch.contains("&iname"));
 }
 
 #[test]
@@ -849,8 +944,7 @@ fn abort_intrinsics_require_exact_runtime_value_shapes() {
 }
 
 #[test]
-fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
-    let preview_features = PreviewFeatures::new();
+fn empty_slice_null_is_a_const_gap_and_user_int_to_ptr_stays_distinct() {
     let source = r#"const ZERO: u64 = 0;
         fn slice_len(borrow s: [i32]) -> u64 { s.len() }
         fn user_pointer(borrow s: [i32]) -> u64 {
@@ -862,42 +956,41 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         fn route(borrow s: [i32]) -> u64 {
             slice_len(borrow s) + user_pointer(borrow s)
         }
-        fn offset_probe() -> u64 {
-            let a = [1, 2];
-            checked { @ptr_to_int(@ptr_offset(@raw(a[0]), 1)) }
-        }
         fn main() -> i32 {
             let empty: [i32; 0] = [];
-            @intCast(route(borrow empty) + offset_probe())
+            @intCast(route(borrow empty))
         }"#;
-    let state = query_cfg_state(source).expect("pointer provenance probe must compile");
-    let interp = Interp {
-        state: &state,
-        stdout_trace: Vec::new(),
-        stdout_bytes: 0,
-        stdout_cap: MAX_STDOUT_BYTES,
-        stderr_cap: MAX_STDERR_BYTES,
-        budget: STEP_BUDGET,
-        depth: 0,
-        heap: Vec::new(),
-        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
-        heap_metadata_bytes: 0,
-    };
 
-    let (slice_cfg, slice_inst, slice_args, slice_result) =
-        find_intrinsic_in_function(&state, "main", "int_to_ptr");
+    let state = query_cfg_state(source).expect("empty-slice provenance probe must compile");
+    let (cfg, pointer, _init) = find_empty_slice_pointer_in_function(&state, "main");
     state.select_source_function("main");
+    let mut interp = contract_interp(&state);
+    assert!(interp.is_empty_slice_pointer(cfg, pointer));
+    let mut frame = Frame {
+        params: Vec::new(),
+        locals: vec![None; cfg.num_locals() as usize],
+        cache: HashMap::new(),
+        promoted: HashMap::new(),
+        param_places: HashMap::new(),
+        place_return: false,
+    };
+    let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, pointer));
     assert_eq!(
-        interp.classify_unsupported_intrinsic(
-            slice_cfg,
-            slice_inst,
-            "int_to_ptr",
-            &slice_args,
-            slice_result,
-        ),
+        unsupported.kind(),
         UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
             UnsupportedIntrinsicKind::EmptySlicePointer,
         ))
+    );
+    assert!(
+        cfg.blocks()
+            .iter()
+            .flat_map(|block| block.insts.iter().copied())
+            .filter_map(|value| match cfg.get_inst(value).data {
+                CfgInstData::Intrinsic { operation, .. } => Some(operation),
+                _ => None,
+            })
+            .all(|operation| operation != rue_air::IntrinsicOperation::IntToPtr),
+        "the compiler-owned null must not masquerade as source @int_to_ptr"
     );
 
     let (user_cfg, user_inst, user_args, user_result) =
@@ -908,401 +1001,129 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         CfgInstData::Const(0)
     ));
     assert_eq!(
-        interp.classify_unsupported_intrinsic(
+        contract_interp(&state).classify_unsupported_intrinsic(
             user_cfg,
             user_inst,
-            "int_to_ptr",
+            rue_air::IntrinsicOperation::IntToPtr,
             &user_args,
             user_result,
         ),
         UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
             UnsupportedIntrinsicKind::IntToPointer,
-        ))
-    );
-    let (offset_cfg, offset_inst, offset_args, offset_result) =
-        find_intrinsic_in_function(&state, "offset_probe", "ptr_offset");
-    state.select_source_function("offset_probe");
-    assert_eq!(
-        interp.classify_unsupported_intrinsic(
-            offset_cfg,
-            offset_inst,
-            "ptr_offset",
-            &offset_args,
-            offset_result,
-        ),
-        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
-            UnsupportedIntrinsicKind::PointerOffset,
-        ))
-    );
-    assert_eq!(
-        interp.classify_unsupported_intrinsic(
-            offset_cfg,
-            offset_inst,
-            "ptr_offset",
-            &offset_args[..1],
-            offset_result,
-        ),
-        UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicArity)
-    );
-    assert_eq!(
-        interp.classify_unsupported_intrinsic(
-            offset_cfg,
-            offset_inst,
-            "ptr_offset",
-            &[offset_args[0], offset_args[0]],
-            offset_result,
-        ),
-        UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature)
-    );
-    assert_eq!(
-        interp.classify_unsupported_intrinsic(
-            offset_cfg,
-            offset_inst,
-            "ptr_offset",
-            &offset_args,
-            Type::U64,
-        ),
-        UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
-        "ptr_offset must return the exact input pointer type"
+        )),
+        "a user-authored zero keeps the source IntToPtr identity"
     );
 
-    // Simulate compiler signature drift faithfully: mutate the instruction's
-    // own result type, rather than only passing an inconsistent classifier
-    // argument, then verify that a user-authored zero still lacks the exact
-    // downstream slice-StructInit provenance.
-    let mut drift_state = query_cfg_state_with_preview_features(source, &preview_features)
-        .expect("pointer provenance drift probe must compile");
-    let (_, _, _, drift_slice_result) =
-        find_intrinsic_in_function(&drift_state, "main", "int_to_ptr");
-    let main_index = drift_state.select_source_function("main");
-    let (slice_pointer_is_mut, slice_pointee) = match drift_slice_result.kind() {
-        TypeKind::PtrConst(id) => (
-            false,
-            drift_state.functions[main_index]
-                .type_pool
-                .ptr_const_def(id),
-        ),
-        TypeKind::PtrMut(id) => (
-            true,
-            drift_state.functions[main_index].type_pool.ptr_mut_def(id),
-        ),
-        _ => panic!("empty-slice pointer synthesis must return a pointer"),
-    };
-    let (_, drift_user_inst, _, _) =
-        find_intrinsic_in_function(&drift_state, "user_pointer", "int_to_ptr");
-    let drift_user_index = drift_state
-        .functions
-        .iter()
-        .position(|function| function.is_source_named("user_pointer"))
-        .expect("user_pointer CFG");
-    drift_state.select_source_function("user_pointer");
-    let type_pool = drift_state.type_pool().clone();
-    let drift_slice_result = if slice_pointer_is_mut {
-        Type::new_ptr_mut(
-            type_pool
-                .all_ptr_mut_ids()
-                .find(|id| type_pool.ptr_mut_def(*id) == slice_pointee)
-                .expect("user-pointer domain contains the synthesized slice pointer type"),
-        )
-    } else {
-        Type::new_ptr_const(
-            type_pool
-                .all_ptr_const_ids()
-                .find(|id| type_pool.ptr_const_def(*id) == slice_pointee)
-                .expect("user-pointer domain contains the synthesized slice pointer type"),
-        )
-    };
-    drift_state.functions[drift_user_index]
-        .cfg
-        .try_edit(&type_pool, |editor| {
-            editor.replace_inst_type(drift_user_inst, drift_slice_result)
-        })
-        .unwrap();
-    let (drift_cfg, drift_inst, drift_args, drift_result) =
-        find_intrinsic_in_function(&drift_state, "user_pointer", "int_to_ptr");
-    drift_state.select_source_function("user_pointer");
-    let drift_interp = Interp {
-        state: &drift_state,
-        stdout_trace: Vec::new(),
-        stdout_bytes: 0,
-        stdout_cap: MAX_STDOUT_BYTES,
-        stderr_cap: MAX_STDERR_BYTES,
-        budget: STEP_BUDGET,
-        depth: 0,
-        heap: Vec::new(),
-        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
-        heap_metadata_bytes: 0,
-    };
-    assert_eq!(
-        drift_interp.classify_unsupported_intrinsic(
-            drift_cfg,
-            drift_inst,
-            "int_to_ptr",
-            &drift_args,
-            drift_result,
-        ),
-        UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
-        "a user-authored zero is not the synthesized empty-slice pointer"
-    );
+    let preview = PreviewFeatures::new();
 
-    let mut extra_use_state = query_cfg_state_with_preview_features(source, &preview_features)
-        .expect("empty-slice exclusive-use probe must compile");
-    let (_, extra_slice_inst, _, extra_slice_result) =
-        find_intrinsic_in_function(&extra_use_state, "main", "int_to_ptr");
-    let extra_main = extra_use_state
+    let mut extra_pointer_use = query_cfg_state_with_preview_features(source, &preview)
+        .expect("extra pointer-use probe must compile");
+    let main = extra_pointer_use
         .functions
         .iter()
         .position(|function| function.is_source_named("main"))
-        .expect("main CFG");
-    let outer_cast = extra_use_state.functions[extra_main]
-        .cfg
-        .blocks()
-        .iter()
-        .flat_map(|block| block.insts.iter().copied())
-        .find(|value| {
-            matches!(
-                extra_use_state.functions[extra_main]
-                    .cfg
-                    .get_inst(*value)
-                    .data,
-                CfgInstData::IntCast { .. }
-            )
-        })
-        .expect("outer result cast");
-    let type_pool = extra_use_state.type_pool().clone();
-    extra_use_state.functions[extra_main]
-        .cfg
-        .try_edit(&type_pool, |editor| {
-            editor.replace_int_cast(outer_cast, extra_slice_inst, extra_slice_result)
-        })
         .unwrap();
-    let (extra_cfg, extra_inst, extra_args, extra_result) =
-        find_intrinsic_in_function(&extra_use_state, "main", "int_to_ptr");
-    let extra_interp = Interp {
-        state: &extra_use_state,
-        stdout_trace: Vec::new(),
-        stdout_bytes: 0,
-        stdout_cap: MAX_STDOUT_BYTES,
-        stderr_cap: MAX_STDERR_BYTES,
-        budget: STEP_BUDGET,
-        depth: 0,
-        heap: Vec::new(),
-        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
-        heap_metadata_bytes: 0,
-    };
-    assert_eq!(
-        extra_interp.classify_unsupported_intrinsic(
-            extra_cfg,
-            extra_inst,
-            "int_to_ptr",
-            &extra_args,
-            extra_result,
-        ),
-        UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
-        "an extra use cannot borrow synthesized empty-slice provenance"
-    );
-
-    let mut extra_init_use_state = query_cfg_state_with_preview_features(source, &preview_features)
-        .expect("empty-slice StructInit exclusive-use probe must compile");
-    let (_, extra_init_pointer, _, _) =
-        find_intrinsic_in_function(&extra_init_use_state, "main", "int_to_ptr");
-    let extra_init_main = extra_init_use_state
-        .functions
-        .iter()
-        .position(|function| function.is_source_named("main"))
-        .expect("main CFG");
-    let (slice_init, slice_ty, outer_cast) = {
-        let cfg = &extra_init_use_state.functions[extra_init_main].cfg;
-        let slice_init = cfg
-            .blocks()
-            .iter()
-            .flat_map(|block| block.insts.iter().copied())
-            .find(|value| {
-                let data = &cfg.get_inst(*value).data;
-                let CfgInstData::StructInit { .. } = data else {
-                    return false;
-                };
-                cfg.get_struct_fields(data).first() == Some(&extra_init_pointer)
-            })
-            .expect("empty-slice StructInit");
+    let (pointer, pointer_ty, outer_cast) = {
+        let cfg = &extra_pointer_use.functions[main].cfg;
+        let (_, pointer, _) = find_empty_slice_pointer_in_function(&extra_pointer_use, "main");
         let outer_cast = cfg
             .blocks()
             .iter()
             .flat_map(|block| block.insts.iter().copied())
             .find(|value| matches!(cfg.get_inst(*value).data, CfgInstData::IntCast { .. }))
             .expect("outer result cast");
-        (slice_init, cfg.get_inst(slice_init).ty, outer_cast)
+        (pointer, cfg.get_inst(pointer).ty, outer_cast)
     };
-    let type_pool = extra_init_use_state.type_pool().clone();
-    extra_init_use_state.functions[extra_init_main]
+    let pool = extra_pointer_use.functions[main].type_pool.clone();
+    extra_pointer_use.functions[main]
         .cfg
-        .try_edit(&type_pool, |editor| {
-            editor.replace_int_cast(outer_cast, slice_init, slice_ty)
+        .try_edit(&pool, |editor| {
+            editor.replace_int_cast(outer_cast, pointer, pointer_ty)
         })
         .unwrap();
-    let (extra_init_cfg, extra_init_inst, extra_init_args, extra_init_result) =
-        find_intrinsic_in_function(&extra_init_use_state, "main", "int_to_ptr");
-    assert_eq!(extra_init_cfg.value_use_count(extra_init_inst), 1);
-    assert_eq!(extra_init_cfg.value_use_count(slice_init), 2);
-    let extra_init_interp = Interp {
-        state: &extra_init_use_state,
-        stdout_trace: Vec::new(),
-        stdout_bytes: 0,
-        stdout_cap: MAX_STDOUT_BYTES,
-        stderr_cap: MAX_STDERR_BYTES,
-        budget: STEP_BUDGET,
-        depth: 0,
-        heap: Vec::new(),
-        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
-        heap_metadata_bytes: 0,
-    };
-    assert_eq!(
-        extra_init_interp.classify_unsupported_intrinsic(
-            extra_init_cfg,
-            extra_init_inst,
-            "int_to_ptr",
-            &extra_init_args,
-            extra_init_result,
-        ),
-        UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
-        "an extra slice-StructInit use cannot borrow synthesized empty-slice provenance"
-    );
+    let cfg = &extra_pointer_use.functions[main].cfg;
+    assert_eq!(cfg.value_use_count(pointer), 2);
+    assert!(!contract_interp(&extra_pointer_use).is_empty_slice_pointer(cfg, pointer));
 
-    let mut wrong_consumer_state = query_cfg_state_with_preview_features(source, &preview_features)
-        .expect("empty-slice consumer-mode probe must compile");
-    let (_, wrong_consumer_pointer, _, _) =
-        find_intrinsic_in_function(&wrong_consumer_state, "main", "int_to_ptr");
-    let wrong_consumer_main = wrong_consumer_state
+    let mut extra_init_use = query_cfg_state_with_preview_features(source, &preview)
+        .expect("extra slice-use probe must compile");
+    let main = extra_init_use
         .functions
         .iter()
         .position(|function| function.is_source_named("main"))
-        .expect("main CFG");
-    let (wrong_consumer_init, consumer, mut consumer_args) = {
-        let cfg = &wrong_consumer_state.functions[wrong_consumer_main].cfg;
-        let init = cfg
+        .unwrap();
+    let (pointer, init, init_ty, outer_cast) = {
+        let cfg = &extra_init_use.functions[main].cfg;
+        let (_, pointer, init) = find_empty_slice_pointer_in_function(&extra_init_use, "main");
+        let outer_cast = cfg
             .blocks()
             .iter()
             .flat_map(|block| block.insts.iter().copied())
-            .find(|value| {
-                let data = &cfg.get_inst(*value).data;
-                let CfgInstData::StructInit { .. } = data else {
-                    return false;
-                };
-                cfg.get_struct_fields(data).first() == Some(&wrong_consumer_pointer)
-            })
-            .expect("empty-slice StructInit");
+            .find(|value| matches!(cfg.get_inst(*value).data, CfgInstData::IntCast { .. }))
+            .expect("outer result cast");
+        (pointer, init, cfg.get_inst(init).ty, outer_cast)
+    };
+    let pool = extra_init_use.functions[main].type_pool.clone();
+    extra_init_use.functions[main]
+        .cfg
+        .try_edit(&pool, |editor| {
+            editor.replace_int_cast(outer_cast, init, init_ty)
+        })
+        .unwrap();
+    let cfg = &extra_init_use.functions[main].cfg;
+    assert_eq!(cfg.value_use_count(init), 2);
+    assert!(!contract_interp(&extra_init_use).is_empty_slice_pointer(cfg, pointer));
+
+    let mut wrong_consumer = query_cfg_state_with_preview_features(source, &preview)
+        .expect("consumer-mode probe must compile");
+    let main = wrong_consumer
+        .functions
+        .iter()
+        .position(|function| function.is_source_named("main"))
+        .unwrap();
+    let (pointer, init, consumer, mut args) = {
+        let cfg = &wrong_consumer.functions[main].cfg;
+        let (_, pointer, init) = find_empty_slice_pointer_in_function(&wrong_consumer, "main");
         let (consumer, args) = cfg
             .blocks()
             .iter()
             .flat_map(|block| block.insts.iter().copied())
             .find_map(|value| {
                 let data = &cfg.get_inst(value).data;
-                let CfgInstData::Call { .. } = data else {
-                    return None;
-                };
-                let args = cfg.get_call_args(data);
-                args.iter()
-                    .any(|arg| arg.value == init)
-                    .then(|| (value, args.to_vec()))
+                matches!(data, CfgInstData::Call { .. })
+                    .then(|| (value, cfg.get_call_args(data).to_vec()))
+                    .filter(|(_, args)| args.iter().any(|arg| arg.value == init))
             })
-            .expect("empty-slice call consumer");
-        (init, consumer, args)
+            .expect("slice call consumer");
+        (pointer, init, consumer, args)
     };
-    let slice_arg = consumer_args
-        .iter_mut()
-        .find(|arg| arg.value == wrong_consumer_init)
-        .expect("empty-slice call argument");
-    assert_eq!(slice_arg.mode, CfgArgMode::Normal);
-    slice_arg.mode = CfgArgMode::Borrow;
-    let type_pool = wrong_consumer_state.type_pool().clone();
-    let cfg = &mut wrong_consumer_state.functions[wrong_consumer_main].cfg;
-    cfg.try_edit(&type_pool, |editor| {
-        editor.replace_call_args(consumer, consumer_args)
-    })
-    .unwrap();
-    let (wrong_consumer_cfg, wrong_consumer_inst, wrong_consumer_args, wrong_consumer_result) =
-        find_intrinsic_in_function(&wrong_consumer_state, "main", "int_to_ptr");
-    assert_eq!(wrong_consumer_cfg.value_use_count(wrong_consumer_inst), 1);
-    assert_eq!(wrong_consumer_cfg.value_use_count(wrong_consumer_init), 1);
-    let wrong_consumer_interp = Interp {
-        state: &wrong_consumer_state,
-        stdout_trace: Vec::new(),
-        stdout_bytes: 0,
-        stdout_cap: MAX_STDOUT_BYTES,
-        stderr_cap: MAX_STDERR_BYTES,
-        budget: STEP_BUDGET,
-        depth: 0,
-        heap: Vec::new(),
-        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
-        heap_metadata_bytes: 0,
-    };
-    assert_eq!(
-        wrong_consumer_interp.classify_unsupported_intrinsic(
-            wrong_consumer_cfg,
-            wrong_consumer_inst,
-            "int_to_ptr",
-            &wrong_consumer_args,
-            wrong_consumer_result,
-        ),
-        UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
-        "the synthesized slice StructInit must have one normal call consumer"
-    );
+    args.iter_mut()
+        .find(|arg| arg.value == init)
+        .expect("slice argument")
+        .mode = CfgArgMode::Borrow;
+    let pool = wrong_consumer.functions[main].type_pool.clone();
+    wrong_consumer.functions[main]
+        .cfg
+        .try_edit(&pool, |editor| editor.replace_call_args(consumer, args))
+        .unwrap();
+    let cfg = &wrong_consumer.functions[main].cfg;
+    assert!(!contract_interp(&wrong_consumer).is_empty_slice_pointer(cfg, pointer));
 
-    let mut wrong_init_state = query_cfg_state_with_preview_features(source, &preview_features)
-        .expect("empty-slice StructInit type probe must compile");
-    let (_, wrong_init_pointer, _, _) =
-        find_intrinsic_in_function(&wrong_init_state, "main", "int_to_ptr");
-    let wrong_init_main = wrong_init_state
+    let mut wrong_init_type = query_cfg_state_with_preview_features(source, &preview)
+        .expect("slice type probe must compile");
+    let main = wrong_init_type
         .functions
         .iter()
         .position(|function| function.is_source_named("main"))
-        .expect("main CFG");
-    let slice_init = {
-        let cfg = &wrong_init_state.functions[wrong_init_main].cfg;
-        cfg.blocks()
-            .iter()
-            .flat_map(|block| block.insts.iter().copied())
-            .find(|value| {
-                let data = &cfg.get_inst(*value).data;
-                let CfgInstData::StructInit { .. } = data else {
-                    return false;
-                };
-                cfg.get_struct_fields(data).first() == Some(&wrong_init_pointer)
-            })
-            .expect("empty-slice StructInit")
-    };
-    let type_pool = wrong_init_state.type_pool().clone();
-    wrong_init_state.functions[wrong_init_main]
-        .cfg
-        .try_edit(&type_pool, |editor| {
-            editor.replace_inst_type(slice_init, Type::UNIT)
-        })
         .unwrap();
-    let (wrong_init_cfg, wrong_init_inst, wrong_init_args, wrong_init_result) =
-        find_intrinsic_in_function(&wrong_init_state, "main", "int_to_ptr");
-    let wrong_init_interp = Interp {
-        state: &wrong_init_state,
-        stdout_trace: Vec::new(),
-        stdout_bytes: 0,
-        stdout_cap: MAX_STDOUT_BYTES,
-        stderr_cap: MAX_STDERR_BYTES,
-        budget: STEP_BUDGET,
-        depth: 0,
-        heap: Vec::new(),
-        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
-        heap_metadata_bytes: 0,
-    };
-    assert_eq!(
-        wrong_init_interp.classify_unsupported_intrinsic(
-            wrong_init_cfg,
-            wrong_init_inst,
-            "int_to_ptr",
-            &wrong_init_args,
-            wrong_init_result,
-        ),
-        UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
-        "the slice StructInit result type must match its struct metadata"
-    );
+    let (_, pointer, init) = find_empty_slice_pointer_in_function(&wrong_init_type, "main");
+    let pool = wrong_init_type.functions[main].type_pool.clone();
+    wrong_init_type.functions[main]
+        .cfg
+        .try_edit(&pool, |editor| editor.replace_inst_type(init, Type::UNIT))
+        .unwrap();
+    let cfg = &wrong_init_type.functions[main].cfg;
+    assert!(!contract_interp(&wrong_init_type).is_empty_slice_pointer(cfg, pointer));
 }
 
 #[test]
@@ -1328,7 +1149,13 @@ fn validated_cfg_rejects_out_of_bounds_field_pointer_projection_metadata() {
             heap_metadata_bytes: 0,
         };
         assert_eq!(
-            interp.classify_unsupported_intrinsic(cfg, inst, "field_ptr", &args, result),
+            interp.classify_unsupported_intrinsic(
+                cfg,
+                inst,
+                rue_air::IntrinsicOperation::FieldPtr,
+                &args,
+                result,
+            ),
             UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
                 UnsupportedIntrinsicKind::FieldPointer,
             ))
@@ -1496,6 +1323,131 @@ fn query_cfg_state_with_trusted_std(
 const TRUSTED_OPTION_MODULE_SOURCE: &str =
     "pub fn Option(comptime T: type) -> type { enum { Some(T), None } }";
 
+const TRUSTED_STRBUF_MODULE_SOURCE: &str = r#"pub struct StrBuf {
+    buf: ptr mut u8,
+    len: u64,
+    cap: u64,
+    fn len(borrow self) -> u64 { self.len }
+    fn as_ptr(borrow self) -> ptr mut u8 { self.buf }
+}
+drop fn StrBuf(self) { }"#;
+
+#[test]
+fn every_source_intrinsic_operation_survives_semantic_export_import_and_cfg_build() {
+    let source = r#"const option = @import("std/option.rue");
+        const strbuf = @import("std/strbuf.rue");
+        const Option = option.Option;
+        const StrBuf = strbuf.StrBuf;
+
+        struct Pair { value: i32 }
+
+        fn panic_no_message() { @panic() }
+        fn panic_with_message() { @panic("boom") }
+
+        fn fallible() -> i32 {
+            let OStrBuf = Option(StrBuf);
+            let OI32 = Option(i32);
+            let OI64 = Option(i64);
+            let OU32 = Option(u32);
+            let OU64 = Option(u64);
+            let _line: OStrBuf = @read_line();
+            let _i32: OI32 = @parse_i32("1");
+            let _i64: OI64 = @parse_i64("2");
+            let _u32: OU32 = @parse_u32("3");
+            let _u64: OU64 = @parse_u64("4");
+            0
+        }
+
+        fn bounds(borrow values: [i64], index: u64) -> i32 {
+            @intCast(values[index])
+        }
+
+        fn pointer_and_runtime() -> i32 {
+            let mut value: i32 = 1;
+            let mut pair = Pair { value: 2 };
+            let signed: i32 = -1;
+            let unsigned: u32 = 1;
+            let wide_signed: i64 = -2;
+            let wide_unsigned: u64 = 2;
+            @assert(true);
+            @assert(true, "ok");
+            @dbg(wide_signed);
+            @dbg(wide_unsigned);
+            @dbg(true);
+            @dbg("text");
+            let _: u32 = @bitCast(signed);
+            let _: i32 = @bitCast(unsigned);
+            let _: u32 = @random_u32();
+            let _: u64 = @random_u64();
+            let _: u64 = @arg_count();
+            let _: ptr mut u8 = checked { @arg_ptr(0) };
+            let _: u64 = @arg_len(0);
+            let _: u64 = @env_count();
+            let _: ptr mut u8 = checked { @env_ptr(0) };
+            let _: u64 = @env_len(0);
+            checked {
+                let shared: ptr const i32 = @raw(value);
+                let mutable: ptr mut i32 = @raw_mut(value);
+                let field: ptr mut i32 = @field_ptr(pair.value);
+                let address: u64 = @ptr_to_int(shared);
+                let _: ptr mut i32 = @int_to_ptr(address);
+                let _: i32 = @ptr_read(shared);
+                let _: i32 = @ptr_read_unaligned(shared);
+                @ptr_write(mutable, 3);
+                @ptr_write_unaligned(field, 4);
+                let _: ptr const i32 = @ptr_offset(shared, 1);
+
+                let raw: ptr mut u8 = @alloc(8, 1);
+                let zeroed: ptr mut u8 = @alloc_zeroed(8, 1);
+                @byte_copy(raw, zeroed, 1);
+                @byte_move(raw, zeroed, 1);
+                @byte_set(raw, 0, 1);
+                let grown: ptr mut u8 = @realloc(raw, 8, 1, 16);
+                let _: bool = @resize(grown, 16, 1, 8);
+                @free(grown, 16, 1);
+                @free(zeroed, 8, 1);
+                let _: i64 = @syscall(0);
+            };
+            0
+        }
+
+        fn main() -> i32 {
+            let seed = @random_u32();
+            let values: [i64; 2] = [1, 2];
+            if seed == 1 { panic_no_message(); }
+            if seed == 2 { panic_with_message(); }
+            fallible() + bounds(borrow values, @intCast(seed)) + pointer_and_runtime()
+        }"#;
+    let state = query_cfg_state_with_trusted_std(
+        source,
+        &[
+            (2, "/project/std/strbuf.rue", TRUSTED_STRBUF_MODULE_SOURCE),
+            (3, "/project/std/option.rue", TRUSTED_OPTION_MODULE_SOURCE),
+        ],
+    )
+    .expect("the full intrinsic source table must compile through durable CFG import");
+    let mut operations = std::collections::HashSet::new();
+    for function in &state.functions {
+        for value in function
+            .cfg
+            .blocks()
+            .iter()
+            .flat_map(|block| block.insts.iter().copied())
+        {
+            if let CfgInstData::Intrinsic { operation, .. } = function.cfg.get_inst(value).data {
+                operations.insert(operation);
+            }
+        }
+    }
+    assert_eq!(rue_air::IntrinsicOperation::ALL.len(), 42);
+    for operation in rue_air::IntrinsicOperation::ALL {
+        assert!(
+            operations.contains(&operation),
+            "source-to-CFG pipeline lost {operation:?}"
+        );
+    }
+}
+
 #[test]
 fn option_returning_intrinsics_require_the_exact_payload_type() {
     // A fallible intrinsic's result is the exact trusted std `Option(payload)`
@@ -1539,7 +1491,7 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
         interp.classify_unsupported_intrinsic(
             parse32_cfg,
             parse32_inst,
-            "parse_i32",
+            rue_air::IntrinsicOperation::ParseI32,
             &parse32_args,
             parse32_result,
         ),
@@ -1552,7 +1504,7 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
         interp.classify_unsupported_intrinsic(
             parse64_cfg,
             parse64_inst,
-            "parse_i64",
+            rue_air::IntrinsicOperation::ParseI64,
             &parse64_args,
             parse64_result,
         ),
@@ -1565,7 +1517,7 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
         interp.classify_unsupported_intrinsic(
             parse32_cfg,
             parse32_inst,
-            "parse_i32",
+            rue_air::IntrinsicOperation::ParseI32,
             &parse32_args,
             Type::U64,
         ),
@@ -1619,14 +1571,26 @@ fn read_line_requires_trusted_source_strbuf_payload_metadata() {
     let (cfg, inst, args, result) = find_intrinsic_in_function(&state, "line", "read_line");
     state.select_source_function("line");
     assert_eq!(
-        interp.classify_unsupported_intrinsic(cfg, inst, "read_line", &args, result),
+        interp.classify_unsupported_intrinsic(
+            cfg,
+            inst,
+            rue_air::IntrinsicOperation::ReadLine,
+            &args,
+            result,
+        ),
         UnsupportedKind::ExternalDependency(ExternalDependencyKind::StandardInput)
     );
 
     let _ = find_intrinsic_in_function(&state, "parse", "parse_i32");
     state.select_source_function("line");
     assert_eq!(
-        interp.classify_unsupported_intrinsic(cfg, inst, "read_line", &args, Type::I32),
+        interp.classify_unsupported_intrinsic(
+            cfg,
+            inst,
+            rue_air::IntrinsicOperation::ReadLine,
+            &args,
+            Type::I32,
+        ),
         UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
         "an arbitrary Option payload must not satisfy @read_line"
     );

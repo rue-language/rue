@@ -1084,58 +1084,123 @@ fn unsupported(kind: UnsupportedKind, detail: impl Into<String>) -> Flow {
     Flow::Unsupported(Unsupported::new(kind, detail))
 }
 
-fn unsupported_intrinsic_kind(name: &str) -> UnsupportedKind {
+fn unsupported_intrinsic_kind_for_operation(
+    operation: rue_air::IntrinsicOperation,
+) -> UnsupportedKind {
     use ExternalDependencyKind as External;
     use SemanticGapKind as Semantic;
     use UnsupportedIntrinsicKind as Intrinsic;
 
-    match name {
-        "parse_i32" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ParseI32)),
-        "parse_i64" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ParseI64)),
-        "parse_u32" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ParseU32)),
-        "parse_u64" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ParseU64)),
+    match operation {
+        rue_air::IntrinsicOperation::ParseI32 => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ParseI32))
+        }
+        rue_air::IntrinsicOperation::ParseI64 => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ParseI64))
+        }
+        rue_air::IntrinsicOperation::ParseU32 => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ParseU32))
+        }
+        rue_air::IntrinsicOperation::ParseU64 => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ParseU64))
+        }
         // `@ptr_read_unaligned`/`@ptr_write_unaligned` (ADR-0059) differ from the
         // aligned forms only in the alignment *requirement* on the address. The
         // oracle does not model alignment, so they share the aligned forms'
         // semantics and gap classification.
-        "ptr_read" | "ptr_read_unaligned" => {
+        rue_air::IntrinsicOperation::PtrRead | rue_air::IntrinsicOperation::PtrReadUnaligned => {
             UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::PointerRead))
         }
-        "ptr_write" | "ptr_write_unaligned" => {
+        rue_air::IntrinsicOperation::PtrWrite | rue_air::IntrinsicOperation::PtrWriteUnaligned => {
             UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::PointerWrite))
         }
-        "ptr_offset" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::PointerOffset)),
-        "ptr_to_int" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::PointerToInt)),
-        "int_to_ptr" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::IntToPointer)),
-        "raw" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::RawAddress)),
-        "raw_mut" => {
+        rue_air::IntrinsicOperation::PtrOffset => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::PointerOffset))
+        }
+        rue_air::IntrinsicOperation::PtrToInt => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::PointerToInt))
+        }
+        rue_air::IntrinsicOperation::IntToPtr => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::IntToPointer))
+        }
+        rue_air::IntrinsicOperation::Raw => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::RawAddress))
+        }
+        rue_air::IntrinsicOperation::RawMut => {
             UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::RawMutableAddress))
         }
-        "field_ptr" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::FieldPointer)),
-        "alloc" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Allocate)),
-        "alloc_zeroed" => {
+        rue_air::IntrinsicOperation::FieldPtr => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::FieldPointer))
+        }
+        rue_air::IntrinsicOperation::Alloc => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Allocate))
+        }
+        rue_air::IntrinsicOperation::AllocZeroed => {
             UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::AllocateZeroed))
         }
-        "free" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Free)),
-        "realloc" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Reallocate)),
-        "resize" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Resize)),
-        "byte_copy" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteCopy)),
-        "byte_move" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteMove)),
-        "byte_set" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteSet)),
-        "read_line" => UnsupportedKind::ExternalDependency(External::StandardInput),
-        "random_u32" => UnsupportedKind::ExternalDependency(External::RandomU32),
-        "random_u64" => UnsupportedKind::ExternalDependency(External::RandomU64),
-        "syscall" => UnsupportedKind::ExternalDependency(External::SystemCall),
+        rue_air::IntrinsicOperation::Free => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Free))
+        }
+        rue_air::IntrinsicOperation::Realloc => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Reallocate))
+        }
+        rue_air::IntrinsicOperation::Resize => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Resize))
+        }
+        rue_air::IntrinsicOperation::ByteCopy => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteCopy))
+        }
+        rue_air::IntrinsicOperation::ByteMove => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteMove))
+        }
+        rue_air::IntrinsicOperation::ByteSet => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteSet))
+        }
+        rue_air::IntrinsicOperation::ReadLine => {
+            UnsupportedKind::ExternalDependency(External::StandardInput)
+        }
+        rue_air::IntrinsicOperation::RandomU32 => {
+            UnsupportedKind::ExternalDependency(External::RandomU32)
+        }
+        rue_air::IntrinsicOperation::RandomU64 => {
+            UnsupportedKind::ExternalDependency(External::RandomU64)
+        }
+        rue_air::IntrinsicOperation::Syscall => {
+            UnsupportedKind::ExternalDependency(External::SystemCall)
+        }
         // Process arguments/environment are captured from loader-supplied
         // process state at entry, so their values lie outside deterministic Rue
         // semantics — an external dependency like `@random_*` (RUE-935).
-        "arg_count" => UnsupportedKind::ExternalDependency(External::ArgCount),
-        "arg_ptr" => UnsupportedKind::ExternalDependency(External::ArgPtr),
-        "arg_len" => UnsupportedKind::ExternalDependency(External::ArgLen),
-        "env_count" => UnsupportedKind::ExternalDependency(External::EnvCount),
-        "env_ptr" => UnsupportedKind::ExternalDependency(External::EnvPtr),
-        "env_len" => UnsupportedKind::ExternalDependency(External::EnvLen),
-        _ => UnsupportedKind::ContractViolation(ContractViolationKind::UnexpectedIntrinsic),
+        rue_air::IntrinsicOperation::ArgCount => {
+            UnsupportedKind::ExternalDependency(External::ArgCount)
+        }
+        rue_air::IntrinsicOperation::ArgPtr => {
+            UnsupportedKind::ExternalDependency(External::ArgPtr)
+        }
+        rue_air::IntrinsicOperation::ArgLen => {
+            UnsupportedKind::ExternalDependency(External::ArgLen)
+        }
+        rue_air::IntrinsicOperation::EnvCount => {
+            UnsupportedKind::ExternalDependency(External::EnvCount)
+        }
+        rue_air::IntrinsicOperation::EnvPtr => {
+            UnsupportedKind::ExternalDependency(External::EnvPtr)
+        }
+        rue_air::IntrinsicOperation::EnvLen => {
+            UnsupportedKind::ExternalDependency(External::EnvLen)
+        }
+        rue_air::IntrinsicOperation::PanicNoMessage
+        | rue_air::IntrinsicOperation::Panic
+        | rue_air::IntrinsicOperation::AssertFailed
+        | rue_air::IntrinsicOperation::AssertWithMessage
+        | rue_air::IntrinsicOperation::BoundsCheck
+        | rue_air::IntrinsicOperation::DebugI64
+        | rue_air::IntrinsicOperation::DebugU64
+        | rue_air::IntrinsicOperation::DebugBool
+        | rue_air::IntrinsicOperation::DebugStr
+        | rue_air::IntrinsicOperation::BitCast => {
+            UnsupportedKind::ContractViolation(ContractViolationKind::UnexpectedIntrinsic)
+        }
     }
 }
 
@@ -1147,7 +1212,43 @@ fn unsupported_runtime_call_kind(kind: RuntimeCallKind) -> Option<UnsupportedRun
         RuntimeCallKind::StrPrintlnAggregate | RuntimeCallKind::StrPrintlnProjected => {
             Some(UnsupportedRuntimeCallKind::Println)
         }
-        _ => None,
+        RuntimeCallKind::StrByteAt
+        | RuntimeCallKind::StrCharScalar
+        | RuntimeCallKind::StrCharNext
+        | RuntimeCallKind::StrCharScalarLossy
+        | RuntimeCallKind::StrCharNextLossy
+        | RuntimeCallKind::ToString
+        | RuntimeCallKind::ToStringUnsigned
+        | RuntimeCallKind::DebugI64
+        | RuntimeCallKind::DebugU64
+        | RuntimeCallKind::DebugBool
+        | RuntimeCallKind::DebugStr
+        | RuntimeCallKind::Panic
+        | RuntimeCallKind::PanicNoMessage
+        | RuntimeCallKind::AssertFailed
+        | RuntimeCallKind::AssertWithMessage
+        | RuntimeCallKind::BoundsCheck
+        | RuntimeCallKind::ReadLine
+        | RuntimeCallKind::ParseI32
+        | RuntimeCallKind::ParseI64
+        | RuntimeCallKind::ParseU32
+        | RuntimeCallKind::ParseU64
+        | RuntimeCallKind::RandomU32
+        | RuntimeCallKind::RandomU64
+        | RuntimeCallKind::Alloc
+        | RuntimeCallKind::AllocZeroed
+        | RuntimeCallKind::Free
+        | RuntimeCallKind::Realloc
+        | RuntimeCallKind::Resize
+        | RuntimeCallKind::ArgCount
+        | RuntimeCallKind::ArgPtr
+        | RuntimeCallKind::ArgLen
+        | RuntimeCallKind::EnvCount
+        | RuntimeCallKind::EnvPtr
+        | RuntimeCallKind::EnvLen
+        | RuntimeCallKind::ByteCopy
+        | RuntimeCallKind::ByteMove
+        | RuntimeCallKind::ByteSet => None,
     }
 }
 
@@ -1344,7 +1445,7 @@ impl<'a> Interp<'a> {
     /// length words from turning a bounded failure into an unbounded
     /// allocation or byte loop.
     fn text_bytes_bounded(&self, val: &Value, max_len: Option<usize>) -> Step<Vec<u8>> {
-        let gap = unsupported_intrinsic_kind("ptr_read");
+        let gap = unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrRead);
         let Some((target, len)) = Self::text_ptr_len(val) else {
             return Err(unsupported(gap, "text value is not a materialized header"));
         };
@@ -1611,7 +1712,9 @@ impl<'a> Interp<'a> {
             } else {
                 let Some(pointer) = pointer else {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "projected output has a null buffer with nonzero length",
                     ));
                 };
@@ -1620,7 +1723,9 @@ impl<'a> Interp<'a> {
                         self.byte_at(
                             pointer,
                             offset as i128,
-                            unsupported_intrinsic_kind("ptr_read"),
+                            unsupported_intrinsic_kind_for_operation(
+                                rue_air::IntrinsicOperation::PtrRead,
+                            ),
                         )
                     })
                     .collect::<Step<Vec<_>>>()?
@@ -1750,23 +1855,27 @@ impl<'a> Interp<'a> {
         self.option_payload(ty) == Some(payload)
     }
 
-    /// Whether this exact `@int_to_ptr(0) -> ptr const T` is the compiler's
+    /// Whether this exact pointer-typed `Const(0)` is the compiler's
     /// synthesized null pointer for an empty borrowed array slice.
     ///
     /// A zero constant and const-pointer result are not sufficient provenance:
     /// user-authored `@int_to_ptr(0)` could otherwise be mislabeled as this
-    /// model gap. Require the intrinsic to feed field 0 of the canonical
+    /// model gap. Require the value to feed field 0 of the canonical
     /// two-word `[T] { ptr, len: 0 }` StructInit emitted by slice coercion.
-    fn is_empty_slice_pointer(&self, cfg: &Cfg, intrinsic: CfgValue) -> bool {
-        if cfg.value_use_count(intrinsic) != 1 {
+    fn is_empty_slice_pointer(&self, cfg: &Cfg, pointer: CfgValue) -> bool {
+        let pointer_inst = cfg.get_inst(pointer);
+        if !pointer_inst.ty.is_ptr_const()
+            || !matches!(pointer_inst.data, CfgInstData::Const(0))
+            || cfg.value_use_count(pointer) != 1
+        {
             return false;
         }
-        let pointer_ty = cfg.get_inst(intrinsic).ty;
+        let pointer_ty = pointer_inst.ty;
         cfg.blocks()
             .iter()
             .filter_map(|block| {
-                let intrinsic_index = block.insts.iter().position(|value| *value == intrinsic)?;
-                Some(block.insts.iter().skip(intrinsic_index + 1).copied())
+                let pointer_index = block.insts.iter().position(|value| *value == pointer)?;
+                Some(block.insts.iter().skip(pointer_index + 1).copied())
             })
             .flatten()
             .any(|value| {
@@ -1787,7 +1896,7 @@ impl<'a> Interp<'a> {
                     return false;
                 }
                 let fields = cfg.get_struct_fields(data);
-                fields[0] == intrinsic
+                fields[0] == pointer
                     && cfg.get_inst(fields[1]).ty == Type::U64
                     && matches!(cfg.get_inst(fields[1]).data, CfgInstData::Const(0))
                     && cfg.blocks().iter().any(|block| {
@@ -1953,27 +2062,60 @@ impl<'a> Interp<'a> {
     fn classify_unsupported_intrinsic(
         &self,
         cfg: &Cfg,
-        intrinsic: CfgValue,
-        name: &str,
+        _intrinsic: CfgValue,
+        operation: rue_air::IntrinsicOperation,
         args: &[CfgValue],
         result_ty: Type,
     ) -> UnsupportedKind {
-        let kind = unsupported_intrinsic_kind(name);
+        let kind = unsupported_intrinsic_kind_for_operation(operation);
         if kind.model_gap().is_none() {
             return kind;
         }
 
-        let arity_matches = match name {
-            "read_line" | "random_u32" | "random_u64" | "arg_count" | "env_count" => {
-                args.is_empty()
+        let arity_matches = match operation {
+            rue_air::IntrinsicOperation::ReadLine
+            | rue_air::IntrinsicOperation::RandomU32
+            | rue_air::IntrinsicOperation::RandomU64
+            | rue_air::IntrinsicOperation::ArgCount
+            | rue_air::IntrinsicOperation::EnvCount => args.is_empty(),
+            rue_air::IntrinsicOperation::PtrWrite
+            | rue_air::IntrinsicOperation::PtrWriteUnaligned
+            | rue_air::IntrinsicOperation::PtrOffset
+            | rue_air::IntrinsicOperation::Alloc
+            | rue_air::IntrinsicOperation::AllocZeroed => args.len() == 2,
+            rue_air::IntrinsicOperation::ByteCopy
+            | rue_air::IntrinsicOperation::ByteMove
+            | rue_air::IntrinsicOperation::ByteSet
+            | rue_air::IntrinsicOperation::Free => args.len() == 3,
+            rue_air::IntrinsicOperation::Realloc | rue_air::IntrinsicOperation::Resize => {
+                args.len() == 4
             }
-            "ptr_write" | "ptr_write_unaligned" | "ptr_offset" | "alloc" | "alloc_zeroed" => {
-                args.len() == 2
-            }
-            "byte_copy" | "byte_move" | "byte_set" | "free" => args.len() == 3,
-            "realloc" | "resize" => args.len() == 4,
-            "syscall" => (1..=7).contains(&args.len()),
-            _ => args.len() == 1,
+            rue_air::IntrinsicOperation::Syscall => (1..=7).contains(&args.len()),
+            rue_air::IntrinsicOperation::Panic
+            | rue_air::IntrinsicOperation::AssertFailed
+            | rue_air::IntrinsicOperation::BoundsCheck
+            | rue_air::IntrinsicOperation::DebugI64
+            | rue_air::IntrinsicOperation::DebugU64
+            | rue_air::IntrinsicOperation::DebugBool
+            | rue_air::IntrinsicOperation::DebugStr
+            | rue_air::IntrinsicOperation::ParseI32
+            | rue_air::IntrinsicOperation::ParseI64
+            | rue_air::IntrinsicOperation::ParseU32
+            | rue_air::IntrinsicOperation::ParseU64
+            | rue_air::IntrinsicOperation::PtrToInt
+            | rue_air::IntrinsicOperation::IntToPtr
+            | rue_air::IntrinsicOperation::PtrRead
+            | rue_air::IntrinsicOperation::PtrReadUnaligned
+            | rue_air::IntrinsicOperation::ArgPtr
+            | rue_air::IntrinsicOperation::ArgLen
+            | rue_air::IntrinsicOperation::EnvPtr
+            | rue_air::IntrinsicOperation::EnvLen
+            | rue_air::IntrinsicOperation::Raw
+            | rue_air::IntrinsicOperation::RawMut
+            | rue_air::IntrinsicOperation::FieldPtr
+            | rue_air::IntrinsicOperation::BitCast => args.len() == 1,
+            rue_air::IntrinsicOperation::PanicNoMessage => args.is_empty(),
+            rue_air::IntrinsicOperation::AssertWithMessage => args.len() == 2,
         };
         if !arity_matches {
             return UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicArity);
@@ -1982,81 +2124,93 @@ impl<'a> Interp<'a> {
         let ty = |index: usize| cfg.get_inst(args[index]).ty;
         let is_text =
             |index: usize| self.is_str_like_type(ty(index)) || self.is_owned_string_type(ty(index));
-        let mut validated_kind = kind;
-        let signature_matches = match name {
-            "parse_i32" => is_text(0) && self.is_option_of(result_ty, Type::I32),
-            "parse_i64" => is_text(0) && self.is_option_of(result_ty, Type::I64),
-            "parse_u32" => is_text(0) && self.is_option_of(result_ty, Type::U32),
-            "parse_u64" => is_text(0) && self.is_option_of(result_ty, Type::U64),
-            "ptr_read" | "ptr_read_unaligned" => self
+        let validated_kind = kind;
+        let signature_matches = match operation {
+            rue_air::IntrinsicOperation::ParseI32 => {
+                is_text(0) && self.is_option_of(result_ty, Type::I32)
+            }
+            rue_air::IntrinsicOperation::ParseI64 => {
+                is_text(0) && self.is_option_of(result_ty, Type::I64)
+            }
+            rue_air::IntrinsicOperation::ParseU32 => {
+                is_text(0) && self.is_option_of(result_ty, Type::U32)
+            }
+            rue_air::IntrinsicOperation::ParseU64 => {
+                is_text(0) && self.is_option_of(result_ty, Type::U64)
+            }
+            rue_air::IntrinsicOperation::PtrRead
+            | rue_air::IntrinsicOperation::PtrReadUnaligned => self
                 .pointer_pointee(ty(0))
                 .is_some_and(|(pointee, _)| pointee == result_ty),
-            "ptr_write" | "ptr_write_unaligned" => {
-                self.pointer_pointee(ty(0))
-                    .is_some_and(|(pointee, mutable)| {
-                        mutable && pointee == ty(1) && result_ty == Type::UNIT
-                    })
+            rue_air::IntrinsicOperation::PtrWrite
+            | rue_air::IntrinsicOperation::PtrWriteUnaligned => self
+                .pointer_pointee(ty(0))
+                .is_some_and(|(pointee, mutable)| {
+                    mutable && (pointee == ty(1) || ty(1) == Type::NEVER) && result_ty == Type::UNIT
+                }),
+            rue_air::IntrinsicOperation::PtrOffset => {
+                (ty(1).is_integer() || ty(1) == Type::NEVER)
+                    && if ty(0) == Type::NEVER {
+                        result_ty == Type::NEVER
+                    } else {
+                        self.pointer_pointee(ty(0)).is_some() && result_ty == ty(0)
+                    }
             }
-            "ptr_offset" => {
-                self.pointer_pointee(ty(0)).is_some() && ty(1).is_integer() && result_ty == ty(0)
+            rue_air::IntrinsicOperation::PtrToInt => {
+                (self.pointer_pointee(ty(0)).is_some() || ty(0) == Type::NEVER)
+                    && result_ty == Type::U64
             }
-            "ptr_to_int" => self.pointer_pointee(ty(0)).is_some() && result_ty == Type::U64,
-            "int_to_ptr" => {
-                let pointer = self.pointer_pointee(result_ty);
-                if ty(0) == Type::U64 && pointer.is_some_and(|(_, mutable)| mutable) {
-                    true
-                } else if ty(0) == Type::U64
-                    && pointer.is_some_and(|(_, mutable)| !mutable)
-                    && matches!(cfg.get_inst(args[0]).data, CfgInstData::Const(0))
-                    && self.is_empty_slice_pointer(cfg, intrinsic)
-                {
-                    validated_kind = UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
-                        UnsupportedIntrinsicKind::EmptySlicePointer,
-                    ));
-                    true
-                } else {
-                    false
-                }
+            rue_air::IntrinsicOperation::IntToPtr => {
+                (ty(0) == Type::U64 || ty(0) == Type::NEVER)
+                    && (result_ty == Type::NEVER
+                        || self
+                            .pointer_pointee(result_ty)
+                            .is_some_and(|(_, mutable)| mutable))
             }
-            "raw" => {
+            rue_air::IntrinsicOperation::Raw => {
                 self.intrinsic_arg_is_place(cfg, args[0])
                     && self
                         .pointer_pointee(result_ty)
                         .is_some_and(|(pointee, mutable)| !mutable && pointee == ty(0))
             }
-            "raw_mut" => {
+            rue_air::IntrinsicOperation::RawMut => {
                 self.intrinsic_arg_is_place(cfg, args[0])
                     && self
                         .pointer_pointee(result_ty)
                         .is_some_and(|(pointee, mutable)| mutable && pointee == ty(0))
             }
-            "field_ptr" => {
+            rue_air::IntrinsicOperation::FieldPtr => {
                 self.intrinsic_arg_is_field_place(cfg, args[0])
                     && self
                         .pointer_pointee(result_ty)
                         .is_some_and(|(pointee, mutable)| mutable && pointee == ty(0))
             }
-            "alloc" | "alloc_zeroed" => {
+            rue_air::IntrinsicOperation::Alloc | rue_air::IntrinsicOperation::AllocZeroed => {
                 ty(0) == Type::U64
                     && ty(1) == Type::U64
                     && self.pointer_pointee(result_ty) == Some((Type::U8, true))
             }
-            "free" => {
+            rue_air::IntrinsicOperation::Free => {
                 self.pointer_pointee(ty(0)) == Some((Type::U8, true))
                     && ty(1) == Type::U64
                     && ty(2) == Type::U64
                     && result_ty == Type::UNIT
             }
-            "realloc" | "resize" => {
+            rue_air::IntrinsicOperation::Realloc | rue_air::IntrinsicOperation::Resize => {
                 // `(p, old_size, align, new_size)`; `@realloc` hands back the
                 // (possibly moved) block, `@resize` reports in-place success.
                 self.pointer_pointee(ty(0)) == Some((Type::U8, true))
                     && ty(1) == Type::U64
                     && ty(2) == Type::U64
                     && ty(3) == Type::U64
-                    && result_ty == if name == "resize" { Type::BOOL } else { ty(0) }
+                    && result_ty
+                        == if operation == rue_air::IntrinsicOperation::Resize {
+                            Type::BOOL
+                        } else {
+                            ty(0)
+                        }
             }
-            "byte_copy" | "byte_move" => {
+            rue_air::IntrinsicOperation::ByteCopy | rue_air::IntrinsicOperation::ByteMove => {
                 self.pointer_pointee(ty(0)) == Some((Type::U8, true))
                     && self
                         .pointer_pointee(ty(1))
@@ -2064,26 +2218,42 @@ impl<'a> Interp<'a> {
                     && ty(2) == Type::U64
                     && result_ty == Type::UNIT
             }
-            "byte_set" => {
+            rue_air::IntrinsicOperation::ByteSet => {
                 self.pointer_pointee(ty(0)) == Some((Type::U8, true))
                     && ty(1) == Type::U8
                     && ty(2) == Type::U64
                     && result_ty == Type::UNIT
             }
-            "read_line" => self
+            rue_air::IntrinsicOperation::ReadLine => self
                 .option_payload(result_ty)
                 .is_some_and(|payload| self.is_owned_string_type(payload)),
-            "random_u32" => result_ty == Type::U32,
-            "random_u64" => result_ty == Type::U64,
-            "arg_count" | "env_count" => result_ty == Type::U64,
-            "arg_len" | "env_len" => ty(0) == Type::U64 && result_ty == Type::U64,
-            "arg_ptr" | "env_ptr" => {
+            rue_air::IntrinsicOperation::RandomU32 => result_ty == Type::U32,
+            rue_air::IntrinsicOperation::RandomU64 => result_ty == Type::U64,
+            rue_air::IntrinsicOperation::ArgCount | rue_air::IntrinsicOperation::EnvCount => {
+                result_ty == Type::U64
+            }
+            rue_air::IntrinsicOperation::ArgLen | rue_air::IntrinsicOperation::EnvLen => {
+                ty(0) == Type::U64 && result_ty == Type::U64
+            }
+            rue_air::IntrinsicOperation::ArgPtr | rue_air::IntrinsicOperation::EnvPtr => {
                 ty(0) == Type::U64 && self.pointer_pointee(result_ty) == Some((Type::U8, true))
             }
-            "syscall" => {
-                args.iter().all(|arg| cfg.get_inst(*arg).ty == Type::U64) && result_ty == Type::I64
+            rue_air::IntrinsicOperation::Syscall => {
+                args.iter().all(|arg| {
+                    let ty = cfg.get_inst(*arg).ty;
+                    ty == Type::U64 || ty == Type::NEVER
+                }) && result_ty == Type::I64
             }
-            _ => false,
+            rue_air::IntrinsicOperation::PanicNoMessage
+            | rue_air::IntrinsicOperation::Panic
+            | rue_air::IntrinsicOperation::AssertFailed
+            | rue_air::IntrinsicOperation::AssertWithMessage
+            | rue_air::IntrinsicOperation::BoundsCheck
+            | rue_air::IntrinsicOperation::DebugI64
+            | rue_air::IntrinsicOperation::DebugU64
+            | rue_air::IntrinsicOperation::DebugBool
+            | rue_air::IntrinsicOperation::DebugStr
+            | rue_air::IntrinsicOperation::BitCast => false,
         };
         if signature_matches {
             validated_kind
@@ -2099,23 +2269,103 @@ impl<'a> Interp<'a> {
     fn preflight_abort_intrinsic(
         &self,
         cfg: &Cfg,
-        name: &str,
+        operation: rue_air::IntrinsicOperation,
         args: &[CfgValue],
         result_ty: Type,
     ) -> Step<Option<AbortIntrinsic>> {
-        let intrinsic = match name {
-            "panic" => AbortIntrinsic::Panic,
-            "assert" => AbortIntrinsic::Assert,
-            _ => return Ok(None),
+        let intrinsic = match operation {
+            rue_air::IntrinsicOperation::PanicNoMessage | rue_air::IntrinsicOperation::Panic => {
+                AbortIntrinsic::Panic
+            }
+            rue_air::IntrinsicOperation::AssertFailed
+            | rue_air::IntrinsicOperation::AssertWithMessage => AbortIntrinsic::Assert,
+            rue_air::IntrinsicOperation::BoundsCheck
+            | rue_air::IntrinsicOperation::DebugI64
+            | rue_air::IntrinsicOperation::DebugU64
+            | rue_air::IntrinsicOperation::DebugBool
+            | rue_air::IntrinsicOperation::DebugStr
+            | rue_air::IntrinsicOperation::ReadLine
+            | rue_air::IntrinsicOperation::ParseI32
+            | rue_air::IntrinsicOperation::ParseI64
+            | rue_air::IntrinsicOperation::ParseU32
+            | rue_air::IntrinsicOperation::ParseU64
+            | rue_air::IntrinsicOperation::RandomU32
+            | rue_air::IntrinsicOperation::RandomU64
+            | rue_air::IntrinsicOperation::PtrToInt
+            | rue_air::IntrinsicOperation::IntToPtr
+            | rue_air::IntrinsicOperation::PtrRead
+            | rue_air::IntrinsicOperation::PtrReadUnaligned
+            | rue_air::IntrinsicOperation::PtrWrite
+            | rue_air::IntrinsicOperation::PtrWriteUnaligned
+            | rue_air::IntrinsicOperation::PtrOffset
+            | rue_air::IntrinsicOperation::Alloc
+            | rue_air::IntrinsicOperation::AllocZeroed
+            | rue_air::IntrinsicOperation::Free
+            | rue_air::IntrinsicOperation::Realloc
+            | rue_air::IntrinsicOperation::Resize
+            | rue_air::IntrinsicOperation::ByteCopy
+            | rue_air::IntrinsicOperation::ByteMove
+            | rue_air::IntrinsicOperation::ByteSet
+            | rue_air::IntrinsicOperation::ArgCount
+            | rue_air::IntrinsicOperation::ArgPtr
+            | rue_air::IntrinsicOperation::ArgLen
+            | rue_air::IntrinsicOperation::EnvCount
+            | rue_air::IntrinsicOperation::EnvPtr
+            | rue_air::IntrinsicOperation::EnvLen
+            | rue_air::IntrinsicOperation::Raw
+            | rue_air::IntrinsicOperation::RawMut
+            | rue_air::IntrinsicOperation::FieldPtr
+            | rue_air::IntrinsicOperation::Syscall
+            | rue_air::IntrinsicOperation::BitCast => return Ok(None),
         };
-        let arity_matches = match intrinsic {
-            AbortIntrinsic::Panic => args.len() <= 1,
-            AbortIntrinsic::Assert => (1..=2).contains(&args.len()),
+        let arity_matches = match operation {
+            rue_air::IntrinsicOperation::PanicNoMessage => args.is_empty(),
+            rue_air::IntrinsicOperation::Panic => args.len() == 1,
+            rue_air::IntrinsicOperation::AssertFailed => args.len() == 1,
+            rue_air::IntrinsicOperation::AssertWithMessage => args.len() == 2,
+            rue_air::IntrinsicOperation::BoundsCheck
+            | rue_air::IntrinsicOperation::DebugI64
+            | rue_air::IntrinsicOperation::DebugU64
+            | rue_air::IntrinsicOperation::DebugBool
+            | rue_air::IntrinsicOperation::DebugStr
+            | rue_air::IntrinsicOperation::ReadLine
+            | rue_air::IntrinsicOperation::ParseI32
+            | rue_air::IntrinsicOperation::ParseI64
+            | rue_air::IntrinsicOperation::ParseU32
+            | rue_air::IntrinsicOperation::ParseU64
+            | rue_air::IntrinsicOperation::RandomU32
+            | rue_air::IntrinsicOperation::RandomU64
+            | rue_air::IntrinsicOperation::PtrToInt
+            | rue_air::IntrinsicOperation::IntToPtr
+            | rue_air::IntrinsicOperation::PtrRead
+            | rue_air::IntrinsicOperation::PtrReadUnaligned
+            | rue_air::IntrinsicOperation::PtrWrite
+            | rue_air::IntrinsicOperation::PtrWriteUnaligned
+            | rue_air::IntrinsicOperation::PtrOffset
+            | rue_air::IntrinsicOperation::Alloc
+            | rue_air::IntrinsicOperation::AllocZeroed
+            | rue_air::IntrinsicOperation::Free
+            | rue_air::IntrinsicOperation::Realloc
+            | rue_air::IntrinsicOperation::Resize
+            | rue_air::IntrinsicOperation::ByteCopy
+            | rue_air::IntrinsicOperation::ByteMove
+            | rue_air::IntrinsicOperation::ByteSet
+            | rue_air::IntrinsicOperation::ArgCount
+            | rue_air::IntrinsicOperation::ArgPtr
+            | rue_air::IntrinsicOperation::ArgLen
+            | rue_air::IntrinsicOperation::EnvCount
+            | rue_air::IntrinsicOperation::EnvPtr
+            | rue_air::IntrinsicOperation::EnvLen
+            | rue_air::IntrinsicOperation::Raw
+            | rue_air::IntrinsicOperation::RawMut
+            | rue_air::IntrinsicOperation::FieldPtr
+            | rue_air::IntrinsicOperation::Syscall
+            | rue_air::IntrinsicOperation::BitCast => false,
         };
         if !arity_matches {
             return Err(unsupported(
                 UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicArity),
-                format!("intrinsic @{name} arity"),
+                format!("intrinsic @{} arity", operation.expected_spelling()),
             ));
         }
 
@@ -2138,7 +2388,7 @@ impl<'a> Interp<'a> {
         if !signature_matches {
             return Err(unsupported(
                 UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
-                format!("intrinsic @{name} signature"),
+                format!("intrinsic @{} signature", operation.expected_spelling()),
             ));
         }
         Ok(Some(intrinsic))
@@ -2243,11 +2493,14 @@ impl<'a> Interp<'a> {
         &mut self,
         cfg: &'a Cfg,
         frame: &mut Frame,
-        name: &str,
+        operation: rue_air::IntrinsicOperation,
         args: &[CfgValue],
         result_ty: Type,
     ) -> Step<Value> {
-        if name != "assert" || result_ty != Type::UNIT || args.len() != 1 {
+        if operation != rue_air::IntrinsicOperation::BoundsCheck
+            || result_ty != Type::UNIT
+            || args.len() != 1
+        {
             return Err(unsupported(
                 UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
                 "compiler bounds-check intrinsic signature",
@@ -2274,6 +2527,90 @@ impl<'a> Interp<'a> {
                 &[b"error: index out of bounds\n"],
             )
         }
+    }
+
+    /// Evaluate an already typed debug operation. The operation selects the
+    /// runtime contract; the operand type is retained only for integer-width
+    /// formatting and text layout after that exact contract has passed.
+    fn eval_debug_intrinsic(
+        &mut self,
+        cfg: &'a Cfg,
+        frame: &mut Frame,
+        operation: rue_air::IntrinsicOperation,
+        args: &[CfgValue],
+        result_ty: Type,
+    ) -> Step<Value> {
+        let [arg] = args else {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::DebugArity),
+                "@dbg arity",
+            ));
+        };
+        let arg_ty = cfg.get_inst(*arg).ty;
+        if !operation.validate_call(
+            self.type_pool(),
+            &[rue_air::IntrinsicAirArgument::value(
+                arg_ty,
+                rue_air::AirArgMode::Normal,
+            )],
+            result_ty,
+        ) {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
+                "@dbg typed operation signature",
+            ));
+        }
+        let val = self.eval(cfg, frame, *arg)?;
+        match operation {
+            rue_air::IntrinsicOperation::DebugI64 => self.write_dbg(&val, arg_ty)?,
+            rue_air::IntrinsicOperation::DebugU64 => self.write_dbg(&val, arg_ty)?,
+            rue_air::IntrinsicOperation::DebugBool => self.write_dbg(&val, arg_ty)?,
+            rue_air::IntrinsicOperation::DebugStr => self.write_dbg(&val, arg_ty)?,
+            rue_air::IntrinsicOperation::PanicNoMessage
+            | rue_air::IntrinsicOperation::Panic
+            | rue_air::IntrinsicOperation::AssertFailed
+            | rue_air::IntrinsicOperation::AssertWithMessage
+            | rue_air::IntrinsicOperation::BoundsCheck
+            | rue_air::IntrinsicOperation::ReadLine
+            | rue_air::IntrinsicOperation::ParseI32
+            | rue_air::IntrinsicOperation::ParseI64
+            | rue_air::IntrinsicOperation::ParseU32
+            | rue_air::IntrinsicOperation::ParseU64
+            | rue_air::IntrinsicOperation::RandomU32
+            | rue_air::IntrinsicOperation::RandomU64
+            | rue_air::IntrinsicOperation::PtrToInt
+            | rue_air::IntrinsicOperation::IntToPtr
+            | rue_air::IntrinsicOperation::PtrRead
+            | rue_air::IntrinsicOperation::PtrReadUnaligned
+            | rue_air::IntrinsicOperation::PtrWrite
+            | rue_air::IntrinsicOperation::PtrWriteUnaligned
+            | rue_air::IntrinsicOperation::PtrOffset
+            | rue_air::IntrinsicOperation::Alloc
+            | rue_air::IntrinsicOperation::AllocZeroed
+            | rue_air::IntrinsicOperation::Free
+            | rue_air::IntrinsicOperation::Realloc
+            | rue_air::IntrinsicOperation::Resize
+            | rue_air::IntrinsicOperation::ByteCopy
+            | rue_air::IntrinsicOperation::ByteMove
+            | rue_air::IntrinsicOperation::ByteSet
+            | rue_air::IntrinsicOperation::ArgCount
+            | rue_air::IntrinsicOperation::ArgPtr
+            | rue_air::IntrinsicOperation::ArgLen
+            | rue_air::IntrinsicOperation::EnvCount
+            | rue_air::IntrinsicOperation::EnvPtr
+            | rue_air::IntrinsicOperation::EnvLen
+            | rue_air::IntrinsicOperation::Raw
+            | rue_air::IntrinsicOperation::RawMut
+            | rue_air::IntrinsicOperation::FieldPtr
+            | rue_air::IntrinsicOperation::Syscall
+            | rue_air::IntrinsicOperation::BitCast => {
+                return Err(unsupported(
+                    UnsupportedKind::ContractViolation(ContractViolationKind::UnexpectedIntrinsic),
+                    "non-debug operation reached debug evaluation",
+                ));
+            }
+        }
+        Ok(Value::Unit)
     }
 
     fn write_dbg(&mut self, val: &Value, ty: Type) -> Step<()> {
@@ -2930,7 +3267,7 @@ impl<'a> Interp<'a> {
     /// Read `len` bytes starting at a raw text pointer (the projected-char
     /// path's `ptr`/`len` pair), through the modeled allocation store.
     fn bytes_from_ptr(&self, ptr: &Value, len: i128) -> Step<Vec<u8>> {
-        let gap = unsupported_intrinsic_kind("ptr_read");
+        let gap = unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrRead);
         if len <= 0 {
             return Ok(Vec::new());
         }
@@ -3054,6 +3391,14 @@ impl<'a> Interp<'a> {
         let ty = inst.ty;
         let result = match &inst.data {
             CfgInstData::Const(n) => {
+                if *n == 0 && ty.is_ptr_const() && self.is_empty_slice_pointer(cfg, v) {
+                    return Err(unsupported(
+                        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+                            UnsupportedIntrinsicKind::EmptySlicePointer,
+                        )),
+                        "compiler-synthesized empty-slice null pointer",
+                    ));
+                }
                 // The constant is stored as a 64-bit two's-complement bit
                 // pattern (e.g. i32::MIN is `18446744071562067968` =
                 // 0xFFFFFFFF80000000), so a signed type reinterprets it as
@@ -3491,7 +3836,9 @@ impl<'a> Interp<'a> {
                                         }
                                         PlaceBase::Indirect(_) => {
                                             return Err(unsupported(
-                                                unsupported_intrinsic_kind("ptr_write"),
+                                                unsupported_intrinsic_kind_for_operation(
+                                                    rue_air::IntrinsicOperation::PtrWrite,
+                                                ),
                                                 "indirect place reached simple call writeback",
                                             ));
                                         }
@@ -3508,61 +3855,118 @@ impl<'a> Interp<'a> {
                 }
             }
 
-            CfgInstData::Intrinsic { runtime, name, .. } => {
-                let iname = self.interner().resolve(name).to_string();
+            CfgInstData::Intrinsic { operation, .. } => {
                 let args = cfg.get_intrinsic_args(&inst.data).to_vec();
-                if *runtime == Some(RuntimeCallKind::BoundsCheck) {
-                    self.eval_bounds_check_intrinsic(cfg, frame, &iname, &args, ty)?
-                } else if let Some(intrinsic) =
-                    self.preflight_abort_intrinsic(cfg, &iname, &args, ty)?
-                {
-                    self.eval_abort_intrinsic(cfg, frame, intrinsic, &args)?
-                } else if iname == "bitCast" {
-                    // `@bitCast` is fully modeled, not a gap: a same-width
-                    // reinterpretation is exactly a `to_bits`/`from_bits` round
-                    // trip in the value model (RUE-952).
-                    self.eval_bit_cast(cfg, frame, &args, ty)?
-                } else if iname == "syscall" {
-                    let kind = self.classify_unsupported_intrinsic(cfg, v, &iname, &args, ty);
-                    if kind
-                        != UnsupportedKind::ExternalDependency(ExternalDependencyKind::SystemCall)
-                    {
-                        return Err(unsupported(kind, format!("intrinsic @{iname}")));
+                match *operation {
+                    rue_air::IntrinsicOperation::BoundsCheck => {
+                        self.eval_bounds_check_intrinsic(cfg, frame, *operation, &args, ty)?
                     }
-                    let values = self.eval_all(cfg, frame, &args)?;
-                    self.eval_stdout_syscall(&values)?
-                } else if iname != "dbg" {
-                    // Classify first: the same static arity/signature validation
-                    // that gates a model-gap registration also gates execution, so
-                    // a malformed intrinsic still reports its contract violation
-                    // rather than being run. A validated, now-modeled heap/pointer
-                    // intrinsic executes; every other typed gap is reported.
-                    let kind = self.classify_unsupported_intrinsic(cfg, v, &iname, &args, ty);
-                    match kind {
-                        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(ik))
-                            if modeled_pointer_intrinsic(ik) =>
+                    rue_air::IntrinsicOperation::PanicNoMessage
+                    | rue_air::IntrinsicOperation::Panic
+                    | rue_air::IntrinsicOperation::AssertFailed
+                    | rue_air::IntrinsicOperation::AssertWithMessage => {
+                        let Some(intrinsic) =
+                            self.preflight_abort_intrinsic(cfg, *operation, &args, ty)?
+                        else {
+                            return Err(unsupported(
+                                UnsupportedKind::ContractViolation(
+                                    ContractViolationKind::IntrinsicSignature,
+                                ),
+                                format!("intrinsic @{} signature", operation.expected_spelling()),
+                            ));
+                        };
+                        self.eval_abort_intrinsic(cfg, frame, intrinsic, &args)?
+                    }
+                    rue_air::IntrinsicOperation::BitCast => {
+                        // `@bitCast` is fully modeled, not a gap: a same-width
+                        // reinterpretation is exactly a `to_bits`/`from_bits` round
+                        // trip in the value model (RUE-952).
+                        self.eval_bit_cast(cfg, frame, &args, ty)?
+                    }
+                    rue_air::IntrinsicOperation::Syscall => {
+                        let kind =
+                            self.classify_unsupported_intrinsic(cfg, v, *operation, &args, ty);
+                        if kind
+                            != UnsupportedKind::ExternalDependency(
+                                ExternalDependencyKind::SystemCall,
+                            )
                         {
-                            match self.eval_pointer_intrinsic(cfg, frame, &iname, &args, ty)? {
-                                Some(value) => value,
-                                None => {
-                                    return Err(unsupported(kind, format!("intrinsic @{iname}")));
+                            return Err(unsupported(
+                                kind,
+                                format!("intrinsic @{}", operation.expected_spelling()),
+                            ));
+                        }
+                        let values = self.eval_all(cfg, frame, &args)?;
+                        self.eval_stdout_syscall(&values)?
+                    }
+                    rue_air::IntrinsicOperation::DebugI64
+                    | rue_air::IntrinsicOperation::DebugU64
+                    | rue_air::IntrinsicOperation::DebugBool
+                    | rue_air::IntrinsicOperation::DebugStr => {
+                        self.eval_debug_intrinsic(cfg, frame, *operation, &args, ty)?
+                    }
+                    rue_air::IntrinsicOperation::ReadLine
+                    | rue_air::IntrinsicOperation::ParseI32
+                    | rue_air::IntrinsicOperation::ParseI64
+                    | rue_air::IntrinsicOperation::ParseU32
+                    | rue_air::IntrinsicOperation::ParseU64
+                    | rue_air::IntrinsicOperation::RandomU32
+                    | rue_air::IntrinsicOperation::RandomU64
+                    | rue_air::IntrinsicOperation::PtrToInt
+                    | rue_air::IntrinsicOperation::IntToPtr
+                    | rue_air::IntrinsicOperation::PtrRead
+                    | rue_air::IntrinsicOperation::PtrReadUnaligned
+                    | rue_air::IntrinsicOperation::PtrWrite
+                    | rue_air::IntrinsicOperation::PtrWriteUnaligned
+                    | rue_air::IntrinsicOperation::PtrOffset
+                    | rue_air::IntrinsicOperation::Alloc
+                    | rue_air::IntrinsicOperation::AllocZeroed
+                    | rue_air::IntrinsicOperation::Free
+                    | rue_air::IntrinsicOperation::Realloc
+                    | rue_air::IntrinsicOperation::Resize
+                    | rue_air::IntrinsicOperation::ByteCopy
+                    | rue_air::IntrinsicOperation::ByteMove
+                    | rue_air::IntrinsicOperation::ByteSet
+                    | rue_air::IntrinsicOperation::ArgCount
+                    | rue_air::IntrinsicOperation::ArgPtr
+                    | rue_air::IntrinsicOperation::ArgLen
+                    | rue_air::IntrinsicOperation::EnvCount
+                    | rue_air::IntrinsicOperation::EnvPtr
+                    | rue_air::IntrinsicOperation::EnvLen
+                    | rue_air::IntrinsicOperation::Raw
+                    | rue_air::IntrinsicOperation::RawMut
+                    | rue_air::IntrinsicOperation::FieldPtr => {
+                        // Classify first: the same static arity/signature validation
+                        // that gates a model-gap registration also gates execution, so
+                        // a malformed intrinsic still reports its contract violation
+                        // rather than being run. A validated, now-modeled heap/pointer
+                        // intrinsic executes; every other typed gap is reported.
+                        let kind =
+                            self.classify_unsupported_intrinsic(cfg, v, *operation, &args, ty);
+                        match kind {
+                            UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(ik))
+                                if modeled_pointer_intrinsic(ik) =>
+                            {
+                                match self
+                                    .eval_pointer_intrinsic(cfg, frame, *operation, &args, ty)?
+                                {
+                                    Some(value) => value,
+                                    None => {
+                                        return Err(unsupported(
+                                            kind,
+                                            format!("intrinsic @{}", operation.expected_spelling()),
+                                        ));
+                                    }
                                 }
                             }
+                            _ => {
+                                return Err(unsupported(
+                                    kind,
+                                    format!("intrinsic @{}", operation.expected_spelling()),
+                                ));
+                            }
                         }
-                        _ => return Err(unsupported(kind, format!("intrinsic @{iname}"))),
                     }
-                } else {
-                    let [arg] = args.as_slice() else {
-                        return Err(unsupported(
-                            UnsupportedKind::ContractViolation(ContractViolationKind::DebugArity),
-                            "@dbg arity",
-                        ));
-                    };
-                    let arg = *arg;
-                    let arg_ty = cfg.get_inst(arg).ty;
-                    let val = self.eval(cfg, frame, arg)?;
-                    self.write_dbg(&val, arg_ty)?;
-                    Value::Unit
                 }
             }
 
@@ -4049,7 +4453,7 @@ impl<'a> Interp<'a> {
                 "accessor place reached oracle storage",
             )),
             PlaceBase::Indirect(_) => Err(unsupported(
-                unsupported_intrinsic_kind("ptr_read"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrRead),
                 "indirect place requires evaluated pointer storage",
             )),
         }
@@ -4073,8 +4477,15 @@ impl<'a> Interp<'a> {
         let mut cur = match base {
             PlaceBase::Indirect(pointer) => {
                 let pointer = self.eval(cfg, frame, pointer)?;
-                let target = self.expect_ptr(pointer, unsupported_intrinsic_kind("ptr_read"))?;
-                self.ptr_cell_read(&target, view_type, unsupported_intrinsic_kind("ptr_read"))?
+                let target = self.expect_ptr(
+                    pointer,
+                    unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrRead),
+                )?;
+                self.ptr_cell_read(
+                    &target,
+                    view_type,
+                    unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrRead),
+                )?
             }
             _ => self.base_value_of(frame, base)?,
         };
@@ -4174,21 +4585,26 @@ impl<'a> Interp<'a> {
         }
         if let PlaceBase::Indirect(pointer) = base {
             let pointer = self.eval(cfg, frame, pointer)?;
-            let target = self.expect_ptr(pointer, unsupported_intrinsic_kind("ptr_write"))?;
+            let target = self.expect_ptr(
+                pointer,
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrWrite),
+            )?;
             if path.is_empty() {
                 return self
                     .ptr_cell_write(
                         &target,
                         view_type,
                         val,
-                        unsupported_intrinsic_kind("ptr_write"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrWrite,
+                        ),
                     )
                     .map_err(Flow::from);
             }
             let mut root = self.ptr_cell_read(
                 &target,
                 place.base_type,
-                unsupported_intrinsic_kind("ptr_write"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrWrite),
             )?;
             let mut cur = &mut root;
             for (idx, _) in &path {
@@ -4213,7 +4629,7 @@ impl<'a> Interp<'a> {
                     &target,
                     place.base_type,
                     root,
-                    unsupported_intrinsic_kind("ptr_write"),
+                    unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrWrite),
                 )
                 .map_err(Flow::from);
         }
@@ -4239,7 +4655,7 @@ impl<'a> Interp<'a> {
                 &target,
                 pointee,
                 val,
-                unsupported_intrinsic_kind("ptr_write"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrWrite),
             );
         }
         let root: &mut Value = {
@@ -4417,19 +4833,19 @@ impl<'a> Interp<'a> {
     fn promoted_slot_value(&self, alloc: usize) -> Step<Value> {
         let allocation = self.heap.get(alloc).ok_or_else(|| {
             unsupported(
-                unsupported_intrinsic_kind("ptr_read"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrRead),
                 "promoted allocation is missing",
             )
         })?;
         if allocation.freed {
             return Err(unsupported(
-                unsupported_intrinsic_kind("ptr_read"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrRead),
                 "promoted allocation was freed",
             ));
         }
         let ty = allocation.root_ty.ok_or_else(|| {
             unsupported(
-                unsupported_intrinsic_kind("ptr_read"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrRead),
                 "raw allocation has no typed view",
             )
         })?;
@@ -4450,7 +4866,7 @@ impl<'a> Interp<'a> {
             .and_then(|allocation| allocation.root_ty)
             .ok_or_else(|| {
                 unsupported(
-                    unsupported_intrinsic_kind("ptr_write"),
+                    unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrWrite),
                     "raw allocation has no typed view",
                 )
             })?;
@@ -4460,7 +4876,7 @@ impl<'a> Interp<'a> {
             .is_some_and(|allocation| allocation.freed)
         {
             return Err(unsupported(
-                unsupported_intrinsic_kind("ptr_write"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrWrite),
                 "promoted allocation was freed",
             ));
         }
@@ -4468,7 +4884,7 @@ impl<'a> Interp<'a> {
         let allocation = &mut self.heap[alloc];
         if bytes.len() != allocation.bytes.len() {
             return Err(unsupported(
-                unsupported_intrinsic_kind("ptr_write"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrWrite),
                 "promoted value layout changed",
             ));
         }
@@ -4607,19 +5023,19 @@ impl<'a> Interp<'a> {
     ) -> Step<(Vec<u8>, Vec<bool>, Vec<Option<PtrTarget>>)> {
         if !self.is_materializable_type(ty) {
             return Err(unsupported(
-                unsupported_intrinsic_kind("ptr_write"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrWrite),
                 "type has no target representation",
             ));
         }
         let size = usize::try_from(self.try_type_byte_size(ty).ok_or_else(|| {
             unsupported(
-                unsupported_intrinsic_kind("ptr_write"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrWrite),
                 "type has no target layout",
             )
         })?)
         .map_err(|_| {
             unsupported(
-                unsupported_intrinsic_kind("ptr_write"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrWrite),
                 "layout exceeds host range",
             )
         })?;
@@ -4630,7 +5046,7 @@ impl<'a> Interp<'a> {
         let mut provenance = vec![None; size];
         let layout = self.try_layout(ty).ok_or_else(|| {
             unsupported(
-                unsupported_intrinsic_kind("ptr_write"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrWrite),
                 "type has no target layout",
             )
         })?;
@@ -4678,19 +5094,25 @@ impl<'a> Interp<'a> {
                 initialized.fill(true);
                 let def = self.type_pool().try_struct_def(id).ok_or_else(|| {
                     unsupported(
-                        unsupported_intrinsic_kind("ptr_write"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrWrite,
+                        ),
                         "struct type metadata",
                     )
                 })?;
                 let LayoutKind::Struct { field_offsets, .. } = layout.kind else {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_write"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrWrite,
+                        ),
                         "struct layout kind",
                     ));
                 };
                 if fields.len() != def.fields.len() {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_write"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrWrite,
+                        ),
                         "struct value shape",
                     ));
                 }
@@ -4699,19 +5121,25 @@ impl<'a> Interp<'a> {
                         self.encode_value(value, field.ty)?;
                     let start = usize::try_from(offset).map_err(|_| {
                         unsupported(
-                            unsupported_intrinsic_kind("ptr_write"),
+                            unsupported_intrinsic_kind_for_operation(
+                                rue_air::IntrinsicOperation::PtrWrite,
+                            ),
                             "field offset exceeds host range",
                         )
                     })?;
                     let end = start.checked_add(field_bytes.len()).ok_or_else(|| {
                         unsupported(
-                            unsupported_intrinsic_kind("ptr_write"),
+                            unsupported_intrinsic_kind_for_operation(
+                                rue_air::IntrinsicOperation::PtrWrite,
+                            ),
                             "field representation offset overflow",
                         )
                     })?;
                     if end > bytes.len() {
                         return Err(unsupported(
-                            unsupported_intrinsic_kind("ptr_write"),
+                            unsupported_intrinsic_kind_for_operation(
+                                rue_air::IntrinsicOperation::PtrWrite,
+                            ),
                             "field representation exceeds layout",
                         ));
                     }
@@ -4724,31 +5152,41 @@ impl<'a> Interp<'a> {
                 initialized.fill(true);
                 let (element_ty, count) = self.type_pool().try_array_def(id).ok_or_else(|| {
                     unsupported(
-                        unsupported_intrinsic_kind("ptr_write"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrWrite,
+                        ),
                         "array type metadata",
                     )
                 })?;
                 let LayoutKind::Array { element, .. } = layout.kind else {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_write"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrWrite,
+                        ),
                         "array layout kind",
                     ));
                 };
                 let count = usize::try_from(count).map_err(|_| {
                     unsupported(
-                        unsupported_intrinsic_kind("ptr_write"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrWrite,
+                        ),
                         "array count exceeds host range",
                     )
                 })?;
                 if elements.len() != count {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_write"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrWrite,
+                        ),
                         "array value shape",
                     ));
                 }
                 let stride = usize::try_from(element.stride).map_err(|_| {
                     unsupported(
-                        unsupported_intrinsic_kind("ptr_write"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrWrite,
+                        ),
                         "array stride exceeds host range",
                     )
                 })?;
@@ -4757,19 +5195,25 @@ impl<'a> Interp<'a> {
                         self.encode_value(value, element_ty)?;
                     let start = index.checked_mul(stride).ok_or_else(|| {
                         unsupported(
-                            unsupported_intrinsic_kind("ptr_write"),
+                            unsupported_intrinsic_kind_for_operation(
+                                rue_air::IntrinsicOperation::PtrWrite,
+                            ),
                             "array representation offset overflow",
                         )
                     })?;
                     let end = start.checked_add(field_bytes.len()).ok_or_else(|| {
                         unsupported(
-                            unsupported_intrinsic_kind("ptr_write"),
+                            unsupported_intrinsic_kind_for_operation(
+                                rue_air::IntrinsicOperation::PtrWrite,
+                            ),
                             "array representation offset overflow",
                         )
                     })?;
                     if end > bytes.len() {
                         return Err(unsupported(
-                            unsupported_intrinsic_kind("ptr_write"),
+                            unsupported_intrinsic_kind_for_operation(
+                                rue_air::IntrinsicOperation::PtrWrite,
+                            ),
                             "array element exceeds layout",
                         ));
                     }
@@ -4782,7 +5226,9 @@ impl<'a> Interp<'a> {
                 initialized.fill(true);
                 let def = self.type_pool().try_enum_def(id).ok_or_else(|| {
                     unsupported(
-                        unsupported_intrinsic_kind("ptr_write"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrWrite,
+                        ),
                         "enum type metadata",
                     )
                 })?;
@@ -4793,7 +5239,9 @@ impl<'a> Interp<'a> {
                     }
                     _ => {
                         return Err(unsupported(
-                            unsupported_intrinsic_kind("ptr_write"),
+                            unsupported_intrinsic_kind_for_operation(
+                                rue_air::IntrinsicOperation::PtrWrite,
+                            ),
                             "enum value shape",
                         ));
                     }
@@ -4811,25 +5259,33 @@ impl<'a> Interp<'a> {
                 } = layout.kind
                 else {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_write"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrWrite,
+                        ),
                         "enum layout kind",
                     ));
                 };
                 let tag_size = usize::try_from(tag_layout.size).map_err(|_| {
                     unsupported(
-                        unsupported_intrinsic_kind("ptr_write"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrWrite,
+                        ),
                         "enum tag exceeds host range",
                     )
                 })?;
                 if tag_size > bytes.len() {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_write"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrWrite,
+                        ),
                         "enum tag exceeds layout",
                     ));
                 }
                 if tag >= def.variant_count() || tag >= variants.len() {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_write"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrWrite,
+                        ),
                         "enum discriminant outside representation",
                     ));
                 }
@@ -4841,13 +5297,17 @@ impl<'a> Interp<'a> {
                 }
                 let Some(payload) = def.variant_payloads.get(tag) else {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_write"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrWrite,
+                        ),
                         "enum payload metadata is incomplete",
                     ));
                 };
                 if payload.len() != fields.len() {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_write"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrWrite,
+                        ),
                         "enum payload shape",
                     ));
                 }
@@ -4856,19 +5316,25 @@ impl<'a> Interp<'a> {
                         self.encode_value(value, *field_ty)?;
                     let start = usize::try_from(*offset).map_err(|_| {
                         unsupported(
-                            unsupported_intrinsic_kind("ptr_write"),
+                            unsupported_intrinsic_kind_for_operation(
+                                rue_air::IntrinsicOperation::PtrWrite,
+                            ),
                             "enum field offset exceeds host range",
                         )
                     })?;
                     let end = start.checked_add(field_bytes.len()).ok_or_else(|| {
                         unsupported(
-                            unsupported_intrinsic_kind("ptr_write"),
+                            unsupported_intrinsic_kind_for_operation(
+                                rue_air::IntrinsicOperation::PtrWrite,
+                            ),
                             "enum field offset overflow",
                         )
                     })?;
                     if end > bytes.len() {
                         return Err(unsupported(
-                            unsupported_intrinsic_kind("ptr_write"),
+                            unsupported_intrinsic_kind_for_operation(
+                                rue_air::IntrinsicOperation::PtrWrite,
+                            ),
                             "enum field exceeds layout",
                         ));
                     }
@@ -4880,7 +5346,7 @@ impl<'a> Interp<'a> {
             }
             _ => {
                 return Err(unsupported(
-                    unsupported_intrinsic_kind("ptr_write"),
+                    unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrWrite),
                     "value/type representation mismatch",
                 ));
             }
@@ -4899,25 +5365,25 @@ impl<'a> Interp<'a> {
     ) -> Step<Value> {
         let size = usize::try_from(self.try_type_byte_size(ty).ok_or_else(|| {
             unsupported(
-                unsupported_intrinsic_kind("ptr_read"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrRead),
                 "type has no target layout",
             )
         })?)
         .map_err(|_| {
             unsupported(
-                unsupported_intrinsic_kind("ptr_read"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrRead),
                 "layout exceeds host range",
             )
         })?;
         if bytes.len() < size || initialized.len() < size || provenance.len() < size {
             return Err(unsupported(
-                unsupported_intrinsic_kind("ptr_read"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrRead),
                 "typed view exceeds allocation",
             ));
         }
         let layout = self.try_layout(ty).ok_or_else(|| {
             unsupported(
-                unsupported_intrinsic_kind("ptr_read"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrRead),
                 "type has no target layout",
             )
         })?;
@@ -4925,7 +5391,9 @@ impl<'a> Interp<'a> {
             TypeKind::Bool => {
                 if !initialized[0] {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "read of uninitialized bool",
                     ));
                 }
@@ -4933,7 +5401,9 @@ impl<'a> Interp<'a> {
                     0 => Ok(Value::Bool(false)),
                     1 => Ok(Value::Bool(true)),
                     _ => Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "invalid bool representation",
                     )),
                 }
@@ -4948,7 +5418,9 @@ impl<'a> Interp<'a> {
             | TypeKind::U64 => {
                 if initialized[..size].iter().any(|ready| !ready) {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "read of uninitialized integer representation",
                     ));
                 }
@@ -4962,7 +5434,9 @@ impl<'a> Interp<'a> {
             TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => {
                 if initialized[..size].iter().any(|ready| !ready) {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "read of uninitialized pointer representation",
                     ));
                 }
@@ -4979,7 +5453,9 @@ impl<'a> Interp<'a> {
                 }
                 let Some(first) = provenance[..size].first().and_then(|p| p.clone()) else {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "pointer representation lacks provenance",
                     ));
                 };
@@ -4989,13 +5465,17 @@ impl<'a> Interp<'a> {
                     || self.ptr_address(&first) != raw
                 {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "pointer representation provenance mismatch",
                     ));
                 }
                 let Some((pointee, _)) = self.pointer_pointee(ty) else {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "pointer representation has no pointee type",
                     ));
                 };
@@ -5006,13 +5486,17 @@ impl<'a> Interp<'a> {
             TypeKind::Struct(id) => {
                 let def = self.type_pool().try_struct_def(id).ok_or_else(|| {
                     unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "struct type metadata",
                     )
                 })?;
                 let LayoutKind::Struct { field_offsets, .. } = layout.kind else {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "struct layout kind",
                     ));
                 };
@@ -5020,13 +5504,17 @@ impl<'a> Interp<'a> {
                 for (field, offset) in def.fields.iter().zip(field_offsets) {
                     let start = usize::try_from(offset).map_err(|_| {
                         unsupported(
-                            unsupported_intrinsic_kind("ptr_read"),
+                            unsupported_intrinsic_kind_for_operation(
+                                rue_air::IntrinsicOperation::PtrRead,
+                            ),
                             "struct field offset exceeds host range",
                         )
                     })?;
                     if start > size {
                         return Err(unsupported(
-                            unsupported_intrinsic_kind("ptr_read"),
+                            unsupported_intrinsic_kind_for_operation(
+                                rue_air::IntrinsicOperation::PtrRead,
+                            ),
                             "struct field offset outside representation",
                         ));
                     }
@@ -5042,25 +5530,33 @@ impl<'a> Interp<'a> {
             TypeKind::Array(id) => {
                 let (element_ty, count) = self.type_pool().try_array_def(id).ok_or_else(|| {
                     unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "array type metadata",
                     )
                 })?;
                 let LayoutKind::Array { element, .. } = layout.kind else {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "array layout kind",
                     ));
                 };
                 let count = usize::try_from(count).map_err(|_| {
                     unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "array count exceeds host range",
                     )
                 })?;
                 let stride = usize::try_from(element.stride).map_err(|_| {
                     unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "array stride exceeds host range",
                     )
                 })?;
@@ -5068,13 +5564,17 @@ impl<'a> Interp<'a> {
                 for index in 0..count {
                     let start = index.checked_mul(stride).ok_or_else(|| {
                         unsupported(
-                            unsupported_intrinsic_kind("ptr_read"),
+                            unsupported_intrinsic_kind_for_operation(
+                                rue_air::IntrinsicOperation::PtrRead,
+                            ),
                             "array element offset overflow",
                         )
                     })?;
                     if start > size {
                         return Err(unsupported(
-                            unsupported_intrinsic_kind("ptr_read"),
+                            unsupported_intrinsic_kind_for_operation(
+                                rue_air::IntrinsicOperation::PtrRead,
+                            ),
                             "array element offset outside representation",
                         ));
                     }
@@ -5089,29 +5589,42 @@ impl<'a> Interp<'a> {
             }
             TypeKind::Enum(id) => {
                 let def = self.type_pool().try_enum_def(id).ok_or_else(|| {
-                    unsupported(unsupported_intrinsic_kind("ptr_read"), "enum type metadata")
+                    unsupported(
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
+                        "enum type metadata",
+                    )
                 })?;
                 let LayoutKind::Enum { tag, variants, .. } = layout.kind else {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "enum layout kind",
                     ));
                 };
                 let tag_size = usize::try_from(tag.size).map_err(|_| {
                     unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "enum tag exceeds host range",
                     )
                 })?;
                 if tag_size > size {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "enum tag exceeds layout",
                     ));
                 }
                 if initialized[..tag_size].iter().any(|ready| !ready) {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "read of uninitialized enum discriminant",
                     ));
                 }
@@ -5121,13 +5634,17 @@ impl<'a> Interp<'a> {
                 }
                 if raw >= def.variant_count() || raw >= variants.len() {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "enum discriminant outside representation",
                     ));
                 }
                 let Some(payload) = def.variant_payloads.get(raw) else {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("ptr_read"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
                         "enum payload metadata is incomplete",
                     ));
                 };
@@ -5138,7 +5655,9 @@ impl<'a> Interp<'a> {
                 for (field_ty, offset) in payload.iter().zip(&variants[raw]) {
                     let start = usize::try_from(*offset).map_err(|_| {
                         unsupported(
-                            unsupported_intrinsic_kind("ptr_read"),
+                            unsupported_intrinsic_kind_for_operation(
+                                rue_air::IntrinsicOperation::PtrRead,
+                            ),
                             "enum field offset exceeds host range",
                         )
                     })?;
@@ -5147,27 +5666,35 @@ impl<'a> Interp<'a> {
                             usize::try_from(self.try_type_byte_size(*field_ty).ok_or_else(
                                 || {
                                     unsupported(
-                                        unsupported_intrinsic_kind("ptr_read"),
+                                        unsupported_intrinsic_kind_for_operation(
+                                            rue_air::IntrinsicOperation::PtrRead,
+                                        ),
                                         "enum field has no target layout",
                                     )
                                 },
                             )?)
                             .map_err(|_| {
                                 unsupported(
-                                    unsupported_intrinsic_kind("ptr_read"),
+                                    unsupported_intrinsic_kind_for_operation(
+                                        rue_air::IntrinsicOperation::PtrRead,
+                                    ),
                                     "enum field layout exceeds host range",
                                 )
                             })?,
                         )
                         .ok_or_else(|| {
                             unsupported(
-                                unsupported_intrinsic_kind("ptr_read"),
+                                unsupported_intrinsic_kind_for_operation(
+                                    rue_air::IntrinsicOperation::PtrRead,
+                                ),
                                 "enum field offset overflow",
                             )
                         })?;
                     if field_end > size {
                         return Err(unsupported(
-                            unsupported_intrinsic_kind("ptr_read"),
+                            unsupported_intrinsic_kind_for_operation(
+                                rue_air::IntrinsicOperation::PtrRead,
+                            ),
                             "enum field offset outside representation",
                         ));
                     }
@@ -5181,7 +5708,7 @@ impl<'a> Interp<'a> {
                 Ok(Value::Aggregate(values))
             }
             _ => Err(unsupported(
-                unsupported_intrinsic_kind("ptr_read"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrRead),
                 "unsupported typed representation",
             )),
         }
@@ -5190,13 +5717,13 @@ impl<'a> Interp<'a> {
     fn heap_alloc_value(&mut self, root: Value, ty: Type, _wrapped_scalar: bool) -> Step<usize> {
         let size = usize::try_from(self.try_type_byte_size(ty).ok_or_else(|| {
             unsupported(
-                unsupported_intrinsic_kind("ptr_write"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrWrite),
                 "type has no target layout",
             )
         })?)
         .map_err(|_| {
             unsupported(
-                unsupported_intrinsic_kind("ptr_write"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrWrite),
                 "layout exceeds host range",
             )
         })?;
@@ -5545,21 +6072,22 @@ impl<'a> Interp<'a> {
 
     /// Execute a heap/pointer intrinsic whose signature already validated as a
     /// modeled model-gap kind. Returns `Ok(None)` to fall through to the existing
-    /// typed-gap path (e.g. the empty-slice `@int_to_ptr(0)` special case, or an
-    /// arbitrary-integer `@int_to_ptr`).
+    /// typed-gap path (for example an arbitrary-integer `@int_to_ptr`).
     fn eval_pointer_intrinsic(
         &mut self,
         cfg: &'a Cfg,
         frame: &mut Frame,
-        name: &str,
+        operation: rue_air::IntrinsicOperation,
         args: &[CfgValue],
         result_ty: Type,
     ) -> Step<Option<Value>> {
-        let gap = unsupported_intrinsic_kind(name);
+        let gap = unsupported_intrinsic_kind_for_operation(operation);
         // Evaluate operands eagerly and left-to-right, matching native lowering,
         // except `@raw`/`@raw_mut`/`@field_ptr` whose operand is an lvalue place.
-        match name {
-            "raw" | "raw_mut" | "field_ptr" => {
+        match operation {
+            rue_air::IntrinsicOperation::Raw
+            | rue_air::IntrinsicOperation::RawMut
+            | rue_air::IntrinsicOperation::FieldPtr => {
                 let pointee = cfg.get_inst(args[0]).ty;
                 let target = match &cfg.get_inst(args[0]).data {
                     CfgInstData::PlaceRead { place } => {
@@ -5588,19 +6116,23 @@ impl<'a> Interp<'a> {
             // representation bytes; only the latter marks those bytes
             // initialized. Typed reads from ordinary `@alloc` therefore stay
             // fail-closed until the program writes the representation.
-            "alloc" | "alloc_zeroed" => {
+            rue_air::IntrinsicOperation::Alloc | rue_air::IntrinsicOperation::AllocZeroed => {
                 let size = self.eval(cfg, frame, args[0])?.as_int();
                 let align = self.eval(cfg, frame, args[1])?.as_int();
-                Ok(Some(self.do_alloc(size, name == "alloc_zeroed", align)?))
+                Ok(Some(self.do_alloc(
+                    size,
+                    operation == rue_air::IntrinsicOperation::AllocZeroed,
+                    align,
+                )?))
             }
-            "free" => {
+            rue_air::IntrinsicOperation::Free => {
                 let p = self.eval(cfg, frame, args[0])?;
                 let size = self.eval(cfg, frame, args[1])?.as_int();
                 let align = self.eval(cfg, frame, args[2])?.as_int();
                 self.do_free(p, size, align, gap)?;
                 Ok(Some(Value::Unit))
             }
-            "realloc" => {
+            rue_air::IntrinsicOperation::Realloc => {
                 let p = self.eval(cfg, frame, args[0])?;
                 let old_size = self.eval(cfg, frame, args[1])?.as_int();
                 let align = self.eval(cfg, frame, args[2])?.as_int();
@@ -5613,7 +6145,7 @@ impl<'a> Interp<'a> {
             // native allocator is also always free to do. A program whose
             // result depends on a `true` here is depending on allocator
             // internals the language does not promise.
-            "resize" => {
+            rue_air::IntrinsicOperation::Resize => {
                 let p = self.eval(cfg, frame, args[0])?;
                 let old_size = self.eval(cfg, frame, args[1])?.as_int();
                 let align = self.eval(cfg, frame, args[2])?.as_int();
@@ -5627,21 +6159,23 @@ impl<'a> Interp<'a> {
                 }
                 Ok(Some(Value::Bool(false)))
             }
-            "ptr_read" | "ptr_read_unaligned" => {
+            rue_air::IntrinsicOperation::PtrRead
+            | rue_air::IntrinsicOperation::PtrReadUnaligned => {
                 let p = self.eval(cfg, frame, args[0])?;
                 let target = self.expect_ptr(p, gap)?;
                 let pointee = self
                     .pointer_pointee(cfg.get_inst(args[0]).ty)
                     .map(|(ty, _)| ty)
                     .ok_or_else(|| unsupported(gap, "pointer read operand type"))?;
-                let value = if name == "ptr_read_unaligned" {
+                let value = if operation == rue_air::IntrinsicOperation::PtrReadUnaligned {
                     self.ptr_cell_read_unaligned(&target, pointee, gap)?
                 } else {
                     self.ptr_cell_read(&target, pointee, gap)?
                 };
                 Ok(Some(value))
             }
-            "ptr_write" | "ptr_write_unaligned" => {
+            rue_air::IntrinsicOperation::PtrWrite
+            | rue_air::IntrinsicOperation::PtrWriteUnaligned => {
                 let p = self.eval(cfg, frame, args[0])?;
                 let val = self.eval(cfg, frame, args[1])?;
                 let target = self.expect_ptr(p, gap)?;
@@ -5649,14 +6183,14 @@ impl<'a> Interp<'a> {
                     .pointer_pointee(cfg.get_inst(args[0]).ty)
                     .map(|(ty, _)| ty)
                     .ok_or_else(|| unsupported(gap, "pointer write operand type"))?;
-                if name == "ptr_write_unaligned" {
+                if operation == rue_air::IntrinsicOperation::PtrWriteUnaligned {
                     self.ptr_cell_write_unaligned(&target, pointee, val, gap)?;
                 } else {
                     self.ptr_cell_write(&target, pointee, val, gap)?;
                 }
                 Ok(Some(Value::Unit))
             }
-            "ptr_offset" => {
+            rue_air::IntrinsicOperation::PtrOffset => {
                 let p = self.eval(cfg, frame, args[0])?;
                 let by = self.eval(cfg, frame, args[1])?.as_int();
                 match p {
@@ -5689,7 +6223,7 @@ impl<'a> Interp<'a> {
                     _ => Err(unsupported(gap, "@ptr_offset of non-pointer")),
                 }
             }
-            "ptr_to_int" => {
+            rue_air::IntrinsicOperation::PtrToInt => {
                 let p = self.eval(cfg, frame, args[0])?;
                 let value = match p {
                     Value::Ptr(Some(t)) => Value::AddressInt {
@@ -5701,7 +6235,7 @@ impl<'a> Interp<'a> {
                 };
                 Ok(Some(value))
             }
-            "int_to_ptr" => {
+            rue_air::IntrinsicOperation::IntToPtr => {
                 let address = self.eval(cfg, frame, args[0])?;
                 let (addr, provenance) = match address {
                     Value::AddressInt { value, provenance } => {
@@ -5728,7 +6262,7 @@ impl<'a> Interp<'a> {
                     None => Ok(None),
                 }
             }
-            "byte_copy" | "byte_move" => {
+            rue_air::IntrinsicOperation::ByteCopy | rue_air::IntrinsicOperation::ByteMove => {
                 let dst = self.eval(cfg, frame, args[0])?;
                 let src = self.eval(cfg, frame, args[1])?;
                 let count = self.eval(cfg, frame, args[2])?.as_int();
@@ -5744,7 +6278,7 @@ impl<'a> Interp<'a> {
                     .map_err(|_| unsupported(gap, "byte count exceeds host range"))?;
                 let (src_alloc, src_start, src_end) = self.byte_range(&src, count, gap)?;
                 let (dst_alloc, dst_start, dst_end) = self.byte_range(&dst, count, gap)?;
-                if name == "byte_copy"
+                if operation == rue_air::IntrinsicOperation::ByteCopy
                     && src_alloc == dst_alloc
                     && src_start < dst_end
                     && dst_start < src_end
@@ -5771,7 +6305,7 @@ impl<'a> Interp<'a> {
                 allocation.provenance[dst_start..dst_end].clone_from_slice(&provenance);
                 Ok(Some(Value::Unit))
             }
-            "byte_set" => {
+            rue_air::IntrinsicOperation::ByteSet => {
                 let p = self.eval(cfg, frame, args[0])?;
                 let val = self.eval(cfg, frame, args[1])?.as_int();
                 let count = self.eval(cfg, frame, args[2])?.as_int();
@@ -5794,7 +6328,30 @@ impl<'a> Interp<'a> {
                 allocation.provenance[start..end].fill(None);
                 Ok(Some(Value::Unit))
             }
-            _ => Ok(None),
+            rue_air::IntrinsicOperation::PanicNoMessage
+            | rue_air::IntrinsicOperation::Panic
+            | rue_air::IntrinsicOperation::AssertFailed
+            | rue_air::IntrinsicOperation::AssertWithMessage
+            | rue_air::IntrinsicOperation::BoundsCheck
+            | rue_air::IntrinsicOperation::DebugI64
+            | rue_air::IntrinsicOperation::DebugU64
+            | rue_air::IntrinsicOperation::DebugBool
+            | rue_air::IntrinsicOperation::DebugStr
+            | rue_air::IntrinsicOperation::ReadLine
+            | rue_air::IntrinsicOperation::ParseI32
+            | rue_air::IntrinsicOperation::ParseI64
+            | rue_air::IntrinsicOperation::ParseU32
+            | rue_air::IntrinsicOperation::ParseU64
+            | rue_air::IntrinsicOperation::RandomU32
+            | rue_air::IntrinsicOperation::RandomU64
+            | rue_air::IntrinsicOperation::ArgCount
+            | rue_air::IntrinsicOperation::ArgPtr
+            | rue_air::IntrinsicOperation::ArgLen
+            | rue_air::IntrinsicOperation::EnvCount
+            | rue_air::IntrinsicOperation::EnvPtr
+            | rue_air::IntrinsicOperation::EnvLen
+            | rue_air::IntrinsicOperation::Syscall
+            | rue_air::IntrinsicOperation::BitCast => Ok(None),
         }
     }
 
@@ -5889,14 +6446,17 @@ impl<'a> Interp<'a> {
     /// `@alloc(size, align)`: reserve canonical representation bytes. Ordinary
     /// allocation bytes are uninitialized; `alloc_zeroed` marks them ready.
     fn do_alloc(&mut self, size: i128, zeroed: bool, align: i128) -> Step<Value> {
-        let align = self.checked_alignment(align, unsupported_intrinsic_kind("alloc"))?;
+        let align = self.checked_alignment(
+            align,
+            unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::Alloc),
+        )?;
         let Some(_bytes) = self.alloc_byte_size(size, 1)? else {
             return Ok(Value::Ptr(None));
         };
         self.materialize_cells_guard(size)?;
         let count = usize::try_from(size).map_err(|_| {
             unsupported(
-                unsupported_intrinsic_kind("alloc"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::Alloc),
                 "allocation exceeds host range",
             )
         })?;
@@ -5964,10 +6524,13 @@ impl<'a> Interp<'a> {
     /// allocation valid (spec 8.6:3), and traps on a `new * stride` overflow
     /// like the compiled size arithmetic (spec 8.6:1).
     fn do_realloc(&mut self, p: Value, old_size: i128, align: i128, new_size: i128) -> Step<Value> {
-        let align = self.checked_alignment(align, unsupported_intrinsic_kind("realloc"))?;
+        let align = self.checked_alignment(
+            align,
+            unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::Realloc),
+        )?;
         if old_size < 0 || new_size < 0 {
             return Err(unsupported(
-                unsupported_intrinsic_kind("realloc"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::Realloc),
                 "negative realloc size",
             ));
         }
@@ -5977,7 +6540,9 @@ impl<'a> Interp<'a> {
             Value::Ptr(None) => {
                 if old_size != 0 {
                     return Err(unsupported(
-                        unsupported_intrinsic_kind("realloc"),
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::Realloc,
+                        ),
                         "null realloc requires old size zero",
                     ));
                 }
@@ -5985,35 +6550,38 @@ impl<'a> Interp<'a> {
             }
             _ => return Ok(Value::Ptr(None)),
         };
-        self.allocation_for_target(&target, unsupported_intrinsic_kind("realloc"))?;
+        self.allocation_for_target(
+            &target,
+            unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::Realloc),
+        )?;
         if target.byte_offset != 0 {
             return Err(unsupported(
-                unsupported_intrinsic_kind("realloc"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::Realloc),
                 "realloc requires the allocation base as ptr mut u8",
             ));
         }
         let Some(allocation) = self.heap.get(target.alloc) else {
             return Err(unsupported(
-                unsupported_intrinsic_kind("realloc"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::Realloc),
                 "realloc allocation missing",
             ));
         };
         if allocation.origin != AllocationOrigin::Heap {
             return Err(unsupported(
-                unsupported_intrinsic_kind("realloc"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::Realloc),
                 "realloc requires an allocator-owned allocation",
             ));
         }
         if allocation.declared_alignment != align {
             return Err(unsupported(
-                unsupported_intrinsic_kind("realloc"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::Realloc),
                 "realloc alignment does not match the live allocation",
             ));
         }
         let actual_old_size = allocation.bytes.len() as i128;
         if old_size != actual_old_size {
             return Err(unsupported(
-                unsupported_intrinsic_kind("realloc"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::Realloc),
                 "realloc old size does not match the live allocation",
             ));
         }
@@ -6030,20 +6598,20 @@ impl<'a> Interp<'a> {
         }
         let new_count = usize::try_from(new_size).map_err(|_| {
             unsupported(
-                unsupported_intrinsic_kind("realloc"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::Realloc),
                 "allocation exceeds host range",
             )
         })?;
         self.materialize_cells_guard(new_size)?;
         let old_kind = allocation_kind(old_size, align).ok_or_else(|| {
             unsupported(
-                unsupported_intrinsic_kind("realloc"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::Realloc),
                 "old allocation has no allocator classification",
             )
         })?;
         let new_kind = allocation_kind(new_size, align).ok_or_else(|| {
             unsupported(
-                unsupported_intrinsic_kind("realloc"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::Realloc),
                 "new allocation has no allocator classification",
             )
         })?;
@@ -6073,7 +6641,7 @@ impl<'a> Interp<'a> {
         let (old_bytes, old_initialized, old_provenance) = {
             let old = self.heap.get(target.alloc).ok_or_else(|| {
                 unsupported(
-                    unsupported_intrinsic_kind("realloc"),
+                    unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::Realloc),
                     "realloc allocation missing",
                 )
             })?;
@@ -6090,7 +6658,7 @@ impl<'a> Interp<'a> {
         let copy = old_bytes.len().min(new_count);
         let destination = self.heap.get_mut(new_target.alloc).ok_or_else(|| {
             unsupported(
-                unsupported_intrinsic_kind("realloc"),
+                unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::Realloc),
                 "new allocation missing",
             )
         })?;
@@ -6178,8 +6746,8 @@ impl<'a> Interp<'a> {
 }
 
 /// Whether the interpreter now executes this pointer/heap intrinsic instead of
-/// reporting it as a model gap. Excludes the still-unmodeled text parses and the
-/// empty-slice `@int_to_ptr(0)` special case (kept as its own typed gap).
+/// reporting it as a model gap. Excludes the still-unmodeled text parses; the
+/// compiler-owned empty-slice null is a typed `Const(0)`, not an intrinsic.
 fn modeled_pointer_intrinsic(kind: UnsupportedIntrinsicKind) -> bool {
     use UnsupportedIntrinsicKind as I;
     matches!(

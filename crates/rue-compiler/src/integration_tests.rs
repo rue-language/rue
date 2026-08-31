@@ -1126,7 +1126,9 @@ drop fn StrBuf(self) { }
                     .iter()
                     .flat_map(|block| block.insts.iter())
                     .filter_map(|value| match cfg.get_inst(*value).data {
-                        rue_cfg::CfgInstData::Intrinsic { runtime, .. } => runtime,
+                        rue_cfg::CfgInstData::Intrinsic { operation, .. } => {
+                            operation.runtime_call()
+                        }
                         _ => None,
                     })
                     .collect();
@@ -1204,7 +1206,9 @@ drop fn StrBuf(self) { }
                     .iter()
                     .flat_map(|block| block.insts.iter())
                     .filter_map(|value| match cfg.get_inst(*value).data {
-                        rue_cfg::CfgInstData::Intrinsic { runtime, .. } => runtime,
+                        rue_cfg::CfgInstData::Intrinsic { operation, .. } => {
+                            operation.runtime_call()
+                        }
                         _ => None,
                     })
                     .collect();
@@ -1277,6 +1281,123 @@ drop fn StrBuf(self) { }
                 }
                 test_compile_source(&source)
                     .unwrap_or_else(|error| panic!("{name} must compile and link: {error}"));
+            }
+        }
+
+        #[test]
+        fn pure_intrinsics_accept_bottom_only_in_their_semantic_positions() {
+            let accepted = [
+                (
+                    "ptr_to_int argument",
+                    r#"
+                        fn diverge() -> ! { loop {} }
+                        fn probe() -> u64 { checked { @ptr_to_int(diverge()) } }
+                        fn main() -> i32 { probe(); 0 }
+                    "#,
+                ),
+                (
+                    "int_to_ptr argument",
+                    r#"
+                        fn diverge() -> ! { loop {} }
+                        fn probe() -> ptr mut i32 { checked { @int_to_ptr(diverge()) } }
+                        fn main() -> i32 { probe(); 0 }
+                    "#,
+                ),
+                (
+                    "int_to_ptr contextual result",
+                    r#"
+                        fn probe() -> ! {
+                            let zero: u64 = 0;
+                            checked { @int_to_ptr(zero) }
+                        }
+                        fn main() -> i32 { probe() }
+                    "#,
+                ),
+                (
+                    "ptr_write value",
+                    r#"
+                        fn diverge() -> ! { loop {} }
+                        fn probe() {
+                            checked {
+                                let zero: u64 = 0;
+                                let p: ptr mut i32 = @int_to_ptr(zero);
+                                @ptr_write(p, diverge());
+                            }
+                        }
+                        fn main() -> i32 { probe(); 0 }
+                    "#,
+                ),
+                (
+                    "ptr_offset pointer",
+                    r#"
+                        fn diverge() -> ! { loop {} }
+                        fn probe() -> ! { checked { @ptr_offset(diverge(), 1) } }
+                        fn main() -> i32 { probe() }
+                    "#,
+                ),
+                (
+                    "ptr_offset offset",
+                    r#"
+                        fn diverge() -> ! { loop {} }
+                        fn probe() -> ptr mut i32 {
+                            checked {
+                                let zero: u64 = 0;
+                                let p: ptr mut i32 = @int_to_ptr(zero);
+                                @ptr_offset(p, diverge())
+                            }
+                        }
+                        fn main() -> i32 { probe(); 0 }
+                    "#,
+                ),
+                (
+                    "syscall argument",
+                    r#"
+                        fn diverge() -> ! { loop {} }
+                        fn probe() -> i64 { checked { @syscall(diverge()) } }
+                        fn main() -> i32 { probe(); 0 }
+                    "#,
+                ),
+            ];
+            for (label, source) in accepted {
+                test_cfg(source).unwrap_or_else(|error| panic!("{label} must reach CFG: {error}"));
+            }
+
+            let rejected = [
+                (
+                    "ptr_read bottom pointer",
+                    r#"fn diverge() -> ! { loop {} } fn main() -> i32 { checked { @ptr_read(diverge()) } }"#,
+                ),
+                (
+                    "ptr_write bottom pointer",
+                    r#"fn diverge() -> ! { loop {} } fn main() { checked { @ptr_write(diverge(), 1); } }"#,
+                ),
+                (
+                    "ptr_offset noninteger",
+                    r#"fn main() -> i32 { checked { let zero: u64 = 0; let p: ptr mut i32 = @int_to_ptr(zero); @ptr_offset(p, true); } 0 }"#,
+                ),
+                (
+                    "raw divergent rvalue",
+                    r#"fn diverge() -> ! { loop {} } fn main() -> i32 { checked { @raw(diverge()); } 0 }"#,
+                ),
+                (
+                    "bitCast bottom operand",
+                    r#"fn diverge() -> ! { loop {} } fn main() -> i32 { let _: u64 = @bitCast(diverge()); 0 }"#,
+                ),
+                (
+                    "syscall non-u64",
+                    r#"fn main() -> i32 { checked { @syscall(true); } 0 }"#,
+                ),
+                (
+                    "int_to_ptr non-u64",
+                    r#"fn main() -> i32 { checked { let _: ptr mut i32 = @int_to_ptr(true); } 0 }"#,
+                ),
+                (
+                    "int_to_ptr unconstrained",
+                    r#"fn main() -> i32 { let zero: u64 = 0; checked { @int_to_ptr(zero); } 0 }"#,
+                ),
+            ];
+            for (label, source) in rejected {
+                assert!(test_cfg(source).is_err(), "{label} must be rejected");
             }
         }
 

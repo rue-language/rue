@@ -783,8 +783,10 @@ fn remap_data(
                 mode: a.mode,
             }))?,
         },
-        CfgInstData::Intrinsic { runtime, name, .. } => CfgInstData::Intrinsic {
-            runtime: *runtime,
+        CfgInstData::Intrinsic {
+            operation, name, ..
+        } => CfgInstData::Intrinsic {
+            operation: *operation,
             name: *name,
             args: cfg.push_intrinsic_args(operands.values.iter().map(|v| m(*v)))?,
         },

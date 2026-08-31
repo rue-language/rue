@@ -21,6 +21,7 @@ mod inference;
 mod inst;
 pub mod integer_semantics;
 mod intern_pool;
+mod intrinsic;
 pub mod layout;
 mod module_registry;
 mod param_arena;
@@ -66,6 +67,11 @@ pub use intern_pool::{
     EnumData, EnumDefEntry, FrozenTypeInternPool, MAX_COMPOSITE_TYPES, StructData, StructDefEntry,
     TypeData, TypeInternPool, TypeInternPoolStats, TypeValidationError,
     composite_type_limit_message,
+};
+pub use intrinsic::{
+    IntrinsicAirArgument, IntrinsicAirArgumentSource, IntrinsicOperation, RuntimeAirTypePool,
+    intrinsic_air_argument, intrinsic_air_argument_with_place_lookup, runtime_air_result_type,
+    runtime_air_type,
 };
 pub use layout::{Layout, LayoutKind, PaddingRange, SLOT_BYTES};
 pub use module_registry::ModuleRegistry;

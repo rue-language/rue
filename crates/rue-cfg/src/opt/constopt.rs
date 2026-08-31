@@ -314,7 +314,7 @@ mod tests {
         let ptr = push(
             &mut cfg,
             CfgInstData::Intrinsic {
-                runtime: None,
+                operation: rue_air::IntrinsicOperation::Raw,
                 name: raw_sym,
                 args,
             },

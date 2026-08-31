@@ -910,7 +910,7 @@ fn pointee_or_self(type_pool: &FrozenTypeInternPool, ty: Type) -> Type {
 pub(crate) fn compact_physical_access_unsupported(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
-    interner: &ThreadedRodeo,
+    _interner: &ThreadedRodeo,
 ) -> Option<Type> {
     // A non-slot-identical aggregate (struct/array/enum) whose whole-value
     // marshalling across a CALL boundary is still unimplemented (RUE-976's
@@ -1037,9 +1037,17 @@ pub(crate) fn compact_physical_access_unsupported(
             // (RUE-1000); a struct/array (or intractable enum) pointee is
             // refused. The byte-addressed raw-byte family is not matched here —
             // it is correct under any layout.
-            CfgInstData::Intrinsic { name, .. } => {
-                let op = interner.resolve(name);
-                if matches!(op, "ptr_read" | "ptr_write" | "alloc" | "free" | "realloc") {
+            CfgInstData::Intrinsic { operation, .. } => {
+                if matches!(
+                    operation,
+                    rue_air::IntrinsicOperation::PtrRead
+                        | rue_air::IntrinsicOperation::PtrReadUnaligned
+                        | rue_air::IntrinsicOperation::PtrWrite
+                        | rue_air::IntrinsicOperation::PtrWriteUnaligned
+                        | rue_air::IntrinsicOperation::Alloc
+                        | rue_air::IntrinsicOperation::Free
+                        | rue_air::IntrinsicOperation::Realloc
+                ) {
                     let mut relevant = vec![inst.ty];
                     for &arg in cfg.get_intrinsic_args(&inst.data) {
                         relevant.push(cfg.get_inst(arg).ty);
@@ -1090,7 +1098,6 @@ pub(crate) fn compact_physical_access_unsupported(
 fn frame_raw_aggregate_pointer_unsupported(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
-    interner: &ThreadedRodeo,
 ) -> Option<Type> {
     let non_slot_identical_aggregate = |ty: Type| -> bool {
         matches!(
@@ -1102,10 +1109,10 @@ fn frame_raw_aggregate_pointer_unsupported(
     for raw in 0..cfg.value_count() {
         let value = CfgValue::from_raw(raw as u32);
         let inst = cfg.get_inst(value);
-        let CfgInstData::Intrinsic { name, .. } = &inst.data else {
+        let CfgInstData::Intrinsic { operation, .. } = &inst.data else {
             continue;
         };
-        if !matches!(interner.resolve(name), "raw" | "raw_mut" | "field_ptr") {
+        if !operation.takes_place_address() {
             continue;
         }
 
@@ -1152,7 +1159,7 @@ pub(crate) fn ensure_compact_layout_codegen_supported(
     // A raw pointer into a non-slot-identical frame aggregate mixes the frame's
     // slot layout with compact-image pointer semantics (RUE-1035 M2). Name the
     // construct — not the preview — and point at the working heap alternative.
-    if let Some(ty) = frame_raw_aggregate_pointer_unsupported(cfg, type_pool, interner) {
+    if let Some(ty) = frame_raw_aggregate_pointer_unsupported(cfg, type_pool) {
         let name = rue_air::drop_glue_names::type_name(ty, type_pool);
         return Err(rue_error::CompileError::without_span(
             rue_error::ErrorKind::InternalCodegenError(format!(

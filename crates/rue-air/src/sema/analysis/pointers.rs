@@ -95,7 +95,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         // Create the intrinsic call instruction
-        let air_ref = air.add_intrinsic(None, name, &[ptr_result.air_ref], pointee_type, span)?;
+        let air_ref = air.add_intrinsic(
+            if unaligned {
+                crate::IntrinsicOperation::PtrReadUnaligned
+            } else {
+                crate::IntrinsicOperation::PtrRead
+            },
+            name,
+            &[ptr_result.air_ref],
+            pointee_type,
+            span,
+        )?;
         Ok(AnalysisResult::with_continues(
             air_ref,
             pointee_type,
@@ -214,7 +224,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Create the intrinsic call instruction
         let air_ref = air.add_intrinsic(
-            None,
+            if unaligned {
+                crate::IntrinsicOperation::PtrWriteUnaligned
+            } else {
+                crate::IntrinsicOperation::PtrWrite
+            },
             name,
             &[ptr_result.air_ref, value_result.air_ref],
             Type::UNIT,
@@ -280,7 +294,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Create the intrinsic call instruction (returns same pointer type)
         let air_ref = air.add_intrinsic(
-            None,
+            crate::IntrinsicOperation::PtrOffset,
             name,
             &[ptr_result.air_ref, offset_result.air_ref],
             ptr_type,
@@ -330,7 +344,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         // Create the intrinsic call instruction (returns u64)
-        let air_ref = air.add_intrinsic(None, name, &[ptr_result.air_ref], Type::U64, span)?;
+        let air_ref = air.add_intrinsic(
+            crate::IntrinsicOperation::PtrToInt,
+            name,
+            &[ptr_result.air_ref],
+            Type::U64,
+            span,
+        )?;
         Ok(AnalysisResult::with_continues(
             air_ref,
             Type::U64,
@@ -405,7 +425,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         // Create the intrinsic call instruction
-        let air_ref = air.add_intrinsic(None, name, &[addr_result.air_ref], result_type, span)?;
+        let air_ref = air.add_intrinsic(
+            crate::IntrinsicOperation::IntToPtr,
+            name,
+            &[addr_result.air_ref],
+            result_type,
+            span,
+        )?;
         Ok(AnalysisResult::with_continues(
             air_ref,
             result_type,
@@ -458,11 +484,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         let zeroed = name == self.known_symbols().alloc_zeroed;
         let air_ref = air.add_intrinsic(
-            Some(if zeroed {
-                crate::RuntimeCallKind::AllocZeroed
+            if zeroed {
+                crate::IntrinsicOperation::AllocZeroed
             } else {
-                crate::RuntimeCallKind::Alloc
-            }),
+                crate::IntrinsicOperation::Alloc
+            },
             name,
             &[size.air_ref, align.air_ref],
             result_ty,
@@ -517,7 +543,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.require_intrinsic_type("realloc", new_size.ty, Type::U64, span)?;
         self.require_power_of_two_align("realloc", args[2].value, span, ctx)?;
         let air_ref = air.add_intrinsic(
-            Some(crate::RuntimeCallKind::Realloc),
+            crate::IntrinsicOperation::Realloc,
             name,
             &[
                 ptr.air_ref,
@@ -581,7 +607,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.require_intrinsic_type("resize", new_size.ty, Type::U64, span)?;
         self.require_power_of_two_align("resize", args[2].value, span, ctx)?;
         let air_ref = air.add_intrinsic(
-            Some(crate::RuntimeCallKind::Resize),
+            crate::IntrinsicOperation::Resize,
             name,
             &[
                 ptr.air_ref,
@@ -634,7 +660,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.require_intrinsic_type("free", align.ty, Type::U64, span)?;
         self.require_power_of_two_align("free", args[2].value, span, ctx)?;
         let air_ref = air.add_intrinsic(
-            Some(crate::RuntimeCallKind::Free),
+            crate::IntrinsicOperation::Free,
             name,
             &[ptr.air_ref, size.air_ref, align.air_ref],
             Type::UNIT,
@@ -715,11 +741,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.require_intrinsic_type(&intrinsic, size.ty, Type::U64, span)?;
         let overlapping = name == self.known_symbols().byte_move;
         let air_ref = air.add_intrinsic(
-            Some(if overlapping {
-                crate::RuntimeCallKind::ByteMove
+            if overlapping {
+                crate::IntrinsicOperation::ByteMove
             } else {
-                crate::RuntimeCallKind::ByteCopy
-            }),
+                crate::IntrinsicOperation::ByteCopy
+            },
             name,
             &[dst.air_ref, src.air_ref, size.air_ref],
             Type::UNIT,
@@ -767,7 +793,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         )?;
         self.require_intrinsic_type("byte_set", size.ty, Type::U64, span)?;
         let air_ref = air.add_intrinsic(
-            Some(crate::RuntimeCallKind::ByteSet),
+            crate::IntrinsicOperation::ByteSet,
             name,
             &[dst.air_ref, byte.air_ref, size.air_ref],
             Type::UNIT,
@@ -928,7 +954,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // @raw/@raw_mut/@field_ptr in the AIR; codegen lowers all three the
         // same way (address of the operand place).
         let name = result_name;
-        let air_ref = air.add_intrinsic(None, name, &[arg_result.air_ref], result_type, span)?;
+        let operation = if result_name == self.known_symbols().field_ptr {
+            crate::IntrinsicOperation::FieldPtr
+        } else if is_mut {
+            crate::IntrinsicOperation::RawMut
+        } else {
+            crate::IntrinsicOperation::Raw
+        };
+        let air_ref =
+            air.add_intrinsic(operation, name, &[arg_result.air_ref], result_type, span)?;
         Ok(AnalysisResult::with_continues(
             air_ref,
             result_type,
@@ -1040,7 +1074,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         // Create the intrinsic call instruction
-        let air_ref = air.add_intrinsic(None, name, &arg_refs, Type::I64, span)?;
+        let air_ref = air.add_intrinsic(
+            crate::IntrinsicOperation::Syscall,
+            name,
+            &arg_refs,
+            Type::I64,
+            span,
+        )?;
         Ok(AnalysisResult::with_continues(
             air_ref,
             Type::I64,
