@@ -1328,7 +1328,14 @@ mod tests {
             )
             .unwrap();
         let all_zst = cfg
-            .append_intrinsic(entry, None, raw, [empty_unit], ptr_unit_ty, span())
+            .append_intrinsic_operation(
+                entry,
+                rue_air::IntrinsicOperation::Raw,
+                raw,
+                [empty_unit],
+                ptr_unit_ty,
+                span(),
+            )
             .unwrap();
         alloc_slot(&mut cfg, entry, 0, all_zst);
         storage_live(&mut cfg, entry, 1, tail_ty);
@@ -1353,7 +1360,14 @@ mod tests {
             )
             .unwrap();
         let tail_zst = cfg
-            .append_intrinsic(entry, None, raw, [tail_unit], ptr_unit_ty, span())
+            .append_intrinsic_operation(
+                entry,
+                rue_air::IntrinsicOperation::Raw,
+                raw,
+                [tail_unit],
+                ptr_unit_ty,
+                span(),
+            )
             .unwrap();
         alloc_slot(&mut cfg, entry, 2, tail_zst);
         let borrow_operand = cfg
@@ -1509,9 +1523,9 @@ mod tests {
             )
             .unwrap();
         let address = cfg
-            .append_intrinsic(
+            .append_intrinsic_operation(
                 entry,
-                None,
+                rue_air::IntrinsicOperation::Raw,
                 interner.get_or_intern("raw"),
                 [element],
                 ptr_i32_ty,

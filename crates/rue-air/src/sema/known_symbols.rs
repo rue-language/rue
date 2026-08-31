@@ -271,18 +271,17 @@ impl KnownSymbols {
         })
     }
 
-    /// Check if a symbol matches any of the parse intrinsics.
-    ///
-    /// Returns the parse intrinsic name as a string if it matches, or None.
-    pub fn get_parse_intrinsic_name(&self, sym: Spur) -> Option<&'static str> {
+    /// Return the semantic operation selected by a parse intrinsic symbol.
+    /// Diagnostic spelling is derived from the resulting typed operation.
+    pub fn get_parse_intrinsic_operation(&self, sym: Spur) -> Option<crate::IntrinsicOperation> {
         if sym == self.parse_i32 {
-            Some("parse_i32")
+            Some(crate::IntrinsicOperation::ParseI32)
         } else if sym == self.parse_i64 {
-            Some("parse_i64")
+            Some(crate::IntrinsicOperation::ParseI64)
         } else if sym == self.parse_u32 {
-            Some("parse_u32")
+            Some(crate::IntrinsicOperation::ParseU32)
         } else if sym == self.parse_u64 {
-            Some("parse_u64")
+            Some(crate::IntrinsicOperation::ParseU64)
         } else {
             None
         }
@@ -369,27 +368,38 @@ mod tests {
     }
 
     #[test]
-    fn get_parse_intrinsic_name() {
+    fn parse_intrinsic_classifier_has_exact_spelling_to_operation_table() {
         let interner = ThreadedRodeo::new();
         let known = KnownSymbols::new(&interner);
 
-        assert_eq!(
-            known.get_parse_intrinsic_name(known.parse_i32),
-            Some("parse_i32")
-        );
-        assert_eq!(
-            known.get_parse_intrinsic_name(known.parse_i64),
-            Some("parse_i64")
-        );
-        assert_eq!(
-            known.get_parse_intrinsic_name(known.parse_u32),
-            Some("parse_u32")
-        );
-        assert_eq!(
-            known.get_parse_intrinsic_name(known.parse_u64),
-            Some("parse_u64")
-        );
-        assert_eq!(known.get_parse_intrinsic_name(known.dbg), None);
+        let exact = [
+            (
+                "parse_i32",
+                known.parse_i32,
+                crate::IntrinsicOperation::ParseI32,
+            ),
+            (
+                "parse_i64",
+                known.parse_i64,
+                crate::IntrinsicOperation::ParseI64,
+            ),
+            (
+                "parse_u32",
+                known.parse_u32,
+                crate::IntrinsicOperation::ParseU32,
+            ),
+            (
+                "parse_u64",
+                known.parse_u64,
+                crate::IntrinsicOperation::ParseU64,
+            ),
+        ];
+        for (spelling, symbol, operation) in exact {
+            assert_eq!(interner.resolve(&symbol), spelling);
+            assert_eq!(known.get_parse_intrinsic_operation(symbol), Some(operation));
+            assert_eq!(operation.expected_spelling(), spelling);
+        }
+        assert_eq!(known.get_parse_intrinsic_operation(known.dbg), None);
     }
 
     #[test]

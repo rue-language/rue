@@ -1505,9 +1505,9 @@ mod tests {
         storage_live(&mut cfg, entry, 2, ptr_ty);
         let probe = load_slot(&mut cfg, entry, 1, Type::I32);
         let raw = cfg
-            .append_intrinsic(
+            .append_intrinsic_operation(
                 entry,
-                None,
+                rue_air::IntrinsicOperation::RawMut,
                 interner.get_or_intern("raw_mut"),
                 [probe],
                 ptr_ty,
@@ -1517,9 +1517,9 @@ mod tests {
         alloc_slot(&mut cfg, entry, 2, raw);
         let pointer = load_slot(&mut cfg, entry, 2, ptr_ty);
         let nine = konst(&mut cfg, entry, 9, Type::I32);
-        cfg.append_intrinsic(
+        cfg.append_intrinsic_operation(
             entry,
-            None,
+            rue_air::IntrinsicOperation::PtrWrite,
             interner.get_or_intern("ptr_write"),
             [pointer, nine],
             Type::UNIT,

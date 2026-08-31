@@ -1332,13 +1332,13 @@ impl AirEditor {
 
     pub fn add_intrinsic(
         &mut self,
-        runtime: Option<crate::RuntimeCallKind>,
+        operation: crate::IntrinsicOperation,
         name: Spur,
         args: &[AirRef],
         ty: Type,
         span: Span,
     ) -> Result<AirRef, AirBuildError> {
-        self.air.add_intrinsic(runtime, name, args, ty, span)
+        self.air.add_intrinsic(operation, name, args, ty, span)
     }
 
     pub fn add_block(
@@ -2423,7 +2423,7 @@ impl Air {
 
     pub(crate) fn add_intrinsic(
         &mut self,
-        runtime: Option<crate::RuntimeCallKind>,
+        operation: crate::IntrinsicOperation,
         name: Spur,
         args: &[AirRef],
         ty: Type,
@@ -2434,7 +2434,7 @@ impl Air {
         let args = self.add_intrinsic_args(args)?;
         Ok(self.push_inst(AirInst {
             data: AirInstData::Intrinsic {
-                runtime,
+                operation,
                 name,
                 args,
             },
@@ -3627,8 +3627,8 @@ pub enum AirInstData {
 
     /// Intrinsic call (e.g., @dbg)
     Intrinsic {
-        /// Runtime helper/adaptation selected for runtime-backed intrinsics.
-        runtime: Option<crate::RuntimeCallKind>,
+        /// Typed intrinsic semantics selected by semantic analysis.
+        operation: crate::IntrinsicOperation,
         /// Intrinsic name (without @, interned)
         name: Spur,
         /// Start index into extra array for arguments
@@ -3961,13 +3961,11 @@ impl Air {
                     writeln!(f, ")")?;
                 }
                 AirInstData::Intrinsic {
-                    runtime,
+                    operation,
                     name,
                     args,
                 } => {
-                    if let Some(runtime) = runtime {
-                        write!(f, "runtime.{runtime:?} ")?;
-                    }
+                    write!(f, "{operation:?} ")?;
                     match interner {
                         Some(interner) => write!(f, "intrinsic @{}(", interner.resolve(name))?,
                         None => write!(f, "intrinsic @sym:{}(", name.into_usize())?,
@@ -4302,19 +4300,30 @@ mod tests {
             .unwrap();
         air.add_call_generic(generic, &[], &[], &[], Type::UNIT, Span::new(0, 0))
             .unwrap();
-        air.add_intrinsic(None, intrinsic, &[], Type::UNIT, Span::new(0, 0))
-            .unwrap();
+        let condition = air.add_inst(AirInst {
+            data: AirInstData::BoolConst(true),
+            ty: Type::BOOL,
+            span: Span::new(0, 0),
+        });
+        air.add_intrinsic(
+            crate::IntrinsicOperation::AssertFailed,
+            intrinsic,
+            &[condition],
+            Type::UNIT,
+            Span::new(0, 0),
+        )
+        .unwrap();
 
         let resolved = air.display_with_interner(&interner).to_string();
         assert!(resolved.contains("call @callee()"));
         assert!(resolved.contains("call_generic @generic<>()"));
-        assert!(resolved.contains("intrinsic @assert()"));
+        assert!(resolved.contains("intrinsic @assert("));
 
         // The context-free Display API remains backward compatible.
         let raw = air.to_string();
         assert!(raw.contains(&format!("call @{}()", call.into_usize())));
         assert!(raw.contains(&format!("call_generic @{}<>()", generic.into_usize())));
-        assert!(raw.contains(&format!("intrinsic @sym:{}()", intrinsic.into_usize())));
+        assert!(raw.contains(&format!("intrinsic @sym:{}(", intrinsic.into_usize())));
     }
 
     #[test]

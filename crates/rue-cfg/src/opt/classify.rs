@@ -302,7 +302,8 @@ mod tests {
         let interner = ThreadedRodeo::new();
         let name = interner.get_or_intern("f");
         let args = cfg.push_call_args(std::iter::empty()).unwrap();
-        let iargs = cfg.push_intrinsic_args(std::iter::empty()).unwrap();
+        let condition = add(&mut cfg, CfgInstData::BoolConst(true), Type::BOOL);
+        let iargs = cfg.push_intrinsic_args([condition]).unwrap();
 
         let effecting = [
             add(
@@ -317,7 +318,7 @@ mod tests {
             add(
                 &mut cfg,
                 CfgInstData::Intrinsic {
-                    runtime: None,
+                    operation: rue_air::IntrinsicOperation::AssertFailed,
                     name,
                     args: iargs,
                 },

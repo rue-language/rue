@@ -209,11 +209,11 @@ impl CfgInstData {
                 args: args.duplicate(),
             },
             Self::Intrinsic {
-                runtime,
+                operation,
                 name,
                 args,
             } => Self::Intrinsic {
-                runtime: *runtime,
+                operation: *operation,
                 name: *name,
                 args: args.duplicate(),
             },
@@ -521,8 +521,8 @@ pub enum CfgInstData {
 
     /// Intrinsic call (e.g., @dbg). Arguments use the intrinsic-value family.
     Intrinsic {
-        /// Runtime helper/adaptation selected by semantic analysis.
-        runtime: Option<rue_air::RuntimeCallKind>,
+        /// Typed intrinsic semantics selected by semantic analysis.
+        operation: rue_air::IntrinsicOperation,
         /// Intrinsic name (interned symbol)
         name: Spur,
         /// Start index into Cfg's extra array
@@ -1271,11 +1271,11 @@ impl Cfg {
                         .map_err(CfgRemapError::Edit)?,
                 },
                 Intrinsic {
-                    runtime,
+                    operation,
                     name,
                     args,
                 } => Intrinsic {
-                    runtime: *runtime,
+                    operation: *operation,
                     name: domain!(symbol(*name)),
                     args: cfg
                         .push_intrinsic_args(self.intrinsic_args(args).iter().copied())
@@ -2325,11 +2325,10 @@ impl Cfg {
         ))
     }
 
-    /// Append an intrinsic and store its operands in this CFG's value store.
-    pub fn append_intrinsic(
+    pub fn append_intrinsic_operation(
         &mut self,
         block: BlockId,
-        runtime: Option<rue_air::RuntimeCallKind>,
+        operation: rue_air::IntrinsicOperation,
         name: Spur,
         args: impl IntoIterator<Item = CfgValue>,
         ty: Type,
@@ -2344,7 +2343,7 @@ impl Cfg {
             block,
             CfgInst {
                 data: CfgInstData::Intrinsic {
-                    runtime,
+                    operation,
                     name,
                     args,
                 },
@@ -3410,13 +3409,11 @@ impl Cfg {
                 write!(f, ")")
             }
             CfgInstData::Intrinsic {
-                runtime,
+                operation,
                 name,
                 args,
             } => {
-                if let Some(runtime) = runtime {
-                    write!(f, "runtime.{runtime:?} ")?;
-                }
+                write!(f, "{operation:?} ")?;
                 match interner {
                     Some(interner) => write!(f, "intrinsic @{}(", interner.resolve(name))?,
                     None => write!(f, "intrinsic @{}(", name.into_usize())?,
@@ -3740,13 +3737,22 @@ mod tests {
                 span: Span::new(0, 0),
             },
         );
+        let condition = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::BoolConst(true),
+                ty: Type::BOOL,
+                span: Span::new(0, 0),
+            },
+        );
+        let args = cfg.push_intrinsic_args([condition]).unwrap();
         cfg.add_inst_to_block(
             entry,
             CfgInst {
                 data: CfgInstData::Intrinsic {
-                    runtime: None,
+                    operation: rue_air::IntrinsicOperation::AssertFailed,
                     name: intrinsic,
-                    args: crate::payload::CfgIntrinsicArgs::EMPTY,
+                    args,
                 },
                 ty: Type::UNIT,
                 span: Span::new(0, 0),
@@ -3756,12 +3762,12 @@ mod tests {
 
         let resolved = cfg.display_with_interner(&interner).to_string();
         assert!(resolved.contains("call @callee()"));
-        assert!(resolved.contains("intrinsic @assert()"));
+        assert!(resolved.contains("intrinsic @assert("));
 
         // The context-free Display API remains backward compatible.
         let raw = cfg.to_string();
         assert!(raw.contains(&format!("call @{}()", call.into_usize())));
-        assert!(raw.contains(&format!("intrinsic @{}()", intrinsic.into_usize())));
+        assert!(raw.contains(&format!("intrinsic @{}(", intrinsic.into_usize())));
     }
 
     #[test]
@@ -3911,9 +3917,9 @@ mod tests {
             )
             .unwrap();
         let intrinsic = cfg
-            .append_intrinsic(
+            .append_intrinsic_operation(
                 entry,
-                None,
+                rue_air::IntrinsicOperation::BitCast,
                 interner.get_or_intern("intrinsic"),
                 [old],
                 Type::I32,
@@ -3988,6 +3994,13 @@ mod tests {
             cloned.get_struct_fields(&cloned.get_inst(strukt).data),
             [old, replacement]
         );
+        assert!(matches!(
+            cloned.get_inst(intrinsic).data,
+            CfgInstData::Intrinsic {
+                operation: rue_air::IntrinsicOperation::BitCast,
+                ..
+            }
+        ));
 
         let remapped = cfg
             .try_remap_domains::<()>(Ok, Ok, Ok, Ok, Ok, |span| {
@@ -4011,6 +4024,13 @@ mod tests {
             remapped.get_enum_payload(&remapped.get_inst(enm).data),
             [old]
         );
+        assert!(matches!(
+            remapped.get_inst(intrinsic).data,
+            CfgInstData::Intrinsic {
+                operation: rue_air::IntrinsicOperation::BitCast,
+                ..
+            }
+        ));
 
         let mut rewritten = remapped;
         rewritten
@@ -4028,6 +4048,13 @@ mod tests {
             rewritten.get_intrinsic_args(&rewritten.get_inst(intrinsic).data),
             [replacement]
         );
+        assert!(matches!(
+            rewritten.get_inst(intrinsic).data,
+            CfgInstData::Intrinsic {
+                operation: rue_air::IntrinsicOperation::BitCast,
+                ..
+            }
+        ));
         assert_eq!(
             rewritten.get_struct_fields(&rewritten.get_inst(strukt).data),
             [replacement, replacement]
@@ -4118,12 +4145,12 @@ mod tests {
             },
         );
         let intrinsic = cfg
-            .append_intrinsic(
+            .append_intrinsic_operation(
                 entry,
-                None,
+                rue_air::IntrinsicOperation::BitCast,
                 Spur::default(),
                 [old],
-                Type::UNIT,
+                Type::I32,
                 Span::new(7, 8),
             )
             .unwrap();
@@ -4198,12 +4225,12 @@ mod tests {
         );
         const USES: usize = 256;
         for _ in 0..USES {
-            cfg.append_intrinsic(
+            cfg.append_intrinsic_operation(
                 entry,
-                None,
+                rue_air::IntrinsicOperation::BitCast,
                 Spur::default(),
                 [old],
-                Type::UNIT,
+                Type::I32,
                 Span::new(5, 6),
             )
             .unwrap();

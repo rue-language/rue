@@ -354,11 +354,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             self.analyze_read_line_intrinsic(air, name, inst_ref, &args, span, result_expected, ctx)
         } else if name == known.to_string {
             self.analyze_to_string_intrinsic(air, &args, span, ctx)
-        } else if let Some(intrinsic_name_str) = known.get_parse_intrinsic_name(name) {
+        } else if let Some(operation) = known.get_parse_intrinsic_operation(name) {
+            let intrinsic_name_str = operation.expected_spelling();
             self.analyze_parse_intrinsic(
                 air,
                 name,
                 inst_ref,
+                operation,
                 intrinsic_name_str,
                 &args,
                 span,
@@ -382,7 +384,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 air,
                 name,
                 "arg_count",
-                crate::RuntimeCallKind::ArgCount,
+                crate::IntrinsicOperation::ArgCount,
                 &args,
                 span,
             )
@@ -391,7 +393,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 air,
                 name,
                 "env_count",
-                crate::RuntimeCallKind::EnvCount,
+                crate::IntrinsicOperation::EnvCount,
                 &args,
                 span,
             )
@@ -400,7 +402,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 air,
                 name,
                 "arg_len",
-                crate::RuntimeCallKind::ArgLen,
+                crate::IntrinsicOperation::ArgLen,
                 &args,
                 span,
                 ctx,
@@ -410,7 +412,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 air,
                 name,
                 "env_len",
-                crate::RuntimeCallKind::EnvLen,
+                crate::IntrinsicOperation::EnvLen,
                 &args,
                 span,
                 ctx,
@@ -420,7 +422,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 air,
                 name,
                 "arg_ptr",
-                crate::RuntimeCallKind::ArgPtr,
+                crate::IntrinsicOperation::ArgPtr,
                 inst_ref,
                 &args,
                 span,
@@ -431,7 +433,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 air,
                 name,
                 "env_ptr",
-                crate::RuntimeCallKind::EnvPtr,
+                crate::IntrinsicOperation::EnvPtr,
                 inst_ref,
                 &args,
                 span,
@@ -933,15 +935,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             (arg_result.air_ref, Vec::new())
         };
         let intrinsic_ref = air.add_intrinsic(
-            Some(if arg_type == Type::BOOL {
-                crate::RuntimeCallKind::DebugBool
+            if arg_type == Type::BOOL {
+                crate::IntrinsicOperation::DebugBool
             } else if self.is_strbuf(arg_type) || self.is_str_like(arg_type) {
-                crate::RuntimeCallKind::DebugStr
+                crate::IntrinsicOperation::DebugStr
             } else if arg_type.is_signed() {
-                crate::RuntimeCallKind::DebugI64
+                crate::IntrinsicOperation::DebugI64
             } else {
-                crate::RuntimeCallKind::DebugU64
-            }),
+                crate::IntrinsicOperation::DebugU64
+            },
             self.known_symbols().dbg,
             &[arg_ref],
             Type::UNIT,
@@ -1133,7 +1135,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // returns, so it participates in never coercion just like a `-> !`
             // call, `return`, or `break` (spec 3.4:2, 4.13:5b; RUE-512).
             let air_ref = air.add_intrinsic(
-                Some(crate::RuntimeCallKind::PanicNoMessage),
+                crate::IntrinsicOperation::PanicNoMessage,
                 self.known_symbols().panic,
                 &[],
                 Type::NEVER,
@@ -1165,7 +1167,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             (arg_result.air_ref, Vec::new())
         };
         let intrinsic_ref = air.add_intrinsic(
-            Some(crate::RuntimeCallKind::Panic),
+            crate::IntrinsicOperation::Panic,
             self.known_symbols().panic,
             &[arg_ref],
             Type::NEVER,
@@ -1257,11 +1259,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         let intrinsic_ref = air.add_intrinsic(
-            Some(if args.len() > 1 {
-                crate::RuntimeCallKind::AssertWithMessage
+            if args.len() > 1 {
+                crate::IntrinsicOperation::AssertWithMessage
             } else {
-                crate::RuntimeCallKind::AssertFailed
-            }),
+                crate::IntrinsicOperation::AssertFailed
+            },
             self.known_symbols().assert,
             &extra_data,
             Type::UNIT,
@@ -1474,7 +1476,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
-        let air_ref = air.add_intrinsic(None, name, &[arg_result.air_ref], target_ty, span)?;
+        let air_ref = air.add_intrinsic(
+            crate::IntrinsicOperation::BitCast,
+            name,
+            &[arg_result.air_ref],
+            target_ty,
+            span,
+        )?;
         Ok(AnalysisResult::new(air_ref, target_ty))
     }
 
@@ -1633,7 +1641,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // The intrinsic lowers to a runtime call whose result codegen packs
         // into this `Option(StrBuf)` enum (discriminant + StrBuf payload).
         let air_ref = air.add_intrinsic(
-            Some(crate::RuntimeCallKind::ReadLine),
+            crate::IntrinsicOperation::ReadLine,
             name,
             &[],
             option_ty,
@@ -1746,6 +1754,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         air: &mut Air,
         name: Spur,
         inst_ref: InstRef,
+        operation: crate::IntrinsicOperation,
         intrinsic_name_str: &str,
         args: &[RirCallArg],
         span: Span,
@@ -1781,13 +1790,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
-        // Determine the payload integer type based on the intrinsic name.
-        let (payload_type, payload_display) = match intrinsic_name_str {
-            "parse_i32" => (Type::I32, "i32"),
-            "parse_i64" => (Type::I64, "i64"),
-            "parse_u32" => (Type::U32, "u32"),
-            "parse_u64" => (Type::U64, "u64"),
-            _ => unreachable!(),
+        // Determine the payload integer type from the semantic operation chosen
+        // by symbol analysis. The spelling remains diagnostic-only.
+        let (payload_type, payload_display) = match operation {
+            crate::IntrinsicOperation::ParseI32 => (Type::I32, "i32"),
+            crate::IntrinsicOperation::ParseI64 => (Type::I64, "i64"),
+            crate::IntrinsicOperation::ParseU32 => (Type::U32, "u32"),
+            crate::IntrinsicOperation::ParseU64 => (Type::U64, "u64"),
+            _ => unreachable!("non-parse operation passed to parse analysis"),
         };
 
         // The result is `Option(int)`: `Some(n)` on success, `None` on parse
@@ -1816,19 +1826,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         } else {
             (arg_result.air_ref, Vec::new())
         };
-        let intrinsic_ref = air.add_intrinsic(
-            Some(match intrinsic_name_str {
-                "parse_i32" => crate::RuntimeCallKind::ParseI32,
-                "parse_i64" => crate::RuntimeCallKind::ParseI64,
-                "parse_u32" => crate::RuntimeCallKind::ParseU32,
-                "parse_u64" => crate::RuntimeCallKind::ParseU64,
-                _ => unreachable!(),
-            }),
-            name,
-            &[arg_ref],
-            option_ty,
-            span,
-        )?;
+        let intrinsic_ref = air.add_intrinsic(operation, name, &[arg_ref], option_ty, span)?;
         let air_ref =
             self.wrap_value_with_temp_scope(air, intrinsic_ref, option_ty, span, temp_scope)?;
         Ok(AnalysisResult::new(air_ref, option_ty))
@@ -1856,7 +1854,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Create the intrinsic instruction that returns u32
         let air_ref = air.add_intrinsic(
-            Some(crate::RuntimeCallKind::RandomU32),
+            crate::IntrinsicOperation::RandomU32,
             name,
             &[],
             Type::U32,
@@ -1887,7 +1885,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Create the intrinsic instruction that returns u64
         let air_ref = air.add_intrinsic(
-            Some(crate::RuntimeCallKind::RandomU64),
+            crate::IntrinsicOperation::RandomU64,
             name,
             &[],
             Type::U64,
@@ -1906,7 +1904,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         air: &mut Air,
         name: Spur,
         display: &str,
-        runtime: crate::RuntimeCallKind,
+        operation: crate::IntrinsicOperation,
         args: &[RirCallArg],
         span: Span,
     ) -> CompileResult<AnalysisResult> {
@@ -1920,7 +1918,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             ));
         }
-        let air_ref = air.add_intrinsic(Some(runtime), name, &[], Type::U64, span)?;
+        let air_ref = air.add_intrinsic(operation, name, &[], Type::U64, span)?;
         Ok(AnalysisResult::new(air_ref, Type::U64))
     }
 
@@ -1934,7 +1932,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         air: &mut Air,
         name: Spur,
         display: &str,
-        runtime: crate::RuntimeCallKind,
+        operation: crate::IntrinsicOperation,
         args: &[RirCallArg],
         span: Span,
         ctx: &mut AnalysisContext,
@@ -1951,7 +1949,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         let index = self.analyze_inst(air, args[0].value, ctx)?;
         self.require_process_index_type(display, index.ty, span)?;
-        let air_ref = air.add_intrinsic(Some(runtime), name, &[index.air_ref], Type::U64, span)?;
+        let air_ref = air.add_intrinsic(operation, name, &[index.air_ref], Type::U64, span)?;
         Ok(AnalysisResult::new(air_ref, Type::U64))
     }
 
@@ -1966,7 +1964,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         air: &mut Air,
         name: Spur,
         display: &str,
-        runtime: crate::RuntimeCallKind,
+        operation: crate::IntrinsicOperation,
         inst_ref: InstRef,
         args: &[RirCallArg],
         span: Span,
@@ -1992,7 +1990,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         {
             return Err(self.type_mismatch_error(expected, result_ty, span));
         }
-        let air_ref = air.add_intrinsic(Some(runtime), name, &[index.air_ref], result_ty, span)?;
+        let air_ref = air.add_intrinsic(operation, name, &[index.air_ref], result_ty, span)?;
         Ok(AnalysisResult::new(air_ref, result_ty))
     }
 

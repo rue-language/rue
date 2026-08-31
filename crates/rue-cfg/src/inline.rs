@@ -1280,7 +1280,7 @@ fn translate_data(
             }
         }
         Intrinsic {
-            runtime,
+            operation,
             name,
             args,
         } => {
@@ -1290,7 +1290,7 @@ fn translate_data(
                 .map(|&value| splice.value(value))
                 .collect();
             Intrinsic {
-                runtime: *runtime,
+                operation: *operation,
                 name: *name,
                 args: dst.push_intrinsic_args(args)?,
             }
@@ -3158,9 +3158,9 @@ mod tests {
                 )
                 .unwrap();
             let element = cfg
-                .append_intrinsic(
+                .append_intrinsic_operation(
                     entry,
-                    None,
+                    rue_air::IntrinsicOperation::PtrRead,
                     interner.get_or_intern("ptr_read"),
                     [data],
                     Type::I64,
@@ -3217,9 +3217,9 @@ mod tests {
                 )
                 .unwrap();
             let data = cfg
-                .append_intrinsic(
+                .append_intrinsic_operation(
                     entry,
-                    None,
+                    rue_air::IntrinsicOperation::Raw,
                     interner.get_or_intern("raw"),
                     [base],
                     ptr_ty,

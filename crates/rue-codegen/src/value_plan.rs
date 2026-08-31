@@ -11,7 +11,8 @@
 //! architecture cannot quietly invent a different scalar/aggregate policy.
 
 use lasso::Spur;
-use rue_air::{EnumId, IntegerType, RuntimeCallKind, StructId, TypeKind};
+use rue_air::IntrinsicOperation;
+use rue_air::{EnumId, IntegerType, StructId, TypeKind};
 use rue_cfg::{CfgInstData, CfgValue, Place, PlaceBase, Projection, Type};
 use rue_runtime_abi::RuntimeHelperId;
 
@@ -260,83 +261,12 @@ pub enum DebugValuePlan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OptionIntrinsic {
-    ReadLine,
-    ParseI32,
-    ParseI64,
-    ParseU32,
-    ParseU64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IntrinsicOperation {
-    Option {
-        intrinsic: OptionIntrinsic,
-        some_discriminant: u64,
-        none_discriminant: u64,
-    },
-    RandomU32,
-    RandomU64,
-    PtrToInt,
-    IntToPtr,
-    PtrRead,
-    PtrWrite,
-    PtrOffset,
-    /// The unified byte-and-alignment allocation family (ADR-0059 Phase 3,
-    /// RUE-961). Every operand — the block pointer, the byte sizes, and the
-    /// alignment — is a user-supplied value, so these carry no layout-derived
-    /// payload; typed allocation is source-computed `@size_of`/`@align_of`
-    /// arithmetic at the call site.
-    Alloc,
-    AllocZeroed,
-    Free,
-    Realloc,
-    Resize,
-    ByteCopy,
-    ByteMove,
-    ByteSet,
-    ArgCount,
-    ArgPtr,
-    ArgLen,
-    EnvCount,
-    EnvPtr,
-    EnvLen,
-    PlaceAddress,
-    Debug,
-    Syscall,
-    /// Same-width two's-complement reinterpretation, `@bitCast` (RUE-952). The
-    /// language operation moves no bits; the payload is only the renormalization
-    /// the *register image* of the target type needs, selected here so neither
-    /// backend re-derives a width policy.
-    BitCast(BitCastForm),
-}
-
-/// How a `@bitCast` result reaches the target type's canonical register image
-/// (RUE-952).
-///
-/// Rue keeps an integer in a register in the canonical image of its own type:
-/// an 8/16-bit value is sign-/zero-extended per its signedness (the form
-/// `emit_subword_narrow` and `emit_wrap_narrow` restore), a 32-bit value has
-/// bits 32..63 clear (what a 32-bit ALU op leaves behind), and a 64-bit value
-/// occupies the whole register. A reinterpretation keeps the low `N` bits and
-/// changes only which type reads them, so the bits above `N` — which belong to
-/// the *source* type's image, and for a negative constant are its sign
-/// extension — must be rebuilt for the target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BitCastForm {
-    /// 64-bit: the two images are the same 64 bits; a plain register move.
     Move,
-    /// Re-extend the low byte for a signed 8-bit target.
     Sign8,
-    /// Clear all but the low byte for an unsigned 8-bit target.
     Zero8,
-    /// Re-extend the low halfword for a signed 16-bit target.
     Sign16,
-    /// Clear all but the low halfword for an unsigned 16-bit target.
     Zero16,
-    /// Clear bits 32..63 for a 32-bit target of either signedness: that is the
-    /// canonical 32-bit image, and a signed consumer re-extends it itself
-    /// (`integer_extension` yields `Sign32` for `i32`).
     Zero32,
 }
 
@@ -356,11 +286,19 @@ pub fn bit_cast_form(to: Type) -> BitCastForm {
 
 #[derive(Debug, Clone)]
 pub struct IntrinsicPlan {
+    /// The exact payload-free semantic identity selected by sema. Contextual
+    /// layout facts live in their own fields and never replace this authority.
     pub operation: IntrinsicOperation,
     /// Shared runtime entry selected from the intrinsic semantics. Target
     /// adapters marshal this helper through their call leaf and do not map
     /// language intrinsics to runtime names themselves.
     pub runtime_call: Option<crate::runtime_call_plan::RuntimeCallPlan>,
+    /// Layout-dependent option tags, derived from the result type only for
+    /// the option-producing runtime operations.
+    pub option_discriminants: Option<(u64, u64)>,
+    /// Contextual normalization for the one payload-free `BitCast` operation.
+    /// `None` for every other operation.
+    pub bit_cast_form: Option<BitCastForm>,
     pub args: Vec<IntrinsicArgPlan>,
     pub result_ty: Type,
     pub result_slots: u32,
@@ -465,9 +403,6 @@ pub trait ValueLowerAdapter:
     /// The target-C psABI flavor for this backend: SysV AMD64 on x86-64, AAPCS64
     /// on AArch64. Names the classifier that governs a foreign-call boundary.
     fn target_c_flavor(&self) -> rue_air::TargetCAbiFlavor;
-    /// Resolve an intrinsic dispatch name without applying callable-machine
-    /// aliases. A source callable may legally share an intrinsic's spelling.
-    fn resolve_intrinsic_symbol(&self, symbol: Spur) -> String;
     fn resolve_named_symbol(&self, symbol: &str) -> String;
     fn call_arg_register_budget(&self) -> usize;
     fn return_register_budget(&self) -> u32;
@@ -1581,13 +1516,13 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
             cache_result(adapter, value, result);
             Some(ValueKind::Call)
         }
-        CfgInstData::Intrinsic { runtime, name, .. } => {
-            assert!(
-                runtime.is_none_or(|runtime| runtime.validate()),
-                "intrinsic runtime metadata must be valid before codegen"
-            );
+        CfgInstData::Intrinsic {
+            operation, name: _, ..
+        } => {
             let args = ctx.cfg.get_intrinsic_args(&inst.data);
-            let name_string = adapter.resolve_intrinsic_symbol(*name);
+            let operation = *operation;
+            let bit_cast_form =
+                (operation == IntrinsicOperation::BitCast).then(|| bit_cast_form(inst.ty));
             let values: Vec<IntrinsicArgPlan> = args
                 .iter()
                 .copied()
@@ -1603,43 +1538,72 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     }
                 })
                 .collect();
-            if name_string == "panic" {
-                let result = adapter.emit_trap(TrapPlan::Panic {
-                    call: if let Some(arg) = values.first().filter(|arg| arg.slots.len() >= 2) {
+            if matches!(
+                operation,
+                IntrinsicOperation::PanicNoMessage | IntrinsicOperation::Panic
+            ) {
+                let runtime = operation
+                    .runtime_call_kind()
+                    .expect("panic operation must be runtime-backed");
+                let call = match operation {
+                    IntrinsicOperation::PanicNoMessage => {
+                        crate::runtime_call_plan::RuntimeCallPlan::no_args(runtime.helper())
+                    }
+                    IntrinsicOperation::Panic => {
+                        let message = values
+                            .first()
+                            .expect("validated panic must have one text argument");
                         crate::runtime_call_plan::RuntimeCallPlan::expect_manifest(
-                            RuntimeHelperId::Panic,
+                            runtime.helper(),
                             [
                                 crate::runtime_call_plan::RuntimeCallArg::const_pointer(
-                                    arg.slots[0],
+                                    message.slots[0],
                                     rue_runtime_abi::AbiType::Byte,
                                 ),
                                 crate::runtime_call_plan::RuntimeCallArg::value(
-                                    arg.slots[1],
+                                    message.slots[1],
                                     rue_runtime_abi::AbiType::U64,
                                 ),
                             ],
                         )
-                    } else {
-                        crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                            RuntimeHelperId::PanicNoMessage,
-                        )
-                    },
-                });
+                    }
+                    _ => unreachable!("non-panic operation in panic dispatch"),
+                };
+                let result = adapter.emit_trap(TrapPlan::Panic { call });
                 cache_result(adapter, value, result);
                 Some(ValueKind::Intrinsic)
-            } else if name_string == "assert" {
-                let message = values.get(1).map(|arg| MaterializedValue {
-                    primary: arg.primary,
-                    slots: arg.slots.clone(),
-                });
-                let call = if *runtime == Some(RuntimeCallKind::BoundsCheck) {
-                    // Slice indexing carries a typed compiler trap identity on
-                    // the existing conditional `assert` shape. Preserve that
-                    // identity through CFG lowering so it reaches the shared
-                    // bounds helper used by fixed-array projections.
-                    crate::runtime_call_plan::RuntimeCallPlan::no_args(RuntimeHelperId::BoundsCheck)
-                } else {
-                    trap_runtime_call(message.as_ref())
+            } else if matches!(
+                operation,
+                IntrinsicOperation::AssertFailed
+                    | IntrinsicOperation::AssertWithMessage
+                    | IntrinsicOperation::BoundsCheck
+            ) {
+                let runtime = operation
+                    .runtime_call_kind()
+                    .expect("assert operation must be runtime-backed");
+                let call = match operation {
+                    IntrinsicOperation::AssertFailed | IntrinsicOperation::BoundsCheck => {
+                        crate::runtime_call_plan::RuntimeCallPlan::no_args(runtime.helper())
+                    }
+                    IntrinsicOperation::AssertWithMessage => {
+                        let message = values
+                            .get(1)
+                            .expect("validated message assertion must carry text");
+                        crate::runtime_call_plan::RuntimeCallPlan::expect_manifest(
+                            runtime.helper(),
+                            [
+                                crate::runtime_call_plan::RuntimeCallArg::const_pointer(
+                                    message.slots[0],
+                                    rue_runtime_abi::AbiType::Byte,
+                                ),
+                                crate::runtime_call_plan::RuntimeCallArg::value(
+                                    message.slots[1],
+                                    rue_runtime_abi::AbiType::U64,
+                                ),
+                            ],
+                        )
+                    }
+                    _ => unreachable!("non-assert operation in assert dispatch"),
                 };
                 let result = adapter.emit_trap(TrapPlan::Assert {
                     condition: values[0].primary,
@@ -1648,114 +1612,6 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                 cache_result(adapter, value, result);
                 Some(ValueKind::Intrinsic)
             } else {
-                let operation = match name_string.as_str() {
-                    "read_line" => IntrinsicOperation::Option {
-                        intrinsic: OptionIntrinsic::ReadLine,
-                        some_discriminant: crate::types::option_variant_discriminants(
-                            ctx.type_pool,
-                            inst.ty,
-                        )
-                        .0,
-                        none_discriminant: crate::types::option_variant_discriminants(
-                            ctx.type_pool,
-                            inst.ty,
-                        )
-                        .1,
-                    },
-                    "parse_i32" => IntrinsicOperation::Option {
-                        intrinsic: OptionIntrinsic::ParseI32,
-                        some_discriminant: crate::types::option_variant_discriminants(
-                            ctx.type_pool,
-                            inst.ty,
-                        )
-                        .0,
-                        none_discriminant: crate::types::option_variant_discriminants(
-                            ctx.type_pool,
-                            inst.ty,
-                        )
-                        .1,
-                    },
-                    "parse_i64" => IntrinsicOperation::Option {
-                        intrinsic: OptionIntrinsic::ParseI64,
-                        some_discriminant: crate::types::option_variant_discriminants(
-                            ctx.type_pool,
-                            inst.ty,
-                        )
-                        .0,
-                        none_discriminant: crate::types::option_variant_discriminants(
-                            ctx.type_pool,
-                            inst.ty,
-                        )
-                        .1,
-                    },
-                    "parse_u32" => IntrinsicOperation::Option {
-                        intrinsic: OptionIntrinsic::ParseU32,
-                        some_discriminant: crate::types::option_variant_discriminants(
-                            ctx.type_pool,
-                            inst.ty,
-                        )
-                        .0,
-                        none_discriminant: crate::types::option_variant_discriminants(
-                            ctx.type_pool,
-                            inst.ty,
-                        )
-                        .1,
-                    },
-                    "parse_u64" => IntrinsicOperation::Option {
-                        intrinsic: OptionIntrinsic::ParseU64,
-                        some_discriminant: crate::types::option_variant_discriminants(
-                            ctx.type_pool,
-                            inst.ty,
-                        )
-                        .0,
-                        none_discriminant: crate::types::option_variant_discriminants(
-                            ctx.type_pool,
-                            inst.ty,
-                        )
-                        .1,
-                    },
-                    "random_u32" => IntrinsicOperation::RandomU32,
-                    "random_u64" => IntrinsicOperation::RandomU64,
-                    // `@bitCast` renames the operand's bits at the result type
-                    // (RUE-952). Only the result type matters: the widths agree
-                    // by construction (sema rejects the cross-width form with
-                    // E0950), so the plan carries just the target's canonical
-                    // register image.
-                    "bitCast" => IntrinsicOperation::BitCast(bit_cast_form(inst.ty)),
-                    "ptr_to_int" => IntrinsicOperation::PtrToInt,
-                    "int_to_ptr" => IntrinsicOperation::IntToPtr,
-                    // The `_unaligned` scalar access pair (ADR-0059 Phase 4,
-                    // RUE-978/RUE-962) shares the aligned lowering: on x86-64 and
-                    // AArch64 a scalar load/store tolerates any address, so the
-                    // interim distinction is a semantic contract (spec 9.2:14k),
-                    // not a distinct instruction. Folding the names here keeps the
-                    // narrow-access and image-marshalling plans identical.
-                    "ptr_read" | "ptr_read_unaligned" => IntrinsicOperation::PtrRead,
-                    "ptr_write" | "ptr_write_unaligned" => IntrinsicOperation::PtrWrite,
-                    "ptr_offset" => IntrinsicOperation::PtrOffset,
-                    // The unified allocation family carries physical byte
-                    // sizes and an explicit alignment in its own operands
-                    // (ADR-0059 Phase 3, RUE-961), so nothing here consults a
-                    // pointee layout: every operand passes straight through.
-                    "alloc" => IntrinsicOperation::Alloc,
-                    "alloc_zeroed" => IntrinsicOperation::AllocZeroed,
-                    "free" => IntrinsicOperation::Free,
-                    "realloc" => IntrinsicOperation::Realloc,
-                    "resize" => IntrinsicOperation::Resize,
-                    "byte_copy" => IntrinsicOperation::ByteCopy,
-                    "byte_move" => IntrinsicOperation::ByteMove,
-                    "byte_set" => IntrinsicOperation::ByteSet,
-                    "arg_count" => IntrinsicOperation::ArgCount,
-                    "arg_ptr" => IntrinsicOperation::ArgPtr,
-                    "arg_len" => IntrinsicOperation::ArgLen,
-                    "env_count" => IntrinsicOperation::EnvCount,
-                    "env_ptr" => IntrinsicOperation::EnvPtr,
-                    "env_len" => IntrinsicOperation::EnvLen,
-                    "raw" | "raw_mut" | "field_ptr" => IntrinsicOperation::PlaceAddress,
-                    "dbg" => IntrinsicOperation::Debug,
-                    "syscall" => IntrinsicOperation::Syscall,
-                    _ => panic!("unsupported intrinsic {name_string}"),
-                };
                 let scale = match operation {
                     IntrinsicOperation::PtrOffset if !args.is_empty() => {
                         Some(crate::allocation::pointer_offset_scale_plan(
@@ -1766,68 +1622,65 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     _ => None,
                 };
                 let result_slots = ctx.type_slot_count(inst.ty);
-                let runtime_call = intrinsic_runtime_call(&operation, &values, result_slots);
-                // A narrow-scalar `@ptr_read`/`@ptr_write` under the compact
-                // layout accesses 1/2/4 physical bytes with the pointee's
-                // extension (RUE-989). The read's pointee is its result type; the
-                // write's pointee is the value operand's type. Every other
-                // operation, a full-slot scalar, or the gate being off yields
-                // `None`, preserving the slot-shaped path.
-                let narrow_access = match operation {
-                    IntrinsicOperation::PtrRead => {
-                        crate::types::narrow_scalar_access(ctx.type_pool, inst.ty)
-                    }
-                    IntrinsicOperation::PtrWrite => crate::types::narrow_scalar_access(
-                        ctx.type_pool,
-                        ctx.cfg.get_inst(args[1]).ty,
-                    ),
-                    _ => None,
-                };
+                let option_discriminants = matches!(
+                    operation,
+                    IntrinsicOperation::ReadLine
+                        | IntrinsicOperation::ParseI32
+                        | IntrinsicOperation::ParseI64
+                        | IntrinsicOperation::ParseU32
+                        | IntrinsicOperation::ParseU64
+                )
+                .then(|| crate::types::option_variant_discriminants(ctx.type_pool, inst.ty));
+                let runtime_call =
+                    intrinsic_runtime_call(&operation, &values, result_slots, option_discriminants);
+                // The aligned and unaligned pointer families share one physical
+                // access plan. The semantic operation remains distinct, but both
+                // backends consume the same pointee layout metadata.
+                let pointer_access = pointer_access_plan(
+                    operation,
+                    inst.ty,
+                    args.get(1).map(|arg| ctx.cfg.get_inst(*arg).ty),
+                );
+                // A narrow-scalar pointer read/write under the compact layout
+                // accesses 1/2/4 physical bytes with the pointee's extension
+                // (RUE-989). Every other operation, a full-slot scalar, or the
+                // gate being off yields `None`, preserving the slot-shaped path.
+                let narrow_access = pointer_access.and_then(|access| {
+                    crate::types::narrow_scalar_access(ctx.type_pool, access.pointee_ty)
+                });
                 // A compact aggregate pointee marshals its whole value through the
                 // pointer via its internal-slot → physical-byte image: a compact
                 // enum (RUE-1000) or a compact struct (RUE-987). The read's pointee
                 // is its result type; the write's pointee is the value operand's
                 // type. Scalars (narrow access) and slot-identical structs (the
                 // byte-identical full-slot path) yield `None`.
-                let physical_slots = match operation {
-                    IntrinsicOperation::PtrRead => {
-                        crate::types::pointer_image_slot_map(ctx.type_pool, inst.ty)
-                    }
-                    IntrinsicOperation::PtrWrite => crate::types::pointer_image_slot_map(
-                        ctx.type_pool,
-                        ctx.cfg.get_inst(args[1]).ty,
-                    ),
-                    _ => None,
-                };
+                let physical_slots = pointer_access.and_then(|access| {
+                    crate::types::pointer_image_slot_map(ctx.type_pool, access.pointee_ty)
+                });
                 // A heterogeneous compact aggregate pointee (no variant-independent
                 // map) marshals through the pointer with a per-variant tag dispatch
                 // (RUE-1037). Only when the single map above is `None`.
                 let dispatch_image = if physical_slots.is_some() {
                     None
                 } else {
-                    match operation {
-                        IntrinsicOperation::PtrRead => {
-                            crate::types::aggregate_dispatch_image(ctx.type_pool, inst.ty)
-                        }
-                        IntrinsicOperation::PtrWrite => crate::types::aggregate_dispatch_image(
-                            ctx.type_pool,
-                            ctx.cfg.get_inst(args[1]).ty,
-                        ),
-                        _ => None,
-                    }
+                    pointer_access.and_then(|access| {
+                        crate::types::aggregate_dispatch_image(ctx.type_pool, access.pointee_ty)
+                    })
                 };
-                // A compact enum `@ptr_write` initializes the whole image, so the
-                // pointee's padding is zeroed before the field stores (ADR-0052
-                // ruling 5). Only the write needs it; the read never stores.
-                let image_padding = match operation {
-                    IntrinsicOperation::PtrWrite if physical_slots.is_some() => ctx
+                // A compact enum pointer write initializes the whole image, so
+                // the pointee's padding is zeroed before the field stores
+                // (ADR-0052 ruling 5). Only writes need it; reads never store.
+                let image_padding = match pointer_access {
+                    Some(access) if access.is_write && physical_slots.is_some() => ctx
                         .type_pool
-                        .compact_image_padding_ranges(ctx.cfg.get_inst(args[1]).ty),
+                        .compact_image_padding_ranges(access.pointee_ty),
                     _ => Vec::new(),
                 };
                 let result = adapter.emit_intrinsic(IntrinsicPlan {
                     operation,
                     runtime_call,
+                    option_discriminants,
+                    bit_cast_form,
                     args: values,
                     result_ty: inst.ty,
                     result_slots,
@@ -1972,149 +1825,149 @@ fn realize_alloc_operands(
         .collect()
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PointerAccessPlan {
+    pointee_ty: Type,
+    is_write: bool,
+}
+
+fn pointer_access_plan(
+    operation: IntrinsicOperation,
+    result_ty: Type,
+    write_value_ty: Option<Type>,
+) -> Option<PointerAccessPlan> {
+    match operation {
+        IntrinsicOperation::PtrRead | IntrinsicOperation::PtrReadUnaligned => {
+            Some(PointerAccessPlan {
+                pointee_ty: result_ty,
+                is_write: false,
+            })
+        }
+        IntrinsicOperation::PtrWrite | IntrinsicOperation::PtrWriteUnaligned => {
+            Some(PointerAccessPlan {
+                pointee_ty: write_value_ty
+                    .expect("validated pointer write must carry its value operand"),
+                is_write: true,
+            })
+        }
+        _ => None,
+    }
+}
+
 fn intrinsic_runtime_call(
     operation: &IntrinsicOperation,
     args: &[IntrinsicArgPlan],
     result_slots: u32,
+    option_discriminants: Option<(u64, u64)>,
 ) -> Option<crate::runtime_call_plan::RuntimeCallPlan> {
     use crate::runtime_call_plan::{RuntimeCallArg, RuntimeCallPlan};
-    use rue_air::RuntimeCallKind;
     use rue_runtime_abi::{AbiType, AggregateShapeId};
 
-    let (helper, call_args) = match operation {
-        IntrinsicOperation::Option { intrinsic, .. } => match intrinsic {
-            OptionIntrinsic::ReadLine => (
-                RuntimeHelperId::ReadLine,
-                vec![
-                    RuntimeCallArg::out_pointer(AggregateShapeId::OptionStrBufResult),
-                    RuntimeCallArg::immediate(option_discriminants(operation).0, AbiType::U64),
-                    RuntimeCallArg::immediate(option_discriminants(operation).1, AbiType::U64),
+    let runtime = operation.runtime_call_kind()?;
+    let helper = runtime.helper();
+    let call_args = match operation {
+        IntrinsicOperation::ReadLine => {
+            let (some, none) = option_discriminants
+                .expect("validated option-producing intrinsic must carry discriminants");
+            vec![
+                RuntimeCallArg::out_pointer(AggregateShapeId::OptionStrBufResult),
+                RuntimeCallArg::immediate(some, AbiType::U64),
+                RuntimeCallArg::immediate(none, AbiType::U64),
+            ]
+        }
+        IntrinsicOperation::ParseI32
+        | IntrinsicOperation::ParseI64
+        | IntrinsicOperation::ParseU32
+        | IntrinsicOperation::ParseU64 => {
+            let (some, none) = option_discriminants
+                .expect("validated option-producing intrinsic must carry discriminants");
+            let arg = args
+                .first()
+                .expect("validated parse intrinsic must carry text");
+            vec![
+                RuntimeCallArg::out_pointer(AggregateShapeId::OptionIntResult),
+                RuntimeCallArg::const_pointer(arg.slots[0], AbiType::Byte),
+                RuntimeCallArg::value(arg.slots[1], AbiType::U64),
+                RuntimeCallArg::immediate(some, AbiType::U64),
+                RuntimeCallArg::immediate(none, AbiType::U64),
+            ]
+        }
+        IntrinsicOperation::RandomU32
+        | IntrinsicOperation::RandomU64
+        | IntrinsicOperation::ArgCount
+        | IntrinsicOperation::EnvCount => vec![],
+        IntrinsicOperation::ArgLen
+        | IntrinsicOperation::EnvLen
+        | IntrinsicOperation::ArgPtr
+        | IntrinsicOperation::EnvPtr => {
+            vec![RuntimeCallArg::value(args[0].primary, AbiType::U64)]
+        }
+        IntrinsicOperation::Alloc
+        | IntrinsicOperation::AllocZeroed
+        | IntrinsicOperation::Free
+        | IntrinsicOperation::Realloc
+        | IntrinsicOperation::Resize => realize_alloc_operands(runtime, args),
+        IntrinsicOperation::ByteCopy | IntrinsicOperation::ByteMove => vec![
+            RuntimeCallArg::mut_pointer(args[0].primary, AbiType::Byte),
+            RuntimeCallArg::const_pointer(args[1].primary, AbiType::Byte),
+            RuntimeCallArg::value(args[2].primary, AbiType::U64),
+        ],
+        IntrinsicOperation::ByteSet => vec![
+            RuntimeCallArg::mut_pointer(args[0].primary, AbiType::Byte),
+            RuntimeCallArg::extended(args[1].primary, args[1].integer_extension, AbiType::U64),
+            RuntimeCallArg::value(args[2].primary, AbiType::U64),
+        ],
+        IntrinsicOperation::DebugI64
+        | IntrinsicOperation::DebugU64
+        | IntrinsicOperation::DebugBool
+        | IntrinsicOperation::DebugStr => {
+            let arg = args
+                .first()
+                .expect("validated debug intrinsic must carry one value");
+            match operation {
+                IntrinsicOperation::DebugStr => vec![
+                    RuntimeCallArg::const_pointer(arg.slots[0], AbiType::Byte),
+                    RuntimeCallArg::value(arg.slots[1], AbiType::U64),
                 ],
-            ),
-            intrinsic => {
-                let arg = args.first()?;
-                let helper = match intrinsic {
-                    OptionIntrinsic::ParseI32 => RuntimeHelperId::ParseI32,
-                    OptionIntrinsic::ParseI64 => RuntimeHelperId::ParseI64,
-                    OptionIntrinsic::ParseU32 => RuntimeHelperId::ParseU32,
-                    OptionIntrinsic::ParseU64 => RuntimeHelperId::ParseU64,
-                    OptionIntrinsic::ReadLine => unreachable!(),
-                };
-                (
-                    helper,
-                    vec![
-                        RuntimeCallArg::out_pointer(AggregateShapeId::OptionIntResult),
-                        RuntimeCallArg::const_pointer(arg.slots[0], AbiType::Byte),
-                        RuntimeCallArg::value(arg.slots[1], AbiType::U64),
-                        RuntimeCallArg::immediate(option_discriminants(operation).0, AbiType::U64),
-                        RuntimeCallArg::immediate(option_discriminants(operation).1, AbiType::U64),
-                    ],
-                )
+                IntrinsicOperation::DebugI64 => vec![RuntimeCallArg::extended(
+                    arg.primary,
+                    arg.integer_extension,
+                    AbiType::I64,
+                )],
+                IntrinsicOperation::DebugU64 => vec![RuntimeCallArg::extended(
+                    arg.primary,
+                    arg.integer_extension,
+                    AbiType::U64,
+                )],
+                IntrinsicOperation::DebugBool => vec![RuntimeCallArg::extended(
+                    arg.primary,
+                    arg.integer_extension,
+                    AbiType::BoolWordI64,
+                )],
+                _ => unreachable!("non-debug operation in debug dispatch"),
             }
-        },
-        IntrinsicOperation::RandomU32 => (RuntimeHelperId::RandomU32, vec![]),
-        IntrinsicOperation::RandomU64 => (RuntimeHelperId::RandomU64, vec![]),
-        IntrinsicOperation::ArgCount => (RuntimeHelperId::ArgCount, vec![]),
-        IntrinsicOperation::EnvCount => (RuntimeHelperId::EnvCount, vec![]),
-        IntrinsicOperation::ArgLen => (
-            RuntimeHelperId::ArgLen,
-            vec![RuntimeCallArg::value(args[0].primary, AbiType::U64)],
-        ),
-        IntrinsicOperation::EnvLen => (
-            RuntimeHelperId::EnvLen,
-            vec![RuntimeCallArg::value(args[0].primary, AbiType::U64)],
-        ),
-        IntrinsicOperation::ArgPtr => (
-            RuntimeHelperId::ArgPtr,
-            vec![RuntimeCallArg::value(args[0].primary, AbiType::U64)],
-        ),
-        IntrinsicOperation::EnvPtr => (
-            RuntimeHelperId::EnvPtr,
-            vec![RuntimeCallArg::value(args[0].primary, AbiType::U64)],
-        ),
-        IntrinsicOperation::Alloc => (
-            RuntimeHelperId::Alloc,
-            realize_alloc_operands(RuntimeCallKind::Alloc, args),
-        ),
-        IntrinsicOperation::AllocZeroed => (
-            RuntimeHelperId::AllocZeroed,
-            realize_alloc_operands(RuntimeCallKind::AllocZeroed, args),
-        ),
-        IntrinsicOperation::Free => (
-            RuntimeHelperId::Free,
-            realize_alloc_operands(RuntimeCallKind::Free, args),
-        ),
-        IntrinsicOperation::ByteCopy => (
-            RuntimeHelperId::ByteCopy,
-            vec![
-                RuntimeCallArg::mut_pointer(args[0].primary, AbiType::Byte),
-                RuntimeCallArg::const_pointer(args[1].primary, AbiType::Byte),
-                RuntimeCallArg::value(args[2].primary, AbiType::U64),
-            ],
-        ),
-        IntrinsicOperation::ByteMove => (
-            RuntimeHelperId::ByteMove,
-            vec![
-                RuntimeCallArg::mut_pointer(args[0].primary, AbiType::Byte),
-                RuntimeCallArg::const_pointer(args[1].primary, AbiType::Byte),
-                RuntimeCallArg::value(args[2].primary, AbiType::U64),
-            ],
-        ),
-        IntrinsicOperation::ByteSet => (
-            RuntimeHelperId::ByteSet,
-            vec![
-                RuntimeCallArg::mut_pointer(args[0].primary, AbiType::Byte),
-                RuntimeCallArg::extended(args[1].primary, args[1].integer_extension, AbiType::U64),
-                RuntimeCallArg::value(args[2].primary, AbiType::U64),
-            ],
-        ),
-        IntrinsicOperation::Realloc => (
-            RuntimeHelperId::Realloc,
-            realize_alloc_operands(RuntimeCallKind::Realloc, args),
-        ),
-        IntrinsicOperation::Resize => (
-            RuntimeHelperId::Resize,
-            realize_alloc_operands(RuntimeCallKind::Resize, args),
-        ),
-        IntrinsicOperation::Debug => {
-            let arg = args.first()?;
-            if arg.slots.len() >= 2 {
-                (
-                    RuntimeHelperId::DebugStr,
-                    vec![
-                        RuntimeCallArg::const_pointer(arg.slots[0], AbiType::Byte),
-                        RuntimeCallArg::value(arg.slots[1], AbiType::U64),
-                    ],
-                )
-            } else {
-                let (helper, ty) = match arg.debug {
-                    DebugValuePlan::Bool => (RuntimeHelperId::DebugBool, AbiType::BoolWordI64),
-                    DebugValuePlan::Integer(IntegerWidth { signed: true, .. }) => {
-                        (RuntimeHelperId::DebugI64, AbiType::I64)
-                    }
-                    DebugValuePlan::Integer(IntegerWidth { signed: false, .. }) => {
-                        (RuntimeHelperId::DebugU64, AbiType::U64)
-                    }
-                    DebugValuePlan::String | DebugValuePlan::Other => return None,
-                };
-                (
-                    helper,
-                    vec![RuntimeCallArg::extended(
-                        arg.primary,
-                        arg.integer_extension,
-                        ty,
-                    )],
-                )
-            }
+        }
+        IntrinsicOperation::Panic
+        | IntrinsicOperation::PanicNoMessage
+        | IntrinsicOperation::AssertFailed
+        | IntrinsicOperation::AssertWithMessage
+        | IntrinsicOperation::BoundsCheck => {
+            unreachable!("trap runtime calls are planned by exact operation above")
         }
         IntrinsicOperation::PtrToInt
         | IntrinsicOperation::IntToPtr
         | IntrinsicOperation::PtrRead
+        | IntrinsicOperation::PtrReadUnaligned
         | IntrinsicOperation::PtrWrite
+        | IntrinsicOperation::PtrWriteUnaligned
         | IntrinsicOperation::PtrOffset
-        | IntrinsicOperation::PlaceAddress
-        | IntrinsicOperation::BitCast(_)
-        | IntrinsicOperation::Syscall => return None,
+        | IntrinsicOperation::Raw
+        | IntrinsicOperation::RawMut
+        | IntrinsicOperation::FieldPtr
+        | IntrinsicOperation::BitCast
+        | IntrinsicOperation::Syscall => {
+            unreachable!("pure intrinsic cannot have a runtime-call mapping")
+        }
     };
     let plan = RuntimeCallPlan::expect_manifest(helper, call_args);
     if let Some(shape) = plan.out_shape() {
@@ -2125,40 +1978,6 @@ fn intrinsic_runtime_call(
         );
     }
     Some(plan)
-}
-
-fn option_discriminants(operation: &IntrinsicOperation) -> (u64, u64) {
-    match operation {
-        IntrinsicOperation::Option {
-            some_discriminant,
-            none_discriminant,
-            ..
-        } => (*some_discriminant, *none_discriminant),
-        _ => unreachable!(),
-    }
-}
-
-fn trap_runtime_call(
-    message: Option<&MaterializedValue>,
-) -> crate::runtime_call_plan::RuntimeCallPlan {
-    if message.is_some_and(|value| value.slots.len() >= 2) {
-        let message = message.unwrap();
-        crate::runtime_call_plan::RuntimeCallPlan::expect_manifest(
-            RuntimeHelperId::Panic,
-            [
-                crate::runtime_call_plan::RuntimeCallArg::const_pointer(
-                    message.slots[0],
-                    rue_runtime_abi::AbiType::Byte,
-                ),
-                crate::runtime_call_plan::RuntimeCallArg::value(
-                    message.slots[1],
-                    rue_runtime_abi::AbiType::U64,
-                ),
-            ],
-        )
-    } else {
-        crate::runtime_call_plan::RuntimeCallPlan::no_args(RuntimeHelperId::AssertFailed)
-    }
 }
 
 fn power_of_two_shift(ctx: &CfgLowerContext<'_>, value: CfgValue) -> Option<u8> {
@@ -2368,13 +2187,14 @@ mod tests {
 
     use super::{
         ComparisonPreparation, DebugValuePlan, IntegerExtension, IntegerWidth, IntrinsicArgPlan,
-        IntrinsicOperation, MaterializationRequirement, MaterializedValue, OptionIntrinsic,
-        StoragePolicy, StoreDestination, ValuePlan, ValueShape, assert_slot_policy,
-        comparison_integer_width, integer_range, type_bits, type_range,
+        MaterializationRequirement, PointerAccessPlan, StoragePolicy, StoreDestination, ValuePlan,
+        ValueShape, assert_slot_policy, comparison_integer_width, integer_range,
+        pointer_access_plan, type_bits, type_range,
     };
     use lasso::ThreadedRodeo;
     use rue_air::{
-        EnumDef, LangItem, ParamSlotModes, RuntimeCallKind, StructDef, StructField, TypeInternPool,
+        EnumDef, IntrinsicOperation, LangItem, ParamSlotModes, StructDef, StructField,
+        TypeInternPool,
     };
     use rue_cfg::{Cfg, CfgInst, CfgInstData, CfgValue, Place, Type};
     use rue_runtime_abi::RuntimeHelperId;
@@ -2572,9 +2392,16 @@ mod tests {
             .append_call(entry, None, call_name, [], Type::I32, Span::new(0, 0))
             .unwrap();
         values.borrow_mut().push(call);
-        let panic_name = interner.get_or_intern("panic");
+        let assert_name = interner.get_or_intern("assert");
         let intrinsic = cfg
-            .append_intrinsic(entry, None, panic_name, [], Type::UNIT, Span::new(0, 0))
+            .append_intrinsic_operation(
+                entry,
+                rue_air::IntrinsicOperation::AssertFailed,
+                assert_name,
+                [bool_constant],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
             .unwrap();
         values.borrow_mut().push(intrinsic);
         let struct_value = cfg
@@ -3175,7 +3002,14 @@ mod tests {
         cfg.entry = entry;
         let input = cfg.append_inst(entry, inst(CfgInstData::Const(0xFFFF_FFFF), Type::U32));
         let result = cfg
-            .append_intrinsic(entry, None, bit_cast, [input], Type::U32, Span::new(0, 0))
+            .append_intrinsic_operation(
+                entry,
+                rue_air::IntrinsicOperation::BitCast,
+                bit_cast,
+                [input],
+                Type::U32,
+                Span::new(0, 0),
+            )
             .expect("synthetic bitCast should append");
         cfg.set_return(entry, Some(result));
 
@@ -3339,30 +3173,65 @@ mod tests {
     }
 
     #[test]
-    fn assert_trap_plan_selects_manifest_runtime_call() {
-        let condition = crate::vreg::VReg::new(0);
-        let no_message = MaterializedValue {
-            primary: condition,
-            slots: Vec::new(),
-        };
-        let message = MaterializedValue {
-            primary: crate::vreg::VReg::new(1),
-            slots: vec![crate::vreg::VReg::new(1), crate::vreg::VReg::new(2)],
-        };
+    fn aligned_and_unaligned_pointer_operations_share_one_physical_access_plan() {
+        let read = Some(PointerAccessPlan {
+            pointee_ty: Type::U16,
+            is_write: false,
+        });
+        assert_eq!(
+            pointer_access_plan(IntrinsicOperation::PtrRead, Type::U16, None),
+            read
+        );
+        assert_eq!(
+            pointer_access_plan(IntrinsicOperation::PtrReadUnaligned, Type::U16, None),
+            read
+        );
 
+        let write = Some(PointerAccessPlan {
+            pointee_ty: Type::U8,
+            is_write: true,
+        });
         assert_eq!(
-            super::trap_runtime_call(None).helper(),
-            RuntimeHelperId::AssertFailed
+            pointer_access_plan(IntrinsicOperation::PtrWrite, Type::UNIT, Some(Type::U8),),
+            write
         );
         assert_eq!(
-            super::trap_runtime_call(Some(&no_message)).helper(),
-            RuntimeHelperId::AssertFailed
+            pointer_access_plan(
+                IntrinsicOperation::PtrWriteUnaligned,
+                Type::UNIT,
+                Some(Type::U8),
+            ),
+            write
         );
         assert_eq!(
-            super::trap_runtime_call(Some(&message)).helper(),
-            RuntimeHelperId::Panic
+            pointer_access_plan(IntrinsicOperation::BitCast, Type::U16, Some(Type::U8)),
+            None
         );
-        assert_eq!(super::trap_runtime_call(Some(&message)).args().len(), 2);
+    }
+
+    #[test]
+    fn trap_operations_have_exact_manifest_runtime_identities() {
+        for (operation, helper) in [
+            (
+                IntrinsicOperation::PanicNoMessage,
+                RuntimeHelperId::PanicNoMessage,
+            ),
+            (IntrinsicOperation::Panic, RuntimeHelperId::Panic),
+            (
+                IntrinsicOperation::AssertFailed,
+                RuntimeHelperId::AssertFailed,
+            ),
+            (
+                IntrinsicOperation::AssertWithMessage,
+                RuntimeHelperId::Panic,
+            ),
+            (
+                IntrinsicOperation::BoundsCheck,
+                RuntimeHelperId::BoundsCheck,
+            ),
+        ] {
+            assert_eq!(operation.runtime_call_kind().unwrap().helper(), helper);
+        }
     }
 
     #[test]
@@ -3373,9 +3242,9 @@ mod tests {
         let entry = cfg.new_block();
         cfg.entry = entry;
         let condition = cfg.append_inst(entry, inst(CfgInstData::BoolConst(false), Type::BOOL));
-        cfg.append_intrinsic(
+        cfg.append_intrinsic_operation(
             entry,
-            Some(RuntimeCallKind::BoundsCheck),
+            rue_air::IntrinsicOperation::BoundsCheck,
             assert_name,
             [condition],
             Type::UNIT,
@@ -3418,27 +3287,35 @@ mod tests {
             ..scalar_arg.clone()
         };
 
-        let option = |intrinsic| IntrinsicOperation::Option {
-            intrinsic,
-            some_discriminant: 1,
-            none_discriminant: 0,
-        };
         let call = |operation, args: &[IntrinsicArgPlan], result_slots| {
-            super::intrinsic_runtime_call(&operation, args, result_slots)
-                .expect("operation should have a runtime call")
+            super::intrinsic_runtime_call(
+                &operation,
+                args,
+                result_slots,
+                matches!(
+                    operation,
+                    IntrinsicOperation::ReadLine
+                        | IntrinsicOperation::ParseI32
+                        | IntrinsicOperation::ParseI64
+                        | IntrinsicOperation::ParseU32
+                        | IntrinsicOperation::ParseU64
+                )
+                .then_some((1, 0)),
+            )
+            .expect("operation should have a runtime call")
         };
 
         assert_eq!(
-            call(option(OptionIntrinsic::ReadLine), &[], 4).helper(),
+            call(IntrinsicOperation::ReadLine, &[], 4).helper(),
             RuntimeHelperId::ReadLine
         );
-        for (intrinsic, helper) in [
-            (OptionIntrinsic::ParseI32, RuntimeHelperId::ParseI32),
-            (OptionIntrinsic::ParseI64, RuntimeHelperId::ParseI64),
-            (OptionIntrinsic::ParseU32, RuntimeHelperId::ParseU32),
-            (OptionIntrinsic::ParseU64, RuntimeHelperId::ParseU64),
+        for (operation, helper) in [
+            (IntrinsicOperation::ParseI32, RuntimeHelperId::ParseI32),
+            (IntrinsicOperation::ParseI64, RuntimeHelperId::ParseI64),
+            (IntrinsicOperation::ParseU32, RuntimeHelperId::ParseU32),
+            (IntrinsicOperation::ParseU64, RuntimeHelperId::ParseU64),
         ] {
-            let plan = call(option(intrinsic), std::slice::from_ref(&string_arg), 2);
+            let plan = call(operation, std::slice::from_ref(&string_arg), 2);
             assert_eq!(plan.helper(), helper);
             assert_eq!(plan.args().len(), 5);
         }
@@ -3516,7 +3393,7 @@ mod tests {
         );
         assert_eq!(
             call(
-                IntrinsicOperation::Debug,
+                IntrinsicOperation::DebugBool,
                 std::slice::from_ref(&scalar_arg),
                 0,
             )
@@ -3525,7 +3402,7 @@ mod tests {
         );
         assert_eq!(
             call(
-                IntrinsicOperation::Debug,
+                IntrinsicOperation::DebugStr,
                 std::slice::from_ref(&string_arg),
                 0,
             )

@@ -151,6 +151,56 @@ fn production_codegen_does_not_call_frozen_declaration_test_adapters() {
 }
 
 #[test]
+fn intrinsic_codegen_dispatch_is_typed_and_has_no_name_fallback() {
+    let value_plan = include_str!("value_plan.rs");
+    assert!(value_plan.contains("let operation = *operation;"));
+    assert!(value_plan.contains("operation == IntrinsicOperation::BitCast"));
+    assert!(!value_plan.contains("pub enum IntrinsicOperation"));
+    for (name, source) in [
+        ("value_plan", value_plan),
+        ("x86_64/cfg_lower", include_str!("x86_64/cfg_lower.rs")),
+        ("aarch64/cfg_lower", include_str!("aarch64/cfg_lower.rs")),
+        ("local_storage", include_str!("local_storage.rs")),
+        ("types", include_str!("types.rs")),
+        ("place_lower", include_str!("place_lower.rs")),
+        ("stack_frame", include_str!("stack_frame.rs")),
+        ("cfg_lower", include_str!("cfg_lower.rs")),
+    ] {
+        for forbidden in [
+            "IntrinsicSelector",
+            "IntrinsicKind",
+            "resolve_intrinsic_symbol",
+            "expected_spelling",
+            "intrinsic_operation_from_name",
+            "unsupported intrinsic",
+            "match self.interner.resolve(&name)",
+            "match interner.resolve(&name)",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{name} contains removed intrinsic name dispatch: {forbidden}"
+            );
+        }
+    }
+    assert!(value_plan.contains("pub operation: IntrinsicOperation"));
+    assert!(value_plan.contains("operation.runtime_call_kind()"));
+    assert!(value_plan.contains("match operation {"));
+    for forbidden in [
+        "if values.len() == 0",
+        "if values.len() == 1",
+        "if args.len() == 0",
+        "if args.len() == 1",
+        "match values.len()",
+        "match args.len()",
+    ] {
+        assert!(
+            !value_plan.contains(forbidden),
+            "value planning regained call-shape intrinsic selection: {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn value_planning_uses_the_air_integer_semantics_kernel() {
     let source = include_str!("value_plan.rs");
     assert!(source.contains("ty.integer_semantics().map(Into::into)"));
