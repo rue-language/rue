@@ -524,6 +524,26 @@ mod tests {
     }
 
     #[test]
+    fn preheader_materialization_edits_the_graph_in_place() {
+        // Preheader materialization runs inside optimize_with_budget's private
+        // editor. A failed edit propagates through LICM into `pass_result`, and
+        // `publish_optimization` checks that result before publishing the
+        // poisoned editor, so a second whole-CFG rollback owner is redundant.
+        // Inspect production code only: loop-analysis tests clone graphs for
+        // before/after and failure-injection fixtures.
+        let source = include_str!("loops.rs");
+        let production = source
+            .split_once("#[cfg(test)]\nmod tests {")
+            .map(|(before, _)| before)
+            .expect("loops.rs keeps its tests in one trailing module");
+        assert_eq!(
+            production.matches("cfg.clone()").count(),
+            0,
+            "preheader materialization reacquired a whole-CFG clone"
+        );
+    }
+
+    #[test]
     fn optimizer_edit_failures_preserve_the_failure_kind() {
         let cfg = crate::Cfg::new(crate::Type::UNIT, 0, 0, "test".to_string(), vec![]);
         let type_pool = rue_air::TypeInternPool::new().freeze();
