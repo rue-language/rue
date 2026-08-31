@@ -11,7 +11,7 @@
 //! - `-O1`: Basic optimizations (constant folding, peephole, CFG
 //!   simplification, dead code elimination)
 //! - `-O2`: `-O1` plus value forwarding / copy propagation (RUE-914) and
-//!   block-local common-subexpression elimination (RUE-913)
+//!   dominator-scoped common-subexpression elimination (RUE-913, RUE-1874)
 //! - `-O3`: `-O2` plus loop-invariant code motion (RUE-927), which hoists
 //!   trap-free invariant computations out of loops into their preheaders, and
 //!   bounded constant-trip full unrolling (RUE-928)
@@ -63,9 +63,9 @@ pub enum OptLevel {
     ///
     /// Superset of `-O1`: runs everything `-O1` does, then value forwarding /
     /// copy propagation (RUE-914), which replaces redundant `Load`s with the
-    /// SSA value already holding the slot's contents, followed by block-local
-    /// common-subexpression elimination (RUE-913), which replaces duplicate
-    /// pure computations within a block with their first occurrence.
+    /// SSA value already holding the slot's contents, followed by
+    /// dominator-scoped common-subexpression elimination (RUE-913, RUE-1874),
+    /// which replaces duplicate pure computations with a dominating occurrence.
     O2,
 
     /// Aggressive optimizations (`-O3`).
@@ -404,11 +404,12 @@ pub fn optimize_with_budget(
                     }
                 }
 
-                // Block-local common-subexpression elimination (RUE-913), at
-                // -O2/-O3 only (ADR-0044 places CSE at the release-default level).
-                // Runs after forwarding — expressions over forwarded loads are now
-                // keyable — and before DCE, which sweeps the dead placeholders each
-                // replaced duplicate (and each forwarded load) leaves behind.
+                // Dominator-scoped common-subexpression elimination (RUE-913,
+                // RUE-1874), at -O2/-O3 only (ADR-0044 places CSE at the
+                // release-default level). Runs after forwarding — expressions over
+                // forwarded loads are now keyable — and before DCE, which sweeps the
+                // dead placeholders each replaced duplicate (and each forwarded
+                // load) leaves behind.
                 if matches!(level, OptLevel::O2 | OptLevel::O3) {
                     cse::run(&mut cfg)?;
                 }
