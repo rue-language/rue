@@ -84,7 +84,9 @@ ALLOWANCES = {
     ),
     "crates/rue-parser/src/parser/shared.rs": Allowance(2, "redundant parser entry preconditions"),
     "crates/rue-parser/src/parser/statements.rs": Allowance(1, "redundant parser entry precondition"),
-    "crates/rue-rir/src/inst.rs": Allowance(1, "redundant RIR variable-width encoding check"),
+    "crates/rue-rir/src/inst/payload.rs": Allowance(
+        1, "redundant RIR variable-width encoding check"
+    ),
     "crates/rue/src/emit.rs": Allowance(1, "validated sole-dependency emit mode"),
     "crates/rue/src/source_loader.rs": Allowance(1, "redundant source-plan revision check"),
 }

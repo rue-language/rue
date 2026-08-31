@@ -1,7 +1,7 @@
 use super::*;
 
 impl RirPayloadError {
-    pub(super) fn new(
+    pub(in crate::inst::payload) fn new(
         family: &'static str,
         start: u32,
         extent: u32,
