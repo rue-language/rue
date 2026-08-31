@@ -197,7 +197,7 @@ mod comptime_public_contract_tests {
 // one authority prevents this inventory from silently drifting from the
 // source consumed by the revisioned-database tests.
 use crate::revisioned_query_database::{REGISTRATION_MANIFEST, REVISIONED_DATABASE_SOURCE};
-use crate::session::SESSION_SOURCE;
+use crate::session::SESSION_PRODUCTION_SOURCE;
 
 const REVISIONED_DATABASE_PHASES: &[(&str, &str)] = &[
     (
@@ -1972,9 +1972,9 @@ const COMPILER_CRATE_ROOT_NAMESPACE_IDENTITY: (usize, u64, usize, u64) = (
     219,
     9_233_980_844_921_801_843,
 );
-const COMPILER_SESSION_ROOT_IDENTITY: (usize, u64) = (6_132, 17_077_621_338_947_793_483);
+const COMPILER_SESSION_ROOT_IDENTITY: (usize, u64) = (3_375, 11_197_616_651_825_656_461);
 const COMPILER_SESSION_CONSTRUCTOR_IDENTITY: (usize, u64) = (82, 10_721_269_354_679_246_675);
-const FRONTEND_DATABASE_CONSTRUCTION_IDENTITY: (usize, u64) = (462, 5_707_410_129_141_731_665);
+const FRONTEND_DATABASE_CONSTRUCTION_IDENTITY: (usize, u64) = (268, 967_740_565_057_515_587);
 const DATABASE_INHERENT_CONSTRUCTOR_IDENTITY: (usize, u64) = (148, 15_840_470_727_822_522_148);
 const DATABASE_CANONICAL_CONSTRUCTOR_IDENTITY: (usize, u64) = (224, 1_314_571_707_455_964_487);
 const TEST_DEFAULT_DATABASE_ADAPTER_IDENTITY: (usize, u64) = (120, 3_163_599_038_660_274_771);
@@ -2062,7 +2062,7 @@ fn revisioned_database_hub_and_registered_family_authority_are_structural() {
         hub.lines().count() < 150,
         "revisioned query database hub regrew into a phase implementation"
     );
-    let session_source = include_str!("session.rs");
+    let session_source = SESSION_PRODUCTION_SOURCE;
     let session_code = rust_code_only(session_source);
     let token_marker = "pub(crate) struct RevisionedQueryDatabaseConstructionToken {";
     let token_start = session_code
@@ -3925,10 +3925,7 @@ pub(super) use register_parse_import_parse;"#;
             }
         })
         .collect::<Vec<_>>();
-    let production_session_source = SESSION_SOURCE
-        .split("\n#[cfg(test)]\nmod tests {")
-        .next()
-        .expect("session production source precedes its test module");
+    let production_session_source = SESSION_PRODUCTION_SOURCE;
     let compiler_construction_sources = compiler_production_sources
         .iter()
         .map(|(owner, source)| {
@@ -3976,11 +3973,11 @@ pub(super) use register_parse_import_parse;"#;
         ],
         "the capability type may appear only in its session declaration/private constructor, the frontend call, and the token-gated database signature",
     );
-    let expected_frontend_database_identifiers = [("session".to_owned(), 4)];
+    let expected_frontend_database_identifiers = [("session".to_owned(), 3)];
     assert_eq!(
         identifier_owner_inventory(&compiler_construction_sources, "FrontendQueryDatabase",),
         expected_frontend_database_identifiers,
-        "the frontend database type must have exactly its declaration, two impl owners, and the canonical CompilerSession field",
+        "the frontend database type must have exactly its declaration, Default owner, and canonical CompilerSession field",
     );
     assert_eq!(
         type_method_definition_owner_inventory(
@@ -4131,6 +4128,11 @@ pub(super) use register_parse_import_parse;"#;
         include_str!("session/metrics.rs"),
         include_str!("session/rooted_artifacts.rs"),
         include_str!("session/discovery_continuation.rs"),
+        include_str!("session/revision_lifecycle.rs"),
+        include_str!("session/import_discovery_owner.rs"),
+        include_str!("session/metrics_attempts.rs"),
+        include_str!("session/program_artifacts.rs"),
+        include_str!("session/rooted_projections.rs"),
         include_str!("session.rs"),
     ];
     assert!(
@@ -4364,7 +4366,7 @@ pub(super) use register_parse_import_parse;"#;
     ));
     let nested_module_owners = module_owner_inventory(&compiler_module_sources);
     let nested_module_fingerprint = source_inventory_fingerprint(&nested_module_owners);
-    let expected_nested_module_identity = (138, 6_140_959_844_248_313_380);
+    let expected_nested_module_identity = (144, 5_193_339_148_943_817_537);
     assert_eq!(
         (nested_module_owners.len(), nested_module_fingerprint),
         expected_nested_module_identity,
@@ -4650,7 +4652,7 @@ pub(super) use register_parse_import_parse;"#;
             "family_with_evaluator".to_owned(),
             1,
         ),
-        ("session".to_owned(), "family".to_owned(), 23),
+        ("session".to_owned(), "family".to_owned(), 21),
     ];
     expected_family_identifier_owners.extend(REGISTRATION_MANIFEST.iter().map(
         |(_, family, macro_name, _)| {
@@ -5375,7 +5377,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ),
     ("semantic_symbols", include_str!("semantic_symbols.rs")),
     ("semantic_identity", include_str!("semantic_identity.rs")),
-    ("session", SESSION_SOURCE),
+    ("session", SESSION_PRODUCTION_SOURCE),
     ("shared_segments", include_str!("shared_segments.rs")),
     ("source_identity", include_str!("source_identity.rs")),
     ("source_metadata", include_str!("source_metadata.rs")),
@@ -5622,7 +5624,7 @@ fn codegen_queries_consume_only_registered_optimized_cfg_domains() {
             && !database.contains("symbol_mappings: Arc<BTreeMap<String, String>>"),
         "the registered codegen request facade must not require semantic/global live inputs"
     );
-    let session = SESSION_SOURCE;
+    let session = SESSION_PRODUCTION_SOURCE;
     assert!(
         session.contains("this adapter enumerates the")
             && session.contains("semantic functions only so focused tests can inspect units")
@@ -6915,6 +6917,45 @@ fn inherent_impl<'a>(source: &'a str, owner: &str) -> &'a str {
     panic!("reviewed owner impl is balanced")
 }
 
+fn inherent_impls(source: &str, owner: &str) -> String {
+    let marker = format!("impl {owner} {{");
+    let mut remaining = source;
+    let mut implementations = String::new();
+    while let Some(start) = remaining.find(&marker) {
+        let candidate = &remaining[start..];
+        let implementation = inherent_impl(candidate, owner);
+        implementations.push_str(implementation);
+        implementations.push('\n');
+        remaining = &candidate[implementation.len()..];
+    }
+    assert!(
+        !implementations.is_empty(),
+        "reviewed owner impl exists: {owner}"
+    );
+    implementations
+}
+
+#[test]
+fn compiler_session_public_inventory_scans_every_impl_block() {
+    let fixture = r#"
+impl CompilerSession {
+    pub fn new() -> Self { todo!() }
+}
+impl CompilerSession {
+    pub fn semantic(&self) -> SemanticView { todo!() }
+}
+    "#;
+    assert!(
+        !public_signatures(inherent_impl(fixture, "CompilerSession")).contains("semantic"),
+        "the regression fixture must hide its forbidden method from the old first-impl scan"
+    );
+    let implementations = inherent_impls(fixture, "CompilerSession");
+    assert!(
+        public_signatures(&implementations).contains("semantic"),
+        "the complete inventory must see a forbidden public signature in a later impl"
+    );
+}
+
 #[test]
 fn facade_stays_small_and_session_centered() {
     let facade = include_str!("lib.rs");
@@ -7032,7 +7073,7 @@ fn per_body_query_boundary_is_stable_independent_and_cache_free() {
             "rooted consumers must retain the already-observed BodyTransaction directly: {redundant_projection}"
         );
     }
-    let session = SESSION_SOURCE;
+    let session = SESSION_PRODUCTION_SOURCE;
     assert!(!session.contains("pub fn semantic("));
     assert!(!session.contains("semantic_view_from_rooted"));
     let body_transaction = source_between_exact_boundaries(
@@ -7165,7 +7206,8 @@ fn semantic_inventory_rejects_unparsed_layouts_and_records_cfg_attributes() {
 fn raw_phase_owners_and_backend_drivers_cannot_return_to_the_stable_facade() {
     let facade = include_str!("lib.rs");
     let root_exports = public_use_declarations(facade).concat();
-    let session = public_signatures(inherent_impl(include_str!("session.rs"), "CompilerSession"));
+    let session_impls = inherent_impls(SESSION_PRODUCTION_SOURCE, "CompilerSession");
+    let session = public_signatures(&session_impls);
     let update = public_signatures(inherent_impl(
         include_str!("session.rs"),
         "CompilerSessionUpdate",
@@ -7294,7 +7336,7 @@ fn removed_parallel_entry_points_cannot_return() {
         );
     }
 
-    let session = SESSION_SOURCE;
+    let session = SESSION_PRODUCTION_SOURCE;
     assert!(!session.contains("pub fn semantic("));
     assert!(!session.contains("semantic_view_from_rooted"));
 }
@@ -7432,10 +7474,11 @@ fn unstable_views_do_not_alias_query_engine_records() {
         .collect::<Vec<_>>();
     assert_eq!(public_modules, ["unstable;"]);
 
-    let session = SESSION_SOURCE;
+    let session = SESSION_PRODUCTION_SOURCE;
     let diagnostic = include_str!("diagnostic_attempt_store.rs");
+    let session_impls = inherent_impls(session, "CompilerSession");
     let reviewed_public = [
-        public_signatures(inherent_impl(session, "CompilerSession")),
+        public_signatures(&session_impls),
         public_signatures(inherent_impl(session, "CompilerSessionUpdate")),
         public_signatures(inherent_impl(diagnostic, "FrontendDiagnosticSnapshot")),
         public_signatures(inherent_impl(include_str!("queries.rs"), "CompileOutput")),
@@ -7570,7 +7613,7 @@ fn durable_cache_schema_cannot_return_to_the_public_facade() {
     assert!(facade.contains("mod durable_semantics;"));
     assert!(!facade.contains("pub mod durable_semantics;"));
 
-    let session = SESSION_SOURCE;
+    let session = SESSION_PRODUCTION_SOURCE;
     for raw_accessor in [
         "durable_specialized_body_payloads",
         "durable_ordinary_bodies",
@@ -7611,7 +7654,7 @@ fn query_attempts_have_one_family_owned_representation() {
 
 #[test]
 fn revisioned_parse_family_is_runtime_registered_without_a_selection_wrapper() {
-    let session = SESSION_SOURCE;
+    let session = SESSION_PRODUCTION_SOURCE;
     let runtime = REVISIONED_DATABASE_SOURCE;
     for removed in [
         "parse: TypedQueryStore<ParseQuery>",
@@ -8117,7 +8160,7 @@ fn canonical_semantic_body_has_no_compiler_owned_peer_algebra() {
 #[test]
 fn rue_1027_production_body_authority_is_query_owned_and_import_only() {
     let canonical = include_str!("canonical_semantic.rs");
-    let session = SESSION_SOURCE;
+    let session = SESSION_PRODUCTION_SOURCE;
     let database = REVISIONED_DATABASE_SOURCE;
     let body_query = include_str!("body_query.rs");
 
@@ -8948,7 +8991,7 @@ fn durable_constructor_diagnostics_use_the_air_interleaver() {
 fn candidate_plan_metrics_have_one_query_terminal_authority() {
     let database = REVISIONED_DATABASE_SOURCE;
     let queries = include_str!("queries.rs");
-    let session = SESSION_SOURCE;
+    let session = SESSION_PRODUCTION_SOURCE;
     let pipeline = include_str!("pipeline_tests.rs");
     // These consumers live outside this Buck crate, so read them from the
     // repository root at test time instead of smuggling copies into the
