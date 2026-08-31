@@ -197,6 +197,7 @@ mod comptime_public_contract_tests {
 // one authority prevents this inventory from silently drifting from the
 // source consumed by the revisioned-database tests.
 use crate::revisioned_query_database::{REGISTRATION_MANIFEST, REVISIONED_DATABASE_SOURCE};
+use crate::session::SESSION_SOURCE;
 
 const REVISIONED_DATABASE_PHASES: &[(&str, &str)] = &[
     (
@@ -696,7 +697,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ),
     ("semantic_symbols", include_str!("semantic_symbols.rs")),
     ("semantic_identity", include_str!("semantic_identity.rs")),
-    ("session", include_str!("session.rs")),
+    ("session", SESSION_SOURCE),
     ("shared_segments", include_str!("shared_segments.rs")),
     ("source_identity", include_str!("source_identity.rs")),
     ("source_metadata", include_str!("source_metadata.rs")),
@@ -943,7 +944,7 @@ fn codegen_queries_consume_only_registered_optimized_cfg_domains() {
             && !database.contains("symbol_mappings: Arc<BTreeMap<String, String>>"),
         "the registered codegen request facade must not require semantic/global live inputs"
     );
-    let session = include_str!("session.rs");
+    let session = SESSION_SOURCE;
     assert!(
         session.contains("this adapter enumerates the")
             && session.contains("semantic functions only so focused tests can inspect units")
@@ -2353,7 +2354,7 @@ fn per_body_query_boundary_is_stable_independent_and_cache_free() {
             "rooted consumers must retain the already-observed BodyTransaction directly: {redundant_projection}"
         );
     }
-    let session = include_str!("session.rs");
+    let session = SESSION_SOURCE;
     assert!(!session.contains("pub fn semantic("));
     assert!(!session.contains("semantic_view_from_rooted"));
     let body_transaction = source_between_exact_boundaries(
@@ -2615,7 +2616,7 @@ fn removed_parallel_entry_points_cannot_return() {
         );
     }
 
-    let session = include_str!("session.rs");
+    let session = SESSION_SOURCE;
     assert!(!session.contains("pub fn semantic("));
     assert!(!session.contains("semantic_view_from_rooted"));
 }
@@ -2753,7 +2754,7 @@ fn unstable_views_do_not_alias_query_engine_records() {
         .collect::<Vec<_>>();
     assert_eq!(public_modules, ["unstable;"]);
 
-    let session = include_str!("session.rs");
+    let session = SESSION_SOURCE;
     let diagnostic = include_str!("diagnostic_attempt_store.rs");
     let reviewed_public = [
         public_signatures(inherent_impl(session, "CompilerSession")),
@@ -2891,7 +2892,7 @@ fn durable_cache_schema_cannot_return_to_the_public_facade() {
     assert!(facade.contains("mod durable_semantics;"));
     assert!(!facade.contains("pub mod durable_semantics;"));
 
-    let session = include_str!("session.rs");
+    let session = SESSION_SOURCE;
     for raw_accessor in [
         "durable_specialized_body_payloads",
         "durable_ordinary_bodies",
@@ -2932,7 +2933,7 @@ fn query_attempts_have_one_family_owned_representation() {
 
 #[test]
 fn revisioned_parse_family_is_runtime_registered_without_a_selection_wrapper() {
-    let session = include_str!("session.rs");
+    let session = SESSION_SOURCE;
     let runtime = REVISIONED_DATABASE_SOURCE;
     for removed in [
         "parse: TypedQueryStore<ParseQuery>",
@@ -3438,7 +3439,7 @@ fn canonical_semantic_body_has_no_compiler_owned_peer_algebra() {
 #[test]
 fn rue_1027_production_body_authority_is_query_owned_and_import_only() {
     let canonical = include_str!("canonical_semantic.rs");
-    let session = include_str!("session.rs");
+    let session = SESSION_SOURCE;
     let database = REVISIONED_DATABASE_SOURCE;
     let body_query = include_str!("body_query.rs");
 
@@ -4014,7 +4015,7 @@ fn durable_constructor_diagnostics_use_the_air_interleaver() {
 fn candidate_plan_metrics_have_one_query_terminal_authority() {
     let database = REVISIONED_DATABASE_SOURCE;
     let queries = include_str!("queries.rs");
-    let session = include_str!("session.rs");
+    let session = SESSION_SOURCE;
     let pipeline = include_str!("pipeline_tests.rs");
     // These consumers live outside this Buck crate, so read them from the
     // repository root at test time instead of smuggling copies into the

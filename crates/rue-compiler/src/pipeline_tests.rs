@@ -3460,7 +3460,7 @@ mod tests {
         let retired_module = ["mod ", "unit", ";"].concat();
         for (path, source) in [
             ("rue-compiler/src/lib.rs", include_str!("lib.rs")),
-            ("rue-compiler/src/session.rs", include_str!("session.rs")),
+            ("rue-compiler/src/session/", crate::session::SESSION_SOURCE),
             (
                 "rue-compiler/src/parsed_modules.rs",
                 include_str!("parsed_modules.rs"),
