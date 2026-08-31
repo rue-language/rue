@@ -22,6 +22,16 @@ and should stay.
   confirm them. Rue's own measured optimizer numbers live in RUE-1765
   (verifier at 4.5% of a fresh Lattice compile) and RUE-1693 (9,555 dominator
   rebuilds in one compile); those are cited as evidence, not re-derived.
+  Finding 12 is why the rest are unmeasured, and is the cheapest item here.
+* **Cross-audited.** A second independent audit of the same trunk revision
+  corrected four claims in the first draft of this note and contributed two
+  findings it had missed. The corrections are folded in where they belong
+  rather than tracked separately; the substantive ones were finding 1 (unroll
+  is a different defect, not the same one), finding 3 (must-execute must
+  preserve observable effects, not only trap order), finding 5 (keep the
+  release-mode check, drop only the clone), and finding 10 (LLVM's and GCC's
+  analysis structures are function-sized too — the advantage is reuse, not
+  size). Findings 12 and 13 came from that audit.
 
 ## The thesis
 
@@ -61,25 +71,30 @@ rather than clever. LLVM's LICM cannot invalidate `LoopInfo`/`DomTree` because
 `LoopSimplify` already gave it a preheader to hoist into, so it only ever moves
 instructions. That is the same insight RUE-1865 reached independently.
 
-## Findings, ranked
+## Findings
 
 | # | Finding | Axis | Est. size |
 | --- | --- | --- | --- |
 | 1 | Loop form is established mid-transform, not as a precondition | speed, architecture | already filed: RUE-1865 |
 | 2 | LICM's memory-invariance gate is whole-body, discarding the per-slot facts Rue already computes | capability | medium |
-| 3 | The never-hoist-trapping rule is stricter than it needs to be, and loop rotation is not the prerequisite RUE-934 assumes | capability | medium |
+| 3 | The never-hoist-trapping rule is stricter than it needs to be; loop rotation is not the prerequisite RUE-934 assumes, but must-execute alone is not sufficient either | capability | medium |
 | 4 | No memory-to-register promotion, which caps what every downstream pass can see | capability | large (RUE-917) |
-| 5 | `ensure_preheader` still deep-clones and re-verifies the whole function per preheader | allocations, speed | small |
+| 5 | `ensure_preheader` still deep-clones the whole function per preheader (the clone is the defect; the release-mode check should stay) | allocations, speed | small |
 | 6 | LICM only hoists; LLVM's LICM also sinks and promotes | capability | medium |
 | 7 | Unrolling refuses all nested loops outright | capability | medium |
 | 8 | CSE is block-local where both compilers are dominator-scoped | capability | medium |
 | 9 | Constant propagation is unconditional, not SCCP; the pipeline hand-rolls a one-round fixpoint instead | capability | medium |
-| 10 | Analyses are rebuilt from scratch per pass with whole-function allocations | speed, allocations | medium |
+| 10 | Analyses are rebuilt from scratch per pass, and def-use adjacency is rebuilt per consumer | speed, allocations | medium |
 | 11 | Full structural verification runs at boundaries where LLVM/GCC verify only under a debug flag | speed | already filed: RUE-1765 |
+| 12 | The optimizer's own work counters are computed and then discarded before production | observability | small |
+| 13 | Post-unroll cleanup omits three available passes; LICM has no profitability model | capability | medium |
 
-Findings 2 and 3 are the ones I would act on first: they are the difference
-between LICM being a pass that fires on real Rue code and one that mostly
-does not.
+Numbers are identity, not rank — the [suggested issue set](#suggested-issue-set)
+at the end carries the ordering. Findings 2 and 3 are the ones I would act on
+first on capability grounds: they are the difference between LICM being a pass
+that fires on real Rue code and one that mostly does not. Finding 12 is small
+and should probably come before either, because it is what makes the rest of
+this note checkable.
 
 ---
 
@@ -88,18 +103,24 @@ does not.
 Already filed as RUE-1865 with the LLVM and GCC citations, so this section only
 adds what the wider survey turned up.
 
-**The same defect exists in `unroll`, and RUE-1865 does not cover it.**
-`unroll::run_with_budget` (`unroll.rs:53-58`) has the identical restart loop:
-recompute `DominatorTree` + `loops()`, transform, `break` on any change, start
-over. It is worse there than in LICM, because unrolling clones blocks — so the
-forest is genuinely invalidated, not merely suspected of being stale, and the
-restart cost is paid per unrolled loop rather than per materialized preheader.
+**`unroll` has the same restart *shape* — but not the same defect, and
+canonicalization will not fix it.** `unroll::run_with_budget`
+(`unroll.rs:53-58`) carries an identical-looking loop: recompute
+`DominatorTree` + `loops()`, transform, `break` on any change, start over.
 
-RUE-1865's proposed normalization step ("one normalization serves both") is
-right, but the issue frames unroll as a beneficiary rather than a second site of
-the same bug. Whoever takes RUE-1865 should be told to fix both, and the
-acceptance criterion should include `unroll`'s `forest_computations` counter,
-not just LICM's.
+The two are not one bug. Establishing preheaders up front makes LICM
+*instruction-motion-only*, so it provably cannot invalidate the forest and the
+restart disappears as a consequence. Unrolling **clones blocks**. It genuinely
+invalidates the forest no matter what form the loops were in on entry, so a
+canonicalization step buys its restart loop nothing. Reducing unroll's
+recomputations is a different problem with different answers — batching the
+independent loops in one forest generation, or updating the forest incrementally
+across a clone.
+
+RUE-1865 should therefore *not* absorb it. The issue is right that "one
+normalization serves both" for establishing loop structure once; it should not be
+extended to unroll's restarts, which need their own issue and their own
+acceptance criterion.
 
 **A second detail worth carrying into that work.** LICM orders loops innermost-
 first by sorting on body size (`licm.rs:167`,
@@ -162,7 +183,7 @@ the module, not a free call, and it should be added there rather than
 reimplemented in `licm.rs` — the module's entire stated purpose is that this
 knowledge lives in one place.
 
-## 3. The trapping rule, and why loop rotation may not be the prerequisite
+## 3. The trapping rule: loop rotation is not the prerequisite, but must-execute is not the whole answer either
 
 **What Rue does.** Trapping invariant ops never move, absolutely
 (`licm.rs:14-19`, `licm.rs:439`). ADR-0054 Phase 4 and
@@ -199,32 +220,43 @@ the edge "**also when the single outside predecessor has other successors**,"
 precisely so the preheader's only successor is the header. So the structural
 precondition for GCC's mechanism is *already met in Rue today*.
 
-The degenerate case needs no analysis at all: **an instruction in the loop
-header always executes when the header does.** A trapping invariant instruction
-in the header can be hoisted to the preheader with no new infrastructure
-whatsoever.
-
 **The complication Rue has that LLVM does not, and that GCC mostly dodges.**
-Rue's traps are defined panics with locations, not UB. So it is not enough to
-preserve *whether* a trap happens; a hoist must not change *which* trap happens
-first. If a header contains `a / b` followed by `c + d` and both would trap,
-hoisting only the division reverses the reported panic. LLVM's poison/UB model
-makes this a non-question; GCC's `could_trap_p` set is dominated by memory
-references where ordering is not observable, so it does not bite there either.
+Must-execute is necessary but *not sufficient* here. Rue's traps are defined
+panics carrying a location, so hoisting must preserve more than whether a trap
+occurs — it must preserve the whole observable prefix that precedes it:
 
-For Rue the rule therefore needs an ordering clause that neither compiler needs:
-a trapping instruction may hoist only if every trapping instruction preceding
-it on the path from header entry is also hoisted, in the same relative order.
-Within a single block that is a simple prefix condition on the instruction list.
+* **Which trap fires.** If a header holds `a / b` then `c + d` and both would
+  trap, hoisting only the division reverses the reported panic.
+* **What has already happened when it fires.** If a `Store`, `Drop`, `Call`, or
+  any other observable-effect instruction precedes the trapping op in the
+  header, hoisting the op above it means the trap now fires with that effect
+  *not yet performed*. The program's visible state at abort differs.
+
+LLVM's poison/UB model makes the first a non-question and licenses the second;
+GCC's `could_trap_p` set is dominated by memory references where neither is
+observable. Rue has defined panic semantics and therefore needs a clause neither
+compiler needs.
+
+Stated once: **a trapping invariant instruction may hoist only if no instruction
+that may trap and no instruction with an observable side effect precedes it on
+any path from the header entry to it** — unless that predecessor also hoists,
+which for an observable-effect op it never can, since those are not speculatable
+at all. Within a single block this is a prefix condition on the instruction
+list; across a body it needs the must-execute walk to carry the effect check
+along with it.
+
+This also blunts the degenerate case. "An instruction in the loop header always
+executes when the header does" is true, but it does not make a header-resident
+trapping op free to hoist — it still has to be effect-prefix-clean. The header
+case is *cheaper* (no `always_executed_in` computation), not *free*.
 
 **Recommendation.** RUE-934 should be re-scoped. Its stated blocker — loop
-rotation — is not required for the always-executed formulation, and the issue's
-framing may be why it has sat in Backlog. Two follow-ups are worth filing
-against it: the header-only degenerate case (small, no new analysis), and the
-general `always_executed_in` computation modelled on GCC (medium). Both need
-the trap-ordering clause above, which is new design work and should be written
-down before either is implemented. I would not implement this from the survey
-alone; it wants an ADR-0054 amendment.
+rotation — is not required for the always-executed formulation, and that framing
+may be why it has sat in Backlog. But the replacement is must-execute **plus**
+trap-and-effect ordering, not must-execute alone, and that pairing is the design
+work. Write it down before implementing either the header-restricted case or the
+general `always_executed_in` computation. This wants an ADR-0054 amendment; I
+would not implement it from the survey.
 
 ## 4. No memory-to-register promotion
 
@@ -268,9 +300,19 @@ insert a preheader. `InsertPreheaderForLoop` edits in place and updates the
 `DomTree` incrementally via `DomTreeUpdater`. GCC's `create_preheaders` splits
 edges in place.
 
-**Recommendation.** Small and well-precedented: drop the clone, keep the
-verification behind `debug_assertions`, and extend the `opt/mod.rs` guard test
-to cover `loops.rs`. Worth filing.
+**Recommendation — the clone, not the check.** Drop the transactional clone,
+edit the graph in place, and **keep the verification release-enabled**. Rue
+maintains release-mode correctness guards deliberately: `verify.rs:15` says "Per
+RUE-45 the guard must fire in **release** builds too," and `rue-cli-tests`
+carries a release-mode CI job whose job is to catch guards that got
+`cfg(debug_assertions)`-gated. Debug-gating this one would cut against that
+policy and against finding 11, where the same always-on posture is defended as
+justified. Extend the `opt/mod.rs` guard test to cover `loops.rs` so the clone
+cannot come back.
+
+If a caller genuinely needs the pre-edit graph on a verification failure, the
+answer is a private editor discarded on failure — not a defensive copy taken on
+every success path.
 
 ## 6. LICM hoists but never sinks or promotes
 
@@ -374,7 +416,7 @@ transform; worth filing as an ADR-scale item, and it interacts with finding 4
 place). (b) I would file as a smaller note: at minimum make the re-run
 condition and its bound explicit, rather than a bare `if stats.x > 0`.
 
-## 10. Analyses are rebuilt from scratch, with whole-function allocations
+## 10. Analyses and def-use adjacency are rebuilt per consumer
 
 **Rebuild count.** In a single `-O3` function compile: `forward` builds a
 dominator tree (`forward.rs:279`), LICM builds one per sweep (`licm.rs:155`),
@@ -394,9 +436,15 @@ and `LoopAnalysis` and invalidate on an explicit `PreservedAnalyses` contract;
 transforms that only move instructions declare both preserved and pay nothing.
 GCC uses `calculate_dominance_info` / `free_dominance_info` with explicit
 validity state, plus `loops_state_satisfies_p` assertions, and updates
-dominators incrementally where a pass can. Both allocate analysis scratch from
-arenas or small-size-optimized containers sized by the working set, not by the
-function.
+dominators incrementally where a pass can.
+
+To be precise about where their advantage actually lies: **it is not that their
+analysis structures are smaller.** LLVM's `DominatorTree`, `LoopInfo`, and
+`MemorySSA` are all function-sized, as Rue's are. The advantage is (a) each is
+built once and *reused* across many passes rather than rebuilt per consumer, (b)
+the representations are compact and flat rather than a container per node, and
+(c) invalidation is explicit, so reuse is safe. Rue loses on all three
+independently, and (b) is fixable without touching (a) or (c).
 
 **Recommendation.** Do *not* propose a general analysis cache in isolation —
 ADR-0054's objection to unguarded caching is correct, and a cache without
@@ -410,6 +458,16 @@ issues that way explicitly.
 flattened now (CSR-style offsets + a single backing `Vec`), exactly as RUE-1693
 did for the dominator tree's adjacency. Small, worth filing.
 
+**A related duplication worth folding in.** Def-use adjacency is built privately
+and thrown away at least twice per `-O3` function: `constopt` builds `users[v]`
+for its sparse worklist, and LICM builds `dependents` over its candidate set
+(`licm.rs:255`). Several passes additionally run their own whole-CFG use-rewrite
+sweeps. LLVM does not rebuild this — SSA use lists are maintained on the IR
+itself and every pass reads them. A reusable compact `CfgUseIndex` would cut
+scans and allocations across `constopt`, `licm`, and the rewrite sweeps, and is
+the same structure a dominator-scoped CSE (finding 8) or a global one would want
+later.
+
 ## 11. Verification at every boundary
 
 Already filed as RUE-1765. Recording the prior-art comparison for that issue's
@@ -422,9 +480,68 @@ builds.
 
 Rue's choice here is more defensible than the raw comparison suggests — it is a
 young compiler with a planted-miscompile suite (RUE-1816) and a lot to lose from
-a silent codegen bug. But "always on, in release, at every boundary" is a
+a silent codegen bug, and RUE-45 makes release-enabled guards deliberate policy
+rather than an oversight. But "always on, in release, at every boundary" is a
 stronger position than either production compiler holds, and the 4.5% is what it
-costs.
+costs. The tractable target is the *number* of boundaries (finding 5 removes
+one), not the checks themselves.
+
+## 12. The optimizer's own work counters do not reach production
+
+Every finding above that claims a cost is a structural argument, because the
+data to check it is computed and then dropped.
+
+Rue's passes carry genuinely good bounded-work counters — LICM's `Stats` alone
+has ten fields, including `forest_computations`, `def_block_scans`,
+`instructions_examined`, and `hoist_workspace_growths`, each with a doc comment
+explaining which regression it would catch (`licm.rs:102-127`). They are
+exercised by unit tests and then thrown away in the real pipeline:
+`opt/mod.rs:428` is `licm::run(&mut cfg, type_pool)?;` — the return value is
+discarded. The published `OptimizationStats` carries five fields, all of them
+unrolling and growth (`opt/mod.rs:123-132`).
+
+So the pass with the most carefully instrumented work in the optimizer reports
+none of it, and RUE-1843's own acceptance counters (`hoist_workspace_growths`
+was added precisely so "a regression to per-loop allocation shows up here")
+cannot show up anywhere a person would look.
+
+**Recommendation.** Publish the counters that already exist before undertaking
+the restructuring the rest of this note argues for: LICM's `Stats`, per-pass
+analysis rebuild counts, and the `forward`/`cse`/`constopt` work totals. This is
+plumbing, not new instrumentation, and it converts most of this survey's
+structural claims into measurable ones. It should come early in the queue for
+that reason — it is what lets the later items be evaluated rather than argued.
+
+## 13. Post-unroll cleanup is narrower than the pipeline it sits in, and LICM has no cost model
+
+Two profitability-shaped gaps, both unmeasured.
+
+**Post-unroll cleanup.** After unrolling, `opt/mod.rs:439-441` runs
+`constopt → simplify → dce`. Not `forward`, not `peephole`, not `cse` — though
+all three ran earlier in the same pipeline and are still available. Unrolling
+clones a loop body N times, which is precisely the moment when the clones share
+forwardable loads and common subexpressions. LLVM's unroller is followed by the
+full simplification pipeline, not a subset. Whether the narrower set is
+deliberate (ADR-0054 specifies a cleanup fixpoint; it may have been scoped to
+what RUE-928 needed) or incidental is worth establishing before changing it —
+but the asymmetry is real and oracle-diff would settle the value cheaply.
+
+**LICM profitability.** Rue hoists every eligible invariant. There is no cost
+model in `licm.rs` at all. GCC has one: `stmt_cost` with a `LIM_EXPENSIVE`
+threshold, and `determine_max_movement` will refuse to hoist rather than
+"unconditionally execute very expensive operations," with the comment that
+moving *memory* references out "should almost surely be a win" — i.e. the
+profitability question is asymmetric by op class.
+
+Hoisting is not free in Rue either: it extends a live range from inside the loop
+to the whole loop, which costs a register. Rue's backend rematerializes constants
+and string metadata but not arbitrary hoisted arithmetic, so a cheap hoist that
+loses a register is a real possible regression. This is the one item in the
+survey where I would insist on measurement before any change: get spill counts
+and produced-program runtime with and without hoisting before choosing a
+threshold or widening rematerialization. It may well be that at Rue's current
+loop shapes the answer is "hoist everything," and that is fine — but it should be
+a measured answer, not an unexamined default.
 
 ## What Rue does differently and should keep
 
@@ -457,26 +574,34 @@ correct:
 Ordered by value per unit of work. None of these are filed yet except where
 noted.
 
-1. **LICM per-slot memory invariance via `slot_facts`** (finding 2) — medium,
-   highest ceiling, reuses existing infrastructure.
-2. **Extend RUE-1865 to cover `unroll`'s identical restart loop** (finding 1) —
-   comment on the existing issue rather than a new one.
-3. **Drop `ensure_preheader`'s transactional clone and release-mode
-   verification** (finding 5) — small, directly precedented by RUE-1663/1842,
-   extend the `opt/mod.rs` guard test.
-4. **Re-scope RUE-934 around `always_executed_in` rather than loop rotation**
+1. **Implement RUE-1865: canonical preheaders before the loop passes**
+   (finding 1) — the enabler the ordering in finding 10 depends on. Scope it to
+   LICM; do not fold unroll's restarts in.
+2. **Publish the optimizer's existing work counters** (finding 12) — small,
+   pure plumbing, and it is what turns the rest of this list from argument into
+   measurement. Worth doing early despite its modest direct payoff.
+3. **Drop `ensure_preheader`'s transactional clone, keeping release-mode
+   verification** (finding 5) — small, precedented by RUE-1663/1842; extend the
+   `opt/mod.rs` guard test to cover `loops.rs`.
+4. **Loop-scoped per-slot memory facts for LICM via `slot_facts`** (finding 2) —
+   medium, highest capability ceiling, reuses existing infrastructure.
+5. **Re-scope RUE-934 around must-execute plus trap-and-effect ordering**
    (finding 3) — comment on the existing issue; wants an ADR-0054 amendment
-   before implementation, because of the trap-ordering clause.
-5. **Allow unrolling of innermost loops that have a parent** (finding 7) —
+   before implementation.
+6. **Unroll restart batching, as its own issue** (finding 1) — explicitly not
+   part of RUE-1865; needs loop batching or incremental forest update.
+7. **Flatten `loops()`'s adjacency and share a `CfgUseIndex`** (finding 10) —
+   small to medium, precedented by RUE-1693.
+8. **Dominator-scoped CSE** (finding 8) — medium, a traversal change.
+9. **Allow unrolling of innermost loops that have a parent** (finding 7) —
    small, gated on oracle-diff.
-6. **Flatten `loops()`'s per-block successor `Vec`s** (finding 10) — small,
-   precedented by RUE-1693.
-7. **Dominator-scoped CSE** (finding 8) — medium, a traversal change.
-8. **Make the pipeline's conditional re-runs explicit** (finding 9b) — small.
-9. **LICM sinking** (finding 6) — medium, low value until RUE-917.
-10. **SCCP** (finding 9a) — ADR-scale.
-11. **Note on RUE-917** that the loop optimizer's ceiling is gated on it
-    (finding 4).
+10. **Measure post-unroll cleanup and LICM profitability** (finding 13) — needs
+    finding 12 first; measurement before any change.
+11. **Make the pipeline's conditional re-runs explicit** (finding 9b) — small.
+12. **LICM sinking** (finding 6) — medium, low value until RUE-917.
+13. **SCCP** (finding 9a) — ADR-scale.
+14. **Note on RUE-917** that the loop optimizer's ceiling is gated on it
+    (finding 4) — and that it carries its own design blocker.
 
 ## Sources
 
