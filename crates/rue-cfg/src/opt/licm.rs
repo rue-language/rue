@@ -120,6 +120,10 @@ pub struct Stats {
     /// Dedicated preheader blocks materialized (an existing unconditional
     /// single-entry predecessor is reused instead of counted here).
     pub preheaders_materialized: u64,
+    /// Times the shared discovery workspace grew its whole-function-sized
+    /// tables. One per run in the steady state, not one per loop analyzed
+    /// (RUE-1843) — a regression to per-loop allocation shows up here.
+    pub hoist_workspace_growths: u64,
 }
 
 /// Run loop-invariant code motion. Call at `-O3` only, after the `-O2` passes
@@ -139,6 +143,9 @@ pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, Cfg
     }
 
     let mut stats = Stats::default();
+    // One discovery workspace for the whole run, reset per loop rather than
+    // reallocated (RUE-1843).
+    let mut workspace = HoistWorkspace::default();
 
     // Recompute dominators + loops from scratch after each actual CFG-edge
     // change (ADR-0054). Instruction-only motion leaves the forest valid, so
@@ -168,7 +175,16 @@ pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, Cfg
         let mut cfg_changed = false;
         for id in order {
             stats.loops_analyzed += 1;
-            if hoist_loop(cfg, forest.get(id), type_pool, &mut def_block, &mut stats)?.cfg_changed {
+            if hoist_loop(
+                cfg,
+                forest.get(id),
+                type_pool,
+                &mut def_block,
+                &mut workspace,
+                &mut stats,
+            )?
+            .cfg_changed
+            {
                 // A dedicated preheader changed edges, so the forest is stale.
                 cfg_changed = true;
                 break;
@@ -208,6 +224,90 @@ fn may_have_cycle_by_block_order(cfg: &Cfg) -> bool {
     false
 }
 
+/// Whole-function-sized scratch for invariant discovery, owned by the run
+/// rather than by each loop (RUE-1843).
+///
+/// Every table is indexed by `CfgValue` or `BlockId`, so each is sized by the
+/// *function* — but only the current loop's candidates are ever written. A
+/// fresh set per loop meant six allocations proportional to the whole function
+/// for every loop in every sweep, paid in full even by a loop with no
+/// candidates at all, since they are built before the zero-hoist early return.
+/// `pending` alone is 8 bytes per value and `dependents` a 24-byte `Vec` header
+/// per value before a single push.
+///
+/// Reuse is only sound because every table's written set is bounded by
+/// `candidate_values` (and `in_loop` by `in_loop_blocks`), so resetting just
+/// those entries restores the all-default state each loop expects, in time
+/// proportional to the loop rather than the function. `invariant` is the one
+/// that would bite if this were wrong: it is read for *every* body instruction,
+/// not just candidates, so a stale `true` would delete a live instruction.
+#[derive(Default)]
+struct HoistWorkspace {
+    in_loop: Vec<bool>,
+    /// Blocks currently set in `in_loop`.
+    in_loop_blocks: Vec<BlockId>,
+    candidate: Vec<bool>,
+    /// Values currently set in `candidate`. Every other value-indexed table's
+    /// written set is a subset of this.
+    candidate_values: Vec<CfgValue>,
+    pending: Vec<usize>,
+    blocked: Vec<bool>,
+    dependents: Vec<Vec<CfgValue>>,
+    invariant: Vec<bool>,
+    order: Vec<CfgValue>,
+    worklist: VecDeque<CfgValue>,
+}
+
+impl HoistWorkspace {
+    /// Reset what the previous loop dirtied, grow to cover the graph, and mark
+    /// `body` as the loop now under analysis.
+    fn prepare(&mut self, cfg: &Cfg, body: &[BlockId], stats: &mut Stats) {
+        for &value in &self.candidate_values {
+            let idx = value.as_u32() as usize;
+            self.candidate[idx] = false;
+            self.pending[idx] = 0;
+            self.blocked[idx] = false;
+            self.invariant[idx] = false;
+            // Clearing keeps the capacity, which is the point: the per-value
+            // `Vec` headers are allocated once and refilled.
+            self.dependents[idx].clear();
+        }
+        self.candidate_values.clear();
+        for &block in &self.in_loop_blocks {
+            self.in_loop[block.as_u32() as usize] = false;
+        }
+        self.in_loop_blocks.clear();
+        self.order.clear();
+        self.worklist.clear();
+
+        // Grow only. Materializing a preheader adds a block and can add typed
+        // block params, so both counts can rise between sweeps; neither ever
+        // falls, and truncating would discard capacity for no gain.
+        let values = cfg.value_count();
+        let blocks = cfg.block_count();
+        let grow_values = self.candidate.len() < values;
+        let grow_blocks = self.in_loop.len() < blocks;
+        if grow_values || grow_blocks {
+            stats.hoist_workspace_growths += 1;
+        }
+        if grow_values {
+            self.candidate.resize(values, false);
+            self.pending.resize(values, 0);
+            self.blocked.resize(values, false);
+            self.invariant.resize(values, false);
+            self.dependents.resize_with(values, Vec::new);
+        }
+        if grow_blocks {
+            self.in_loop.resize(blocks, false);
+        }
+
+        for &block in body {
+            self.in_loop[block.as_u32() as usize] = true;
+            self.in_loop_blocks.push(block);
+        }
+    }
+}
+
 /// Hoist every trap-free invariant instruction out of `lp` into its preheader.
 /// Reports whether materializing the destination changed CFG edges.
 #[derive(Default)]
@@ -220,6 +320,7 @@ fn hoist_loop(
     lp: &NaturalLoop,
     type_pool: &FrozenTypeInternPool,
     def_block: &mut Vec<Option<BlockId>>,
+    workspace: &mut HoistWorkspace,
     stats: &mut Stats,
 ) -> Result<HoistResult, CfgOptimizationError> {
     // Phase-2 conservatism: any memory read is non-invariant when the loop body
@@ -229,12 +330,20 @@ fn hoist_loop(
     // Classify each body instruction once. The classifier remains the sole
     // authority for trap/effect eligibility; the worklist below only answers
     // whether eligible operands become available at the preheader.
-    let value_count = cfg.value_count();
-    let mut in_loop = vec![false; cfg.block_count()];
-    let mut candidate = vec![false; value_count];
-    let mut candidate_values = Vec::new();
+    workspace.prepare(cfg, &lp.body, stats);
+    let HoistWorkspace {
+        in_loop,
+        in_loop_blocks: _,
+        candidate,
+        candidate_values,
+        pending,
+        blocked,
+        dependents,
+        invariant,
+        order,
+        worklist,
+    } = workspace;
     for &block in &lp.body {
-        in_loop[block.as_u32() as usize] = true;
         for &value in &cfg.get_block(block).insts {
             stats.instructions_examined += 1;
             if is_hoist_candidate(cfg, value, body_has_effect) {
@@ -248,10 +357,7 @@ fn hoist_loop(
     // when any in-loop operand is not itself a candidate (including block
     // parameters). Otherwise its pending count reaches zero as invariant
     // operands leave the worklist.
-    let mut pending = vec![0usize; value_count];
-    let mut blocked = vec![false; value_count];
-    let mut dependents: Vec<Vec<CfgValue>> = vec![Vec::new(); value_count];
-    for &value in &candidate_values {
+    for &value in candidate_values.iter() {
         let value_idx = value.as_u32() as usize;
         super::dce::visit_instruction_uses(cfg, value, |operand| {
             let operand_idx = operand.as_u32() as usize;
@@ -267,8 +373,7 @@ fn hoist_loop(
         });
     }
 
-    let mut worklist = VecDeque::new();
-    for &value in &candidate_values {
+    for &value in candidate_values.iter() {
         let idx = value.as_u32() as usize;
         if !blocked[idx] && pending[idx] == 0 {
             worklist.push_back(value);
@@ -277,8 +382,6 @@ fn hoist_loop(
 
     // Dependency order falls out of the worklist: a user is enqueued only
     // after every in-loop candidate operand has been discovered invariant.
-    let mut invariant = vec![false; value_count];
-    let mut order = Vec::new();
     while let Some(value) = worklist.pop_front() {
         let idx = value.as_u32() as usize;
         invariant[idx] = true;
@@ -315,7 +418,7 @@ fn hoist_loop(
             .insts
             .retain(|value| !invariant[value.as_u32() as usize]);
     }
-    for &value in &order {
+    for &value in order.iter() {
         cfg.get_block_mut(ph).insts.push(value);
         // The shared table is now stale for exactly these values, and their new
         // defining block is known: the preheader they just moved into.
@@ -679,6 +782,28 @@ mod tests {
              this to be a meaningful bound",
             stats.loops_analyzed,
             stats.def_block_scans,
+        );
+
+        // Same bound for the discovery workspace (RUE-1843): its six tables are
+        // sized by the function, so allocating a set per loop cost the whole
+        // function's size for every loop in every sweep — paid even by a loop
+        // with no candidates, since they are built before the zero-hoist early
+        // return. One workspace is reset per loop instead, and only grows when
+        // the graph does, which within a sweep can happen at most once: the
+        // sweep breaks out as soon as materializing a preheader changes edges.
+        assert!(
+            stats.hoist_workspace_growths <= stats.forest_computations,
+            "workspace grew {} times across {} sweeps; it should grow only when \
+             the graph does",
+            stats.hoist_workspace_growths,
+            stats.forest_computations,
+        );
+        assert!(
+            stats.loops_analyzed > stats.hoist_workspace_growths,
+            "fixture must analyze more loops ({}) than the workspace takes \
+             growths ({}) for this to be a meaningful bound",
+            stats.loops_analyzed,
+            stats.hoist_workspace_growths,
         );
 
         // `fully` must have left the inner body entirely and no longer live in
