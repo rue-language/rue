@@ -376,11 +376,11 @@ impl PackedValidatedRir {
                 )
                 .map_err(PackedRirAppendError::Build)?;
         }
-        let mut rir = editor.into_unvalidated();
+        let rir = editor.into_unvalidated();
         // The packed envelope and append traversal have already checked the
-        // complete payload graph, so published consumers may use lazy views.
-        rir.views_validated = true;
-        Ok((ValidatedRir(rir), appended.metadata))
+        // complete payload graph. Publication still goes through validation's
+        // sole `ValidatedRir` construction boundary.
+        Ok((ValidatedRir::from_prevalidated(rir), appended.metadata))
     }
 
     fn try_append_remapped_internal<E>(

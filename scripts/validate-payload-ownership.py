@@ -13,14 +13,20 @@ from gatelib import parse_crate_sources
 
 
 OWNER_PATHS = {
-    # `inst/packed.rs` is a private submodule of the RIR owner. Its decoder
-    # provides one atomic append/rollback transaction over both physical
-    # stores; treating it as an arbitrary consumer would force that invariant
-    # through a broader mutable-store API.
+    # These files are the privacy-nested RIR owner layers. Payload encoding,
+    # span rewriting, validation, editing, packed decoding, and their moved
+    # owner tests intentionally share descendant-private access to the two
+    # physical stores. `inst/printer.rs` is deliberately absent: presentation
+    # consumes only typed read views.
     "rue-rir": {
         Path("inst.rs"),
+        Path("inst/payload.rs"),
+        Path("inst/spans.rs"),
+        Path("inst/validation.rs"),
+        Path("inst/editor.rs"),
         Path("inst/payload_support.rs"),
         Path("inst/packed.rs"),
+        Path("inst/tests.rs"),
     },
     "rue-air": {Path("inst.rs"), Path("inst/payload_support.rs")},
     "rue-cfg": {Path("inst.rs"), Path("inst/payload_metrics.rs"), Path("payload.rs")},
