@@ -5,9 +5,11 @@
 //! structural resolution, qualified-path walking, visibility, and constructor
 //! argument binding.
 
+use std::cell::RefCell;
 use std::path::Path;
 use std::sync::Arc;
 
+use ahash::AHashMap;
 use lasso::{Key, Spur};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -24,6 +26,58 @@ impl SemanticVisibilityDomain {
 
     pub fn is_visible_from(&self, accessing: &Self, is_public: bool) -> bool {
         is_public || accessing.0.is_none() || self.0.is_none() || accessing.0 == self.0
+    }
+}
+
+/// Per-file memo for [`SemanticVisibilityDomain::from_file_path`].
+///
+/// A file's visibility domain is a pure function of its source path, but
+/// deriving it costs a path parse, a lossy UTF-8 conversion and a fresh
+/// `Arc<str>`. RUE-1840 stopped resolution from deriving it on the fast
+/// paths; this stops the derivations that remain from repeating, since they
+/// name the same handful of files over and over.
+///
+/// Only a *found* path is memoized. A path table can be filled lazily — the
+/// compiler's is, resolving a module's locator on first use — so a file with
+/// no path yet can acquire one, and recording the miss would pin the wrong
+/// domain for the rest of the table's life. A miss costs a repeated probe;
+/// that is the cheap half.
+///
+/// Given that, this caches a pure function of one path table: it belongs
+/// beside that table and shares its lifetime, and whatever drops the paths
+/// drops the domains derived from them. There is nothing else to invalidate
+/// it against.
+#[derive(Debug)]
+pub struct SemanticVisibilityDomainCache<F> {
+    derived: RefCell<AHashMap<F, SemanticVisibilityDomain>>,
+}
+
+impl<F> Default for SemanticVisibilityDomainCache<F> {
+    fn default() -> Self {
+        Self {
+            derived: RefCell::new(AHashMap::new()),
+        }
+    }
+}
+
+impl<F: Copy + Eq + std::hash::Hash> SemanticVisibilityDomainCache<F> {
+    /// The visibility domain for `file`, deriving it on first use.
+    ///
+    /// `source_path` is invoked once per distinct `file` that has one, and on
+    /// every lookup for a file that does not — see the type docs for why the
+    /// absent case is deliberately not recorded.
+    pub fn domain(
+        &self,
+        file: F,
+        source_path: impl FnOnce() -> Option<Arc<str>>,
+    ) -> Option<SemanticVisibilityDomain> {
+        let cached = self.derived.borrow().get(&file).cloned();
+        if cached.is_some() {
+            return cached;
+        }
+        let derived = SemanticVisibilityDomain::from_file_path(Some(&source_path()?));
+        self.derived.borrow_mut().insert(file, derived.clone());
+        Some(derived)
     }
 }
 
@@ -2685,6 +2739,60 @@ mod tests {
             fixture.accessing_domain_calls.get(),
             1,
             "a selected named type must still derive the visibility domain"
+        );
+    }
+
+    #[test]
+    fn the_visibility_domain_cache_derives_once_per_file() {
+        // RUE-1840, second half. Resolution now derives the accessing domain
+        // only where it is read, but the derivations that remain name the same
+        // handful of files over and over, and `from_file_path` is a path parse,
+        // a lossy UTF-8 conversion and a fresh Arc<str> every time.
+        let cache = SemanticVisibilityDomainCache::default();
+        let probes = std::cell::Cell::new(0u32);
+        let probe = |path: Option<&'static str>| {
+            probes.set(probes.get() + 1);
+            path.map(Arc::<str>::from)
+        };
+
+        let expected = SemanticVisibilityDomain::from_file_path(Some("app/sub/main.rue"));
+        for _ in 0..5 {
+            assert_eq!(
+                cache.domain(7u32, || probe(Some("app/sub/main.rue"))),
+                Some(expected.clone())
+            );
+        }
+        assert_eq!(probes.get(), 1, "a repeated lookup re-derived the domain");
+
+        // A distinct file is a distinct key, so it derives once more: the memo
+        // is per file, not a single last-seen slot.
+        assert_eq!(
+            cache.domain(8u32, || probe(Some("app/other/main.rue"))),
+            Some(SemanticVisibilityDomain::from_file_path(Some(
+                "app/other/main.rue"
+            )))
+        );
+        assert_eq!(
+            probes.get(),
+            2,
+            "a second file did not derive its own domain"
+        );
+
+        // A file with no path yet must NOT be memoized as absent. The
+        // compiler's path table is filled lazily — `module_source` inserts a
+        // module's physical path the first time its locator resolves — so a
+        // lookup can miss and the same file acquire a path immediately after.
+        // Recording the miss would pin that file at "no domain" for the life
+        // of the table, silently widening what is visible from it.
+        let mut path: Option<&'static str> = None;
+        assert_eq!(cache.domain(9u32, || probe(path)), None);
+        path = Some("app/late/main.rue");
+        assert_eq!(
+            cache.domain(9u32, || probe(path)),
+            Some(SemanticVisibilityDomain::from_file_path(Some(
+                "app/late/main.rue"
+            ))),
+            "a file that acquired a path after a miss kept the stale absence"
         );
     }
 

@@ -160,8 +160,8 @@ pub use semantic_type_resolution::{
     SemanticTypeConstructorHead, SemanticTypeConstructorParameter, SemanticTypeFact,
     SemanticTypeFactKind, SemanticTypeSyntaxError, SemanticTypeSyntaxFailure,
     SemanticTypeSyntaxProvider, SemanticValueSyntax, SemanticVisibilityDomain,
-    resolve_semantic_module_path, resolve_structured_semantic_type_syntax,
-    resolve_structured_semantic_type_syntax_with,
+    SemanticVisibilityDomainCache, resolve_semantic_module_path,
+    resolve_structured_semantic_type_syntax, resolve_structured_semantic_type_syntax_with,
 };
 pub use types::{
     ArrayLen, ArrayTypeId, EnumDef, EnumId, LangItem, ModuleDef, ModuleId, PtrConstTypeId,
