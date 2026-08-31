@@ -16,6 +16,7 @@ use crate::{
     Terminator, Type,
 };
 use ahash::{AHashMap, AHashSet};
+use rue_span::Span;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Stats {
@@ -490,8 +491,171 @@ fn map_value(map: &AHashMap<CfgValue, CfgValue>, value: CfgValue) -> CfgValue {
     map.get(&value).copied().unwrap_or(value)
 }
 
+/// The variable-length operands of one instruction, read out of the original
+/// graph before any cloning begins.
+///
+/// At most one field is ever non-empty; which one follows from the
+/// instruction's own shape. The arms filled by [`capture_operands`] mirror the
+/// payload-reading arms of [`remap_data`] one for one — a payload kind added to
+/// either belongs in both.
+#[derive(Debug, Default)]
+struct SourceOperands {
+    /// `Intrinsic` arguments, `StructInit` fields, `ArrayInit` elements and
+    /// `EnumVariant` payloads: flat value lists.
+    values: Vec<CfgValue>,
+    /// `Call` and `AccessorCall` arguments.
+    call_args: Vec<CfgCallArg>,
+    /// `PlaceRead` and `PlaceWrite` projections.
+    projections: Vec<Projection>,
+}
+
+fn capture_operands(cfg: &Cfg, data: &CfgInstData) -> SourceOperands {
+    let mut operands = SourceOperands::default();
+    match data {
+        CfgInstData::Call { .. } => operands.call_args = cfg.get_call_args(data).to_vec(),
+        CfgInstData::AccessorCall { args, .. } => operands.call_args = cfg.call_args(args).to_vec(),
+        CfgInstData::Intrinsic { .. } => operands.values = cfg.get_intrinsic_args(data).to_vec(),
+        CfgInstData::StructInit { .. } => operands.values = cfg.get_struct_fields(data).to_vec(),
+        CfgInstData::ArrayInit { elements } => {
+            operands.values = cfg.array_elements(elements).to_vec();
+        }
+        CfgInstData::EnumVariant { payload, .. } => {
+            operands.values = cfg.enum_payload(payload).to_vec();
+        }
+        CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. } => {
+            operands.projections = cfg.get_place_projections(place).to_vec();
+        }
+        _ => {}
+    }
+    operands
+}
+
+/// One loop-body instruction as it was before unrolling started.
+#[derive(Debug)]
+struct SourceInst {
+    ty: Type,
+    span: Span,
+    /// The original instruction shape. Its variable-length payload ranges still
+    /// address the *live* graph's arenas — which is where they came from, and
+    /// where they stay valid, since this pass only ever appends to them. Read
+    /// the operands out of `operands`, never by resolving these ranges: after
+    /// unrolling begins, resolving them against the graph yields the original
+    /// operands rather than the mapped ones. Nothing here can: `remap_data`
+    /// takes no read handle on the source graph at all.
+    data: CfgInstData,
+    operands: SourceOperands,
+}
+
+/// One loop-body block as it was before unrolling started, with its
+/// terminator's block-argument lists already resolved.
+#[derive(Debug)]
+struct SourceBlock {
+    params: Vec<(CfgValue, Type)>,
+    insts: Vec<CfgValue>,
+    /// Carries payload ranges under the same rule as [`SourceInst::data`]: the
+    /// resolved lists below are what `remap_term` reads.
+    terminator: Terminator,
+    goto_args: Vec<CfgValue>,
+    then_args: Vec<CfgValue>,
+    else_args: Vec<CfgValue>,
+    switch_cases: Vec<(i64, BlockId)>,
+}
+
+/// An immutable copy of the loop subgraph, taken once per unroll.
+///
+/// [`unroll_one`] appends blocks and instructions and rewires terminators while
+/// it reads the original shape, so those reads cannot borrow the graph it is
+/// editing. They only ever touch the loop body, so this copies the loop body
+/// and nothing else — where a whole-`Cfg` clone used to stand in, at a cost
+/// proportional to the entire function (RUE-1842).
+#[derive(Debug)]
+struct LoopSource {
+    blocks: AHashMap<BlockId, SourceBlock>,
+    insts: AHashMap<CfgValue, SourceInst>,
+    ownership_boundaries: AHashSet<CfgValue>,
+}
+
+impl LoopSource {
+    fn capture(cfg: &Cfg, body: &[BlockId]) -> Self {
+        let mut blocks = AHashMap::with_capacity(body.len());
+        let mut insts = AHashMap::new();
+        let mut ownership_boundaries = AHashSet::new();
+        for &id in body {
+            let block = cfg.get_block(id);
+            let terminator = block.terminator.duplicate_with_owner();
+            let (mut goto_args, mut then_args, mut else_args, mut switch_cases) =
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            // Each accessor panics on the wrong terminator shape, so ask only
+            // for the lists this terminator actually has.
+            match &terminator {
+                Terminator::Goto { .. } => goto_args = cfg.get_goto_args(&terminator).to_vec(),
+                Terminator::Branch { .. } => {
+                    then_args = cfg.get_branch_then_args(&terminator).to_vec();
+                    else_args = cfg.get_branch_else_args(&terminator).to_vec();
+                }
+                Terminator::Switch { .. } => {
+                    switch_cases = cfg.get_switch_cases(&terminator).to_vec();
+                }
+                Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => {}
+            }
+            for &(value, _) in &block.params {
+                if cfg.is_ownership_boundary_value(value) {
+                    ownership_boundaries.insert(value);
+                }
+            }
+            for &value in &block.insts {
+                let inst = cfg.get_inst(value);
+                insts.insert(
+                    value,
+                    SourceInst {
+                        ty: inst.ty,
+                        span: inst.span,
+                        data: inst.data.duplicate_with_owner(),
+                        operands: capture_operands(cfg, &inst.data),
+                    },
+                );
+                if cfg.is_ownership_boundary_value(value) {
+                    ownership_boundaries.insert(value);
+                }
+            }
+            blocks.insert(
+                id,
+                SourceBlock {
+                    params: block.params.clone(),
+                    insts: block.insts.clone(),
+                    terminator,
+                    goto_args,
+                    then_args,
+                    else_args,
+                    switch_cases,
+                },
+            );
+        }
+        Self {
+            blocks,
+            insts,
+            ownership_boundaries,
+        }
+    }
+
+    /// A captured loop-body block. Callers only ever ask for blocks they took
+    /// from the same `body` slice this was captured from.
+    fn block(&self, id: BlockId) -> &SourceBlock {
+        &self.blocks[&id]
+    }
+
+    /// A captured loop-body instruction, keyed by its original value.
+    fn inst(&self, value: CfgValue) -> &SourceInst {
+        &self.insts[&value]
+    }
+
+    fn is_ownership_boundary_value(&self, value: CfgValue) -> bool {
+        self.ownership_boundaries.contains(&value)
+    }
+}
+
 fn remap_data(
-    source: &Cfg,
+    operands: &SourceOperands,
     cfg: &mut Cfg,
     data: &CfgInstData,
     map: &AHashMap<CfgValue, CfgValue>,
@@ -555,8 +719,8 @@ fn remap_data(
                 PlaceBase::Indirect(v) => PlaceBase::Indirect(m(v)),
                 b => b,
             };
-            let ps = source
-                .get_place_projections(place)
+            let ps = operands
+                .projections
                 .iter()
                 .map(|p| match p {
                     Projection::Field {
@@ -582,8 +746,8 @@ fn remap_data(
                 PlaceBase::Indirect(v) => PlaceBase::Indirect(m(v)),
                 b => b,
             };
-            let ps = source
-                .get_place_projections(place)
+            let ps = operands
+                .projections
                 .iter()
                 .map(|p| match p {
                     Projection::Field {
@@ -607,14 +771,14 @@ fn remap_data(
         CfgInstData::Call { runtime, name, .. } => CfgInstData::Call {
             runtime: *runtime,
             name: *name,
-            args: cfg.push_call_args(source.get_call_args(data).iter().map(|a| CfgCallArg {
+            args: cfg.push_call_args(operands.call_args.iter().map(|a| CfgCallArg {
                 value: m(a.value),
                 mode: a.mode,
             }))?,
         },
-        CfgInstData::AccessorCall { name, args } => CfgInstData::AccessorCall {
+        CfgInstData::AccessorCall { name, .. } => CfgInstData::AccessorCall {
             name: *name,
-            args: cfg.push_call_args(source.call_args(args).iter().map(|a| CfgCallArg {
+            args: cfg.push_call_args(operands.call_args.iter().map(|a| CfgCallArg {
                 value: m(a.value),
                 mode: a.mode,
             }))?,
@@ -622,24 +786,23 @@ fn remap_data(
         CfgInstData::Intrinsic { runtime, name, .. } => CfgInstData::Intrinsic {
             runtime: *runtime,
             name: *name,
-            args: cfg.push_intrinsic_args(source.get_intrinsic_args(data).iter().map(|v| m(*v)))?,
+            args: cfg.push_intrinsic_args(operands.values.iter().map(|v| m(*v)))?,
         },
         CfgInstData::StructInit { struct_id, .. } => CfgInstData::StructInit {
             struct_id: *struct_id,
-            fields: cfg.push_struct_fields(source.get_struct_fields(data).iter().map(|v| m(*v)))?,
+            fields: cfg.push_struct_fields(operands.values.iter().map(|v| m(*v)))?,
         },
-        CfgInstData::ArrayInit { elements } => CfgInstData::ArrayInit {
-            elements: cfg
-                .push_array_elements(source.array_elements(elements).iter().map(|v| m(*v)))?,
+        CfgInstData::ArrayInit { .. } => CfgInstData::ArrayInit {
+            elements: cfg.push_array_elements(operands.values.iter().map(|v| m(*v)))?,
         },
         CfgInstData::EnumVariant {
             enum_id,
             variant_index,
-            payload,
+            ..
         } => CfgInstData::EnumVariant {
             enum_id: *enum_id,
             variant_index: *variant_index,
-            payload: cfg.push_enum_payload(source.enum_payload(payload).iter().map(|v| m(*v)))?,
+            payload: cfg.push_enum_payload(operands.values.iter().map(|v| m(*v)))?,
         },
         CfgInstData::EnumPayloadGet {
             base,
@@ -689,17 +852,19 @@ fn unroll_one(
         return Ok((0, 0, 0));
     }
     let original_blocks = lp.body.clone();
-    // Read every original instruction, terminator, and owner-bound payload
-    // from one immutable snapshot. This keeps work proportional to the
-    // cloned subgraph and prevents later iterations observing earlier clones.
-    let source = cfg.clone();
+    // Read every original instruction, terminator, and owner-bound payload from
+    // one immutable copy: the pass appends blocks and rewires terminators while
+    // it reads, so these reads cannot borrow the graph being edited, and later
+    // iterations must not observe earlier clones. Only the loop body is ever
+    // read, so only the loop body is copied (RUE-1842).
+    let source = LoopSource::capture(cfg, &original_blocks);
     let original_values: u64 = original_blocks
         .iter()
         .map(|b| {
-            u64::try_from(cfg.get_block(*b).params.len())
+            u64::try_from(source.block(*b).params.len())
                 .ok()
                 .and_then(|params| {
-                    params.checked_add(u64::try_from(cfg.get_block(*b).insts.len()).ok()?)
+                    params.checked_add(u64::try_from(source.block(*b).insts.len()).ok()?)
                 })
                 .unwrap_or(u64::MAX)
         })
@@ -707,7 +872,7 @@ fn unroll_one(
         .unwrap_or(u64::MAX);
     let original_instructions: u64 = original_blocks
         .iter()
-        .map(|b| u64::try_from(cfg.get_block(*b).insts.len()).unwrap_or(u64::MAX))
+        .map(|b| u64::try_from(source.block(*b).insts.len()).unwrap_or(u64::MAX))
         .try_fold(0u64, |a, b| a.checked_add(b))
         .unwrap_or(u64::MAX);
     let mut iterations: Vec<AHashMap<BlockId, BlockId>> = Vec::new();
@@ -719,8 +884,7 @@ fn unroll_one(
             .collect();
         let mut map = AHashMap::new();
         for &b in &original_blocks {
-            let params = cfg.get_block(b).params.clone();
-            for &(v, ty) in &params {
+            for &(v, ty) in &source.block(b).params {
                 let nv = cfg.add_block_param(block_map[&b], ty);
                 map.insert(v, nv);
                 // Unrolling duplicates the value arena. Preserve the
@@ -734,21 +898,14 @@ fn unroll_one(
         }
         let insts: Vec<(CfgValue, BlockId)> = original_blocks
             .iter()
-            .flat_map(|&b| {
-                source
-                    .get_block(b)
-                    .insts
-                    .iter()
-                    .copied()
-                    .map(move |v| (v, b))
-            })
+            .flat_map(|&b| source.block(b).insts.iter().copied().map(move |v| (v, b)))
             .collect();
         // Reserve every cloned instruction value before translating any
         // operands. Accessor splicing can leave a later-appended definition
         // with a larger numeric ID than its user; numeric sorting alone would
         // then silently fall back to the original value.
         for &(v, b) in &insts {
-            let i = source.get_inst(v);
+            let i = source.inst(v);
             let nv = cfg.append_inst(
                 block_map[&b],
                 CfgInst {
@@ -766,27 +923,26 @@ fn unroll_one(
             .iter()
             .flat_map(|block| {
                 source
-                    .get_block(*block)
+                    .block(*block)
                     .params
                     .iter()
                     .map(|(value, _)| *value)
-                    .chain(source.get_block(*block).insts.iter().copied())
+                    .chain(source.block(*block).insts.iter().copied())
             })
             .collect::<AHashSet<_>>();
         let mut missing_mapping = false;
+        // These read original loop values, whose instruction data and payload
+        // handles this pass never rewrites — it only appends — so reading them
+        // off the graph gives the same answer the copy would.
         for &(v, _) in &insts {
-            super::dce::visit_instruction_uses(&source, v, |used| {
+            super::dce::visit_instruction_uses(cfg, v, |used| {
                 missing_mapping |= internal_values.contains(&used) && !map.contains_key(&used);
             });
         }
         for &block in &original_blocks {
-            super::dce::visit_terminator_uses(
-                &source,
-                &source.get_block(block).terminator,
-                |used| {
-                    missing_mapping |= internal_values.contains(&used) && !map.contains_key(&used);
-                },
-            );
+            super::dce::visit_terminator_uses(cfg, &cfg.get_block(block).terminator, |used| {
+                missing_mapping |= internal_values.contains(&used) && !map.contains_key(&used);
+            });
         }
         if missing_mapping {
             return Err(CfgOptimizationError::Edit(
@@ -797,7 +953,7 @@ fn unroll_one(
             ));
         }
         for (v, _) in insts {
-            let i = source.get_inst(v);
+            let i = source.inst(v);
             let iteration_i = i128::from(iteration);
             let raw = trip
                 .initial
@@ -816,7 +972,7 @@ fn unroll_one(
                     family: "unrolled IV representation",
                 })
             })?;
-            let data = remap_data(&source, cfg, &i.data, &map, Some((trip.slot, raw)))?;
+            let data = remap_data(&i.operands, cfg, &i.data, &map, Some((trip.slot, raw)))?;
             let nv = map[&v];
             cfg.get_inst_mut(nv).data = data;
         }
@@ -832,7 +988,8 @@ fn unroll_one(
         let block_map = &iterations[i];
         let map = &all_maps[i];
         for &b in &original_blocks {
-            let source_term = &source.get_block(b).terminator;
+            let source_block = source.block(b);
+            let source_term = &source_block.terminator;
             let target = block_map[&b];
             let term = if b == lp.header {
                 let body = match source_term {
@@ -856,13 +1013,13 @@ fn unroll_one(
                     }
                 };
                 let header_args: Vec<_> = match source_term {
-                    Terminator::Branch { then_block, .. } if *then_block == body => source
-                        .get_branch_then_args(source_term)
+                    Terminator::Branch { then_block, .. } if *then_block == body => source_block
+                        .then_args
                         .iter()
                         .map(|v| map_value(map, *v))
                         .collect(),
-                    Terminator::Branch { .. } => source
-                        .get_branch_else_args(source_term)
+                    Terminator::Branch { .. } => source_block
+                        .else_args
                         .iter()
                         .map(|v| map_value(map, *v))
                         .collect(),
@@ -885,7 +1042,7 @@ fn unroll_one(
                     args: cfg.push_goto_args(Vec::<CfgValue>::new())?,
                 }
             } else {
-                remap_term(&source, cfg, source_term, map, block_map)?
+                remap_term(source_block, cfg, map, block_map)?
             };
             cfg.get_block_mut(target).terminator = term;
         }
@@ -921,16 +1078,15 @@ fn unroll_one(
 }
 
 fn remap_term(
-    source: &Cfg,
+    source: &SourceBlock,
     cfg: &mut Cfg,
-    t: &Terminator,
     map: &AHashMap<CfgValue, CfgValue>,
     blocks: &AHashMap<BlockId, BlockId>,
 ) -> Result<Terminator, CfgOptimizationError> {
-    Ok(match t {
+    Ok(match &source.terminator {
         Terminator::Goto { target, .. } => Terminator::Goto {
             target: blocks.get(target).copied().unwrap_or(*target),
-            args: cfg.push_goto_args(source.get_goto_args(t).iter().map(|v| map_value(map, *v)))?,
+            args: cfg.push_goto_args(source.goto_args.iter().map(|v| map_value(map, *v)))?,
         },
         Terminator::Branch {
             cond,
@@ -940,19 +1096,9 @@ fn remap_term(
         } => Terminator::Branch {
             cond: map_value(map, *cond),
             then_block: blocks.get(then_block).copied().unwrap_or(*then_block),
-            then_args: cfg.push_then_args(
-                source
-                    .get_branch_then_args(t)
-                    .iter()
-                    .map(|v| map_value(map, *v)),
-            )?,
+            then_args: cfg.push_then_args(source.then_args.iter().map(|v| map_value(map, *v)))?,
             else_block: blocks.get(else_block).copied().unwrap_or(*else_block),
-            else_args: cfg.push_else_args(
-                source
-                    .get_branch_else_args(t)
-                    .iter()
-                    .map(|v| map_value(map, *v)),
-            )?,
+            else_args: cfg.push_else_args(source.else_args.iter().map(|v| map_value(map, *v)))?,
         },
         Terminator::Switch {
             scrutinee,
@@ -962,7 +1108,7 @@ fn remap_term(
             scrutinee: map_value(map, *scrutinee),
             cases: cfg.push_switch_cases(
                 source
-                    .get_switch_cases(t)
+                    .switch_cases
                     .iter()
                     .map(|(v, b)| (*v, blocks.get(b).copied().unwrap_or(*b))),
             )?,
@@ -1348,6 +1494,64 @@ mod tests {
         let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.loops_unrolled, 0);
         assert_eq!(format!("{:?}", cfg), format!("{:?}", before));
+    }
+
+    #[test]
+    fn unrolling_never_clones_the_whole_graph() {
+        // RUE-1842: `unroll_one` read the original loop out of a whole-`Cfg`
+        // clone, once per accepted unroll. The snapshot is load-bearing — the
+        // pass appends blocks and rewires terminators while it reads the
+        // original shape — but it only ever reads the loop body, so copying
+        // the function was pure waste. `Cfg::clone` counts itself, which makes
+        // this checkable directly rather than by matching source text.
+        let mut cfg = slot_loop(0, 3, false);
+        Cfg::reset_test_clone_count();
+        let stats = run(&mut cfg).unwrap();
+        let clones = Cfg::test_clone_count();
+        assert_eq!(stats.loops_unrolled, 1, "the fixture must actually unroll");
+        assert_eq!(
+            clones, 0,
+            "unrolling cloned the whole graph {clones} time(s)"
+        );
+        cfg.verify().unwrap();
+    }
+
+    #[test]
+    fn the_loop_snapshot_copies_only_the_loop_body() {
+        // The other half of RUE-1842: a copy that avoids `Cfg::clone` but still
+        // walks every block would count zero clones and cost just as much. The
+        // snapshot must be bounded by the loop it was asked for.
+        let cfg = slot_loop(0, 3, false);
+        let entry = BlockId::from_raw(0);
+        let exit = BlockId::from_raw(4);
+        let body = vec![
+            BlockId::from_raw(1),
+            BlockId::from_raw(2),
+            BlockId::from_raw(3),
+        ];
+        let source = LoopSource::capture(&cfg, &body);
+
+        assert_eq!(
+            source.blocks.len(),
+            body.len(),
+            "the snapshot copied blocks it was not asked for"
+        );
+        for outside in [entry, exit] {
+            assert!(
+                !source.blocks.contains_key(&outside),
+                "the snapshot reached outside the loop body"
+            );
+        }
+        let expected: usize = body.iter().map(|b| cfg.get_block(*b).insts.len()).sum();
+        assert_eq!(
+            source.insts.len(),
+            expected,
+            "the snapshot copied instructions outside the loop body"
+        );
+        assert!(
+            expected < cfg.get_block(entry).insts.len() + expected,
+            "the fixture must have work outside the loop for this to mean anything"
+        );
     }
 
     #[test]
