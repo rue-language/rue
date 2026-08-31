@@ -1545,17 +1545,21 @@ EOF
   check "test.sh: the union tier filters no tier out" \
     "$([ "$rc" -eq 0 ] && ! grep -Eq -- '--(include|exclude) rue_test_tier_' "$sb/calls.log" && echo 0 || echo 1)"
 
-  # Required CI gives these corpora their own platform-corpus job; a local run
-  # must still cover them.
+  # Required CI gives the heavy corpora and clippy gates their own jobs; a local
+  # run must still cover both sets through the ordinary premerge tier.
   : >"$sb/calls.log"; rc=0
   out="$(cd "$sb" && CI=true FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
   check "test.sh: required CI subtracts the dedicated-lane label" \
     "$([ "$rc" -eq 0 ] && grep -Fq -- '--exclude rue_ci_dedicated_lane' "$sb/calls.log" && echo 0 || echo 1)"
+  check "test.sh: required CI subtracts the dedicated clippy-lane label" \
+    "$([ "$rc" -eq 0 ] && grep -Fq -- '--exclude rue_ci_clippy_lane' "$sb/calls.log" && echo 0 || echo 1)"
 
   : >"$sb/calls.log"; rc=0
   out="$(cd "$sb" && FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
   check "test.sh: a local run still covers the dedicated-lane corpora" \
     "$([ "$rc" -eq 0 ] && ! grep -Fq -- '--exclude rue_ci_dedicated_lane' "$sb/calls.log" && echo 0 || echo 1)"
+  check "test.sh: a local run still covers the dedicated clippy gates" \
+    "$([ "$rc" -eq 0 ] && ! grep -Fq -- '--exclude rue_ci_clippy_lane' "$sb/calls.log" && echo 0 || echo 1)"
 
   # The exit code is the verdict, and the sentinel agrees with it (RUE-579).
   rc=0

@@ -20,7 +20,13 @@ ROOT_BUCK = Path(os.environ.get("RUE_ROOT_BUCK", MODULE.ROOT_BUCK))
 
 class GateValidatorTests(unittest.TestCase):
     def validate_text(
-        self, text, native_runner=None, test_runner=None, buck=None, valgrind_install=None
+        self,
+        text,
+        native_runner=None,
+        test_runner=None,
+        buck=None,
+        valgrind_install=None,
+        clippy_adapter=None,
     ):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ci.yml"
@@ -47,8 +53,19 @@ class GateValidatorTests(unittest.TestCase):
                 if valgrind_install is not None
                 else MODULE.VALGRIND_INSTALL_SCRIPT.read_text()
             )
+            clippy_adapter_path = Path(directory) / "ci-clippy"
+            clippy_adapter_path.write_text(
+                clippy_adapter
+                if clippy_adapter is not None
+                else MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
+            )
             return MODULE.validate(
-                path, runner_path, test_runner_path, buck_path, installer_path
+                path,
+                runner_path,
+                test_runner_path,
+                buck_path,
+                installer_path,
+                clippy_adapter_path,
             )
 
     def test_current_workflow_is_valid(self):
@@ -721,6 +738,331 @@ class GateValidatorTests(unittest.TestCase):
     def test_declared_need_outputs_pass(self):
         self.assertEqual(self.validate_text(SOURCE.read_text()), [])
 
+    # RUE-1855: clippy keeps the same required check identity while waiting on
+    # the determinator. Both job-level always() and the dependency are needed:
+    # without the former, an upstream failure silently skips the required job.
+    def test_clippy_must_wait_for_affected_targets_with_always_semantics(self):
+        source = SOURCE.read_text()
+        changed = source.replace(
+            "  clippy:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    if: ${{ always() }}\n"
+            "    needs: affected-targets\n",
+            "  clippy:\n    runs-on: ubuntu-latest\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("clippy must use job-level always()", errors)
+        self.assertIn("clippy must depend exactly once on affected-targets", errors)
+
+    def test_clippy_displayed_identity_cannot_change(self):
+        changed = SOURCE.read_text().replace(
+            "  clippy:\n    runs-on: ubuntu-latest\n",
+            "  clippy:\n    runs-on: ubuntu-latest\n    name: renamed lint\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("existing displayed job/check identity", errors)
+
+    def test_clippy_heavy_setup_fails_open_on_missing_selection_output(self):
+        source = SOURCE.read_text()
+        mutations = (
+            # A transported run=false alone cannot prove intentional deselection.
+            "if: ${{ always() && steps.sel.outputs.run != 'false' }}",
+            # A failed selection step must run even if its partial outputs look valid.
+            "if: ${{ always() && (steps.sel.outputs.run != 'false' || "
+            "steps.sel.outputs.proof_status != 'SELECTIVE' || "
+            "steps.sel.outputs.gate_status != 'DESELECTED') }}",
+            # Missing proof or gate outputs are degraded state, never a skip.
+            "if: ${{ always() && (steps.sel.outcome != 'success' || "
+            "steps.sel.outputs.run != 'false' || "
+            "steps.sel.outputs.gate_status != 'DESELECTED') }}",
+            "if: ${{ always() && (steps.sel.outcome != 'success' || "
+            "steps.sel.outputs.run != 'false' || "
+            "steps.sel.outputs.proof_status != 'SELECTIVE') }}",
+        )
+        for mutation in mutations:
+            changed = source.replace(MODULE.CLIPPY_HEAVY_GATE, mutation, 1)
+            self.assertNotEqual(changed, source, "splice anchor no longer matches ci.yml")
+            errors = "\n".join(self.validate_text(changed))
+            self.assertIn("Bootstrap dotslash", errors)
+            self.assertIn("successful, proved lane deselection", errors)
+
+    def test_clippy_uses_the_repository_owned_dotslash_bootstrap(self):
+        source = SOURCE.read_text()
+        clippy = MODULE.job_blocks(source)["clippy"]
+        changed_clippy = clippy.replace(
+            "        uses: ./.github/actions/bootstrap-dotslash\n",
+            "        run: true\n",
+            1,
+        )
+        changed = source.replace(clippy, changed_clippy, 1)
+        self.assertNotEqual(changed, source, "splice anchor no longer matches ci.yml")
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("repository-owned dotslash bootstrap", errors)
+
+    def test_clippy_heavy_step_runtime_contract(self):
+        cases = (
+            ("success", "false", "", "DESELECTED", True),
+            ("success", "false", "SELECTIVE", "", True),
+            ("failure", "false", "SELECTIVE", "DESELECTED", True),
+            ("success", "true", "SELECTIVE", "DESELECTED", True),
+            ("success", "false", "SELECTIVE", "DESELECTED", False),
+        )
+        for outcome, run, proof, gate, expected_run in cases:
+            with self.subTest(outcome=outcome, run=run, proof=proof, gate=gate):
+                self.assertEqual(
+                    MODULE.clippy_heavy_step_runs(outcome, run, proof, gate),
+                    expected_run,
+                )
+
+    def test_clippy_lane_gate_must_use_the_canonical_lane(self):
+        changed = SOURCE.read_text().replace(
+            "run: scripts/ci-clippy select",
+            'run: scripts/ci-corpus-decision "release"',
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("complete proved decision", errors)
+
+    def test_clippy_incomplete_decision_metadata_cannot_deselect(self):
+        changed = SOURCE.read_text().replace(
+            "          RUE_AFFECTED_LANES_DIGEST: ${{ needs.affected-targets.outputs.selected_lanes_digest }}\n",
+            "",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("complete proved decision", errors)
+
+    def test_clippy_raw_closure_count_is_declared_and_consumed(self):
+        source = SOURCE.read_text()
+        changed = source.replace(
+            "          RUE_AFFECTED_IMPACTED_CLOSURE_COUNT: ${{ needs.affected-targets.outputs.impacted_closure_count }}\n",
+            "",
+            1,
+        )
+        self.assertNotEqual(changed, source, "splice anchor no longer matches ci.yml")
+        self.assertIn("complete proved decision", "\n".join(self.validate_text(changed)))
+
+        changed = source.replace(
+            "      impacted_closure_count: ${{ steps.decide.outputs.impacted_closure_count }}\n",
+            "",
+            1,
+        )
+        self.assertNotEqual(changed, source, "splice anchor no longer matches ci.yml")
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn(
+            "needs.affected-targets.outputs.impacted_closure_count is referenced",
+            errors,
+        )
+
+    def test_clippy_adapter_must_verify_the_raw_closure_count(self):
+        source = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
+        changed = source.replace(
+            '            "${RUE_AFFECTED_IMPACTED_CLOSURE_COUNT:-}" \\\n',
+            "",
+            1,
+        )
+        self.assertNotEqual(changed, source, "splice anchor no longer matches ci-clippy")
+        self.assertIn(
+            "complete planner proof",
+            "\n".join(MODULE.clippy_adapter_errors(changed)),
+        )
+
+    def test_clippy_impacted_payload_requires_count_and_digest(self):
+        changed = SOURCE.read_text().replace(
+            "          RUE_AFFECTED_IMPACTED_TARGETS_DIGEST: ${{ needs.affected-targets.outputs.impacted_targets_digest }}\n",
+            "",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("complete impacted payload proof", errors)
+
+    def test_clippy_materializer_requires_verified_selection_and_gate(self):
+        source = SOURCE.read_text()
+        for line in (
+            "          RUE_CLIPPY_PROOF_STATUS: ${{ steps.sel.outputs.proof_status }}\n",
+            "          RUE_CLIPPY_GATE_STATUS: ${{ steps.sel.outputs.gate_status }}\n",
+        ):
+            changed = source.replace(line, "", 1)
+            self.assertNotEqual(changed, source, "splice anchor no longer matches ci.yml")
+            errors = "\n".join(self.validate_text(changed))
+            self.assertIn("complete impacted payload proof", errors)
+
+    def test_clippy_adapter_cannot_narrow_after_selection_or_gate_failure(self):
+        source = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
+        for condition in (
+            '"${RUE_CLIPPY_PROOF_STATUS:-}" == "SELECTIVE"',
+            '"${RUE_CLIPPY_GATE_STATUS:-}" == "RUN"',
+        ):
+            changed = source.replace(condition, '"true" == "true"', 1)
+            self.assertNotEqual(changed, source, "splice anchor no longer matches ci-clippy")
+            errors = "\n".join(MODULE.clippy_adapter_errors(changed))
+            self.assertIn("authenticate the complete impacted payload", errors)
+
+    def test_clippy_selection_uses_the_canonical_planner_narrow_limit(self):
+        source = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
+        mutations = (
+            source.replace(
+                'narrow_limit="$("$affected" narrow-limit)"',
+                'narrow_limit="600"',
+                1,
+            ),
+            source.replace('"$narrow_limit" >/dev/null', '"600" >/dev/null', 1),
+        )
+        for changed in mutations:
+            self.assertNotEqual(changed, source, "splice anchor no longer matches ci-clippy")
+            errors = "\n".join(MODULE.clippy_adapter_errors(changed))
+            self.assertIn("canonical narrow limit", errors)
+
+    def test_clippy_cannot_reintroduce_a_peer_graph_query(self):
+        changed = SOURCE.read_text().replace(
+            "run: scripts/ci-clippy run",
+            "run: ./buck2 uquery \"kind('sh_test', 'root//crates/...')\"",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("reviewed registry-derived runner", errors)
+        self.assertIn("must not invoke Buck directly", errors)
+
+    def test_clippy_registered_intersection_cannot_be_bypassed(self):
+        adapter = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text().replace(
+            '"$affected" narrow-scope clippy "${NARROW_FILE:-}"',
+            '"$affected" scope-targets clippy',
+            1,
+        )
+        errors = "\n".join(
+            self.validate_text(SOURCE.read_text(), clippy_adapter=adapter)
+        )
+        self.assertIn("exact registry-derived execution program", errors)
+        self.assertIn("target text must come only from registered", errors)
+
+    def test_clippy_scope_failure_retains_the_broad_fail_open_superset(self):
+        adapter = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text().replace(
+            '"$buck2" test //crates/...', "true", 1
+        )
+        errors = "\n".join(
+            self.validate_text(SOURCE.read_text(), clippy_adapter=adapter)
+        )
+        self.assertIn("broad fail-open test fallback", errors)
+
+    def test_clippy_empty_live_and_empty_subset_contracts_are_distinct(self):
+        source = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
+        changed = source.replace(
+            'if [[ "$narrow_status" -eq 2 ]]; then',
+            'if [[ "$narrow_status" -eq 99 ]]; then',
+            1,
+        )
+        self.assertIn(
+            "first narrow-scope query reports an empty live inventory",
+            "\n".join(MODULE.clippy_adapter_errors(changed)),
+        )
+        changed = source.replace(
+            "verified impacted subset is empty; intentional no-op",
+            "nothing selected",
+            1,
+        )
+        self.assertIn(
+            "successfully stop on a proved empty impacted subset",
+            "\n".join(MODULE.clippy_adapter_errors(changed)),
+        )
+        changed = source.replace(
+            'echo "clippy: verified impacted subset is empty; intentional no-op"\n'
+            "                return 0",
+            'echo "clippy: verified impacted subset is empty; intentional no-op"\n'
+            "                return 1",
+            1,
+        )
+        self.assertIn(
+            "successfully stop on a proved empty impacted subset",
+            "\n".join(MODULE.clippy_adapter_errors(changed)),
+        )
+
+    def test_clippy_target_array_cannot_be_hardcoded_or_appended(self):
+        source = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
+        mutations = (
+            source.replace(
+                "    local targets=()",
+                "    local targets=(//crates/one:one-clippy)",
+                1,
+            ),
+            source.replace(
+                '    done <<<"$targets_text"',
+                '    done <<<"$targets_text"\n'
+                '    targets+=(//crates/one:one-clippy)',
+                1,
+            ),
+        )
+        for changed in mutations:
+            with self.subTest(changed=changed):
+                errors = "\n".join(MODULE.clippy_adapter_errors(changed))
+                self.assertIn("target array must start empty", errors)
+
+    def test_clippy_cannot_add_extra_buck_test_or_build(self):
+        source = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
+        for command in (
+            '"$buck2" test //crates/one:one-clippy',
+            '"$buck2" build //crates/...',
+            "./buck2 test //crates/one:one-clippy",
+            "buck2 build //crates/...",
+        ):
+            changed = source.replace(
+                '    echo "Running $selection clippy scope',
+                f"    {command}\n    echo \"Running $selection clippy scope",
+                1,
+            )
+            with self.subTest(command=command):
+                errors = "\n".join(MODULE.clippy_adapter_errors(changed))
+                self.assertIn("must not add Buck target executions", errors)
+
+    def test_clippy_dispatch_cannot_append_work_after_reviewed_runner(self):
+        source = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
+        changed = source.replace(
+            "        run_clippy ;;",
+            '        run_clippy; "$buck2" test //crates/one:one-clippy ;;',
+            1,
+        )
+        errors = "\n".join(MODULE.clippy_adapter_errors(changed))
+        self.assertIn("top-level dispatch", errors)
+        self.assertIn("must not add Buck target executions", errors)
+
+    def test_clippy_rejects_every_direct_buck_graph_query_form(self):
+        source = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
+        commands = (
+            "query",
+            "uquery",
+            "cquery",
+            "aquery",
+            "bxl",
+            "targets",
+        )
+        for command in commands:
+            changed = source.replace(
+                '    echo "Running $selection clippy scope',
+                f'    "$buck2" {command} //...\n'
+                '    echo "Running $selection clippy scope',
+                1,
+            )
+            with self.subTest(command=command):
+                errors = "\n".join(MODULE.clippy_adapter_errors(changed))
+                self.assertIn("direct Buck graph queries", errors)
+
+    def test_clippy_graph_query_cannot_hide_behind_global_flags(self):
+        source = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
+        for invocation in (
+            '"$buck2" --isolation-dir peer cquery //...',
+            "./buck2 --isolation-dir peer cquery //...",
+        ):
+            changed = source.replace(
+                '    echo "Running $selection clippy scope',
+                f"    {invocation}\n"
+                '    echo "Running $selection clippy scope',
+                1,
+            )
+            with self.subTest(invocation=invocation):
+                errors = "\n".join(MODULE.clippy_adapter_errors(changed))
+                self.assertIn("direct Buck graph queries", errors)
+
     def test_future_narrowing_consumer_must_be_registered(self):
         changed = SOURCE.read_text() + (
             "\n  future-narrowed-lane:\n"
@@ -965,6 +1307,72 @@ class GateValidatorTests(unittest.TestCase):
 
     def test_lane_targets_and_job_agree_today(self):
         self.assertEqual(MODULE.lane_target_drift(SOURCE.read_text()), [])
+
+    def test_clippy_live_proxy_and_registered_scope_must_agree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "affected-targets"
+            script.write_text(
+                "#!/usr/bin/env bash\n"
+                "case \"$1:${2:-}\" in\n"
+                "  lane-targets:clippy) echo //crates/one:one-clippy;;\n"
+                "  scope-targets:clippy) echo //crates/two:two-clippy;;\n"
+                "  clippy-owned-targets:) echo //crates/two:two-clippy;;\n"
+                "esac\n"
+            )
+            errors = MODULE.clippy_lane_ownership(script)
+        self.assertIn(
+            "clippy lane proxy and registered runnable scope disagree",
+            "\n".join(errors),
+        )
+
+    def test_clippy_live_inventory_rejects_noncanonical_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "affected-targets"
+            script.write_text(
+                "#!/usr/bin/env bash\n"
+                "echo //crates/one:one-clippy //crates/one:one-fmt-check\n"
+            )
+            errors = MODULE.clippy_lane_ownership(script)
+        self.assertIn("outside the canonical live set", "\n".join(errors))
+        self.assertIn("one-fmt-check", "\n".join(errors))
+
+    def test_clippy_owner_label_rejects_a_non_suffix_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "affected-targets"
+            script.write_text(
+                "#!/usr/bin/env bash\n"
+                "case \"$1\" in\n"
+                "  lane-targets|scope-targets) echo //crates/one:one-clippy;;\n"
+                "  clippy-owned-targets) echo //crates/one:one-clippy //crates/one:one-test;;\n"
+                "esac\n"
+            )
+            errors = "\n".join(MODULE.clippy_lane_ownership(script))
+        self.assertIn("owner label contains targets outside the canonical live set", errors)
+        self.assertIn("labels targets outside the canonical live inventory", errors)
+        self.assertIn("one-test", errors)
+
+    def test_clippy_canonical_suffix_target_cannot_lack_owner_label(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "affected-targets"
+            script.write_text(
+                "#!/usr/bin/env bash\n"
+                "case \"$1\" in\n"
+                "  lane-targets|scope-targets) echo //crates/one:one-clippy //crates/two:two-clippy;;\n"
+                "  clippy-owned-targets) echo //crates/one:one-clippy;;\n"
+                "esac\n"
+            )
+            errors = "\n".join(MODULE.clippy_lane_ownership(script))
+        self.assertIn("canonical live clippy targets missing rue_ci_clippy_lane", errors)
+        self.assertIn("two-clippy", errors)
+
+    def test_clippy_owner_label_exactly_matches_canonical_inventory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "affected-targets"
+            script.write_text(
+                "#!/usr/bin/env bash\n"
+                "echo //crates/one:one-clippy //crates/two:two-clippy\n"
+            )
+            self.assertEqual(MODULE.clippy_lane_ownership(script), [])
 
     def test_unreadable_lane_script_fails_closed(self):
         # Ownership validation fails closed when its canonical graph query is

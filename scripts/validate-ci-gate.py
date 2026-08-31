@@ -18,6 +18,7 @@ TEST_RUNNER_SOURCE = (
 )
 ROOT_BUCK = Path(__file__).resolve().parents[1] / "BUCK"
 VALGRIND_INSTALL_SCRIPT = Path(__file__).with_name("install-valgrind")
+CLIPPY_ADAPTER_SCRIPT = Path(__file__).with_name("ci-clippy")
 
 # RUE-1161: the platform each entry of the harness's CI_EXECUTED_TARGETS claims
 # a required lane for, and the workflow text that proves that lane exists. The
@@ -200,10 +201,12 @@ def narrowing_contract_errors(
     jobs = job_blocks(workflow)
     errors: list[str] = []
     expected_by_job = {
+        "clippy": {"clippy"},
         "linux-premerge": {"linux-premerge-build", "linux-premerge-tests"},
         "native-platforms": {"native-platforms-units"},
     }
     expected_command_lines = {
+        "clippy": "run: scripts/ci-clippy run",
         "linux-premerge-build": (
             'elif ! scope="$(scripts/affected-targets narrow-scope '
             'linux-premerge-build "$NARROW_FILE")"; then'
@@ -228,8 +231,16 @@ def narrowing_contract_errors(
         executable = [line.split("#", 1)[0] for line in block.splitlines()]
         stripped_lines = [line.strip() for line in executable if line.strip()]
         executable_text = "\n".join(executable)
-        consumes_impacted = "needs.affected-targets.outputs.impacted" in executable_text
-        consumes_narrowed = "needs.affected-targets.outputs.narrowed" in executable_text
+        impacted_refs = re.findall(
+            r"needs\.affected-targets\.outputs\.impacted(?![A-Za-z0-9_-])",
+            executable_text,
+        )
+        narrowed_refs = re.findall(
+            r"needs\.affected-targets\.outputs\.narrowed(?![A-Za-z0-9_-])",
+            executable_text,
+        )
+        consumes_impacted = bool(impacted_refs)
+        consumes_narrowed = bool(narrowed_refs)
         if not (consumes_narrowed or consumes_impacted):
             continue
         expected_scopes = expected_by_job.get(job)
@@ -238,7 +249,7 @@ def narrowing_contract_errors(
                 f"{job} consumes impacted narrowing but is absent from the scope registry"
             )
             continue
-        if executable_text.count("needs.affected-targets.outputs.impacted") != 1:
+        if len(impacted_refs) != 1:
             errors.append(f"{job} must materialize the impacted output exactly once")
         raw_file_ref = "${{ steps.narrow.outputs.file }}"
         if executable_text.count(raw_file_ref) != 1:
@@ -248,16 +259,18 @@ def narrowing_contract_errors(
                 errors.append(
                     f"{job} has a raw impacted-file consumer outside a registered narrow-scope preparer"
                 )
-        expected_narrow_file_line = {
-            "linux-premerge": expected_command_lines["linux-premerge-build"],
-            "native-platforms": expected_command_lines["native-platforms-units"],
-        }[job]
-        narrow_file_uses = [line for line in stripped_lines if "$NARROW_FILE" in line]
-        if narrow_file_uses != [expected_narrow_file_line]:
-            errors.append(
-                f"{job} must expose $NARROW_FILE only to its registered narrow-scope command"
-            )
+        if job != "clippy":
+            expected_narrow_file_line = {
+                "linux-premerge": expected_command_lines["linux-premerge-build"],
+                "native-platforms": expected_command_lines["native-platforms-units"],
+            }[job]
+            narrow_file_uses = [line for line in stripped_lines if "$NARROW_FILE" in line]
+            if narrow_file_uses != [expected_narrow_file_line]:
+                errors.append(
+                    f"{job} must expose $NARROW_FILE only to its registered narrow-scope command"
+                )
         allowed_local_file_uses = {
+            "clippy": set(),
             "linux-premerge": {
                 ': >"$file"',
                 'printf \'%s\\n\' "$RUE_AFFECTED_IMPACTED" | sed \'/^$/d\' >"$file"',
@@ -306,7 +319,12 @@ def narrowing_contract_errors(
                 )
             else:
                 used_scopes.add(consumer)
-        if job == "linux-premerge":
+        if job == "clippy":
+            if stripped_lines.count("run: scripts/ci-clippy materialize") != 1:
+                errors.append(
+                    "clippy must materialize its raw impacted output through the reviewed adapter"
+                )
+        elif job == "linux-premerge":
             if stripped_lines.count(
                 'if scope="$(scripts/affected-targets scope-targets linux-premerge-build)"; then'
             ) != 1:
@@ -336,11 +354,480 @@ def narrowing_contract_errors(
                 )
             if stripped_lines.count('narrowed="$native_targets"') != 1:
                 errors.append("native-platforms must retain its full-scope degraded fallback")
-        if "GITHUB_STEP_SUMMARY" not in executable_text or "saved share" not in executable_text:
+        if job != "clippy" and (
+            "GITHUB_STEP_SUMMARY" not in executable_text
+            or "saved share" not in executable_text
+        ):
             errors.append(f"{job} must publish final per-scope saved-share visibility")
     unused = set(registry) - used_scopes
     for consumer in sorted(unused):
         errors.append(f"registered scope {consumer!r} has no workflow narrow-scope consumer")
+    return errors
+
+
+CLIPPY_HEAVY_GATE = (
+    "if: ${{ always() && (steps.sel.outcome != 'success' || "
+    "steps.sel.outputs.run != 'false' || "
+    "steps.sel.outputs.proof_status != 'SELECTIVE' || "
+    "steps.sel.outputs.gate_status != 'DESELECTED') }}"
+)
+
+
+def clippy_heavy_step_runs(
+    outcome: str, run: str, proof_status: str, gate_status: str
+) -> bool:
+    """Whether a clippy heavy step runs under the proved-deselection contract."""
+    return not (
+        outcome == "success"
+        and run == "false"
+        and proof_status == "SELECTIVE"
+        and gate_status == "DESELECTED"
+    )
+
+
+def clippy_workflow_errors(workflow: str) -> list[str]:
+    """Pin the clippy job identity and its thin reviewed-adapter calls."""
+    block = job_blocks(workflow).get("clippy", "")
+    errors: list[str] = []
+    direct_if = [
+        line.strip()
+        for line in block.splitlines()
+        if not line.lstrip().startswith("#") and re.match(r"^    if\s*:", line)
+    ]
+    if direct_if != ["if: ${{ always() }}"]:
+        errors.append(
+            "clippy must use job-level always() so an affected-targets failure cannot skip it"
+        )
+    if sum(line.strip() == "needs: affected-targets" for line in block.splitlines()) != 1:
+        errors.append("clippy must depend exactly once on affected-targets")
+    if any(
+        re.match(r"^    name\s*:", line)
+        for line in block.splitlines()
+        if not line.lstrip().startswith("#")
+    ):
+        errors.append(
+            "clippy must retain its existing displayed job/check identity (the clippy job id)"
+        )
+
+    step_pattern = re.compile(
+        r"^      - name: (?P<name>[^\n]+)\n(?P<body>.*?)(?=^      - |\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    steps: dict[str, list[str]] = {}
+    for match in step_pattern.finditer(block):
+        steps.setdefault(match.group("name"), []).append(match.group("body"))
+    for name in (
+        "Bootstrap dotslash",
+        "Provision remote build cache",
+        "Impacted target list",
+        "Run clippy",
+    ):
+        bodies = steps.get(name, [])
+        if len(bodies) != 1 or sum(
+            line.strip() == CLIPPY_HEAVY_GATE for line in bodies[0].splitlines()
+        ) != 1:
+            errors.append(
+                f"clippy step {name!r} may skip only after a successful, proved lane deselection"
+            )
+    bootstrap = steps.get("Bootstrap dotslash", [])
+    if len(bootstrap) == 1 and sum(
+        line.strip() == "uses: ./.github/actions/bootstrap-dotslash"
+        for line in bootstrap[0].splitlines()
+    ) != 1:
+        errors.append("clippy must use the repository-owned dotslash bootstrap")
+
+    selection = steps.get("Lane selection", [])
+    selection_contract = (
+        "id: sel",
+        "RUE_AFFECTED_FULL: ${{ needs.affected-targets.outputs.full }}",
+        "RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}",
+        "RUE_AFFECTED_LANES_COUNT: ${{ needs.affected-targets.outputs.selected_lanes_count }}",
+        "RUE_AFFECTED_LANES_DIGEST: ${{ needs.affected-targets.outputs.selected_lanes_digest }}",
+        "RUE_AFFECTED_NARROWED: ${{ needs.affected-targets.outputs.narrowed }}",
+        "RUE_AFFECTED_NARROWING_STATUS: ${{ needs.affected-targets.outputs.narrowing_status }}",
+        "RUE_AFFECTED_HEAD_TARGET_COUNT: ${{ needs.affected-targets.outputs.head_target_count }}",
+        "RUE_AFFECTED_IMPACTED_CLOSURE_COUNT: ${{ needs.affected-targets.outputs.impacted_closure_count }}",
+        "RUE_AFFECTED_IMPACTED_TARGET_COUNT: ${{ needs.affected-targets.outputs.impacted_target_count }}",
+        "run: scripts/ci-clippy select",
+    )
+    if len(selection) != 1 or any(
+        required not in selection[0] for required in selection_contract
+    ):
+        errors.append(
+            "clippy lane selection must pass the complete proved decision to the reviewed adapter"
+        )
+    impacted = steps.get("Impacted target list", [])
+    impacted_contract = (
+        "id: narrow",
+        "RUE_CLIPPY_PROOF_STATUS: ${{ steps.sel.outputs.proof_status }}",
+        "RUE_CLIPPY_GATE_STATUS: ${{ steps.sel.outputs.gate_status }}",
+        "RUE_AFFECTED_NARROWED: ${{ needs.affected-targets.outputs.narrowed }}",
+        "RUE_AFFECTED_IMPACTED: ${{ needs.affected-targets.outputs.impacted }}",
+        "RUE_AFFECTED_IMPACTED_TARGET_COUNT: ${{ needs.affected-targets.outputs.impacted_target_count }}",
+        "RUE_AFFECTED_IMPACTED_TARGETS_DIGEST: ${{ needs.affected-targets.outputs.impacted_targets_digest }}",
+        "run: scripts/ci-clippy materialize",
+    )
+    if len(impacted) != 1 or any(
+        required not in impacted[0] for required in impacted_contract
+    ):
+        errors.append(
+            "clippy must pass the complete impacted payload proof to the reviewed materializer"
+        )
+    runner = steps.get("Run clippy", [])
+    runner_contract = (
+        "NARROW_FILE: ${{ steps.narrow.outputs.file }}",
+        "NARROW_STATUS: ${{ steps.narrow.outputs.status }}",
+        "run: scripts/ci-clippy run",
+    )
+    if len(runner) != 1 or any(
+        required not in runner[0] for required in runner_contract
+    ):
+        errors.append("clippy must execute only the reviewed registry-derived runner")
+
+    for name, bodies in (
+        ("Lane selection", selection),
+        ("Impacted target list", impacted),
+        ("Run clippy", runner),
+    ):
+        if len(bodies) == 1 and sum(
+            line.strip().startswith("run:") for line in bodies[0].splitlines()
+        ) != 1:
+            errors.append(f"clippy step {name!r} must have exactly one run command")
+
+    executable_lines = [
+        line.split("#", 1)[0]
+        for line in block.splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+    if any(
+        re.search(
+            r"(?<![A-Za-z0-9_.-])(?:\./)?buck2(?:\s|$)",
+            line,
+        )
+        for line in executable_lines
+    ):
+        errors.append(
+            "clippy workflow must not invoke Buck directly; its reviewed adapter owns execution"
+        )
+    executable = "\n".join(executable_lines)
+    for required, message in (
+        (
+            "BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}",
+            "clippy must preserve fork-safe BuildBuddy secret handling",
+        ),
+        (
+            "scripts/provision-build-cache install",
+            "clippy must preserve remote-cache provisioning",
+        ),
+        (
+            "scripts/provision-build-cache apply",
+            "clippy must preserve remote-cache provisioning",
+        ),
+    ):
+        if required not in executable:
+            errors.append(message)
+    return errors
+
+
+def shell_function_lines(source: str, name: str) -> list[str]:
+    """Executable, comment-insensitive lines from one simple Bash function."""
+    match = re.search(
+        rf"^{re.escape(name)}\(\) \{{\n(?P<body>.*?)^\}}",
+        source,
+        re.MULTILINE | re.DOTALL,
+    )
+    if not match:
+        return []
+    return [
+        line.strip()
+        for line in match.group("body").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+
+def shell_top_level_lines(source: str, function_names: tuple[str, ...]) -> list[str]:
+    """Executable lines outside the adapter's reviewed function bodies."""
+    remaining = source
+    for name in function_names:
+        remaining = re.sub(
+            rf"^{re.escape(name)}\(\) \{{\n.*?^\}}\n?",
+            "",
+            remaining,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+    return [
+        line.strip()
+        for line in remaining.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+
+CLIPPY_SELECT_PROGRAM = (
+    'local proof_status="DEGRADED" narrow_limit=""',
+    'if [[ "${RUE_AFFECTED_FULL:-}" == "false" ]]; then',
+    'if ! narrow_limit="$("$affected" narrow-limit)"; then',
+    'echo "clippy canonical narrow limit is unavailable or malformed; running the full live inventory" >&2',
+    'RUE_AFFECTED_FULL=""',
+    "export RUE_AFFECTED_FULL",
+    'elif ! printf \'%s\' "${RUE_AFFECTED_LANES:-}" | "$proof" verify-decision \\',
+    '"${RUE_AFFECTED_LANES_COUNT:-}" \\',
+    '"${RUE_AFFECTED_LANES_DIGEST:-}" \\',
+    '"${RUE_AFFECTED_NARROWED:-}" \\',
+    '"${RUE_AFFECTED_NARROWING_STATUS:-}" \\',
+    '"${RUE_AFFECTED_HEAD_TARGET_COUNT:-}" \\',
+    '"${RUE_AFFECTED_IMPACTED_CLOSURE_COUNT:-}" \\',
+    '"${RUE_AFFECTED_IMPACTED_TARGET_COUNT:-}" \\',
+    '"$narrow_limit" >/dev/null; then',
+    'echo "clippy selection payload or metadata is incomplete or inconsistent; running the full live inventory" >&2',
+    'RUE_AFFECTED_FULL=""',
+    "export RUE_AFFECTED_FULL",
+    "else",
+    'proof_status="SELECTIVE"',
+    "fi",
+    'elif [[ "${RUE_AFFECTED_FULL:-}" == "true" ]]; then',
+    'proof_status="FULL"',
+    "fi",
+    '"$decision" clippy',
+    "local decision_status=$?",
+    'if [[ -n "${GITHUB_OUTPUT:-}" ]]; then',
+    'printf \'proof_status=%s\\n\' "$proof_status" >>"$GITHUB_OUTPUT"',
+    "fi",
+    'return "$decision_status"',
+)
+
+CLIPPY_MATERIALIZE_PROGRAM = (
+    'if [[ -z "${RUNNER_TEMP:-}" || -z "${GITHUB_OUTPUT:-}" ]]; then',
+    'echo "ci-clippy: RUNNER_TEMP and GITHUB_OUTPUT are required" >&2',
+    "return 2",
+    "fi",
+    'local file="$RUNNER_TEMP/impacted-clippy-targets.txt"',
+    'local status="DECLINED"',
+    ': >"$file"',
+    'if [[ "${RUE_CLIPPY_PROOF_STATUS:-}" == "SELECTIVE" \\',
+    '&& "${RUE_CLIPPY_GATE_STATUS:-}" == "RUN" \\',
+    '&& "${RUE_AFFECTED_NARROWED:-}" == "true" ]]; then',
+    'if printf \'%s\' "${RUE_AFFECTED_IMPACTED:-}" | "$proof" verify targets \\',
+    '"${RUE_AFFECTED_IMPACTED_TARGET_COUNT:-}" \\',
+    '"${RUE_AFFECTED_IMPACTED_TARGETS_DIGEST:-}" \\',
+    '--require-nonempty >"$file"; then',
+    'status="CANDIDATE"',
+    "else",
+    'status="DEGRADED"',
+    'echo "clippy impacted payload proof failed; running the full live inventory" >&2',
+    "append_scope_summary '- `clippy`: **DEGRADED**; saved share **not applicable** (impacted output unavailable or corrupt; full scope used).'",
+    "fi",
+    'elif [[ "${RUE_CLIPPY_PROOF_STATUS:-}" == "FULL" \\',
+    '&& "${RUE_CLIPPY_GATE_STATUS:-}" == "RUN" ]]; then',
+    "append_scope_summary '- `clippy`: **DECLINED**; saved share **not applicable** (full scope used).'",
+    'elif [[ "${RUE_CLIPPY_PROOF_STATUS:-}" == "SELECTIVE" \\',
+    '&& "${RUE_CLIPPY_GATE_STATUS:-}" == "RUN" \\',
+    '&& "${RUE_AFFECTED_NARROWED:-}" == "false" ]]; then',
+    "append_scope_summary '- `clippy`: **DECLINED**; saved share **not applicable** (full scope used).'",
+    "else",
+    'status="DEGRADED"',
+    'echo "clippy selection, gate, or narrowing decision is unavailable; running the full live inventory" >&2',
+    "append_scope_summary '- `clippy`: **DEGRADED**; saved share **not applicable** (selection, gate, or narrowing decision unavailable; full scope used).'",
+    "fi",
+    "{",
+    'printf \'file=%s\\n\' "$file"',
+    'printf \'status=%s\\n\' "$status"',
+    '} >>"$GITHUB_OUTPUT"',
+)
+
+CLIPPY_RUN_PROGRAM = (
+    'local selection="full"',
+    'local targets_text=""',
+    "local narrow_status scope_status target",
+    'if [[ "${NARROW_STATUS:-}" == "CANDIDATE" ]]; then',
+    'if targets_text="$("$affected" narrow-scope clippy "${NARROW_FILE:-}")"; then',
+    'if [[ -z "$targets_text" ]]; then',
+    'echo "clippy: verified impacted subset is empty; intentional no-op"',
+    "return 0",
+    "fi",
+    'selection="narrowed"',
+    "else",
+    "narrow_status=$?",
+    'if [[ "$narrow_status" -eq 2 ]]; then',
+    'echo "clippy: no live -clippy targets found; the query or crate macros are broken" >&2',
+    "return 1",
+    "fi",
+    'echo "clippy: scope resolution or intersection failed; running the full live inventory" >&2',
+    "fi",
+    "fi",
+    'if [[ "$selection" == "full" ]]; then',
+    'if targets_text="$("$affected" scope-targets clippy)"; then',
+    ":",
+    "else",
+    "scope_status=$?",
+    'if [[ "$scope_status" -eq 2 ]]; then',
+    'echo "clippy: no live -clippy targets found; the query or crate macros are broken" >&2',
+    "return 1",
+    "fi",
+    'echo "clippy: live scope unavailable; running all crate tests as the fail-open superset" >&2',
+    '"$buck2" test //crates/...',
+    "return $?",
+    "fi",
+    "fi",
+    "local targets=()",
+    "while IFS= read -r target; do",
+    '[[ -n "$target" ]] && targets+=("$target")',
+    'done <<<"$targets_text"',
+    'if [[ "${#targets[@]}" -eq 0 ]]; then',
+    'echo "clippy: resolved live inventory is unexpectedly empty" >&2',
+    "return 1",
+    "fi",
+    'echo "Running $selection clippy scope across ${#targets[@]} crates..."',
+    '"$buck2" test "${targets[@]}"',
+)
+
+CLIPPY_SUMMARY_PROGRAM = (
+    '[[ -n "${GITHUB_STEP_SUMMARY:-}" ]] || return 0',
+    'printf \'%s\\n\' "$1" >>"$GITHUB_STEP_SUMMARY"',
+)
+
+CLIPPY_TOP_LEVEL_PROGRAM = (
+    "set -uo pipefail",
+    'repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"',
+    'proof="$repo_root/scripts/ci-affected-payload.py"',
+    'decision="$repo_root/scripts/ci-corpus-decision"',
+    'affected="$repo_root/scripts/affected-targets"',
+    'buck2="$repo_root/buck2"',
+    'case "${1:-}" in',
+    "select)",
+    '[[ $# -eq 1 ]] || { echo "usage: scripts/ci-clippy select" >&2; exit 2; }',
+    "select_lane ;;",
+    "materialize)",
+    '[[ $# -eq 1 ]] || { echo "usage: scripts/ci-clippy materialize" >&2; exit 2; }',
+    "materialize_impacted ;;",
+    "run)",
+    '[[ $# -eq 1 ]] || { echo "usage: scripts/ci-clippy run" >&2; exit 2; }',
+    "run_clippy ;;",
+    "*)",
+    'echo "usage: scripts/ci-clippy {select|materialize|run}" >&2',
+    "exit 2 ;;",
+    "esac",
+)
+
+
+def clippy_adapter_errors(source: str) -> list[str]:
+    """Pin payload verification, rc semantics, and Buck target provenance."""
+    errors: list[str] = []
+    select_lines = shell_function_lines(source, "select_lane")
+    materialize_lines = shell_function_lines(source, "materialize_impacted")
+    run_lines = shell_function_lines(source, "run_clippy")
+    summary_lines = shell_function_lines(source, "append_scope_summary")
+    top_level_lines = shell_top_level_lines(
+        source,
+        (
+            "select_lane",
+            "append_scope_summary",
+            "materialize_impacted",
+            "run_clippy",
+        ),
+    )
+    if tuple(select_lines) != CLIPPY_SELECT_PROGRAM:
+        errors.append(
+            "clippy adapter must bind the selected-lane payload and canonical narrow limit to its complete planner proof"
+        )
+    if tuple(materialize_lines) != CLIPPY_MATERIALIZE_PROGRAM:
+        errors.append(
+            "clippy adapter must authenticate the complete impacted payload before narrowing"
+        )
+    if tuple(run_lines) != CLIPPY_RUN_PROGRAM:
+        errors.append(
+            "clippy runner must retain the exact registry-derived execution program"
+        )
+    if tuple(summary_lines) != CLIPPY_SUMMARY_PROGRAM:
+        errors.append("clippy adapter must retain its bounded scope-summary writer")
+    if tuple(top_level_lines) != CLIPPY_TOP_LEVEL_PROGRAM:
+        errors.append(
+            "clippy adapter top-level dispatch must invoke only its reviewed subcommands"
+        )
+
+    graph_commands = {"query", "uquery", "cquery", "aquery", "bxl", "targets"}
+    target_commands = {"build", "test", "run"}
+    graph_lines: list[str] = []
+    target_lines: list[str] = []
+    buck_marker = re.compile(r'(?:"?\$buck2"?|(?<![A-Za-z0-9_.-])(?:\./)?buck2)')
+    all_lines = top_level_lines + select_lines + materialize_lines + summary_lines + run_lines
+    for line in all_lines:
+        marker = buck_marker.search(line)
+        if not marker:
+            continue
+        words = re.findall(r"[A-Za-z][A-Za-z0-9_-]*", line[marker.end() :])
+        command = next(
+            (word for word in words if word in graph_commands | target_commands),
+            None,
+        )
+        if command in graph_commands:
+            graph_lines.append(line)
+        if command in target_commands:
+            target_lines.append(line)
+    if graph_lines:
+        errors.append(
+            "clippy runner must not run direct Buck graph queries in any query form"
+        )
+    expected_target_lines = [
+        '"$buck2" test //crates/...',
+        '"$buck2" test "${targets[@]}"',
+    ]
+    if target_lines != expected_target_lines:
+        errors.append(
+            "clippy runner must not add Buck target executions outside its full fallback and registry-derived array"
+        )
+
+    array_writes = [
+        line
+        for line in run_lines
+        if re.search(r"(?:^|\s)(?:local\s+)?targets(?:\+)?=", line)
+    ]
+    if array_writes != [
+        "local targets=()",
+        '[[ -n "$target" ]] && targets+=("$target")',
+    ]:
+        errors.append(
+            "clippy target array must start empty and be populated only from registry output"
+        )
+    target_text_writes = [line for line in run_lines if "targets_text=" in line]
+    if target_text_writes != [
+        'local targets_text=""',
+        'if targets_text="$("$affected" narrow-scope clippy "${NARROW_FILE:-}")"; then',
+        'if targets_text="$("$affected" scope-targets clippy)"; then',
+    ]:
+        errors.append(
+            "clippy executable target text must come only from registered narrow/full scopes"
+        )
+    def has_sequence(expected: tuple[str, ...]) -> bool:
+        width = len(expected)
+        return any(
+            tuple(run_lines[index : index + width]) == expected
+            for index in range(len(run_lines) - width + 1)
+        )
+
+    empty_error = (
+        'echo "clippy: no live -clippy targets found; the query or crate macros are broken" >&2',
+        "return 1",
+        "fi",
+    )
+    if not has_sequence(('if [[ "$narrow_status" -eq 2 ]]; then',) + empty_error):
+        errors.append(
+            "clippy must hard-fail immediately when the first narrow-scope query reports an empty live inventory"
+        )
+    if not has_sequence(('if [[ "$scope_status" -eq 2 ]]; then',) + empty_error):
+        errors.append("clippy must keep a successful empty full live inventory as a hard error")
+    if not has_sequence(
+        (
+            'if [[ -z "$targets_text" ]]; then',
+            'echo "clippy: verified impacted subset is empty; intentional no-op"',
+            "return 0",
+            "fi",
+        )
+    ):
+        errors.append(
+            "clippy must log and successfully stop on a proved empty impacted subset"
+        )
+    if '"$buck2" test //crates/...' not in run_lines:
+        errors.append("clippy must retain its broad fail-open test fallback")
     return errors
 
 
@@ -698,6 +1185,67 @@ def native_lane_ownership(
     return errors
 
 
+def clippy_lane_ownership(script: Path = AFFECTED_TARGETS_SCRIPT) -> list[str]:
+    """Require selection, execution, and CI-owner labels to be exactly equal."""
+    outputs: dict[str, set[str]] = {}
+    errors: list[str] = []
+    for command, args in (
+        ("lane proxy", ("lane-targets", "clippy")),
+        ("registered scope", ("scope-targets", "clippy")),
+        ("owner label", ("clippy-owned-targets",)),
+    ):
+        result = subprocess.run(
+            ["bash", str(script), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip()
+            errors.append(
+                f"clippy {command} query failed" + (f": {detail}" if detail else "")
+            )
+            continue
+        targets = [target for target in result.stdout.split() if target]
+        if not targets:
+            errors.append(f"clippy {command} is empty")
+            continue
+        if len(targets) != len(set(targets)):
+            errors.append(f"clippy {command} contains duplicate targets")
+        invalid = sorted(
+            target
+            for target in set(targets)
+            if not (
+                (target.startswith("//crates/") or target.startswith("//crates:"))
+                and target.endswith("-clippy")
+            )
+        )
+        if invalid:
+            errors.append(
+                f"clippy {command} contains targets outside the canonical live set: "
+                + ", ".join(invalid)
+            )
+        outputs[command] = set(targets)
+    if {"lane proxy", "registered scope"} <= set(outputs) and outputs[
+        "lane proxy"
+    ] != outputs["registered scope"]:
+        errors.append("clippy lane proxy and registered runnable scope disagree")
+    if {"registered scope", "owner label"} <= set(outputs):
+        missing_labels = sorted(outputs["registered scope"] - outputs["owner label"])
+        extra_labels = sorted(outputs["owner label"] - outputs["registered scope"])
+        if missing_labels:
+            errors.append(
+                "canonical live clippy targets missing rue_ci_clippy_lane: "
+                + ", ".join(missing_labels)
+            )
+        if extra_labels:
+            errors.append(
+                "rue_ci_clippy_lane labels targets outside the canonical live inventory: "
+                + ", ".join(extra_labels)
+            )
+    return errors
+
+
 def valgrind_install_errors(workflow: str, script: str) -> list[str]:
     """Keep Valgrind installation bounded and on its canonical script path."""
     block = job_blocks(workflow).get("valgrind", "")
@@ -741,6 +1289,7 @@ def validate(
     test_runner_path: Path = TEST_RUNNER_SOURCE,
     buck_path: Path = ROOT_BUCK,
     valgrind_install_path: Path = VALGRIND_INSTALL_SCRIPT,
+    clippy_adapter_path: Path = CLIPPY_ADAPTER_SCRIPT,
 ) -> list[str]:
     workflow = ci_path.read_text()
     native_runner = native_runner_path.read_text()
@@ -759,6 +1308,11 @@ def validate(
     except OSError as error:
         errors.append(f"Valgrind installer unreadable: {error}")
         valgrind_install = ""
+    try:
+        clippy_adapter = clippy_adapter_path.read_text()
+    except OSError as error:
+        errors.append(f"clippy adapter unreadable: {error}")
+        clippy_adapter = ""
     try:
         jobs = job_blocks(workflow)
     except ValueError as error:
@@ -1047,6 +1601,8 @@ def validate(
     errors.extend(undeclared_need_outputs(workflow, jobs))
     errors.extend(lane_target_drift(workflow))
     errors.extend(narrowing_contract_errors(workflow))
+    errors.extend(clippy_workflow_errors(workflow))
+    errors.extend(clippy_adapter_errors(clippy_adapter))
 
     if "  pull_request:\n" not in workflow or "  merge_group:\n" not in workflow:
         errors.append("CI must run on both pull_request and merge_group")
@@ -1082,6 +1638,7 @@ def main() -> int:
     )
     if not args.structural_only:
         errors.extend(native_lane_ownership(args.workflow.read_text()))
+        errors.extend(clippy_lane_ownership())
     if errors:
         for error in errors:
             print(f"error: {error}")

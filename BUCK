@@ -1348,6 +1348,7 @@ rue_sh_test(
     ],
     resources = [
         "scripts/affected-targets",
+        "scripts/ci-clippy",
         "scripts/ci-required-results.py",
         # The gate pins the bounded apt timeout/retry/lock policy as well as
         # the workflow wiring, so installer-only edits must invalidate it.
@@ -1429,6 +1430,7 @@ rue_sh_test(
     test = "scripts/test-validate-ci-gate.py",
     resources = [
         "scripts/affected-targets",
+        "scripts/ci-clippy",
         "scripts/ci-required-results.py",
         "scripts/run-native-platform-corpus.sh",
         "scripts/validate-ci-gate.py",
@@ -1632,6 +1634,8 @@ rue_sh_test(
     test = "scripts/test-affected-targets.sh",
     resources = [
         "scripts/affected-targets",
+        "scripts/ci-affected-payload.py",
+        "scripts/ci-clippy",
         "scripts/ci-corpus-decision",
         "scripts/ci-corpus-selected",
         "scripts/parse-btd-impacted.py",

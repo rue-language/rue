@@ -221,11 +221,13 @@ if [[ $# -eq 0 ]]; then
         elif [[ "$test_tier" != all ]]; then
             test_args+=(--include "rue_test_tier_$test_tier")
         fi
-        # Required CI gives these corpora their own platform-corpus job; the label
-        # is the only place that set is written down (scripts/validate-ci-gate.py
-        # fails if a labeled corpus has no job).
+        # Required CI gives the heavy corpora and clippy gates their own jobs;
+        # graph labels keep linux-premerge from executing either owned set a
+        # second time. scripts/validate-ci-gate.py fails if a dedicated corpus
+        # has no owner, and validate-test-duplication.py proves the complete
+        # scheduled sets do not overlap accidentally.
         if [[ "${CI:-}" == "true" ]]; then
-            test_args+=(--exclude rue_ci_dedicated_lane)
+            test_args+=(--exclude rue_ci_dedicated_lane --exclude rue_ci_clippy_lane)
         fi
 
         echo "Running the $test_tier tier..."

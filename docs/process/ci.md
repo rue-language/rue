@@ -525,11 +525,12 @@ How it decides:
 
 - **Lane membership is queried, not transcribed.** The premerge lane is
   `attrfilter(labels, 'rue_test_tier_premerge', set(//... toolchains//...))`
-  minus the `rue_cli_shard` and `rue_ci_dedicated_lane` sets; the corpus and
-  gated-lane inventories come from `scripts/affected-targets corpus-targets`
-  and `lane-targets`, which are the lists CI's determinator already consults.
-  A lane added to `SELECTABLE_LANES` and not classified by the gate fails it,
-  so this adds no unwatched row to ADR-0069's ledger.
+  minus the `rue_cli_shard`, `rue_ci_dedicated_lane`, and
+  `rue_ci_clippy_lane` sets; the corpus and gated-lane inventories come from
+  `scripts/affected-targets corpus-targets` and `lane-targets`, which are the
+  lists CI's determinator already consults. A lane added to `SELECTABLE_LANES`
+  and not classified by the gate fails it, so this adds no unwatched row to
+  ADR-0069's ledger.
 - **Identities come from `--list`.** Each target is listed with the exact args
   and env its own Buck target carries, so the scaling matrix's
   `--ignored scaling_matrix` selection lists three tests and the CLI shards
@@ -597,13 +598,13 @@ verdict covers. Three groups:
   `--list` inventory non-authoritative, so they remain explicitly classified in
   `NOT_LISTABLE` and outside ordinary duplicate accounting.
 
-## Affected-corpus selection on pull requests (RUE-1119)
+## Affected-target selection on pull requests (RUE-1119)
 
-On a `pull_request` run, the heavy `platform-corpus` suites are selected down to
-the ones the change actually affects; `merge_group` and `workflow_dispatch`
-always run the full corpus and remain the authoritative `//...` gate. Selection
-uses Meta's off-the-shelf Buck Target Determinator (BTD,
-`facebookincubator/buck2-change-detector`) rather than a bespoke
+On a `pull_request` run, the heavy `platform-corpus` suites and registered lanes
+are selected down to the work the change actually affects; `merge_group` and
+`workflow_dispatch` always run the complete live inventories and remain the
+authoritative `//...` gate. Selection uses Meta's off-the-shelf Buck Target
+Determinator (BTD, `facebookincubator/buck2-change-detector`) rather than a bespoke
 `owner()`/`rdeps()` query: the `affected-targets` job dumps the Buck graph with
 `buck2 targets` at the merge-base and at the head and feeds both dumps plus the
 changed-file list to `btd`, whose impacted-target closure is intersected with
@@ -631,16 +632,53 @@ Selection is applied **within** each gated job, not by skipping the job:
 the heavy steps (paying only the runner spin-up) while the check still reports
 success, so no branch-protection change is required.
 
-RUE-1130 extended that gate from the `platform-corpus` corpora to six further
-lanes — `native (linux-arm64)`, `native (macos-arm64)`, `release (linux-x64)`,
-`valgrind (linux-x64)`, `asan (linux-x64)`, and
-`compiler reproducibility (linux-x64)`. Each is named in `SELECTABLE_LANES` and
-maps to the Buck targets it actually executes (`lane_targets`); a lane runs when
-any of those targets is in BTD's impacted closure. Gating the corpora alone had
-saved nothing measurable: a documentation change cost 444s against 465s for a
+The gate covers eight named lanes: `clippy`, `native (linux-arm64)`, `native
+(macos-arm64)`, `release (linux-x64)`, `valgrind (linux-x64)`, `asan
+(linux-x64)`, `compiler reproducibility (linux-x64)`, and `rue_program digest
+sensitivity (linux-x64)`. Each is named in `SELECTABLE_LANES` and maps to the
+Buck targets it actually executes (`lane_targets`); a lane runs when any of
+those targets is in BTD's impacted closure. Gating the corpora alone had saved
+nothing measurable: a documentation change cost 444s against 465s for a
 compiler change, because the lanes that dominate a run were not consulting the
-determinator. On four measured peripheral runs the extension frees 905–1034s of
-runner time each.
+determinator. On four measured peripheral runs the RUE-1130 extension freed
+905–1034s of runner time each.
+
+Clippy is also a registered graph-narrowing consumer. Its one canonical live
+inventory is every `sh_test` under `root//crates/...` whose label ends exactly
+in `-clippy`; that same computation supplies both its lane-selection proxies
+and its runnable allowlist. Every member also carries `rue_ci_clippy_lane`, and
+the live CI validator requires the label-owned set to equal that canonical
+inventory exactly before Linux premerge may subtract it. A verified selective
+deselection skips DotSlash, cache, and provisioning work while the existing
+`clippy` job/check still finishes successfully. Each heavy step requires the
+selection step itself to have succeeded and all three outputs to agree on that
+deselection (`run=false`, `proof_status=SELECTIVE`, and
+`gate_status=DESELECTED`); any partial output or failed step runs instead.
+
+The planner publishes a canonical item count and SHA-256 content proof beside
+both independently transported payloads: the space-separated selected-lane
+list and the newline-separated live impacted closure. Clippy accepts a
+selective deselection only when the complete lane payload, canonical positive
+head count, raw BTD closure count, live impacted count, and narrowing status all
+verify. The state must reproduce the planner exactly: `CANDIDATE/true` if and
+only if the raw closure is nonempty, no larger than the canonical limit, and
+has a nonempty live intersection; every other coherent state is
+`DECLINED/false`. The live count may exceed neither the raw closure nor the head
+graph. When the lane is selected, the adapter also carries the successful
+lane-gate verdict into the materializer. It materializes a small closure only
+when both verdicts remain verified and that payload exactly matches its count
+and digest, then runs
+`impacted ∩ clippy`; a proved empty intersection logs an intentional no-op and
+succeeds, while a nonempty intersection runs only those live clippy gates.
+Candidate verification reads the planner's `narrow-limit` authority directly,
+so the default 600-target threshold and any supported override cannot drift at
+the consumer boundary. The limit applies to the raw BTD closure, including
+base-only labels, rather than only its smaller runnable head intersection.
+Missing, truncated, reordered, malformed, or inconsistent payloads and
+metadata fail open to the full inventory, as does any selection or gate
+failure. A successful canonical live query with zero clippy targets remains a
+hard error—including on the first narrowed query—because it means the query or
+crate macros are broken, not that a particular diff has no clippy work.
 
 `linux-premerge` is handled differently, because skipping it wholesale on a
 representative subset is exactly the RUE-924 failure mode. It is **narrowed**
@@ -653,12 +691,13 @@ is where the build cost goes: the lane spends 286–317s building every crate
 whenever a compiler crate changes, and an unimpacted crate's test binary has
 nothing to prove.
 
-Narrowing is declined, and the ordinary pattern used, whenever nothing is
+Narrowing is declined, and the ordinary scope used, whenever nothing is
 impacted or so much is that the pattern is the better expression of it
 (`RUE_AFFECTED_NARROW_LIMIT`, default 600 targets — a compiler change reaches
 most of the graph, so narrowing it saves nothing). Consumers key on the
-determinator's `narrowed` flag rather than on the list being non-empty, so an
-absent, empty, or oversized list always reads as "run everything". `test.sh`
+determinator's `narrowed` flag rather than on the list being non-empty. An
+absent, malformed, corrupt, or oversized candidate therefore reads as "run
+everything"; scope-query or intersection failure does too. `test.sh`
 applies the same rule: an unset, unreadable, or empty `RUE_TEST_TARGETS_FILE`
 runs the full pattern, and only a readable non-empty list narrows.
 

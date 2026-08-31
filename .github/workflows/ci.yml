@@ -144,10 +144,33 @@ jobs:
 
   clippy:
     runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs: affected-targets
     steps:
       - uses: actions/checkout@v6
 
+      # RUE-1855: clippy is both gated and graph-narrowed. An explicit
+      # selective decision may skip the heavy setup while preserving this
+      # required job/check identity. Missing, malformed, or failed selection
+      # state runs the lane; only the gate's verified exit-1 decision writes
+      # run=false, and the heavy-step conditions require its matching proof and
+      # gate outputs from a successful selection step before they may skip.
+      - name: Lane selection
+        id: sel
+        env:
+          RUE_AFFECTED_FULL: ${{ needs.affected-targets.outputs.full }}
+          RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
+          RUE_AFFECTED_LANES_COUNT: ${{ needs.affected-targets.outputs.selected_lanes_count }}
+          RUE_AFFECTED_LANES_DIGEST: ${{ needs.affected-targets.outputs.selected_lanes_digest }}
+          RUE_AFFECTED_NARROWED: ${{ needs.affected-targets.outputs.narrowed }}
+          RUE_AFFECTED_NARROWING_STATUS: ${{ needs.affected-targets.outputs.narrowing_status }}
+          RUE_AFFECTED_HEAD_TARGET_COUNT: ${{ needs.affected-targets.outputs.head_target_count }}
+          RUE_AFFECTED_IMPACTED_CLOSURE_COUNT: ${{ needs.affected-targets.outputs.impacted_closure_count }}
+          RUE_AFFECTED_IMPACTED_TARGET_COUNT: ${{ needs.affected-targets.outputs.impacted_target_count }}
+        run: scripts/ci-clippy select
+
       - name: Bootstrap dotslash
+        if: ${{ always() && (steps.sel.outcome != 'success' || steps.sel.outputs.run != 'false' || steps.sel.outputs.proof_status != 'SELECTIVE' || steps.sel.outputs.gate_status != 'DESELECTED') }}
         uses: ./.github/actions/bootstrap-dotslash
 
       # BuildBuddy remote action cache (RUE-316/RUE-1006). GitHub withholds
@@ -157,6 +180,7 @@ jobs:
       # merge queue serializes on this workflow. The cold fallback is
       # mandatory; this step must never fail because the secret is absent.
       - name: Provision remote build cache
+        if: ${{ always() && (steps.sel.outcome != 'success' || steps.sel.outputs.run != 'false' || steps.sel.outputs.proof_status != 'SELECTIVE' || steps.sel.outputs.gate_status != 'DESELECTED') }}
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
@@ -167,7 +191,24 @@ jobs:
           scripts/provision-build-cache install
           scripts/provision-build-cache apply
 
+      # Materialize the planner output once. `narrowed=true` is valid only with
+      # a non-empty live impacted closure and verified selection/gate state; an
+      # absent value is degraded state, never permission to run nothing.
+      # `narrow-scope` performs the final syntax and live-scope validation.
+      - name: Impacted target list
+        if: ${{ always() && (steps.sel.outcome != 'success' || steps.sel.outputs.run != 'false' || steps.sel.outputs.proof_status != 'SELECTIVE' || steps.sel.outputs.gate_status != 'DESELECTED') }}
+        id: narrow
+        env:
+          RUE_CLIPPY_PROOF_STATUS: ${{ steps.sel.outputs.proof_status }}
+          RUE_CLIPPY_GATE_STATUS: ${{ steps.sel.outputs.gate_status }}
+          RUE_AFFECTED_NARROWED: ${{ needs.affected-targets.outputs.narrowed }}
+          RUE_AFFECTED_IMPACTED: ${{ needs.affected-targets.outputs.impacted }}
+          RUE_AFFECTED_IMPACTED_TARGET_COUNT: ${{ needs.affected-targets.outputs.impacted_target_count }}
+          RUE_AFFECTED_IMPACTED_TARGETS_DIGEST: ${{ needs.affected-targets.outputs.impacted_targets_digest }}
+        run: scripts/ci-clippy materialize
+
       - name: Run clippy
+        if: ${{ always() && (steps.sel.outcome != 'success' || steps.sel.outputs.run != 'false' || steps.sel.outputs.proof_status != 'SELECTIVE' || steps.sel.outputs.gate_status != 'DESELECTED') }}
         # Every crate emits its own `<name>-clippy` test from the
         # rue_crate/rue_binary macros (RUE-1153). Running them as tests means
         # Buck must materialize each crate's [clippy.txt] before its gate can
@@ -177,14 +218,10 @@ jobs:
         # then scored what it could not read as clean (RUE-1152). Workspace
         # lint policy (deny warnings + grandfathered allow-list) lives in
         # toolchains/rust/BUCK.
-        run: |
-          mapfile -t TARGETS < <(./buck2 uquery "kind('sh_test', 'root//crates/...')" | grep -- '-clippy$')
-          if [ "${#TARGETS[@]}" -eq 0 ]; then
-            echo "clippy: no -clippy targets found; the query or the macros are broken" >&2
-            exit 1
-          fi
-          echo "Running clippy across ${#TARGETS[@]} crates..."
-          ./buck2 test "${TARGETS[@]}"
+        env:
+          NARROW_FILE: ${{ steps.narrow.outputs.file }}
+          NARROW_STATUS: ${{ steps.narrow.outputs.status }}
+        run: scripts/ci-clippy run
 
   actionlint:
     runs-on: ubuntu-latest
@@ -404,6 +441,9 @@ jobs:
         # `rue_ci_dedicated_lane` label in BUCK, and test.sh subtracts that label
         # when CI=true. This step no longer names them: the CI-contract job
         # fails if the labeled set and the platform-corpus matrix disagree.
+        # RUE-1855 gives the graph-owned clippy gates the analogous
+        # `rue_ci_clippy_lane` label; their required job is their only test
+        # owner in CI, rather than a duplicate inside this broad selection.
         #
         # RUE-1260: `buck2 test` prints a per-target tally and a `✗ <target>`
         # line, so a target whose process dies without emitting a result line
@@ -971,11 +1011,11 @@ jobs:
   # merge_group and workflow_dispatch always force the authoritative full run;
   # the decision is fail-open, so any tool/VCS/graph error, or any change to an
   # out-of-graph input (the ./buck2 pin, test.sh, scripts/ci-*, this workflow,
-  # .buckconfig/BUCK/.bzl/toolchains), runs the whole corpus. Only the
-  # platform-corpus heavy suites below consult this; every other job in the
-  # workflow runs unconditionally, so selection can only ever drop the corpus
-  # jobs that BTD proved unaffected. The scripts stay fail-open by construction,
-  # and scripts/test-affected-targets.sh pins the force-full and gate logic.
+  # .buckconfig/BUCK/.bzl/toolchains), runs the complete registered work. The
+  # platform corpora and selectable lanes consult its gate; linux-premerge,
+  # native units, and clippy also intersect small verified closures with their
+  # registered live scopes. The scripts stay fail-open by construction, and
+  # scripts/test-affected-targets.sh pins the force-full and gate logic.
   affected-targets:
     runs-on: ubuntu-latest
     name: affected targets (linux-x64)
@@ -988,6 +1028,11 @@ jobs:
       # now fails closed on that, because the failure only appears on the
       # peripheral PRs the gating exists for, and never on a CI-touching one.
       selected_lanes: ${{ steps.decide.outputs.selected_lanes }}
+      # Independently transported outputs can be missing or truncated while
+      # another output still arrives. The count and content proof distinguish
+      # that from a deliberately empty selected-lane set.
+      selected_lanes_count: ${{ steps.decide.outputs.selected_lanes_count }}
+      selected_lanes_digest: ${{ steps.decide.outputs.selected_lanes_digest }}
       # The impacted-target closure, and the determinator's own flag for whether
       # narrowing to it is worthwhile. Consumers key on `narrowed`; an absent or
       # empty `impacted` therefore reads as "run everything", never "run
@@ -996,7 +1041,13 @@ jobs:
       impacted: ${{ steps.decide.outputs.impacted }}
       narrowing_status: ${{ steps.decide.outputs.narrowing_status }}
       head_target_count: ${{ steps.decide.outputs.head_target_count }}
+      # Raw BTD closure size is separate from the runnable head intersection;
+      # consumers need both to reproduce the planner's narrowing state exactly.
+      impacted_closure_count: ${{ steps.decide.outputs.impacted_closure_count }}
       impacted_target_count: ${{ steps.decide.outputs.impacted_target_count }}
+      # The clippy materializer accepts a narrowing candidate only when the
+      # complete multiline payload matches both this count and digest.
+      impacted_targets_digest: ${{ steps.decide.outputs.impacted_targets_digest }}
     steps:
       - uses: actions/checkout@v6
         # BTD compares the graph at the merge-base and at the head, so the base

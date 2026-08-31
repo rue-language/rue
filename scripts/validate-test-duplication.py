@@ -20,9 +20,9 @@ How it works:
 
 1. **Lane membership comes from the live graph, never from YAML.** The premerge
    lane is `attrfilter(labels, 'rue_test_tier_premerge', ...)` minus the
-   `rue_cli_shard` and `rue_ci_dedicated_lane` sets — the derivation
-   `docs/notes/rue-1250-premerge-critical-path.md` measured and `test.sh`
-   executes. The corpus and gated-lane inventories come from
+   `rue_cli_shard`, `rue_ci_dedicated_lane`, and `rue_ci_clippy_lane` sets —
+   the derivation `docs/notes/rue-1250-premerge-critical-path.md` measured and
+   `test.sh` executes. The corpus and gated-lane inventories come from
    `scripts/affected-targets`, which is the same list CI's determinator already
    consults, so this gate adds no new hand-maintained row to ADR-0069's ledger.
 2. **Identities come from `--list` on the test binaries.** Cheap and exact: it
@@ -58,6 +58,7 @@ AFFECTED_TARGETS = ROOT / "scripts" / "affected-targets"
 TIER_PREMERGE = "rue_test_tier_premerge"
 CLI_SHARD_LABEL = "rue_cli_shard"
 DEDICATED_LANE_LABEL = "rue_ci_dedicated_lane"
+CLIPPY_LANE_LABEL = "rue_ci_clippy_lane"
 
 PREMERGE_QUERY = (
     "attrfilter(labels, '" + TIER_PREMERGE + "', set(//... toolchains//...))"
@@ -65,11 +66,12 @@ PREMERGE_QUERY = (
 
 # Which platform executes which lane. `linux-premerge` and `platform-corpus`
 # are the two halves of the linux-x64 test load: the premerge tier minus the
-# corpora that own their own job, and those corpora. The rest are the gated
-# lanes RUE-1130 named.
+# corpora and clippy gates that own their own job, and those owned lanes. The
+# rest are gated selection proxies named by RUE-1130.
 LANE_PLATFORMS = {
     "linux-premerge": "linux-x64",
     "platform-corpus": "linux-x64",
+    "clippy": "linux-x64",
     "release": "linux-x64",
     "native-linux-arm64": "linux-arm64",
     "native-macos-arm64": "macos-arm64",
@@ -949,10 +951,14 @@ def lane_membership(buck: Buck, script: Path = AFFECTED_TARGETS) -> dict[str, li
 
     shards = {target for target, tags in labels.items() if CLI_SHARD_LABEL in tags}
     dedicated = {target for target, tags in labels.items() if DEDICATED_LANE_LABEL in tags}
+    clippy_owned = {target for target, tags in labels.items() if CLIPPY_LANE_LABEL in tags}
 
     lanes = {
-        "linux-premerge": sorted(set(labels) - shards - dedicated),
+        "linux-premerge": sorted(set(labels) - shards - dedicated - clippy_owned),
         "platform-corpus": sorted(affected_targets("corpus-targets", script=script)),
+        # RUE-1855: these are runnable sh_tests, not representative proxies.
+        # Their live inventory is shared with clippy's affected-lane selector.
+        "clippy": sorted(affected_targets("lane-targets", "clippy", script=script)),
         "release": sorted(affected_targets("lane-targets", "release", script=script)),
     }
     for lane in ("native-linux-arm64", "native-macos-arm64"):

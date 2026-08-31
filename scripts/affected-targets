@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Affected-target selection for pull-request CI (RUE-1119, extended by RUE-1130).
 #
-# On a pull_request run, only the heavy corpus suites a change actually affects
-# need to run; the merge queue (merge_group) remains the authoritative full
-# `//...` run. This script decides, for one PR, which of the selectable corpus
-# targets are affected, using Meta's off-the-shelf Buck Target Determinator
-# (BTD, facebookincubator/buck2-change-detector) rather than a hand-rolled
-# `owner()`/`rdeps()` query.
+# On a pull_request run, only the registered heavy work a change actually
+# affects needs to run; the merge queue (merge_group) remains the authoritative
+# full `//...` run. This script decides, for one PR, which selectable corpus
+# targets and lanes are affected, using Meta's off-the-shelf Buck Target
+# Determinator (BTD, facebookincubator/buck2-change-detector) rather than a
+# hand-rolled `owner()`/`rdeps()` query.
 #
 # SAFETY MODEL (this is the whole point). Under-selection silently drops
 # coverage — a suite that never runs cannot fail (RUE-924). So every decision
@@ -38,6 +38,8 @@
 #                      deliberately added here.
 #   is-selectable-lane Exit 0 only for a gated workflow lane (RUE-1130).
 #   lane-targets       Print the Buck targets a gated lane executes.
+#   clippy-owned-targets
+#                      Print live targets carrying clippy's CI-owner label.
 #   native-targets     Print every live-graph target carrying native scope.
 #   corpus-targets     Print the corpus targets the platform-corpus matrix runs.
 #   lanes              Print the gated workflow lane names.
@@ -47,6 +49,7 @@
 #                      the lane's own scope, and neither spelling of that scope
 #                      may name a corpus action (RUE-1511).
 #   scope-registry     Print the auditable narrowed-lane scope contract.
+#   narrow-limit       Print the canonical maximum impacted closure size.
 #   scope-targets      Print a lane's unnarrowed scope from that contract.
 #   narrow-scope       Intersect an impacted closure with a registered scope.
 #
@@ -110,6 +113,7 @@ SELECTABLE_CORPUS=(
 # the live graph, so a target added since this file was written is still
 # discovered — it simply is not built or run when the diff cannot reach it.
 SELECTABLE_LANES=(
+    clippy
     native-linux-arm64
     native-macos-arm64
     release
@@ -126,14 +130,15 @@ SELECTABLE_LANES=(
 # can reject a workflow that grows a second, unreviewed narrowing path.
 scope_registry() {
     printf '%s\n' \
+        'clippy|graph|crates_sh_test_ending_-clippy' \
         'linux-premerge-build|pattern|//crates/...' \
-        'linux-premerge-tests|graph|rue_test_tier_premerge-minus-dedicated' \
+        'linux-premerge-tests|graph|rue_test_tier_premerge-minus-dedicated-and-clippy' \
         'native-platforms-units|graph|rue_platform_native'
 }
 
 is_scope_consumer() {
     case "$1" in
-        linux-premerge-build|linux-premerge-tests|native-platforms-units) return 0 ;;
+        clippy|linux-premerge-build|linux-premerge-tests|native-platforms-units) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -142,6 +147,11 @@ is_scope_consumer() {
 # An unknown lane prints nothing, and the gate treats that as "run".
 lane_targets() {
     case "$1" in
+        clippy)
+            # The lane proxy and the runnable scope are one live inventory.
+            # Keeping both consumers on this function prevents a newly added
+            # crate from being selectable but not runnable, or vice versa.
+            clippy_targets ;;
         native-linux-arm64|native-macos-arm64)
             # Unit membership is graph-owned. The two corpus targets remain
             # selection proxies because their host-evaluated only_on cases are
@@ -169,6 +179,57 @@ lane_targets() {
         *)
             return 1 ;;
     esac
+}
+
+# The one canonical clippy inventory. Every Rue crate macro emits a sh_test
+# whose label ends exactly in `-clippy`; querying the live graph keeps new and
+# renamed crates self-enrolling. The same function supplies lane selection and
+# registered narrowing, so there is no transcribed target list or peer query.
+#
+# Return 2, distinct from a query failure, when the live query succeeds but the
+# inventory is empty. That is a broken macro/query invariant and must remain a
+# hard error; it is not the same thing as a verified impacted intersection that
+# happens to contain no clippy targets.
+clippy_targets() {
+    local buck2 queried target targets=""
+    buck2="$(buck2_bin)"
+    if ! queried="$("$buck2" uquery "kind('sh_test', 'root//crates/...')")"; then
+        echo "affected-targets: could not query live clippy targets" >&2
+        return 1
+    fi
+    if ! queried="$(normalize_cell <<<"$queried")"; then
+        echo "affected-targets: could not normalize live clippy targets" >&2
+        return 1
+    fi
+    while IFS= read -r target; do
+        if [[ "$target" == *-clippy ]]; then
+            targets+="${targets:+$'\n'}$target"
+        fi
+    done <<<"$queried"
+    if [[ -z "$targets" ]]; then
+        echo "affected-targets: live clippy graph selection is empty" >&2
+        return 2
+    fi
+    printf '%s\n' "$targets"
+}
+
+# The owner-label set is deliberately not a runnable inventory. CI executes
+# only clippy_targets() above; the live validator compares this independently
+# queried ownership set with that canonical suffix-derived set so neither a
+# missing label nor a label on an unrelated target can remove coverage.
+clippy_owned_targets() {
+    local buck2 targets
+    buck2="$(buck2_bin)"
+    if ! targets="$("$buck2" uquery "attrfilter(labels, 'rue_ci_clippy_lane', //crates/...)")"; then
+        echo "affected-targets: could not query rue_ci_clippy_lane targets" >&2
+        return 1
+    fi
+    targets="$(normalize_cell <<<"$targets" | grep . || true)"
+    if [[ -z "$targets" ]]; then
+        echo "affected-targets: rue_ci_clippy_lane graph selection is empty" >&2
+        return 1
+    fi
+    printf '%s\n' "$targets"
 }
 
 # The one canonical native unit selection. Keep this query here so the
@@ -281,11 +342,23 @@ emit_output_multiline() {
     } >>"$GITHUB_OUTPUT"
 }
 
+payload_proof() {
+    python3 "$repo_root/scripts/ci-affected-payload.py" proof "$1"
+}
+
 # RUE-1130. Beyond this many impacted targets, narrowing a lane to an explicit
 # list saves nothing — a compiler change reaches most of the graph, so the list
 # is the graph — and the `//...` pattern is cheaper to express and to read.
 # Emitting nothing means "do not narrow", which every consumer treats as full.
 NARROW_LIMIT="${RUE_AFFECTED_NARROW_LIMIT:-600}"
+
+narrow_limit() {
+    if ! [[ "$NARROW_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
+        echo "affected-targets: narrow limit must be a canonical positive decimal" >&2
+        return 1
+    fi
+    printf '%s\n' "$NARROW_LIMIT"
+}
 
 # Intersect a newline-separated impacted list (file) with the targets given as
 # arguments, preserving argument order. Used by lanes whose contents are a fixed
@@ -385,7 +458,8 @@ deferred_corpus_targets() {
     # carriers even when their names do not end in `-action` or match the test.
     query="attrfilter(labels, rue_test_tier_premerge, //crates/...)"
     query="$query except (attrfilter(labels, rue_ci_dedicated_lane, //crates/...)"
-    query="$query + attrfilter(labels, rue_cli_shard, //crates/...))"
+    query="$query + attrfilter(labels, rue_cli_shard, //crates/...)"
+    query="$query + attrfilter(labels, rue_ci_clippy_lane, //crates/...))"
     if ! covered="$("$buck2" uquery "$query")"; then
         echo "affected-targets: could not query the premerge-tier test selection" >&2
         return 1
@@ -519,7 +593,8 @@ workflow_test_targets() {
     base="set(//... toolchains//...)"
     query="attrfilter(labels, rue_test_tier_premerge, $base)"
     query="$query except (attrfilter(labels, rue_ci_dedicated_lane, $base)"
-    query="$query + attrfilter(labels, rue_cli_shard, $base))"
+    query="$query + attrfilter(labels, rue_cli_shard, $base)"
+    query="$query + attrfilter(labels, rue_ci_clippy_lane, $base))"
     if ! targets="$("$buck2" uquery "$query")"; then
         echo "affected-targets: could not expand the premerge test scope" >&2
         return 1
@@ -539,6 +614,7 @@ scope_targets() {
     local consumer="$1"
     is_scope_consumer "$consumer" || return 1
     case "$consumer" in
+        clippy) clippy_targets ;;
         linux-premerge-build) build_scope "" strict ;;
         linux-premerge-tests) workflow_test_targets ;;
         native-platforms-units) native_platform_targets ;;
@@ -559,20 +635,43 @@ emit_scope_summary() {
     fi
 }
 
-# Produce a narrowed scope by construction.  Pattern lanes use their own
+# A narrowing candidate is emitted only when the planner found at least one
+# live impacted target. An empty or syntactically malformed file therefore
+# means the job output was lost or corrupted, not "nothing is impacted". Keep
+# stale but well-formed labels valid: exact intersection with the current live
+# scope safely drops a target removed since the determinator dump.
+valid_impacted_file() {
+    local file="$1"
+    [[ -r "$file" && -f "$file" && -s "$file" ]] || return 1
+    awk '
+        NF != 1 || $0 !~ /^\/\/[^[:space:]]*:[^[:space:]]+$/ { bad = 1 }
+        END { exit (NR > 0 && !bad) ? 0 : 1 }
+    ' "$file"
+}
+
+# Produce a narrowed scope by construction. Pattern lanes use their own
 # scope-aware query; graph lanes first obtain their live allowlist and then
-# intersect it.  A query failure is non-zero so callers retain the full
-# unnarrowed scope rather than claiming a verified subset.
+# intersect it. A query failure is non-zero so callers retain the full
+# unnarrowed scope rather than claiming a verified subset. Preserve a scope
+# resolver's distinct status (notably clippy's successful-but-empty status 2)
+# so the workflow can keep that invariant a hard error.
 narrow_scope() {
-    local consumer="$1" file="$2" scope narrowed target total_count selected_count
+    local consumer="$1" file="$2" scope narrowed target total_count selected_count scope_status
     is_scope_consumer "$consumer" || return 1
-    if [[ ! -r "$file" || -d "$file" ]]; then
-        emit_scope_summary "$consumer" DEGRADED "" "" "impacted list unavailable; full scope used"
+    if ! valid_impacted_file "$file"; then
+        emit_scope_summary "$consumer" DEGRADED "" "" "impacted list unavailable or malformed; full scope used"
         return 1
     fi
-    if ! scope="$(scope_targets "$consumer")"; then
-        emit_scope_summary "$consumer" DEGRADED "" "" "scope query unavailable; full scope used"
-        return 1
+    if scope="$(scope_targets "$consumer")"; then
+        :
+    else
+        scope_status=$?
+        if [[ "$scope_status" -eq 2 ]]; then
+            emit_scope_summary "$consumer" FAILED "" "" "live scope inventory rejected; hard failure"
+        else
+            emit_scope_summary "$consumer" DEGRADED "" "" "scope query unavailable; full scope used"
+        fi
+        return "$scope_status"
     fi
     local targets=()
     while IFS= read -r target; do
@@ -610,7 +709,7 @@ emit_manifest() {
         fi
     done
     {
-        echo "### Affected-corpus selection (RUE-1119)"
+        echo "### Affected-target selection (RUE-1119)"
         echo
         echo "- Decision: **${mode}**"
         echo "- Reason: ${reason}"
@@ -643,7 +742,7 @@ emit_manifest() {
             echo "| ${target} | ${state} |"
         done
         echo
-        echo "| Gated lane (RUE-1130) | Selection |"
+        echo "| Gated lane (RUE-1130/RUE-1855) | Selection |"
         echo "| --- | --- |"
         local lane
         for lane in "${SELECTABLE_LANES[@]}"; do
@@ -666,10 +765,14 @@ decide_full() {
     emit_output full "true"
     emit_output selected ""
     emit_output selected_lanes ""
+    emit_output selected_lanes_count ""
+    emit_output selected_lanes_digest ""
     emit_output_multiline impacted ""
+    emit_output impacted_targets_digest ""
     emit_output narrowed "false"
     emit_output narrowing_status "$status"
     emit_output head_target_count ""
+    emit_output impacted_closure_count ""
     emit_output impacted_target_count ""
     emit_manifest "full" "$reason" "" "" "$status"
     exit 0
@@ -677,12 +780,31 @@ decide_full() {
 
 decide_select() {
     local selected="$1" reason="$2" lanes="${3:-}" impacted_file="${4:-}" head_count="${5:-}" closure_count="${6:-}" live_count="${7:-0}"
+    local lane_proof lane_count lane_digest impacted_proof proved_live_count impacted_digest limit
+    if ! limit="$(narrow_limit)"; then
+        decide_full "narrow limit is unavailable or malformed"
+    fi
+    if ! lane_proof="$(printf '%s' "$lanes" | payload_proof lanes)"; then
+        decide_full "could not prove the selected-lane payload"
+    fi
+    lane_count="${lane_proof%% *}"
+    lane_digest="${lane_proof#* }"
+    if ! impacted_proof="$(payload_proof targets <"$impacted_file")"; then
+        decide_full "could not prove the live impacted-target payload"
+    fi
+    proved_live_count="${impacted_proof%% *}"
+    impacted_digest="${impacted_proof#* }"
+    if [[ "$proved_live_count" != "$live_count" ]]; then
+        decide_full "live impacted-target count disagrees with its payload"
+    fi
     echo "affected-targets: SELECTIVE run — ${reason}"
     echo "affected-targets: selected corpus targets: ${selected:-<none>}"
     echo "affected-targets: selected lanes: ${lanes:-<none>}"
     emit_output full "false"
     emit_output selected "$selected"
     emit_output selected_lanes "$lanes"
+    emit_output selected_lanes_count "$lane_count"
+    emit_output selected_lanes_digest "$lane_digest"
     # Narrowing is an optimization layered on the selective decision, and it is
     # declined independently: too many impacted targets, or none at all, both
     # mean the lane keeps its ordinary pattern. `narrowed` is the single flag
@@ -690,19 +812,21 @@ decide_select() {
     # "narrow to nothing".
     local impacted_count="${closure_count:-0}"
     local narrowing_status="DECLINED"
-    if [[ "$impacted_count" -gt 0 && "$impacted_count" -le "$NARROW_LIMIT" && "$live_count" -gt 0 ]]; then
+    if [[ "$impacted_count" -gt 0 && "$impacted_count" -le "$limit" && "$live_count" -gt 0 ]]; then
         narrowing_status="CANDIDATE"
         echo "affected-targets: ${live_count} live impacted targets are eligible for registered scope verification"
         emit_output_multiline impacted "$impacted_file"
         emit_output narrowed "true"
     else
-        echo "affected-targets: not narrowing (${impacted_count} impacted targets; limit ${NARROW_LIMIT})"
+        echo "affected-targets: not narrowing (${impacted_count} impacted targets; limit ${limit})"
         emit_output_multiline impacted ""
         emit_output narrowed "false"
     fi
     emit_output narrowing_status "$narrowing_status"
     emit_output head_target_count "$head_count"
-    emit_output impacted_target_count "$live_count"
+    emit_output impacted_closure_count "$impacted_count"
+    emit_output impacted_target_count "$proved_live_count"
+    emit_output impacted_targets_digest "$impacted_digest"
     emit_manifest "select" "$reason" "$selected" "$lanes" "$narrowing_status" "$head_count" "$live_count"
     exit 0
 }
@@ -887,6 +1011,9 @@ main() {
         scope-registry)
             [[ $# -eq 1 ]] || { echo "usage: scripts/affected-targets scope-registry" >&2; exit 2; }
             scope_registry ;;
+        narrow-limit)
+            [[ $# -eq 1 ]] || { echo "usage: scripts/affected-targets narrow-limit" >&2; exit 2; }
+            narrow_limit ;;
         scope-targets)
             [[ $# -eq 2 ]] || { echo "usage: scripts/affected-targets scope-targets LANE" >&2; exit 2; }
             scope_targets "$2" ;;
@@ -896,6 +1023,9 @@ main() {
         lane-targets)
             [[ $# -eq 2 ]] || { echo "usage: scripts/affected-targets lane-targets LANE" >&2; exit 2; }
             lane_targets "$2" ;;
+        clippy-owned-targets)
+            [[ $# -eq 1 ]] || { echo "usage: scripts/affected-targets clippy-owned-targets" >&2; exit 2; }
+            clippy_owned_targets ;;
         native-targets)
             [[ $# -eq 1 ]] || { echo "usage: scripts/affected-targets native-targets" >&2; exit 2; }
             native_platform_targets ;;
@@ -904,7 +1034,7 @@ main() {
         lanes)
             lanes ;;
         *)
-            echo "usage: scripts/affected-targets [decide|force-full-match|status-paths|is-selectable|is-selectable-lane|lane-targets|native-targets|corpus-targets|lanes|intersect|build-scope|scope-registry|scope-targets|narrow-scope]" >&2
+            echo "usage: scripts/affected-targets [decide|force-full-match|status-paths|is-selectable|is-selectable-lane|lane-targets|clippy-owned-targets|native-targets|corpus-targets|lanes|intersect|build-scope|scope-registry|narrow-limit|scope-targets|narrow-scope]" >&2
             exit 2 ;;
     esac
 }

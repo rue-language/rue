@@ -147,9 +147,13 @@ def _clippy_check(name):
         name = name + "-clippy",
         test = "//crates:clippy-gate",
         args = ["$(location :" + name + "[clippy.txt])"],
-        # Premerge tier; excluded from quick iteration so `scripts/rue quick`
-        # keeps meaning "unit tests only" (see quick-test.sh).
-        labels = rue_test_labels("premerge", labels = ["rue_not_quick"]),
+        # The required clippy job owns these gates. Keep the premerge tier for
+        # direct developer selection, but required CI subtracts the ownership
+        # label so linux-premerge does not execute the same gates a second time.
+        labels = rue_test_labels(
+            "premerge",
+            labels = ["rue_ci_clippy_lane", "rue_not_quick"],
+        ),
     )
 
 def rue_crate(

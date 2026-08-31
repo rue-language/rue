@@ -496,7 +496,12 @@ class LaneModelTests(unittest.TestCase):
             'case "$1" in\n'
             f'  lanes) printf "%s\\n" {" ".join(lanes)} ;;\n'
             "  corpus-targets) echo //:cli-tests-shard-0 ;;\n"
-            "  lane-targets) echo //:release-smoke ;;\n"
+            "  lane-targets)\n"
+            "    if [ \"$2\" = clippy ]; then\n"
+            "      echo //crates/rue-lexer:rue-lexer-clippy\n"
+            "    else\n"
+            "      echo //:release-smoke\n"
+            "    fi ;;\n"
             "esac\n"
         )
         return script
@@ -528,6 +533,26 @@ class LaneModelTests(unittest.TestCase):
         self.assertEqual(
             set(GATE.LANE_PLATFORMS) & GATE.SELECTION_PROXY_LANES, set()
         )
+
+    def test_dedicated_clippy_targets_are_not_also_premerge_members(self):
+        class ClippyBuck:
+            root = Path(".")
+
+            def uquery(self, expression, attributes):
+                return {
+                    "//crates/rue-lexer:rue-lexer-clippy": {
+                        "labels": [GATE.CLIPPY_LANE_LABEL]
+                    },
+                    "//crates/rue-lexer:rue-lexer-test": {"labels": []},
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            script = self.fake_affected_targets(
+                Path(directory), sorted(set(GATE.LANE_PLATFORMS) | GATE.SELECTION_PROXY_LANES)
+            )
+            lanes = GATE.lane_membership(ClippyBuck(), script)
+        self.assertIn("//crates/rue-lexer:rue-lexer-clippy", lanes["clippy"])
+        self.assertNotIn("//crates/rue-lexer:rue-lexer-clippy", lanes["linux-premerge"])
 
     def test_the_determinator_exposes_the_inventories_this_gate_reads(self):
         for subcommand in ("corpus-targets", "lanes"):
