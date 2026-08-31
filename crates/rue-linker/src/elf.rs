@@ -730,6 +730,40 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// What archive member selection needs from one object: its symbols, and the
+/// container and architecture facts a target check reads.
+///
+/// Deliberately not an `ObjectFile`: this carries no sections, and a value that
+/// looks like a fully decoded object but has none would be a trap.
+#[derive(Debug, Clone)]
+pub struct ObjectSymbols {
+    /// The object's symbol table, identical to a full parse's.
+    pub symbols: Vec<Symbol>,
+    /// The machine architecture recorded in the object header.
+    pub machine: ElfMachine,
+    /// The object's container format.
+    pub format: ObjectFormat,
+}
+
+/// How much of an object file to decode.
+///
+/// Archive member selection reads only the symbol table (RUE-1845): it asks
+/// which members define which symbols, and the answer never depends on section
+/// contents or relocations. Decoding those for a member that is then discarded
+/// is the bulk of parsing an archive — the embedded runtime is 297 members of
+/// which a link typically extracts one.
+///
+/// The depth never affects the symbols produced. `SymbolsOnly` yields exactly
+/// the symbol table `Full` yields; it omits sections and relocations, and with
+/// them the bounds checks that only their contents can fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ParseDepth {
+    /// Sections with their contents, symbols, and relocations.
+    Full,
+    /// The symbol table alone.
+    SymbolsOnly,
+}
+
 impl ObjectFile {
     /// Parse a relocatable object file (ELF or Mach-O).
     ///
@@ -740,12 +774,42 @@ impl ObjectFile {
         Self::parse_with_cancellation(data, || false)
     }
 
+    /// Parse only what archive member selection reads, for one object.
+    ///
+    /// Produces exactly the symbols [`ObjectFile::parse_with_cancellation`]
+    /// produces. Sections and relocations are not decoded, so a member whose
+    /// section or relocation contents are malformed parses here and fails only
+    /// if it is actually linked — see [`ParseDepth`].
+    ///
+    /// Returns [`ObjectSymbols`] rather than an `ObjectFile`, so an object with
+    /// no sections cannot be mistaken for a fully decoded one.
+    pub fn parse_symbols_with_cancellation(
+        data: &[u8],
+        mut cancellation: impl FnMut() -> bool,
+    ) -> Result<ObjectSymbols, ParseError> {
+        Self::parse_at_depth(data, ParseDepth::SymbolsOnly, &mut cancellation).map(|object| {
+            ObjectSymbols {
+                symbols: object.symbols,
+                machine: object.machine,
+                format: object.format,
+            }
+        })
+    }
+
     /// Parse an object with bounded caller-owned cancellation checkpoints.
     pub fn parse_with_cancellation(
         data: &[u8],
         mut cancellation: impl FnMut() -> bool,
     ) -> Result<Self, ParseError> {
-        check_parse_cancellation(&mut cancellation)?;
+        Self::parse_at_depth(data, ParseDepth::Full, &mut cancellation)
+    }
+
+    fn parse_at_depth(
+        data: &[u8],
+        depth: ParseDepth,
+        cancellation: &mut impl FnMut() -> bool,
+    ) -> Result<Self, ParseError> {
+        check_parse_cancellation(cancellation)?;
         // Need at least 4 bytes to check magic
         if data.len() < 4 {
             return Err(ParseError::TooShort);
@@ -753,9 +817,9 @@ impl ObjectFile {
 
         // Dispatch based on magic bytes
         if data[0..4] == ELF_MAGIC {
-            Self::parse_elf(data, &mut cancellation)
+            Self::parse_elf(data, depth, cancellation)
         } else if data.len() >= 4 && read_u32(data, 0) == MH_MAGIC_64 {
-            Self::parse_macho(data, &mut cancellation)
+            Self::parse_macho(data, depth, cancellation)
         } else {
             Err(ParseError::UnknownFormat)
         }
@@ -764,8 +828,15 @@ impl ObjectFile {
     /// Parse a Mach-O 64-bit relocatable object file.
     ///
     /// Extracts sections, symbols, and relocations from a Mach-O object file.
+    ///
+    /// Unlike ELF, a symbols-only parse still walks the section headers: a
+    /// Mach-O symbol's value is an address that must be made section-relative
+    /// by subtracting its section's `addr`, so the addresses are load-bearing
+    /// for the symbols themselves. Only the section *contents* and the
+    /// relocations are skipped.
     fn parse_macho(
         data: &[u8],
+        depth: ParseDepth,
         cancellation: &mut impl FnMut() -> bool,
     ) -> Result<Self, ParseError> {
         // Minimum size check for Mach-O header
@@ -907,7 +978,9 @@ impl ObjectFile {
                         // checked add so a malformed offset/size near usize::MAX
                         // is rejected instead of wrapping (RUE-334), mirroring
                         // the ELF path's checked_add bounds validation.
-                        let section_data = if size > 0 && offset > 0 {
+                        let section_data = if depth == ParseDepth::SymbolsOnly {
+                            Vec::new()
+                        } else if size > 0 && offset > 0 {
                             let end = offset
                                 .checked_add(size as usize)
                                 .ok_or_else(|| ParseError::SectionOutOfBounds(full_name.clone()))?;
@@ -1119,7 +1192,11 @@ impl ObjectFile {
         }
 
         // Parse relocations for each section
-        for (section_index, nreloc, reloff) in section_reloc_info {
+        let sections_with_relocations = match depth {
+            ParseDepth::Full => section_reloc_info,
+            ParseDepth::SymbolsOnly => Vec::new(),
+        };
+        for (section_index, nreloc, reloff) in sections_with_relocations {
             check_parse_cancellation(cancellation)?;
             if nreloc == 0 {
                 continue;
@@ -1293,7 +1370,11 @@ impl ObjectFile {
     }
 
     /// Parse an ELF64 relocatable object file.
-    fn parse_elf(data: &[u8], cancellation: &mut impl FnMut() -> bool) -> Result<Self, ParseError> {
+    fn parse_elf(
+        data: &[u8],
+        depth: ParseDepth,
+        cancellation: &mut impl FnMut() -> bool,
+    ) -> Result<Self, ParseError> {
         check_parse_cancellation(cancellation)?;
         // Check minimum size for ELF header
         if data.len() < ELF64_EHDR_SIZE {
@@ -1424,8 +1505,15 @@ impl ObjectFile {
         }
         let shstrtab_data = &data[shstrtab.offset as usize..shstrtab_end as usize];
 
-        // Second pass: create sections with names
-        for (i, raw) in raw_sections.iter().enumerate() {
+        // Second pass: create sections with names. A symbols-only parse skips
+        // it wholesale: an ELF symbol's `section_index` is its raw `st_shndx`
+        // resolved against `raw_sections`, never against the list built here, so
+        // the symbols below are identical either way.
+        let sections_to_build: &[RawSection] = match depth {
+            ParseDepth::Full => &raw_sections,
+            ParseDepth::SymbolsOnly => &[],
+        };
+        for (i, raw) in sections_to_build.iter().enumerate() {
             check_parse_cancellation(cancellation)?;
             let name = read_utf8_cstring_with_cancellation(
                 shstrtab_data,
@@ -1632,8 +1720,14 @@ impl ObjectFile {
             }
         }
 
-        // Parse relocations
-        for raw in raw_sections.iter() {
+        // Parse relocations. Selection never reads them, and they are the
+        // largest single item in an archive parse (RUE-1845): the embedded
+        // x86-64 runtime carries 35,672 of them across 6,594 sections.
+        let sections_with_relocations: &[RawSection] = match depth {
+            ParseDepth::Full => &raw_sections,
+            ParseDepth::SymbolsOnly => &[],
+        };
+        for raw in sections_with_relocations.iter() {
             check_parse_cancellation(cancellation)?;
             if raw.sh_type != SHT_RELA {
                 continue;
