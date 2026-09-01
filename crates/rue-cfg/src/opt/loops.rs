@@ -170,10 +170,10 @@ pub(crate) fn loops_with_stats(cfg: &Cfg, dom: &DominatorTree) -> (LoopForest, S
     let mut stats = Stats::default();
     let n = cfg.block_count();
 
-    // Successor lists, decoded once.
-    let succs: Vec<Vec<BlockId>> = (0..n)
-        .map(|i| successors_of(cfg, BlockId::from_raw(i as u32)))
-        .collect();
+    // Successor lists share two flat backing allocations instead of allocating
+    // once for every block. The exact-size first pass and fill pass use the
+    // same decoder, so their edge meaning and order cannot drift.
+    let succs = Successors::build(cfg, n);
 
     // ------------------------------------------------------------------
     // Reachability + irreducibility. A retreating edge `u -> v` (v is a DFS
@@ -194,7 +194,7 @@ pub(crate) fn loops_with_stats(cfg: &Cfg, dom: &DominatorTree) -> (LoopForest, S
         // (block, next successor index).
         let mut stack: Vec<(BlockId, usize)> = vec![(entry, 0)];
         while let Some(&(block, idx)) = stack.last() {
-            let block_succs = &succs[block.as_u32() as usize];
+            let block_succs = succs.of(block);
             if idx < block_succs.len() {
                 stack.last_mut().unwrap().1 += 1;
                 stats.edges_visited += 1;
@@ -245,7 +245,7 @@ pub(crate) fn loops_with_stats(cfg: &Cfg, dom: &DominatorTree) -> (LoopForest, S
             continue;
         }
         let ub = BlockId::from_raw(u as u32);
-        for &s in &succs[u] {
+        for &s in succs.of(ub) {
             stats.edges_visited += 1;
             if dom.dominates(s, ub) {
                 stats.back_edges += 1;
@@ -307,7 +307,7 @@ pub(crate) fn loops_with_stats(cfg: &Cfg, dom: &DominatorTree) -> (LoopForest, S
         // header is a legitimate exit source (its trip test branching out).
         let mut exits: Vec<(BlockId, BlockId)> = Vec::new();
         for &b in &body {
-            for &s in &succs[b.as_u32() as usize] {
+            for &s in succs.of(b) {
                 if body
                     .binary_search_by_key(&s.as_u32(), |b: &BlockId| b.as_u32())
                     .is_err()
@@ -736,26 +736,75 @@ fn redirect_edges(
     Ok(())
 }
 
-/// Successor blocks of `block` in control-flow order.
-fn successors_of(cfg: &Cfg, block: BlockId) -> Vec<BlockId> {
+/// Flat successor adjacency: the edges from block `i` occupy
+/// `targets[offsets[i]..offsets[i + 1]]` in exact control-flow order.
+struct Successors {
+    offsets: Vec<usize>,
+    targets: Vec<BlockId>,
+}
+
+impl Successors {
+    fn build(cfg: &Cfg, block_count: usize) -> Self {
+        let mut edge_count = 0usize;
+        for raw in 0..block_count {
+            visit_successors(cfg, BlockId::from_raw(raw as u32), |_| {
+                edge_count = edge_count
+                    .checked_add(1)
+                    .expect("CFG successor count exceeds addressable memory");
+            });
+        }
+
+        let mut offsets = Vec::with_capacity(block_count + 1);
+        let mut targets = Vec::with_capacity(edge_count);
+        offsets.push(0);
+        for raw in 0..block_count {
+            visit_successors(cfg, BlockId::from_raw(raw as u32), |target| {
+                targets.push(target);
+            });
+            offsets.push(targets.len());
+        }
+        Self { offsets, targets }
+    }
+
+    fn of(&self, block: BlockId) -> &[BlockId] {
+        let index = block.as_u32() as usize;
+        &self.targets[self.offsets[index]..self.offsets[index + 1]]
+    }
+}
+
+/// Visit successor blocks of `block` in control-flow order.
+///
+/// This is the single terminator decoder used by both passes of
+/// [`Successors::build`]: goto target; branch then and else; switch cases in
+/// arena order and then its default.
+fn visit_successors(cfg: &Cfg, block: BlockId, mut visit: impl FnMut(BlockId)) {
     match &cfg.get_block(block).terminator {
-        Terminator::Goto { target, .. } => vec![*target],
+        Terminator::Goto { target, .. } => visit(*target),
         Terminator::Branch {
             then_block,
             else_block,
             ..
-        } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. } => {
-            let mut out: Vec<BlockId> = cfg
-                .switch_cases(cases)
-                .iter()
-                .map(|(_, target)| *target)
-                .collect();
-            out.push(*default);
-            out
+        } => {
+            visit(*then_block);
+            visit(*else_block);
         }
-        Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => Vec::new(),
+        Terminator::Switch { cases, default, .. } => {
+            for &(_, target) in cfg.switch_cases(cases) {
+                visit(target);
+            }
+            visit(*default);
+        }
+        Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => {}
     }
+}
+
+/// Test-only successor helper for preheader assertions, driven by the same
+/// decoder as the analysis adjacency.
+#[cfg(test)]
+fn successors_of(cfg: &Cfg, block: BlockId) -> Vec<BlockId> {
+    let mut successors = Vec::new();
+    visit_successors(cfg, block, |target| successors.push(target));
+    successors
 }
 
 #[cfg(test)]
@@ -826,6 +875,175 @@ mod tests {
     fn analyze(cfg: &Cfg) -> LoopForest {
         let dom = DominatorTree::compute(cfg);
         loops(cfg, &dom)
+    }
+
+    fn ring_cfg(block_count: usize) -> Cfg {
+        assert!(block_count > 0);
+        let mut cfg = make_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let mut previous = entry;
+        for _ in 1..block_count {
+            let next = cfg.new_block();
+            cfg.set_terminator(previous, goto(next));
+            previous = next;
+        }
+        cfg.set_terminator(previous, goto(entry));
+        cfg
+    }
+
+    // ------------------------------------------------------------------
+    // Flat successor representation
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn flat_successors_preserve_offsets_order_duplicates_and_invalid_targets() {
+        let mut cfg = make_cfg();
+        let none = cfg.new_block();
+        cfg.entry = none;
+        let unreachable = cfg.new_block();
+        let returned = cfg.new_block();
+        let jumped = cfg.new_block();
+        let branched = cfg.new_block();
+        let switched = cfg.new_block();
+        let invalid = cfg.new_block();
+
+        cfg.set_terminator(none, Terminator::None);
+        cfg.set_terminator(unreachable, Terminator::Unreachable);
+        cfg.set_terminator(returned, Terminator::Return { value: None });
+        cfg.set_terminator(jumped, goto(none));
+        let branch_cond = bool_const(&mut cfg, branched);
+        cfg.set_terminator(branched, branch(branch_cond, returned, returned));
+        let switch_value = bool_const(&mut cfg, switched);
+        let switch_term = switch(
+            &mut cfg,
+            switch_value,
+            [(7, branched), (3, unreachable), (11, branched)],
+            jumped,
+        );
+        cfg.set_terminator(switched, switch_term);
+        let counterfeit = BlockId::from_raw(999);
+        cfg.set_terminator(invalid, goto(counterfeit));
+
+        let (successors, allocations, bytes) =
+            crate::allocation_test_support::allocation_evidence(|| {
+                Successors::build(&cfg, cfg.block_count())
+            });
+
+        assert_eq!(successors.offsets, vec![0, 0, 0, 0, 1, 3, 7, 8]);
+        assert_eq!(
+            successors.targets,
+            vec![
+                none,
+                returned,
+                returned,
+                branched,
+                unreachable,
+                branched,
+                jumped,
+                counterfeit,
+            ]
+        );
+        assert_eq!(successors.of(none), &[]);
+        assert_eq!(successors.of(branched), &[returned, returned]);
+        assert_eq!(
+            successors.of(switched),
+            &[branched, unreachable, branched, jumped]
+        );
+        assert_eq!(successors.of(invalid), &[counterfeit]);
+        assert_eq!(allocations, 2);
+        assert_eq!(
+            bytes,
+            successors.offsets.len() * std::mem::size_of::<usize>()
+                + successors.targets.len() * std::mem::size_of::<BlockId>()
+        );
+    }
+
+    #[test]
+    fn successor_backing_allocations_do_not_scale_with_block_count() {
+        const SMALL_BLOCKS: usize = 8;
+        const LARGE_BLOCKS: usize = 1024;
+        let small_cfg = ring_cfg(SMALL_BLOCKS);
+        let large_cfg = ring_cfg(LARGE_BLOCKS);
+
+        let (small, small_allocations, small_bytes) =
+            crate::allocation_test_support::allocation_evidence(|| {
+                Successors::build(&small_cfg, small_cfg.block_count())
+            });
+        let (large, large_allocations, large_bytes) =
+            crate::allocation_test_support::allocation_evidence(|| {
+                Successors::build(&large_cfg, large_cfg.block_count())
+            });
+
+        assert_eq!(small_allocations, 2);
+        assert_eq!(large_allocations, small_allocations);
+        assert_eq!(small.offsets.len(), SMALL_BLOCKS + 1);
+        assert_eq!(small.targets.len(), SMALL_BLOCKS);
+        assert_eq!(small.of(BlockId::from_raw(0)), &[BlockId::from_raw(1)]);
+        assert_eq!(large.offsets.len(), LARGE_BLOCKS + 1);
+        assert_eq!(large.targets.len(), LARGE_BLOCKS);
+        assert_eq!(
+            large.of(BlockId::from_raw((LARGE_BLOCKS - 1) as u32)),
+            &[BlockId::from_raw(0)]
+        );
+        assert_eq!(
+            small_bytes,
+            (SMALL_BLOCKS + 1) * std::mem::size_of::<usize>()
+                + SMALL_BLOCKS * std::mem::size_of::<BlockId>()
+        );
+        assert_eq!(
+            large_bytes,
+            (LARGE_BLOCKS + 1) * std::mem::size_of::<usize>()
+                + LARGE_BLOCKS * std::mem::size_of::<BlockId>()
+        );
+    }
+
+    #[test]
+    fn empty_and_zero_edge_successors_allocate_only_offsets() {
+        let empty_cfg = make_cfg();
+        let mut zero_edge_cfg = make_cfg();
+        const BLOCKS: usize = 1024;
+        for _ in 0..BLOCKS {
+            zero_edge_cfg.new_block();
+        }
+
+        let (empty, empty_allocations, empty_bytes) =
+            crate::allocation_test_support::allocation_evidence(|| {
+                Successors::build(&empty_cfg, empty_cfg.block_count())
+            });
+        let (zero_edge, zero_edge_allocations, zero_edge_bytes) =
+            crate::allocation_test_support::allocation_evidence(|| {
+                Successors::build(&zero_edge_cfg, zero_edge_cfg.block_count())
+            });
+
+        assert_eq!(empty_allocations, 1);
+        assert_eq!(empty_bytes, std::mem::size_of::<usize>());
+        assert_eq!(empty.offsets, vec![0]);
+        assert!(empty.targets.is_empty());
+        assert_eq!(zero_edge_allocations, empty_allocations);
+        assert_eq!(zero_edge_bytes, (BLOCKS + 1) * std::mem::size_of::<usize>());
+        assert_eq!(zero_edge.offsets.len(), BLOCKS + 1);
+        assert!(zero_edge.offsets.iter().all(|&offset| offset == 0));
+        assert!(zero_edge.targets.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "validated CFG payload")]
+    fn flat_successors_preserve_counterfeit_switch_range_failure() {
+        let mut cfg = make_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let scrutinee = bool_const(&mut cfg, entry);
+        cfg.set_terminator(
+            entry,
+            Terminator::Switch {
+                scrutinee,
+                cases: crate::payload::CfgSwitchCases::malformed(1, 1),
+                default: entry,
+            },
+        );
+
+        let _ = Successors::build(&cfg, cfg.block_count());
     }
 
     // ------------------------------------------------------------------
