@@ -58,15 +58,33 @@ pub fn run_with_budget(
             break;
         }
         let mut changed = false;
+        let entries: Vec<_> = forest
+            .loops()
+            .iter()
+            .map(|lp| unique_outside_predecessor(cfg, lp))
+            .collect();
+        let mut unrolled_in_generation = Vec::new();
         for id in 0..forest.len() {
+            // One edit invalidates its own loop id and every enclosing body's
+            // membership. Sibling loops, however, come from the same forest
+            // generation and remain valid when their bodies and entry edits
+            // cannot touch one another. Batch only that bounded case; anything
+            // nested or connected through an edited boundary waits for the
+            // mandatory rebuild below.
+            if unrolled_in_generation
+                .iter()
+                .any(|&other| !forest_generation_independent(&forest, &entries, id, other))
+            {
+                continue;
+            }
             stats.loops_analyzed += 1;
             let lp = forest.get(id);
             // An enclosing loop still contains another induction protocol and
             // cannot be cloned. An innermost loop is self-contained even when
             // it has a parent, so it may use the ordinary canonical-shape and
-            // budget checks below. A successful edit breaks this forest walk;
-            // loop ids and enclosing bodies are forest-local and must not be
-            // reused after cloning changes the graph.
+            // budget checks below. A successful edit invalidates its own id
+            // and enclosing bodies; only the independent sibling check above
+            // permits further use of this forest generation.
             if forest.loops().iter().any(|other| other.parent == Some(id)) {
                 stats.shape_refusals += 1;
                 continue;
@@ -124,7 +142,7 @@ pub fn run_with_budget(
                     stats.values_cloned += values;
                     stats.instructions_cloned += instructions;
                     changed = true;
-                    break;
+                    unrolled_in_generation.push(id);
                 }
                 Err(error) => return Err(error),
             }
@@ -134,6 +152,44 @@ pub fn run_with_budget(
         }
     }
     Ok(stats)
+}
+
+fn unique_outside_predecessor(cfg: &Cfg, lp: &NaturalLoop) -> Option<BlockId> {
+    let mut outside = cfg
+        .predecessors_of(lp.header)
+        .into_iter()
+        .filter(|predecessor| !lp.contains(*predecessor));
+    let predecessor = outside.next()?;
+    outside.next().is_none().then_some(predecessor)
+}
+
+/// Whether two loop ids from one immutable forest generation can be edited
+/// without either edit invalidating the other's forest-local shape.
+fn forest_generation_independent(
+    forest: &super::loops::LoopForest,
+    entries: &[Option<BlockId>],
+    a_id: usize,
+    b_id: usize,
+) -> bool {
+    let a = forest.get(a_id);
+    let b = forest.get(b_id);
+
+    // Ancestors contain descendants, so this also excludes every
+    // ancestor/descendant pair while accepting disjoint sibling trees.
+    if a.body.iter().any(|block| b.contains(*block)) {
+        return false;
+    }
+
+    // `unroll_one` rewires the unique outside predecessor. Do not reuse a
+    // loop whose body supplies that predecessor, nor clone an exit that enters
+    // the other loop body and would create a new, unanalyzed predecessor.
+    if entries[a_id].is_some_and(|entry| b.contains(entry))
+        || entries[b_id].is_some_and(|entry| a.contains(entry))
+    {
+        return false;
+    }
+    !a.exits.iter().any(|(_, target)| b.contains(*target))
+        && !b.exits.iter().any(|(_, target)| a.contains(*target))
 }
 
 fn const_value(cfg: &Cfg, value: CfgValue, ty: Type) -> Option<i128> {
@@ -1317,6 +1373,146 @@ mod tests {
         cfg
     }
 
+    fn independent_slot_loops(loop_count: usize, bound: u64) -> Cfg {
+        assert!(loop_count > 0);
+        let mut cfg = Cfg::new(
+            Type::I32,
+            u32::try_from(loop_count).unwrap(),
+            0,
+            "independent_slot_loops".into(),
+            Vec::<bool>::new(),
+        );
+        let span = Span::new(10, 11);
+        let mut preheader = cfg.new_block();
+
+        for slot in 0..loop_count {
+            let header = cfg.new_block();
+            let body = cfg.new_block();
+            let latch = cfg.new_block();
+            let exit = cfg.new_block();
+            let slot = u32::try_from(slot).unwrap();
+
+            let init = cfg.append_inst(
+                preheader,
+                CfgInst {
+                    data: CfgInstData::Const(0),
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            cfg.append_inst(
+                preheader,
+                CfgInst {
+                    data: CfgInstData::Alloc { slot, init },
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            cfg.set_goto(preheader, header, []);
+
+            let iv = cfg.append_inst(
+                header,
+                CfgInst {
+                    data: CfgInstData::Load { slot },
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            let limit = cfg.append_inst(
+                header,
+                CfgInst {
+                    data: CfgInstData::Const(bound),
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            let cond = cfg.append_inst(
+                header,
+                CfgInst {
+                    data: CfgInstData::Lt(iv, limit),
+                    ty: Type::BOOL,
+                    span,
+                },
+            );
+            cfg.set_branch(header, cond, body, [], exit, []);
+
+            let body_iv = cfg.append_inst(
+                body,
+                CfgInst {
+                    data: CfgInstData::Load { slot },
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            let body_one = cfg.append_inst(
+                body,
+                CfgInst {
+                    data: CfgInstData::Const(1),
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            cfg.append_inst(
+                body,
+                CfgInst {
+                    data: CfgInstData::Add(body_iv, body_one),
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            cfg.set_goto(body, latch, []);
+
+            let latch_iv = cfg.append_inst(
+                latch,
+                CfgInst {
+                    data: CfgInstData::Load { slot },
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            let step = cfg.append_inst(
+                latch,
+                CfgInst {
+                    data: CfgInstData::Const(1),
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            let update = cfg.append_inst(
+                latch,
+                CfgInst {
+                    data: CfgInstData::Add(latch_iv, step),
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            cfg.append_inst(
+                latch,
+                CfgInst {
+                    data: CfgInstData::Store {
+                        slot,
+                        value: update,
+                    },
+                    ty: Type::UNIT,
+                    span,
+                },
+            );
+            cfg.set_goto(latch, header, []);
+            preheader = exit;
+        }
+
+        let result = cfg.append_inst(
+            preheader,
+            CfgInst {
+                data: CfgInstData::Const(0),
+                ty: Type::I32,
+                span,
+            },
+        );
+        cfg.set_return(preheader, Some(result));
+        cfg
+    }
+
     fn nested_slot_loops(depth: usize, bound: u64) -> Cfg {
         nested_slot_loops_with_order(depth, bound, true)
     }
@@ -1578,6 +1774,85 @@ mod tests {
         assert!(stats.forest_computations <= 3);
         assert!(stats.loops_analyzed <= 2);
         assert!(stats.values_cloned > 0);
+    }
+
+    #[test]
+    fn run_batches_independent_loops_in_one_forest_generation() {
+        let mut cfg = independent_slot_loops(3, 2);
+        let mut repeated = independent_slot_loops(3, 2);
+        cfg.verify().unwrap();
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(
+            stats,
+            Stats {
+                forest_computations: 2,
+                loops_analyzed: 3,
+                loops_unrolled: 3,
+                budget_refusals: 0,
+                shape_refusals: 0,
+                blocks_cloned: 18,
+                values_cloned: 60,
+                instructions_cloned: 60,
+            }
+        );
+        assert_eq!(run(&mut repeated).unwrap(), stats);
+        assert_eq!(format!("{repeated:?}"), format!("{cfg:?}"));
+        cfg.verify().unwrap();
+        let dom = DominatorTree::compute(&cfg);
+        assert!(loops(&cfg, &dom).is_empty());
+    }
+
+    #[test]
+    fn refused_independent_loop_does_not_invalidate_the_batch() {
+        let mut cfg = independent_slot_loops(3, 2);
+        let dom = DominatorTree::compute(&cfg);
+        let forest = loops(&cfg, &dom);
+        let refused_header = forest.get(1).header;
+        let term = std::mem::replace(
+            &mut cfg.get_block_mut(refused_header).terminator,
+            Terminator::None,
+        );
+        cfg.append_inst(
+            refused_header,
+            CfgInst {
+                data: CfgInstData::Const(99),
+                ty: Type::I32,
+                span: Span::new(12, 13),
+            },
+        );
+        cfg.get_block_mut(refused_header).terminator = term;
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.forest_computations, 2);
+        assert_eq!(stats.loops_analyzed, 4);
+        assert_eq!(stats.loops_unrolled, 2);
+        assert_eq!(stats.shape_refusals, 2);
+        assert_eq!(stats.blocks_cloned, 12);
+        assert_eq!(stats.values_cloned, 40);
+        cfg.verify().unwrap();
+        let dom = DominatorTree::compute(&cfg);
+        let remaining = loops(&cfg, &dom);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining.get(0).header, refused_header);
+    }
+
+    #[test]
+    fn independent_batch_charges_the_shared_budget_in_forest_order() {
+        let mut cfg = independent_slot_loops(3, 2);
+        // Each loop charges exactly 20 values. Forty remaining units accept
+        // the first two forest-ordered loops and refuse the third both before
+        // and after the rebuild driven by those successful edits.
+        let mut budget = super::super::CodeGrowthBudget::with_used(216, 0);
+        let stats = run_with_budget(&mut cfg, &mut budget).unwrap();
+        assert_eq!(stats.forest_computations, 2);
+        assert_eq!(stats.loops_analyzed, 4);
+        assert_eq!(stats.loops_unrolled, 2);
+        assert_eq!(stats.budget_refusals, 2);
+        assert_eq!(stats.shape_refusals, 0);
+        assert_eq!(stats.blocks_cloned, 12);
+        assert_eq!(stats.values_cloned, 40);
+        assert_eq!(budget.used(), 256);
+        cfg.verify().unwrap();
     }
 
     #[test]

@@ -567,7 +567,8 @@ pub fn optimize_with_budget(
                     stats.add_licm(licm_stats);
                     // Full constant-trip unrolling follows LICM and is
                     // followed by a mandatory cleanup fixpoint. Analyses are
-                    // recomputed by the pass after every CFG mutation.
+                    // recomputed by the pass after every independent mutation
+                    // batch.
                     let unroll = unroll::run_with_budget(&mut cfg, &mut budget)?;
                     stats.add_unroll(unroll);
                     stats.code_growth_used = budget.used_values().saturating_sub(initial_values);
