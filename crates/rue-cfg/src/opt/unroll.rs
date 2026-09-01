@@ -61,10 +61,13 @@ pub fn run_with_budget(
         for id in 0..forest.len() {
             stats.loops_analyzed += 1;
             let lp = forest.get(id);
-            // Nested loops are intentionally not guessed at. Their outer body
-            // contains another back edge and cloning it would duplicate a
-            // second induction protocol with no canonical order.
-            if lp.parent.is_some() || forest.loops().iter().any(|other| other.parent == Some(id)) {
+            // An enclosing loop still contains another induction protocol and
+            // cannot be cloned. An innermost loop is self-contained even when
+            // it has a parent, so it may use the ordinary canonical-shape and
+            // budget checks below. A successful edit breaks this forest walk;
+            // loop ids and enclosing bodies are forest-local and must not be
+            // reused after cloning changes the graph.
+            if forest.loops().iter().any(|other| other.parent == Some(id)) {
                 stats.shape_refusals += 1;
                 continue;
             }
@@ -1314,6 +1317,174 @@ mod tests {
         cfg
     }
 
+    fn nested_slot_loops(depth: usize, bound: u64) -> Cfg {
+        nested_slot_loops_with_order(depth, bound, true)
+    }
+
+    fn nested_slot_loops_with_order(depth: usize, bound: u64, outer_latch_first: bool) -> Cfg {
+        assert!(depth > 0);
+        let mut cfg = Cfg::new(
+            Type::I32,
+            u32::try_from(depth).unwrap(),
+            0,
+            "nested_slot_loops".into(),
+            Vec::<bool>::new(),
+        );
+        let entry = cfg.new_block();
+        // Loop-forest order follows the first-seen latch. Most tests put the
+        // outer latch first so the has-child refusal is observed before the
+        // accepted inner loop. The alternate order makes a stale loop id name
+        // a different header after the forest is rebuilt.
+        let mut latches: Vec<_> = (0..depth).map(|_| cfg.new_block()).collect();
+        if !outer_latch_first {
+            latches.reverse();
+        }
+        let headers: Vec<_> = (0..depth).map(|_| cfg.new_block()).collect();
+        let inner_preheaders: Vec<_> = (1..depth).map(|_| cfg.new_block()).collect();
+        let leaf = cfg.new_block();
+        let exit = cfg.new_block();
+        let span = Span::new(20, 21);
+
+        for level in 0..depth {
+            let preheader = if level == 0 {
+                entry
+            } else {
+                inner_preheaders[level - 1]
+            };
+            let init = cfg.append_inst(
+                preheader,
+                CfgInst {
+                    data: CfgInstData::Const(0),
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            cfg.append_inst(
+                preheader,
+                CfgInst {
+                    data: CfgInstData::Alloc {
+                        slot: u32::try_from(level).unwrap(),
+                        init,
+                    },
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            cfg.set_goto(preheader, headers[level], []);
+
+            let iv = cfg.append_inst(
+                headers[level],
+                CfgInst {
+                    data: CfgInstData::Load {
+                        slot: u32::try_from(level).unwrap(),
+                    },
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            let limit = cfg.append_inst(
+                headers[level],
+                CfgInst {
+                    data: CfgInstData::Const(bound),
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            let cond = cfg.append_inst(
+                headers[level],
+                CfgInst {
+                    data: CfgInstData::Lt(iv, limit),
+                    ty: Type::BOOL,
+                    span,
+                },
+            );
+            let body = if level + 1 == depth {
+                leaf
+            } else {
+                inner_preheaders[level]
+            };
+            let loop_exit = if level == 0 { exit } else { latches[level - 1] };
+            cfg.set_branch(headers[level], cond, body, [], loop_exit, []);
+
+            let latch_iv = cfg.append_inst(
+                latches[level],
+                CfgInst {
+                    data: CfgInstData::Load {
+                        slot: u32::try_from(level).unwrap(),
+                    },
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            let one = cfg.append_inst(
+                latches[level],
+                CfgInst {
+                    data: CfgInstData::Const(1),
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            let update = cfg.append_inst(
+                latches[level],
+                CfgInst {
+                    data: CfgInstData::Add(latch_iv, one),
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            cfg.append_inst(
+                latches[level],
+                CfgInst {
+                    data: CfgInstData::Store {
+                        slot: u32::try_from(level).unwrap(),
+                        value: update,
+                    },
+                    ty: Type::UNIT,
+                    span,
+                },
+            );
+            cfg.set_goto(latches[level], headers[level], []);
+        }
+
+        let leaf_iv = cfg.append_inst(
+            leaf,
+            CfgInst {
+                data: CfgInstData::Load {
+                    slot: u32::try_from(depth - 1).unwrap(),
+                },
+                ty: Type::I32,
+                span,
+            },
+        );
+        let leaf_one = cfg.append_inst(
+            leaf,
+            CfgInst {
+                data: CfgInstData::Const(1),
+                ty: Type::I32,
+                span,
+            },
+        );
+        cfg.append_inst(
+            leaf,
+            CfgInst {
+                data: CfgInstData::Add(leaf_iv, leaf_one),
+                ty: Type::I32,
+                span,
+            },
+        );
+        cfg.set_goto(leaf, latches[depth - 1], []);
+        let result = cfg.append_inst(
+            exit,
+            CfgInst {
+                data: CfgInstData::Const(0),
+                ty: Type::I32,
+                span,
+            },
+        );
+        cfg.set_return(exit, Some(result));
+        cfg
+    }
+
     #[test]
     fn trip_counts_cover_strict_and_inclusive_boundaries() {
         assert_eq!(checked_trip_count(0, 3, 1, 0, Type::I64), Some(3));
@@ -1472,30 +1643,144 @@ mod tests {
     }
 
     #[test]
-    fn run_refuses_nested_loops_without_mutating_the_cfg() {
-        let mut cfg = slot_loop(0, 2, false);
-        let body = BlockId::from_raw(2);
-        let outer_latch = BlockId::from_raw(3);
-        let inner_header = cfg.new_block();
-        let inner_latch = cfg.new_block();
-        let span = Span::new(5, 6);
-        let always = cfg.append_inst(
+    fn run_unrolls_a_constant_trip_inner_loop_then_its_containing_loop() {
+        let mut cfg = nested_slot_loops(2, 2);
+        cfg.verify().unwrap();
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(
+            stats,
+            Stats {
+                forest_computations: 3,
+                loops_analyzed: 3,
+                loops_unrolled: 2,
+                budget_refusals: 0,
+                shape_refusals: 1,
+                blocks_cloned: 30,
+                values_cloned: 98,
+                instructions_cloned: 98,
+            }
+        );
+        cfg.verify().unwrap();
+        let dom = DominatorTree::compute(&cfg);
+        assert!(loops(&cfg, &dom).is_empty());
+    }
+
+    #[test]
+    fn run_unrolls_deeper_nests_from_the_inside_out() {
+        let mut cfg = nested_slot_loops(3, 1);
+        cfg.verify().unwrap();
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.forest_computations, 4);
+        assert_eq!(stats.loops_analyzed, 6);
+        assert_eq!(stats.loops_unrolled, 3);
+        assert_eq!(stats.shape_refusals, 3);
+        assert_eq!(stats.budget_refusals, 0);
+        cfg.verify().unwrap();
+        let dom = DominatorTree::compute(&cfg);
+        assert!(loops(&cfg, &dom).is_empty());
+    }
+
+    #[test]
+    fn run_refuses_a_noncanonical_inner_loop_and_its_containing_loop() {
+        let mut cfg = nested_slot_loops(2, 2);
+        let dom = DominatorTree::compute(&cfg);
+        let forest = loops(&cfg, &dom);
+        let inner_header = forest
+            .loops()
+            .iter()
+            .find(|lp| lp.parent.is_some())
+            .unwrap()
+            .header;
+        let term = std::mem::replace(
+            &mut cfg.get_block_mut(inner_header).terminator,
+            Terminator::None,
+        );
+        cfg.append_inst(
             inner_header,
             CfgInst {
-                data: CfgInstData::BoolConst(true),
-                ty: Type::BOOL,
-                span,
+                data: CfgInstData::Const(99),
+                ty: Type::I32,
+                span: Span::new(22, 23),
             },
         );
-        cfg.set_goto(inner_latch, inner_header, []);
-        cfg.get_block_mut(body).terminator = Terminator::None;
-        cfg.set_goto(body, inner_header, []);
-        cfg.set_branch(inner_header, always, inner_latch, [], outer_latch, []);
+        cfg.get_block_mut(inner_header).terminator = term;
         cfg.verify().unwrap();
-        let before = cfg.clone();
+        let before = format!("{:?}", cfg);
         let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.forest_computations, 1);
+        assert_eq!(stats.loops_analyzed, 2);
         assert_eq!(stats.loops_unrolled, 0);
-        assert_eq!(format!("{:?}", cfg), format!("{:?}", before));
+        assert_eq!(stats.shape_refusals, 2);
+        assert_eq!(stats.budget_refusals, 0);
+        assert_eq!(format!("{:?}", cfg), before);
+    }
+
+    #[test]
+    fn run_applies_the_existing_budget_to_an_innermost_loop() {
+        let mut cfg = nested_slot_loops(2, 26);
+        let before = format!("{:?}", cfg);
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.forest_computations, 1);
+        assert_eq!(stats.loops_analyzed, 2);
+        assert_eq!(stats.loops_unrolled, 0);
+        assert_eq!(stats.shape_refusals, 1);
+        assert_eq!(stats.budget_refusals, 1);
+        assert_eq!(stats.blocks_cloned, 0);
+        assert_eq!(stats.values_cloned, 0);
+        assert_eq!(format!("{:?}", cfg), before);
+    }
+
+    #[test]
+    fn run_rebuilds_a_counterfeit_loop_id_and_stale_enclosing_body() {
+        let mut cfg = nested_slot_loops_with_order(2, 2, false);
+        cfg.verify().unwrap();
+        let old_block_count = cfg.block_count();
+        let dom = DominatorTree::compute(&cfg);
+        let stale_forest = loops(&cfg, &dom);
+        assert_eq!(stale_forest.len(), 2);
+        let stale_zero = stale_forest.get(0);
+        assert!(
+            stale_zero.parent.is_some(),
+            "loop zero starts as the inner loop"
+        );
+        let stale_inner_header = stale_zero.header;
+        let stale_outer = stale_forest
+            .loops()
+            .iter()
+            .find(|lp| lp.parent.is_none())
+            .unwrap();
+        assert_eq!(stale_outer.body.len(), 6);
+
+        let trip = recognize(&cfg, stale_zero).expect("the inner loop is canonical");
+        let (blocks, values, instructions) = unroll_one(&mut cfg, stale_zero, trip).unwrap();
+        assert_eq!((blocks, values, instructions), (6, 20, 20));
+        cfg.verify().unwrap();
+
+        let dom = DominatorTree::compute(&cfg);
+        let fresh_forest = loops(&cfg, &dom);
+        assert_eq!(fresh_forest.len(), 1);
+        let fresh_zero = fresh_forest.get(0);
+        assert_ne!(fresh_zero.header, stale_inner_header);
+        assert_eq!(fresh_zero.header, stale_outer.header);
+        assert_eq!(fresh_zero.body.len(), 12);
+        assert!(
+            fresh_zero
+                .body
+                .iter()
+                .any(|block| block.as_u32() as usize >= old_block_count),
+            "the rebuilt enclosing body must contain the cloned inner blocks"
+        );
+
+        // `run` must consume the fresh 12-block body. Reusing the stale
+        // six-block body (or treating stale loop id zero as the outer loop)
+        // would report only 12 cloned blocks here.
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.forest_computations, 2);
+        assert_eq!(stats.loops_analyzed, 1);
+        assert_eq!(stats.loops_unrolled, 1);
+        assert_eq!(stats.blocks_cloned, 24);
+        assert_eq!(stats.values_cloned, 78);
+        cfg.verify().unwrap();
     }
 
     #[test]

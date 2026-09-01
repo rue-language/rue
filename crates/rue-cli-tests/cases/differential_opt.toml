@@ -1011,6 +1011,32 @@ fn main() -> i32 {
 stdout = "6\n"
 exit_code = 6
 
+# RUE-1870: an ordinary constant-trip inner loop may unroll while it is owned
+# by an enclosing loop. The inner additions and per-outer-iteration debug
+# markers make both loops' effects observable, and the small shape lets O3
+# rebuild the loop forest and then unroll the containing loop as well.
+[[case]]
+name = "nested_constant_trip_unroll_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut outer: i32 = 0;
+    let mut total: i32 = 0;
+    while outer < 2 {
+        let mut inner: i32 = 0;
+        while inner < 2 {
+            total = total + outer * 10 + inner;
+            inner = inner + 1;
+        }
+        @dbg(total);
+        outer = outer + 1;
+    }
+    total
+}
+""" }]
+stdout = "1\n22\n"
+exit_code = 22
+
 # The third body iteration traps. A full clone must retain the trap and its
 # position rather than evaluating it early or deleting it.
 [[case]]

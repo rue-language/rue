@@ -534,13 +534,13 @@ pub(super) fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> Source
 }
 
 #[test]
-fn o3_publishes_unrolled_work_for_canonical_slot_loop() {
+fn o3_publishes_nested_unrolled_work_for_canonical_slot_loops() {
     let source = snapshot(
         &[(
             1,
             "/p/main.rue",
             "main.rue",
-            "fn main() -> i32 { let mut i: i32 = 0; while i < 3 { i = i + 1; } i }",
+            "fn main() -> i32 { let mut outer: i32 = 0; let mut total: i32 = 0; while outer < 2 { let mut inner: i32 = 0; while inner < 2 { total = total + outer * 10 + inner; inner = inner + 1; } @dbg(total); outer = outer + 1; } total }",
         )],
         1,
     );
@@ -560,61 +560,61 @@ fn o3_publishes_unrolled_work_for_canonical_slot_loop() {
             ..CompileOptions::default()
         })
         .unwrap();
-    assert!(o3.work().cfg.optimization_loops_unrolled > 0);
-    assert!(o3.work().cfg.optimization_loops_unrolled <= o3.work().cfg.optimization_loops_analyzed);
+    assert_eq!(o3.work().cfg.optimization_loops_unrolled, 2);
+    assert_eq!(o3.work().cfg.optimization_loops_analyzed, 2);
     assert_eq!(
         o3.work().cfg.optimization_passes,
         crate::canonical_semantic::CfgOptimizationWork {
-            constopt_fold_attempts: 43,
-            constopt_folded: 6,
+            constopt_fold_attempts: 216,
+            constopt_folded: 22,
             constopt_loads_rewritten: 0,
             peephole_divmods_reduced: 0,
             peephole_identities_rewired: 0,
-            simplify_blocks_scanned: 14,
+            simplify_blocks_scanned: 36,
             simplify_branches_folded: 0,
             simplify_switches_folded: 0,
             simplify_edges_threaded: 0,
             simplify_forwarders_resolved: 0,
-            simplify_blocks_merged: 7,
-            forward_insts_scanned: 14,
+            simplify_blocks_merged: 15,
+            forward_insts_scanned: 42,
             forward_loads_single_write: 0,
             forward_loads_block_local: 0,
             forward_rule1_dominance_pairs_checked: 0,
             forward_dominator_computations: 0,
-            cse_insts_scanned: 14,
-            cse_duplicates_replaced: 0,
-            cse_max_table_entries_sum: 6,
+            cse_insts_scanned: 42,
+            cse_duplicates_replaced: 5,
+            cse_max_table_entries_sum: 11,
             cse_dominator_computations: 1,
             preheader_normalization_forest_computations: 1,
-            preheader_normalization_loops_examined: 1,
+            preheader_normalization_loops_examined: 2,
             preheader_normalization_preheaders_materialized: 0,
             preheader_normalization_verifier_dominator_computations: 0,
             licm_forest_computations: 1,
             licm_def_block_scans: 1,
-            licm_loops_analyzed: 1,
-            licm_instructions_examined: 8,
-            licm_slot_fact_instructions_scanned: 8,
-            licm_slot_fact_entries_initialized: 1,
+            licm_loops_analyzed: 2,
+            licm_instructions_examined: 48,
+            licm_slot_fact_instructions_scanned: 48,
+            licm_slot_fact_entries_initialized: 3,
             licm_slot_fact_workspace_growths: 1,
             // Production-pipeline sentinels: candidate use-index work must
             // survive batch publication and rooted work projection.
-            licm_use_index_users_visited: 8,
-            licm_use_index_edges_visited: 4,
-            licm_use_index_domain_entries_initialized: 14,
-            licm_candidate_dependencies: 1,
-            licm_worklist_pops: 3,
-            licm_invariants_hoisted: 3,
+            licm_use_index_users_visited: 36,
+            licm_use_index_edges_visited: 12,
+            licm_use_index_domain_entries_initialized: 42,
+            licm_candidate_dependencies: 2,
+            licm_worklist_pops: 15,
+            licm_invariants_hoisted: 15,
             // Deliberate regression sentinel: production O3 must surface the
             // reusable LICM discovery workspace growth, not discard it.
             licm_hoist_workspace_growths: 1,
-            unroll_forest_computations: 2,
-            unroll_loops_analyzed: 1,
-            unroll_loops_unrolled: 1,
+            unroll_forest_computations: 3,
+            unroll_loops_analyzed: 2,
+            unroll_loops_unrolled: 2,
             unroll_budget_refusals: 0,
             unroll_shape_refusals: 0,
-            unroll_blocks_cloned: 6,
-            unroll_values_cloned: 15,
-            unroll_instructions_cloned: 15,
+            unroll_blocks_cloned: 22,
+            unroll_values_cloned: 110,
+            unroll_instructions_cloned: 110,
             publication_verifier_dominator_computations: 1,
             accessor_splice_imported_callee_verifier_dominator_computations: 0,
             accessor_splice_preoptimization_verifier_dominator_computations: 0,
