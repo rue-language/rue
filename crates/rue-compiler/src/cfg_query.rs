@@ -2318,6 +2318,10 @@ pub(crate) fn evaluate_optimized_cfg(
                 .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
             }
         };
+        context.record_work(rue_query::WorkItem::new(
+            "cfg.accessor-splice.imported-callee-verifier-dominator-computations",
+            1,
+        ));
         if splice.replacement.is_some() {
             // An accessor splice substitutes its yielded place itself and
             // never defers a call replacement; a deferred value here would
@@ -2375,6 +2379,10 @@ pub(crate) fn evaluate_optimized_cfg(
             .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
         }
     };
+    context.record_work(rue_query::WorkItem::new(
+        "cfg.accessor-splice.preoptimization-verifier-dominator-computations",
+        1,
+    ));
     Ok(finish_cfg_optimization(
         context,
         key,
@@ -2843,6 +2851,10 @@ pub(crate) fn apply_general_inlining(
                     break;
                 }
             }
+            context.record_work(rue_query::WorkItem::new(
+                "cfg.general-inline.imported-callee-verifier-dominator-computations",
+                1,
+            ));
             if let Some(budget) = growth_budget.as_mut() {
                 assert!(
                     budget.can_charge(growth_charge),
@@ -2909,6 +2921,10 @@ pub(crate) fn apply_general_inlining(
                 continue;
             }
         };
+        context.record_work(rue_query::WorkItem::new(
+            "cfg.general-inline.pre-reoptimization-verifier-dominator-computations",
+            1,
+        ));
         let budget = growth_budget.unwrap_or_else(rue_cfg::opt::CodeGrowthBudget::o3);
         context.record_work(rue_query::WorkItem::new("cfg.reoptimize.attempts", 1));
         let (current, stats, budget) = match rue_cfg::opt::optimize_with_budget(
@@ -2926,26 +2942,7 @@ pub(crate) fn apply_general_inlining(
                 continue;
             }
         };
-        context.record_work(rue_query::WorkItem::new(
-            "cfg.optimize.loops-analyzed",
-            stats.loops_analyzed,
-        ));
-        context.record_work(rue_query::WorkItem::new(
-            "cfg.optimize.loops-unrolled",
-            stats.loops_unrolled,
-        ));
-        context.record_work(rue_query::WorkItem::new(
-            "cfg.optimize.budget-refusals",
-            stats.budget_refusals,
-        ));
-        context.record_work(rue_query::WorkItem::new(
-            "cfg.reoptimize.code-growth-used",
-            stats.code_growth_used,
-        ));
-        context.record_work(rue_query::WorkItem::new(
-            "cfg.reoptimize.code-growth-blocks-used",
-            stats.code_growth_blocks_used,
-        ));
+        record_optimization_stats(context, "cfg.reoptimize", stats);
         context.record_work(rue_query::WorkItem::new("cfg.reoptimize.completions", 1));
         let interner_retained_charge = frozen_interner_retained_charge(&interner);
         output[index] = CfgValue::Available(Arc::new(CfgRecord {
@@ -3313,26 +3310,7 @@ fn finish_cfg_optimization(
     ) {
         Ok((cfg, stats, budget)) => {
             context.record_work(rue_query::WorkItem::new("cfg.optimize.successes", 1));
-            context.record_work(rue_query::WorkItem::new(
-                "cfg.optimize.loops-analyzed",
-                stats.loops_analyzed,
-            ));
-            context.record_work(rue_query::WorkItem::new(
-                "cfg.optimize.loops-unrolled",
-                stats.loops_unrolled,
-            ));
-            context.record_work(rue_query::WorkItem::new(
-                "cfg.optimize.budget-refusals",
-                stats.budget_refusals,
-            ));
-            context.record_work(rue_query::WorkItem::new(
-                "cfg.optimize.code-growth-used",
-                stats.code_growth_used,
-            ));
-            context.record_work(rue_query::WorkItem::new(
-                "cfg.optimize.code-growth-blocks-used",
-                stats.code_growth_blocks_used,
-            ));
+            record_optimization_stats(context, "cfg.optimize", stats);
             QueryOutput::success(CfgValue::Available(Arc::new(build_record(
                 cfg,
                 budget.used(),
@@ -3350,6 +3328,98 @@ fn finish_cfg_optimization(
             .with_terminal_kind(rue_query::QueryTerminalKind::Failure)
         }
     }
+}
+
+fn record_optimization_stats(
+    context: &QueryContext,
+    prefix: &str,
+    stats: rue_cfg::opt::OptimizationStats,
+) {
+    macro_rules! record {
+        ($name:literal, $field:ident) => {
+            context.record_work(rue_query::WorkItem::new(
+                format!("{prefix}.{}", $name),
+                stats.$field,
+            ));
+        };
+    }
+
+    record!("constopt.fold-attempts", constopt_fold_attempts);
+    record!("constopt.folded", constopt_folded);
+    record!("constopt.loads-rewritten", constopt_loads_rewritten);
+    record!("peephole.divmods-reduced", peephole_divmods_reduced);
+    record!("peephole.identities-rewired", peephole_identities_rewired);
+    record!("simplify.blocks-scanned", simplify_blocks_scanned);
+    record!("simplify.branches-folded", simplify_branches_folded);
+    record!("simplify.switches-folded", simplify_switches_folded);
+    record!("simplify.edges-threaded", simplify_edges_threaded);
+    record!("simplify.forwarders-resolved", simplify_forwarders_resolved);
+    record!("simplify.blocks-merged", simplify_blocks_merged);
+    record!("forward.insts-scanned", forward_insts_scanned);
+    record!("forward.loads-single-write", forward_loads_single_write);
+    record!("forward.loads-block-local", forward_loads_block_local);
+    record!(
+        "forward.rule1-dominance-pairs-checked",
+        forward_rule1_dominance_pairs_checked
+    );
+    record!(
+        "forward.dominator-computations",
+        forward_dominator_computations
+    );
+    record!("cse.insts-scanned", cse_insts_scanned);
+    record!("cse.duplicates-replaced", cse_duplicates_replaced);
+    record!("cse.max-table-entries", cse_max_table_entries);
+    record!("cse.dominator-computations", cse_dominator_computations);
+    record!(
+        "preheader-normalization.forest-computations",
+        preheader_normalization_forest_computations
+    );
+    record!(
+        "preheader-normalization.loops-examined",
+        preheader_normalization_loops_examined
+    );
+    record!(
+        "preheader-normalization.preheaders-materialized",
+        preheader_normalization_preheaders_materialized
+    );
+    record!(
+        "preheader-normalization.verifier-dominator-computations",
+        preheader_normalization_verifier_dominator_computations
+    );
+    record!("licm.forest-computations", licm_forest_computations);
+    record!("licm.def-block-scans", licm_def_block_scans);
+    record!("licm.loops-analyzed", licm_loops_analyzed);
+    record!("licm.instructions-examined", licm_instructions_examined);
+    record!(
+        "licm.slot-fact-instructions-scanned",
+        licm_slot_fact_instructions_scanned
+    );
+    record!(
+        "licm.slot-fact-entries-initialized",
+        licm_slot_fact_entries_initialized
+    );
+    record!(
+        "licm.slot-fact-workspace-growths",
+        licm_slot_fact_workspace_growths
+    );
+    record!("licm.candidate-dependencies", licm_candidate_dependencies);
+    record!("licm.worklist-pops", licm_worklist_pops);
+    record!("licm.invariants-hoisted", licm_invariants_hoisted);
+    record!("licm.hoist-workspace-growths", licm_hoist_workspace_growths);
+    record!("unroll.forest-computations", unroll_forest_computations);
+    record!("loops-analyzed", loops_analyzed);
+    record!("loops-unrolled", loops_unrolled);
+    record!("budget-refusals", budget_refusals);
+    record!("unroll.shape-refusals", unroll_shape_refusals);
+    record!("unroll.blocks-cloned", unroll_blocks_cloned);
+    record!("unroll.values-cloned", unroll_values_cloned);
+    record!("unroll.instructions-cloned", unroll_instructions_cloned);
+    record!(
+        "publication-verifier-dominator-computations",
+        publication_verifier_dominator_computations
+    );
+    record!("code-growth-used", code_growth_used);
+    record!("code-growth-blocks-used", code_growth_blocks_used);
 }
 
 fn attached_accessor_calls(

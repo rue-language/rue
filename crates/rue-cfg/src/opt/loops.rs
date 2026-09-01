@@ -405,6 +405,10 @@ pub(crate) struct PreheaderNormalizationStats {
     pub(crate) loops_examined: u64,
     /// Dedicated preheader blocks inserted.
     pub(crate) preheaders_materialized: u64,
+    /// Dominator computations performed by the materialization verifier.
+    /// Reused preheaders do not verify or count here; every successfully
+    /// materialized preheader contributes one.
+    pub(crate) verifier_dominator_computations: u64,
 }
 
 /// Ensure that every natural loop has a dedicated preheader.
@@ -442,6 +446,7 @@ pub(crate) fn normalize_preheaders(
         ensure_preheader(cfg, forest.get(id), type_pool)?;
         if cfg.block_count() != before {
             stats.preheaders_materialized += 1;
+            stats.verifier_dominator_computations += 1;
         }
     }
     Ok(stats)
@@ -1006,6 +1011,7 @@ mod tests {
         let before = cfg.block_count();
         let stats = normalize_preheaders(&mut cfg, &test_type_pool()).unwrap();
         assert_eq!(stats.preheaders_materialized, 2);
+        assert_eq!(stats.verifier_dominator_computations, 2);
         assert_eq!(stats.forest_computations, 1);
         assert_eq!(cfg.block_count(), before + 2);
 
@@ -1023,6 +1029,7 @@ mod tests {
 
         let second = normalize_preheaders(&mut cfg, &test_type_pool()).unwrap();
         assert_eq!(second.preheaders_materialized, 0);
+        assert_eq!(second.verifier_dominator_computations, 0);
         assert_eq!(second.forest_computations, 1);
         assert_eq!(cfg.block_count(), before + 2);
     }
@@ -1044,6 +1051,7 @@ mod tests {
         let before = cfg.block_count();
         let stats = normalize_preheaders(&mut cfg, &test_type_pool()).unwrap();
         assert_eq!(stats.preheaders_materialized, 0);
+        assert_eq!(stats.verifier_dominator_computations, 0);
         assert_eq!(stats.forest_computations, 1);
         assert_eq!(stats.loops_examined, 1);
         assert_eq!(cfg.block_count(), before);
@@ -1067,6 +1075,7 @@ mod tests {
         assert_eq!(stats.forest_computations, 0);
         assert_eq!(stats.loops_examined, 0);
         assert_eq!(stats.preheaders_materialized, 0);
+        assert_eq!(stats.verifier_dominator_computations, 0);
     }
 
     #[test]
@@ -1768,6 +1777,7 @@ mod tests {
         assert_eq!(stats.forest_computations, 1);
         assert_eq!(stats.loops_examined, LOOPS as u64);
         assert_eq!(stats.preheaders_materialized, LOOPS as u64);
+        assert_eq!(stats.verifier_dominator_computations, LOOPS as u64);
         assert_eq!(cfg.block_count(), blocks_before + LOOPS);
         assert_eq!(Cfg::test_clone_count(), 0);
         assert_eq!(test_preheader_pred_scan_count(), LOOPS);

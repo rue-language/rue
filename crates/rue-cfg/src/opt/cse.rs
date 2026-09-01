@@ -106,6 +106,9 @@ pub struct Stats {
     /// Bounded by the keyed instructions on one dominator-tree root-to-leaf
     /// path (or one unreachable block), not by the whole CFG.
     pub max_table_entries: u64,
+    /// Dominator trees computed by this pass. CSE owns one computation per
+    /// run so its scoped value-number tables follow the current CFG.
+    pub dominator_computations: u64,
 }
 
 /// Value-number key for a pure-by-value instruction. Constants carry their
@@ -293,6 +296,7 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     let mut subst: Vec<Option<CfgValue>> = vec![None; cfg.value_count()];
     let never_written_param = never_written_params(cfg);
 
+    stats.dominator_computations += 1;
     let dominators = crate::dominators::DominatorTree::compute(cfg);
     // Invert the public idom relation in ascending block-id order. This is the
     // same canonical child order used to number DominatorTree's preorder.
@@ -744,6 +748,7 @@ mod tests {
         let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.insts_scanned, total_insts as u64);
         assert_eq!(stats.duplicates_replaced, 1);
+        assert_eq!(stats.dominator_computations, 1);
         assert!(matches!(
             cfg.get_inst(duplicate).data,
             CfgInstData::Const(0)

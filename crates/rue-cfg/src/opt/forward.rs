@@ -100,6 +100,9 @@ pub struct Stats {
     /// the same-block skip or the dedupe shows up as a non-zero count in
     /// `test_single_write_nonconst_forwarded`.
     pub rule1_dominance_pairs_checked: u64,
+    /// Dominator trees computed by this pass. The tree is built only when at
+    /// least one distinct cross-block Rule 1 pair needs proof.
+    pub dominator_computations: u64,
 }
 
 /// Run value forwarding. Call at `-O2`/`-O3` after simplification and before
@@ -276,6 +279,7 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     // value before its definition in release builds.
     stats.rule1_dominance_pairs_checked = rule1_dominance_checks.len() as u64;
     if !rule1_dominance_checks.is_empty() {
+        stats.dominator_computations += 1;
         let dom = crate::dominators::DominatorTree::compute(cfg);
         for (write_block, load_block) in &rule1_dominance_checks {
             assert!(
@@ -381,6 +385,7 @@ mod tests {
         // RUE-1844: the write and the load share a block, so dominance is
         // reflexive and no pair is recorded — no dominator tree is built.
         assert_eq!(stats.rule1_dominance_pairs_checked, 0);
+        assert_eq!(stats.dominator_computations, 0);
         // The return now reads the Add directly.
         assert!(matches!(
             cfg.get_block(cfg.entry).terminator,
@@ -801,6 +806,7 @@ mod tests {
         // RUE-1844: this pair really is cross-block, so it is recorded and
         // verified against a dominator tree.
         assert_eq!(stats.rule1_dominance_pairs_checked, 1);
+        assert_eq!(stats.dominator_computations, 1);
         assert!(matches!(
             cfg.get_block(block2).terminator,
             Terminator::Return { value: Some(v) } if v == c
