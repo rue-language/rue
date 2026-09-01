@@ -55,29 +55,27 @@
 //! in the preheader in discovery (dependency) order, so a hoisted operand always
 //! precedes its hoisted user.
 //!
-//! ## Placement in the pipeline and the recompute rule
+//! ## Placement in the pipeline and the canonical preheader contract
 //!
 //! LICM runs at `-O3` only, **after** the whole `-O1`/`-O2` sequence
 //! (`constopt` → `peephole` → `simplify` → `forward` → `cse`), so it works on a
 //! CFG whose constants are already folded and whose trivial control flow is
 //! already threaded — the invariant operands it keys on are as exposed as the
 //! earlier passes can make them — and **before** the final `dce`, which sweeps
-//! anything the moves orphan. It recomputes the dominator tree and loop forest
-//! from scratch (ADR-0054's recompute-per-pass rule). Moving instructions
-//! between existing blocks does not change CFG edges, dominators, or loop
-//! membership, so the same forest remains authoritative. Creating a dedicated
-//! preheader does change edges; only then does LICM stop consuming the current
-//! forest and recompute before continuing. An **irreducible** forest makes the
-//! pass a no-op: the analysis refuses to describe a multi-entry cycle, so there
-//! is nothing to hoist.
+//! anything the moves orphan. The `-O3` driver first establishes canonical
+//! preheaders for every natural loop. LICM then computes the dominator tree and
+//! loop forest exactly once and only moves instructions between existing
+//! blocks, so that forest remains authoritative for the whole pass. An
+//! **irreducible** forest makes the pass a no-op: the analysis refuses to
+//! describe a multi-entry cycle, so there is nothing to hoist.
 //!
 //! Nested loops are processed **innermost first** (the forest's nesting orders
 //! them by body size): an op invariant for an inner loop hoists to the inner
-//! preheader, which sits in the outer loop's body, and a later sweep can hoist it
-//! again to the outer preheader if it is invariant there too. An op that is not
-//! invariant for the inner loop cannot be invariant for the outer one either (the
-//! varying operand lives in the inner body, which is part of the outer body), so
-//! innermost-first never misses a hoist.
+//! preheader, which sits in the outer loop's body, and the later outer-loop
+//! visit can hoist it again to the outer preheader if it is invariant there too.
+//! An op that is not invariant for the inner loop cannot be invariant for the
+//! outer one either (the varying operand lives in the inner body, which is part
+//! of the outer body), so innermost-first never misses a hoist.
 
 use std::collections::VecDeque;
 
@@ -85,27 +83,26 @@ use rue_air::FrozenTypeInternPool;
 
 use super::CfgOptimizationError;
 use super::classify;
-use super::loops::{LoopId, NaturalLoop, ensure_preheader, loops};
+use super::loops::{LoopId, NaturalLoop, loops, may_have_cycle_by_block_order, preheader};
 use super::slot_facts::{self, LoopSlotFacts};
 use crate::dominators::DominatorTree;
-use crate::{BlockId, Cfg, CfgInstData, CfgValue, Terminator};
+use crate::{BlockId, Cfg, CfgInstData, CfgValue};
 
 /// Bounded-work counters for one LICM run (RUE-794 discipline).
 ///
 /// Every field is monotone and structurally bounded. One forest computation
-/// visits each loop until a dedicated preheader changes CFG edges. Within a
-/// loop, each instruction is scanned once for slot facts and once for hoist
-/// eligibility, each candidate dependency is recorded once, and each
-/// discovered invariant leaves the worklist once.
+/// visits each loop once. Within a loop, each instruction is scanned once for
+/// slot facts and once for hoist eligibility, each candidate dependency is
+/// recorded once, and each discovered invariant leaves the worklist once.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Stats {
     /// Dominator-tree and loop-forest computations, including the initial one.
     pub forest_computations: u64,
-    /// Whole-function definition-block scans. One per sweep, not one per loop
+    /// Whole-function definition-block scans. One per run, not one per loop
     /// analyzed (RUE-1843): hoisting only relocates instructions to a known
     /// preheader, so the table is patched in place instead of rebuilt.
     pub def_block_scans: u64,
-    /// Per-loop invariance analyses performed (one per loop visited in a sweep).
+    /// Per-loop invariance analyses performed (one per loop visited).
     pub loops_analyzed: u64,
     /// Loop-body instructions tested for hoist eligibility.
     pub instructions_examined: u64,
@@ -127,9 +124,6 @@ pub struct Stats {
     pub worklist_pops: u64,
     /// Instructions moved into a preheader across all loops.
     pub invariants_hoisted: u64,
-    /// Dedicated preheader blocks materialized (an existing unconditional
-    /// single-entry predecessor is reused instead of counted here).
-    pub preheaders_materialized: u64,
     /// Times the shared discovery workspace grew its whole-function-sized
     /// tables. One per run in the steady state, not one per loop analyzed
     /// (RUE-1843) — a regression to per-loop allocation shows up here.
@@ -137,10 +131,13 @@ pub struct Stats {
 }
 
 /// Run loop-invariant code motion. Call at `-O3` only, after the `-O2` passes
-/// and before DCE (see the module docs). Returns its work counters. The type
-/// pool feeds preheader materialization's typed block-param payloads (RUE-840),
-/// whose capacity failures propagate as the pass error.
-pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, CfgOptimizationError> {
+/// and before DCE (see the module docs). The caller must first establish
+/// canonical preheaders with `loops::normalize_preheaders`. Returns its work
+/// counters. The type-pool parameter is retained for the pass API contract.
+pub fn run(
+    cfg: &mut Cfg,
+    _type_pool: &FrozenTypeInternPool,
+) -> Result<Stats, CfgOptimizationError> {
     // Every directed cycle contains an edge whose target is no later than its
     // source in the total block-id order. Proving that no such edge exists is
     // therefore enough to skip both dominator construction and loop discovery.
@@ -157,87 +154,44 @@ pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, Cfg
     // reallocated (RUE-1843).
     let mut workspace = HoistWorkspace::default();
 
-    // Recompute dominators + loops from scratch after each actual CFG-edge
-    // change (ADR-0054). Instruction-only motion leaves the forest valid, so
-    // one computation can serve every loop in that sweep.
-    loop {
-        stats.forest_computations += 1;
-        let dom = DominatorTree::compute(cfg);
-        let forest = loops(cfg, &dom);
-        // An irreducible forest carries no loops, so this is a natural no-op;
-        // an empty (loop-free) forest likewise.
-        if forest.is_irreducible() || forest.is_empty() {
-            break;
-        }
+    stats.forest_computations += 1;
+    let dom = DominatorTree::compute(cfg);
+    let forest = loops(cfg, &dom);
+    // An irreducible forest carries no loops, so this is a natural no-op;
+    // an empty (loop-free) forest likewise.
+    if forest.is_irreducible() || forest.is_empty() {
+        return Ok(stats);
+    }
 
-        // Innermost first: a smaller body is nested more deeply. Hoisting from
-        // the innermost loop first lets its results bubble outward on later
-        // sweeps.
-        let mut order: Vec<LoopId> = (0..forest.len()).collect();
-        order.sort_by_key(|&id| forest.get(id).body.len());
-        // The forest contains only reachable natural loops. Keep an explicit
-        // shared reachability set for slot-fact scans so disconnected
-        // counterfeit blocks can never become memory barriers, and compute it
-        // once per sweep rather than once per loop.
-        let reachable = super::dce::compute_reachable_blocks(cfg);
+    // Innermost first: a smaller body is nested more deeply. Hoisting from
+    // the innermost loop first lets its results bubble outward when the later
+    // outer-loop visit sees them in the inner preheader.
+    let mut order: Vec<LoopId> = (0..forest.len()).collect();
+    order.sort_by_key(|&id| forest.get(id).body.len());
+    // The forest contains only reachable natural loops. Keep an explicit
+    // shared reachability set for slot-fact scans so disconnected
+    // counterfeit blocks can never become memory barriers, and compute it
+    // once per run rather than once per loop.
+    let reachable = super::dce::compute_reachable_blocks(cfg);
 
-        // One whole-function def-block scan per sweep. Instruction-only motion
-        // keeps it accurate as long as each hoist patches the entries it moved,
-        // and any sweep that materializes a preheader breaks out below and
-        // recomputes both the forest and this table (RUE-1843).
-        let mut def_block = compute_def_blocks(cfg, &mut stats);
+    // One whole-function def-block scan per run. Instruction-only motion keeps
+    // it accurate as long as each hoist patches the entries it moved
+    // (RUE-1843).
+    let mut def_block = compute_def_blocks(cfg, &mut stats);
 
-        let mut cfg_changed = false;
-        for id in order {
-            stats.loops_analyzed += 1;
-            if hoist_loop(
-                cfg,
-                forest.get(id),
-                type_pool,
-                &mut def_block,
-                &reachable,
-                &mut workspace,
-                &mut stats,
-            )?
-            .cfg_changed
-            {
-                // A dedicated preheader changed edges, so the forest is stale.
-                cfg_changed = true;
-                break;
-            }
-        }
-        if !cfg_changed {
-            break;
-        }
+    for id in order {
+        stats.loops_analyzed += 1;
+        hoist_loop(
+            cfg,
+            forest.get(id),
+            &mut def_block,
+            &reachable,
+            &mut workspace,
+            &mut stats,
+        );
     }
 
     Ok(stats)
-}
-
-fn may_have_cycle_by_block_order(cfg: &Cfg) -> bool {
-    for raw in 0..cfg.block_count() {
-        let block = BlockId::from_raw(raw as u32);
-        let observe = |target: BlockId| target.as_u32() <= block.as_u32();
-        let may_cycle = match &cfg.get_block(block).terminator {
-            Terminator::Goto { target, .. } => observe(*target),
-            Terminator::Branch {
-                then_block,
-                else_block,
-                ..
-            } => observe(*then_block) || observe(*else_block),
-            Terminator::Switch { cases, default, .. } => {
-                cfg.switch_cases(cases)
-                    .iter()
-                    .any(|(_, target)| observe(*target))
-                    || observe(*default)
-            }
-            Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => false,
-        };
-        if may_cycle {
-            return true;
-        }
-    }
-    false
 }
 
 /// Whole-function-sized scratch for invariant discovery, owned by the run
@@ -246,7 +200,7 @@ fn may_have_cycle_by_block_order(cfg: &Cfg) -> bool {
 /// Every table is indexed by `CfgValue` or `BlockId`, so each is sized by the
 /// *function* — but only the current loop's candidates are ever written. A
 /// fresh set per loop meant six allocations proportional to the whole function
-/// for every loop in every sweep, paid in full even by a loop with no
+/// for every loop in the run, paid in full even by a loop with no
 /// candidates at all, since they are built before the zero-hoist early return.
 /// `pending` alone is 8 bytes per value and `dependents` a 24-byte `Vec` header
 /// per value before a single push.
@@ -297,9 +251,9 @@ impl HoistWorkspace {
         self.order.clear();
         self.worklist.clear();
 
-        // Grow only. Materializing a preheader adds a block and can add typed
-        // block params, so both counts can rise between sweeps; neither ever
-        // falls, and truncating would discard capacity for no gain.
+        // Grow only. Canonical normalization has already established every
+        // preheader, so the graph cannot grow during this LICM run; retaining
+        // capacity across loop visits avoids per-loop allocation.
         let values = cfg.value_count();
         let blocks = cfg.block_count();
         let grow_values = self.candidate.len() < values;
@@ -325,22 +279,14 @@ impl HoistWorkspace {
     }
 }
 
-/// Hoist every trap-free invariant instruction out of `lp` into its preheader.
-/// Reports whether materializing the destination changed CFG edges.
-#[derive(Default)]
-struct HoistResult {
-    cfg_changed: bool,
-}
-
 fn hoist_loop(
     cfg: &mut Cfg,
     lp: &NaturalLoop,
-    type_pool: &FrozenTypeInternPool,
     def_block: &mut Vec<Option<BlockId>>,
     reachable: &super::dce::BitSet,
     workspace: &mut HoistWorkspace,
     stats: &mut Stats,
-) -> Result<HoistResult, CfgOptimizationError> {
+) {
     // Classify each body instruction once. The classifier remains the sole
     // authority for trap/effect eligibility; the worklist below only answers
     // whether eligible operands become available at the preheader.
@@ -424,18 +370,12 @@ fn hoist_loop(
     }
 
     if order.is_empty() {
-        return Ok(HoistResult::default());
+        return;
     }
 
-    // Materialize the preheader once, then relocate each invariant instruction
-    // into it. `ensure_preheader` reuses a suitable existing predecessor when it
-    // can, inserting a block only when it must.
-    let before = cfg.block_count();
-    let ph = ensure_preheader(cfg, lp, type_pool)?;
-    let cfg_changed = cfg.block_count() > before;
-    if cfg_changed {
-        stats.preheaders_materialized += 1;
-    }
+    // Canonical O3 normalization has already established this destination.
+    // Merely looking it up cannot change CFG edges or invalidate the forest.
+    let ph = preheader(cfg, lp).expect("LICM requires canonical loop preheaders");
 
     for &block in &lp.body {
         cfg.get_block_mut(block)
@@ -450,7 +390,6 @@ fn hoist_loop(
     }
 
     stats.invariants_hoisted += order.len() as u64;
-    Ok(HoistResult { cfg_changed })
 }
 
 /// Whether `value` is eligible to hoist on its own merits, independent of its
@@ -517,6 +456,12 @@ mod tests {
 
     fn test_type_pool() -> FrozenTypeInternPool {
         rue_air::TypeInternPool::new().freeze()
+    }
+
+    /// Exercise LICM through the same canonical-preheader boundary as O3.
+    fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, CfgOptimizationError> {
+        super::super::loops::normalize_preheaders(cfg, type_pool)?;
+        super::run(cfg, type_pool)
     }
 
     fn goto(target: BlockId) -> Terminator {
@@ -783,15 +728,15 @@ mod tests {
         assert!(stats.invariants_hoisted >= 2);
 
         // RUE-1843: the whole-function definition-block table is built once per
-        // sweep, not once per loop analyzed. This fixture has two nested loops,
-        // so it analyzes strictly more loops than it takes sweeps — which is
-        // what makes the second assertion bite: restoring the per-loop scan
+        // run, not once per loop analyzed. This fixture has two nested loops,
+        // so it analyzes strictly more loops than whole-function scans — which
+        // is what makes the second assertion bite: restoring the per-loop scan
         // makes the scan count track `loops_analyzed` instead. The counter is
         // incremented inside `compute_def_blocks` itself, so it cannot drift
         // from the number of scans actually performed.
         assert_eq!(
             stats.def_block_scans, stats.forest_computations,
-            "one definition-block scan per sweep, alongside the forest"
+            "one definition-block scan per run, alongside the forest"
         );
         assert!(
             stats.loops_analyzed > stats.def_block_scans,
@@ -803,15 +748,15 @@ mod tests {
 
         // Same bound for the discovery workspace (RUE-1843): its six tables are
         // sized by the function, so allocating a set per loop cost the whole
-        // function's size for every loop in every sweep — paid even by a loop
+        // function's size for every loop in the run — paid even by a loop
         // with no candidates, since they are built before the zero-hoist early
-        // return. One workspace is reset per loop instead, and only grows when
-        // the graph does, which within a sweep can happen at most once: the
-        // sweep breaks out as soon as materializing a preheader changes edges.
+        // return. One workspace is reset per loop instead; canonical
+        // normalization has already finished every graph edit, so it grows at
+        // most once to the final graph's dimensions.
         assert!(
             stats.hoist_workspace_growths <= stats.forest_computations,
-            "workspace grew {} times across {} sweeps; it should grow only when \
-             the graph does",
+            "workspace grew {} times during one {}-forest run; it should grow \
+             only to the final graph dimensions",
             stats.hoist_workspace_growths,
             stats.forest_computations,
         );
@@ -870,7 +815,6 @@ mod tests {
         let before = cfg.block_count();
         let stats = run(&mut cfg, &test_type_pool()).unwrap();
         assert_eq!(stats.invariants_hoisted, 0);
-        assert_eq!(stats.preheaders_materialized, 0);
         assert_eq!(cfg.block_count(), before, "no preheader inserted");
     }
 
@@ -1493,7 +1437,6 @@ mod tests {
         assert_eq!(stats.candidate_dependencies, 0);
         assert_eq!(stats.worklist_pops, LOOP_COUNT as u64);
         assert_eq!(stats.invariants_hoisted, LOOP_COUNT as u64);
-        assert_eq!(stats.preheaders_materialized, 0);
         assert!(
             loads
                 .iter()
@@ -1504,10 +1447,10 @@ mod tests {
     }
 
     #[test]
-    fn recomputes_forest_only_after_materializing_preheader() {
+    fn canonical_normalization_keeps_licm_to_one_forest() {
         // Entry has a sibling successor, so it cannot serve as the loop
-        // preheader. Hoisting inserts one block and triggers exactly one
-        // structural recomputation.
+        // preheader. Canonical normalization inserts it before LICM; the pass
+        // itself performs only instruction motion and computes one forest.
         let mut cfg = make_cfg();
         let entry = cfg.new_block();
         cfg.entry = entry;
@@ -1527,8 +1470,7 @@ mod tests {
 
         let stats = run(&mut cfg, &test_type_pool()).unwrap();
         assert_eq!(stats.invariants_hoisted, 1);
-        assert_eq!(stats.preheaders_materialized, 1);
-        assert_eq!(stats.forest_computations, 2);
+        assert_eq!(stats.forest_computations, 1);
         assert_ne!(block_of(&cfg, invariant), Some(body));
         cfg.verify().unwrap();
     }

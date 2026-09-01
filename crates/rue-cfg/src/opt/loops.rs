@@ -15,7 +15,8 @@
 //!    no loops, so no consumer ever guesses a body for a tangle the dominator
 //!    tree cannot describe.
 //!
-//! 2. **Preheader materialization** ([`ensure_preheader`]). A loop's preheader
+//! 2. **Canonical preheader normalization** ([`normalize_preheaders`]). A
+//!    loop's preheader
 //!    is a dedicated block that dominates the header and runs exactly once per
 //!    loop entry — the block LICM hoists *into*. The header's predecessors split
 //!    into **back-edge predecessors** (latches, inside the body) and **outside
@@ -30,13 +31,13 @@
 //!    into such a predecessor would run the hoisted work on the sibling arm's
 //!    path too.
 //!
-//! LICM (RUE-927, `opt/licm.rs`) is the live pipeline consumer: it runs at
-//! `-O3` from `opt/mod.rs` and drives [`loops`] and [`ensure_preheader`].
-//! Constant-trip unrolling (RUE-928) is the tracked next consumer; the few
-//! items only it will need carry targeted allows below. Dominators and loops
-//! are **recomputed per pass, never cached** (ADR-0054): every mutation here
-//! invalidates the dominator tree, and recompute-per-pass is O(blocks) and
-//! trivially correct at Rue's scale.
+//! The `-O3` pipeline normalizes every natural loop before either loop transform
+//! runs. Splitting an entry edge changes only that loop header's predecessors,
+//! so one forest can safely drive every distinct header even though an inner
+//! preheader becomes part of each enclosing loop's body. LICM then computes a
+//! fresh forest that observes those final bodies and restricts itself to
+//! instruction motion. Dominators and loops are **recomputed per pass, never
+//! cached** (ADR-0054).
 
 use crate::dominators::DominatorTree;
 use crate::{BlockId, Cfg, CfgEditError, Terminator};
@@ -395,6 +396,93 @@ pub(crate) fn ensure_preheader(
     ensure_preheader_with_injection(cfg, lp, type_pool, PayloadFailureInjection::default())
 }
 
+/// Work performed while establishing the canonical `-O3` preheader form.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PreheaderNormalizationStats {
+    /// Fresh dominator-tree and loop-forest computations.
+    pub(crate) forest_computations: u64,
+    /// Loops whose existing preheader was classified or materialized.
+    pub(crate) loops_examined: u64,
+    /// Dedicated preheader blocks inserted.
+    pub(crate) preheaders_materialized: u64,
+}
+
+/// Ensure that every natural loop has a dedicated preheader.
+///
+/// Materialization redirects only outside edges that already target the loop's
+/// own header. It cannot change another header's predecessor set or create a
+/// loop, so the initial forest remains sufficient to normalize every distinct
+/// header in one sweep. An inner insertion does change enclosing loop *bodies*;
+/// consumers therefore compute their own fresh forest after normalization.
+pub(crate) fn normalize_preheaders(
+    cfg: &mut Cfg,
+    type_pool: &FrozenTypeInternPool,
+) -> Result<PreheaderNormalizationStats, CfgOptimizationError> {
+    let mut stats = PreheaderNormalizationStats::default();
+    if !may_have_cycle_by_block_order(cfg) {
+        return Ok(stats);
+    }
+
+    stats.forest_computations += 1;
+    let dom = DominatorTree::compute(cfg);
+    let forest = loops(cfg, &dom);
+    if forest.is_irreducible() || forest.is_empty() {
+        return Ok(stats);
+    }
+
+    let mut order: Vec<LoopId> = (0..forest.len()).collect();
+    order.sort_by_key(|&id| {
+        let lp = forest.get(id);
+        (lp.body.len(), lp.header.as_u32())
+    });
+
+    for id in order {
+        stats.loops_examined += 1;
+        let before = cfg.block_count();
+        ensure_preheader(cfg, forest.get(id), type_pool)?;
+        if cfg.block_count() != before {
+            stats.preheaders_materialized += 1;
+        }
+    }
+    Ok(stats)
+}
+
+/// Cheaply prove that a CFG is acyclic from its total block-id order.
+///
+/// Every directed cycle contains an edge whose target is no later than its
+/// source. A non-forward edge in an acyclic graph is only a conservative false
+/// positive; `false` is a proof that loop analysis can be skipped.
+pub(crate) fn may_have_cycle_by_block_order(cfg: &Cfg) -> bool {
+    for raw in 0..cfg.block_count() {
+        let block = BlockId::from_raw(raw as u32);
+        let observe = |target: BlockId| target.as_u32() <= block.as_u32();
+        let may_cycle = match &cfg.get_block(block).terminator {
+            Terminator::Goto { target, .. } => observe(*target),
+            Terminator::Branch {
+                then_block,
+                else_block,
+                ..
+            } => observe(*then_block) || observe(*else_block),
+            Terminator::Switch { cases, default, .. } => {
+                cfg.switch_cases(cases)
+                    .iter()
+                    .any(|(_, target)| observe(*target))
+                    || observe(*default)
+            }
+            Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => false,
+        };
+        if may_cycle {
+            return true;
+        }
+    }
+    false
+}
+
+/// Return the preheader guaranteed by [`normalize_preheaders`].
+pub(crate) fn preheader(cfg: &Cfg, lp: &NaturalLoop) -> Option<BlockId> {
+    classify_preheader(cfg, lp).reusable
+}
+
 #[derive(Default)]
 struct PayloadFailureInjection {
     #[cfg(test)]
@@ -456,7 +544,7 @@ fn ensure_preheader_with_injection(
     injection.before_validation(cfg, ph);
     // Validate the materialized preheader with the materialization verifier, NOT
     // the strict `verify_with_type_pool`. Preheader materialization runs
-    // mid-pipeline during LICM (RUE-927), between `simplify` and the pipeline's
+    // mid-pipeline during canonical O3 normalization, between `cse` and LICM,
     // final DCE, so the CFG legitimately carries two kinds of transient debris
     // that DCE has not swept yet and that this edit did not introduce:
     //   * detached-but-in-arena dead values left by `forward`/`cse` — tolerated
@@ -887,6 +975,98 @@ mod tests {
         assert_eq!(outer.parent, None);
         let outer_id = forest.loops().iter().position(|l| l.header == o).unwrap();
         assert_eq!(inner.parent, Some(outer_id));
+    }
+
+    #[test]
+    fn normalization_materializes_nested_headers_from_one_forest() {
+        // Both loop entries are Branch arms, so neither predecessor is a
+        // preheader. One forest safely drives both header splits; the consumer's
+        // fresh forest must then include the inner preheader in the enclosing
+        // outer loop body.
+        let mut cfg = make_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let outer = cfg.new_block();
+        let inner = cfg.new_block();
+        let inner_body = cfg.new_block();
+        let outer_latch = cfg.new_block();
+        let exit = cfg.new_block();
+
+        let entry_cond = bool_const(&mut cfg, entry);
+        cfg.set_terminator(entry, branch(entry_cond, outer, exit));
+        let outer_cond = bool_const(&mut cfg, outer);
+        cfg.set_terminator(outer, branch(outer_cond, inner, exit));
+        let inner_cond = bool_const(&mut cfg, inner);
+        cfg.set_terminator(inner, branch(inner_cond, inner_body, outer_latch));
+        cfg.set_terminator(inner_body, goto(inner));
+        cfg.set_terminator(outer_latch, goto(outer));
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+        cfg.verify().unwrap();
+
+        let before = cfg.block_count();
+        let stats = normalize_preheaders(&mut cfg, &test_type_pool()).unwrap();
+        assert_eq!(stats.preheaders_materialized, 2);
+        assert_eq!(stats.forest_computations, 1);
+        assert_eq!(cfg.block_count(), before + 2);
+
+        let inner_ph = BlockId::from_raw(before as u32);
+        let forest = analyze(&cfg);
+        let outer_loop = loop_of(&forest, outer);
+        let inner_loop = loop_of(&forest, inner);
+        assert_eq!(preheader(&cfg, inner_loop), Some(inner_ph));
+        assert!(
+            outer_loop.contains(inner_ph),
+            "the final outer body must include the materialized inner preheader"
+        );
+        assert!(preheader(&cfg, outer_loop).is_some());
+        cfg.verify().unwrap();
+
+        let second = normalize_preheaders(&mut cfg, &test_type_pool()).unwrap();
+        assert_eq!(second.preheaders_materialized, 0);
+        assert_eq!(second.forest_computations, 1);
+        assert_eq!(cfg.block_count(), before + 2);
+    }
+
+    #[test]
+    fn normalization_reuses_existing_preheaders_without_editing() {
+        let mut cfg = make_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let header = cfg.new_block();
+        let body = cfg.new_block();
+        let exit = cfg.new_block();
+        cfg.set_terminator(entry, goto(header));
+        let cond = bool_const(&mut cfg, header);
+        cfg.set_terminator(header, branch(cond, body, exit));
+        cfg.set_terminator(body, goto(header));
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+
+        let before = cfg.block_count();
+        let stats = normalize_preheaders(&mut cfg, &test_type_pool()).unwrap();
+        assert_eq!(stats.preheaders_materialized, 0);
+        assert_eq!(stats.forest_computations, 1);
+        assert_eq!(stats.loops_examined, 1);
+        assert_eq!(cfg.block_count(), before);
+    }
+
+    #[test]
+    fn normalization_skips_forest_construction_for_acyclic_cfgs() {
+        let mut cfg = make_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let then_block = cfg.new_block();
+        let else_block = cfg.new_block();
+        let exit = cfg.new_block();
+        let cond = bool_const(&mut cfg, entry);
+        cfg.set_terminator(entry, branch(cond, then_block, else_block));
+        cfg.set_terminator(then_block, goto(exit));
+        cfg.set_terminator(else_block, goto(exit));
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+
+        let stats = normalize_preheaders(&mut cfg, &test_type_pool()).unwrap();
+        assert_eq!(stats.forest_computations, 0);
+        assert_eq!(stats.loops_examined, 0);
+        assert_eq!(stats.preheaders_materialized, 0);
     }
 
     #[test]
@@ -1581,15 +1761,13 @@ mod tests {
             previous = next;
         }
         cfg.set_terminator(previous, Terminator::Return { value: None });
-        let dom = DominatorTree::compute(&cfg);
-        let forest = loops(&cfg, &dom);
-        assert_eq!(forest.len(), LOOPS);
         let blocks_before = cfg.block_count();
         Cfg::reset_test_clone_count();
         reset_test_preheader_pred_scan_count();
-        for lp in forest.loops() {
-            ensure_preheader(&mut cfg, lp, &test_type_pool()).unwrap();
-        }
+        let stats = normalize_preheaders(&mut cfg, &test_type_pool()).unwrap();
+        assert_eq!(stats.forest_computations, 1);
+        assert_eq!(stats.loops_examined, LOOPS as u64);
+        assert_eq!(stats.preheaders_materialized, LOOPS as u64);
         assert_eq!(cfg.block_count(), blocks_before + LOOPS);
         assert_eq!(Cfg::test_clone_count(), 0);
         assert_eq!(test_preheader_pred_scan_count(), LOOPS);

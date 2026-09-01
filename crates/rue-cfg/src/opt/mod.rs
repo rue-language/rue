@@ -12,9 +12,10 @@
 //!   simplification, dead code elimination)
 //! - `-O2`: `-O1` plus value forwarding / copy propagation (RUE-914) and
 //!   dominator-scoped common-subexpression elimination (RUE-913, RUE-1874)
-//! - `-O3`: `-O2` plus loop-invariant code motion (RUE-927), which hoists
-//!   trap-free invariant computations out of loops into their preheaders, and
-//!   bounded constant-trip full unrolling (RUE-928)
+//! - `-O3`: `-O2` plus canonical loop-preheader normalization, loop-invariant
+//!   code motion (RUE-927), which hoists trap-free invariant computations out
+//!   of loops into their preheaders, and bounded constant-trip full unrolling
+//!   (RUE-928)
 //!
 //! ## Pipeline
 //!
@@ -414,8 +415,12 @@ pub fn optimize_with_budget(
                     cse::run(&mut cfg)?;
                 }
 
-                // Loop-invariant code motion (RUE-927), at -O3 only — the first
-                // pass gated strictly above -O2 (ADR-0054 Phase 2). Runs after
+                // Canonical loop normalization and LICM (RUE-927), at -O3
+                // only — the first work gated strictly above -O2 (ADR-0054
+                // Phases 1-2). Normalization establishes a preheader for every
+                // natural loop to a fixed point before either loop transform.
+                // LICM then computes one current forest and changes no CFG
+                // edges. Runs after
                 // the whole -O1/-O2 sequence so the invariant operands it keys
                 // on are as exposed as constant folding, simplification,
                 // forwarding, and CSE can make them, and before DCE, which
@@ -426,6 +431,7 @@ pub fn optimize_with_budget(
                 // never runs (the inverse of RUE-57). It recomputes dominators
                 // + loops per the ADR's recompute rule.
                 if matches!(level, OptLevel::O3) {
+                    loops::normalize_preheaders(&mut cfg, type_pool)?;
                     licm::run(&mut cfg, type_pool)?;
                     // Full constant-trip unrolling follows LICM and is
                     // followed by a mandatory cleanup fixpoint. Analyses are
@@ -475,6 +481,19 @@ fn publish_optimization(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{BlockId, Cfg, CfgInst, CfgInstData, CfgValue, Terminator, Type};
+    use rue_span::Span;
+
+    fn push(cfg: &mut Cfg, block: BlockId, data: CfgInstData, ty: Type) -> CfgValue {
+        cfg.add_inst_to_block(
+            block,
+            CfgInst {
+                data,
+                ty,
+                span: Span::new(0, 0),
+            },
+        )
+    }
 
     #[test]
     fn optimizer_rewrite_boundaries_are_explicitly_in_place() {
@@ -527,8 +546,8 @@ mod tests {
     #[test]
     fn preheader_materialization_edits_the_graph_in_place() {
         // Preheader materialization runs inside optimize_with_budget's private
-        // editor. A failed edit propagates through LICM into `pass_result`, and
-        // `publish_optimization` checks that result before publishing the
+        // editor. A failed normalization edit propagates into `pass_result`,
+        // and `publish_optimization` checks that result before publishing the
         // poisoned editor, so a second whole-CFG rollback owner is redundant.
         // Inspect production code only: loop-analysis tests clone graphs for
         // before/after and failure-injection fixtures.
@@ -542,6 +561,136 @@ mod tests {
             0,
             "preheader materialization reacquired a whole-CFG clone"
         );
+    }
+
+    #[test]
+    fn empty_canonical_preheader_is_reclaimed_before_publication() {
+        // The entry Branch cannot itself be the loop preheader, so O3
+        // normalization must split its loop edge. With no invariant work to
+        // retain, final simplify threads around that empty block and DCE
+        // reclaims it: the CFG handed to codegen has the same block population
+        // as O2, which performs no normalization.
+        let pool = rue_air::TypeInternPool::new().freeze();
+        let mut cfg = Cfg::new(Type::UNIT, 0, 1, "test".to_string(), vec![false]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let header = cfg.new_block();
+        let body = cfg.new_block();
+        let exit = cfg.new_block();
+        let cond = push(&mut cfg, entry, CfgInstData::Param { index: 0 }, Type::BOOL);
+        cfg.set_terminator(
+            entry,
+            Terminator::Branch {
+                cond,
+                then_block: header,
+                then_args: crate::payload::CfgThenArgs::EMPTY,
+                else_block: exit,
+                else_args: crate::payload::CfgElseArgs::EMPTY,
+            },
+        );
+        cfg.set_terminator(
+            header,
+            Terminator::Branch {
+                cond,
+                then_block: body,
+                then_args: crate::payload::CfgThenArgs::EMPTY,
+                else_block: exit,
+                else_args: crate::payload::CfgElseArgs::EMPTY,
+            },
+        );
+        cfg.set_terminator(
+            body,
+            Terminator::Goto {
+                target: header,
+                args: crate::payload::CfgGotoArgs::EMPTY,
+            },
+        );
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+        let cfg = cfg.finish(&pool).unwrap();
+
+        let o2 = optimize(cfg.clone(), OptLevel::O2, &pool).unwrap();
+        let o3 = optimize(cfg, OptLevel::O3, &pool).unwrap();
+        assert_eq!(o3.block_count(), o2.block_count());
+        assert_eq!(o3.block_count(), 3);
+    }
+
+    #[test]
+    fn nonempty_canonical_preheader_survives_final_cleanup() {
+        // The body computes a dynamic but trap-free invariant used by the next
+        // header iteration. LICM moves it into the materialized preheader; the
+        // final cleanup may remove the now-empty body, but must retain the
+        // nonempty preheader as the defining block outside the final loop.
+        let pool = rue_air::TypeInternPool::new().freeze();
+        let mut cfg = Cfg::new(
+            Type::I32,
+            0,
+            3,
+            "test".to_string(),
+            vec![false, false, false],
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let header = cfg.new_block();
+        let body = cfg.new_block();
+        let exit = cfg.new_block();
+        let a = push(&mut cfg, entry, CfgInstData::Param { index: 0 }, Type::I32);
+        let b = push(&mut cfg, entry, CfgInstData::Param { index: 1 }, Type::I32);
+        let cond = push(&mut cfg, entry, CfgInstData::Param { index: 2 }, Type::BOOL);
+        let current = cfg.add_block_param(header, Type::I32);
+        let result = cfg.add_block_param(exit, Type::I32);
+        let then_args = cfg.push_then_args([a]).unwrap();
+        let else_args = cfg.push_else_args([a]).unwrap();
+        cfg.set_terminator(
+            entry,
+            Terminator::Branch {
+                cond,
+                then_block: header,
+                then_args,
+                else_block: exit,
+                else_args,
+            },
+        );
+        let else_args = cfg.push_else_args([current]).unwrap();
+        cfg.set_terminator(
+            header,
+            Terminator::Branch {
+                cond,
+                then_block: body,
+                then_args: crate::payload::CfgThenArgs::EMPTY,
+                else_block: exit,
+                else_args,
+            },
+        );
+        let invariant = push(&mut cfg, body, CfgInstData::BitOr(a, b), Type::I32);
+        let args = cfg.push_goto_args([invariant]).unwrap();
+        cfg.set_terminator(
+            body,
+            Terminator::Goto {
+                target: header,
+                args,
+            },
+        );
+        cfg.set_terminator(
+            exit,
+            Terminator::Return {
+                value: Some(result),
+            },
+        );
+        let cfg = cfg.finish(&pool).unwrap();
+        let optimized = optimize(cfg, OptLevel::O3, &pool).unwrap();
+
+        let defining_block = optimized
+            .block_ids()
+            .find(|&block| optimized.get_block(block).insts.contains(&invariant))
+            .expect("the live invariant remains attached");
+        let dom = crate::dominators::DominatorTree::compute(&optimized);
+        let forest = loops::loops(&optimized, &dom);
+        assert_eq!(forest.len(), 1);
+        assert_eq!(
+            loops::preheader(&optimized, forest.get(0)),
+            Some(defining_block)
+        );
+        assert!(!forest.get(0).contains(defining_block));
     }
 
     #[test]
