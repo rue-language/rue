@@ -665,6 +665,10 @@ pub struct CfgOptimizationWork {
     pub simplify_edges_threaded: u64,
     pub simplify_forwarders_resolved: u64,
     pub simplify_blocks_merged: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub dce_instructions_removed: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub dce_blocks_removed: u64,
     pub forward_insts_scanned: u64,
     pub forward_loads_single_write: u64,
     pub forward_loads_block_local: u64,
@@ -875,6 +879,27 @@ question = "small maintained compiler frontend"
                 .licm_use_index_domain_entries_initialized,
             0
         );
+    }
+
+    #[test]
+    fn older_cfg_optimization_defaults_and_zero_elides_dce_work() {
+        let mut work = CompilerWork::default();
+        work.cfg_optimization.constopt_folded = 1;
+        let mut encoded = serde_json::to_value(work).unwrap();
+        let cfg_optimization = encoded["cfg_optimization"].as_object_mut().unwrap();
+        assert!(!cfg_optimization.contains_key("dce_instructions_removed"));
+        assert!(!cfg_optimization.contains_key("dce_blocks_removed"));
+
+        let decoded: CompilerWork = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(decoded.cfg_optimization.constopt_folded, 1);
+        assert_eq!(decoded.cfg_optimization.dce_instructions_removed, 0);
+        assert_eq!(decoded.cfg_optimization.dce_blocks_removed, 0);
+
+        encoded["cfg_optimization"]["dce_instructions_removed"] = 13.into();
+        encoded["cfg_optimization"]["dce_blocks_removed"] = 5.into();
+        let decoded: CompilerWork = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.cfg_optimization.dce_instructions_removed, 13);
+        assert_eq!(decoded.cfg_optimization.dce_blocks_removed, 5);
     }
 
     #[test]

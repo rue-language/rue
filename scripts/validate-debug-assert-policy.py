@@ -81,6 +81,10 @@ ALLOWANCES = {
     ),
     "crates/rue-compiler/src/source_identity.rs": Allowance(4, "redundant normalized-path representation checks"),
     "crates/rue-compiler/src/source_snapshot.rs": Allowance(1, "redundant source arena identity check"),
+    "crates/rue-cfg/src/opt/mod.rs": Allowance(
+        1,
+        "bounded cleanup fixpoint exhaustion diagnostic; release work remains capped",
+    ),
     "crates/rue-error/src/lib.rs": Allowance(1, "redundant diagnostic rendering bounds check"),
     "crates/rue-oracle/src/lib.rs": Allowance(
         5,

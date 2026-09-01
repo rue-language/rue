@@ -1452,6 +1452,8 @@ fn benchmark_compiler_work(
                 simplify_edges_threaded: work.simplify_edges_threaded as u64,
                 simplify_forwarders_resolved: work.simplify_forwarders_resolved as u64,
                 simplify_blocks_merged: work.simplify_blocks_merged as u64,
+                dce_instructions_removed: work.dce_instructions_removed as u64,
+                dce_blocks_removed: work.dce_blocks_removed as u64,
                 forward_insts_scanned: work.forward_insts_scanned as u64,
                 forward_loads_single_write: work.forward_loads_single_write as u64,
                 forward_loads_block_local: work.forward_loads_block_local as u64,
@@ -2263,6 +2265,8 @@ mod tests {
                     prerequisite_layout_requests: 41,
                     prerequisite_drop_glue_requests: 47,
                     optimization_passes: rue_compiler::unstable::CfgOptimizationMetrics {
+                        dce_instructions_removed: 51,
+                        dce_blocks_removed: 52,
                         forward_dominator_computations: 53,
                         cse_dominator_computations: 59,
                         licm_forest_computations: 61,
@@ -2413,6 +2417,8 @@ mod tests {
         assert_eq!(projected.cfg_prerequisites.layout_requests, 41);
         assert_eq!(projected.cfg_prerequisites.type_fact_requests, 0);
         assert_eq!(projected.cfg_prerequisites.drop_glue_requests, 47);
+        assert_eq!(projected.cfg_optimization.dce_instructions_removed, 51);
+        assert_eq!(projected.cfg_optimization.dce_blocks_removed, 52);
         assert_eq!(
             projected.cfg_optimization.forward_dominator_computations,
             53
