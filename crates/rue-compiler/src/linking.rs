@@ -444,11 +444,174 @@ static RUNTIME_AARCH64_LINUX_VALIDATION: std::sync::OnceLock<Result<(), String>>
     std::sync::OnceLock::new();
 static RUNTIME_AARCH64_MACOS_VALIDATION: std::sync::OnceLock<Result<(), String>> =
     std::sync::OnceLock::new();
+static EMBEDDED_RUNTIME_INDEXES: EmbeddedRuntimeIndexCaches = EmbeddedRuntimeIndexCaches::new();
 /// Times the embedded runtime archive has actually been decoded. Parsing it
 /// materializes every member — headers, symbol tables, relocations, and a
 /// `Vec<u8>` per section — so this count is the real cost being avoided
 /// (RUE-1845).
 static RUNTIME_ARCHIVE_PARSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+thread_local! {
+    /// Exact count of index parses reached through the production helper on
+    /// this test thread. Keeping the guard thread-local makes assertions
+    /// independent of Rust's parallel test scheduling.
+    static RUNTIME_ARCHIVE_INDEX_PARSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn record_runtime_archive_index_parse() {
+    #[cfg(test)]
+    RUNTIME_ARCHIVE_INDEX_PARSES.with(|count| count.set(count.get() + 1));
+}
+
+struct EmbeddedRuntimeIndexCache {
+    index: std::sync::OnceLock<rue_linker::ArchiveIndex<'static>>,
+    initialization_active: std::sync::atomic::AtomicBool,
+    waiters: std::sync::atomic::AtomicUsize,
+}
+
+struct EmbeddedRuntimeIndexInitializationLease<'a> {
+    cache: &'a EmbeddedRuntimeIndexCache,
+}
+
+impl EmbeddedRuntimeIndexCache {
+    const fn new() -> Self {
+        Self {
+            index: std::sync::OnceLock::new(),
+            initialization_active: std::sync::atomic::AtomicBool::new(false),
+            waiters: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn get_or_try_index(
+        &self,
+        cancellation: &rue_query::CancellationToken,
+        initialize: impl FnOnce() -> CancellableLinkResult<rue_linker::ArchiveIndex<'static>>,
+    ) -> CancellableLinkResult<&rue_linker::ArchiveIndex<'static>> {
+        check_cancellation(cancellation)?;
+        if let Some(index) = self.index.get() {
+            return Ok(index);
+        }
+
+        // OnceLock cannot discard a canceled fallible initialization. Elect one
+        // initializer explicitly and let other requests wait in short bounded
+        // intervals so their own cancellation remains observable. A lease resets
+        // the election on every exit, including cancellation and unwinding.
+        loop {
+            check_cancellation(cancellation)?;
+            if let Some(index) = self.index.get() {
+                return Ok(index);
+            }
+            if self
+                .initialization_active
+                .compare_exchange(
+                    false,
+                    true,
+                    std::sync::atomic::Ordering::Acquire,
+                    std::sync::atomic::Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                break;
+            }
+            self.waiters
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            self.waiters
+                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        let initialization = EmbeddedRuntimeIndexInitializationLease { cache: self };
+        self.initialize_after_election(initialization, cancellation, initialize)
+    }
+
+    fn initialize_after_election(
+        &self,
+        initialization: EmbeddedRuntimeIndexInitializationLease<'_>,
+        cancellation: &rue_query::CancellationToken,
+        initialize: impl FnOnce() -> CancellableLinkResult<rue_linker::ArchiveIndex<'static>>,
+    ) -> CancellableLinkResult<&rue_linker::ArchiveIndex<'static>> {
+        // A contender can observe an empty OnceLock before the previous
+        // initializer publishes, then win the election only after that
+        // initializer releases it. Recheck under this election before doing
+        // any work or attempting the one-time publication.
+        check_cancellation(cancellation)?;
+        if let Some(index) = self.index.get() {
+            return Ok(index);
+        }
+
+        let index = initialize()?;
+        check_cancellation(cancellation)?;
+        self.index
+            .set(index)
+            .expect("embedded runtime index has one elected initializer");
+        drop(initialization);
+        Ok(self
+            .index
+            .get()
+            .expect("embedded runtime index was just initialized"))
+    }
+
+    fn get_or_index(
+        &self,
+        runtime_bytes: &'static [u8],
+        cancellation: &rue_query::CancellationToken,
+    ) -> CancellableLinkResult<&rue_linker::ArchiveIndex<'static>> {
+        self.get_or_try_index(cancellation, || {
+            parse_runtime_index_with_cancellation(runtime_bytes, cancellation)
+        })
+    }
+
+    #[cfg(test)]
+    fn waiter_count(&self) -> usize {
+        self.waiters.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Drop for EmbeddedRuntimeIndexInitializationLease<'_> {
+    fn drop(&mut self) {
+        self.cache
+            .initialization_active
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+struct EmbeddedRuntimeIndexCaches {
+    x86_64_linux: EmbeddedRuntimeIndexCache,
+    aarch64_linux: EmbeddedRuntimeIndexCache,
+    aarch64_macos: EmbeddedRuntimeIndexCache,
+}
+
+impl EmbeddedRuntimeIndexCaches {
+    const fn new() -> Self {
+        Self {
+            x86_64_linux: EmbeddedRuntimeIndexCache::new(),
+            aarch64_linux: EmbeddedRuntimeIndexCache::new(),
+            aarch64_macos: EmbeddedRuntimeIndexCache::new(),
+        }
+    }
+
+    fn for_target(&self, target: Target) -> &EmbeddedRuntimeIndexCache {
+        match target {
+            Target::X86_64Linux => &self.x86_64_linux,
+            Target::Aarch64Linux => &self.aarch64_linux,
+            Target::Aarch64Macos => &self.aarch64_macos,
+        }
+    }
+}
+
+enum ValidatedRuntimeIndex<'cache, 'bytes> {
+    Embedded(&'cache rue_linker::ArchiveIndex<'static>),
+    Supplied(rue_linker::ArchiveIndex<'bytes>),
+}
+
+impl ValidatedRuntimeIndex<'_, '_> {
+    fn as_index(&self) -> &rue_linker::ArchiveIndex<'_> {
+        match self {
+            Self::Embedded(index) => index,
+            Self::Supplied(index) => index,
+        }
+    }
+}
 
 /// Return the embedded rue-runtime archive matching `target`.
 pub(crate) fn runtime_for_target(target: Target) -> &'static [u8] {
@@ -941,16 +1104,51 @@ fn validate_runtime_archive_only_with_cancellation(
 /// compile links. Re-deriving the verdict per process moved a build-time
 /// guarantee into every user's compile. A caller-supplied archive is not
 /// covered by that test and still takes the full parse and the full check.
+///
+/// **Retained links.** The embedded bytes have process lifetime and cannot
+/// change, so their parsed index is retained once per target. Physical identity
+/// is the authority: equal caller-owned bytes still take both fresh validation
+/// and fresh indexing on every call (RUE-1881).
+#[cfg(test)]
 fn validated_runtime_index_with_cancellation<'a>(
     runtime_bytes: &'a [u8],
     target: Target,
     cancellation: &rue_query::CancellationToken,
-) -> CancellableLinkResult<rue_linker::ArchiveIndex<'a>> {
+) -> CancellableLinkResult<ValidatedRuntimeIndex<'static, 'a>> {
+    validated_runtime_index_in_caches_with_cancellation(
+        runtime_bytes,
+        target,
+        cancellation,
+        &EMBEDDED_RUNTIME_INDEXES,
+    )
+}
+
+fn validated_runtime_index_in_caches_with_cancellation<'cache, 'bytes>(
+    runtime_bytes: &'bytes [u8],
+    target: Target,
+    cancellation: &rue_query::CancellationToken,
+    embedded_indexes: &'cache EmbeddedRuntimeIndexCaches,
+) -> CancellableLinkResult<ValidatedRuntimeIndex<'cache, 'bytes>> {
     check_cancellation(cancellation)?;
-    if !std::ptr::eq(runtime_bytes, runtime_for_target(target)) {
-        validate_runtime_archive_with_cancellation(runtime_bytes, target, cancellation)?;
+    let embedded_runtime = runtime_for_target(target);
+    if std::ptr::eq(runtime_bytes, embedded_runtime) {
+        return embedded_indexes
+            .for_target(target)
+            .get_or_index(embedded_runtime, cancellation)
+            .map(ValidatedRuntimeIndex::Embedded);
     }
+
+    validate_runtime_archive_with_cancellation(runtime_bytes, target, cancellation)?;
     check_cancellation(cancellation)?;
+    parse_runtime_index_with_cancellation(runtime_bytes, cancellation)
+        .map(ValidatedRuntimeIndex::Supplied)
+}
+
+fn parse_runtime_index_with_cancellation<'a>(
+    runtime_bytes: &'a [u8],
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableLinkResult<rue_linker::ArchiveIndex<'a>> {
+    record_runtime_archive_index_parse();
     let index =
         rue_linker::ArchiveIndex::parse_strict_objects_with_cancellation(runtime_bytes, || {
             cancellation.is_canceled()
@@ -1142,11 +1340,13 @@ fn finish_internal_link_with_cancellation(
                 .map_err(map_linker_control)?;
         }
         check_cancellation(cancellation)?;
-        let runtime =
-            validated_runtime_index_with_cancellation(runtime_bytes, options.target, cancellation)?;
-        linker
-            .add_archive_index_with_cancellation(&runtime, &mut || cancellation.is_canceled())
-            .map_err(map_linker_control)?;
+        add_runtime_archive_to_linker_with_cancellation(
+            &mut linker,
+            runtime_bytes,
+            options.target,
+            cancellation,
+            &EMBEDDED_RUNTIME_INDEXES,
+        )?;
     }
     let executable = linker
         .link_with_cancellation(entry_point, || cancellation.is_canceled())
@@ -1183,6 +1383,24 @@ fn finish_internal_link_with_cancellation(
         provider_observations: crate::unstable::ProviderObservationMetrics::default(),
         publication: crate::unstable::PublicationMetrics::default(),
     })
+}
+
+fn add_runtime_archive_to_linker_with_cancellation(
+    linker: &mut Linker,
+    runtime_bytes: &[u8],
+    target: Target,
+    cancellation: &rue_query::CancellationToken,
+    embedded_indexes: &EmbeddedRuntimeIndexCaches,
+) -> CancellableLinkResult<()> {
+    let runtime = validated_runtime_index_in_caches_with_cancellation(
+        runtime_bytes,
+        target,
+        cancellation,
+        embedded_indexes,
+    )?;
+    linker
+        .add_archive_index_with_cancellation(runtime.as_index(), &mut || cancellation.is_canceled())
+        .map_err(map_linker_control)
 }
 
 /// Link retained compiler units directly. Export thunks remain serialized
@@ -1952,7 +2170,10 @@ mod runtime_archive_validation_tests {
         .expect("the embedded runtime indexes");
         let after = RUNTIME_ARCHIVE_PARSES.load(std::sync::atomic::Ordering::Relaxed);
 
-        assert!(!index.is_empty(), "the embedded runtime has members");
+        assert!(
+            !index.as_index().is_empty(),
+            "the embedded runtime has members"
+        );
         assert_eq!(
             before, after,
             "indexing the embedded runtime fell back to a whole-archive parse"
@@ -1973,6 +2194,198 @@ mod runtime_archive_validation_tests {
             before + 1,
             after,
             "a caller-supplied archive must still be fully validated"
+        );
+    }
+
+    #[test]
+    fn internal_link_dispatch_caches_only_each_embedded_runtime_index() {
+        let cancellation = rue_query::CancellationToken::default();
+        let embedded_indexes = EmbeddedRuntimeIndexCaches::new();
+
+        for &target in Target::all() {
+            let bytes = runtime_for_target(target);
+            RUNTIME_ARCHIVE_INDEX_PARSES.with(|count| count.set(0));
+            for _ in 0..2 {
+                add_runtime_archive_to_linker_with_cancellation(
+                    &mut Linker::new(target),
+                    bytes,
+                    target,
+                    &cancellation,
+                    &embedded_indexes,
+                )
+                .expect("the production internal-link dispatch admits the embedded runtime");
+            }
+            RUNTIME_ARCHIVE_INDEX_PARSES.with(|count| {
+                assert_eq!(
+                    count.get(),
+                    1,
+                    "two {target} embedded links must index once"
+                )
+            });
+
+            // Equal contents do not confer embedded identity. Pass two
+            // physically distinct copies through the same production dispatch
+            // boundary used above; neither may consult the embedded cache.
+            let supplied_first = bytes.to_vec();
+            let supplied_second = bytes.to_vec();
+            assert!(!std::ptr::eq(supplied_first.as_slice(), bytes));
+            assert!(!std::ptr::eq(supplied_second.as_slice(), bytes));
+            assert!(!std::ptr::eq(
+                supplied_first.as_slice(),
+                supplied_second.as_slice()
+            ));
+            RUNTIME_ARCHIVE_INDEX_PARSES.with(|count| count.set(0));
+            for supplied in [&supplied_first, &supplied_second] {
+                add_runtime_archive_to_linker_with_cancellation(
+                    &mut Linker::new(target),
+                    supplied,
+                    target,
+                    &cancellation,
+                    &embedded_indexes,
+                )
+                .expect("the production internal-link dispatch admits a supplied runtime");
+            }
+            RUNTIME_ARCHIVE_INDEX_PARSES.with(|count| {
+                assert_eq!(
+                    count.get(),
+                    2,
+                    "each physically distinct {target} caller archive must be indexed"
+                )
+            });
+        }
+    }
+
+    #[test]
+    fn canceled_embedded_index_waiter_does_not_wait_for_the_initializer() {
+        let target = Target::X86_64Linux;
+        let bytes = runtime_for_target(target);
+        let cache = std::sync::Arc::new(EmbeddedRuntimeIndexCache::new());
+        let (initializer_entered_tx, initializer_entered_rx) = std::sync::mpsc::channel();
+        let (release_initializer_tx, release_initializer_rx) = std::sync::mpsc::channel();
+
+        let initializer_cache = std::sync::Arc::clone(&cache);
+        let initializer = std::thread::spawn(move || {
+            let cancellation = rue_query::CancellationToken::new();
+            initializer_cache
+                .get_or_try_index(&cancellation, || {
+                    initializer_entered_tx.send(()).unwrap();
+                    release_initializer_rx.recv().unwrap();
+                    parse_runtime_index_with_cancellation(bytes, &cancellation)
+                })
+                .map(|_| ())
+        });
+        initializer_entered_rx.recv().unwrap();
+
+        let waiter_cache = std::sync::Arc::clone(&cache);
+        let waiter_cancellation = rue_query::CancellationToken::new();
+        let cancel_waiter = waiter_cancellation.clone();
+        let (waiter_result_tx, waiter_result_rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            let result = waiter_cache.get_or_try_index(&waiter_cancellation, || {
+                panic!("a waiter must not become the initializer while one is blocked")
+            });
+            waiter_result_tx
+                .send(matches!(
+                    result,
+                    Err(crate::session::PipelineRequestControl::Abort(
+                        rue_query::QueryAbort::Canceled
+                    ))
+                ))
+                .unwrap();
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while cache.waiter_count() == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the second request never began waiting"
+            );
+            std::thread::yield_now();
+        }
+        cancel_waiter.cancel();
+        assert!(
+            waiter_result_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("the canceled waiter remained blocked behind the initializer"),
+            "the waiter did not report cancellation"
+        );
+        waiter.join().unwrap();
+
+        // The cancellation result above arrived while this initializer was
+        // deliberately blocked. Release it only after proving that ordering.
+        release_initializer_tx.send(()).unwrap();
+        initializer.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn canceled_embedded_index_initializer_permits_a_live_retry() {
+        let target = Target::X86_64Linux;
+        let bytes = runtime_for_target(target);
+        let cache = std::sync::Arc::new(EmbeddedRuntimeIndexCache::new());
+        let cancellation = rue_query::CancellationToken::new();
+        let cancel_initializer = cancellation.clone();
+        let (initializer_entered_tx, initializer_entered_rx) = std::sync::mpsc::channel();
+        let (release_initializer_tx, release_initializer_rx) = std::sync::mpsc::channel();
+
+        let initializer_cache = std::sync::Arc::clone(&cache);
+        let initializer = std::thread::spawn(move || {
+            initializer_cache
+                .get_or_try_index(&cancellation, || {
+                    initializer_entered_tx.send(()).unwrap();
+                    release_initializer_rx.recv().unwrap();
+                    parse_runtime_index_with_cancellation(bytes, &cancellation)
+                })
+                .map(|_| ())
+        });
+        initializer_entered_rx.recv().unwrap();
+        cancel_initializer.cancel();
+        release_initializer_tx.send(()).unwrap();
+        assert!(matches!(
+            initializer.join().unwrap(),
+            Err(crate::session::PipelineRequestControl::Abort(
+                rue_query::QueryAbort::Canceled
+            ))
+        ));
+        assert!(
+            cache.index.get().is_none(),
+            "a canceled initializer must not publish its result"
+        );
+
+        let retry = cache
+            .get_or_index(bytes, &rue_query::CancellationToken::new())
+            .expect("a live request can retry after canceled initialization");
+        assert!(!retry.is_empty());
+    }
+
+    #[test]
+    fn elected_waiter_rechecks_an_index_published_before_election() {
+        let target = Target::X86_64Linux;
+        let bytes = runtime_for_target(target);
+        let cancellation = rue_query::CancellationToken::new();
+        let cache = EmbeddedRuntimeIndexCache::new();
+        let published = parse_runtime_index_with_cancellation(bytes, &cancellation).unwrap();
+        cache.index.set(published).unwrap();
+
+        // Reproduce the state after a contender observed the OnceLock empty,
+        // the prior initializer published and released, and the contender then
+        // won the election using that stale observation.
+        cache
+            .initialization_active
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let election = EmbeddedRuntimeIndexInitializationLease { cache: &cache };
+        let expected = cache.index.get().unwrap();
+        let actual = cache
+            .initialize_after_election(election, &cancellation, || {
+                panic!("an elected waiter must recheck the published index")
+            })
+            .unwrap();
+
+        assert!(std::ptr::eq(actual, expected));
+        assert!(
+            !cache
+                .initialization_active
+                .load(std::sync::atomic::Ordering::Relaxed),
+            "returning the published index must release the stale election"
         );
     }
 
