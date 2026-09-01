@@ -1243,7 +1243,30 @@ mod tests {
     use rue_span::Span;
 
     fn slot_loop(initial: u64, bound: u64, descending: bool) -> Cfg {
-        let mut cfg = Cfg::new(Type::I32, 1, 0, "slot_loop".into(), Vec::<bool>::new());
+        slot_loop_fixture(initial, bound, descending, false)
+    }
+
+    fn slot_loop_with_repeated_body_expression(initial: u64, bound: u64) -> Cfg {
+        slot_loop_fixture(initial, bound, false, true)
+    }
+
+    fn slot_loop_fixture(
+        initial: u64,
+        bound: u64,
+        descending: bool,
+        repeated_body_expression: bool,
+    ) -> Cfg {
+        let mut cfg = Cfg::new(
+            Type::I32,
+            if repeated_body_expression { 2 } else { 1 },
+            u32::from(repeated_body_expression),
+            "slot_loop".into(),
+            if repeated_body_expression {
+                vec![false]
+            } else {
+                vec![]
+            },
+        );
         let entry = cfg.new_block();
         let header = cfg.new_block();
         let body = cfg.new_block();
@@ -1266,6 +1289,27 @@ mod tests {
                 span,
             },
         );
+        if repeated_body_expression {
+            let param = cfg.append_inst(
+                entry,
+                CfgInst {
+                    data: CfgInstData::Param { index: 0 },
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            cfg.append_inst(
+                entry,
+                CfgInst {
+                    data: CfgInstData::Alloc {
+                        slot: 1,
+                        init: param,
+                    },
+                    ty: Type::UNIT,
+                    span,
+                },
+            );
+        }
         cfg.set_goto(entry, header, []);
         let iv = cfg.append_inst(
             header,
@@ -1320,6 +1364,43 @@ mod tests {
                 span,
             },
         );
+        if repeated_body_expression {
+            let lhs = cfg.append_inst(
+                body,
+                CfgInst {
+                    data: CfgInstData::Param { index: 0 },
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            let rhs = cfg.append_inst(
+                body,
+                CfgInst {
+                    data: CfgInstData::Param { index: 0 },
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            let repeated = cfg.append_inst(
+                body,
+                CfgInst {
+                    data: CfgInstData::WrappingAdd(lhs, rhs),
+                    ty: Type::I32,
+                    span,
+                },
+            );
+            cfg.append_inst(
+                body,
+                CfgInst {
+                    data: CfgInstData::Store {
+                        slot: 1,
+                        value: repeated,
+                    },
+                    ty: Type::UNIT,
+                    span,
+                },
+            );
+        }
         cfg.set_goto(body, latch, []);
         let latch_iv = cfg.append_inst(
             latch,
@@ -1740,6 +1821,87 @@ mod tests {
             let dom = DominatorTree::compute(&cfg);
             assert!(loops(&cfg, &dom).is_empty());
         }
+    }
+
+    #[test]
+    fn optimizer_cleanup_revisits_expressions_cloned_by_unrolling() {
+        let mut cfg = slot_loop_with_repeated_body_expression(0, 3);
+        let original_expressions = cfg
+            .blocks()
+            .iter()
+            .flat_map(|block| &block.insts)
+            .filter(|value| matches!(cfg.get_inst(**value).data, CfgInstData::WrappingAdd(_, _)))
+            .count();
+        let mut budget = super::super::CodeGrowthBudget::o3();
+
+        let unroll = run_with_budget(&mut cfg, &mut budget).unwrap();
+        let unrolled_expressions = cfg
+            .blocks()
+            .iter()
+            .flat_map(|block| &block.insts)
+            .filter(|value| matches!(cfg.get_inst(**value).data, CfgInstData::WrappingAdd(_, _)))
+            .count();
+        // Branch the already-unrolled graph only in this A/B regression: both
+        // sides run the canonical named cleanup, differing solely in whether
+        // the newly added clone-revisit passes are enabled.
+        let mut control = cfg.clone();
+        let mut control_stats = super::super::OptimizationStats::default();
+        super::super::run_cleanup_to_fixpoint(
+            &mut control,
+            &mut control_stats,
+            super::super::CleanupSequence::Unrolling {
+                revisit_clones: false,
+            },
+        )
+        .unwrap();
+        let mut stats = super::super::OptimizationStats::default();
+
+        super::super::run_cleanup_to_fixpoint(
+            &mut cfg,
+            &mut stats,
+            super::super::CleanupSequence::Unrolling {
+                revisit_clones: true,
+            },
+        )
+        .unwrap();
+
+        let control_expressions = control
+            .blocks()
+            .iter()
+            .flat_map(|block| &block.insts)
+            .filter(|value| {
+                matches!(
+                    control.get_inst(**value).data,
+                    CfgInstData::WrappingAdd(_, _)
+                )
+            })
+            .count();
+        let revisited_expressions = cfg
+            .blocks()
+            .iter()
+            .flat_map(|block| &block.insts)
+            .filter(|value| matches!(cfg.get_inst(**value).data, CfgInstData::WrappingAdd(_, _)))
+            .count();
+        let control_instructions = control
+            .blocks()
+            .iter()
+            .map(|block| block.insts.len())
+            .sum::<usize>();
+        let revisited_instructions = cfg
+            .blocks()
+            .iter()
+            .map(|block| block.insts.len())
+            .sum::<usize>();
+
+        assert_eq!(unroll.loops_unrolled, 1);
+        assert_eq!(original_expressions, 1);
+        assert_eq!(unrolled_expressions, 4);
+        assert_eq!(control_expressions, 3);
+        assert_eq!(revisited_expressions, 1);
+        assert_eq!(control_stats.cse_duplicates_replaced, 0);
+        assert_eq!(stats.cse_duplicates_replaced, 33);
+        assert_eq!(control_instructions, 23);
+        assert_eq!(revisited_instructions, 14);
     }
 
     #[test]
