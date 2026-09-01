@@ -4173,9 +4173,8 @@ mod tests {
             work.optimization_reoptimization_completions
         );
         assert_eq!(
-            work.optimization_passes.cse_dominator_computations,
-            work.optimization_attempts + work.optimization_reoptimization_attempts,
-            "every successful O3 optimize_with_budget owner publishes its CSE analysis build"
+            work.optimization_passes.cse_dominator_computations, 5,
+            "the three O3 owners publish their initial CSE analysis, while only accepted unrolling adds cleanup analyses"
         );
         assert_eq!(
             work.optimization_passes

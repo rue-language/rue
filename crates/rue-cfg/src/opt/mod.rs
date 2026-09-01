@@ -274,12 +274,15 @@ const MAX_CLEANUP_ROUNDS: usize = 64;
 /// These are deliberately named site contracts, not a configurable pass
 /// manager. In particular, DCE stays where the pipeline already placed it:
 /// before cleanup exposed by control-flow folding, absent from forwarding's
-/// local cleanup, and after the post-unroll fold/simplify pair.
+/// local cleanup, and last in post-unroll cleanup. The unrolling sequence first
+/// folds and merges control flow; when unrolling cloned a body, it then revisits
+/// forwarding, peepholes, and CSE in their dependency order before DCE sweeps
+/// placeholders.
 #[derive(Debug, Clone, Copy)]
 enum CleanupSequence {
     ControlFlow,
     Forwarding,
-    Unrolling,
+    Unrolling { revisit_clones: bool },
 }
 
 fn constopt_made_progress(stats: constopt::Stats) -> bool {
@@ -288,6 +291,14 @@ fn constopt_made_progress(stats: constopt::Stats) -> bool {
 
 fn peephole_made_progress(stats: peephole::Stats) -> bool {
     stats.divmods_reduced > 0 || stats.identities_rewired > 0
+}
+
+fn forward_made_progress(stats: forward::Stats) -> bool {
+    stats.loads_forwarded_single_write > 0 || stats.loads_forwarded_block_local > 0
+}
+
+fn cse_made_progress(stats: cse::Stats) -> bool {
+    stats.duplicates_replaced > 0
 }
 
 fn simplify_made_progress(stats: simplify::Stats) -> bool {
@@ -340,17 +351,36 @@ fn run_cleanup_to_fixpoint_with_limit(
                 stats.add_simplify(simplify_stats);
                 constopt_progress || simplify_progress
             }
-            CleanupSequence::Unrolling => {
+            CleanupSequence::Unrolling { revisit_clones } => {
                 let constopt_stats = constopt::run(cfg);
                 let constopt_progress = constopt_made_progress(constopt_stats);
                 stats.add_constopt(constopt_stats);
                 let simplify_stats = simplify::run(cfg)?;
                 let simplify_progress = simplify_made_progress(simplify_stats);
                 stats.add_simplify(simplify_stats);
+                let (forward_progress, peephole_progress, cse_progress) = if revisit_clones {
+                    let forward_stats = forward::run(cfg)?;
+                    let forward_progress = forward_made_progress(forward_stats);
+                    stats.add_forward(forward_stats);
+                    let peephole_stats = peephole::run(cfg)?;
+                    let peephole_progress = peephole_made_progress(peephole_stats);
+                    stats.add_peephole(peephole_stats);
+                    let cse_stats = cse::run(cfg)?;
+                    let cse_progress = cse_made_progress(cse_stats);
+                    stats.add_cse(cse_stats);
+                    (forward_progress, peephole_progress, cse_progress)
+                } else {
+                    (false, false, false)
+                };
                 let dce_stats = dce::run(cfg);
                 let dce_progress = dce_stats.made_progress();
                 stats.add_dce(dce_stats);
-                constopt_progress || simplify_progress || dce_progress
+                constopt_progress
+                    || simplify_progress
+                    || forward_progress
+                    || peephole_progress
+                    || cse_progress
+                    || dce_progress
             }
         };
         if !final_round_made_progress {
@@ -633,8 +663,7 @@ pub fn optimize_with_budget(
                     // simplify that newly constant control flow before CSE;
                     // this is essential for drop-flag stores revealed after a
                     // selector branch is folded.
-                    let forwarding_made_progress = forward_stats.loads_forwarded_single_write > 0
-                        || forward_stats.loads_forwarded_block_local > 0;
+                    let forwarding_made_progress = forward_made_progress(forward_stats);
                     if forwarding_made_progress {
                         run_cleanup_to_fixpoint(&mut cfg, &mut stats, CleanupSequence::Forwarding)?;
                     }
@@ -674,13 +703,21 @@ pub fn optimize_with_budget(
                     // Full constant-trip unrolling follows LICM and is
                     // followed by a mandatory cleanup fixpoint. Analyses are
                     // recomputed by the pass after every independent mutation
-                    // batch.
+                    // batch. Only an accepted unroll enables the passes that
+                    // revisit cloned values; fold/simplify/DCE remain the
+                    // unconditional cleanup contract.
                     let unroll = unroll::run_with_budget(&mut cfg, &mut budget)?;
                     stats.add_unroll(unroll);
                     stats.code_growth_used = budget.used_values().saturating_sub(initial_values);
                     stats.code_growth_blocks_used =
                         budget.used_blocks().saturating_sub(initial_blocks);
-                    run_cleanup_to_fixpoint(&mut cfg, &mut stats, CleanupSequence::Unrolling)?;
+                    run_cleanup_to_fixpoint(
+                        &mut cfg,
+                        &mut stats,
+                        CleanupSequence::Unrolling {
+                            revisit_clones: unroll.loops_unrolled > 0,
+                        },
+                    )?;
                 }
 
                 // Dead code elimination: remove unused values and unreachable blocks
@@ -899,6 +936,131 @@ mod tests {
     }
 
     #[test]
+    fn o3_without_unrolling_does_not_charge_clone_cleanup_passes() {
+        let pool = rue_air::TypeInternPool::new().freeze();
+        let mut cfg = Cfg::new(Type::I32, 0, 1, "no_unroll".to_string(), vec![false]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let param = push(&mut cfg, entry, CfgInstData::Param { index: 0 }, Type::I32);
+        cfg.set_terminator(entry, Terminator::Return { value: Some(param) });
+        let cfg = cfg.finish(&pool).unwrap();
+
+        let (_, o2) = optimize_with_stats(cfg.clone(), OptLevel::O2, &pool).unwrap();
+        let (_, o3) = optimize_with_stats(cfg, OptLevel::O3, &pool).unwrap();
+
+        assert_eq!(o3.loops_unrolled, 0);
+        assert_eq!(
+            o3.simplify_blocks_scanned,
+            o2.simplify_blocks_scanned + 1,
+            "zero-unroll O3 retains the unconditional one-block cleanup round"
+        );
+        assert_eq!(o3.forward_insts_scanned, 1);
+        assert_eq!(o3.cse_insts_scanned, 1);
+        assert_eq!(o3.cse_dominator_computations, 1);
+        assert_eq!(o3.peephole_identities_rewired, 0);
+        assert_eq!(o3.peephole_divmods_reduced, o2.peephole_divmods_reduced);
+        assert_eq!(
+            o3.peephole_identities_rewired,
+            o2.peephole_identities_rewired
+        );
+        assert_eq!(o3.forward_insts_scanned, o2.forward_insts_scanned);
+        assert_eq!(o3.forward_loads_single_write, o2.forward_loads_single_write);
+        assert_eq!(o3.forward_loads_block_local, o2.forward_loads_block_local);
+        assert_eq!(
+            o3.forward_rule1_dominance_pairs_checked,
+            o2.forward_rule1_dominance_pairs_checked
+        );
+        assert_eq!(
+            o3.forward_dominator_computations,
+            o2.forward_dominator_computations
+        );
+        assert_eq!(o3.cse_insts_scanned, o2.cse_insts_scanned);
+        assert_eq!(o3.cse_duplicates_replaced, o2.cse_duplicates_replaced);
+        assert_eq!(o3.cse_max_table_entries, o2.cse_max_table_entries);
+        assert_eq!(o3.cse_dominator_computations, o2.cse_dominator_computations);
+    }
+
+    #[test]
+    fn unrolling_cleanup_tracks_each_added_pass_and_its_progress_exactly() {
+        let pool = rue_air::TypeInternPool::new().freeze();
+        let mut cfg = Cfg::new(
+            Type::I32,
+            1,
+            1,
+            "unrolled_straight_line".to_string(),
+            vec![false],
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let param = push(&mut cfg, entry, CfgInstData::Param { index: 0 }, Type::I32);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: param,
+            },
+            Type::UNIT,
+        );
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Store {
+                slot: 0,
+                value: param,
+            },
+            Type::UNIT,
+        );
+        let load = push(&mut cfg, entry, CfgInstData::Load { slot: 0 }, Type::I32);
+        let zero = push(&mut cfg, entry, CfgInstData::Const(0), Type::I32);
+        let identity = push(&mut cfg, entry, CfgInstData::BitOr(load, zero), Type::I32);
+        let first = push(&mut cfg, entry, CfgInstData::Add(param, param), Type::I32);
+        let duplicate = push(&mut cfg, entry, CfgInstData::Add(param, param), Type::I32);
+        let result = push(
+            &mut cfg,
+            entry,
+            CfgInstData::WrappingAdd(identity, duplicate),
+            Type::I32,
+        );
+        cfg.set_terminator(
+            entry,
+            Terminator::Return {
+                value: Some(result),
+            },
+        );
+        let mut cfg = cfg.finish(&pool).unwrap().into_editor();
+        let mut stats = OptimizationStats::default();
+
+        run_cleanup_to_fixpoint_with_limit(
+            &mut cfg,
+            &mut stats,
+            CleanupSequence::Unrolling {
+                revisit_clones: true,
+            },
+            4,
+        )
+        .unwrap();
+
+        assert!(matches!(cfg.get_inst(first).data, CfgInstData::Add(_, _)));
+        assert_eq!(
+            stats,
+            OptimizationStats {
+                constopt_fold_attempts: 15,
+                peephole_identities_rewired: 1,
+                simplify_blocks_scanned: 2,
+                dce_instructions_removed: 4,
+                forward_insts_scanned: 14,
+                forward_loads_block_local: 1,
+                cse_insts_scanned: 14,
+                cse_duplicates_replaced: 2,
+                cse_max_table_entries: 4,
+                cse_dominator_computations: 2,
+                ..OptimizationStats::default()
+            }
+        );
+    }
+
+    #[test]
     fn cleanup_no_progress_round_terminates_and_aggregates_exact_stats() {
         let pool = rue_air::TypeInternPool::new().freeze();
         let mut cfg = Cfg::new(Type::UNIT, 0, 0, "no_progress".to_string(), vec![]);
@@ -931,8 +1093,15 @@ mod tests {
         let mut cfg = cfg.finish(&pool).unwrap().into_editor();
         let mut stats = OptimizationStats::default();
 
-        run_cleanup_to_fixpoint_with_limit(&mut cfg, &mut stats, CleanupSequence::Unrolling, 4)
-            .unwrap();
+        run_cleanup_to_fixpoint_with_limit(
+            &mut cfg,
+            &mut stats,
+            CleanupSequence::Unrolling {
+                revisit_clones: true,
+            },
+            4,
+        )
+        .unwrap();
 
         assert_eq!(cfg.get_block(entry).insts.len(), 0);
         assert_eq!(
@@ -940,6 +1109,10 @@ mod tests {
             OptimizationStats {
                 simplify_blocks_scanned: 2,
                 dce_instructions_removed: 1,
+                forward_insts_scanned: 1,
+                cse_insts_scanned: 1,
+                cse_max_table_entries: 1,
+                cse_dominator_computations: 2,
                 ..OptimizationStats::default()
             }
         );
