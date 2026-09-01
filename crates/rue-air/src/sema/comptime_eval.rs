@@ -65,7 +65,7 @@ use super::comptime::{
     ComptimeStructuredTypeResolution, ComptimeStructuredTypes, ComptimeTrap, ComptimeType,
     ComptimeTypeAlgebra, ComptimeValueAlgebra,
 };
-use super::context::{AnalysisContext, ConstValue};
+use super::context::{AnalysisContext, CheckedConstIndexCandidate, ConstValue};
 use super::info::FunctionCallInfo;
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 
@@ -82,6 +82,75 @@ pub(crate) type ComptimeEnv<'a> = GenericComptimeEnv<
     FileId,
     super::anon_structs::IssuedStableProducerId,
 >;
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CheckedConstIndexTestStats {
+    pub evaluations: u64,
+    pub hits: u64,
+    pub canceled_hits: u64,
+    pub candidate_hits: u64,
+    pub candidate_rejections: u64,
+    pub candidate_comparisons: u64,
+    pub comparison_nodes: u64,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CANCEL_ON_CHECKED_CONST_INDEX_HIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static CHECKED_CONST_INDEX_HIT_REACHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_cancellation_on_checked_const_index_hit<R>(action: impl FnOnce() -> R) -> R {
+    CANCEL_ON_CHECKED_CONST_INDEX_HIT.with(|armed| {
+        let previous = armed.replace(true);
+        CHECKED_CONST_INDEX_HIT_REACHED.with(|reached| reached.set(false));
+        let result = action();
+        armed.set(previous);
+        CHECKED_CONST_INDEX_HIT_REACHED.with(|reached| reached.set(false));
+        result
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn checked_const_index_hit_requests_cancellation() -> bool {
+    CANCEL_ON_CHECKED_CONST_INDEX_HIT.with(std::cell::Cell::get)
+        && CHECKED_CONST_INDEX_HIT_REACHED.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+thread_local! {
+    static CHECKED_CONST_INDEX_TEST_STATS: std::cell::Cell<CheckedConstIndexTestStats> =
+        const { std::cell::Cell::new(CheckedConstIndexTestStats {
+            evaluations: 0,
+            hits: 0,
+            canceled_hits: 0,
+            candidate_hits: 0,
+            candidate_rejections: 0,
+            candidate_comparisons: 0,
+            comparison_nodes: 0,
+        }) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_checked_const_index_test_stats() {
+    CHECKED_CONST_INDEX_TEST_STATS.with(|stats| stats.set(CheckedConstIndexTestStats::default()));
+}
+
+#[cfg(test)]
+pub(crate) fn checked_const_index_test_stats() -> CheckedConstIndexTestStats {
+    CHECKED_CONST_INDEX_TEST_STATS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn update_checked_const_index_test_stats(update: impl FnOnce(&mut CheckedConstIndexTestStats)) {
+    CHECKED_CONST_INDEX_TEST_STATS.with(|stats| {
+        let mut current = stats.get();
+        update(&mut current);
+        stats.set(current);
+    });
+}
 
 /// Incremental ordinary-body binding state. It is intentionally not Clone:
 /// each admitted call owns one source-order binding transaction, and the
@@ -253,7 +322,7 @@ impl<'a>
     pub(crate) fn for_analysis(ctx: &'a AnalysisContext) -> Self {
         Self {
             canonical_identity: Some(ctx.canonical_producer.clone()),
-            type_subst: ctx.comptime_type_vars.clone(),
+            type_subst: ctx.comptime_type_vars.snapshot(),
             value_subst: ctx.comptime_value_vars.clone(),
             resolved_types: Some(ctx.resolved_types),
             // Borrow the caller's live locals instead of snapshotting their
@@ -488,17 +557,276 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     pub(crate) fn try_get_const_index_checked(
         &mut self,
         inst_ref: InstRef,
-        ctx: &AnalysisContext,
+        ctx: &mut AnalysisContext,
     ) -> CompileResult<Option<i128>> {
+        let scope = ctx.checked_const_index_scope_key();
+        let cache_key = AnalysisContext::checked_const_index_cache_key(inst_ref, scope.clone());
+        if let Some(value) = ctx
+            .checked_const_index_cache
+            .borrow()
+            .get(&cache_key)
+            .copied()
+        {
+            #[cfg(test)]
+            CHECKED_CONST_INDEX_HIT_REACHED.with(|reached| reached.set(true));
+            // A memo hit must not let retained work bypass the owning query's
+            // cancellation boundary.
+            let cancellation = self.check_canceled();
+            #[cfg(test)]
+            if cancellation.is_err() {
+                update_checked_const_index_test_stats(|stats| stats.canceled_hits += 1);
+            }
+            cancellation?;
+            ctx.checked_const_index_cache_hits
+                .set(ctx.checked_const_index_cache_hits.get().saturating_add(1));
+            #[cfg(test)]
+            update_checked_const_index_test_stats(|stats| stats.hits += 1);
+            return Ok(Some(value));
+        }
+        let span = self.body_rir_ref().get(inst_ref).span;
+        let candidate_key = AnalysisContext::checked_const_index_candidate_key(span);
+        let candidates = ctx
+            .checked_const_index_candidates
+            .borrow()
+            .get(&candidate_key)
+            .cloned()
+            .unwrap_or_default();
+        for candidate in candidates {
+            ctx.checked_const_index_candidate_comparisons.set(
+                ctx.checked_const_index_candidate_comparisons
+                    .get()
+                    .saturating_add(1),
+            );
+            let (equivalent, nodes) =
+                self.checked_const_index_expressions_equivalent(&candidate, inst_ref, ctx);
+            ctx.checked_const_index_comparison_nodes.set(
+                ctx.checked_const_index_comparison_nodes
+                    .get()
+                    .saturating_add(nodes),
+            );
+            #[cfg(test)]
+            update_checked_const_index_test_stats(|stats| {
+                stats.candidate_comparisons += 1;
+                stats.comparison_nodes = stats.comparison_nodes.saturating_add(nodes);
+            });
+            if equivalent {
+                #[cfg(test)]
+                CHECKED_CONST_INDEX_HIT_REACHED.with(|reached| reached.set(true));
+                let cancellation = self.check_canceled();
+                #[cfg(test)]
+                if cancellation.is_err() {
+                    update_checked_const_index_test_stats(|stats| stats.canceled_hits += 1);
+                }
+                cancellation?;
+                ctx.checked_const_index_cache
+                    .borrow_mut()
+                    .insert(cache_key, candidate.value);
+                ctx.checked_const_index_cache_hits
+                    .set(ctx.checked_const_index_cache_hits.get().saturating_add(1));
+                #[cfg(test)]
+                update_checked_const_index_test_stats(|stats| {
+                    stats.hits += 1;
+                    stats.candidate_hits += 1;
+                });
+                return Ok(Some(candidate.value));
+            }
+            #[cfg(test)]
+            update_checked_const_index_test_stats(|stats| stats.candidate_rejections += 1);
+        }
+        ctx.checked_const_index_evaluations
+            .set(ctx.checked_const_index_evaluations.get().saturating_add(1));
+        #[cfg(test)]
+        update_checked_const_index_test_stats(|stats| stats.evaluations += 1);
         let mut env = ComptimeEnv::for_analysis(ctx);
         // Full i128 backing value, NOT the i64 narrowing: `as_integer()`
         // returns None for a u64 constant above i64::MAX, which made an
         // exactly-known out-of-bounds index (`a[18446744073709551615]`)
         // indistinguishable from a runtime index and skip the compile-time
         // bounds check (RUE-532).
-        Ok(self
+        let value = self
             .eval_const_expr(inst_ref, &mut env)?
-            .and_then(|v| v.as_int_value()))
+            .and_then(|v| v.as_int_value());
+        drop(env);
+        if let Some(value) = value {
+            ctx.checked_const_index_cache
+                .borrow_mut()
+                .insert(cache_key, value);
+            ctx.checked_const_index_candidates
+                .borrow_mut()
+                .entry(candidate_key)
+                .or_default()
+                .push(CheckedConstIndexCandidate {
+                    root: inst_ref,
+                    value,
+                    runtime_local_names: ctx.locals.keys().copied().collect(),
+                    comptime_type_vars: ctx.comptime_type_vars.snapshot(),
+                });
+        }
+        Ok(value)
+    }
+
+    /// Typed equivalence for the expression forms admitted to cross-root reuse.
+    /// Unsupported forms conservatively miss and evaluate normally. This work
+    /// runs only after a successful same-span candidate exists. Failed probes
+    /// are never admitted to either cache; an ordinary failure with no prior
+    /// candidate avoids structural comparison entirely.
+    fn checked_const_index_expressions_equivalent(
+        &self,
+        candidate: &CheckedConstIndexCandidate,
+        right: InstRef,
+        ctx: &AnalysisContext,
+    ) -> (bool, u64) {
+        let mut pending = vec![(candidate.root, right)];
+        let mut visited = AHashSet::new();
+        let mut nodes = 0_u64;
+        while let Some((left, right)) = pending.pop() {
+            if !visited.insert((left, right)) {
+                continue;
+            }
+            nodes = nodes.saturating_add(1);
+            let left_inst = self.body_rir_ref().get(left);
+            let right_inst = self.body_rir_ref().get(right);
+            if left_inst.span != right_inst.span
+                || ctx.resolved_type_of(left) != ctx.resolved_type_of(right)
+            {
+                return (false, nodes);
+            }
+            let equivalent = match (&left_inst.data, &right_inst.data) {
+                (InstData::IntConst(left), InstData::IntConst(right)) => left == right,
+                (InstData::BoolConst(left), InstData::BoolConst(right)) => left == right,
+                (InstData::UnitConst, InstData::UnitConst) => true,
+                (
+                    InstData::VarRef {
+                        name: left_name, ..
+                    },
+                    InstData::VarRef {
+                        name: right_name, ..
+                    },
+                ) => {
+                    left_name == right_name
+                        && candidate.runtime_local_names.contains(left_name)
+                            == ctx.locals.contains_key(right_name)
+                        && candidate.comptime_type_vars.get(left_name)
+                            == ctx.comptime_type_vars.get(right_name)
+                }
+                (
+                    InstData::FieldGet {
+                        base: left_base,
+                        field: left_field,
+                    },
+                    InstData::FieldGet {
+                        base: right_base,
+                        field: right_field,
+                    },
+                ) => {
+                    pending.push((*left_base, *right_base));
+                    left_field == right_field
+                }
+                (InstData::Neg { operand: left }, InstData::Neg { operand: right })
+                | (InstData::Not { operand: left }, InstData::Not { operand: right })
+                | (InstData::BitNot { operand: left }, InstData::BitNot { operand: right })
+                | (InstData::Comptime { expr: left }, InstData::Comptime { expr: right }) => {
+                    pending.push((*left, *right));
+                    true
+                }
+                (InstData::Add { lhs: ll, rhs: lr }, InstData::Add { lhs: rl, rhs: rr })
+                | (InstData::Sub { lhs: ll, rhs: lr }, InstData::Sub { lhs: rl, rhs: rr })
+                | (InstData::Mul { lhs: ll, rhs: lr }, InstData::Mul { lhs: rl, rhs: rr })
+                | (InstData::Div { lhs: ll, rhs: lr }, InstData::Div { lhs: rl, rhs: rr })
+                | (InstData::Mod { lhs: ll, rhs: lr }, InstData::Mod { lhs: rl, rhs: rr })
+                | (InstData::BitAnd { lhs: ll, rhs: lr }, InstData::BitAnd { lhs: rl, rhs: rr })
+                | (InstData::BitOr { lhs: ll, rhs: lr }, InstData::BitOr { lhs: rl, rhs: rr })
+                | (InstData::BitXor { lhs: ll, rhs: lr }, InstData::BitXor { lhs: rl, rhs: rr })
+                | (InstData::Shl { lhs: ll, rhs: lr }, InstData::Shl { lhs: rl, rhs: rr })
+                | (InstData::Shr { lhs: ll, rhs: lr }, InstData::Shr { lhs: rl, rhs: rr }) => {
+                    pending.extend([(*lr, *rr), (*ll, *rl)]);
+                    true
+                }
+                (
+                    InstData::TypeIntrinsic {
+                        name: left_name,
+                        type_arg: left_type,
+                    },
+                    InstData::TypeIntrinsic {
+                        name: right_name,
+                        type_arg: right_type,
+                    },
+                ) => {
+                    let syntax_equivalent = self
+                        .checked_const_index_named_type_syntax_equivalent(*left_type, *right_type);
+                    let binding_equivalent = self
+                        .checked_const_index_named_type_syntax_symbol(*left_type)
+                        .zip(self.checked_const_index_named_type_syntax_symbol(*right_type))
+                        .is_none_or(|(left, right)| {
+                            left == right
+                                && candidate.comptime_type_vars.get(&left)
+                                    == ctx.comptime_type_vars.get(&right)
+                        });
+                    left_name == right_name && syntax_equivalent && binding_equivalent
+                }
+                (
+                    InstData::OffsetOf {
+                        type_arg: left_type,
+                        field: left_field,
+                    },
+                    InstData::OffsetOf {
+                        type_arg: right_type,
+                        field: right_field,
+                    },
+                ) => {
+                    let syntax_equivalent = self
+                        .checked_const_index_named_type_syntax_equivalent(*left_type, *right_type);
+                    let binding_equivalent = self
+                        .checked_const_index_named_type_syntax_symbol(*left_type)
+                        .zip(self.checked_const_index_named_type_syntax_symbol(*right_type))
+                        .is_none_or(|(left, right)| {
+                            left == right
+                                && candidate.comptime_type_vars.get(&left)
+                                    == ctx.comptime_type_vars.get(&right)
+                        });
+                    left_field == right_field && syntax_equivalent && binding_equivalent
+                }
+                _ => false,
+            };
+            if !equivalent {
+                return (false, nodes);
+            }
+        }
+        (true, nodes)
+    }
+
+    /// The checked-index cases needing type-syntax reuse currently name a
+    /// comptime alias or generic parameter. Compare that spelling through the
+    /// typed arena; every richer syntax conservatively evaluates again.
+    fn checked_const_index_named_type_syntax_equivalent(
+        &self,
+        left: rue_rir::RirTypeSyntaxRef,
+        right: rue_rir::RirTypeSyntaxRef,
+    ) -> bool {
+        use rue_rir::RirTypeSyntaxNode;
+
+        let arena = self.body_rir_ref().type_syntax();
+        match (arena.node(left), arena.node(right)) {
+            (Some(RirTypeSyntaxNode::Named(left)), Some(RirTypeSyntaxNode::Named(right))) => {
+                arena.symbol(*left) == arena.symbol(*right)
+            }
+            (Some(RirTypeSyntaxNode::Unit), Some(RirTypeSyntaxNode::Unit))
+            | (Some(RirTypeSyntaxNode::Never), Some(RirTypeSyntaxNode::Never)) => true,
+            _ => false,
+        }
+    }
+
+    fn checked_const_index_named_type_syntax_symbol(
+        &self,
+        reference: rue_rir::RirTypeSyntaxRef,
+    ) -> Option<Spur> {
+        use rue_rir::RirTypeSyntaxNode;
+
+        let arena = self.body_rir_ref().type_syntax();
+        let RirTypeSyntaxNode::Named(symbol) = arena.node(reference)? else {
+            return None;
+        };
+        arena.symbol(*symbol).copied()
     }
 
     /// Check if an RIR instruction is a direct reference to a `comptime`

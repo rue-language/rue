@@ -32,7 +32,7 @@ use rue_error::{CompileResult, PreviewFeatures};
 use rue_lexer::Lexer;
 use rue_parser::Parser;
 use rue_rir::{AstGen, RirEditor, RirValidationContext, ValidatedRir};
-use rue_span::FileId;
+use rue_span::{FileId, Span};
 use rue_target::Target;
 
 use super::provider::{
@@ -123,6 +123,10 @@ pub(crate) struct FixtureFacts {
     methods: AHashMap<FixtureKey, DurableMethod<FixtureKey, FixtureModule>>,
     nominals: AHashMap<FixtureKey, DurableNominal<FixtureKey, FixtureModule>>,
     consts: AHashMap<FixtureKey, DurableConst<FixtureKey, FixtureModule>>,
+    root_modules: AHashMap<Arc<str>, FixtureModule>,
+    module_bindings: AHashMap<(FixtureModule, Arc<str>), FixtureModule>,
+    module_files: AHashMap<FixtureModule, FileId>,
+    qualified_consts: AHashMap<(FixtureModule, Arc<str>), FixtureKey>,
 }
 
 /// The in-memory durable fact source handed to the production body host. Facts
@@ -237,26 +241,42 @@ impl DurableBodyLookupSource<FixtureKey, FixtureModule> for FixtureFactSource {
     fn root_module_binding(
         &self,
         _current: &FixtureKey,
-        _name: &str,
+        name: &str,
     ) -> Option<super::DurableBodyModuleBinding<FixtureKey, FixtureModule>> {
-        // The fixture is a single module with no `@import` bindings.
-        None
+        let target = self.0.root_modules.get(name)?.clone();
+        Some(super::DurableBodyModuleBinding {
+            definition: FixtureKey::value_const(name),
+            target,
+            is_public: true,
+        })
     }
 
     fn module_binding(
         &self,
-        _module: &FixtureModule,
-        _name: &str,
+        module: &FixtureModule,
+        name: &str,
     ) -> Option<super::DurableBodyModuleBinding<FixtureKey, FixtureModule>> {
-        None
+        let target = self
+            .0
+            .module_bindings
+            .get(&(module.clone(), Arc::from(name)))?
+            .clone();
+        Some(super::DurableBodyModuleBinding {
+            definition: FixtureKey::value_const(name),
+            target,
+            is_public: true,
+        })
     }
 
     fn qualified_free_function(&self, _module: &FixtureModule, _name: &str) -> Option<FixtureKey> {
         None
     }
 
-    fn qualified_value_const(&self, _module: &FixtureModule, _name: &str) -> Option<FixtureKey> {
-        None
+    fn qualified_value_const(&self, module: &FixtureModule, name: &str) -> Option<FixtureKey> {
+        self.0
+            .qualified_consts
+            .get(&(module.clone(), Arc::from(name)))
+            .cloned()
     }
 
     fn qualified_nominal(
@@ -269,6 +289,15 @@ impl DurableBodyLookupSource<FixtureKey, FixtureModule> for FixtureFactSource {
 
     fn module_path(&self, module: &FixtureModule) -> String {
         module.to_string()
+    }
+
+    fn module_source(&self, module: &FixtureModule) -> Option<super::DurableBodySourceLocator> {
+        let file_id = *self.0.module_files.get(module)?;
+        Some(super::DurableBodySourceLocator {
+            file_id,
+            physical_path: module.clone(),
+            source_length: 0,
+        })
     }
 
     fn definition_kind(&self, definition: &FixtureKey) -> Option<StableDefinitionKind> {
@@ -377,6 +406,9 @@ impl BodyFactProvider for UnconsultedFactProvider {
     fn is_canceled(&self) -> bool {
         #[cfg(test)]
         {
+            if super::comptime_eval::checked_const_index_hit_requests_cancellation() {
+                return true;
+            }
             return FIXTURE_CANCELLATION_AFTER.with(|configured| {
                 FIXTURE_CANCELLATION_CHECKS.with(|count| {
                     let checks = count.get() + 1;
@@ -741,6 +773,48 @@ impl ProviderFixture {
         key
     }
 
+    pub(crate) fn declare_imported_const(
+        &mut self,
+        alias: &str,
+        module: &str,
+        name: &str,
+        ty: FixtureType,
+        value: FixtureConstValue,
+    ) -> FixtureKey {
+        let module: FixtureModule = Arc::from(module);
+        self.facts
+            .root_modules
+            .insert(Arc::from(alias), module.clone());
+        let key = FixtureKey::value_const(&format!("{module}::{name}"));
+        self.facts.consts.insert(
+            key.clone(),
+            DurableConst {
+                is_public: true,
+                ty,
+                value,
+            },
+        );
+        self.facts
+            .qualified_consts
+            .insert((module, Arc::from(name)), key.clone());
+        key
+    }
+
+    pub(crate) fn declare_imported_module_binding(
+        &mut self,
+        module: &str,
+        alias: &str,
+        target: &str,
+    ) {
+        self.facts
+            .module_bindings
+            .insert((Arc::from(module), Arc::from(alias)), Arc::from(target));
+    }
+
+    pub(crate) fn set_imported_module_file(&mut self, module: &str, file: FileId) {
+        self.facts.module_files.insert(Arc::from(module), file);
+    }
+
     /// Run the production provider body path over the free function `function`
     /// declared in `source`, which must contain exactly that declaration —
     /// mirroring the compiler's per-body plan, whose RIR bundle carries one
@@ -755,6 +829,8 @@ impl ProviderFixture {
             StableDefinitionKind::Function,
             None,
             |_| {},
+            None,
+            &[],
         )
     }
 
@@ -915,6 +991,8 @@ impl ProviderFixture {
             kind,
             Some(owner),
             |_| {},
+            None,
+            &[],
         )
     }
 
@@ -932,6 +1010,8 @@ impl ProviderFixture {
             StableDefinitionKind::Destructor,
             Some(owner),
             |_| {},
+            None,
+            &[],
         )
     }
 
@@ -951,6 +1031,48 @@ impl ProviderFixture {
             StableDefinitionKind::Function,
             None,
             edit,
+            None,
+            &[],
+        )
+    }
+
+    /// [`Self::analyze`] with canonical RIR instruction spans remapped after
+    /// validation. This lets production-path controls counterfeit occurrence
+    /// coordinates without exposing mutable validated instructions.
+    pub(crate) fn analyze_span_edited(
+        &self,
+        source: &str,
+        function: &str,
+        mut remap: impl FnMut(rue_rir::RirSpanSlot, Span) -> Span,
+    ) -> CompileResult<FixtureBody> {
+        self.analyze_declaration(
+            source,
+            FixtureKey::function(function),
+            function,
+            StableDefinitionKind::Function,
+            None,
+            |_| {},
+            Some(&mut remap),
+            &[],
+        )
+    }
+
+    pub(crate) fn analyze_span_edited_with_files(
+        &self,
+        source: &str,
+        function: &str,
+        extra_source_lengths: &[(FileId, u32)],
+        mut remap: impl FnMut(rue_rir::RirSpanSlot, Span) -> Span,
+    ) -> CompileResult<FixtureBody> {
+        self.analyze_declaration(
+            source,
+            FixtureKey::function(function),
+            function,
+            StableDefinitionKind::Function,
+            None,
+            |_| {},
+            Some(&mut remap),
+            extra_source_lengths,
         )
     }
 
@@ -962,6 +1084,8 @@ impl ProviderFixture {
         kind: StableDefinitionKind,
         owner_name: Option<&str>,
         edit: impl FnOnce(&mut RirEditor),
+        mut remap: Option<&mut dyn FnMut(rue_rir::RirSpanSlot, Span) -> Span>,
+        extra_source_lengths: &[(FileId, u32)],
     ) -> CompileResult<FixtureBody> {
         let (tokens, interner) = Lexer::new(source).tokenize().expect("fixture source lexes");
         let (ast, interner) = Parser::new(tokens, interner)
@@ -977,32 +1101,47 @@ impl ProviderFixture {
         astgen.append_items(&ast.items);
         let mut editor = astgen.finish_editor();
         edit(&mut editor);
-        let source_lengths = [(self.facts.file, source.len() as u32)];
-        let rir = ValidatedRir::finish(
-            editor,
-            &RirValidationContext {
-                symbol_count: interner.len(),
-                source_lengths: &source_lengths,
-            },
-        )
-        .expect("fixture RIR validates");
+        let mut source_lengths = vec![(self.facts.file, source.len() as u32)];
+        source_lengths.extend_from_slice(extra_source_lengths);
+        let validation = RirValidationContext {
+            symbol_count: interner.len(),
+            source_lengths: &source_lengths,
+        };
+        let rir = ValidatedRir::finish(editor, &validation).expect("fixture RIR validates");
+        let rir = if let Some(remap) = remap.as_mut() {
+            rir.try_rewrite_span_slots(
+                &validation,
+                || Ok::<_, std::convert::Infallible>(()),
+                |slot, span| Ok::<_, std::convert::Infallible>(remap(slot, span)),
+            )
+            .expect("fixture span edit preserves validated RIR")
+        } else {
+            rir
+        };
         let bundle = BodyRirBundle::new(
             rir,
             rue_rir::SharedSymbolSpace::adopt(std::sync::Arc::new(interner)),
         );
         let facts = FixtureFactSource(Rc::new(self.facts.clone()));
-        analyze_provider_ordinary_body(
-            &UnconsultedFactProvider,
-            facts,
-            &bundle,
-            key,
-            name,
-            kind,
-            owner_name,
-            Target::host().expect("host target resolves"),
-            self.preview.clone(),
-            &self.well_known,
-        )
+        let analyze = || {
+            analyze_provider_ordinary_body(
+                &UnconsultedFactProvider,
+                facts,
+                &bundle,
+                key,
+                name,
+                kind,
+                owner_name,
+                Target::host().expect("host target resolves"),
+                self.preview.clone(),
+                &self.well_known,
+            )
+        };
+        if extra_source_lengths.is_empty() {
+            analyze()
+        } else {
+            super::provider_body_host::with_provider_body_test_owner_file(self.facts.file, analyze)
+        }
     }
 }
 

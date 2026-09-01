@@ -6,11 +6,14 @@
 //! embedded here as [`AnalysisContext::ownership`].
 
 use ahash::{AHashMap, AHashSet};
+use std::cell::{Cell, RefCell};
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use lasso::Spur;
 use rue_error::CompileWarning;
-use rue_rir::{RirParamMode, SymbolHandle};
+use rue_rir::{InstRef, RirParamMode, SymbolHandle};
 use rue_span::{FileId, Span};
 
 use super::ownership_state::OwnershipState;
@@ -56,6 +59,116 @@ pub(crate) struct ParamInfo {
     /// receiver; mutations affect the callee's copy only, with no
     /// write-back to the caller (that is `Inout`).
     pub is_mut: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CheckedConstIndexScopeKey(Rc<()>);
+
+impl CheckedConstIndexScopeKey {
+    pub(crate) fn fresh() -> Self {
+        Self(Rc::new(()))
+    }
+}
+
+impl PartialEq for CheckedConstIndexScopeKey {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for CheckedConstIndexScopeKey {}
+
+impl Hash for CheckedConstIndexScopeKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Rc::as_ptr(&self.0).hash(state);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CheckedConstIndexScopeState {
+    current: CheckedConstIndexScopeKey,
+    stack: Vec<CheckedConstIndexScopeKey>,
+}
+
+impl CheckedConstIndexScopeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            current: CheckedConstIndexScopeKey::fresh(),
+            stack: Vec::new(),
+        }
+    }
+
+    fn key(&self) -> CheckedConstIndexScopeKey {
+        self.current.clone()
+    }
+
+    fn changed(&mut self) {
+        self.current = CheckedConstIndexScopeKey::fresh();
+    }
+
+    fn push(&mut self) {
+        self.stack.push(self.current.clone());
+    }
+
+    fn pop(&mut self) {
+        self.current = self
+            .stack
+            .pop()
+            .expect("analysis scope identity stack stays parallel to lexical scopes");
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct CheckedConstIndexCacheKey {
+    root: InstRef,
+    scope: CheckedConstIndexScopeKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct CheckedConstIndexCandidateKey {
+    span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CheckedConstIndexCandidate {
+    pub root: InstRef,
+    pub value: i128,
+    pub runtime_local_names: AHashSet<Spur>,
+    pub comptime_type_vars: AHashMap<Spur, Type>,
+}
+
+/// Read-only outside this module so scope-state mutations cannot bypass the
+/// checked-index identity refresh/restore paths.
+#[derive(Debug, Clone)]
+pub(crate) struct ScopeStateMap<V>(AHashMap<Spur, V>);
+
+impl<V> ScopeStateMap<V> {
+    pub(crate) fn new(values: AHashMap<Spur, V>) -> Self {
+        Self(values)
+    }
+
+    fn insert(&mut self, name: Spur, value: V) -> Option<V> {
+        self.0.insert(name, value)
+    }
+
+    fn remove(&mut self, name: &Spur) -> Option<V> {
+        self.0.remove(name)
+    }
+
+    pub(crate) fn snapshot(&self) -> AHashMap<Spur, V>
+    where
+        V: Clone,
+    {
+        self.0.clone()
+    }
+}
+
+impl<V> std::ops::Deref for ScopeStateMap<V> {
+    type Target = AHashMap<Spur, V>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 /// Resolves parameter names without making tiny signatures pay for an index.
@@ -144,7 +257,7 @@ pub(crate) struct AnalysisContext<'a> {
     /// File that owns the function body currently being analyzed.
     pub current_file_id: FileId,
     /// Local variables in scope
-    pub locals: AHashMap<Spur, LocalVar>,
+    pub locals: ScopeStateMap<LocalVar>,
     /// Function parameters (immutable reference, shared across the function)
     pub params: &'a [ParamInfo],
     /// Body-scoped parameter-name index shared by every semantic consumer.
@@ -177,6 +290,9 @@ pub(crate) struct AnalysisContext<'a> {
     /// [`AnalysisContext::bind_comptime_type_var`], never by inserting into
     /// `comptime_type_vars` directly.
     pub comptime_type_scope_stack: Vec<Vec<(Spur, Option<Type>)>>,
+    /// Persistent identity of the exact runtime-name/type-alias environment.
+    /// Scope mutations replace it; scope pop restores the saved identity.
+    pub(crate) checked_const_index_scope_state: CheckedConstIndexScopeState,
     /// Resolved types from HM inference.
     /// Maps RIR instruction refs to their resolved concrete types.
     /// This is populated by running constraint generation and unification
@@ -220,12 +336,38 @@ pub(crate) struct AnalysisContext<'a> {
     /// When a variable is bound to a comptime type (e.g., `let P = make_point()` where
     /// `make_point() -> type`), this map stores the resolved type so it can be used
     /// as a type annotation (e.g., `let p: P = ...`).
-    pub comptime_type_vars: AHashMap<Spur, Type>,
+    pub comptime_type_vars: ScopeStateMap<Type>,
     /// Comptime value variables: maps variable symbols to their compile-time constant values.
     /// When an anonymous struct method captures comptime parameters from the enclosing function
     /// (e.g., `fn FixedBuffer(comptime N: i32)` creates a struct with methods that reference `N`),
     /// this map stores the captured values so method bodies can resolve them.
     pub comptime_value_vars: AHashMap<Spur, ConstValue>,
+    /// Successful checked integer-index evaluations for this one canonical
+    /// body analysis. AstGen deliberately duplicates a compound assignment's
+    /// source index into its read and write RIR nodes. Exact-root hits are
+    /// constant-time; distinct roots first share a cheap source-occurrence
+    /// candidate and are reused only after typed structural equivalence. Both
+    /// The exact-root lookup carries every mutable environment component
+    /// consulted by `ComptimeEnv::for_analysis`.
+    /// Producer, specialization/value substitutions, file/import identity, and
+    /// resolved types are fixed by this context's body-local lifetime.
+    pub checked_const_index_cache: Rc<RefCell<AHashMap<CheckedConstIndexCacheKey, i128>>>,
+    /// Successful source-occurrence candidates. A distinct AstGen duplicate
+    /// reaches structural and relevant-scope validation only after this cheap
+    /// span lookup. Candidate environment snapshots are created only for a
+    /// successful evaluator result; a failing probe can compare an existing
+    /// candidate but is never itself admitted.
+    pub checked_const_index_candidates:
+        Rc<RefCell<AHashMap<CheckedConstIndexCandidateKey, Vec<CheckedConstIndexCandidate>>>>,
+    /// Actual checked index evaluator invocations in this body. Cache hits do
+    /// not increment this production work counter.
+    pub checked_const_index_evaluations: Rc<Cell<u64>>,
+    /// Successful checked index cache lookups in this body.
+    pub checked_const_index_cache_hits: Rc<Cell<u64>>,
+    /// Distinct-root candidates subjected to typed structural comparison.
+    pub checked_const_index_candidate_comparisons: Rc<Cell<u64>>,
+    /// RIR node pairs visited by those comparisons.
+    pub checked_const_index_comparison_nodes: Rc<Cell<u64>>,
     /// Functions referenced during analysis of this function.
     /// Used for demand-driven semantic analysis (ADR-0045) to track
     /// which functions need to be analyzed. Each entry is a function name symbol.
@@ -341,13 +483,12 @@ impl DivergenceKinds {
 }
 
 // Import InstRef for use in resolved_types
-use rue_rir::InstRef;
 
 impl ScopedContext for AnalysisContext<'_> {
     type VarInfo = LocalVar;
 
     fn locals_mut(&mut self) -> &mut AHashMap<Spur, Self::VarInfo> {
-        &mut self.locals
+        &mut self.locals.0
     }
 
     fn scope_stack_mut(&mut self) -> &mut Vec<Vec<(Spur, Option<Self::VarInfo>)>> {
@@ -367,6 +508,12 @@ impl ScopedContext for AnalysisContext<'_> {
     /// E0205). Applies to every scoped binding form that reaches
     /// `insert_local`: nested `let`, `match` payload bindings, loop binders.
     fn insert_local(&mut self, symbol: Spur, var: LocalVar) {
+        // Const evaluation observes only runtime-name membership. Replaying a
+        // declaration over an already-live runtime binding does not change
+        // that state; adding the name or hiding a type alias does.
+        if !self.locals.contains_key(&symbol) || self.comptime_type_vars.contains_key(&symbol) {
+            self.refresh_checked_const_index_scope_state();
+        }
         let old_value = self.locals.insert(symbol, var);
         // Track in the current scope (if any) for cleanup on pop
         if let Some(current_scope) = self.scope_stack.last_mut() {
@@ -387,6 +534,7 @@ impl ScopedContext for AnalysisContext<'_> {
     }
 
     fn push_scope(&mut self) {
+        self.checked_const_index_scope_state.push();
         self.scope_stack.push(Vec::with_capacity(2));
         self.ownership.push_scope_frame();
         self.comptime_type_scope_stack.push(Vec::new());
@@ -421,10 +569,35 @@ impl ScopedContext for AnalysisContext<'_> {
                 }
             }
         }
+        self.checked_const_index_scope_state.pop();
     }
 }
 
 impl<'a> AnalysisContext<'a> {
+    pub(crate) fn checked_const_index_scope_key(&self) -> CheckedConstIndexScopeKey {
+        // `ComptimeEnv` asks locals only for name membership; slots, mutability,
+        // ownership state, and local types cannot affect const evaluation.
+        // Parameter runtime names are immutable for the body and therefore do
+        // not enter this per-probe state. Comptime values, producer identity,
+        // defining file/imports, and resolved types are likewise body-fixed.
+        self.checked_const_index_scope_state.key()
+    }
+
+    fn refresh_checked_const_index_scope_state(&mut self) {
+        self.checked_const_index_scope_state.changed();
+    }
+
+    pub(crate) fn checked_const_index_cache_key(
+        root: InstRef,
+        scope: CheckedConstIndexScopeKey,
+    ) -> CheckedConstIndexCacheKey {
+        CheckedConstIndexCacheKey { root, scope }
+    }
+
+    pub(crate) fn checked_const_index_candidate_key(span: Span) -> CheckedConstIndexCandidateKey {
+        CheckedConstIndexCandidateKey { span }
+    }
+
     /// Resolve one function parameter through the body's canonical lookup.
     pub(crate) fn param(&self, name: Spur) -> Option<&'a ParamInfo> {
         self.param_index.get(self.params, name)
@@ -462,6 +635,11 @@ impl<'a> AnalysisContext<'a> {
     /// `comptime_type_vars` and `locals` in different orders, so leaving
     /// both live would resolve the name inconsistently.
     pub fn bind_comptime_type_var(&mut self, symbol: Spur, ty: Type) {
+        if self.comptime_type_vars.get(&symbol).copied() != Some(ty)
+            || self.locals.contains_key(&symbol)
+        {
+            self.refresh_checked_const_index_scope_state();
+        }
         let old_alias = self.comptime_type_vars.insert(symbol, ty);
         if let Some(alias_frame) = self.comptime_type_scope_stack.last_mut() {
             alias_frame.push((symbol, old_alias));
@@ -504,6 +682,7 @@ impl<'a> AnalysisContext<'a> {
             return_type: self.return_type,
             scope_stack: self.scope_stack.clone(),
             comptime_type_scope_stack: self.comptime_type_scope_stack.clone(),
+            checked_const_index_scope_state: self.checked_const_index_scope_state.clone(),
             resolved_types: self.resolved_types,
             resolved_continues: self.resolved_continues,
             comptime_selections: self.comptime_selections,
@@ -516,6 +695,14 @@ impl<'a> AnalysisContext<'a> {
             local_atoms: self.local_atoms.clone(),
             comptime_type_vars: self.comptime_type_vars.clone(),
             comptime_value_vars: self.comptime_value_vars.clone(),
+            checked_const_index_cache: self.checked_const_index_cache.clone(),
+            checked_const_index_candidates: self.checked_const_index_candidates.clone(),
+            checked_const_index_evaluations: self.checked_const_index_evaluations.clone(),
+            checked_const_index_cache_hits: self.checked_const_index_cache_hits.clone(),
+            checked_const_index_candidate_comparisons: self
+                .checked_const_index_candidate_comparisons
+                .clone(),
+            checked_const_index_comparison_nodes: self.checked_const_index_comparison_nodes.clone(),
             referenced_functions: AHashSet::new(),
             referenced_methods: AHashSet::new(),
             expected_type: None,
@@ -805,6 +992,33 @@ mod tests {
                 Some(param.abi_slot)
             );
         }
+    }
+
+    #[test]
+    fn checked_index_scope_identity_clones_changes_and_restores_exactly() {
+        let mut state = CheckedConstIndexScopeState::new();
+        let baseline = state.key();
+        state.push();
+        state.changed();
+        let bind = state.key();
+        let fork = state.clone();
+        assert_eq!(
+            bind,
+            fork.key(),
+            "a context fork preserves exact scope state"
+        );
+
+        state.changed();
+        let shadow = state.key();
+        assert_ne!(baseline, bind, "a binding allocates a new state identity");
+        assert_ne!(bind, shadow, "a shadow allocates another state identity");
+
+        state.pop();
+        let restored = state.key();
+        assert_eq!(
+            baseline, restored,
+            "popping a scope restores the saved identity rather than hashing contents"
+        );
     }
 
     // =========================================================================
