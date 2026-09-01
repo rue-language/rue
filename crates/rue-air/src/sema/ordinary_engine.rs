@@ -84,6 +84,10 @@ pub(crate) struct ExpressionAnalysisBreakdown {
     pub(crate) staged_binding_trie_updates: u64,
     pub(crate) staged_binding_trie_lookups: u64,
     pub(crate) staged_probe_nodes: u64,
+    pub(crate) checked_const_index_evaluations: u64,
+    pub(crate) checked_const_index_cache_hits: u64,
+    pub(crate) checked_const_index_candidate_comparisons: u64,
+    pub(crate) checked_const_index_comparison_nodes: u64,
     pub(crate) air_emission_validation_ns: u64,
 }
 
@@ -2311,7 +2315,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             canonical_producer,
             canonical_function_identity,
             current_file_id: self.body_rir_ref().get(body).span.file_id,
-            locals: AHashMap::new(),
+            locals: super::context::ScopeStateMap::new(AHashMap::new()),
             params: &param_vec,
             param_index: &param_index,
             next_slot: 0,
@@ -2321,6 +2325,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             return_type,
             scope_stack: Vec::new(),
             comptime_type_scope_stack: Vec::new(),
+            checked_const_index_scope_state: super::context::CheckedConstIndexScopeState::new(),
             resolved_types: &resolved_types,
             resolved_continues: &resolved_continues,
             comptime_selections: &comptime_selections,
@@ -2331,8 +2336,16 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             local_string_table: AHashMap::new(),
             local_strings: Vec::new(),
             local_atoms: Vec::new(),
-            comptime_type_vars,
+            comptime_type_vars: super::context::ScopeStateMap::new(comptime_type_vars),
             comptime_value_vars,
+            checked_const_index_cache: std::rc::Rc::new(std::cell::RefCell::new(AHashMap::new())),
+            checked_const_index_candidates: std::rc::Rc::new(std::cell::RefCell::new(
+                AHashMap::new(),
+            )),
+            checked_const_index_evaluations: std::rc::Rc::new(std::cell::Cell::new(0)),
+            checked_const_index_cache_hits: std::rc::Rc::new(std::cell::Cell::new(0)),
+            checked_const_index_candidate_comparisons: std::rc::Rc::new(std::cell::Cell::new(0)),
+            checked_const_index_comparison_nodes: std::rc::Rc::new(std::cell::Cell::new(0)),
             referenced_functions: AHashSet::new(),
             referenced_methods: AHashSet::new(),
             expected_type: None,
@@ -2484,6 +2497,14 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 staged_binding_trie_updates: inference_breakdown.staged_binding_trie_updates,
                 staged_binding_trie_lookups: inference_breakdown.staged_binding_trie_lookups,
                 staged_probe_nodes: inference_breakdown.staged_probe_nodes,
+                checked_const_index_evaluations: ctx.checked_const_index_evaluations.get(),
+                checked_const_index_cache_hits: ctx.checked_const_index_cache_hits.get(),
+                checked_const_index_candidate_comparisons: ctx
+                    .checked_const_index_candidate_comparisons
+                    .get(),
+                checked_const_index_comparison_nodes: ctx
+                    .checked_const_index_comparison_nodes
+                    .get(),
                 air_emission_validation_ns,
             });
 

@@ -56,6 +56,41 @@ fn elapsed_ns(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
+#[cfg(test)]
+thread_local! {
+    static PROVIDER_BODY_TEST_OWNER_FILE: Cell<Option<FileId>> = const { Cell::new(None) };
+}
+
+#[cfg(test)]
+fn provider_body_test_owner_file() -> Option<FileId> {
+    PROVIDER_BODY_TEST_OWNER_FILE.get()
+}
+
+#[cfg(not(test))]
+fn provider_body_test_owner_file() -> Option<FileId> {
+    None
+}
+
+/// Admit a deliberately multi-file counterfeit RIR to the ordinary-body test
+/// engine while preserving the one-source-file production contract.
+#[cfg(test)]
+pub(crate) fn with_provider_body_test_owner_file<T>(
+    owner_file: FileId,
+    f: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<FileId>);
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            PROVIDER_BODY_TEST_OWNER_FILE.set(self.0);
+        }
+    }
+
+    let previous = PROVIDER_BODY_TEST_OWNER_FILE.replace(Some(owner_file));
+    let _restore = Restore(previous);
+    f()
+}
+
 fn publish_provider_body_breakdown(
     host_setup_ns: u64,
     expression_engine_ns: u64,
@@ -104,6 +139,11 @@ fn publish_provider_body_breakdown(
         staged_binding_trie_updates = expression.staged_binding_trie_updates,
         staged_binding_trie_lookups = expression.staged_binding_trie_lookups,
         staged_probe_nodes = expression.staged_probe_nodes,
+        checked_const_index_evaluations = expression.checked_const_index_evaluations,
+        checked_const_index_cache_hits = expression.checked_const_index_cache_hits,
+        checked_const_index_candidate_comparisons = expression
+            .checked_const_index_candidate_comparisons,
+        checked_const_index_comparison_nodes = expression.checked_const_index_comparison_nodes,
         staged_precompute_nodes = precompute
             .alias_nodes_visited
             .saturating_add(precompute.alias_block_statements)
@@ -738,6 +778,14 @@ pub struct ProviderBodyWork {
     pub staged_binding_trie_lookups: u64,
     /// Precompute nodes visited once by the staged snapshot.
     pub staged_precompute_nodes: u64,
+    /// Checked integer-index evaluator invocations after body-local reuse.
+    pub checked_const_index_evaluations: u64,
+    /// Successful body-local checked integer-index cache lookups.
+    pub checked_const_index_cache_hits: u64,
+    /// Distinct-root occurrence candidates compared structurally.
+    pub checked_const_index_candidate_comparisons: u64,
+    /// RIR node pairs visited by structural candidate comparisons.
+    pub checked_const_index_comparison_nodes: u64,
 }
 
 impl ProviderBodyWork {
@@ -762,6 +810,11 @@ impl ProviderBodyWork {
             .saturating_add(precompute.inline_scan_bodies)
             .saturating_add(precompute.inline_raw_candidates)
             .saturating_add(precompute.inline_final_candidates);
+        self.checked_const_index_evaluations = expression.checked_const_index_evaluations;
+        self.checked_const_index_cache_hits = expression.checked_const_index_cache_hits;
+        self.checked_const_index_candidate_comparisons =
+            expression.checked_const_index_candidate_comparisons;
+        self.checked_const_index_comparison_nodes = expression.checked_const_index_comparison_nodes;
         self
     }
 }
@@ -5494,11 +5547,14 @@ where
     M: Clone + Eq + Hash + Ord,
 {
     let result = (|| -> CompileResult<ProviderOrdinaryBody<K, M>> {
-        let owner_file = bundle.source_file_id().ok_or_else(|| {
-            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                "provider body RIR does not have one source file".into(),
-            ))
-        })?;
+        let owner_file = bundle
+            .source_file_id()
+            .or_else(provider_body_test_owner_file)
+            .ok_or_else(|| {
+                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                    "provider body RIR does not have one source file".into(),
+                ))
+            })?;
         let host_setup_started = Instant::now();
         let mut host = ProviderBodyHost::new(
             provider, source, bundle, key, owner_file, name, owner_kind, owner_name, target,

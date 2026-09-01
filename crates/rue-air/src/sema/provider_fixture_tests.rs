@@ -11,6 +11,10 @@ use rue_error::ErrorKind;
 use std::sync::Arc;
 
 use super::comptime::MAX_COMPTIME_CALL_DEPTH;
+use super::comptime_eval::{
+    checked_const_index_test_stats, reset_checked_const_index_test_stats,
+    with_cancellation_on_checked_const_index_hit,
+};
 use super::ordinary_engine::{
     comptime_reduction_test_keys, comptime_reduction_test_stats,
     reset_comptime_reduction_test_stats,
@@ -47,6 +51,466 @@ fn provider_body_types_integer_addition() {
     let add = air.get(crate::AirRef::from_raw(2));
     assert!(matches!(add.data, crate::AirInstData::Add(_, _)));
     assert_eq!(add.ty, crate::types::Type::I32);
+}
+
+#[test]
+fn checked_const_index_is_shared_between_inference_and_ownership() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function("main", Vec::new(), SemanticImportType::Unit);
+    let source = "fn main() { let mut values: [i32; 2] = [10, 20]; values[1 + 0] += 2; }";
+
+    let first = fixture
+        .analyze(source, "main")
+        .expect("constant array index analyzes");
+    let retained = fixture
+        .analyze(source, "main")
+        .expect("retained constant array index analyzes");
+
+    assert_eq!(first.work.checked_const_index_evaluations, 1);
+    assert_eq!(first.work.checked_const_index_cache_hits, 1);
+    assert_eq!(first.work.checked_const_index_candidate_comparisons, 1);
+    assert_eq!(first.work.checked_const_index_comparison_nodes, 3);
+    assert_eq!(retained.work.checked_const_index_evaluations, 1);
+    assert_eq!(retained.work.checked_const_index_cache_hits, 1);
+    assert_eq!(first.export.body, retained.export.body);
+}
+
+#[test]
+fn runtime_index_failure_is_not_cached_between_probes() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function(
+        "lookup",
+        vec![value_param("index", SemanticImportType::I32)],
+        SemanticImportType::Unit,
+    );
+    let body = fixture
+        .analyze(
+            "fn lookup(index: i32) { let mut values: [i32; 2] = [10, 20]; values[index] += 2; }",
+            "lookup",
+        )
+        .expect("runtime array index analyzes");
+
+    assert_eq!(body.work.checked_const_index_evaluations, 2);
+    assert_eq!(body.work.checked_const_index_cache_hits, 0);
+    assert_eq!(body.work.checked_const_index_candidate_comparisons, 0);
+    assert_eq!(body.work.checked_const_index_comparison_nodes, 0);
+}
+
+#[test]
+fn checked_const_index_cache_preserves_runtime_shadow_scope() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_const(
+        "index",
+        SemanticImportType::I32,
+        SemanticImportConstValue::Integer(1),
+    );
+    fixture.declare_function("update", Vec::new(), SemanticImportType::Unit);
+    let source = "fn update() { let mut values: [i32; 2] = [10, 20]; values[index] += 2; { let index: i32 = 0; values[index] += 2; } }";
+    let mut occurrences = source.match_indices("index").map(|(start, _)| start);
+    let outer = occurrences.next().expect("outer index spelling");
+    let binding = occurrences.next().expect("shadow binding spelling");
+    let inner = occurrences.next().expect("inner index spelling");
+    assert!(binding < inner);
+    let outer_span = rue_span::Span::new(outer as u32, (outer + 5) as u32);
+    let inner_span = rue_span::Span::new(inner as u32, (inner + 5) as u32);
+    let body = fixture
+        .analyze_span_edited(source, "update", |_, span| {
+            if span == inner_span { outer_span } else { span }
+        })
+        .expect("runtime shadow preserves index classification");
+
+    // The outer comptime parameter evaluates once and is shared. The inner
+    // runtime local shadows that same name and both probes must retry as
+    // non-constant rather than hitting the outer result.
+    assert_eq!(body.work.checked_const_index_evaluations, 3);
+    assert_eq!(body.work.checked_const_index_cache_hits, 1);
+    assert_eq!(body.work.checked_const_index_candidate_comparisons, 3);
+}
+
+#[test]
+fn checked_const_index_cache_preserves_type_alias_bind_shadow_and_restore() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function("main", Vec::new(), SemanticImportType::Unit);
+    let source = "fn main() { let mut values: [i32; 16] = [0; 16]; let Alias = i32; values[@size_of(Alias)] += 1; { let Alias = i64; values[@size_of(Alias)] += 1; } values[@size_of(Alias)] += 1; }";
+    let occurrences = source
+        .match_indices("@size_of(Alias)")
+        .map(|(start, spelling)| rue_span::Span::new(start as u32, (start + spelling.len()) as u32))
+        .collect::<Vec<_>>();
+    let [first, shadowed, restored] = occurrences.as_slice() else {
+        panic!("fixture has three type-alias index occurrences");
+    };
+    let body = fixture
+        .analyze_span_edited(source, "main", |_, span| {
+            if span == *shadowed || span == *restored {
+                *first
+            } else {
+                span
+            }
+        })
+        .expect("type alias scope is restored after the nested block");
+
+    // All three roots counterfeit the same occurrence coordinate. These
+    // type-intrinsic probes do not produce cache-eligible integers at this
+    // checked-index phase, so bind, shadow, and restored probes all retry and
+    // preserve their source-order semantics rather than publishing a result.
+    assert_eq!(body.work.checked_const_index_evaluations, 6);
+    assert_eq!(body.work.checked_const_index_cache_hits, 0);
+    assert_eq!(body.work.checked_const_index_candidate_comparisons, 0);
+}
+
+#[test]
+fn counterfeit_same_span_index_expression_cannot_hit() {
+    let source =
+        "fn main() { let mut values: [i32; 2] = [10, 20]; values[1] += 2; values[1 / 0] += 2; }";
+    let first_index = source.find("values[1]").expect("first index") + "values[".len();
+    let failed_index = source.find("1 / 0").expect("failing index");
+    let first_index_span = rue_span::Span::new(first_index as u32, (first_index + 1) as u32);
+    let failed_index_span = rue_span::Span::new(failed_index as u32, (failed_index + 5) as u32);
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function("main", Vec::new(), SemanticImportType::Unit);
+    let mut first_failure = None;
+    for _attempt in 0..2 {
+        reset_checked_const_index_test_stats();
+        let error = fixture
+            .analyze_span_edited(source, "main", |_, span| {
+                if span == failed_index_span {
+                    first_index_span
+                } else {
+                    span
+                }
+            })
+            .map(|_| ())
+            .expect_err("the same-span trapping expression must be evaluated and rejected");
+        let stats = checked_const_index_test_stats();
+        assert_eq!(stats.evaluations, 2);
+        // The first candidate hit belongs to the first successful compound
+        // index's duplicate. The distinct trapping root reaches a second
+        // comparison, is rejected, evaluated, and never publishes a value.
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.candidate_hits, 1);
+        assert_eq!(stats.candidate_rejections, 1);
+        assert_eq!(stats.candidate_comparisons, 2);
+        assert_eq!(stats.comparison_nodes, 2);
+        assert!(
+            matches!(
+                &error.kind,
+                ErrorKind::ComptimeEvaluationFailed { reason }
+                    if reason == "division by zero (this operation would panic at runtime)"
+            ),
+            "unexpected counterfeit diagnostic: {error:?}"
+        );
+        assert_eq!(error_source_slice(source, &error), "1");
+        let span = error.span();
+        if let Some((first_kind, first_span)) = &first_failure {
+            assert_eq!(
+                first_kind, &error.kind,
+                "malformed class must retry exactly"
+            );
+            assert_eq!(*first_span, span, "malformed span must retry exactly");
+        } else {
+            first_failure = Some((error.kind, span));
+        }
+    }
+}
+
+#[test]
+fn distinct_successful_same_span_expression_cannot_reuse_candidate() {
+    let source = "fn main() { let mut values: [i32; 2] = [0, 0]; values[1] += 1; values[2] += 1; }";
+    let one = source.find("values[1]").expect("first index") + "values[".len();
+    let two = source.find("values[2]").expect("second index") + "values[".len();
+    let one_span = rue_span::Span::new(one as u32, (one + 1) as u32);
+    let two_span = rue_span::Span::new(two as u32, (two + 1) as u32);
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function("main", Vec::new(), SemanticImportType::Unit);
+    reset_checked_const_index_test_stats();
+    let error = fixture
+        .analyze_span_edited(source, "main", |_, span| {
+            if span == two_span { one_span } else { span }
+        })
+        .map(|_| ())
+        .expect_err("the counterfeit integer two remains out of bounds");
+    assert!(
+        matches!(
+            error.kind,
+            ErrorKind::IndexOutOfBounds {
+                index: 2,
+                length: 2
+            }
+        ),
+        "unexpected child-file diagnostic: {error:?}"
+    );
+    let stats = checked_const_index_test_stats();
+    assert_eq!(stats.evaluations, 2);
+    assert_eq!(stats.hits, 1);
+}
+
+#[test]
+fn same_root_span_with_different_child_files_preserves_uncached_behavior() {
+    let source = "fn main() { let mut values: [i32; 2] = [0, 0]; values[first.LIMIT] += 1; values[second.LIMIT] += 1; }";
+    let first_root_start = source.find("first.LIMIT").expect("first qualified index");
+    let second_root_start = source.find("second.LIMIT").expect("second qualified index");
+    let first_root = rue_span::Span::new(first_root_start as u32, (first_root_start + 11) as u32);
+    let second_root =
+        rue_span::Span::new(second_root_start as u32, (second_root_start + 12) as u32);
+    let second_base = rue_span::Span::new(second_root_start as u32, (second_root_start + 6) as u32);
+    let first_file = rue_span::FileId::new(1);
+
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_imported_const(
+        "first",
+        "fixture/first.rue",
+        "LIMIT",
+        SemanticImportType::I32,
+        SemanticImportConstValue::Integer(1),
+    );
+    fixture.declare_imported_const(
+        "second",
+        "fixture/second.rue",
+        "LIMIT",
+        SemanticImportType::I32,
+        SemanticImportConstValue::Integer(2),
+    );
+    fixture.declare_imported_module_binding("fixture/first.rue", "second", "fixture/second.rue");
+    fixture.set_imported_module_file("fixture/first.rue", first_file);
+    fixture.declare_function("main", Vec::new(), SemanticImportType::Unit);
+    reset_checked_const_index_test_stats();
+    let result = fixture.analyze_span_edited_with_files(
+        source,
+        "main",
+        &[(first_file, source.len() as u32)],
+        |_, span| {
+            if span == second_root {
+                first_root
+            } else if span == second_base {
+                rue_span::Span::with_file(first_file, span.start, span.end)
+            } else {
+                span
+            }
+        },
+    );
+    let error = result
+        .map(|_| ())
+        .expect_err("the foreign child span remains invalid at publication");
+    assert!(
+        matches!(
+            &error.kind,
+            ErrorKind::OutputPublication(reason)
+                if reason == "provider body export failed: ForeignSpan"
+        ),
+        "unexpected child-file diagnostic: {error:?}"
+    );
+    assert_eq!(error.span(), None);
+    let stats = checked_const_index_test_stats();
+    assert_eq!(stats.evaluations, 4);
+    assert_eq!(stats.hits, 0);
+    assert_eq!(stats.candidate_comparisons, 0);
+}
+
+#[test]
+fn non_integer_index_diagnostic_retries_before_checked_cache_admission() {
+    let source = "fn main() { let mut values: [i32; 2] = [0, 0]; values[true] += 1; }";
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function("main", Vec::new(), SemanticImportType::Unit);
+    let mut first_failure = None;
+    for _attempt in 0..2 {
+        reset_checked_const_index_test_stats();
+        let error = fixture
+            .analyze(source, "main")
+            .map(|_| ())
+            .expect_err("a boolean index is rejected");
+        assert!(matches!(
+            &error.kind,
+            ErrorKind::TypeMismatch { expected, found }
+                if expected == "integer type" && found == "bool"
+        ));
+        assert_eq!(error_source_slice(source, &error), "true");
+        assert_eq!(checked_const_index_test_stats().evaluations, 0);
+        let span = error.span();
+        if let Some((first_kind, first_span)) = &first_failure {
+            assert_eq!(first_kind, &error.kind);
+            assert_eq!(*first_span, span);
+        } else {
+            first_failure = Some((error.kind, span));
+        }
+    }
+}
+
+#[test]
+fn cancellation_wins_at_checked_const_index_cache_hit() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function("main", Vec::new(), SemanticImportType::Unit);
+    let source = "fn main() { let mut values: [i32; 2] = [10, 20]; values[1 + 0] += 2; }";
+    reset_checked_const_index_test_stats();
+    let result = with_cancellation_on_checked_const_index_hit(|| fixture.analyze(source, "main"));
+    let stats = checked_const_index_test_stats();
+    let error = result
+        .map(|_| ())
+        .expect_err("cancellation at the primed cache hit must win");
+    assert!(
+        matches!(&error.kind, ErrorKind::InternalError(message) if message == "body analysis query canceled"),
+        "unexpected cancellation diagnostic: {error:?}"
+    );
+    assert_eq!(stats.evaluations, 1);
+    assert_eq!(stats.hits, 0);
+    assert_eq!(stats.canceled_hits, 1);
+}
+
+#[test]
+fn checked_const_index_cache_is_body_and_specialization_local() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function(
+        "update",
+        vec![comptime_type_param("T")],
+        SemanticImportType::Unit,
+    );
+    let four = fixture.declare_struct("Four", vec![("x", SemanticImportType::I32)], true);
+    let eight = fixture.declare_struct("Eight", vec![("x", SemanticImportType::I64)], true);
+    let source = "fn update(comptime T: type) { let mut values: [i32; 16] = [0; 16]; values[@size_of(T)] += 2; }";
+
+    let i32_body = fixture
+        .analyze_specialized_with_types(source, "update", &[SemanticImportType::Nominal(four)], &[])
+        .expect("four-byte specialization analyzes");
+    let i64_body = fixture
+        .analyze_specialized_with_types(
+            source,
+            "update",
+            &[SemanticImportType::Nominal(eight)],
+            &[],
+        )
+        .expect("eight-byte specialization analyzes");
+
+    for body in [&i32_body, &i64_body] {
+        assert_eq!(body.work.checked_const_index_evaluations, 2);
+        assert_eq!(body.work.checked_const_index_cache_hits, 0);
+        assert_eq!(body.work.checked_const_index_candidate_comparisons, 0);
+    }
+    assert_ne!(i32_body.export.body, i64_body.export.body);
+}
+
+#[test]
+fn checked_const_index_cache_is_imported_generic_identity_local() {
+    let mut fixture = ProviderFixture::new();
+    let limit = fixture.declare_const(
+        "LIMIT",
+        SemanticImportType::I32,
+        SemanticImportConstValue::Integer(1),
+    );
+    fixture.declare_function(
+        "update",
+        vec![comptime_type_param("T")],
+        SemanticImportType::Unit,
+    );
+    let four = fixture.declare_struct("Four", vec![("x", SemanticImportType::I32)], true);
+    let eight = fixture.declare_struct("Eight", vec![("x", SemanticImportType::I64)], true);
+    let source = "fn update(comptime T: type) { let mut values: [i32; 16] = [0; 16]; values[LIMIT + @size_of(T)] += 2; }";
+
+    let mut exports = Vec::new();
+    for ty in [four, eight] {
+        let body = fixture
+            .analyze_specialized_with_types(
+                source,
+                "update",
+                &[SemanticImportType::Nominal(ty)],
+                &[],
+            )
+            .expect("imported generic index analyzes");
+        assert_eq!(body.work.checked_const_index_evaluations, 2);
+        assert_eq!(body.work.checked_const_index_cache_hits, 0);
+        assert_eq!(body.work.checked_const_index_candidate_comparisons, 0);
+        assert!(body.referenced_values.contains(&limit));
+        exports.push(body.export.body);
+    }
+    assert_ne!(exports[0], exports[1]);
+}
+
+#[test]
+fn qualified_imported_const_index_preserves_uncached_retry_behavior() {
+    let mut fixture = ProviderFixture::new();
+    let limit = fixture.declare_imported_const(
+        "module",
+        "fixture/module.rue",
+        "LIMIT",
+        SemanticImportType::I32,
+        SemanticImportConstValue::Integer(1),
+    );
+    fixture.declare_function("main", Vec::new(), SemanticImportType::Unit);
+    let body = fixture
+        .analyze(
+            "fn main() { let mut values: [i32; 2] = [0, 0]; values[module.LIMIT] += 1; }",
+            "main",
+        )
+        .expect("qualified imported constant index analyzes");
+
+    assert_eq!(
+        (
+            body.work.checked_const_index_evaluations,
+            body.work.checked_const_index_cache_hits,
+            body.work.checked_const_index_candidate_comparisons,
+            body.work.checked_const_index_comparison_nodes,
+        ),
+        (2, 0, 0, 0)
+    );
+    assert!(body.referenced_values.contains(&limit));
+}
+
+#[test]
+fn checked_const_index_cache_isolated_across_imported_const_bodies() {
+    let source = "fn main() { let mut values: [i32; 2] = [0, 0]; values[LIMIT] += 1; }";
+
+    let mut in_bounds = ProviderFixture::new();
+    in_bounds.declare_const(
+        "LIMIT",
+        SemanticImportType::I32,
+        SemanticImportConstValue::Integer(1),
+    );
+    in_bounds.declare_function("main", Vec::new(), SemanticImportType::Unit);
+    in_bounds
+        .analyze(source, "main")
+        .expect("the first imported value is in bounds");
+
+    let mut out_of_bounds = ProviderFixture::new();
+    out_of_bounds.declare_const(
+        "LIMIT",
+        SemanticImportType::I32,
+        SemanticImportConstValue::Integer(2),
+    );
+    out_of_bounds.declare_function("main", Vec::new(), SemanticImportType::Unit);
+    let error = out_of_bounds
+        .analyze(source, "main")
+        .map(|_| ())
+        .expect_err("the second imported value must not reuse the first body");
+    assert!(matches!(
+        error.kind,
+        ErrorKind::IndexOutOfBounds {
+            index: 2,
+            length: 2
+        }
+    ));
+    assert_eq!(error_source_slice(source, &error), "LIMIT");
+}
+
+#[test]
+fn checked_const_index_cache_isolated_across_anonymous_producers() {
+    let safe_source = "fn main() { let T = struct { x: i32 }; let mut values: [i32; 8] = [0; 8]; values[@size_of(T)] += 1; }";
+    let wide_source = "fn main() { let T = struct { x: i64 }; let mut values: [i32; 8] = [0; 8]; values[@size_of(T)] += 1; }";
+
+    let mut safe = ProviderFixture::new();
+    safe.declare_function("main", Vec::new(), SemanticImportType::Unit);
+    let safe_body = safe
+        .analyze(safe_source, "main")
+        .expect("the four-byte anonymous producer analyzes");
+
+    let mut wide = ProviderFixture::new();
+    wide.declare_function("main", Vec::new(), SemanticImportType::Unit);
+    let wide_body = wide
+        .analyze(wide_source, "main")
+        .expect("the wide anonymous producer analyzes independently");
+    for body in [&safe_body, &wide_body] {
+        assert_eq!(body.work.checked_const_index_evaluations, 2);
+        assert_eq!(body.work.checked_const_index_cache_hits, 0);
+        assert_eq!(body.work.checked_const_index_candidate_comparisons, 0);
+    }
+    assert_ne!(safe_body.export.body, wide_body.export.body);
 }
 
 #[test]

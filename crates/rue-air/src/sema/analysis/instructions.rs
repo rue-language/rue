@@ -528,7 +528,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         )
                     })?;
                     if !ctx.comptime_type_vars.is_empty() {
-                        self.set_anon_struct_type_subst(struct_id, ctx.comptime_type_vars.clone());
+                        self.set_anon_struct_type_subst(
+                            struct_id,
+                            ctx.comptime_type_vars.snapshot(),
+                        );
                     }
                 }
 
