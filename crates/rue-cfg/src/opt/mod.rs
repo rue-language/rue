@@ -123,13 +123,126 @@ pub enum CfgOptimizationError {
 /// Bounded optimizer work published alongside the optimized CFG.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct OptimizationStats {
+    pub constopt_fold_attempts: u64,
+    pub constopt_folded: u64,
+    pub constopt_loads_rewritten: u64,
+    pub peephole_divmods_reduced: u64,
+    pub peephole_identities_rewired: u64,
+    pub simplify_blocks_scanned: u64,
+    pub simplify_branches_folded: u64,
+    pub simplify_switches_folded: u64,
+    pub simplify_edges_threaded: u64,
+    pub simplify_forwarders_resolved: u64,
+    pub simplify_blocks_merged: u64,
+    pub forward_insts_scanned: u64,
+    pub forward_loads_single_write: u64,
+    pub forward_loads_block_local: u64,
+    pub forward_rule1_dominance_pairs_checked: u64,
+    pub forward_dominator_computations: u64,
+    pub cse_insts_scanned: u64,
+    pub cse_duplicates_replaced: u64,
+    pub cse_max_table_entries: u64,
+    pub cse_dominator_computations: u64,
+    pub preheader_normalization_forest_computations: u64,
+    pub preheader_normalization_loops_examined: u64,
+    pub preheader_normalization_preheaders_materialized: u64,
+    pub preheader_normalization_verifier_dominator_computations: u64,
+    pub licm_forest_computations: u64,
+    pub licm_def_block_scans: u64,
+    pub licm_loops_analyzed: u64,
+    pub licm_instructions_examined: u64,
+    pub licm_slot_fact_instructions_scanned: u64,
+    pub licm_slot_fact_entries_initialized: u64,
+    pub licm_slot_fact_workspace_growths: u64,
+    pub licm_candidate_dependencies: u64,
+    pub licm_worklist_pops: u64,
+    pub licm_invariants_hoisted: u64,
+    pub licm_hoist_workspace_growths: u64,
+    pub unroll_forest_computations: u64,
     pub loops_analyzed: u64,
     pub loops_unrolled: u64,
     pub budget_refusals: u64,
+    pub unroll_shape_refusals: u64,
+    pub unroll_blocks_cloned: u64,
+    pub unroll_values_cloned: u64,
+    pub unroll_instructions_cloned: u64,
+    /// Dominator computations performed by the final publication verifier.
+    /// A successfully returned optimizer result contributes exactly one.
+    pub publication_verifier_dominator_computations: u64,
     /// CFG values cloned by O3 growth transforms in this invocation.
     pub code_growth_used: u64,
     /// CFG blocks cloned by O3 growth transforms in this invocation.
     pub code_growth_blocks_used: u64,
+}
+
+impl OptimizationStats {
+    fn add_constopt(&mut self, pass: constopt::Stats) {
+        self.constopt_fold_attempts += pass.fold_attempts;
+        self.constopt_folded += pass.folded;
+        self.constopt_loads_rewritten += pass.loads_rewritten;
+    }
+
+    fn add_peephole(&mut self, pass: peephole::Stats) {
+        self.peephole_divmods_reduced += pass.divmods_reduced;
+        self.peephole_identities_rewired += pass.identities_rewired;
+    }
+
+    fn add_simplify(&mut self, pass: simplify::Stats) {
+        self.simplify_blocks_scanned += pass.blocks_scanned;
+        self.simplify_branches_folded += pass.branches_folded;
+        self.simplify_switches_folded += pass.switches_folded;
+        self.simplify_edges_threaded += pass.edges_threaded;
+        self.simplify_forwarders_resolved += pass.forwarders_resolved;
+        self.simplify_blocks_merged += pass.blocks_merged;
+    }
+
+    fn add_forward(&mut self, pass: forward::Stats) {
+        self.forward_insts_scanned += pass.insts_scanned;
+        self.forward_loads_single_write += pass.loads_forwarded_single_write;
+        self.forward_loads_block_local += pass.loads_forwarded_block_local;
+        self.forward_rule1_dominance_pairs_checked += pass.rule1_dominance_pairs_checked;
+        self.forward_dominator_computations += pass.dominator_computations;
+    }
+
+    fn add_cse(&mut self, pass: cse::Stats) {
+        self.cse_insts_scanned += pass.insts_scanned;
+        self.cse_duplicates_replaced += pass.duplicates_replaced;
+        self.cse_max_table_entries = self.cse_max_table_entries.max(pass.max_table_entries);
+        self.cse_dominator_computations += pass.dominator_computations;
+    }
+
+    fn add_preheader_normalization(&mut self, pass: loops::PreheaderNormalizationStats) {
+        self.preheader_normalization_forest_computations += pass.forest_computations;
+        self.preheader_normalization_loops_examined += pass.loops_examined;
+        self.preheader_normalization_preheaders_materialized += pass.preheaders_materialized;
+        self.preheader_normalization_verifier_dominator_computations +=
+            pass.verifier_dominator_computations;
+    }
+
+    fn add_licm(&mut self, pass: licm::Stats) {
+        self.licm_forest_computations += pass.forest_computations;
+        self.licm_def_block_scans += pass.def_block_scans;
+        self.licm_loops_analyzed += pass.loops_analyzed;
+        self.licm_instructions_examined += pass.instructions_examined;
+        self.licm_slot_fact_instructions_scanned += pass.slot_fact_instructions_scanned;
+        self.licm_slot_fact_entries_initialized += pass.slot_fact_entries_initialized;
+        self.licm_slot_fact_workspace_growths += pass.slot_fact_workspace_growths;
+        self.licm_candidate_dependencies += pass.candidate_dependencies;
+        self.licm_worklist_pops += pass.worklist_pops;
+        self.licm_invariants_hoisted += pass.invariants_hoisted;
+        self.licm_hoist_workspace_growths += pass.hoist_workspace_growths;
+    }
+
+    fn add_unroll(&mut self, pass: unroll::Stats) {
+        self.unroll_forest_computations += pass.forest_computations;
+        self.loops_analyzed += pass.loops_analyzed;
+        self.loops_unrolled += pass.loops_unrolled;
+        self.budget_refusals += pass.budget_refusals;
+        self.unroll_shape_refusals += pass.shape_refusals;
+        self.unroll_blocks_cloned += pass.blocks_cloned;
+        self.unroll_values_cloned += pass.values_cloned;
+        self.unroll_instructions_cloned += pass.instructions_cloned;
+    }
 }
 
 /// Exact growth attributed to one bounded transform operation.
@@ -355,7 +468,8 @@ pub fn optimize_with_budget(
                 // instruction only when one of its inputs becomes constant, so
                 // deep chains stay linear instead of forcing quadratic full-CFG
                 // rescans (RUE-794).
-                constopt::run(&mut cfg);
+                let constopt_stats = constopt::run(&mut cfg);
+                stats.add_constopt(constopt_stats);
 
                 // Peephole algebraic simplification (RUE-912): rewire trap-free
                 // identities (x+0, x*1, ...) to their operand and strength-reduce
@@ -363,7 +477,8 @@ pub fn optimize_with_budget(
                 // so propagated constants are visible; annihilators that produce
                 // constants (x*0, x-x, ...) live in the constfold kernel inside
                 // the worklist instead, because their results cascade.
-                peephole::run(&mut cfg)?;
+                let peephole_stats = peephole::run(&mut cfg)?;
+                stats.add_peephole(peephole_stats);
 
                 // CFG simplification (RUE-910, RUE-911): fold constant-condition
                 // Branch/Switch terminators into Gotos so dead arms drop out of
@@ -371,6 +486,7 @@ pub fn optimize_with_budget(
                 // single-predecessor Goto chains into straight-line blocks
                 // before DCE prunes the leftovers.
                 let simplify_stats = simplify::run(&mut cfg)?;
+                stats.add_simplify(simplify_stats);
                 // Folding a control value can expose stores and loads on the
                 // surviving path (notably drop flags). Re-run the sparse
                 // constant/folding cleanup when control flow changed so those
@@ -378,9 +494,12 @@ pub fn optimize_with_budget(
                 // forwarding and CSE inspect the graph.
                 if simplify_stats.branches_folded > 0 || simplify_stats.switches_folded > 0 {
                     dce::run(&mut cfg);
-                    constopt::run(&mut cfg);
-                    peephole::run(&mut cfg)?;
-                    simplify::run(&mut cfg)?;
+                    let constopt_stats = constopt::run(&mut cfg);
+                    stats.add_constopt(constopt_stats);
+                    let peephole_stats = peephole::run(&mut cfg)?;
+                    stats.add_peephole(peephole_stats);
+                    let simplify_stats = simplify::run(&mut cfg)?;
+                    stats.add_simplify(simplify_stats);
                 }
 
                 // Value forwarding / copy propagation (RUE-914), at -O2/-O3 only.
@@ -392,6 +511,7 @@ pub fn optimize_with_budget(
                 // value is already computed — so the orphaned loads fall to DCE.
                 if matches!(level, OptLevel::O2 | OptLevel::O3) {
                     let forward_stats = forward::run(&mut cfg)?;
+                    stats.add_forward(forward_stats);
                     // Forwarding can expose constants in a branch condition
                     // without changing the Load instruction itself. Fold and
                     // simplify that newly constant control flow before CSE;
@@ -400,8 +520,10 @@ pub fn optimize_with_budget(
                     if forward_stats.loads_forwarded_single_write > 0
                         || forward_stats.loads_forwarded_block_local > 0
                     {
-                        constopt::run(&mut cfg);
-                        simplify::run(&mut cfg)?;
+                        let constopt_stats = constopt::run(&mut cfg);
+                        stats.add_constopt(constopt_stats);
+                        let simplify_stats = simplify::run(&mut cfg)?;
+                        stats.add_simplify(simplify_stats);
                     }
                 }
 
@@ -412,7 +534,8 @@ pub fn optimize_with_budget(
                 // dead placeholders each replaced duplicate (and each forwarded
                 // load) leaves behind.
                 if matches!(level, OptLevel::O2 | OptLevel::O3) {
-                    cse::run(&mut cfg)?;
+                    let cse_stats = cse::run(&mut cfg)?;
+                    stats.add_cse(cse_stats);
                 }
 
                 // Canonical loop normalization and LICM (RUE-927), at -O3
@@ -431,20 +554,22 @@ pub fn optimize_with_budget(
                 // never runs (the inverse of RUE-57). It recomputes dominators
                 // + loops per the ADR's recompute rule.
                 if matches!(level, OptLevel::O3) {
-                    loops::normalize_preheaders(&mut cfg, type_pool)?;
-                    licm::run(&mut cfg, type_pool)?;
+                    let preheader_stats = loops::normalize_preheaders(&mut cfg, type_pool)?;
+                    stats.add_preheader_normalization(preheader_stats);
+                    let licm_stats = licm::run(&mut cfg, type_pool)?;
+                    stats.add_licm(licm_stats);
                     // Full constant-trip unrolling follows LICM and is
                     // followed by a mandatory cleanup fixpoint. Analyses are
                     // recomputed by the pass after every CFG mutation.
                     let unroll = unroll::run_with_budget(&mut cfg, &mut budget)?;
-                    stats.loops_analyzed = unroll.loops_analyzed;
-                    stats.loops_unrolled = unroll.loops_unrolled;
-                    stats.budget_refusals = unroll.budget_refusals;
+                    stats.add_unroll(unroll);
                     stats.code_growth_used = budget.used_values().saturating_sub(initial_values);
                     stats.code_growth_blocks_used =
                         budget.used_blocks().saturating_sub(initial_blocks);
-                    constopt::run(&mut cfg);
-                    simplify::run(&mut cfg)?;
+                    let constopt_stats = constopt::run(&mut cfg);
+                    stats.add_constopt(constopt_stats);
+                    let simplify_stats = simplify::run(&mut cfg)?;
+                    stats.add_simplify(simplify_stats);
                     dce::run(&mut cfg);
                 }
 
@@ -455,7 +580,10 @@ pub fn optimize_with_budget(
         Ok(())
     })();
 
-    publish_optimization(cfg, pass_result, type_pool).map(|cfg| (cfg, stats, budget))
+    publish_optimization(cfg, pass_result, type_pool).map(|cfg| {
+        stats.publication_verifier_dominator_computations += 1;
+        (cfg, stats, budget)
+    })
 }
 
 fn publish_optimization(

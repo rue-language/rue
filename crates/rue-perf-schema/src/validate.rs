@@ -2163,6 +2163,41 @@ window = 10
     }
 
     #[test]
+    fn legacy_v3_work_without_cfg_optimization_still_validates() {
+        // Stored v3 records predate CFG optimizer work. Exercise the actual
+        // JSON reader and work.2 reconstruction so the new default group
+        // cannot silently change the digest preimage of those records.
+        let encoded = crate::encode_stored_v3(&boundary_run()).expect("fixture encodes");
+        let value = serde_json::to_value(encoded).expect("fixture serializes");
+        let compiler_work = value["workloads"][0]["boundary"]["compiler_work"]
+            .as_object()
+            .expect("stored workload carries compiler work");
+        assert!(!compiler_work.contains_key("cfg_optimization"));
+
+        const LEGACY_V3_WORK_DIGEST: &str =
+            "a0f93c49a0b63bf6009aa3b3e6e1b78b599eb2187b20fcae6988e2cfaa7e8bd9";
+        for sample in value["workloads"][0]["samples"]
+            .as_array()
+            .expect("stored workload carries samples")
+        {
+            for digest in sample["boundary_work_processes"]
+                .as_array()
+                .expect("stored sample carries work digests")
+            {
+                assert_eq!(digest.as_str(), Some(LEGACY_V3_WORK_DIGEST));
+            }
+        }
+
+        let decoded: RunObject = serde_json::from_value(value).expect("legacy v3 JSON decodes");
+        let outcome = validate_run(&boundary_manifest(), &decoded);
+        assert!(
+            outcome.is_appendable(),
+            "legacy v3 record must remain appendable: {:?}",
+            outcome.errors
+        );
+    }
+
+    #[test]
     fn a_tampered_process_digest_fails_the_witness_comparison() {
         let mut encoded = crate::encode_stored_v3(&boundary_run()).unwrap();
         encoded.workloads[0].samples[1].boundary_processes[1] = "0".repeat(64);

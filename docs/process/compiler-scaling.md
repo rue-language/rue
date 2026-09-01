@@ -17,8 +17,9 @@ headline; it does not contribute to that index.
 ## Measurement regime
 
 Each sample launches the canonical compiler binary in a new process and asks
-it for `--benchmark-json` (benchmark JSON schema 18). The manifest, external runner, and compiler must
-independently agree that this is `fresh_source_to_native_v1`: Rue `-O3`, the
+it for `--benchmark-json` (benchmark JSON schema 19). The manifest, external
+runner, and compiler must independently agree that this is
+`fresh_source_to_native_v1`: Rue `-O3`, the
 internal linker, one published native executable, the canonical rooted query
 graph, and the declared worker row. There is no retained compiler session,
 daemon, persistent query cache, precompiled package/program/standard artifact,

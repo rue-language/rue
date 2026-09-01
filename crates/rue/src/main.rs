@@ -1438,6 +1438,78 @@ fn benchmark_compiler_work(
             strings: metrics.semantic.cfg.local_strings as u64,
             local_atoms: metrics.semantic.cfg.local_atoms as u64,
         },
+        cfg_optimization: {
+            let work = metrics.semantic.cfg.optimization_passes;
+            rue_perf_schema::CfgOptimizationWork {
+                constopt_fold_attempts: work.constopt_fold_attempts as u64,
+                constopt_folded: work.constopt_folded as u64,
+                constopt_loads_rewritten: work.constopt_loads_rewritten as u64,
+                peephole_divmods_reduced: work.peephole_divmods_reduced as u64,
+                peephole_identities_rewired: work.peephole_identities_rewired as u64,
+                simplify_blocks_scanned: work.simplify_blocks_scanned as u64,
+                simplify_branches_folded: work.simplify_branches_folded as u64,
+                simplify_switches_folded: work.simplify_switches_folded as u64,
+                simplify_edges_threaded: work.simplify_edges_threaded as u64,
+                simplify_forwarders_resolved: work.simplify_forwarders_resolved as u64,
+                simplify_blocks_merged: work.simplify_blocks_merged as u64,
+                forward_insts_scanned: work.forward_insts_scanned as u64,
+                forward_loads_single_write: work.forward_loads_single_write as u64,
+                forward_loads_block_local: work.forward_loads_block_local as u64,
+                forward_rule1_dominance_pairs_checked: work.forward_rule1_dominance_pairs_checked
+                    as u64,
+                forward_dominator_computations: work.forward_dominator_computations as u64,
+                cse_insts_scanned: work.cse_insts_scanned as u64,
+                cse_duplicates_replaced: work.cse_duplicates_replaced as u64,
+                cse_max_table_entries_sum: work.cse_max_table_entries_sum as u64,
+                cse_dominator_computations: work.cse_dominator_computations as u64,
+                preheader_normalization_forest_computations: work
+                    .preheader_normalization_forest_computations
+                    as u64,
+                preheader_normalization_loops_examined: work.preheader_normalization_loops_examined
+                    as u64,
+                preheader_normalization_preheaders_materialized: work
+                    .preheader_normalization_preheaders_materialized
+                    as u64,
+                preheader_normalization_verifier_dominator_computations: work
+                    .preheader_normalization_verifier_dominator_computations
+                    as u64,
+                licm_forest_computations: work.licm_forest_computations as u64,
+                licm_def_block_scans: work.licm_def_block_scans as u64,
+                licm_loops_analyzed: work.licm_loops_analyzed as u64,
+                licm_instructions_examined: work.licm_instructions_examined as u64,
+                licm_slot_fact_instructions_scanned: work.licm_slot_fact_instructions_scanned
+                    as u64,
+                licm_slot_fact_entries_initialized: work.licm_slot_fact_entries_initialized as u64,
+                licm_slot_fact_workspace_growths: work.licm_slot_fact_workspace_growths as u64,
+                licm_candidate_dependencies: work.licm_candidate_dependencies as u64,
+                licm_worklist_pops: work.licm_worklist_pops as u64,
+                licm_invariants_hoisted: work.licm_invariants_hoisted as u64,
+                licm_hoist_workspace_growths: work.licm_hoist_workspace_growths as u64,
+                unroll_forest_computations: work.unroll_forest_computations as u64,
+                unroll_loops_analyzed: work.unroll_loops_analyzed as u64,
+                unroll_loops_unrolled: work.unroll_loops_unrolled as u64,
+                unroll_budget_refusals: work.unroll_budget_refusals as u64,
+                unroll_shape_refusals: work.unroll_shape_refusals as u64,
+                unroll_blocks_cloned: work.unroll_blocks_cloned as u64,
+                unroll_values_cloned: work.unroll_values_cloned as u64,
+                unroll_instructions_cloned: work.unroll_instructions_cloned as u64,
+                publication_verifier_dominator_computations: work
+                    .publication_verifier_dominator_computations
+                    as u64,
+                accessor_splice_imported_callee_verifier_dominator_computations: work
+                    .accessor_splice_imported_callee_verifier_dominator_computations
+                    as u64,
+                accessor_splice_preoptimization_verifier_dominator_computations: work
+                    .accessor_splice_preoptimization_verifier_dominator_computations
+                    as u64,
+                general_inline_splice_imported_callee_verifier_dominator_computations: work
+                    .general_inline_splice_imported_callee_verifier_dominator_computations
+                    as u64,
+                inline_splice_pre_reoptimization_verifier_dominator_computations: work
+                    .inline_splice_pre_reoptimization_verifier_dominator_computations
+                    as u64,
+            }
+        },
         publication: rue_perf_schema::PublicationWork {
             cone_retention_failures: metrics.publication.cone_retention_failures,
         },
@@ -2185,6 +2257,20 @@ mod tests {
                     prerequisite_stable_types_scanned: 37,
                     prerequisite_layout_requests: 41,
                     prerequisite_drop_glue_requests: 47,
+                    optimization_passes: rue_compiler::unstable::CfgOptimizationMetrics {
+                        forward_dominator_computations: 53,
+                        cse_dominator_computations: 59,
+                        licm_forest_computations: 61,
+                        licm_hoist_workspace_growths: 67,
+                        unroll_forest_computations: 71,
+                        preheader_normalization_verifier_dominator_computations: 73,
+                        publication_verifier_dominator_computations: 79,
+                        accessor_splice_imported_callee_verifier_dominator_computations: 81,
+                        accessor_splice_preoptimization_verifier_dominator_computations: 83,
+                        general_inline_splice_imported_callee_verifier_dominator_computations: 87,
+                        inline_splice_pre_reoptimization_verifier_dominator_computations: 89,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
                 ..Default::default()
@@ -2319,6 +2405,50 @@ mod tests {
         assert_eq!(projected.cfg_prerequisites.layout_requests, 41);
         assert_eq!(projected.cfg_prerequisites.type_fact_requests, 0);
         assert_eq!(projected.cfg_prerequisites.drop_glue_requests, 47);
+        assert_eq!(
+            projected.cfg_optimization.forward_dominator_computations,
+            53
+        );
+        assert_eq!(projected.cfg_optimization.cse_dominator_computations, 59);
+        assert_eq!(projected.cfg_optimization.licm_forest_computations, 61);
+        assert_eq!(projected.cfg_optimization.licm_hoist_workspace_growths, 67);
+        assert_eq!(projected.cfg_optimization.unroll_forest_computations, 71);
+        assert_eq!(
+            projected
+                .cfg_optimization
+                .preheader_normalization_verifier_dominator_computations,
+            73
+        );
+        assert_eq!(
+            projected
+                .cfg_optimization
+                .publication_verifier_dominator_computations,
+            79
+        );
+        assert_eq!(
+            projected
+                .cfg_optimization
+                .accessor_splice_imported_callee_verifier_dominator_computations,
+            81
+        );
+        assert_eq!(
+            projected
+                .cfg_optimization
+                .accessor_splice_preoptimization_verifier_dominator_computations,
+            83
+        );
+        assert_eq!(
+            projected
+                .cfg_optimization
+                .general_inline_splice_imported_callee_verifier_dominator_computations,
+            87
+        );
+        assert_eq!(
+            projected
+                .cfg_optimization
+                .inline_splice_pre_reoptimization_verifier_dominator_computations,
+            89
+        );
         let runtime = projected.query_runtime;
         assert_eq!(runtime.claims, 41);
         assert_eq!(runtime.reuses, 43);

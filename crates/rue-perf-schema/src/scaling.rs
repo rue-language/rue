@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 25;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 26;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,6 +232,9 @@ pub struct CompilerWork {
     /// Aggregate size of the rooted body-local semantic domains retained by CFG.
     #[serde(default)]
     pub cfg_local_epoch: CfgLocalEpochWork,
+    /// Bounded structural work from target-independent CFG optimization.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub cfg_optimization: CfgOptimizationWork,
     /// Work performed by the revisioned query runtime.
     pub query_runtime: QueryRuntimeWork,
     /// Publication-seam health for the proof-lease handoffs (RUE-1576).
@@ -241,6 +244,10 @@ pub struct CompilerWork {
 
 fn is_zero(value: &u64) -> bool {
     *value == 0
+}
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    value == &T::default()
 }
 
 /// Exact lifecycle and output quantities for one candidate body-plan query.
@@ -642,6 +649,62 @@ pub struct CfgLocalEpochWork {
     pub local_atoms: u64,
 }
 
+/// Additive per-pass work from successful local optimization and changed-caller
+/// reoptimization. Analysis construction is charged to the pass that owns it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CfgOptimizationWork {
+    pub constopt_fold_attempts: u64,
+    pub constopt_folded: u64,
+    pub constopt_loads_rewritten: u64,
+    pub peephole_divmods_reduced: u64,
+    pub peephole_identities_rewired: u64,
+    pub simplify_blocks_scanned: u64,
+    pub simplify_branches_folded: u64,
+    pub simplify_switches_folded: u64,
+    pub simplify_edges_threaded: u64,
+    pub simplify_forwarders_resolved: u64,
+    pub simplify_blocks_merged: u64,
+    pub forward_insts_scanned: u64,
+    pub forward_loads_single_write: u64,
+    pub forward_loads_block_local: u64,
+    pub forward_rule1_dominance_pairs_checked: u64,
+    pub forward_dominator_computations: u64,
+    pub cse_insts_scanned: u64,
+    pub cse_duplicates_replaced: u64,
+    /// Sum of the per-run value-number table high-water marks.
+    pub cse_max_table_entries_sum: u64,
+    pub cse_dominator_computations: u64,
+    pub preheader_normalization_forest_computations: u64,
+    pub preheader_normalization_loops_examined: u64,
+    pub preheader_normalization_preheaders_materialized: u64,
+    pub preheader_normalization_verifier_dominator_computations: u64,
+    pub licm_forest_computations: u64,
+    pub licm_def_block_scans: u64,
+    pub licm_loops_analyzed: u64,
+    pub licm_instructions_examined: u64,
+    pub licm_slot_fact_instructions_scanned: u64,
+    pub licm_slot_fact_entries_initialized: u64,
+    pub licm_slot_fact_workspace_growths: u64,
+    pub licm_candidate_dependencies: u64,
+    pub licm_worklist_pops: u64,
+    pub licm_invariants_hoisted: u64,
+    pub licm_hoist_workspace_growths: u64,
+    pub unroll_forest_computations: u64,
+    pub unroll_loops_analyzed: u64,
+    pub unroll_loops_unrolled: u64,
+    pub unroll_budget_refusals: u64,
+    pub unroll_shape_refusals: u64,
+    pub unroll_blocks_cloned: u64,
+    pub unroll_values_cloned: u64,
+    pub unroll_instructions_cloned: u64,
+    pub publication_verifier_dominator_computations: u64,
+    pub accessor_splice_imported_callee_verifier_dominator_computations: u64,
+    pub accessor_splice_preoptimization_verifier_dominator_computations: u64,
+    pub general_inline_splice_imported_callee_verifier_dominator_computations: u64,
+    pub inline_splice_pre_reoptimization_verifier_dominator_computations: u64,
+}
+
 /// Deterministic work performed by database-owned semantic reachability.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -773,6 +836,14 @@ question = "small maintained compiler frontend"
         object.remove("publication");
         let decoded: CompilerWork = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.publication, PublicationWork::default());
+    }
+
+    #[test]
+    fn older_compiler_work_defaults_cfg_optimization_work() {
+        let mut encoded = serde_json::to_value(CompilerWork::default()).unwrap();
+        encoded.as_object_mut().unwrap().remove("cfg_optimization");
+        let decoded: CompilerWork = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.cfg_optimization, CfgOptimizationWork::default());
     }
 
     #[test]

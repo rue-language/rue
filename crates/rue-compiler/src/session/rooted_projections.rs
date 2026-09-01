@@ -1099,9 +1099,101 @@ impl CompilerSession {
         work.cfg.optimization_attempts += batch_work("cfg.optimize.attempts");
         work.cfg.optimization_completions += batch_work("cfg.optimize.successes");
         work.cfg.optimized_level_attempts += batch_work("cfg.optimize.nonzero-level");
-        work.cfg.optimization_loops_analyzed += batch_work("cfg.optimize.loops-analyzed");
-        work.cfg.optimization_loops_unrolled += batch_work("cfg.optimize.loops-unrolled");
-        work.cfg.optimization_budget_refusals += batch_work("cfg.optimize.budget-refusals");
+        let optimization_work = |suffix: &str| {
+            batch_work(&format!("cfg.optimize.{suffix}"))
+                + batch_work(&format!("cfg.reoptimize.{suffix}"))
+        };
+        work.cfg.optimization_loops_analyzed += optimization_work("loops-analyzed");
+        work.cfg.optimization_loops_unrolled += optimization_work("loops-unrolled");
+        work.cfg.optimization_budget_refusals += optimization_work("budget-refusals");
+        let passes = &mut work.cfg.optimization_passes;
+        macro_rules! pass_work {
+            ($field:ident, $name:literal) => {
+                passes.$field += optimization_work($name);
+            };
+        }
+        pass_work!(constopt_fold_attempts, "constopt.fold-attempts");
+        pass_work!(constopt_folded, "constopt.folded");
+        pass_work!(constopt_loads_rewritten, "constopt.loads-rewritten");
+        pass_work!(peephole_divmods_reduced, "peephole.divmods-reduced");
+        pass_work!(peephole_identities_rewired, "peephole.identities-rewired");
+        pass_work!(simplify_blocks_scanned, "simplify.blocks-scanned");
+        pass_work!(simplify_branches_folded, "simplify.branches-folded");
+        pass_work!(simplify_switches_folded, "simplify.switches-folded");
+        pass_work!(simplify_edges_threaded, "simplify.edges-threaded");
+        pass_work!(simplify_forwarders_resolved, "simplify.forwarders-resolved");
+        pass_work!(simplify_blocks_merged, "simplify.blocks-merged");
+        pass_work!(forward_insts_scanned, "forward.insts-scanned");
+        pass_work!(forward_loads_single_write, "forward.loads-single-write");
+        pass_work!(forward_loads_block_local, "forward.loads-block-local");
+        pass_work!(
+            forward_rule1_dominance_pairs_checked,
+            "forward.rule1-dominance-pairs-checked"
+        );
+        pass_work!(
+            forward_dominator_computations,
+            "forward.dominator-computations"
+        );
+        pass_work!(cse_insts_scanned, "cse.insts-scanned");
+        pass_work!(cse_duplicates_replaced, "cse.duplicates-replaced");
+        pass_work!(cse_max_table_entries_sum, "cse.max-table-entries");
+        pass_work!(cse_dominator_computations, "cse.dominator-computations");
+        pass_work!(
+            preheader_normalization_forest_computations,
+            "preheader-normalization.forest-computations"
+        );
+        pass_work!(
+            preheader_normalization_loops_examined,
+            "preheader-normalization.loops-examined"
+        );
+        pass_work!(
+            preheader_normalization_preheaders_materialized,
+            "preheader-normalization.preheaders-materialized"
+        );
+        pass_work!(
+            preheader_normalization_verifier_dominator_computations,
+            "preheader-normalization.verifier-dominator-computations"
+        );
+        pass_work!(licm_forest_computations, "licm.forest-computations");
+        pass_work!(licm_def_block_scans, "licm.def-block-scans");
+        pass_work!(licm_loops_analyzed, "licm.loops-analyzed");
+        pass_work!(licm_instructions_examined, "licm.instructions-examined");
+        pass_work!(
+            licm_slot_fact_instructions_scanned,
+            "licm.slot-fact-instructions-scanned"
+        );
+        pass_work!(
+            licm_slot_fact_entries_initialized,
+            "licm.slot-fact-entries-initialized"
+        );
+        pass_work!(
+            licm_slot_fact_workspace_growths,
+            "licm.slot-fact-workspace-growths"
+        );
+        pass_work!(licm_candidate_dependencies, "licm.candidate-dependencies");
+        pass_work!(licm_worklist_pops, "licm.worklist-pops");
+        pass_work!(licm_invariants_hoisted, "licm.invariants-hoisted");
+        pass_work!(licm_hoist_workspace_growths, "licm.hoist-workspace-growths");
+        pass_work!(unroll_forest_computations, "unroll.forest-computations");
+        pass_work!(unroll_loops_analyzed, "loops-analyzed");
+        pass_work!(unroll_loops_unrolled, "loops-unrolled");
+        pass_work!(unroll_budget_refusals, "budget-refusals");
+        pass_work!(unroll_shape_refusals, "unroll.shape-refusals");
+        pass_work!(unroll_blocks_cloned, "unroll.blocks-cloned");
+        pass_work!(unroll_values_cloned, "unroll.values-cloned");
+        pass_work!(unroll_instructions_cloned, "unroll.instructions-cloned");
+        pass_work!(
+            publication_verifier_dominator_computations,
+            "publication-verifier-dominator-computations"
+        );
+        passes.accessor_splice_imported_callee_verifier_dominator_computations +=
+            batch_work("cfg.accessor-splice.imported-callee-verifier-dominator-computations");
+        passes.accessor_splice_preoptimization_verifier_dominator_computations +=
+            batch_work("cfg.accessor-splice.preoptimization-verifier-dominator-computations");
+        passes.general_inline_splice_imported_callee_verifier_dominator_computations +=
+            batch_work("cfg.general-inline.imported-callee-verifier-dominator-computations");
+        passes.inline_splice_pre_reoptimization_verifier_dominator_computations +=
+            batch_work("cfg.general-inline.pre-reoptimization-verifier-dominator-computations");
         work.cfg.optimization_inline_budget_refusals +=
             batch_work("cfg.general-inline-budget-refusals");
         work.cfg.optimization_inline_importability_refusals +=

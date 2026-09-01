@@ -805,7 +805,9 @@ mod tests {
     fn the_work_digest_preimage_serializes_every_group() {
         // `CompilerWork` is the v3 work-digest preimage. Retired v2 lowering
         // evidence is intentionally absent from this public wire shape.
-        let canonical = crate::canonical::canonical_json(&CompilerWork::default()).unwrap();
+        let mut work = CompilerWork::default();
+        work.cfg_optimization.constopt_fold_attempts = 1;
+        let canonical = crate::canonical::canonical_json(&work).unwrap();
         for field in [
             "candidate_body_plan_construction",
             "candidate_body_plan_materialization",
@@ -817,6 +819,7 @@ mod tests {
             "cfg_prerequisites",
             "cfg_retained_charge",
             "cfg_local_epoch",
+            "cfg_optimization",
             "query_runtime",
             "publication",
         ] {
@@ -825,6 +828,22 @@ mod tests {
                 "{field} omitted"
             );
         }
+        assert_ne!(
+            work_digest(&work).unwrap(),
+            work_digest(&CompilerWork::default()).unwrap(),
+            "nonzero optimizer work must participate in work.2"
+        );
+    }
+
+    #[test]
+    fn zero_cfg_optimization_preserves_the_legacy_work2_preimage() {
+        let work = CompilerWork::default();
+        let canonical = crate::canonical::canonical_json(&work).unwrap();
+        assert!(!canonical.contains("\"cfg_optimization\":"), "{canonical}");
+        assert_eq!(
+            work_digest(&work).unwrap(),
+            "a0f93c49a0b63bf6009aa3b3e6e1b78b599eb2187b20fcae6988e2cfaa7e8bd9"
+        );
     }
 
     #[test]

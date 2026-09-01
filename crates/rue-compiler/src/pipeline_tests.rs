@@ -4172,6 +4172,42 @@ mod tests {
             work.optimization_reoptimization_attempts,
             work.optimization_reoptimization_completions
         );
+        assert_eq!(
+            work.optimization_passes.cse_dominator_computations,
+            work.optimization_attempts + work.optimization_reoptimization_attempts,
+            "every successful O3 optimize_with_budget owner publishes its CSE analysis build"
+        );
+        assert_eq!(
+            work.optimization_passes
+                .publication_verifier_dominator_computations,
+            work.optimization_attempts + work.optimization_reoptimization_attempts,
+            "every successful optimize_with_budget owner runs one publication verifier"
+        );
+        assert_eq!(
+            work.optimization_passes
+                .inline_splice_pre_reoptimization_verifier_dominator_computations,
+            work.optimization_reoptimization_attempts,
+            "each changed-caller batch is verified before its reoptimization"
+        );
+        assert_eq!(
+            work.optimization_passes
+                .general_inline_splice_imported_callee_verifier_dominator_computations,
+            2,
+            "the two accepted inline splices each verify their imported callee"
+        );
+        assert_eq!(
+            work.optimization_passes
+                .accessor_splice_preoptimization_verifier_dominator_computations,
+            0,
+            "this fixture has no mandatory accessor batch"
+        );
+        assert_eq!(
+            work.optimization_passes.unroll_forest_computations,
+            work.optimization_attempts
+                + work.optimization_reoptimization_attempts
+                + work.optimization_passes.unroll_loops_unrolled,
+            "each run builds its initial forest and each successful unroll rebuilds it"
+        );
         let mut fresh_budget = rue_cfg::opt::CodeGrowthBudget::o3();
         assert!(fresh_budget.try_charge(rue_cfg::opt::CodeGrowth {
             values: EXPECTED_REOPT_ATTEMPT_VALUES,
@@ -4272,7 +4308,7 @@ mod tests {
     fn phase5_accessor_splice_reaches_backend_and_linker() {
         let snapshot = SourceSnapshot::single(
             "<phase5-accessor-backend>",
-            "struct Point { value: i32, fn read(borrow self) -> borrow i32 { yield self.value; } } fn main() -> i32 { let point = Point { value: 7 }; @dbg(point.read()); 0 }",
+            "struct Point { value: i32, fn read(borrow self) -> borrow i32 { yield self.value; } } fn main() -> i32 { let point = Point { value: 7 }; @dbg(point.read()); @dbg(point.read()); 0 }",
         )
         .unwrap();
         let mut session = CompilerSession::new();
@@ -4288,6 +4324,24 @@ mod tests {
             let output = session
                 .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
                 .unwrap();
+            assert_eq!(
+                output
+                    .work
+                    .cfg
+                    .optimization_passes
+                    .accessor_splice_preoptimization_verifier_dominator_computations,
+                1,
+                "one mandatory accessor batch is verified before optimization at {opt_level:?}"
+            );
+            assert_eq!(
+                output
+                    .work
+                    .cfg
+                    .optimization_passes
+                    .accessor_splice_imported_callee_verifier_dominator_computations,
+                2,
+                "both mandatory splices verify their imported callee at {opt_level:?}"
+            );
             let main = output
                 .cfgs
                 .iter()

@@ -562,6 +562,61 @@ fn o3_publishes_unrolled_work_for_canonical_slot_loop() {
         .unwrap();
     assert!(o3.work().cfg.optimization_loops_unrolled > 0);
     assert!(o3.work().cfg.optimization_loops_unrolled <= o3.work().cfg.optimization_loops_analyzed);
+    assert_eq!(
+        o3.work().cfg.optimization_passes,
+        crate::canonical_semantic::CfgOptimizationWork {
+            constopt_fold_attempts: 43,
+            constopt_folded: 6,
+            constopt_loads_rewritten: 0,
+            peephole_divmods_reduced: 0,
+            peephole_identities_rewired: 0,
+            simplify_blocks_scanned: 14,
+            simplify_branches_folded: 0,
+            simplify_switches_folded: 0,
+            simplify_edges_threaded: 0,
+            simplify_forwarders_resolved: 0,
+            simplify_blocks_merged: 7,
+            forward_insts_scanned: 14,
+            forward_loads_single_write: 0,
+            forward_loads_block_local: 0,
+            forward_rule1_dominance_pairs_checked: 0,
+            forward_dominator_computations: 0,
+            cse_insts_scanned: 14,
+            cse_duplicates_replaced: 0,
+            cse_max_table_entries_sum: 6,
+            cse_dominator_computations: 1,
+            preheader_normalization_forest_computations: 1,
+            preheader_normalization_loops_examined: 1,
+            preheader_normalization_preheaders_materialized: 0,
+            preheader_normalization_verifier_dominator_computations: 0,
+            licm_forest_computations: 1,
+            licm_def_block_scans: 1,
+            licm_loops_analyzed: 1,
+            licm_instructions_examined: 8,
+            licm_slot_fact_instructions_scanned: 8,
+            licm_slot_fact_entries_initialized: 1,
+            licm_slot_fact_workspace_growths: 1,
+            licm_candidate_dependencies: 1,
+            licm_worklist_pops: 3,
+            licm_invariants_hoisted: 3,
+            // Deliberate regression sentinel: production O3 must surface the
+            // reusable LICM discovery workspace growth, not discard it.
+            licm_hoist_workspace_growths: 1,
+            unroll_forest_computations: 2,
+            unroll_loops_analyzed: 1,
+            unroll_loops_unrolled: 1,
+            unroll_budget_refusals: 0,
+            unroll_shape_refusals: 0,
+            unroll_blocks_cloned: 6,
+            unroll_values_cloned: 15,
+            unroll_instructions_cloned: 15,
+            publication_verifier_dominator_computations: 1,
+            accessor_splice_imported_callee_verifier_dominator_computations: 0,
+            accessor_splice_preoptimization_verifier_dominator_computations: 0,
+            general_inline_splice_imported_callee_verifier_dominator_computations: 0,
+            inline_splice_pre_reoptimization_verifier_dominator_computations: 0,
+        }
+    );
 }
 
 fn c_ffi_options() -> CompileOptions {

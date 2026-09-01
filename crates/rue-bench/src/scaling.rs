@@ -1194,6 +1194,7 @@ mod tests {
                     functions: 1,
                 },
                 work: rue_perf_schema::CompilerWork {
+                    cfg_optimization: rue_perf_schema::CfgOptimizationWork::default(),
                     legacy_v2_semantic_body_structure: None,
                     candidate_body_plan_construction:
                         rue_perf_schema::CandidateBodyPlanWork::default(),

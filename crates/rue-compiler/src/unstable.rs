@@ -2669,6 +2669,123 @@ pub struct SemanticCfgMetrics {
     pub cfg_builds_attempted: usize,
     pub cfg_builds_succeeded: usize,
     pub cfg_builds_failed: usize,
+    pub optimization_passes: CfgOptimizationMetrics,
+}
+
+/// Bounded CFG optimizer work exposed to performance-record producers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CfgOptimizationMetrics {
+    pub constopt_fold_attempts: usize,
+    pub constopt_folded: usize,
+    pub constopt_loads_rewritten: usize,
+    pub peephole_divmods_reduced: usize,
+    pub peephole_identities_rewired: usize,
+    pub simplify_blocks_scanned: usize,
+    pub simplify_branches_folded: usize,
+    pub simplify_switches_folded: usize,
+    pub simplify_edges_threaded: usize,
+    pub simplify_forwarders_resolved: usize,
+    pub simplify_blocks_merged: usize,
+    pub forward_insts_scanned: usize,
+    pub forward_loads_single_write: usize,
+    pub forward_loads_block_local: usize,
+    pub forward_rule1_dominance_pairs_checked: usize,
+    pub forward_dominator_computations: usize,
+    pub cse_insts_scanned: usize,
+    pub cse_duplicates_replaced: usize,
+    pub cse_max_table_entries_sum: usize,
+    pub cse_dominator_computations: usize,
+    pub preheader_normalization_forest_computations: usize,
+    pub preheader_normalization_loops_examined: usize,
+    pub preheader_normalization_preheaders_materialized: usize,
+    pub preheader_normalization_verifier_dominator_computations: usize,
+    pub licm_forest_computations: usize,
+    pub licm_def_block_scans: usize,
+    pub licm_loops_analyzed: usize,
+    pub licm_instructions_examined: usize,
+    pub licm_slot_fact_instructions_scanned: usize,
+    pub licm_slot_fact_entries_initialized: usize,
+    pub licm_slot_fact_workspace_growths: usize,
+    pub licm_candidate_dependencies: usize,
+    pub licm_worklist_pops: usize,
+    pub licm_invariants_hoisted: usize,
+    pub licm_hoist_workspace_growths: usize,
+    pub unroll_forest_computations: usize,
+    pub unroll_loops_analyzed: usize,
+    pub unroll_loops_unrolled: usize,
+    pub unroll_budget_refusals: usize,
+    pub unroll_shape_refusals: usize,
+    pub unroll_blocks_cloned: usize,
+    pub unroll_values_cloned: usize,
+    pub unroll_instructions_cloned: usize,
+    pub publication_verifier_dominator_computations: usize,
+    pub accessor_splice_imported_callee_verifier_dominator_computations: usize,
+    pub accessor_splice_preoptimization_verifier_dominator_computations: usize,
+    pub general_inline_splice_imported_callee_verifier_dominator_computations: usize,
+    pub inline_splice_pre_reoptimization_verifier_dominator_computations: usize,
+}
+
+impl From<crate::canonical_semantic::CfgOptimizationWork> for CfgOptimizationMetrics {
+    fn from(work: crate::canonical_semantic::CfgOptimizationWork) -> Self {
+        Self {
+            constopt_fold_attempts: work.constopt_fold_attempts,
+            constopt_folded: work.constopt_folded,
+            constopt_loads_rewritten: work.constopt_loads_rewritten,
+            peephole_divmods_reduced: work.peephole_divmods_reduced,
+            peephole_identities_rewired: work.peephole_identities_rewired,
+            simplify_blocks_scanned: work.simplify_blocks_scanned,
+            simplify_branches_folded: work.simplify_branches_folded,
+            simplify_switches_folded: work.simplify_switches_folded,
+            simplify_edges_threaded: work.simplify_edges_threaded,
+            simplify_forwarders_resolved: work.simplify_forwarders_resolved,
+            simplify_blocks_merged: work.simplify_blocks_merged,
+            forward_insts_scanned: work.forward_insts_scanned,
+            forward_loads_single_write: work.forward_loads_single_write,
+            forward_loads_block_local: work.forward_loads_block_local,
+            forward_rule1_dominance_pairs_checked: work.forward_rule1_dominance_pairs_checked,
+            forward_dominator_computations: work.forward_dominator_computations,
+            cse_insts_scanned: work.cse_insts_scanned,
+            cse_duplicates_replaced: work.cse_duplicates_replaced,
+            cse_max_table_entries_sum: work.cse_max_table_entries_sum,
+            cse_dominator_computations: work.cse_dominator_computations,
+            preheader_normalization_forest_computations: work
+                .preheader_normalization_forest_computations,
+            preheader_normalization_loops_examined: work.preheader_normalization_loops_examined,
+            preheader_normalization_preheaders_materialized: work
+                .preheader_normalization_preheaders_materialized,
+            preheader_normalization_verifier_dominator_computations: work
+                .preheader_normalization_verifier_dominator_computations,
+            licm_forest_computations: work.licm_forest_computations,
+            licm_def_block_scans: work.licm_def_block_scans,
+            licm_loops_analyzed: work.licm_loops_analyzed,
+            licm_instructions_examined: work.licm_instructions_examined,
+            licm_slot_fact_instructions_scanned: work.licm_slot_fact_instructions_scanned,
+            licm_slot_fact_entries_initialized: work.licm_slot_fact_entries_initialized,
+            licm_slot_fact_workspace_growths: work.licm_slot_fact_workspace_growths,
+            licm_candidate_dependencies: work.licm_candidate_dependencies,
+            licm_worklist_pops: work.licm_worklist_pops,
+            licm_invariants_hoisted: work.licm_invariants_hoisted,
+            licm_hoist_workspace_growths: work.licm_hoist_workspace_growths,
+            unroll_forest_computations: work.unroll_forest_computations,
+            unroll_loops_analyzed: work.unroll_loops_analyzed,
+            unroll_loops_unrolled: work.unroll_loops_unrolled,
+            unroll_budget_refusals: work.unroll_budget_refusals,
+            unroll_shape_refusals: work.unroll_shape_refusals,
+            unroll_blocks_cloned: work.unroll_blocks_cloned,
+            unroll_values_cloned: work.unroll_values_cloned,
+            unroll_instructions_cloned: work.unroll_instructions_cloned,
+            publication_verifier_dominator_computations: work
+                .publication_verifier_dominator_computations,
+            accessor_splice_imported_callee_verifier_dominator_computations: work
+                .accessor_splice_imported_callee_verifier_dominator_computations,
+            accessor_splice_preoptimization_verifier_dominator_computations: work
+                .accessor_splice_preoptimization_verifier_dominator_computations,
+            general_inline_splice_imported_callee_verifier_dominator_computations: work
+                .general_inline_splice_imported_callee_verifier_dominator_computations,
+            inline_splice_pre_reoptimization_verifier_dominator_computations: work
+                .inline_splice_pre_reoptimization_verifier_dominator_computations,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2786,6 +2903,7 @@ impl SemanticMetrics {
                 cfg_builds_attempted: work.cfg.cfg_builds_attempted,
                 cfg_builds_succeeded: work.cfg.cfg_builds_succeeded,
                 cfg_builds_failed: work.cfg.cfg_builds_failed,
+                optimization_passes: work.cfg.optimization_passes.into(),
             },
         }
     }
