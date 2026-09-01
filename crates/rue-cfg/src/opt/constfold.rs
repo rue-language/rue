@@ -22,6 +22,38 @@ use std::cmp::Ordering;
 use crate::{Cfg, CfgInstData, CfgValue};
 use rue_air::{EnumId, Type};
 
+/// Whether this instruction belongs to the fold kernel's operand-driven
+/// domain. Constopt snapshots exactly this set so its published attempt count
+/// remains one seed plus one event per foldable operand edge, even after a
+/// user has already folded and changed shape.
+pub(super) fn is_foldable_instruction(cfg: &Cfg, value: CfgValue) -> bool {
+    matches!(
+        cfg.get_inst(value).data,
+        CfgInstData::Add(..)
+            | CfgInstData::Sub(..)
+            | CfgInstData::Mul(..)
+            | CfgInstData::WrappingAdd(..)
+            | CfgInstData::WrappingSub(..)
+            | CfgInstData::WrappingMul(..)
+            | CfgInstData::Div(..)
+            | CfgInstData::Mod(..)
+            | CfgInstData::Eq(..)
+            | CfgInstData::Ne(..)
+            | CfgInstData::Lt(..)
+            | CfgInstData::Gt(..)
+            | CfgInstData::Le(..)
+            | CfgInstData::Ge(..)
+            | CfgInstData::BitAnd(..)
+            | CfgInstData::BitOr(..)
+            | CfgInstData::BitXor(..)
+            | CfgInstData::Shl(..)
+            | CfgInstData::Shr(..)
+            | CfgInstData::Neg(..)
+            | CfgInstData::Not(..)
+            | CfgInstData::BitNot(..)
+    )
+}
+
 /// Try to fold a single instruction if it operates on constants.
 /// Returns `true` if the instruction was replaced by a constant.
 ///

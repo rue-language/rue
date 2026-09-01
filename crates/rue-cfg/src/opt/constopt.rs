@@ -37,6 +37,7 @@ use crate::{Cfg, CfgInstData, CfgValue};
 
 use super::constfold;
 use super::slot_facts::{self, SlotWrites};
+use super::use_index::CfgUseIndex;
 
 /// Work counters for one run.
 ///
@@ -85,49 +86,35 @@ pub fn run(cfg: &mut Cfg) -> Stats {
     // which scanned every value; orphaned instructions are folded too and
     // swept by DCE afterwards):
     //
-    // - `users[v]`: foldable instructions that read v as an operand, to
-    //   re-attempt when v becomes constant.
+    // - `use_index.users(v)`: foldable instructions that read v as an
+    //   operand, to re-attempt when v becomes constant.
     // - `loads_of_slot[s]`: the Loads to rewrite when slot s's single write
     //   becomes constant.
     // - `init_watchers[v]`: slots whose single whole-slot write initializes
     //   from v, resolved when v becomes constant.
     // ------------------------------------------------------------------
-    let mut users: Vec<Vec<CfgValue>> = vec![Vec::new(); value_count];
+    // This index intentionally remains the pre-fold snapshot while the event
+    // loop replaces instructions with constants. That is the established
+    // sparse algorithm: every original foldable edge produces exactly one
+    // re-attempt when its operand becomes constant. Rebuilding after each fold
+    // would both change the RUE-1868 counter meaning and turn the pass into an
+    // incremental-use-list project.
+    let mut use_index = CfgUseIndex::default();
+    use_index
+        .rebuild(
+            cfg,
+            (0..value_count)
+                .map(|i| CfgValue::from_raw(i as u32))
+                .filter(|&value| constfold::is_foldable_instruction(cfg, value)),
+        )
+        .expect("verified CFG operands belong to this value domain");
     let mut loads_of_slot: Vec<Vec<CfgValue>> = vec![Vec::new(); num_locals];
     for i in 0..value_count {
         let value = CfgValue::from_raw(i as u32);
-        match &cfg.get_inst(value).data {
-            CfgInstData::Add(a, b)
-            | CfgInstData::Sub(a, b)
-            | CfgInstData::Mul(a, b)
-            | CfgInstData::WrappingAdd(a, b)
-            | CfgInstData::WrappingSub(a, b)
-            | CfgInstData::WrappingMul(a, b)
-            | CfgInstData::Div(a, b)
-            | CfgInstData::Mod(a, b)
-            | CfgInstData::Eq(a, b)
-            | CfgInstData::Ne(a, b)
-            | CfgInstData::Lt(a, b)
-            | CfgInstData::Gt(a, b)
-            | CfgInstData::Le(a, b)
-            | CfgInstData::Ge(a, b)
-            | CfgInstData::BitAnd(a, b)
-            | CfgInstData::BitOr(a, b)
-            | CfgInstData::BitXor(a, b)
-            | CfgInstData::Shl(a, b)
-            | CfgInstData::Shr(a, b) => {
-                users[a.as_u32() as usize].push(value);
-                users[b.as_u32() as usize].push(value);
+        if let CfgInstData::Load { slot } = &cfg.get_inst(value).data {
+            if let Some(loads) = loads_of_slot.get_mut(*slot as usize) {
+                loads.push(value);
             }
-            CfgInstData::Neg(a) | CfgInstData::Not(a) | CfgInstData::BitNot(a) => {
-                users[a.as_u32() as usize].push(value);
-            }
-            CfgInstData::Load { slot } => {
-                if let Some(loads) = loads_of_slot.get_mut(*slot as usize) {
-                    loads.push(value);
-                }
-            }
-            _ => {}
         }
     }
 
@@ -166,7 +153,10 @@ pub fn run(cfg: &mut Cfg) -> Stats {
     while let Some(value) = became_const.pop_front() {
         let idx = value.as_u32() as usize;
 
-        for &user in &users[idx] {
+        for &user in use_index
+            .users(cfg, value)
+            .expect("constopt owns the indexed CFG and preserves value types")
+        {
             stats.fold_attempts += 1;
             if constfold::fold_instruction(cfg, user) {
                 stats.folded += 1;

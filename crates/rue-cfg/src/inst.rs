@@ -12,7 +12,7 @@
 //! This design follows Rust MIR's proven approach and eliminates redundant
 //! Load instructions for nested access patterns like `arr[i].field`.
 
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 #[cfg(test)]
 use std::cell::Cell;
@@ -350,6 +350,25 @@ impl CfgValue {
     #[inline]
     pub const fn as_u32(self) -> u32 {
         self.0
+    }
+}
+
+/// Stable identity for one physical CFG owner.
+///
+/// An index retains a clone of this token, so allocator address reuse cannot
+/// counterfeit an owner. `Cfg::clone` deliberately mints a fresh token: the
+/// clone is a peer graph whose equal numeric values do not belong to the
+/// original owner.
+#[derive(Debug, Clone)]
+pub(crate) struct CfgOwnerIdentity(Arc<()>);
+
+impl CfgOwnerIdentity {
+    fn new() -> Self {
+        Self(Arc::new(()))
+    }
+
+    pub(crate) fn same_owner(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -716,6 +735,10 @@ impl BasicBlock {
 /// The complete CFG for a function.
 #[derive(Debug)]
 pub struct Cfg {
+    /// Exact identity of this complete CFG owner. Peer clones receive a fresh
+    /// identity; lightweight snapshots may retain this token to reject a
+    /// same-address replacement.
+    owner_identity: CfgOwnerIdentity,
     /// All basic blocks
     blocks: Vec<BasicBlock>,
     /// Entry block
@@ -1054,6 +1077,7 @@ impl Clone for Cfg {
         #[cfg(test)]
         CFG_CLONE_COUNT.with(|count| count.set(count.get() + 1));
         Self {
+            owner_identity: CfgOwnerIdentity::new(),
             blocks: self
                 .blocks
                 .iter()
@@ -1398,6 +1422,7 @@ impl Cfg {
         param_modes: impl Into<ParamSlotModes>,
     ) -> Self {
         Self {
+            owner_identity: CfgOwnerIdentity::new(),
             blocks: Vec::new(),
             entry: BlockId(0),
             return_type,
@@ -1417,6 +1442,11 @@ impl Cfg {
             source_param_abi: Vec::new(),
             capacity_exceeded: None,
         }
+    }
+
+    /// Exact owner token for owner-bound internal indexes.
+    pub(crate) fn owner_identity(&self) -> &CfgOwnerIdentity {
+        &self.owner_identity
     }
 
     /// Install the grouped per-source-parameter ABI descriptors derived by the

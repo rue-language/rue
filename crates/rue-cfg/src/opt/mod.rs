@@ -37,6 +37,7 @@ mod peephole;
 mod simplify;
 mod slot_facts;
 mod unroll;
+mod use_index;
 
 use crate::{CfgEditError, CfgVerificationError, ValidatedCfg};
 use rue_air::FrozenTypeInternPool;
@@ -154,6 +155,9 @@ pub struct OptimizationStats {
     pub licm_slot_fact_instructions_scanned: u64,
     pub licm_slot_fact_entries_initialized: u64,
     pub licm_slot_fact_workspace_growths: u64,
+    pub licm_use_index_users_visited: u64,
+    pub licm_use_index_edges_visited: u64,
+    pub licm_use_index_domain_entries_initialized: u64,
     pub licm_candidate_dependencies: u64,
     pub licm_worklist_pops: u64,
     pub licm_invariants_hoisted: u64,
@@ -227,6 +231,9 @@ impl OptimizationStats {
         self.licm_slot_fact_instructions_scanned += pass.slot_fact_instructions_scanned;
         self.licm_slot_fact_entries_initialized += pass.slot_fact_entries_initialized;
         self.licm_slot_fact_workspace_growths += pass.slot_fact_workspace_growths;
+        self.licm_use_index_users_visited += pass.use_index_users_visited;
+        self.licm_use_index_edges_visited += pass.use_index_edges_visited;
+        self.licm_use_index_domain_entries_initialized += pass.use_index_domain_entries_initialized;
         self.licm_candidate_dependencies += pass.candidate_dependencies;
         self.licm_worklist_pops += pass.worklist_pops;
         self.licm_invariants_hoisted += pass.invariants_hoisted;
