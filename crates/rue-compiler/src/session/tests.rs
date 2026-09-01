@@ -596,6 +596,11 @@ fn o3_publishes_unrolled_work_for_canonical_slot_loop() {
             licm_slot_fact_instructions_scanned: 8,
             licm_slot_fact_entries_initialized: 1,
             licm_slot_fact_workspace_growths: 1,
+            // Production-pipeline sentinels: candidate use-index work must
+            // survive batch publication and rooted work projection.
+            licm_use_index_users_visited: 8,
+            licm_use_index_edges_visited: 4,
+            licm_use_index_domain_entries_initialized: 14,
             licm_candidate_dependencies: 1,
             licm_worklist_pops: 3,
             licm_invariants_hoisted: 3,

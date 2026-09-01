@@ -1170,6 +1170,12 @@ impl CompilerSession {
             licm_slot_fact_workspace_growths,
             "licm.slot-fact-workspace-growths"
         );
+        pass_work!(licm_use_index_users_visited, "licm.use-index-users-visited");
+        pass_work!(licm_use_index_edges_visited, "licm.use-index-edges-visited");
+        pass_work!(
+            licm_use_index_domain_entries_initialized,
+            "licm.use-index-domain-entries-initialized"
+        );
         pass_work!(licm_candidate_dependencies, "licm.candidate-dependencies");
         pass_work!(licm_worklist_pops, "licm.worklist-pops");
         pass_work!(licm_invariants_hoisted, "licm.invariants-hoisted");

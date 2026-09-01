@@ -607,9 +607,12 @@ retains only the unrelated semantic-analysis evidence; the retired body-lowering
 and index subgroup is accepted only by the private v2 decoder and is never
 rendered or emitted by v3.
 
-The scaling-report wire revision is 26. Revision 26 adds bounded CFG optimizer
-work, including pass-owned analysis and verifier dominator computations, while
-omitting the all-zero group so stored v3 `work.2` preimages remain valid.
+The scaling-report wire revision is 27. Revision 27 adds LICM sparse use-index
+user, operand-edge, and amortized value-domain initialization work to the
+bounded CFG optimizer group. These fields default to and omit zero so revision
+26 stored v3 `work.2` preimages remain valid. Revision 26 introduced the group,
+including pass-owned analysis and verifier dominator computations, while
+omitting the all-zero group so earlier stored v3 preimages remain valid.
 Canonical-RIR presentation reports `requests_computed` only: the current presentation query
 does not reuse a published result, so no synthetic reuse counter is exposed.
 The candidate-plan fields report query-terminal computed/reused counts and

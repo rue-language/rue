@@ -3402,6 +3402,12 @@ fn record_optimization_stats(
         "licm.slot-fact-workspace-growths",
         licm_slot_fact_workspace_growths
     );
+    record!("licm.use-index-users-visited", licm_use_index_users_visited);
+    record!("licm.use-index-edges-visited", licm_use_index_edges_visited);
+    record!(
+        "licm.use-index-domain-entries-initialized",
+        licm_use_index_domain_entries_initialized
+    );
     record!("licm.candidate-dependencies", licm_candidate_dependencies);
     record!("licm.worklist-pops", licm_worklist_pops);
     record!("licm.invariants-hoisted", licm_invariants_hoisted);

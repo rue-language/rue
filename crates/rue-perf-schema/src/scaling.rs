@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 26;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 27;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -686,6 +686,15 @@ pub struct CfgOptimizationWork {
     pub licm_slot_fact_instructions_scanned: u64,
     pub licm_slot_fact_entries_initialized: u64,
     pub licm_slot_fact_workspace_growths: u64,
+    /// Candidate instructions physically visited by sparse CSR refills.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub licm_use_index_users_visited: u64,
+    /// Candidate operand edges physically visited by sparse CSR refills.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub licm_use_index_edges_visited: u64,
+    /// Dense value-domain entries initialized on amortized index growth.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub licm_use_index_domain_entries_initialized: u64,
     pub licm_candidate_dependencies: u64,
     pub licm_worklist_pops: u64,
     pub licm_invariants_hoisted: u64,
@@ -844,6 +853,28 @@ question = "small maintained compiler frontend"
         encoded.as_object_mut().unwrap().remove("cfg_optimization");
         let decoded: CompilerWork = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.cfg_optimization, CfgOptimizationWork::default());
+    }
+
+    #[test]
+    fn revision_26_cfg_optimization_defaults_new_licm_use_index_work() {
+        let mut work = CompilerWork::default();
+        work.cfg_optimization.licm_forest_computations = 1;
+        let encoded = serde_json::to_value(work).unwrap();
+        let cfg_optimization = encoded["cfg_optimization"].as_object().unwrap();
+        assert!(!cfg_optimization.contains_key("licm_use_index_users_visited"));
+        assert!(!cfg_optimization.contains_key("licm_use_index_edges_visited"));
+        assert!(!cfg_optimization.contains_key("licm_use_index_domain_entries_initialized"));
+
+        let decoded: CompilerWork = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.cfg_optimization.licm_forest_computations, 1);
+        assert_eq!(decoded.cfg_optimization.licm_use_index_users_visited, 0);
+        assert_eq!(decoded.cfg_optimization.licm_use_index_edges_visited, 0);
+        assert_eq!(
+            decoded
+                .cfg_optimization
+                .licm_use_index_domain_entries_initialized,
+            0
+        );
     }
 
     #[test]

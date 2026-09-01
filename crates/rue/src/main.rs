@@ -1481,6 +1481,11 @@ fn benchmark_compiler_work(
                     as u64,
                 licm_slot_fact_entries_initialized: work.licm_slot_fact_entries_initialized as u64,
                 licm_slot_fact_workspace_growths: work.licm_slot_fact_workspace_growths as u64,
+                licm_use_index_users_visited: work.licm_use_index_users_visited as u64,
+                licm_use_index_edges_visited: work.licm_use_index_edges_visited as u64,
+                licm_use_index_domain_entries_initialized: work
+                    .licm_use_index_domain_entries_initialized
+                    as u64,
                 licm_candidate_dependencies: work.licm_candidate_dependencies as u64,
                 licm_worklist_pops: work.licm_worklist_pops as u64,
                 licm_invariants_hoisted: work.licm_invariants_hoisted as u64,
@@ -2262,6 +2267,9 @@ mod tests {
                         cse_dominator_computations: 59,
                         licm_forest_computations: 61,
                         licm_hoist_workspace_growths: 67,
+                        licm_use_index_users_visited: 68,
+                        licm_use_index_edges_visited: 69,
+                        licm_use_index_domain_entries_initialized: 70,
                         unroll_forest_computations: 71,
                         preheader_normalization_verifier_dominator_computations: 73,
                         publication_verifier_dominator_computations: 79,
@@ -2412,6 +2420,14 @@ mod tests {
         assert_eq!(projected.cfg_optimization.cse_dominator_computations, 59);
         assert_eq!(projected.cfg_optimization.licm_forest_computations, 61);
         assert_eq!(projected.cfg_optimization.licm_hoist_workspace_growths, 67);
+        assert_eq!(projected.cfg_optimization.licm_use_index_users_visited, 68);
+        assert_eq!(projected.cfg_optimization.licm_use_index_edges_visited, 69);
+        assert_eq!(
+            projected
+                .cfg_optimization
+                .licm_use_index_domain_entries_initialized,
+            70
+        );
         assert_eq!(projected.cfg_optimization.unroll_forest_computations, 71);
         assert_eq!(
             projected

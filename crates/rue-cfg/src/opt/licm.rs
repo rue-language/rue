@@ -120,6 +120,15 @@ pub struct Stats {
     pub slot_fact_workspace_growths: u64,
     /// Def-use edges between hoist candidates in the same loop body.
     pub candidate_dependencies: u64,
+    /// Candidate user instructions physically visited by sparse use-index CSR
+    /// refills. Two visits per candidate are the count/fill passes; unrelated
+    /// whole-function values do not contribute after amortized domain growth.
+    pub use_index_users_visited: u64,
+    /// Candidate operand edges physically visited by CSR count/fill passes.
+    pub use_index_edges_visited: u64,
+    /// Dense value-domain entries initialized while the reusable generation
+    /// maps grow. Bounded by the maximum value domain, not loops times values.
+    pub use_index_domain_entries_initialized: u64,
     /// Invariant candidates removed from the discovery worklist.
     pub worklist_pops: u64,
     /// Instructions moved into a preheader across all loops.
@@ -202,8 +211,9 @@ pub fn run(
 /// fresh set per loop meant six allocations proportional to the whole function
 /// for every loop in the run, paid in full even by a loop with no
 /// candidates at all, since they are built before the zero-hoist early return.
-/// `pending` alone is 8 bytes per value and `dependents` a 24-byte `Vec` header
-/// per value before a single push.
+/// `pending` alone is 8 bytes per value. Candidate adjacency is kept in one
+/// reusable CSR [`super::use_index::CfgUseIndex`] rather than a `Vec` header
+/// per value before a single edge is pushed.
 ///
 /// Reuse is only sound because every table's written set is bounded by
 /// `candidate_values` (and `in_loop` by `in_loop_blocks`), so resetting just
@@ -223,7 +233,7 @@ struct HoistWorkspace {
     candidate_values: Vec<CfgValue>,
     pending: Vec<usize>,
     blocked: Vec<bool>,
-    dependents: Vec<Vec<CfgValue>>,
+    use_index: super::use_index::CfgUseIndex,
     invariant: Vec<bool>,
     order: Vec<CfgValue>,
     worklist: VecDeque<CfgValue>,
@@ -239,9 +249,6 @@ impl HoistWorkspace {
             self.pending[idx] = 0;
             self.blocked[idx] = false;
             self.invariant[idx] = false;
-            // Clearing keeps the capacity, which is the point: the per-value
-            // `Vec` headers are allocated once and refilled.
-            self.dependents[idx].clear();
         }
         self.candidate_values.clear();
         for &block in &self.in_loop_blocks {
@@ -266,7 +273,6 @@ impl HoistWorkspace {
             self.pending.resize(values, 0);
             self.blocked.resize(values, false);
             self.invariant.resize(values, false);
-            self.dependents.resize_with(values, Vec::new);
         }
         if grow_blocks {
             self.in_loop.resize(blocks, false);
@@ -299,7 +305,7 @@ fn hoist_loop(
         candidate_values,
         pending,
         blocked,
-        dependents,
+        use_index,
         invariant,
         order,
         worklist,
@@ -323,6 +329,18 @@ fn hoist_loop(
         }
     }
 
+    // Refill adjacency in candidate discovery order. That preserves the old
+    // dependents-list order (and duplicate operands) exactly while reusing one
+    // compact allocation across loop visits. LICM only moves instructions
+    // between blocks below; it never rewrites operands, so this snapshot stays
+    // valid until the next loop explicitly rebuilds it.
+    let use_index_work = use_index
+        .rebuild(cfg, candidate_values.iter().copied())
+        .expect("verified CFG operands belong to this value domain");
+    stats.use_index_users_visited += use_index_work.users_visited;
+    stats.use_index_edges_visited += use_index_work.edges_visited;
+    stats.use_index_domain_entries_initialized += use_index_work.domain_entries_initialized;
+
     // Build the candidate def-use graph. A candidate is permanently blocked
     // when any in-loop operand is not itself a candidate (including block
     // parameters). Otherwise its pending count reaches zero as invariant
@@ -334,7 +352,6 @@ fn hoist_loop(
             if def_block[operand_idx].is_some_and(|block| in_loop[block.as_u32() as usize]) {
                 if candidate[operand_idx] {
                     pending[value_idx] += 1;
-                    dependents[operand_idx].push(value);
                     stats.candidate_dependencies += 1;
                 } else {
                     blocked[value_idx] = true;
@@ -358,7 +375,10 @@ fn hoist_loop(
         order.push(value);
         stats.worklist_pops += 1;
 
-        for &user in &dependents[idx] {
+        for &user in use_index
+            .users(cfg, value)
+            .expect("LICM only moves indexed instructions between blocks")
+        {
             let user_idx = user.as_u32() as usize;
             pending[user_idx] = pending[user_idx]
                 .checked_sub(1)
@@ -1368,6 +1388,7 @@ mod tests {
         const LOOP_COUNT: usize = 24;
         const LOCAL_COUNT: usize = 4096;
         const PARAM_COUNT: usize = 2048;
+        const UNRELATED_VALUE_COUNT: usize = 4096;
 
         let mut cfg = Cfg::new(
             Type::UNIT,
@@ -1386,6 +1407,9 @@ mod tests {
             CfgInstData::Alloc { slot: 0, init },
             Type::UNIT,
         );
+        for i in 0..UNRELATED_VALUE_COUNT {
+            push(&mut cfg, entry, CfgInstData::Const(i as u64), Type::I32);
+        }
 
         let mut predecessor = entry;
         let mut loads = Vec::with_capacity(LOOP_COUNT);
@@ -1435,6 +1459,13 @@ mod tests {
         assert_eq!(stats.slot_fact_workspace_growths, 1);
         assert_eq!(stats.hoist_workspace_growths, 1);
         assert_eq!(stats.candidate_dependencies, 0);
+        assert_eq!(stats.use_index_users_visited, (LOOP_COUNT * 2) as u64);
+        assert_eq!(stats.use_index_edges_visited, 0);
+        assert_eq!(
+            stats.use_index_domain_entries_initialized,
+            cfg.value_count() as u64,
+            "sparse refills initialize the large value domain once, not once per loop"
+        );
         assert_eq!(stats.worklist_pops, LOOP_COUNT as u64);
         assert_eq!(stats.invariants_hoisted, LOOP_COUNT as u64);
         assert!(

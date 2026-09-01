@@ -169,6 +169,47 @@ fn slot_write_classification_has_one_owner() {
 }
 
 #[test]
+fn cfg_use_adjacency_has_one_compact_owner() {
+    let owner = include_str!("opt/use_index.rs");
+    assert!(owner.contains("struct CfgUseIndex"));
+    assert!(owner.contains("offsets: Vec<usize>"));
+    assert!(owner.contains("users: Vec<CfgValue>"));
+    assert!(owner.contains("bucket_generation: Vec<u64>"));
+    assert!(owner.contains("domain_entries_initialized"));
+    assert!(owner.contains("fn rebuild<I>("));
+    assert!(owner.contains("fn invalidate(&mut self)"));
+    assert!(owner.contains("WrongOwner"));
+    assert!(owner.contains("ValueTypeChanged"));
+
+    let cfg_owner = include_str!("inst.rs");
+    assert!(cfg_owner.contains("struct CfgOwnerIdentity(Arc<()>)"));
+    assert!(cfg_owner.contains("Arc::ptr_eq(&self.0, &other.0)"));
+    assert!(cfg_owner.contains("owner_identity: CfgOwnerIdentity::new()"));
+
+    for (name, source, old_adjacency) in [
+        (
+            "opt/constopt.rs",
+            include_str!("opt/constopt.rs"),
+            "let mut users: Vec<Vec<CfgValue>>",
+        ),
+        (
+            "opt/licm.rs",
+            include_str!("opt/licm.rs"),
+            "dependents: Vec<Vec<CfgValue>>",
+        ),
+    ] {
+        assert!(
+            source.contains("CfgUseIndex"),
+            "{name} no longer consumes the shared CFG use index"
+        );
+        assert!(
+            !source.contains(old_adjacency),
+            "{name} regained private whole-CFG def-use adjacency"
+        );
+    }
+}
+
+#[test]
 fn constant_folding_uses_the_air_integer_semantics_kernel() {
     let source = include_str!("opt/constfold.rs");
     assert!(source.contains("integer_semantics()"));
