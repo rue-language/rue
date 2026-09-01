@@ -213,9 +213,14 @@ implementation would be exactly the duplicate-analysis smell that guidance warns
 against, and the landed module already avoids it.
 
 **Invalidation discipline: recompute per pass initially.** Dominators and loops
-are **recomputed by each pass that needs them, not cached across passes.** Loop
-passes mutate the CFG (LICM inserts a preheader and moves instructions;
-unrolling clones blocks), which invalidates dominators; a cache would need
+are **recomputed by each pass that needs them, not cached across passes.** The
+canonical `-O3` normalization step materializes every natural-loop preheader
+before either loop transform. Splitting an entry edge changes only that loop
+header's predecessors and cannot create a new loop, so one forest safely drives
+normalization of every distinct header. An inner preheader does become part of
+each enclosing loop body; LICM's own fresh forest observes those final bodies
+before LICM only moves instructions. Unrolling retains its separate
+recompute-after-mutation behavior. A cross-pass cache would need
 careful incremental maintenance that is not worth it at Rue's scale and is a
 ready source of stale-analysis miscompiles. Recompute-per-pass is O(blocks) and
 trivially correct. Caching within a *single* pass (compute once, use for all
