@@ -565,17 +565,20 @@ fn o3_publishes_nested_unrolled_work_for_canonical_slot_loops() {
     assert_eq!(
         o3.work().cfg.optimization_passes,
         crate::canonical_semantic::CfgOptimizationWork {
-            constopt_fold_attempts: 216,
+            // Includes the final observed-no-progress cleanup round.
+            constopt_fold_attempts: 332,
             constopt_folded: 22,
             constopt_loads_rewritten: 0,
             peephole_divmods_reduced: 0,
             peephole_identities_rewired: 0,
-            simplify_blocks_scanned: 36,
+            simplify_blocks_scanned: 37,
             simplify_branches_folded: 0,
             simplify_switches_folded: 0,
             simplify_edges_threaded: 0,
             simplify_forwarders_resolved: 0,
             simplify_blocks_merged: 15,
+            dce_instructions_removed: 98,
+            dce_blocks_removed: 28,
             forward_insts_scanned: 42,
             forward_loads_single_write: 0,
             forward_loads_block_local: 0,
@@ -622,6 +625,156 @@ fn o3_publishes_nested_unrolled_work_for_canonical_slot_loops() {
             inline_splice_pre_reoptimization_verifier_dominator_computations: 0,
         }
     );
+}
+
+#[test]
+fn cleanup_handles_builder_drop_flags_at_o1_and_o2() {
+    let source = snapshot(
+        &[((
+            1,
+            "/p/main.rue",
+            "main.rue",
+            "struct D { v: i32 }\ndrop fn D(self) { @dbg(self.v); }\nfn take(d: D) {}\nfn main() -> i32 { let d = D { v: 7 }; if true { take(d); } 0 }",
+        ))],
+        1,
+    );
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+    let assert_ownership_shape = |output: &crate::RootedCfgOutput, expect_take_call: bool| {
+        let main = output
+            .functions()
+            .iter()
+            .find(|unit| unit.definition_source_name() == Some("main"))
+            .unwrap();
+        assert!(
+            main.cfg()
+                .blocks()
+                .iter()
+                .all(|block| match block.terminator {
+                    rue_cfg::Terminator::Branch { cond, .. } => !matches!(
+                        main.cfg().get_inst(cond).data,
+                        rue_cfg::CfgInstData::BoolConst(_)
+                    ),
+                    _ => true,
+                })
+        );
+        assert_eq!(
+            main.cfg()
+                .blocks()
+                .iter()
+                .any(|block| matches!(block.terminator, rue_cfg::Terminator::Branch { .. })),
+            expect_take_call,
+            "O1 retains the dynamic drop guard; O2 inlines and resolves it"
+        );
+        let main_source_calls = main
+            .cfg()
+            .blocks()
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .filter_map(|value| match main.cfg().get_inst(*value).data {
+                rue_cfg::CfgInstData::Call {
+                    runtime: None,
+                    name,
+                    ..
+                } => Some(main.interner().resolve(&name)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if expect_take_call {
+            assert_eq!(main_source_calls.len(), 1);
+            assert!(main_source_calls[0].ends_with("__take"));
+        } else {
+            assert!(main_source_calls.is_empty(), "O2 should inline `take`");
+        }
+        assert!(main.cfg().blocks().iter().any(|block| matches!(
+            block.terminator,
+            rue_cfg::Terminator::Return { value: Some(value) }
+                if matches!(main.cfg().get_inst(value).data, rue_cfg::CfgInstData::Const(0))
+        )));
+
+        let drops_by_function = output
+            .functions()
+            .iter()
+            .map(|unit| {
+                let drops = unit
+                    .cfg()
+                    .blocks()
+                    .iter()
+                    .flat_map(|block| block.insts.iter())
+                    .filter(|value| {
+                        matches!(
+                            unit.cfg().get_inst(**value).data,
+                            rue_cfg::CfgInstData::Drop { .. }
+                        )
+                    })
+                    .count();
+                (unit.definition_source_name(), drops)
+            })
+            .collect::<Vec<_>>();
+        let take_drops = drops_by_function
+            .iter()
+            .find(|(name, _)| *name == Some("take"))
+            .map(|(_, drops)| *drops);
+        assert_eq!(
+            take_drops,
+            expect_take_call.then_some(1),
+            "O1 keeps callee ownership while O2 transfers its drop into the inlined caller: {drops_by_function:?}"
+        );
+        assert_eq!(
+            drops_by_function
+                .iter()
+                .find(|(name, _)| *name == Some("main"))
+                .map(|(_, drops)| *drops),
+            Some(1),
+            "the caller must retain its flag-guarded fallback drop: {drops_by_function:?}"
+        );
+
+        let debug_calls = output
+            .functions()
+            .iter()
+            .flat_map(|unit| {
+                unit.cfg()
+                    .blocks()
+                    .iter()
+                    .flat_map(|block| block.insts.iter())
+                    .filter(|value| {
+                        matches!(
+                            unit.cfg().get_inst(**value).data,
+                            rue_cfg::CfgInstData::Intrinsic {
+                                operation: rue_air::IntrinsicOperation::DebugI64,
+                                ..
+                            }
+                        )
+                    })
+            })
+            .count();
+        assert_eq!(
+            debug_calls, 1,
+            "the destructor's observable body must survive"
+        );
+    };
+    let o1 = session
+        .rooted_cfg(&CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        })
+        .unwrap();
+    assert_ownership_shape(&o1, true);
+    assert!(o1.work().cfg.optimization_passes.simplify_branches_folded > 0);
+    assert!(o1.work().cfg.optimization_passes.dce_blocks_removed > 0);
+    assert!(o1.work().cfg.optimization_passes.dce_instructions_removed > 0);
+
+    session.update(&source).into_result().unwrap();
+    let o2 = session
+        .rooted_cfg(&CompileOptions {
+            opt_level: OptLevel::O2,
+            ..CompileOptions::default()
+        })
+        .unwrap();
+    assert_ownership_shape(&o2, false);
+    assert!(o2.work().cfg.optimization_passes.simplify_branches_folded > 0);
+    assert!(o2.work().cfg.optimization_passes.dce_blocks_removed > 0);
+    assert!(o2.work().cfg.optimization_passes.dce_instructions_removed > 0);
 }
 
 fn c_ffi_options() -> CompileOptions {

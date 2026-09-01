@@ -1123,6 +1123,8 @@ impl CompilerSession {
         pass_work!(simplify_edges_threaded, "simplify.edges-threaded");
         pass_work!(simplify_forwarders_resolved, "simplify.forwarders-resolved");
         pass_work!(simplify_blocks_merged, "simplify.blocks-merged");
+        pass_work!(dce_instructions_removed, "dce.instructions-removed");
+        pass_work!(dce_blocks_removed, "dce.blocks-removed");
         pass_work!(forward_insts_scanned, "forward.insts-scanned");
         pass_work!(forward_loads_single_write, "forward.loads-single-write");
         pass_work!(forward_loads_block_local, "forward.loads-block-local");

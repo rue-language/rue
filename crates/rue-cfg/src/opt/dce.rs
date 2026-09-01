@@ -33,6 +33,23 @@
 use super::classify;
 use crate::{BlockId, Cfg, CfgInstData, CfgValue, Projection, Terminator};
 
+/// Semantically relevant mutations performed by one DCE run.
+///
+/// Detached values remain in the arena by design, so attachment and block
+/// removal are the two mutations that matter to a cleanup fixpoint. Work such
+/// as liveness visits is deliberately not part of this predicate.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Stats {
+    pub instructions_removed: u64,
+    pub blocks_removed: u64,
+}
+
+impl Stats {
+    pub fn made_progress(self) -> bool {
+        self.instructions_removed > 0 || self.blocks_removed > 0
+    }
+}
+
 /// A simple bitset for tracking indices.
 ///
 /// This is more efficient than `HashSet<u32>` for dense, small sets because:
@@ -83,7 +100,9 @@ impl BitSet {
 ///
 /// This marks live values and removes dead instructions from blocks.
 /// It also removes unreachable blocks.
-pub fn run(cfg: &mut Cfg) {
+pub fn run(cfg: &mut Cfg) -> Stats {
+    let instructions_before: usize = cfg.blocks().iter().map(|block| block.insts.len()).sum();
+    let blocks_before = cfg.block_count();
     // Reachability is the authority for both liveness roots and block
     // pruning. Computing it first keeps unreachable blocks and detached
     // value-arena husks from retaining otherwise dead operand chains.
@@ -97,6 +116,12 @@ pub fn run(cfg: &mut Cfg) {
 
     // Phase 3: Remove unreachable blocks using the same reachability result.
     eliminate_unreachable_blocks(cfg, &reachable);
+
+    let instructions_after: usize = cfg.blocks().iter().map(|block| block.insts.len()).sum();
+    Stats {
+        instructions_removed: instructions_before.saturating_sub(instructions_after) as u64,
+        blocks_removed: blocks_before.saturating_sub(cfg.block_count()) as u64,
+    }
 }
 
 /// Compute the set of live values in the CFG.
@@ -511,7 +536,14 @@ mod tests {
         // Before DCE: block has 3 instructions
         assert_eq!(cfg.get_block(entry).insts.len(), 3);
 
-        run(&mut cfg);
+        let stats = run(&mut cfg);
+        assert_eq!(
+            stats,
+            Stats {
+                instructions_removed: 2,
+                blocks_removed: 0,
+            }
+        );
 
         // After DCE: block should have only 1 instruction (c3)
         let block = cfg.get_block(entry);
@@ -544,7 +576,8 @@ mod tests {
         let c3 = add_const(&mut cfg, 42, Type::I32);
         finalize_cfg(&mut cfg, c3);
 
-        run(&mut cfg);
+        let stats = run(&mut cfg);
+        assert_eq!(stats, Stats::default());
 
         // The add (and its operands) must survive even though the add's result
         // is never used; only nothing is removed here.
@@ -567,7 +600,8 @@ mod tests {
         let add = add_add(&mut cfg, c1, c2, Type::I32);
         finalize_cfg(&mut cfg, add);
 
-        run(&mut cfg);
+        let stats = run(&mut cfg);
+        assert_eq!(stats, Stats::default());
 
         // All 3 instructions should still be in the block
         let block = cfg.get_block(entry);
@@ -622,7 +656,9 @@ mod tests {
         cfg.set_terminator(unreachable_block, Terminator::Return { value: Some(c2) });
 
         assert_eq!(cfg.block_count(), 2);
-        run(&mut cfg);
+        let stats = run(&mut cfg);
+        assert_eq!(stats.blocks_removed, 1);
+        assert_eq!(stats.instructions_removed, 1);
 
         // The unreachable block is removed outright, not left as an
         // `Unreachable` husk, and the survivors stay densely numbered

@@ -3355,6 +3355,8 @@ fn record_optimization_stats(
     record!("simplify.edges-threaded", simplify_edges_threaded);
     record!("simplify.forwarders-resolved", simplify_forwarders_resolved);
     record!("simplify.blocks-merged", simplify_blocks_merged);
+    record!("dce.instructions-removed", dce_instructions_removed);
+    record!("dce.blocks-removed", dce_blocks_removed);
     record!("forward.insts-scanned", forward_insts_scanned);
     record!("forward.loads-single-write", forward_loads_single_write);
     record!("forward.loads-block-local", forward_loads_block_local);

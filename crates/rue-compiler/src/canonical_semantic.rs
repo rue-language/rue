@@ -122,6 +122,8 @@ pub struct CfgOptimizationWork {
     pub simplify_edges_threaded: usize,
     pub simplify_forwarders_resolved: usize,
     pub simplify_blocks_merged: usize,
+    pub dce_instructions_removed: usize,
+    pub dce_blocks_removed: usize,
     pub forward_insts_scanned: usize,
     pub forward_loads_single_write: usize,
     pub forward_loads_block_local: usize,
