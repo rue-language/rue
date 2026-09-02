@@ -8,6 +8,21 @@
 //     let o = std.cmp.cmp(i64, 3, 7);        // Ordering.Less
 //     let m = std.cmp.min(i64, 3, 7);        // 3
 //     let c = std.cmp.clamp(i64, 12, 0, 9);  // 9
+//
+// The interface-bounded counterparts (`equals`, `compare`, `min_by_order`,
+// `max_by_order`) take any type conforming to `std.interfaces.Equatable` /
+// `Ordered` (spec 6.7) — `StrBuf` today, or a program's own struct under
+// `--preview interfaces`. They sit beside the operator versions rather than
+// replacing them: an integer type has no methods, so it cannot conform to an
+// interface, and a bounded parameter has no operators (spec 6.7:20), so one
+// function cannot serve both.
+//
+//     let a: StrBuf = "apple";
+//     let b: StrBuf = "banana";
+//     std.cmp.equals(StrBuf, borrow a, borrow b);   // false
+//     std.cmp.compare(StrBuf, borrow a, borrow b);  // Ordering.Less
+
+const interfaces = @import("interfaces.rue");
 
 // The result of a three-way comparison.
 pub enum Ordering {
@@ -51,4 +66,32 @@ pub fn clamp(comptime T: type, x: T, lo: T, hi: T) -> T {
 // Whether two values are equal.
 pub fn eq(comptime T: type, a: T, b: T) -> bool {
     a == b
+}
+
+// Whether two values are equal under `Equatable.equals`.
+pub fn equals(comptime T: interfaces.Equatable, borrow a: T, borrow b: T) -> bool {
+    a.equals(borrow b)
+}
+
+// Three-way compare under `Ordered.less`: `Less` when `a.less(b)`, `Greater`
+// when `b.less(a)`, else `Equal`.
+pub fn compare(comptime T: interfaces.Ordered, borrow a: T, borrow b: T) -> Ordering {
+    if a.less(borrow b) {
+        Ordering.Less
+    } else if b.less(borrow a) {
+        Ordering.Greater
+    } else {
+        Ordering.Equal
+    }
+}
+
+// The lesser of two values under `Ordered.less` (returns `a` on a tie). The
+// values are moved in and the chosen one is moved out.
+pub fn min_by_order(comptime T: interfaces.Ordered, a: T, b: T) -> T {
+    if b.less(borrow a) { b } else { a }
+}
+
+// The greater of two values under `Ordered.less` (returns `a` on a tie).
+pub fn max_by_order(comptime T: interfaces.Ordered, a: T, b: T) -> T {
+    if a.less(borrow b) { b } else { a }
 }

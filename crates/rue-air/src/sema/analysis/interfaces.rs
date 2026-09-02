@@ -50,11 +50,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if bounds.is_empty() {
             return Ok(());
         }
-        self.require_preview(
-            PreviewFeature::Interfaces,
-            "an interface bound on a comptime parameter",
-            call_span,
-        )?;
+        // A bound declared by a trusted standard-library function is usable
+        // without the preview (spec 6.7:25); every other bound is gated at
+        // the call as at its declaration (spec 6.7:3).
+        if !self.file_module_is_trusted_standard_library(function.file_id) {
+            self.require_preview(
+                PreviewFeature::Interfaces,
+                "an interface bound on a comptime parameter",
+                call_span,
+            )?;
+        }
         let parameter = self.body_interner().resolve(&parameter).to_string();
         for bound in bounds {
             let Some(assertion) = self.assertion_satisfying(argument, bound) else {

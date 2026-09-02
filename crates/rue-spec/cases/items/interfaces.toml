@@ -1,7 +1,9 @@
 # Interfaces (preview) — specification cases for chapter 6.7.
 #
 # Every construct in this chapter is behind `--preview interfaces` (6.7:3), so
-# each passing case sets `preview = "interfaces"` and `preview_should_pass`.
+# each passing case sets `preview = "interfaces"` and `preview_should_pass` —
+# except the 6.7:25 cases at the end, which exercise the trusted
+# standard-library exemption against the real std without the flag.
 
 [section]
 id = "items.interfaces"
@@ -669,3 +671,54 @@ fn Wrapped(comptime T: Show) -> type {
 fn main() -> i32 { 0 }
 """
 exit_code = 0
+
+# ---------------------------------------------------------------------------
+# Trusted standard-library exemption (6.7:25)
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "std_bound_is_callable_without_the_preview"
+spec = ["6.7:25", "6.7:15"]
+description = "Without the preview a program calls the bounded `std.cmp.equals` and `std.fmt.display` with `StrBuf`, whose conformance std asserts; the bound is checked and satisfied."
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    let a: StrBuf = "apple";
+    let b: StrBuf = "apple";
+    let shown = std.fmt.display(StrBuf, borrow a);
+    if std.cmp.equals(StrBuf, borrow a, borrow b) && shown.len() == 5 { 5 } else { 1 }
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "std_bound_is_still_checked_without_the_preview"
+spec = ["6.7:25", "6.7:15"]
+description = "The exemption lifts the gate, not the check: a non-conforming argument to a std bound is E0305 at the call without the preview."
+real_std = true
+source = """
+const std = @import("std");
+struct Val { n: i64 }
+fn main() -> i32 {
+    let a = Val { n: 1 };
+    if std.cmp.equals(Val, borrow a, borrow a) { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0305", "type `Val` does not conform to interface `Equatable`"]
+
+[[case]]
+name = "program_assertion_for_a_std_type_still_needs_the_preview"
+spec = ["6.7:25", "6.7:3"]
+description = "The exemption covers the declaring module only: a program asserting a conformance for `StrBuf` itself is gated."
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+StrBuf is std.interfaces.Ordered;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1100", "interfaces"]

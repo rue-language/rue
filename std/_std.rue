@@ -5,7 +5,9 @@
 //
 // The standard library provides common utilities organized into submodules:
 // - std.math: Integer math (generic min/max/abs/gcd/isqrt/pow, i64 checked_*)
-// - std.cmp: Ordering + generic min/max/clamp/cmp
+// - std.interfaces: Equatable / Hashable / Ordered / Display, the interfaces
+//   std's bounded generics require (StrBuf conforms to all four)
+// - std.cmp: Ordering + generic min/max/clamp/cmp, `equals` over Equatable
 // - std.mem: swap / replace (inout helpers)
 // - std.tuple: Pair / Triple
 // - std.fmt: scalar-to-string formatting (int/bool, hex/binary)
@@ -30,6 +32,7 @@
 
 // Re-export library modules.
 pub const math = @import("math.rue");
+pub const interfaces = @import("interfaces.rue");
 pub const cmp = @import("cmp.rue");
 pub const mem = @import("mem.rue");
 pub const tuple = @import("tuple.rue");

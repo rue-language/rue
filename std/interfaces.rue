@@ -1,0 +1,54 @@
+// std.interfaces — the standard library's interfaces (spec 6.7).
+//
+// An interface names a set of method requirements; a type conforms by
+// asserting so, and the assertion is verified against the type's inherent
+// methods. Bounded generic functions elsewhere in std (`std.hashmap.HashMap`,
+// `std.sort.sort_by_order`, `std.cmp.equals`, ...) take `comptime T: <bound>`
+// and can be called from any program with a conforming type: the standard
+// library is exempt from the `interfaces` preview gate (spec 6.7:25), so
+// calling through a std bound needs no flag. Declaring an interface, a
+// conformance, or a bound in a program of your own still does.
+//
+//     const std = @import("std");
+//     struct Id is std.interfaces.Equatable {    // needs --preview interfaces
+//         n: i64,
+//         fn equals(borrow self, borrow other: Id) -> bool { self.n == other.n }
+//     }
+//
+// `StrBuf` conforms to all four interfaces below (the assertion is at the end
+// of this module). Primitive types cannot conform: an interface requirement is
+// a method, and `i64` has no inherent methods, so the `<`/`==` operators of
+// the integer types are not reachable through a bound (spec 6.7:20). Generic
+// code over integers keeps using the operator-based std entry points
+// (`std.sort.quicksort`, `std.cmp.min`, ...).
+
+const strbuf = @import("strbuf.rue");
+
+// Value equality. `equals` MUST be reflexive, symmetric, and transitive, and
+// two values that are `equals` MUST `hash` alike when the type is also
+// `Hashable`.
+pub interface Equatable {
+    fn equals(borrow self, borrow other: Self) -> bool;
+}
+
+// A 64-bit hash of the value, for `std.hashmap.HashMap` keys. A hash is a
+// function of the value's `equals` identity, not of its address.
+pub interface Hashable {
+    fn hash(borrow self) -> u64;
+}
+
+// A strict weak ordering: `less` is irreflexive and transitive, and two values
+// neither of which is `less` than the other are equivalent. `std.sort` orders
+// by `less` alone.
+pub interface Ordered {
+    fn less(borrow self, borrow other: Self) -> bool;
+}
+
+// A human-readable rendering of the value as a new `StrBuf`.
+pub interface Display {
+    fn to_string(borrow self) -> strbuf.StrBuf;
+}
+
+// `StrBuf` compares and hashes by its bytes (`equals`/`less`/`hash`, defined
+// in std.strbuf) and renders as a copy of itself.
+strbuf.StrBuf is Equatable + Hashable + Ordered + Display;

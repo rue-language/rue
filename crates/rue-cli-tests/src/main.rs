@@ -95,6 +95,9 @@
 //! - `tier = "slow"` on a section or `[[automatic_example]]`: keep exhaustive
 //!   or full-program large-example coverage behind the dedicated slow Buck
 //!   target
+//! - `preview = "<feature>"` on an `[[automatic_example]]`: compile that
+//!   example with `--preview <feature>`, for an example whose own sources use
+//!   a gated feature (std's use of one needs no flag)
 //! - `known_bug = "RUE-123"`: expected failure (xfail), using the canonical
 //!   `RUE-<positive integer>` spelling with no leading zeroes. An ordinary
 //!   assertion failure is ignored with the bug reference. A fatal subprocess
@@ -1016,15 +1019,24 @@ impl ExecutionContract {
 #[serde(deny_unknown_fields)]
 struct AutomaticExampleContract {
     path: String,
-    contract: String,
+    /// A named execution contract; absent, the example keeps the ordinary
+    /// default budgets, so an entry can exist only to carry `preview`.
+    #[serde(default)]
+    contract: Option<String>,
     #[serde(default)]
     tier: CliCaseTier,
+    /// A preview feature the example's own sources use (`--preview <name>`
+    /// on its compile). An example that only calls std through a gated
+    /// feature needs none: the trusted standard library is exempt.
+    #[serde(default)]
+    preview: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AutomaticExampleMetadata {
     contract: ExecutionContract,
     tier: CliCaseTier,
+    preview: Option<String>,
 }
 
 #[derive(Debug)]
@@ -4027,16 +4039,18 @@ fn validate_contract_metadata(
                 entry.path,
             ));
         }
-        if !corpus.contracts.contains_key(&entry.contract) {
-            return Err(format!(
-                "automatic example '{}' references unknown contract '{}'",
-                entry.path, entry.contract,
-            ));
+        if let Some(name) = &entry.contract {
+            if !corpus.contracts.contains_key(name) {
+                return Err(format!(
+                    "automatic example '{}' references unknown contract '{}'",
+                    entry.path, name,
+                ));
+            }
         }
         let contract = resolve_contract(
             &corpus.contracts,
             &corpus.timeout_profiles,
-            Some(&entry.contract),
+            entry.contract.as_deref(),
         );
         if automatic_contracts
             .insert(
@@ -4044,6 +4058,7 @@ fn validate_contract_metadata(
                 AutomaticExampleMetadata {
                     contract,
                     tier: entry.tier,
+                    preview: entry.preview.clone(),
                 },
             )
             .is_some()
@@ -4053,7 +4068,9 @@ fn validate_contract_metadata(
                 entry.path,
             ));
         }
-        used_contracts.insert(entry.contract.clone());
+        if let Some(name) = &entry.contract {
+            used_contracts.insert(name.clone());
+        }
     }
 
     let mut unused = corpus
@@ -4091,12 +4108,16 @@ fn run_example(
     rue_binary: &Path,
     real_std: &Path,
     contract: &ExecutionContract,
+    preview: Option<&str>,
 ) -> TestResult {
     let temp_dir = tempfile::tempdir()
         .map_err(|e| TestFailure::fatal(format!("failed to create temp dir: {}", e)))?;
     let dir = temp_dir.path();
 
     let mut cmd = compiler_command(rue_binary);
+    if let Some(feature) = preview {
+        cmd.args(["--preview", feature]);
+    }
     cmd.arg(path).args(["-o", "prog"]).current_dir(dir);
     cmd.env("RUE_STD_PATH", real_std);
     let compile_output = run_phase_with_timeout(
@@ -4292,6 +4313,7 @@ fn example_trials(
         let contract = metadata
             .map(|metadata| metadata.contract.clone())
             .unwrap_or_else(|| resolve_contract(&HashMap::new(), timeout_profiles, None));
+        let preview = metadata.and_then(|metadata| metadata.preview.clone());
         let heavyweight = contract.is_heavyweight();
         let rue_binary = rue_binary.to_path_buf();
         let real_std = real_std.to_path_buf();
@@ -4309,8 +4331,15 @@ fn example_trials(
                 let expectation = EXAMPLE_EXPECTATIONS
                     .iter()
                     .find(|e| e.path == relative_path);
-                run_example(&path, expectation, &rue_binary, &real_std, &contract)
-                    .map_err(RunError::fail)
+                run_example(
+                    &path,
+                    expectation,
+                    &rue_binary,
+                    &real_std,
+                    &contract,
+                    preview.as_deref(),
+                )
+                .map_err(RunError::fail)
             })
         });
         trials.push(if heavyweight {

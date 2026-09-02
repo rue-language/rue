@@ -90,3 +90,62 @@ error_contains = [
     "while checking `render` against the bound of parameter `T`",
 ]
 compile_stderr_not_contains = ["internal compiler error"]
+
+[[case]]
+name = "std_bounded_generic_runs_without_the_preview"
+description = """
+Spec 6.7:25: the trusted standard library declares interfaces, asserts that
+`StrBuf` conforms, and bounds `std.cmp.equals` / `std.cmp.compare` — none
+of which needs the flag from the program that calls them. The program itself
+declares nothing gated, so it compiles without `--preview`.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    let a: StrBuf = "apple";
+    let b: StrBuf = "banana";
+    let O = std.cmp.Ordering;
+    let order = match std.cmp.compare(StrBuf, borrow a, borrow b) {
+        O.Less => 1,
+        O.Equal => 2,
+        O.Greater => 3,
+    };
+    @dbg(order);
+    if std.cmp.equals(StrBuf, borrow a, borrow a) { order + 6 } else { 0 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "1\n"
+exit_code = 7
+
+[[case]]
+name = "std_bounded_generic_is_skolem_checked_without_the_preview"
+description = """
+Spec 6.7:25 lifts the preview gate for a trusted standard-library module,
+not the definition-site check (6.7:19): a std bounded function whose body
+uses a member outside its bound fails the build of a program that never
+calls it and never passes the flag, with the check's note. The standard
+library here is a case-local stub, so the failure is planted rather than
+found in the real std.
+"""
+env = { RUE_STD_PATH = "sdk" }
+files = [
+    { path = "sdk/_std.rue", source = """
+pub interface Show { fn show(borrow self) -> i64; }
+pub fn render(comptime T: Show, borrow x: T) -> i64 { x.show() + x.extra() }
+""" },
+    { path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 { 0 }
+""" },
+]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "E0411",
+    "no method named 'extra' found for type 'T'",
+    "while checking `render` against the bound of parameter `T`",
+]
+compile_stderr_not_contains = ["E1100", "internal compiler error"]

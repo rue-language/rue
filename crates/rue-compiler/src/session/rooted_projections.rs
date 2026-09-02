@@ -132,14 +132,15 @@ impl CompilerSession {
         // Every bounded function in the import cone gets its skolem check
         // whether or not it is called (spec 6.7:19): the check is a root of
         // the same closure, so its diagnostics are collected with every
-        // other body's. Bounds exist only under the preview, so a program
-        // without the preview scans nothing.
-        if options
-            .preview_features
-            .contains(&rue_error::PreviewFeature::Interfaces)
-        {
-            roots.extend(crate::skolem::skolem_check_roots(&projection.declarations));
-        }
+        // other body's. Without the preview only trusted standard-library
+        // modules can declare bounds (spec 6.7:25), so only their functions
+        // are scanned.
+        roots.extend(crate::skolem::skolem_check_roots(
+            &projection.declarations,
+            options
+                .preview_features
+                .contains(&rue_error::PreviewFeature::Interfaces),
+        ));
         let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
             target: options.target,
             preview_features: StablePreviewFeatures::new(&options.preview_features),

@@ -2379,12 +2379,27 @@ fn resolve_interface_reference(
     }
 }
 
+/// Whether `module` may use the interfaces feature (spec 6.7:3, 6.7:25):
+/// every module under `--preview interfaces`, and a trusted standard-library
+/// module always. The exemption is what lets std declare interfaces,
+/// conformances, and bounds that an ordinary program uses without the flag;
+/// a user module that writes any of them itself still needs the preview.
+fn interfaces_enabled_for(provider: &SemanticNucleusTypeProvider<'_>, module: &ModuleId) -> bool {
+    provider
+        .configuration
+        .preview_features
+        .contains(rue_error::PreviewFeature::Interfaces)
+        || module.is_trusted_standard_library()
+}
+
 /// Classify a comptime parameter that is not declared `: type` (spec
 /// 6.7:14): its interface bound when it names one or more interfaces, or
 /// empty when it is an ordinary comptime value parameter. A composed bound
 /// (`A + B`) is always a bound, so each name in it must be an interface; a
 /// single name is a bound only when it resolves to an interface, except that
 /// a struct name — never a comptime value type — is E0306 under the preview.
+/// A trusted standard-library module is exempt from the gate (spec 6.7:25),
+/// so std can declare bounds a program compiled without the preview calls.
 fn classify_interface_bounds(
     provider: &mut SemanticNucleusTypeProvider<'_>,
     module: &ModuleId,
@@ -2401,10 +2416,7 @@ fn classify_interface_bounds(
         )
     };
     let composed = !parameter.bounds.is_empty();
-    let preview = provider
-        .configuration
-        .preview_features
-        .contains(rue_error::PreviewFeature::Interfaces);
+    let preview = interfaces_enabled_for(provider, module);
     let mut keys = Vec::with_capacity(1 + parameter.bounds.len());
     for root in std::iter::once(parameter.ty).chain(parameter.bounds.iter().copied()) {
         if composed || !keys.is_empty() {
@@ -2508,11 +2520,7 @@ fn resolve_conformance_facts(
             crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(kind),
         )
     };
-    if !provider
-        .configuration
-        .preview_features
-        .contains(rue_error::PreviewFeature::Interfaces)
-    {
+    if !interfaces_enabled_for(provider, module) {
         let kind = rue_error::ErrorKind::PreviewFeatureRequired {
             feature: rue_error::PreviewFeature::Interfaces,
             what: if parsed.is_interface {
@@ -2608,10 +2616,7 @@ pub(in crate::revisioned_query_database) fn resolve_module_conformances(
             },
         )
     };
-    let preview = provider
-        .configuration
-        .preview_features
-        .contains(rue_error::PreviewFeature::Interfaces);
+    let preview = interfaces_enabled_for(provider, module);
     let mut assertions = Vec::new();
     for item in &parsed.ast().items {
         let rue_parser::ast::Item::Conformance(assertion) = item else {

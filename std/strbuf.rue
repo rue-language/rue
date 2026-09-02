@@ -23,6 +23,7 @@
 const option = @import("option.rue");
 const arraybuf = @import("arraybuf.rue");
 const rawbuf = @import("rawbuf.rue");
+const hashing = @import("hash.rue");
 
 // Raw-pointer operations are private module implementation details. Keeping
 // them outside the public struct prevents callers from laundering unchecked
@@ -508,6 +509,43 @@ pub struct StrBuf {
             i += 1;
         }
         true
+    }
+
+    // The `std.interfaces` requirements (spec 6.7). `StrBuf` is asserted to
+    // conform to `Equatable`, `Hashable`, `Ordered`, and `Display` in
+    // std/interfaces.rue; these are the inherent methods that assertion is
+    // verified against, so their signatures are fixed by the interfaces.
+
+    // `Equatable`: byte-for-byte equality, the method form of
+    // `equals_borrowed`.
+    fn equals(borrow self, borrow other: Self) -> bool {
+        Self.equals_borrowed(borrow self, borrow other)
+    }
+
+    // `Hashable`: FNV-1a/64 of the bytes through `std.hash`, so a `StrBuf`
+    // key hashes exactly as `std.hash.fnv1a_strbuf` reports.
+    fn hash(borrow self) -> u64 {
+        hashing.fnv1a_strbuf(borrow self)
+    }
+
+    // `Ordered`: byte-lexicographic order, a proper prefix ordering first.
+    fn less(borrow self, borrow other: Self) -> bool {
+        let n = if self.len < other.len { self.len } else { other.len };
+        let mut i: u64 = 0;
+        while i < n {
+            let a = read_packed_byte(self.core.buf, i);
+            let b = read_packed_byte(other.core.buf, i);
+            if a != b {
+                return a < b;
+            }
+            i += 1;
+        }
+        self.len < other.len
+    }
+
+    // `Display`: a string renders as an independent copy of itself.
+    fn to_string(borrow self) -> Self {
+        self.copy()
     }
 
     // Canonical source entry point for the `+` operator.

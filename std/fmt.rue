@@ -7,10 +7,20 @@
 //     const std = @import("std");
 //     let s = std.fmt.to_hex(255);        // "ff"
 //     let t = std.fmt.bool_to_string(true); // "true"
+//
+// `display` renders any type conforming to `std.interfaces.Display` (spec
+// 6.7) through its `to_string`; integers stay on `int_to_string`, since a
+// primitive has no methods and so cannot conform.
 
 const arraybuf = @import("arraybuf.rue");
+const interfaces = @import("interfaces.rue");
 const strbuf = @import("strbuf.rue");
 const StrBuf = strbuf.StrBuf;
+
+// The `Display` rendering of `x`, as a new string.
+pub fn display(comptime T: interfaces.Display, borrow x: T) -> StrBuf {
+    x.to_string()
+}
 
 // Decimal string of any integer value (wraps the `@to_string` intrinsic, which
 // already handles every integer width).

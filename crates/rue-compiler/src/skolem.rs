@@ -188,13 +188,21 @@ pub(crate) fn instance_is_skolem_check(instance: &FunctionInstanceKey) -> bool {
 /// a producer checked at each instantiation, so neither gets a check
 /// (spec 6.7:24). Each check is the function's specialization by the
 /// skolems of its comptime parameters, in declaration order.
+///
+/// Without the interfaces preview only a trusted standard-library module can
+/// declare a bound (spec 6.7:25), so `all_modules` is false there and the
+/// roots are limited to std's own bounded functions; with the preview every
+/// module in the import cone is scanned.
 pub(crate) fn skolem_check_roots(
     declarations: &[DurableDeclarationSemantic],
+    all_modules: bool,
 ) -> Vec<FunctionInstanceKey> {
     declarations
         .iter()
         .filter_map(|declaration| {
-            if declaration.key.kind() != StableDefinitionKind::Function {
+            if declaration.key.kind() != StableDefinitionKind::Function
+                || !(all_modules || declaration.key.module().is_trusted_standard_library())
+            {
                 return None;
             }
             let DurableDeclarationPayload::Callable {

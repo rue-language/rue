@@ -15,7 +15,8 @@ verified against the type's inherent members (6.4, 6.5); an assertion carries
 no bodies of its own. A comptime type parameter (4.14) may name interfaces as
 its *bound*, in which case every type argument bound to it must conform to
 each of them. Interfaces are a preview feature: every construct in this
-section requires `--preview interfaces` (6.7:3).
+section requires `--preview interfaces` (6.7:3), except within the trusted
+standard library (6.7:25).
 
 ## Preview gate
 
@@ -51,6 +52,21 @@ An `interface` item, a conformance assertion (freestanding or in a struct
 header), or an interface bound on a comptime parameter **MUST NOT** appear in a
 program compiled without the `interfaces` preview feature. Each such use
 produces the preview-feature diagnostic (E1100) naming `interfaces`.
+
+{{ rule(id="6.7:25", cat="legality-rule") }}
+
+A trusted standard-library module (a module of the toolchain's standard
+library, the same classification that admits `ArrayBuf(T).get_ref` in 6.6)
+is exempt from 6.7:3: it **MAY**
+declare interfaces, conformance assertions, associated type declarations,
+and interface bounds without the preview feature, and a call whose callee is
+a trusted standard-library function passes the bound check of 6.7:15
+without it, so a program compiled without the preview can call a bounded
+standard-library function with a standard-library type that conforms. The
+definition-site check of 6.7:19 runs for those functions in every program.
+The exemption covers only the declaring module: a program that itself
+declares an interface, asserts a conformance (including one for a
+standard-library type), or declares a bound still requires the preview.
 
 ## Interface declarations
 
