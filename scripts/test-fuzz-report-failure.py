@@ -38,6 +38,7 @@ sys.path.insert(0, str(SCRIPTS))
 from gatelib import load_script
 
 fr = load_script("fuzz-report-failure.py", __file__)
+fw = load_script("validate-fuzz-workflow.py", __file__)
 
 
 class MockTransport(fr.Transport):
@@ -603,6 +604,7 @@ class WorkflowContractTests(unittest.TestCase):
             "emitter_sequence_aarch64",
         )
         for target in targets:
+            self.assertEqual(fw.validate_target(self.workflow, target), [])
             self.assertIn(
                 f"path: crates/rue-fuzz/nightly-restored/{target}", self.workflow
             )
@@ -652,22 +654,118 @@ class WorkflowContractTests(unittest.TestCase):
         )
 
     def test_live_target_guard_checks_cache_wiring(self):
-        guard = self.workflow.split("- name: Verify every registered fuzz target is scheduled", 1)[1]
+        guard = fw.matching_block(
+            fw.step_blocks(self.workflow),
+            "- name: Verify every registered fuzz target is scheduled",
+            6,
+        )
+        self.assertIsNotNone(guard)
         self.assertIn(
-            'grep -qF -- "path: crates/rue-fuzz/nightly-restored/${t}"', guard
+            "python3 scripts/validate-fuzz-workflow.py", guard
+        )
+        self.assertNotIn(
+            "${{ github.run_id }}", guard
+        )
+        self.assertNotIn(
+            "${{ github.run_attempt }}", guard
         )
         self.assertIn(
-            'grep -cF -- "path: crates/rue-fuzz/nightly-restored/${t}"', guard
-        )
-        self.assertIn(
-            'key: rue-fuzz-corpus-v3-${t}-${{ github.run_id }}-${{ github.run_attempt }}',
-            guard,
-        )
-        self.assertIn(
-            'restore-keys: rue-fuzz-corpus-v3-${t}-',
+            '.github/workflows/fuzz.yml "${scheduled[@]}"',
             guard,
         )
         self.assertNotRegex(self.workflow, r"\b(?:find|cp)\s+.*nightly-(?:restored|corpus)")
+
+    def test_live_target_validator_rejects_expression_interpolation_drift(self):
+        target = "lexer"
+        generation_key = (
+            f"key: rue-fuzz-corpus-v3-{target}-"
+            "${{ github.run_id }}-${{ github.run_attempt }}"
+        )
+        drifted = self.workflow.replace(
+            generation_key,
+            f"key: rue-fuzz-corpus-v3-{target}-12345-1",
+        )
+        self.assertEqual(
+            fw.validate_target(drifted, target),
+            [
+                "lexer:restore-generation-key",
+                "lexer:save-generation-key",
+            ],
+        )
+
+    def test_live_target_validator_rejects_a_missing_target_field(self):
+        target = "lexer"
+        missing_aggregation = self.workflow.replace(
+            "steps.fuzz-lexer.outcome == 'failure' ||", "", 1
+        )
+        self.assertEqual(
+            fw.validate_target(missing_aggregation, target),
+            ["lexer:failure-aggregation"],
+        )
+
+    def test_live_target_validator_ignores_a_commented_out_mutation_command(self):
+        target = "lexer"
+        command = (
+            "./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 "
+            "--evolve-corpus=crates/rue-fuzz/nightly-corpus/lexer lexer "
+            "crates/rue-fuzz/nightly-input/lexer"
+        )
+        commented = self.workflow.replace(
+            f"        run: {command}",
+            f"        run: |\n          # {command}",
+        )
+        self.assertEqual(
+            fw.validate_target(commented, target),
+            ["lexer:five-minute-step"],
+        )
+
+    def test_live_target_validator_ignores_aggregation_shell_comments(self):
+        target = "lexer"
+        camouflaged = self.workflow.replace(
+            "          steps.fuzz-lexer.outcome == 'failure' ||\n", "", 1
+        ).replace(
+            '          echo "One or more fuzz targets found crashes (see step outcomes above)."',
+            "          # steps.fuzz-lexer.outcome == 'failure'\n"
+            '          echo "One or more fuzz targets found crashes (see step outcomes above)."',
+            1,
+        )
+        self.assertEqual(
+            fw.validate_target(camouflaged, target),
+            ["lexer:failure-aggregation"],
+        )
+
+    def test_live_target_validator_rejects_a_disabled_mutation_step(self):
+        disabled = self.workflow.replace(
+            "        id: fuzz-lexer\n",
+            "        id: fuzz-lexer\n        if: false\n",
+            1,
+        )
+        self.assertEqual(
+            fw.validate_target(disabled, "lexer"),
+            ["lexer:five-minute-step"],
+        )
+
+    def test_live_target_validator_rejects_a_dead_aggregation_clause(self):
+        dead_clause = self.workflow.replace(
+            "          steps.fuzz-lexer.outcome == 'failure' ||",
+            "          false && steps.fuzz-lexer.outcome == 'failure' ||",
+            1,
+        )
+        self.assertEqual(
+            fw.validate_target(dead_clause, "lexer"),
+            ["lexer:failure-aggregation"],
+        )
+
+    def test_live_target_validator_rejects_a_folded_dead_aggregation_clause(self):
+        dead_clause = self.workflow.replace(
+            "          steps.fuzz-lexer.outcome == 'failure' ||",
+            "          false &&\n          steps.fuzz-lexer.outcome == 'failure' ||",
+            1,
+        )
+        self.assertEqual(
+            fw.validate_target(dead_clause, "lexer"),
+            ["lexer:failure-aggregation"],
+        )
 
     def test_every_aggregated_target_is_also_named_to_the_reporter(self):
         """A target the reporter does not name degrades to `(job-level failure)`.

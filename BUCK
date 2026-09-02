@@ -1649,7 +1649,10 @@ rue_sh_test(
         "PYTHONDONTWRITEBYTECODE": "1",
         "RUE_FUZZ_REPORT_ROOT": "$(location :fuzz-report-test-inputs)",
     },
-    resources = ["scripts/fuzz-report-failure.py"] +
+    resources = [
+        "scripts/fuzz-report-failure.py",
+        "scripts/validate-fuzz-workflow.py",
+    ] +
         [":gatelib-sources"],
 )
 
