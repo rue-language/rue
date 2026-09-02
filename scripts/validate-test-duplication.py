@@ -272,6 +272,15 @@ NOT_LISTABLE = {
         "execution of anything. It is skipped rather than probed because "
         "probing it IS a second execution of a premerge suite."
     ),
+    "//:compiler-spec-machine-index": (
+        "rue-spec's `--check-machine-index` is a hermetic metadata drift check, "
+        "not a test filter: it generates the compiler/specification index twice "
+        "and compares the deterministic bytes, then exits before constructing "
+        "the libtest harness. Its opacity hides no repeated test inventory and "
+        "executes no spec cases. Passing `--list` cannot enumerate anything and "
+        "would instead run the complete drift assertion, so the target remains "
+        "an explicit opaque unit."
+    ),
     "//:frontend-diff-test": (
         "rue-frontend-diff takes only --refresh-manifest and drives a corpus "
         "recorded in crates/rue-frontend-diff/src/corpus_manifest.rs. Its "

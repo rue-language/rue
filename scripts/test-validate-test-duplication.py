@@ -281,6 +281,9 @@ class AllowanceTests(unittest.TestCase):
             self.assertTrue(target.startswith("//"), target)
             self.assertGreater(len(reason), 120, target)
         self.assertIn("distinct assertion", GATE.NOT_LISTABLE["//crates/rue-oracle-diff:oracle-diff-test"])
+        machine_index_reason = GATE.NOT_LISTABLE["//:compiler-spec-machine-index"]
+        self.assertIn("deterministic bytes", machine_index_reason)
+        self.assertIn("executes no spec cases", machine_index_reason)
         self.assertNotIn("provisional", " ".join(GATE.NOT_LISTABLE.values()))
 
 
