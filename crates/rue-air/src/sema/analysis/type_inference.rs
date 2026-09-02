@@ -1385,7 +1385,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
 
         // For VarRef, we handle it specially: check for full moves but don't mark as moved
-        if let InstData::VarRef { name, anchor } = &inst.data {
+        if let InstData::VarRef { name, .. } = &inst.data {
             // Check if it's a parameter — unless a `let` shadowed it with a
             // same-named local, which then wins for all later references
             // (spec 5.1:10, RUE-278); the local is resolved just below.
@@ -1433,7 +1433,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return self.analyze_var_ref(
                     air,
                     *name,
-                    anchor.clone(),
+                    Some(inst_ref),
                     inst.span,
                     resolved_ty,
                     ctx,

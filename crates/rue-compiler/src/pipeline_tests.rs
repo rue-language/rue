@@ -2622,6 +2622,78 @@ mod tests {
         assert_scheduled_codegen_matches_fresh_link(true);
     }
 
+    #[test]
+    fn named_module_const_resolution_keeps_read_anchor_identity_when_retained_or_fresh() {
+        fn atoms(
+            cfg: &RootedCfgOutput,
+        ) -> Vec<(rue_air::LocalAtomKind, String, rue_rir::RirStructuralAnchor)> {
+            cfg.functions()
+                .iter()
+                .flat_map(|function| function.record.local_atoms.iter())
+                .map(|atom| {
+                    (
+                        atom.identity.kind,
+                        atom.content.to_string(),
+                        atom.identity.anchor.clone(),
+                    )
+                })
+                .collect()
+        }
+
+        let first = SourceSnapshot::single(
+            "<named-const-anchor>",
+            r#"
+                const MESSAGE: str = "hello";
+                fn main() -> i32 {
+                    @dbg(MESSAGE);
+                    @dbg(MESSAGE);
+                    0
+                }
+            "#,
+        )
+        .unwrap();
+        let shifted = SourceSnapshot::single(
+            "<named-const-anchor>",
+            r#"
+                // Absolute coordinates change; producer structure does not.
+                const MESSAGE: str = "hello";
+                fn main() -> i32 {
+                    @dbg(MESSAGE);
+                    @dbg(MESSAGE);
+                    0
+                }
+            "#,
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+
+        let mut retained_session = CompilerSession::new();
+        retained_session
+            .update_for_presentation(&first)
+            .into_result()
+            .unwrap();
+        let first_atoms = atoms(&retained_session.rooted_cfg(&options).unwrap());
+        assert_eq!(first_atoms.len(), 2);
+        assert!(first_atoms.iter().all(|(kind, content, _)| {
+            *kind == rue_air::LocalAtomKind::ReadOnlyData && content == "hello"
+        }));
+        assert_ne!(first_atoms[0].2, first_atoms[1].2);
+
+        retained_session
+            .update_for_presentation(&shifted)
+            .into_result()
+            .unwrap();
+        let retained_atoms = atoms(&retained_session.rooted_cfg(&options).unwrap());
+        let mut fresh_session = CompilerSession::new();
+        fresh_session
+            .update_for_presentation(&shifted)
+            .into_result()
+            .unwrap();
+        let fresh_atoms = atoms(&fresh_session.rooted_cfg(&options).unwrap());
+        assert_eq!(retained_atoms, first_atoms);
+        assert_eq!(fresh_atoms, retained_atoms);
+    }
+
     #[cfg(unix)]
     #[test]
     #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]

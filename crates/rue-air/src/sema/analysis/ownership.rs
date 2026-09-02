@@ -1590,9 +1590,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 air, directives, *name, *is_mut, *ty, *init, *iter_elem, inst.span, ctx,
             ),
 
-            InstData::VarRef { name, anchor } => {
+            InstData::VarRef { name, .. } => {
                 let resolved_ty = ctx.resolved_type_of(inst_ref);
-                self.analyze_var_ref(air, *name, anchor.clone(), inst.span, resolved_ty, ctx)
+                self.analyze_var_ref(air, *name, Some(inst_ref), inst.span, resolved_ty, ctx)
             }
 
             InstData::Assign { name, value } => {
@@ -1893,7 +1893,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         &mut self,
         air: &mut Air,
         name: Spur,
-        atom_anchor: Option<rue_rir::RirStructuralAnchor>,
+        atom_anchor: Option<InstRef>,
         span: Span,
         // The Hindley-Milner-resolved type of this reference, if known. Used
         // to recover the declared width of a captured comptime value parameter
@@ -2230,6 +2230,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     span,
                 ));
             }
+            let atom_anchor = match const_info.value {
+                ConstValue::String(_) => atom_anchor.and_then(|instruction| {
+                    self.body_rir_ref()
+                        .materialize_const_use_anchor(instruction)
+                }),
+                _ => None,
+            };
             let (data, ty) = self.materialize_const_value(
                 ctx,
                 const_info.value,

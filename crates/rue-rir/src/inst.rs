@@ -22,6 +22,10 @@ pub use printer::*;
 pub struct Rir {
     /// All instructions across the canonical module sequence.
     instructions: Vec<Inst>,
+    /// Producer-private structural paths for source variable reads. Entries
+    /// are aligned with `instructions`; public flat anchors remain in
+    /// `InstData::VarRef` only for explicitly constructed RIR.
+    deferred_structural_anchors: Vec<Option<RirDeferredStructuralAnchor>>,
     /// Extra data for variable-length instruction payloads.
     extra: Vec<u32>,
     /// Declaration-local structured type syntax referenced by type-bearing
@@ -46,6 +50,7 @@ pub struct Rir {
 impl PartialEq for Rir {
     fn eq(&self, other: &Self) -> bool {
         self.instructions == other.instructions
+            && self.deferred_structural_anchors == other.deferred_structural_anchors
             && self.extra == other.extra
             && self.type_syntax == other.type_syntax
             && self.instruction_limit_exceeded == other.instruction_limit_exceeded

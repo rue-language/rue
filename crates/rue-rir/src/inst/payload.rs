@@ -836,7 +836,44 @@ impl Rir {
             return InstRef::from_raw(0);
         }
         self.instructions.push(inst);
+        self.deferred_structural_anchors.push(None);
         InstRef::from_raw(index)
+    }
+
+    pub(crate) fn set_deferred_structural_anchor(
+        &mut self,
+        instruction: InstRef,
+        anchor: RirDeferredStructuralAnchor,
+    ) {
+        self.deferred_structural_anchors[instruction.as_u32() as usize] = Some(anchor);
+    }
+
+    pub(crate) fn deferred_structural_anchor(
+        &self,
+        instruction: InstRef,
+    ) -> Option<&RirDeferredStructuralAnchor> {
+        self.deferred_structural_anchors
+            .get(instruction.as_u32() as usize)
+            .and_then(Option::as_ref)
+    }
+
+    /// Materialize the structural anchor for a semantically proven named
+    /// string-constant use. Explicit public anchors take precedence; ordinary
+    /// source reads consult the producer-private deferred side table.
+    pub fn materialize_const_use_anchor(
+        &self,
+        instruction: InstRef,
+    ) -> Option<RirStructuralAnchor> {
+        match &self.get(instruction).data {
+            InstData::VarRef {
+                anchor: Some(anchor),
+                ..
+            } => Some(anchor.clone()),
+            InstData::VarRef { anchor: None, .. } => self
+                .deferred_structural_anchor(instruction)
+                .map(RirDeferredStructuralAnchor::materialize),
+            _ => None,
+        }
     }
 
     /// The implementation-limit rejection latched during construction, if the

@@ -235,6 +235,132 @@ impl RirStructuralAnchor {
     }
 }
 
+/// A source occurrence whose structural anchor is materialized only if semantic
+/// resolution proves that the read names module-level read-only data.
+///
+/// AstGen shares the immutable prefix nodes between syntax descendants and
+/// stores the occurrence's final segment inline. Extending the producer cursor
+/// is O(1), and recording a variable read performs no allocation or path copy.
+#[derive(Debug, Clone)]
+pub(crate) struct RirDeferredStructuralAnchor {
+    pub(crate) prefix: Option<std::sync::Arc<RirStructuralPathPrefix>>,
+    pub(crate) tail: RirStructuralPathSegment,
+    pub(crate) len: usize,
+    pub(crate) flat: Option<RirStructuralAnchor>,
+}
+
+#[derive(Debug)]
+pub(crate) struct RirStructuralPathPrefix {
+    pub(crate) parent: Option<std::sync::Arc<RirStructuralPathPrefix>>,
+    pub(crate) segment: RirStructuralPathSegment,
+    pub(crate) len: usize,
+}
+
+pub(crate) const MAX_DEFERRED_STRUCTURAL_PATH: usize = rue_error::MAX_NESTING_DEPTH * 4;
+
+impl RirDeferredStructuralAnchor {
+    pub(crate) fn new(
+        prefix: Option<std::sync::Arc<RirStructuralPathPrefix>>,
+        tail: RirStructuralPathSegment,
+    ) -> Self {
+        let len = prefix.as_ref().map_or(1, |prefix| prefix.len + 1);
+        Self {
+            prefix,
+            tail,
+            len,
+            flat: None,
+        }
+    }
+
+    pub(crate) fn from_flat(anchor: RirStructuralAnchor) -> Self {
+        let segments = anchor.segments();
+        let tail = segments
+            .last()
+            .copied()
+            .unwrap_or(RirStructuralPathSegment::Body);
+        Self {
+            prefix: None,
+            tail,
+            len: segments.len(),
+            flat: Some(anchor),
+        }
+    }
+
+    /// Materialize the original public flat anchor at the semantic const-use
+    /// boundary. Parser-produced chains are bounded by `MAX_NESTING_DEPTH`;
+    /// packed input is validated before reaching this representation.
+    pub(crate) fn materialize(&self) -> RirStructuralAnchor {
+        if let Some(flat) = &self.flat {
+            return flat.clone();
+        }
+        let mut segments = vec![self.tail; self.len];
+        let mut index = self.len - 1;
+        let mut cursor = self.prefix.as_deref();
+        while let Some(node) = cursor {
+            index -= 1;
+            segments[index] = node.segment;
+            cursor = node.parent.as_deref();
+        }
+        RirStructuralAnchor::new(segments)
+    }
+
+    pub(crate) fn retained_allocation_charge(&self) -> u64 {
+        if let Some(flat) = &self.flat {
+            return std::mem::size_of_val(flat.segments()) as u64;
+        }
+        self.prefix.as_ref().map_or(0, |prefix| {
+            prefix.len as u64 * std::mem::size_of::<RirStructuralPathPrefix>() as u64
+        })
+    }
+}
+
+impl PartialEq for RirDeferredStructuralAnchor {
+    fn eq(&self, other: &Self) -> bool {
+        if self.len != other.len || self.tail != other.tail {
+            return false;
+        }
+        if let (Some(left), Some(right)) = (&self.flat, &other.flat) {
+            return left == right;
+        }
+        if let Some(flat) = &self.flat {
+            return chained_prefix_equals(
+                other.prefix.as_deref(),
+                &flat.segments()[..self.len - 1],
+            );
+        }
+        if let Some(flat) = &other.flat {
+            return chained_prefix_equals(self.prefix.as_deref(), &flat.segments()[..self.len - 1]);
+        }
+        let mut left = self.prefix.as_deref();
+        let mut right = other.prefix.as_deref();
+        while let (Some(a), Some(b)) = (left, right) {
+            if a.segment != b.segment {
+                return false;
+            }
+            left = a.parent.as_deref();
+            right = b.parent.as_deref();
+        }
+        left.is_none() && right.is_none()
+    }
+}
+
+impl Eq for RirDeferredStructuralAnchor {}
+
+fn chained_prefix_equals(
+    mut node: Option<&RirStructuralPathPrefix>,
+    segments: &[RirStructuralPathSegment],
+) -> bool {
+    let mut index = segments.len();
+    while let Some(current) = node {
+        if index == 0 || current.segment != segments[index - 1] {
+            return false;
+        }
+        index -= 1;
+        node = current.parent.as_deref();
+    }
+    index == 0
+}
+
 /// A single RIR instruction.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Inst {

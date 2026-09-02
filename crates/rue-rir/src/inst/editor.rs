@@ -154,6 +154,9 @@ impl RirEditor {
             Ok(value) => Ok(value),
             Err(error) => {
                 self.rir.instructions.truncate(instruction_len);
+                self.rir
+                    .deferred_structural_anchors
+                    .truncate(instruction_len);
                 self.rir.extra.truncate(extra_len);
                 Err(error)
             }
@@ -164,6 +167,28 @@ impl RirEditor {
     /// below, whose descriptors never escape the editor.
     pub fn add_inst(&mut self, inst: Inst) -> InstRef {
         self.rir.add_inst(inst)
+    }
+
+    pub(crate) fn add_deferred_var_ref(
+        &mut self,
+        name: Spur,
+        anchor: RirDeferredStructuralAnchor,
+        span: Span,
+    ) -> InstRef {
+        let instruction = self.rir.add_inst(Inst {
+            data: InstData::VarRef { name, anchor: None },
+            span,
+        });
+        self.rir.set_deferred_structural_anchor(instruction, anchor);
+        instruction
+    }
+
+    pub(crate) fn set_deferred_structural_anchor(
+        &mut self,
+        instruction: InstRef,
+        anchor: RirDeferredStructuralAnchor,
+    ) {
+        self.rir.set_deferred_structural_anchor(instruction, anchor);
     }
 
     /// The implementation-limit rejection latched by an infallible
@@ -845,7 +870,7 @@ impl RirEditor {
                 };
                 let span = take_span(RirSpanField::Instruction)?;
                 let payload_free = |data| Inst { data, span };
-                match &instruction.data {
+                let destination_instruction = match &instruction.data {
                     InstData::IntConst(value) => {
                         self.add_inst(payload_free(InstData::IntConst(*value)))
                     }
@@ -1427,6 +1452,10 @@ impl RirEditor {
                         self.add_anon_enum_type(&variants, &payloads, anchor.clone(), span)?
                     }
                 };
+                if let Some(anchor) = source.deferred_structural_anchor(source_instruction) {
+                    self.rir
+                        .set_deferred_structural_anchor(destination_instruction, anchor.clone());
+                }
             }
             if let Some((slot, _)) = mapped_spans.next() {
                 return Err(RirSpanRemapError::UnconsumedSlot(slot));
@@ -1451,6 +1480,9 @@ impl RirEditor {
         })();
         if result.is_err() {
             self.rir.instructions.truncate(instruction_start as usize);
+            self.rir
+                .deferred_structural_anchors
+                .truncate(instruction_start as usize);
             self.rir.extra.truncate(extra_start as usize);
             self.type_syntax.rollback(type_snapshot);
         }
@@ -1481,6 +1513,7 @@ impl RirEditor {
             intrinsic,
             args: range,
         };
+        self.rir.deferred_structural_anchors[instruction.as_u32() as usize] = None;
         Ok(())
     }
 

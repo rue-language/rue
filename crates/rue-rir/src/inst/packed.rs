@@ -18,7 +18,10 @@ use crate::{RirTypeSyntaxNode, RirTypeSyntaxRange, RirTypeSyntaxSymbol};
 use super::*;
 
 const MAGIC: &[u8; 4] = b"RIRP";
-const VERSION: u8 = 4;
+// Packed RIR is a private, ephemeral compiler-cache format. The cache header
+// version is checked before decoding, so changing this byte invalidates every
+// prior representation instead of requiring compatibility decoding.
+const VERSION: u8 = 5;
 const HEADER_LEN: usize = 64;
 
 /// One fallible source intrinsic whose result requires a trusted `Option`
@@ -408,6 +411,10 @@ impl PackedValidatedRir {
         .decode();
         if result.is_err() {
             destination.rir.instructions.truncate(instruction_len);
+            destination
+                .rir
+                .deferred_structural_anchors
+                .truncate(instruction_len);
             destination.rir.extra.truncate(extra_len);
             destination.type_syntax.rollback(type_snapshot);
             destination.rir.instruction_limit_exceeded = capacity_latch;
@@ -561,6 +568,8 @@ struct Encoder<E, C, P> {
     type_count: usize,
     current_type: u32,
     fallible_intrinsics: RirFallibleIntrinsicSet,
+    deferred_prefix_ids: HashMap<*const RirStructuralPathPrefix, u32>,
+    deferred_prefix_count: u32,
     marker: std::marker::PhantomData<fn() -> E>,
 }
 
@@ -580,6 +589,8 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
             type_count: 0,
             current_type: 0,
             fallible_intrinsics: RirFallibleIntrinsicSet::default(),
+            deferred_prefix_ids: HashMap::new(),
+            deferred_prefix_count: 0,
             marker: std::marker::PhantomData,
         }
     }
@@ -1097,55 +1108,7 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
         self.count(anchor.segments().len())?;
         for segment in anchor.segments() {
             self.check()?;
-            match *segment {
-                RirStructuralPathSegment::Body => self.byte(0)?,
-                RirStructuralPathSegment::ParameterType(value) => {
-                    self.byte(1)?;
-                    self.u32(value)?;
-                }
-                RirStructuralPathSegment::ReturnType => self.byte(2)?,
-                RirStructuralPathSegment::Statement(value) => {
-                    self.byte(3)?;
-                    self.u32(value)?;
-                }
-                RirStructuralPathSegment::Operand(value) => {
-                    self.byte(4)?;
-                    self.u32(value)?;
-                }
-                RirStructuralPathSegment::Branch(value) => {
-                    self.byte(5)?;
-                    self.u32(value)?;
-                }
-                RirStructuralPathSegment::MatchArm(value) => {
-                    self.byte(6)?;
-                    self.u32(value)?;
-                }
-                RirStructuralPathSegment::FieldType(value) => {
-                    self.byte(7)?;
-                    self.u32(value)?;
-                }
-                RirStructuralPathSegment::VariantPayload { variant, payload } => {
-                    self.byte(8)?;
-                    self.u32(variant)?;
-                    self.u32(payload)?;
-                }
-                RirStructuralPathSegment::Method(value) => {
-                    self.byte(9)?;
-                    self.u32(value)?;
-                }
-                RirStructuralPathSegment::AnonymousType(value) => {
-                    self.byte(10)?;
-                    self.u32(value)?;
-                }
-                RirStructuralPathSegment::StringLiteral(value) => {
-                    self.byte(11)?;
-                    self.u32(value)?;
-                }
-                RirStructuralPathSegment::ReadOnlyData(value) => {
-                    self.byte(12)?;
-                    self.u32(value)?;
-                }
-            }
+            self.anchor_segment(*segment)?;
         }
         Ok(())
     }
@@ -1157,6 +1120,181 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
         self.boolean(anchor.is_some())?;
         if let Some(anchor) = anchor {
             self.anchor(anchor)?;
+        }
+        Ok(())
+    }
+
+    fn anchor_segment(
+        &mut self,
+        segment: RirStructuralPathSegment,
+    ) -> Result<(), PackedRirEncodeError<E>> {
+        match segment {
+            RirStructuralPathSegment::Body => self.byte(0)?,
+            RirStructuralPathSegment::ParameterType(value) => {
+                self.byte(1)?;
+                self.u32(value)?;
+            }
+            RirStructuralPathSegment::ReturnType => self.byte(2)?,
+            RirStructuralPathSegment::Statement(value) => {
+                self.byte(3)?;
+                self.u32(value)?;
+            }
+            RirStructuralPathSegment::Operand(value) => {
+                self.byte(4)?;
+                self.u32(value)?;
+            }
+            RirStructuralPathSegment::Branch(value) => {
+                self.byte(5)?;
+                self.u32(value)?;
+            }
+            RirStructuralPathSegment::MatchArm(value) => {
+                self.byte(6)?;
+                self.u32(value)?;
+            }
+            RirStructuralPathSegment::FieldType(value) => {
+                self.byte(7)?;
+                self.u32(value)?;
+            }
+            RirStructuralPathSegment::VariantPayload { variant, payload } => {
+                self.byte(8)?;
+                self.u32(variant)?;
+                self.u32(payload)?;
+            }
+            RirStructuralPathSegment::Method(value) => {
+                self.byte(9)?;
+                self.u32(value)?;
+            }
+            RirStructuralPathSegment::AnonymousType(value) => {
+                self.byte(10)?;
+                self.u32(value)?;
+            }
+            RirStructuralPathSegment::StringLiteral(value) => {
+                self.byte(11)?;
+                self.u32(value)?;
+            }
+            RirStructuralPathSegment::ReadOnlyData(value) => {
+                self.byte(12)?;
+                self.u32(value)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn deferred_prefix_id(&self, prefix: &RirStructuralPathPrefix) -> Option<u32> {
+        self.deferred_prefix_ids
+            .get(&(prefix as *const RirStructuralPathPrefix))
+            .copied()
+    }
+
+    fn unseen_deferred_prefixes(&self, mut prefix: &RirStructuralPathPrefix) -> usize {
+        let mut count = 0;
+        loop {
+            if self.deferred_prefix_id(prefix).is_some() {
+                return count;
+            }
+            count += 1;
+            let Some(parent) = prefix.parent.as_deref() else {
+                return count;
+            };
+            prefix = parent;
+        }
+    }
+
+    fn define_deferred_prefix(
+        &mut self,
+        prefix: &RirStructuralPathPrefix,
+    ) -> Result<u32, PackedRirEncodeError<E>> {
+        self.check()?;
+        if let Some(id) = self.deferred_prefix_id(prefix) {
+            return Ok(id);
+        }
+        let parent = if let Some(parent) = &prefix.parent {
+            Some(self.define_deferred_prefix(parent)?)
+        } else {
+            None
+        };
+        self.boolean(parent.is_some())?;
+        if let Some(parent) = parent {
+            self.u32(parent)?;
+        }
+        self.anchor_segment(prefix.segment)?;
+        self.deferred_prefix_ids
+            .try_reserve(1)
+            .map_err(|_| PackedRirEncodeError::CapacityFailure)?;
+        let id = self.deferred_prefix_count;
+        self.deferred_prefix_count = self
+            .deferred_prefix_count
+            .checked_add(1)
+            .ok_or(PackedRirEncodeError::ResourceLimit)?;
+        self.deferred_prefix_ids
+            .insert(prefix as *const RirStructuralPathPrefix, id);
+        Ok(id)
+    }
+
+    fn define_flat_prefix(
+        &mut self,
+        segments: &[RirStructuralPathSegment],
+    ) -> Result<Option<u32>, PackedRirEncodeError<E>> {
+        let mut parent = None;
+        for &segment in segments {
+            self.check()?;
+            self.boolean(parent.is_some())?;
+            if let Some(parent) = parent {
+                self.u32(parent)?;
+            }
+            self.anchor_segment(segment)?;
+            let id = self.deferred_prefix_count;
+            self.deferred_prefix_count = self
+                .deferred_prefix_count
+                .checked_add(1)
+                .ok_or(PackedRirEncodeError::ResourceLimit)?;
+            parent = Some(id);
+        }
+        Ok(parent)
+    }
+
+    fn deferred_anchor(
+        &mut self,
+        anchor: &RirDeferredStructuralAnchor,
+    ) -> Result<(), PackedRirEncodeError<E>> {
+        self.check()?;
+        let (prefix, tail) = if let Some(flat) = &anchor.flat {
+            let Some((&tail, prefix_segments)) = flat.segments().split_last() else {
+                self.count(0)?;
+                self.boolean(false)?;
+                self.boolean(false)?;
+                return Ok(());
+            };
+            self.count(prefix_segments.len())?;
+            (self.define_flat_prefix(prefix_segments)?, tail)
+        } else {
+            let new_prefixes = anchor
+                .prefix
+                .as_deref()
+                .map_or(0, |prefix| self.unseen_deferred_prefixes(prefix));
+            self.count(new_prefixes)?;
+            let prefix = if let Some(prefix) = &anchor.prefix {
+                Some(self.define_deferred_prefix(prefix)?)
+            } else {
+                None
+            };
+            (prefix, anchor.tail)
+        };
+        self.boolean(prefix.is_some())?;
+        if let Some(prefix) = prefix {
+            self.u32(prefix)?;
+        }
+        self.boolean(true)?;
+        self.anchor_segment(tail)
+    }
+
+    fn optional_deferred_anchor(
+        &mut self,
+        anchor: Option<&RirDeferredStructuralAnchor>,
+    ) -> Result<(), PackedRirEncodeError<E>> {
+        self.boolean(anchor.is_some())?;
+        if let Some(anchor) = anchor {
+            self.deferred_anchor(anchor)?;
         }
         Ok(())
     }
@@ -1526,6 +1664,7 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                 self.byte(44)?;
                 self.symbol(*name)?;
                 self.optional_anchor(anchor.as_ref())?;
+                self.optional_deferred_anchor(rir.deferred_structural_anchor(instruction))?;
             }
             InstData::Assign { name, value } => {
                 self.byte(45)?;
@@ -1972,6 +2111,7 @@ struct Decoder<'a, E, C, S, P> {
     symbols: u32,
     types: u32,
     type_nodes: Vec<RirTypeSyntaxRef>,
+    deferred_prefixes: Vec<Arc<RirStructuralPathPrefix>>,
     source_instruction: u32,
     destination_instruction_start: u32,
     spans_read: u32,
@@ -2007,6 +2147,7 @@ impl<
             symbols: 0,
             types: 0,
             type_nodes: Vec::new(),
+            deferred_prefixes: Vec::new(),
             source_instruction: 0,
             destination_instruction_start: 0,
             spans_read: 0,
@@ -2937,7 +3078,20 @@ impl<
             44 => {
                 let name = self.symbol(reader)?;
                 let anchor = self.optional_anchor(reader)?;
-                add!(InstData::VarRef { name, anchor })
+                let deferred = self.optional_deferred_anchor(reader)?;
+                if anchor.is_some() && deferred.is_some() {
+                    return Err(PackedRirDecodeError::InvalidTag {
+                        family: "variable reference anchor storage",
+                        tag: 3,
+                    }
+                    .into());
+                }
+                let instruction = add!(InstData::VarRef { name, anchor });
+                if let Some(deferred) = deferred {
+                    self.destination
+                        .set_deferred_structural_anchor(instruction, deferred);
+                }
+                instruction
             }
             45 => {
                 let name = self.symbol(reader)?;
@@ -3192,27 +3346,7 @@ impl<
             .map_err(|_| Self::capacity("structural anchor"))?;
         for _ in 0..count {
             self.check()?;
-            let tag = Self::byte_tag(reader, "structural anchor segment", 12)?;
-            let segment = match tag {
-                0 => RirStructuralPathSegment::Body,
-                1 => RirStructuralPathSegment::ParameterType(reader.u32()?),
-                2 => RirStructuralPathSegment::ReturnType,
-                3 => RirStructuralPathSegment::Statement(reader.u32()?),
-                4 => RirStructuralPathSegment::Operand(reader.u32()?),
-                5 => RirStructuralPathSegment::Branch(reader.u32()?),
-                6 => RirStructuralPathSegment::MatchArm(reader.u32()?),
-                7 => RirStructuralPathSegment::FieldType(reader.u32()?),
-                8 => RirStructuralPathSegment::VariantPayload {
-                    variant: reader.u32()?,
-                    payload: reader.u32()?,
-                },
-                9 => RirStructuralPathSegment::Method(reader.u32()?),
-                10 => RirStructuralPathSegment::AnonymousType(reader.u32()?),
-                11 => RirStructuralPathSegment::StringLiteral(reader.u32()?),
-                12 => RirStructuralPathSegment::ReadOnlyData(reader.u32()?),
-                _ => unreachable!(),
-            };
-            segments.push(segment);
+            segments.push(Self::anchor_segment(reader)?);
         }
         Ok(RirStructuralAnchor::new(segments))
     }
@@ -3223,6 +3357,105 @@ impl<
     ) -> Result<Option<RirStructuralAnchor>, PackedRirAppendError<E>> {
         if reader.boolean("optional structural anchor")? {
             self.anchor(reader).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn anchor_segment(
+        reader: &mut Reader<'_>,
+    ) -> Result<RirStructuralPathSegment, PackedRirDecodeError> {
+        let tag = Self::byte_tag(reader, "structural anchor segment", 12)?;
+        Ok(match tag {
+            0 => RirStructuralPathSegment::Body,
+            1 => RirStructuralPathSegment::ParameterType(reader.u32()?),
+            2 => RirStructuralPathSegment::ReturnType,
+            3 => RirStructuralPathSegment::Statement(reader.u32()?),
+            4 => RirStructuralPathSegment::Operand(reader.u32()?),
+            5 => RirStructuralPathSegment::Branch(reader.u32()?),
+            6 => RirStructuralPathSegment::MatchArm(reader.u32()?),
+            7 => RirStructuralPathSegment::FieldType(reader.u32()?),
+            8 => RirStructuralPathSegment::VariantPayload {
+                variant: reader.u32()?,
+                payload: reader.u32()?,
+            },
+            9 => RirStructuralPathSegment::Method(reader.u32()?),
+            10 => RirStructuralPathSegment::AnonymousType(reader.u32()?),
+            11 => RirStructuralPathSegment::StringLiteral(reader.u32()?),
+            12 => RirStructuralPathSegment::ReadOnlyData(reader.u32()?),
+            _ => unreachable!(),
+        })
+    }
+
+    fn deferred_anchor(
+        &mut self,
+        reader: &mut Reader<'_>,
+    ) -> Result<RirDeferredStructuralAnchor, PackedRirAppendError<E>> {
+        let definitions = Self::count(reader, "deferred structural prefixes", 2)?;
+        self.deferred_prefixes
+            .try_reserve(definitions)
+            .map_err(|_| Self::capacity("deferred structural prefixes"))?;
+        for _ in 0..definitions {
+            self.check()?;
+            let parent = if reader.boolean("deferred structural prefix parent")? {
+                let reference = reader.u32()? as usize;
+                Some(self.deferred_prefixes.get(reference).cloned().ok_or(
+                    PackedRirDecodeError::CountOutOfBounds {
+                        family: "deferred structural prefix reference",
+                    },
+                )?)
+            } else {
+                None
+            };
+            let segment = Self::anchor_segment(reader)?;
+            let len = parent.as_ref().map_or(1, |parent| parent.len + 1);
+            if len > MAX_DEFERRED_STRUCTURAL_PATH {
+                return Err(PackedRirDecodeError::CountOutOfBounds {
+                    family: "deferred structural path depth",
+                }
+                .into());
+            }
+            self.deferred_prefixes
+                .push(Arc::new(RirStructuralPathPrefix {
+                    parent,
+                    segment,
+                    len,
+                }));
+        }
+        let prefix = if reader.boolean("deferred structural anchor prefix")? {
+            let reference = reader.u32()? as usize;
+            Some(self.deferred_prefixes.get(reference).cloned().ok_or(
+                PackedRirDecodeError::CountOutOfBounds {
+                    family: "deferred structural anchor prefix reference",
+                },
+            )?)
+        } else {
+            None
+        };
+        if !reader.boolean("deferred structural anchor tail")? {
+            return Ok(RirDeferredStructuralAnchor::from_flat(
+                RirStructuralAnchor::new(Vec::new()),
+            ));
+        }
+        let tail = Self::anchor_segment(reader)?;
+        if prefix
+            .as_ref()
+            .is_some_and(|prefix| prefix.len.saturating_add(1) > MAX_DEFERRED_STRUCTURAL_PATH)
+        {
+            return Err(PackedRirDecodeError::CountOutOfBounds {
+                family: "deferred structural path depth",
+            }
+            .into());
+        }
+        Ok(RirDeferredStructuralAnchor::new(prefix, tail))
+    }
+
+    fn optional_deferred_anchor(
+        &mut self,
+        reader: &mut Reader<'_>,
+    ) -> Result<Option<RirDeferredStructuralAnchor>, PackedRirAppendError<E>> {
+        if reader.boolean("optional deferred structural anchor")? {
+            self.deferred_anchor(reader).map(Some)
         } else {
             Ok(None)
         }
@@ -3431,6 +3664,59 @@ mod tests {
             |_slot, span| Ok((span.start, span.end)),
         )
         .unwrap()
+    }
+
+    fn production_deferred_owner(source: &str) -> (ValidatedRir, ThreadedRodeo, InstRef) {
+        let (tokens, symbols) = Lexer::new(source).tokenize().unwrap();
+        let (ast, symbols) = Parser::new(tokens, symbols).parse().unwrap();
+        let mut astgen = crate::AstGen::with_symbol_normalizer(&symbols, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = ValidatedRir::finish(
+            astgen.finish_editor(),
+            &RirValidationContext {
+                symbol_count: symbols.len(),
+                source_lengths: &[(FileId::DEFAULT, source.len() as u32)],
+            },
+        )
+        .unwrap();
+        let root = rir
+            .iter()
+            .find_map(|(reference, instruction)| {
+                matches!(instruction.data, InstData::FnDecl { .. }).then_some(reference)
+            })
+            .unwrap();
+        (rir, symbols, root)
+    }
+
+    fn decode_deferred_fixture(
+        bytes: &[u8],
+        mut checkpoint: impl FnMut() -> Result<(), ()>,
+    ) -> Result<RirDeferredStructuralAnchor, PackedRirAppendError<()>> {
+        let mut destination = RirEditor::new();
+        let mut decoder = Decoder {
+            bytes: &[],
+            destination: &mut destination,
+            root_methods: None,
+            revalidate_symbols: false,
+            checkpoint: &mut checkpoint,
+            remap_symbol: |_ordinal| Ok(Spur::try_from_usize(0).unwrap()),
+            remap_span: |_slot, _basis| Ok(Span::new(0, 0)),
+            instructions: 0,
+            symbols: 0,
+            types: 0,
+            type_nodes: Vec::new(),
+            deferred_prefixes: Vec::new(),
+            source_instruction: 0,
+            destination_instruction_start: 0,
+            spans_read: 0,
+            marker: std::marker::PhantomData,
+        };
+        let mut reader = Reader::new(bytes);
+        let anchor = decoder.deferred_anchor(&mut reader)?;
+        if reader.remaining() != 0 {
+            return Err(PackedRirDecodeError::TrailingBytes.into());
+        }
+        Ok(anchor)
     }
 
     fn pack_intrinsics(names: &[&str]) -> PackedValidatedRir {
@@ -3854,11 +4140,11 @@ mod tests {
     }
 
     #[test]
-    fn wrong_version_is_rejected_without_destination_mutation() {
+    fn packed_v4_is_rejected_without_destination_mutation() {
         let (source, symbols, root) = validated_owner(false);
         let packed = pack(&source, &symbols, root);
         let mut bytes = packed.as_bytes().to_vec();
-        bytes[4] = VERSION + 1;
+        bytes[4] = 4;
         let corrupt = PackedValidatedRir(Arc::from(bytes));
         let mut destination = RirEditor::new();
         destination.add_inst(Inst {
@@ -3872,7 +4158,7 @@ mod tests {
         assert!(matches!(
             append(&corrupt, &mut destination),
             Err(PackedRirAppendError::Decode(
-                PackedRirDecodeError::UnsupportedVersion(_)
+                PackedRirDecodeError::UnsupportedVersion(4)
             ))
         ));
         assert_eq!(
@@ -3881,6 +4167,190 @@ mod tests {
         );
         assert_eq!(destination.rir.extra, before_extra);
         assert!(destination.rir.instruction_limit_exceeded);
+    }
+
+    #[test]
+    fn packed_v5_production_deferred_prefixes_roundtrip_repack_and_share() {
+        let source_text = "fn f() -> i32 { MODULE_LOOKING + MODULE_LOOKING }";
+        let (source, symbols, root) = production_deferred_owner(source_text);
+        let packed = pack(&source, &symbols, root);
+        let (decoded, metadata) = packed
+            .try_decode_validated(
+                PackedRirProjection {
+                    symbol_count: symbols.len(),
+                    file_id: FileId::DEFAULT,
+                    declaration_start: 0,
+                    source_length: source_text.len() as u32,
+                },
+                || Ok::<_, ()>(()),
+            )
+            .unwrap();
+        assert_eq!(metadata.declaration, root);
+        assert!(source.exact_eq(&decoded));
+        assert_eq!(pack(&decoded, &symbols, root).as_bytes(), packed.as_bytes());
+
+        let prefixes = decoded
+            .iter()
+            .filter_map(|(reference, instruction)| {
+                matches!(instruction.data, InstData::VarRef { .. })
+                    .then(|| decoded.deferred_structural_anchor(reference))
+                    .flatten()
+                    .and_then(|anchor| anchor.prefix.as_ref())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(prefixes.len(), 2);
+        assert!(Arc::ptr_eq(
+            prefixes[0].parent.as_ref().unwrap(),
+            prefixes[1].parent.as_ref().unwrap()
+        ));
+    }
+
+    #[test]
+    fn packed_v5_rejects_forward_prefix_parent_and_invalid_anchor_reference() {
+        let forward_parent = [1, 1, 0, 0, 0, 0];
+        assert!(matches!(
+            decode_deferred_fixture(&forward_parent, || Ok(())),
+            Err(PackedRirAppendError::Decode(
+                PackedRirDecodeError::CountOutOfBounds {
+                    family: "deferred structural prefix reference"
+                }
+            ))
+        ));
+
+        // One root `Body` definition followed by a reference to nonexistent
+        // prefix 1 and a syntactically valid tail.
+        let invalid_anchor = [1, 0, 0, 1, 1, 1, 12, 0];
+        assert!(matches!(
+            decode_deferred_fixture(&invalid_anchor, || Ok(())),
+            Err(PackedRirAppendError::Decode(
+                PackedRirDecodeError::CountOutOfBounds {
+                    family: "deferred structural anchor prefix reference"
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn packed_v5_rejects_flat_and_deferred_var_ref_anchor_without_mutation() {
+        let source_text = "fn f() -> i32 { MODULE_LOOKING }";
+        let (source, symbols, root) = production_deferred_owner(source_text);
+        let packed = pack(&source, &symbols, root);
+        let header = Header::parse(packed.as_bytes()).unwrap();
+        let mut bytes = packed.as_bytes().to_vec();
+        let opcode = bytes[header.instructions_offset..header.basis_offset]
+            .windows(4)
+            .position(|window| window[0] == 44 && window[2] == 0 && window[3] == 1)
+            .map(|offset| header.instructions_offset + offset)
+            .expect("production VarRef has flat=false and deferred=true");
+        bytes[opcode + 2] = 1;
+        bytes.insert(opcode + 3, 0); // empty public flat anchor
+        set_header(&mut bytes, 48, header.basis_offset + 1);
+        set_header(&mut bytes, 52, header.end_offset + 1);
+        let corrupt = PackedValidatedRir(Arc::from(bytes));
+
+        let mut destination = RirEditor::new();
+        let existing_name = Spur::try_from_usize(0).unwrap();
+        destination.add_deferred_var_ref(
+            existing_name,
+            RirDeferredStructuralAnchor::new(None, RirStructuralPathSegment::ReadOnlyData(0)),
+            Span::new(4, 5),
+        );
+        destination.rir.extra.push(17);
+        destination.rir.instruction_limit_exceeded = true;
+        let before_instructions = format!("{:?}", destination.rir.instructions);
+        let before_deferred = destination.rir.deferred_structural_anchors.clone();
+        let before_extra = destination.rir.extra.clone();
+
+        assert!(matches!(
+            append(&corrupt, &mut destination),
+            Err(PackedRirAppendError::Decode(
+                PackedRirDecodeError::InvalidTag {
+                    family: "variable reference anchor storage",
+                    tag: 3
+                }
+            ))
+        ));
+        assert_eq!(
+            format!("{:?}", destination.rir.instructions),
+            before_instructions
+        );
+        assert_eq!(destination.rir.deferred_structural_anchors, before_deferred);
+        assert_eq!(destination.rir.extra, before_extra);
+        assert!(destination.rir.instruction_limit_exceeded);
+    }
+
+    fn chained_prefix_fixture(definitions: usize) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        put_u32(&mut bytes, definitions as u32);
+        for index in 0..definitions {
+            bytes.push(u8::from(index != 0));
+            if index != 0 {
+                put_u32(&mut bytes, (index - 1) as u32);
+            }
+            bytes.push(0); // Body
+        }
+        bytes.push(1);
+        put_u32(&mut bytes, definitions.saturating_sub(1) as u32);
+        bytes.push(1);
+        bytes.push(12); // ReadOnlyData
+        bytes.push(0);
+        bytes
+    }
+
+    #[test]
+    fn packed_v5_enforces_the_exact_deferred_depth_bound() {
+        let maximum = chained_prefix_fixture(MAX_DEFERRED_STRUCTURAL_PATH - 1);
+        assert_eq!(
+            decode_deferred_fixture(&maximum, || Ok(())).unwrap().len,
+            MAX_DEFERRED_STRUCTURAL_PATH
+        );
+
+        let too_deep = chained_prefix_fixture(MAX_DEFERRED_STRUCTURAL_PATH);
+        assert!(matches!(
+            decode_deferred_fixture(&too_deep, || Ok(())),
+            Err(PackedRirAppendError::Decode(
+                PackedRirDecodeError::CountOutOfBounds {
+                    family: "deferred structural path depth"
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn packed_v5_prefix_traversal_is_cancellable() {
+        let (source, _, _) = production_deferred_owner("fn f() -> i32 { MODULE_LOOKING }");
+        let deferred = source
+            .iter()
+            .find_map(|(reference, instruction)| {
+                matches!(instruction.data, InstData::VarRef { .. })
+                    .then(|| source.deferred_structural_anchor(reference).cloned())
+                    .flatten()
+            })
+            .unwrap();
+        let mut encode_checkpoints = 0;
+        let mut encoder = Encoder::new(
+            || {
+                encode_checkpoints += 1;
+                (encode_checkpoints < 4).then_some(()).ok_or(())
+            },
+            |_slot, _span| Ok((0, 0)),
+        );
+        assert!(matches!(
+            encoder.deferred_anchor(&deferred),
+            Err(PackedRirEncodeError::Checkpoint(()))
+        ));
+        assert_eq!(encode_checkpoints, 4);
+
+        let fixture = chained_prefix_fixture(32);
+        let mut decode_checkpoints = 0;
+        assert!(matches!(
+            decode_deferred_fixture(&fixture, || {
+                decode_checkpoints += 1;
+                (decode_checkpoints < 8).then_some(()).ok_or(())
+            }),
+            Err(PackedRirAppendError::Checkpoint(()))
+        ));
+        assert_eq!(decode_checkpoints, 8);
     }
 
     #[test]

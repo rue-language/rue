@@ -162,21 +162,27 @@ impl ValidatedRir {
     /// Logical heap bytes retained by this RIR owner, excluding the inline
     /// [`ValidatedRir`] value itself.
     ///
-    /// Dense instruction and payload storage is charged by logical length.
+    /// Dense instruction, deferred-anchor slot, and payload storage is charged
+    /// by logical length.
     /// Every structural-anchor `Arc` pointee is charged in full along each
     /// reaching instruction path, including when multiple instructions share
     /// one allocation. This matches Rue's allocator-independent retained-value
     /// policy and leaves the enclosing owner responsible for the inline value.
     pub fn retained_allocation_charge(&self) -> u64 {
         let instructions = self.len().saturating_mul(std::mem::size_of::<Inst>()) as u64;
+        let deferred_slots = self
+            .len()
+            .saturating_mul(std::mem::size_of::<Option<RirDeferredStructuralAnchor>>())
+            as u64;
         let payload = self.extra_len().saturating_mul(std::mem::size_of::<u32>()) as u64;
         let type_syntax = self.type_syntax().retained_allocation_charge();
         self.iter().fold(
             instructions
+                .saturating_add(deferred_slots)
                 .saturating_add(payload)
                 .saturating_add(type_syntax),
-            |charge, (_, instruction)| {
-                let anchors = match &instruction.data {
+            |charge, (reference, instruction)| {
+                let flat_anchors = match &instruction.data {
                     InstData::StringConst { anchor, .. }
                     | InstData::AnonStructType { anchor, .. }
                     | InstData::AnonEnumType { anchor, .. } => {
@@ -188,7 +194,10 @@ impl ValidatedRir {
                     } => std::mem::size_of_val(anchor.segments()) as u64,
                     _ => 0,
                 };
-                charge.saturating_add(anchors)
+                let deferred = self
+                    .deferred_structural_anchor(reference)
+                    .map_or(0, RirDeferredStructuralAnchor::retained_allocation_charge);
+                charge.saturating_add(flat_anchors).saturating_add(deferred)
             },
         )
     }
@@ -344,7 +353,31 @@ impl Rir {
 
     /// Validate every variable-length payload before publishing this RIR.
     pub fn validate_payloads(&self) -> Result<(), RirPayloadError> {
-        for (_, inst) in self.iter() {
+        if self.deferred_structural_anchors.len() != self.instructions.len() {
+            return Err(rir_payload_error! {
+                family: "deferred structural anchors",
+                start: 0,
+                extent: 0,
+                record: None,
+                expected: self.instructions.len(),
+                actual: self.deferred_structural_anchors.len(),
+                reason: "side metadata is not aligned with instructions",
+            });
+        }
+        for (reference, inst) in self.iter() {
+            if self.deferred_structural_anchor(reference).is_some()
+                && !matches!(inst.data, InstData::VarRef { anchor: None, .. })
+            {
+                return Err(rir_payload_error! {
+                    family: "deferred structural anchors",
+                    start: reference.as_u32(),
+                    extent: 1,
+                    record: None,
+                    expected: 1,
+                    actual: 1,
+                    reason: "deferred anchor does not belong to an unanchored variable read",
+                });
+            }
             match &inst.data {
                 InstData::Match { arms, .. } => self.validate_match_range(arms)?,
                 InstData::FnDecl {
