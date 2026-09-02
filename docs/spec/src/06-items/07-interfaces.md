@@ -32,6 +32,7 @@ interface_fn    = "fn" IDENT "(" [ interface_params ] ")" [ result ] ";" ;
 interface_params = [ "inout" | "borrow" ] "self" [ "," params ] | params ;
 conformance_decl = type "is" interface_list ";" ;
 struct_conformance = "is" interface_list ;   (* between the struct name and "{" *)
+struct_assoc_type = [ "pub" ] "const" IDENT "=" type ";" ;   (* in a struct body, after fields *)
 interface_bound = "comptime" IDENT ":" interface_list ;
 ```
 
@@ -117,10 +118,14 @@ refines):
   associated-constant names;
 - an associated-function requirement is satisfied only by an inherent
   associated function of the same name under the same comparison;
-- a type-valued associated constant requirement is satisfied only by a `pub
-  const` of the same name in the type's body whose value is a type.
+- a type-valued associated constant requirement is satisfied only by an
+  associated type declaration `pub const Name = Type;` of the same name in the
+  type's body (6.7:2), whose right-hand side is a type.
 
-If any requirement is unsatisfied the assertion is a compile-time error that
+An assertion is verified whenever it is relied on to satisfy a bound
+(6.7:15); an implementation **MAY** also verify assertions eagerly. If any
+requirement is unsatisfied the assertion is a compile-time error, reported at
+the assertion, that
 names the type, the interface, and every unsatisfied requirement, and — for
 a member that exists with the wrong signature — the requirement's expected
 signature and the member's actual signature.
@@ -155,7 +160,7 @@ struct Range is Sequence {
     }
 }
 
-i64 is Equatable;   // error: `i64` has no inherent method `equals`
+i64 is Equatable;   // error when relied on: `i64` has no inherent method `equals`
 ```
 
 ## Interface bounds
