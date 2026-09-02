@@ -170,9 +170,11 @@ fn main() -> i32 {
     i = 8;
     while i < 24 { @dbg(b[i]); i += 1; }
     @dbg(std.net.sockaddr_in6_len());
-    let lo = std.net.Ipv6Addr.localhost().octets();
+    let lo_addr = std.net.Ipv6Addr.localhost();
+    let lo = lo_addr.octets();
     @dbg(lo[0]); @dbg(lo[14]); @dbg(lo[15]);
-    let any = std.net.Ipv6Addr.unspecified().octets();
+    let any_addr = std.net.Ipv6Addr.unspecified();
+    let any = any_addr.octets();
     @dbg(any[0]); @dbg(any[15]);
     0
 }
