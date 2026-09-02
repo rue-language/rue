@@ -80,6 +80,24 @@ pub fn interner_error_kind(kind: lasso::LassoErrorKind, message: impl Into<Strin
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ErrorCode(pub u16);
 
+/// Stable compiler-owned metadata for a public diagnostic code.
+///
+/// The inventory is derived from the [`ErrorCode`] declarations in this file,
+/// so adding or retiring a code changes the compiler metadata and every
+/// machine-readable consumer together. `title` is the deterministic display
+/// form of `name`; it is metadata, not diagnostic prose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorCodeMetadata {
+    /// Numeric code, rendered as `E` followed by four digits by [`fmt::Display`].
+    pub code: ErrorCode,
+    /// Stable symbolic name of the associated [`ErrorCode`] constant.
+    pub name: &'static str,
+    /// Stable human-readable title derived from `name`.
+    pub title: String,
+    /// Repository-relative source authority for the declaration.
+    pub source_path: &'static str,
+}
+
 /// Maximum supported syntactic nesting depth.
 ///
 /// The parser (recursive-descent through bracketed constructs) and AstGen
@@ -91,64 +109,79 @@ pub struct ErrorCode(pub u16);
 /// limit in spec C.6:3; the diagnosable-failure requirement is spec C.1:2.
 pub const MAX_NESTING_DEPTH: usize = 256;
 
-impl ErrorCode {
+macro_rules! define_error_codes {
+    ($( $(#[$meta:meta])* $name:ident = $value:literal; )*) => {
+        impl ErrorCode {
+            $(
+                $(#[$meta])*
+                pub const $name: Self = Self($value);
+            )*
+        }
+
+        const ERROR_CODE_DECLARATIONS: &[(ErrorCode, &str)] = &[
+            $((ErrorCode::$name, stringify!($name))),*
+        ];
+    };
+}
+
+define_error_codes! {
     // ========================================================================
     // Lexer errors (E0001-E0099)
     // ========================================================================
-    pub const UNEXPECTED_CHARACTER: Self = Self(1);
-    pub const INVALID_INTEGER: Self = Self(2);
-    pub const INVALID_STRING_ESCAPE: Self = Self(3);
-    pub const UNTERMINATED_STRING: Self = Self(4);
+    UNEXPECTED_CHARACTER = 1;
+    INVALID_INTEGER = 2;
+    INVALID_STRING_ESCAPE = 3;
+    UNTERMINATED_STRING = 4;
     // E0005 (UNSUPPORTED_INTEGER_BASE) is retired: 0x/0o/0b literals are now
     // valid Rue syntax (RUE-177). Do not reuse the code.
-    pub const UPPERCASE_BASE_PREFIX: Self = Self(6);
-    pub const EMPTY_BASED_LITERAL: Self = Self(7);
-    pub const INVALID_DIGIT_FOR_BASE: Self = Self(8);
-    pub const MALFORMED_BYTE_LITERAL: Self = Self(9);
+    UPPERCASE_BASE_PREFIX = 6;
+    EMPTY_BASED_LITERAL = 7;
+    INVALID_DIGIT_FOR_BASE = 8;
+    MALFORMED_BYTE_LITERAL = 9;
     /// The per-file lexer diagnostic budget was exceeded. The detailed
     /// diagnostics before this summary remain available.
-    pub const LEXER_DIAGNOSTICS_OMITTED: Self = Self(10);
+    LEXER_DIAGNOSTICS_OMITTED = 10;
     /// A floating-point literal written with a leading dot (`.5`) or a
     /// trailing dot (`5.`); ADR-0065 §3 requires `0.5` / `5.0`. Sits in the
     /// lexical band even though the trailing-dot form is diagnosed by the
     /// parser — see [`ErrorKind::MalformedFloatLiteral`] for why that half
     /// cannot be decided from the lexeme alone. (RUE-1068)
-    pub const MALFORMED_FLOAT_LITERAL: Self = Self(11);
+    MALFORMED_FLOAT_LITERAL = 11;
 
     // ========================================================================
     // Parser errors (E0100-E0199)
     // ========================================================================
-    pub const UNEXPECTED_TOKEN: Self = Self(100);
+    UNEXPECTED_TOKEN = 100;
     // E0101 was UNEXPECTED_EOF, deleted as never-produced: the parser reports
     // end-of-file as UnexpectedToken { found: "end of file" }. Keep the
     // number retired rather than reusing it.
-    pub const PARSE_ERROR: Self = Self(102);
+    PARSE_ERROR = 102;
     /// The per-file parser recovery diagnostic budget was exceeded. The
     /// detailed diagnostics before this summary remain available.
-    pub const PARSER_DIAGNOSTICS_OMITTED: Self = Self(103);
+    PARSER_DIAGNOSTICS_OMITTED = 103;
 
     // ========================================================================
     // Semantic errors (E0200-E0399)
     // ========================================================================
-    pub const NO_MAIN_FUNCTION: Self = Self(200);
-    pub const UNDEFINED_VARIABLE: Self = Self(201);
-    pub const UNDEFINED_FUNCTION: Self = Self(202);
-    pub const ASSIGN_TO_IMMUTABLE: Self = Self(203);
-    pub const UNKNOWN_TYPE: Self = Self(204);
-    pub const USE_AFTER_MOVE: Self = Self(205);
-    pub const TYPE_MISMATCH: Self = Self(206);
-    pub const WRONG_ARGUMENT_COUNT: Self = Self(207);
-    pub const MOVE_WHILE_CALL_LOANED: Self = Self(208);
-    pub const UNEXPECTED_CALL_ARGUMENT_MODE: Self = Self(209);
+    NO_MAIN_FUNCTION = 200;
+    UNDEFINED_VARIABLE = 201;
+    UNDEFINED_FUNCTION = 202;
+    ASSIGN_TO_IMMUTABLE = 203;
+    UNKNOWN_TYPE = 204;
+    USE_AFTER_MOVE = 205;
+    TYPE_MISMATCH = 206;
+    WRONG_ARGUMENT_COUNT = 207;
+    MOVE_WHILE_CALL_LOANED = 208;
+    UNEXPECTED_CALL_ARGUMENT_MODE = 209;
     /// Whole-value assignment to a second-class `inout str` view. The view
     /// grants exclusive access to the caller's bytes; it is not a first-class
     /// string header that may be rebound (RUE-641).
-    pub const STR_VIEW_REASSIGNMENT: Self = Self(210);
+    STR_VIEW_REASSIGNMENT = 210;
     /// The executable entry point has parameters or a return type other than
     /// `i32` or `()` (spec 6.1:8, RUE-778). The runtime calls `main` with no
     /// arguments and consumes either its status code or the unit value, so a
     /// different source signature would violate the entry ABI.
-    pub const INVALID_MAIN_SIGNATURE: Self = Self(211);
+    INVALID_MAIN_SIGNATURE = 211;
     // E0250-E0261 form the borrow-accessor block (ADR-0062, RUE-662). The
     // ownership/borrow family's E04xx band is at its ceiling (E0499), so
     // accessor diagnostics live here in the semantic band instead.
@@ -156,143 +189,143 @@ impl ErrorCode {
     /// function. The result is a second-class borrowed place scoped to the
     /// enclosing full expression (ADR-0062); returning it would let the loan
     /// outlive the receiver access that justifies it.
-    pub const ACCESSOR_RESULT_RETURNED: Self = Self(250);
+    ACCESSOR_RESULT_RETURNED = 250;
     /// An accessor result was stored — assigned to a variable, field, or
     /// element. The result is a second-class borrowed place (ADR-0062); a
     /// stored copy would be a stored borrow, which Rue does not have.
-    pub const ACCESSOR_RESULT_STORED: Self = Self(251);
+    ACCESSOR_RESULT_STORED = 251;
     /// An accessor result was bound by a plain `let`. The result's extent is
     /// the enclosing full expression (ADR-0062), so a binding would outlive
     /// the loan. Use the result directly within one expression instead.
-    pub const ACCESSOR_RESULT_BOUND: Self = Self(252);
+    ACCESSOR_RESULT_BOUND = 252;
     /// An accessor result was captured into an aggregate (struct literal or
     /// array literal). The result is a second-class borrowed place
     /// (ADR-0062); an aggregate member holding it would be a stored borrow.
-    pub const ACCESSOR_RESULT_CAPTURED: Self = Self(253);
+    ACCESSOR_RESULT_CAPTURED = 253;
     /// An accessor body's non-diverging control flow does not end in the
     /// single trailing `yield` (ADR-0062 phase 1): the final statement is not
     /// a `yield`, a `yield` appears before the end, or the body contains a
     /// `return`/`?` exit. Guards before the yield may only diverge (trap,
     /// `@panic`) or fall through.
-    pub const ACCESSOR_BODY_MISSING_YIELD: Self = Self(254);
+    ACCESSOR_BODY_MISSING_YIELD = 254;
     /// The operand of an accessor's `yield` is not a place rooted at the
     /// receiver parameter (`self`). An accessor hands out a projection of its
     /// receiver (ADR-0062); yielding a local, temporary, or unrelated place
     /// would dangle once the accessor's frame is gone.
-    pub const ACCESSOR_YIELD_NOT_RECEIVER_ROOTED: Self = Self(255);
+    ACCESSOR_YIELD_NOT_RECEIVER_ROOTED = 255;
     /// A `yield` expression appears outside the body of a `-> borrow T`
     /// accessor. `yield` is the accessor body's exit form (ADR-0062).
-    pub const YIELD_OUTSIDE_ACCESSOR: Self = Self(256);
+    YIELD_OUTSIDE_ACCESSOR = 256;
     /// An accessor result and receiver use different modes: `-> borrow T`
     /// requires `borrow self`, while `-> inout T` requires `inout self`.
-    pub const ACCESSOR_REQUIRES_BORROW_SELF: Self = Self(257);
+    ACCESSOR_REQUIRES_BORROW_SELF = 257;
     /// A value with drop glue was read out of an accessor result by value.
     /// The result is a borrowed place, not an owner (ADR-0062); copying a
     /// drop-glue value out of it would mint an aliasing second owner — the
     /// same double-free the E0711 gate closes (RUE-651). Only trivially
     /// droppable element values may be read out by value.
-    pub const ACCESSOR_RESULT_MOVED: Self = Self(258);
+    ACCESSOR_RESULT_MOVED = 258;
     /// A root was used incompatibly in the same full expression as an
     /// accessor result: an exclusive result conflicts with any other loan,
     /// while a shared result conflicts with an exclusive use (ADR-0062).
-    pub const ACCESSOR_LOAN_CONFLICT: Self = Self(259);
+    ACCESSOR_LOAN_CONFLICT = 259;
     /// An accessor declares a parameter mode other than by-value (`borrow`,
     /// `inout`, or `comptime` on a non-receiver parameter). Phase 1 accessor
     /// arguments are by-value guard inputs (ADR-0062); by-ref accessor
     /// parameters are deferred with the coroutine form (RUE-1012).
-    pub const ACCESSOR_PARAM_MODE_UNSUPPORTED: Self = Self(260);
+    ACCESSOR_PARAM_MODE_UNSUPPORTED = 260;
     /// An accessor call re-entered an accessor whose expansion is already in
     /// progress: `fn xr(borrow self) -> borrow i64 { yield self.xr(); }`, or
     /// the same cycle through several accessors. An accessor call compiles by
     /// inlining its body at the call site (ADR-0062), so an accessor-call
     /// cycle has no finite expansion.
-    pub const ACCESSOR_RECURSION: Self = Self(261);
+    ACCESSOR_RECURSION = 261;
 
     // ========================================================================
     // Struct/enum errors (E0400-E0499)
     // ========================================================================
-    pub const MISSING_FIELDS: Self = Self(400);
-    pub const UNKNOWN_FIELD: Self = Self(401);
-    pub const DUPLICATE_FIELD: Self = Self(402);
-    pub const COPY_STRUCT_NON_COPY_FIELD: Self = Self(403);
-    pub const RESERVED_TYPE_NAME: Self = Self(404);
-    pub const DUPLICATE_TYPE_DEFINITION: Self = Self(405);
-    pub const LINEAR_VALUE_NOT_CONSUMED: Self = Self(406);
-    pub const LINEAR_STRUCT_COPY: Self = Self(407);
+    MISSING_FIELDS = 400;
+    UNKNOWN_FIELD = 401;
+    DUPLICATE_FIELD = 402;
+    COPY_STRUCT_NON_COPY_FIELD = 403;
+    RESERVED_TYPE_NAME = 404;
+    DUPLICATE_TYPE_DEFINITION = 405;
+    LINEAR_VALUE_NOT_CONSUMED = 406;
+    LINEAR_STRUCT_COPY = 407;
     // 408, 409 retired with the @handle directive (RUE-199).
-    pub const DUPLICATE_METHOD: Self = Self(410);
-    pub const UNDEFINED_METHOD: Self = Self(411);
-    pub const UNDEFINED_ASSOC_FN: Self = Self(412);
-    pub const METHOD_CALL_ON_NON_STRUCT: Self = Self(413);
-    pub const METHOD_CALLED_AS_ASSOC_FN: Self = Self(414);
-    pub const ASSOC_FN_CALLED_AS_METHOD: Self = Self(415);
-    pub const DUPLICATE_DESTRUCTOR: Self = Self(416);
-    pub const DESTRUCTOR_UNKNOWN_TYPE: Self = Self(417);
-    pub const DUPLICATE_CONSTANT: Self = Self(418);
-    pub const CONST_EXPR_NOT_SUPPORTED: Self = Self(434);
-    pub const DUPLICATE_VARIANT: Self = Self(419);
-    pub const UNKNOWN_VARIANT: Self = Self(420);
-    pub const UNKNOWN_ENUM_TYPE: Self = Self(421);
+    DUPLICATE_METHOD = 410;
+    UNDEFINED_METHOD = 411;
+    UNDEFINED_ASSOC_FN = 412;
+    METHOD_CALL_ON_NON_STRUCT = 413;
+    METHOD_CALLED_AS_ASSOC_FN = 414;
+    ASSOC_FN_CALLED_AS_METHOD = 415;
+    DUPLICATE_DESTRUCTOR = 416;
+    DESTRUCTOR_UNKNOWN_TYPE = 417;
+    DUPLICATE_CONSTANT = 418;
+    CONST_EXPR_NOT_SUPPORTED = 434;
+    DUPLICATE_VARIANT = 419;
+    UNKNOWN_VARIANT = 420;
+    UNKNOWN_ENUM_TYPE = 421;
     // 422 (FIELD_WRONG_ORDER) is retired: struct-literal fields may now be
     // given in any order, matched to declared fields by name (RUE-9). Do not
     // reuse the number.
-    pub const FIELD_ACCESS_ON_NON_STRUCT: Self = Self(423);
-    pub const INVALID_ASSIGNMENT_TARGET: Self = Self(424);
-    pub const INOUT_NON_LVALUE: Self = Self(425);
-    pub const INOUT_EXCLUSIVE_ACCESS: Self = Self(426);
-    pub const BORROW_NON_LVALUE: Self = Self(427);
-    pub const MUTATE_BORROWED_VALUE: Self = Self(428);
-    pub const MOVE_OUT_OF_BORROW: Self = Self(429);
-    pub const BORROW_INOUT_CONFLICT: Self = Self(430);
-    pub const INOUT_KEYWORD_MISSING: Self = Self(431);
-    pub const BORROW_KEYWORD_MISSING: Self = Self(432);
-    pub const EMPTY_STRUCT: Self = Self(433);
-    pub const RESERVED_FUNCTION_NAME: Self = Self(435);
-    pub const DUPLICATE_FUNCTION_DEFINITION: Self = Self(436);
-    pub const MOVE_OUT_OF_INOUT: Self = Self(437);
+    FIELD_ACCESS_ON_NON_STRUCT = 423;
+    INVALID_ASSIGNMENT_TARGET = 424;
+    INOUT_NON_LVALUE = 425;
+    INOUT_EXCLUSIVE_ACCESS = 426;
+    BORROW_NON_LVALUE = 427;
+    MUTATE_BORROWED_VALUE = 428;
+    MOVE_OUT_OF_BORROW = 429;
+    BORROW_INOUT_CONFLICT = 430;
+    INOUT_KEYWORD_MISSING = 431;
+    BORROW_KEYWORD_MISSING = 432;
+    EMPTY_STRUCT = 433;
+    RESERVED_FUNCTION_NAME = 435;
+    DUPLICATE_FUNCTION_DEFINITION = 436;
+    MOVE_OUT_OF_INOUT = 437;
     // 438 (BY_REF_ARG_NOT_PLAIN_VARIABLE) is retired: by-ref arguments may
     // now be field/index projections (RUE-143). Do not reuse the number.
     // 439-441 are reserved by in-flight work; next free code is 444.
-    pub const MOVE_SELF_OUT_OF_DESTRUCTOR: Self = Self(442);
-    pub const LINEAR_VALUE_NOT_CONSUMED_ON_ALL_PATHS: Self = Self(443);
+    MOVE_SELF_OUT_OF_DESTRUCTOR = 442;
+    LINEAR_VALUE_NOT_CONSUMED_ON_ALL_PATHS = 443;
     // 444-455 are reserved by in-flight work; next free code is 458.
-    pub const MOVE_FIELD_OUT_OF_DESTRUCTOR_TYPE: Self = Self(456);
-    pub const COPY_STRUCT_WITH_DESTRUCTOR: Self = Self(457);
+    MOVE_FIELD_OUT_OF_DESTRUCTOR_TYPE = 456;
+    COPY_STRUCT_WITH_DESTRUCTOR = 457;
     // 458-459 are reserved by in-flight work.
-    pub const PRIVATE_UNQUALIFIED_ACCESS: Self = Self(460);
-    pub const CONST_INITIALIZER_CYCLE: Self = Self(461);
+    PRIVATE_UNQUALIFIED_ACCESS = 460;
+    CONST_INITIALIZER_CYCLE = 461;
     // 462-473 are reserved by in-flight work.
-    pub const LINEAR_FIELD_DROPPED_BY_DESTRUCTURE: Self = Self(474);
-    pub const CONST_MISSING_TYPE_ANNOTATION: Self = Self(475);
+    LINEAR_FIELD_DROPPED_BY_DESTRUCTURE = 474;
+    CONST_MISSING_TYPE_ANNOTATION = 475;
     // 476-477 are reserved by in-flight work.
-    pub const LINEAR_VALUE_DISCARDED: Self = Self(478);
+    LINEAR_VALUE_DISCARDED = 478;
     // 479 is reserved by in-flight work.
-    pub const ASSIGN_TO_PARTIALLY_MOVED_ARRAY: Self = Self(480);
+    ASSIGN_TO_PARTIALLY_MOVED_ARRAY = 480;
     /// An array length `[T; N]` where `N` is not a usable compile-time constant
     /// (a runtime variable, a negative/non-integer value, or an undefined
     /// name). Named lengths must resolve via the const evaluator (RUE-16).
-    pub const INVALID_ARRAY_LENGTH: Self = Self(481);
+    INVALID_ARRAY_LENGTH = 481;
     /// Source nests deeper than the compiler's fixed recursion limit
     /// (`MAX_NESTING_DEPTH`). A parser/AstGen guard reports this instead of
     /// overflowing the stack on pathologically nested input (RUE-42). It is a
     /// resource-limit diagnostic rather than a struct/enum error, but the
     /// reserved code lives in this block.
-    pub const NESTING_LIMIT_EXCEEDED: Self = Self(482);
+    NESTING_LIMIT_EXCEEDED = 482;
     /// A struct or enum (transitively) contains itself by value with no
     /// pointer indirection, so it has no finite size/layout (RUE-264).
     /// Analogous to Rust's E0072 and a sibling of [`Self::CONST_INITIALIZER_CYCLE`]
     /// (E0461) for the type-definition graph.
-    pub const RECURSIVE_TYPE_INFINITE_SIZE: Self = Self(483);
+    RECURSIVE_TYPE_INFINITE_SIZE = 483;
     /// A pattern binds the same identifier more than once (e.g. an enum
     /// payload pattern `Rect(w, w)`). Every binding in a pattern must be a
     /// fresh name (spec 4.7:30); reusing one silently shadows the earlier
     /// binding and discards its value (RUE-269, analogous to Rust E0416).
-    pub const DUPLICATE_PATTERN_BINDING: Self = Self(484);
+    DUPLICATE_PATTERN_BINDING = 484;
     /// `@raw`/`@raw_mut` applied to a non-place operand (literal, arithmetic,
     /// call result). A raw pointer must address an addressable place (spec
     /// 9.1:12, ADR-0028); taking the "address" of a temporary value would
     /// reinterpret the value's bits as a pointer (RUE-274).
-    pub const RAW_REQUIRES_PLACE: Self = Self(485);
+    RAW_REQUIRES_PLACE = 485;
     /// A match-arm payload position that binds nothing — an explicit `_`
     /// discard, or a position covered by the all-wildcard bare variant
     /// pattern `E.A` — names a payload field whose type carries a linear
@@ -300,40 +333,40 @@ impl ErrorCode {
     /// binding (formal core §2 elaboration note), so its must-consume
     /// obligation (3.8:52) could never be discharged. Bind the field by name
     /// and consume it — or `@drop` it (E0478's escape hatch, RUE-187).
-    pub const LINEAR_PAYLOAD_DISCARDED: Self = Self(486);
+    LINEAR_PAYLOAD_DISCARDED = 486;
     /// A slice type `[T]` was written in return position (`fn f(...) -> [T]`).
     /// A slice is a *second-class* fat-pointer view (ADR-0037, ADR-0043,
     /// RUE-322): it is valid only in argument position and may not be
     /// returned, since the view would outlive the borrow it aliases.
-    pub const SLICE_RETURN_NOT_ALLOWED: Self = Self(487);
+    SLICE_RETURN_NOT_ALLOWED = 487;
     /// A slice type `[T]` was written as a struct field type. A slice is
     /// second-class (ADR-0037, ADR-0043, RUE-322) and cannot be stored in an
     /// aggregate — storing it would let the view escape its borrow's scope.
-    pub const SLICE_IN_AGGREGATE_FIELD: Self = Self(488);
+    SLICE_IN_AGGREGATE_FIELD = 488;
     /// A slice type `[T]` was written in a binding position other than a
     /// parameter — a `let` local or a `const`. A slice is second-class
     /// (ADR-0037, ADR-0043, RUE-322): it may only name a function parameter,
     /// so it cannot be bound past its argument scope.
-    pub const SLICE_ESCAPES_SCOPE: Self = Self(489);
+    SLICE_ESCAPES_SCOPE = 489;
     /// `@field_ptr(...)` was applied to something other than a field-access
     /// expression `s.field` (RUE-301). `@field_ptr` is *compiler-mediated
     /// field access*: it forms a raw pointer to the field the compiler placed,
     /// so its operand MUST name a struct field. Use `@raw`/`@raw_mut` for the
     /// address of a whole variable or array element.
-    pub const FIELD_PTR_REQUIRES_FIELD: Self = Self(490);
+    FIELD_PTR_REQUIRES_FIELD = 490;
     /// A function or method parameter list names the same parameter twice
     /// (e.g. `fn f(x: i32, x: i32)`). Every parameter in a single list must
     /// have a distinct name (spec 6.1); a repeated name silently shadows the
     /// earlier binding on a first-wins basis, so the declaration is rejected
     /// (RUE-349, a sibling of [`Self::DUPLICATE_PATTERN_BINDING`] (E0484) and
     /// analogous to Rust's E0415).
-    pub const DUPLICATE_PARAMETER: Self = Self(491);
+    DUPLICATE_PARAMETER = 491;
     /// A string literal assigned to a fixed-capacity string `Str(N)` does not
     /// fit: its UTF-8 byte length exceeds the capacity `N` (ADR-0043 Phase 5,
     /// RUE-326). `Str(N)` is the fixed string rung (`[u8; N]` + UTF-8) with no
     /// heap, so an over-long literal cannot be stored — the fit is checked at
     /// compile time.
-    pub const STR_FIXED_CAPACITY_EXCEEDED: Self = Self(492);
+    STR_FIXED_CAPACITY_EXCEEDED = 492;
     /// Assignment to an initialized place that holds a live linear value
     /// (RUE-387). Overwriting the place would implicitly drop (silently
     /// consume) the old linear value, which linearity forbids — a theorem-5
@@ -342,14 +375,14 @@ impl ErrorCode {
     /// exception is reinitializing a place that was provably moved out on
     /// every path (the spec 3.8:55/56 reinit idiom), which holds nothing to
     /// destroy.
-    pub const LINEAR_VALUE_OVERWRITTEN: Self = Self(493);
+    LINEAR_VALUE_OVERWRITTEN = 493;
     /// Assignment to an `inout` parameter (or a place rooted at one) whose
     /// type carries a linear value (RUE-387). The parameter names the
     /// caller's storage, which holds a live linear value; reassigning it
     /// would implicitly drop that value in the caller. An `inout` place can
     /// never be proven moved-out (moving out of a by-ref binding is itself
     /// rejected), so a linear `inout` assignment is always ill-formed.
-    pub const LINEAR_VALUE_OVERWRITTEN_THROUGH_INOUT: Self = Self(494);
+    LINEAR_VALUE_OVERWRITTEN_THROUGH_INOUT = 494;
     /// A string *buffer* — `StrBuf` (growable) or `Str(N)` (fixed) — was used
     /// where a *first-class* `str` value is required: a bare `str` parameter,
     /// a `str` binding, a `str` return, or a `str` struct field (ADR-0043
@@ -358,21 +391,21 @@ impl ErrorCode {
     /// letting it become a first-class `str` produces a dangling view once the
     /// buffer is dropped (the verified RUE-386 segfault). A buffer coerces only
     /// to a second-class `borrow str` / `inout str` view.
-    pub const BUFFER_NOT_FIRST_CLASS_STR: Self = Self(495);
+    BUFFER_NOT_FIRST_CLASS_STR = 495;
     /// A first-class / static-backed `str` value was supplied as the operand
     /// of an `inout str` parameter (ADR-0043 two-types model, RUE-386). An
     /// exclusive `str` view requires *local* provenance — a `StrBuf`/`Str(N)`
     /// buffer the caller owns — because a static `str` lives in read-only
     /// `.rodata` (exclusive mutation would fault) and, being `Copy`, can have
     /// two roots over one static buffer that per-root exclusivity cannot see.
-    pub const INOUT_STR_REQUIRES_LOCAL_BUFFER: Self = Self(496);
+    INOUT_STR_REQUIRES_LOCAL_BUFFER = 496;
     /// A borrowed `str` *view* — the binding of a `borrow str` / `inout str`
     /// parameter — was used where a first-class `str` value is required
     /// (returned, stored in a struct field, bound to a `str` local, or passed
     /// to a bare `str` parameter) (ADR-0043 two-types model, RUE-386). A view
     /// is second-class: it may only be read (`.len()`, byte indexing) or
     /// re-borrowed, never escape the call as a first-class value.
-    pub const STR_VIEW_NOT_FIRST_CLASS: Self = Self(497);
+    STR_VIEW_NOT_FIRST_CLASS = 497;
     // E0498 (CONTAINER_ELEMENT_HAS_DESTRUCTOR) was retired by RUE-646: owning
     // growable containers now run each live element's drop glue before freeing
     // their buffer (Rust's `Vec<T>` discipline), so a destructor-bearing element
@@ -383,89 +416,89 @@ impl ErrorCode {
     /// container/element multiplicity propagation is designed (RUE-388), such
     /// containers cannot yet track element linearity, so a linear element would
     /// be leaked (never consumed); the instantiation is rejected instead.
-    pub const CONTAINER_ELEMENT_IS_LINEAR: Self = Self(499);
+    CONTAINER_ELEMENT_IS_LINEAR = 499;
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
     // ========================================================================
-    pub const BREAK_OUTSIDE_LOOP: Self = Self(500);
-    pub const CONTINUE_OUTSIDE_LOOP: Self = Self(501);
-    pub const BREAK_WITH_VALUE: Self = Self(502);
+    BREAK_OUTSIDE_LOOP = 500;
+    CONTINUE_OUTSIDE_LOOP = 501;
+    BREAK_WITH_VALUE = 502;
     /// The `?` operator was used in a function whose return type is not an
     /// `Option` (RUE-6, ADR-0038): `?` early-returns `None`, so the enclosing
     /// function must return an `Option`.
-    pub const QUESTION_OUTSIDE_OPTION_FN: Self = Self(503);
-    pub const QUESTION_OUTSIDE_RESULT_FN: Self = Self(505);
-    pub const QUESTION_ERR_TYPE_MISMATCH: Self = Self(506);
+    QUESTION_OUTSIDE_OPTION_FN = 503;
+    QUESTION_OUTSIDE_RESULT_FN = 505;
+    QUESTION_ERR_TYPE_MISMATCH = 506;
     /// The `?` operator was applied to a value that is not an `Option`
     /// (RUE-6, ADR-0038).
-    pub const QUESTION_ON_NON_OPTION: Self = Self(504);
+    QUESTION_ON_NON_OPTION = 504;
 
     // ========================================================================
     // Match errors (E0600-E0699)
     // ========================================================================
-    pub const NON_EXHAUSTIVE_MATCH: Self = Self(600);
-    pub const EMPTY_MATCH: Self = Self(601);
-    pub const INVALID_MATCH_TYPE: Self = Self(602);
+    NON_EXHAUSTIVE_MATCH = 600;
+    EMPTY_MATCH = 601;
+    INVALID_MATCH_TYPE = 602;
 
     // ========================================================================
     // Intrinsic errors (E0700-E0799)
     // ========================================================================
-    pub const UNKNOWN_INTRINSIC: Self = Self(700);
-    pub const INTRINSIC_WRONG_ARG_COUNT: Self = Self(701);
-    pub const INTRINSIC_TYPE_MISMATCH: Self = Self(702);
-    pub const IMPORT_REQUIRES_STRING_LITERAL: Self = Self(703);
-    pub const MODULE_NOT_FOUND: Self = Self(704);
-    pub const STD_LIB_NOT_FOUND: Self = Self(705);
-    pub const PRIVATE_MEMBER_ACCESS: Self = Self(706);
-    pub const UNKNOWN_MODULE_MEMBER: Self = Self(707);
+    UNKNOWN_INTRINSIC = 700;
+    INTRINSIC_WRONG_ARG_COUNT = 701;
+    INTRINSIC_TYPE_MISMATCH = 702;
+    IMPORT_REQUIRES_STRING_LITERAL = 703;
+    MODULE_NOT_FOUND = 704;
+    STD_LIB_NOT_FOUND = 705;
+    PRIVATE_MEMBER_ACCESS = 706;
+    UNKNOWN_MODULE_MEMBER = 707;
     // 708 (AMBIGUOUS_MODULE) is retired (ADR-0078): an extensionless import
     // names the directory facade alone and a file module is spelled with its
     // extension, so the file/facade ambiguity no longer exists. Keep the
     // number retired rather than reusing it.
-    pub const CANNOT_INFER_CAST_TARGET: Self = Self(709);
-    pub const CANNOT_INFER_POINTEE_TYPE: Self = Self(710);
-    pub const CONTAINER_ELEMENT_NOT_TRIVIALLY_DROPPABLE: Self = Self(711);
+    CANNOT_INFER_CAST_TARGET = 709;
+    CANNOT_INFER_POINTEE_TYPE = 710;
+    CONTAINER_ELEMENT_NOT_TRIVIALLY_DROPPABLE = 711;
     /// A comptime-constant `align` argument to a byte-allocation intrinsic
     /// (`@alloc`/`@alloc_zeroed`/`@free`/`@realloc`/`@resize`, ADR-0059) was
     /// zero or not a power of two. Alignment must be a power of two.
-    pub const INTRINSIC_ALIGN_NOT_POWER_OF_TWO: Self = Self(712);
+    INTRINSIC_ALIGN_NOT_POWER_OF_TWO = 712;
     /// A relative `@import` path resolves outside the project root (the root
     /// source file's directory), so it can receive no project-relative module
     /// identity (ADR-0078).
-    pub const IMPORT_ESCAPES_ROOT: Self = Self(713);
+    IMPORT_ESCAPES_ROOT = 713;
     /// An `@import` specifier is not a relative path: it is empty, or it is
     /// absolute. Resolution is defined for relative paths only (spec 10.2:1-2),
     /// and an absolute specifier would additionally bind the program to one
     /// machine's layout, which project-root-relative identity exists to avoid.
-    pub const IMPORT_SPECIFIER_NOT_RELATIVE: Self = Self(714);
+    IMPORT_SPECIFIER_NOT_RELATIVE = 714;
     /// Two logical import spellings resolve to one physical file. Importing a
     /// physical file under more than one logical identity would make the
     /// source graph ambiguous (RUE-1705).
-    pub const IMPORT_SPELLINGS_SAME_FILE: Self = Self(715);
+    IMPORT_SPELLINGS_SAME_FILE = 715;
 
     // ========================================================================
     // Literal/operator errors (E0800-E0899)
     // ========================================================================
-    pub const LITERAL_OUT_OF_RANGE: Self = Self(800);
-    pub const CANNOT_NEGATE: Self = Self(801);
-    pub const CHAINED_COMPARISON: Self = Self(802);
+    LITERAL_OUT_OF_RANGE = 800;
+    CANNOT_NEGATE = 801;
+    CHAINED_COMPARISON = 802;
 
     // ========================================================================
     // Array errors (E0900-E0999)
     // ========================================================================
-    pub const INDEX_ON_NON_ARRAY: Self = Self(900);
-    pub const ARRAY_LENGTH_MISMATCH: Self = Self(901);
-    pub const INDEX_OUT_OF_BOUNDS: Self = Self(902);
-    pub const TYPE_ANNOTATION_REQUIRED: Self = Self(903);
-    pub const MOVE_OUT_OF_INDEX: Self = Self(904);
-    pub const ARRAY_REPEAT_NON_COPY: Self = Self(905);
-    pub const TYPE_TOO_LARGE: Self = Self(906);
-    pub const FUNCTION_FRAME_TOO_LARGE: Self = Self(907);
+    INDEX_ON_NON_ARRAY = 900;
+    ARRAY_LENGTH_MISMATCH = 901;
+    INDEX_OUT_OF_BOUNDS = 902;
+    TYPE_ANNOTATION_REQUIRED = 903;
+    MOVE_OUT_OF_INDEX = 904;
+    ARRAY_REPEAT_NON_COPY = 905;
+    TYPE_TOO_LARGE = 906;
+    FUNCTION_FRAME_TOO_LARGE = 907;
     /// A frame array with non-slot-width elements cannot yet be borrowed as a
     /// slice because slice pointer semantics use the compact element image
     /// while frames keep a full-slot representation (RUE-1595).
-    pub const SLICE_FRAME_ARRAY_NOT_SUPPORTED: Self = Self(908);
+    SLICE_FRAME_ARRAY_NOT_SUPPORTED = 908;
 
     // ------------------------------------------------------------------
     // Bit-reinterpretation errors (E0950-E0959)
@@ -474,24 +507,24 @@ impl ErrorCode {
     /// (RUE-952, spec 4.13:120). A bit reinterpretation renames the bits it is
     /// given; it neither invents nor discards any, so the source and target
     /// **must** share a width. The value-changing conversion is `@intCast`.
-    pub const BIT_CAST_WIDTH_MISMATCH: Self = Self(950);
+    BIT_CAST_WIDTH_MISMATCH = 950;
 
     // ========================================================================
     // Linker/target errors (E1000-E1099)
     // ========================================================================
-    pub const LINK_ERROR: Self = Self(1000);
-    pub const UNSUPPORTED_TARGET: Self = Self(1001);
+    LINK_ERROR = 1000;
+    UNSUPPORTED_TARGET = 1001;
 
     // ========================================================================
     // Preview feature errors (E1100-E1199)
     // ========================================================================
-    pub const PREVIEW_FEATURE_REQUIRED: Self = Self(1100);
-    pub const EXTERN_SIGNATURE_TYPE_UNSUPPORTED: Self = Self(1101);
-    pub const EXTERN_AGGREGATE_NOT_REPR_C: Self = Self(1102);
-    pub const EXTERN_ARRAY_BY_VALUE: Self = Self(1103);
-    pub const REPR_C_STRUCT_INELIGIBLE: Self = Self(1104);
-    pub const EXTERN_VARIADIC_UNSUPPORTED: Self = Self(1105);
-    pub const EXPORT_SIGNATURE_UNSUPPORTED: Self = Self(1106);
+    PREVIEW_FEATURE_REQUIRED = 1100;
+    EXTERN_SIGNATURE_TYPE_UNSUPPORTED = 1101;
+    EXTERN_AGGREGATE_NOT_REPR_C = 1102;
+    EXTERN_ARRAY_BY_VALUE = 1103;
+    REPR_C_STRUCT_INELIGIBLE = 1104;
+    EXTERN_VARIADIC_UNSUPPORTED = 1105;
+    EXPORT_SIGNATURE_UNSUPPORTED = 1106;
     /// The same C symbol is declared by two `extern "C"` foreign declarations
     /// whose Rue signatures disagree (RUE-1218, spec 9.3:5). A foreign
     /// declaration names an external C symbol rather than a Rue callable, so
@@ -502,7 +535,7 @@ impl ErrorCode {
     /// not a general duplicate-definition rule — an ordinary function's
     /// identity is module-local (RUE-1125), so only foreign declarations can
     /// collide across modules at all.
-    pub const FOREIGN_SIGNATURE_CONFLICT: Self = Self(1107);
+    FOREIGN_SIGNATURE_CONFLICT = 1107;
     /// An `extern "C"` foreign declaration names `main`, the program entry
     /// point (RUE-1220, spec 9.3:6). A foreign declaration names the C symbol
     /// it declares (RUE-1125), so this one takes the bare `main` symbol the
@@ -511,33 +544,33 @@ impl ErrorCode {
     /// through it recurses into the program's own `main`. Sits in the FFI band
     /// beside the other `extern "C"` rules, and is the import-side mirror of
     /// E1106's rejection of a `pub extern "C" fn` export named `main`.
-    pub const FOREIGN_ENTRY_POINT_DECLARATION: Self = Self(1108);
+    FOREIGN_ENTRY_POINT_DECLARATION = 1108;
     /// A float literal was used with `--preview floats` enabled, but the
     /// typing phases of ADR-0065 (Phase 4 onward) are not implemented yet.
     /// Sits in the preview band beside E1100 because it is the second half of
     /// the same gate: E1100 fires without the flag, E1109 with it. (RUE-1069)
-    pub const FLOAT_NOT_YET_IMPLEMENTED: Self = Self(1109);
+    FLOAT_NOT_YET_IMPLEMENTED = 1109;
 
     // ========================================================================
     // Comptime errors (E1200-E1299)
     // ========================================================================
-    pub const COMPTIME_EVALUATION_FAILED: Self = Self(1200);
-    pub const COMPTIME_ARG_NOT_CONST: Self = Self(1201);
+    COMPTIME_EVALUATION_FAILED = 1200;
+    COMPTIME_ARG_NOT_CONST = 1201;
 
     // ========================================================================
     // Unchecked-code errors (E1300-E1399)
     // ========================================================================
-    pub const UNCHECKED_OP_REQUIRES_CHECKED: Self = Self(1300);
+    UNCHECKED_OP_REQUIRES_CHECKED = 1300;
 
     // ========================================================================
     // Compiler-input errors (E1400-E1499)
     // ========================================================================
     /// Invalid metadata supplied at a compiler API boundary.
-    pub const INVALID_COMPILER_INPUT: Self = Self(1400);
-    pub const COMPILER_RESOURCE_LIMIT: Self = Self(1401);
-    pub const COMPILER_RESOURCE_EXHAUSTION: Self = Self(1402);
-    pub const OUTPUT_PUBLICATION: Self = Self(1403);
-    pub const UNSATISFIED_TRUSTED_TOOLCHAIN_INPUT: Self = Self(1404);
+    INVALID_COMPILER_INPUT = 1400;
+    COMPILER_RESOURCE_LIMIT = 1401;
+    COMPILER_RESOURCE_EXHAUSTION = 1402;
+    OUTPUT_PUBLICATION = 1403;
+    UNSATISFIED_TRUSTED_TOOLCHAIN_INPUT = 1404;
 
     // ========================================================================
     // Driver/host errors (E1500-E1599)
@@ -546,23 +579,54 @@ impl ErrorCode {
     // graph. They are used by the CLI/host's machine-readable source-load
     // boundary and therefore do not map from an ErrorKind variant below.
     /// An ordinary source-loading or driver I/O failure.
-    pub const DRIVER_SOURCE_LOAD: Self = Self(1500);
+    DRIVER_SOURCE_LOAD = 1500;
     /// A required trusted toolchain input is missing, unreadable, or malformed.
-    pub const DRIVER_TOOLCHAIN_INTEGRITY: Self = Self(1501);
+    DRIVER_TOOLCHAIN_INTEGRITY = 1501;
     /// Hermetic policy denied a trusted toolchain input during acquisition.
-    pub const DRIVER_HERMETIC_DENIAL: Self = Self(1502);
+    DRIVER_HERMETIC_DENIAL = 1502;
 
     // ========================================================================
     // Internal compiler errors (E9000-E9999)
     // ========================================================================
-    pub const INTERNAL_ERROR: Self = Self(9000);
-    pub const INTERNAL_CODEGEN_ERROR: Self = Self(9001);
+    INTERNAL_ERROR = 9000;
+    INTERNAL_CODEGEN_ERROR = 9001;
 }
 
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "E{:04}", self.0)
     }
+}
+
+/// Return every public compiler error code in numeric order.
+///
+/// `define_error_codes!` remains the single structural authority: it emits the
+/// associated constants and the declaration table consumed here.
+/// Unit tests below cross-check this inventory against the exhaustive
+/// [`ErrorKind::code`] mapping (apart from the documented driver boundary).
+pub fn error_code_metadata() -> &'static [ErrorCodeMetadata] {
+    static METADATA: std::sync::OnceLock<Vec<ErrorCodeMetadata>> = std::sync::OnceLock::new();
+    METADATA.get_or_init(|| {
+        let mut metadata = Vec::with_capacity(ERROR_CODE_DECLARATIONS.len());
+        for &(code, name) in ERROR_CODE_DECLARATIONS {
+            let mut words = name.split('_');
+            let first = words.next().expect("ErrorCode name must not be empty");
+            let mut title = first.to_ascii_lowercase();
+            title[..1].make_ascii_uppercase();
+            for word in words {
+                title.push(' ');
+                title.push_str(&word.to_ascii_lowercase());
+            }
+            metadata.push(ErrorCodeMetadata {
+                code,
+                name,
+                title,
+                source_path: "crates/rue-error/src/lib.rs",
+            });
+        }
+        metadata.sort_by_key(|entry| entry.code.0);
+        metadata
+    })
 }
 
 // ============================================================================
@@ -2640,24 +2704,14 @@ mod tests {
 
     /// Every ErrorCode constant must map to a distinct number: two diagnostics
     /// sharing an E-code would be indistinguishable to users and tests.
-    /// Scans this file's source for the `pub const NAME: Self = Self(NNN);`
-    /// declarations so the check can't go stale as codes are added.
+    /// The macro-emitted declaration table cannot omit a constant because both
+    /// are expanded from the same entry.
     #[test]
     fn test_error_codes_are_unique() {
-        let src = include_str!("lib.rs");
-        let mut seen: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
-        for line in src.lines() {
-            let Some(rest) = line.trim().strip_prefix("pub const ") else {
-                continue;
-            };
-            let Some((name, tail)) = rest.split_once(": Self = Self(") else {
-                continue;
-            };
-            let Some(num) = tail.split(')').next().and_then(|n| n.parse::<u32>().ok()) else {
-                continue;
-            };
-            if let Some(prev) = seen.insert(num, name.to_string()) {
-                panic!("duplicate ErrorCode {num}: {prev} and {name}");
+        let mut seen: std::collections::HashMap<u16, &str> = std::collections::HashMap::new();
+        for &(code, name) in ERROR_CODE_DECLARATIONS {
+            if let Some(prev) = seen.insert(code.0, name) {
+                panic!("duplicate ErrorCode {}: {prev} and {name}", code.0);
             }
         }
         assert!(
@@ -2665,6 +2719,26 @@ mod tests {
             "expected to find the ErrorCode constants (found {})",
             seen.len()
         );
+    }
+
+    #[test]
+    fn test_error_code_metadata_is_complete_unique_and_stably_ordered() {
+        let metadata = error_code_metadata();
+        assert!(metadata.len() > 50);
+        assert!(
+            metadata
+                .windows(2)
+                .all(|pair| pair[0].code.0 < pair[1].code.0),
+            "metadata must be unique and ordered by numeric code"
+        );
+        assert!(metadata.iter().all(|entry| {
+            !entry.name.is_empty()
+                && !entry.title.is_empty()
+                && entry.source_path == "crates/rue-error/src/lib.rs"
+        }));
+
+        assert_eq!(metadata.len(), ERROR_CODE_DECLARATIONS.len());
+        assert_eq!(metadata, error_code_metadata(), "metadata must reproduce");
     }
 
     /// `ErrorKind::code()` must cover the compiler-declared ErrorCode constants without
@@ -2685,15 +2759,10 @@ mod tests {
 
         // Collect all declared ErrorCode constant names. Driver/host codes are
         // consumed by the CLI's SourceLoadError renderer, not ErrorKind::code().
-        let mut declared: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for line in src.lines() {
-            let Some(rest) = line.trim().strip_prefix("pub const ") else {
-                continue;
-            };
-            if let Some((name, _)) = rest.split_once(": Self = Self(") {
-                declared.insert(name);
-            }
-        }
+        let mut declared: std::collections::HashSet<&str> = ERROR_CODE_DECLARATIONS
+            .iter()
+            .map(|(_, name)| *name)
+            .collect();
         assert!(
             declared.len() > 50,
             "expected to find the ErrorCode constants (found {})",

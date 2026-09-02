@@ -24,6 +24,9 @@ highlight_themes_css = [
   { theme = "gruvbox-light", filename = "syntax-light.css" },
 ]
 
+[slugify]
+paths = "on"
+
 [extra]
 github_url = "https://github.com/rue-language/rue"
 bluesky_url = "https://bsky.app/profile/rue-lang.dev"

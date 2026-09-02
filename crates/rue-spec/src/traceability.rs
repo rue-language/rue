@@ -98,6 +98,10 @@ pub struct SpecParagraph {
     /// Category of the paragraph (e.g., "legality-rule", "dynamic-semantics").
     /// Normative categories require test coverage.
     pub category: String,
+    /// Nearest enclosing Markdown heading, used as the stable rule title.
+    pub title: String,
+    /// Path relative to the specification source root.
+    pub source_path: String,
     /// The text content of the paragraph (first non-empty line after the marker).
     pub text: String,
 }
@@ -1731,6 +1735,7 @@ fn validate_grammar_consistency(spec_dir: &Path) -> Result<(), String> {
 /// coverage requirement without any report.
 fn parse_spec_file(
     path: &Path,
+    source_path: &str,
     paragraphs: &mut BTreeMap<String, SpecParagraph>,
     duplicates: &mut Vec<String>,
 ) -> Result<(), String> {
@@ -1739,7 +1744,14 @@ fn parse_spec_file(
 
     let lines: Vec<&str> = content.lines().collect();
 
+    let mut title = String::new();
     for (i, line) in lines.iter().enumerate() {
+        if let Some(heading) = line.trim().strip_prefix('#') {
+            let heading = heading.trim_start_matches('#').trim();
+            if !heading.is_empty() {
+                title = heading.to_string();
+            }
+        }
         let marker = parse_spec_comment(line)
             .map_err(|error| format!("{}:{}: {error}", path.display(), i + 1))?;
         if let Some((id, category)) = marker {
@@ -1766,6 +1778,8 @@ fn parse_spec_file(
                 SpecParagraph {
                     id: id.clone(),
                     category: category.clone(),
+                    title: title.clone(),
+                    source_path: source_path.to_string(),
                     text,
                 },
             ) {
@@ -1811,7 +1825,12 @@ pub fn parse_spec_paragraphs(
     })?;
 
     for path in md_files {
-        parse_spec_file(&path, &mut paragraphs, &mut duplicates)?;
+        let source_path = path
+            .strip_prefix(spec_dir)
+            .map_err(|_| format!("{} is outside {}", path.display(), spec_dir.display()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        parse_spec_file(&path, &source_path, &mut paragraphs, &mut duplicates)?;
     }
 
     Ok((paragraphs, duplicates))
@@ -2620,7 +2639,7 @@ Another paragraph.
 
         let mut paragraphs = BTreeMap::new();
         let mut duplicates = Vec::new();
-        parse_spec_file(&file_path, &mut paragraphs, &mut duplicates).unwrap();
+        parse_spec_file(&file_path, "test.md", &mut paragraphs, &mut duplicates).unwrap();
         assert!(duplicates.is_empty());
 
         assert_eq!(paragraphs.len(), 2);
@@ -2628,6 +2647,8 @@ Another paragraph.
         assert!(paragraphs.contains_key("3.1:2"));
         assert_eq!(paragraphs["3.1:1"].category, "normative");
         assert_eq!(paragraphs["3.1:2"].category, "normative");
+        assert_eq!(paragraphs["3.1:1"].title, "Test");
+        assert_eq!(paragraphs["3.1:1"].source_path, "test.md");
         assert_eq!(paragraphs["3.1:1"].text, "This is a test paragraph.");
     }
 
@@ -2656,7 +2677,7 @@ fn main() { }
 
         let mut paragraphs = BTreeMap::new();
         let mut duplicates = Vec::new();
-        parse_spec_file(&file_path, &mut paragraphs, &mut duplicates).unwrap();
+        parse_spec_file(&file_path, "test.md", &mut paragraphs, &mut duplicates).unwrap();
         assert!(duplicates.is_empty());
 
         assert_eq!(paragraphs.len(), 1);
@@ -2673,6 +2694,8 @@ fn main() { }
             SpecParagraph {
                 id: "1.1:1".to_string(),
                 category: "legality-rule".to_string(),
+                title: "Test".to_string(),
+                source_path: "test.md".to_string(),
                 text: "Test".to_string(),
             },
         );
@@ -2681,6 +2704,8 @@ fn main() { }
             SpecParagraph {
                 id: "1.1:2".to_string(),
                 category: "legality-rule".to_string(),
+                title: "Test".to_string(),
+                source_path: "test.md".to_string(),
                 text: "Test 2".to_string(),
             },
         );
@@ -3066,6 +3091,8 @@ exit_code = 0
                     SpecParagraph {
                         id: id.to_string(),
                         category: "normative".to_string(),
+                        title: "Test".to_string(),
+                        source_path: "test.md".to_string(),
                         text: "t".to_string(),
                     },
                 );

@@ -2,10 +2,19 @@ load("//crates:defs.bzl", "rue_binary")
 
 rue_binary(
     name = "rue-spec",
+    mapped_srcs = {
+        "//:spec-route-root": "src/spec-route-root.txt",
+        "//:spec-rule-template": "src/spec-rule-template.html",
+        "//:website-config": "src/website-config.toml",
+    },
     deps = [
+        "//crates/rue-error:rue-error",
         "//crates/rue-test-runner:rue-test-runner",
         "//third-party:libtest2-mimic",
+        "//third-party:serde",
+        "//third-party:serde_json",
         "//third-party:tempfile",
+        "//third-party:toml",
     ],
 )
 
@@ -28,6 +37,19 @@ command_alias(
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
         "RUE_REAL_STD_PATH": "$(location root//:std)/std",
         "RUE_SPEC_CASES": "$(location :cases)/cases",
+    },
+    visibility = ["PUBLIC"],
+)
+
+# Deterministic compiler-error/specification index. All source authorities are
+# declared inputs, so Buck cannot serve output produced from a stale corpus.
+command_alias(
+    name = "machine-index",
+    exe = ":rue-spec",
+    args = ["--machine-index"],
+    env = {
+        "RUE_SPEC_CASES": "$(location :cases)/cases",
+        "RUE_SPEC_DIR": "$(location root//:spec-docs)/docs/spec/src",
     },
     visibility = ["PUBLIC"],
 )

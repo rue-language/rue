@@ -103,6 +103,12 @@ import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE_URL = "https://rue-lang.dev"
+with open(os.path.join(REPO, "website", "spec-route-root.txt"), encoding="ascii") as handle:
+    SPEC_ROUTE_ROOT = handle.read().strip()
+if not re.fullmatch(r"[a-z0-9-]+(?:/[a-z0-9-]+)*", SPEC_ROUTE_ROOT):
+    raise SystemExit(
+        "website/spec-route-root.txt must contain a non-empty lower-case ASCII route"
+    )
 
 # The peer half of the comparison, in its own file so that its digest rides the
 # COMPARISON identity and not the workload one (RUE-1493). `sys.path` already
@@ -382,7 +388,7 @@ def assemble_corpus(dest: str, exclude: dict | None = None) -> list[str]:
     reason: the rules are as much an input to the measured job as the bytes are.
     """
     shutil.copytree(os.path.join(REPO, "website", "content"), dest)
-    spec_dest = os.path.join(dest, "spec")
+    spec_dest = os.path.join(dest, *SPEC_ROUTE_ROOT.split("/"))
     if os.path.exists(spec_dest):
         shutil.rmtree(spec_dest)
     shutil.copytree(os.path.join(REPO, "docs", "spec", "src"), spec_dest)
@@ -396,7 +402,7 @@ def assemble_corpus(dest: str, exclude: dict | None = None) -> list[str]:
             with open(path, encoding="utf-8") as handle:
                 body = handle.read()
             with open(path, "w", encoding="utf-8") as handle:
-                handle.write(pattern.sub(r"@/spec/\1", body))
+                handle.write(pattern.sub("@/%s/\\1" % SPEC_ROUTE_ROOT, body))
 
     for rel in exclude or {}:
         victim = os.path.join(dest, rel)

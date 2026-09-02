@@ -56,6 +56,7 @@ use rue_test_runner::{
 };
 use std::path::Path;
 
+mod machine_index;
 mod traceability;
 
 /// Possible paths for the spec directory.
@@ -111,6 +112,31 @@ fn run_traceability(detailed: bool, json: bool) {
     if report.gate_failing() {
         std::process::exit(1);
     }
+}
+
+fn run_machine_index(check: bool) {
+    let spec_dir = find_dir("RUE_SPEC_DIR", SPEC_DIR_PATHS, "docs/spec/src");
+    let cases_dir = find_dir("RUE_SPEC_CASES", CASES_DIR_PATHS, "cases");
+    let bytes = machine_index::generate(&spec_dir, &cases_dir).unwrap_or_else(|error| {
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    });
+    if check {
+        let reproduced = machine_index::generate(&spec_dir, &cases_dir).unwrap_or_else(|error| {
+            eprintln!("error: failed to reproduce machine index: {error}");
+            std::process::exit(1);
+        });
+        if bytes != reproduced {
+            eprintln!("error: machine index bytes are not reproducible");
+            std::process::exit(1);
+        }
+        return;
+    }
+    use std::io::Write;
+    std::io::stdout().write_all(&bytes).unwrap_or_else(|error| {
+        eprintln!("error: failed to write machine index: {error}");
+        std::process::exit(1);
+    });
 }
 
 /// Wrapper to convert TestResult to libtest2_mimic's RunError type.
@@ -268,6 +294,14 @@ fn run_preview_case_wrapper(
 fn main() {
     // Check for traceability flag before parsing libtest args
     let raw_args: Vec<String> = std::env::args().collect();
+
+    if raw_args
+        .iter()
+        .any(|a| matches!(a.as_str(), "--machine-index" | "--check-machine-index"))
+    {
+        run_machine_index(raw_args.iter().any(|a| a == "--check-machine-index"));
+        return;
+    }
 
     if raw_args.iter().any(|a| a == "--traceability") {
         let detailed = raw_args.iter().any(|a| a == "--detailed");

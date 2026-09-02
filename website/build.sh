@@ -6,22 +6,31 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
+SPEC_ROUTE_ROOT="$(tr -d '\r\n' < website/spec-route-root.txt)"
 
-# Copy spec content into website/content/spec
+case "$SPEC_ROUTE_ROOT" in
+    ""|*[!a-z0-9/-]*|/*|*/|*//* )
+        echo "error: website/spec-route-root.txt must contain a non-empty lower-case ASCII route" >&2
+        exit 1
+        ;;
+esac
+
+# Copy spec content into the shared specification route root.
 # We use a copy rather than a symlink for Windows compatibility (symlinks
 # require elevated privileges on Windows). The spec source lives in
 # docs/spec/src/ to keep it near the compiler code.
 echo "Copying spec content..."
-rm -rf website/content/spec
-cp -r docs/spec/src website/content/spec
+rm -rf "website/content/$SPEC_ROUTE_ROOT"
+mkdir -p "$(dirname "website/content/$SPEC_ROUTE_ROOT")"
+cp -r docs/spec/src "website/content/$SPEC_ROUTE_ROOT"
 
 # Rewrite internal links: spec files use @/XX-... but once copied to
-# website/content/spec/, the links need to be @/spec/XX-...
+# its website content mount, the links need the shared route-root prefix.
 echo "Rewriting spec internal links..."
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    find website/content/spec -name "*.md" -exec sed -i '' 's|@/\([0-9]\)|@/spec/\1|g' {} \;
+    find "website/content/$SPEC_ROUTE_ROOT" -name "*.md" -exec sed -i '' "s|@/\\([0-9]\\)|@/$SPEC_ROUTE_ROOT/\\1|g" {} \;
 else
-    find website/content/spec -name "*.md" -exec sed -i 's|@/\([0-9]\)|@/spec/\1|g' {} \;
+    find "website/content/$SPEC_ROUTE_ROOT" -name "*.md" -exec sed -i "s|@/\\([0-9]\\)|@/$SPEC_ROUTE_ROOT/\\1|g" {} \;
 fi
 
 # Rebuild the performance dashboard's data from the raw records (ADR-0067).
