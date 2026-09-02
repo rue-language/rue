@@ -28,21 +28,21 @@ order conversion in reusable Rue library code rather than compiler intrinsics.
 
 ## Summary
 
-`std.net` v1 provides blocking TCP clients and servers on Linux x86-64,
-aarch64, and AArch64 macOS. It supports IPv4 addresses through an extensible
-public address enum,
-marshals kernel socket addresses explicitly through a `SockAddr` abstraction,
-and exposes separate owned `TcpListener` and `TcpStream` descriptor types.
-Errors are normalized from errno into a target-independent network error enum.
-UDP, IPv6, DNS, TLS, and nonblocking/readiness APIs are outside v1.
+`std.net` v1 introduced blocking IPv4 TCP clients and servers on Linux x86-64,
+aarch64 Linux, and AArch64 macOS. It marshals kernel socket addresses explicitly
+through a `SockAddr` abstraction and exposes separate owned `TcpListener` and
+`TcpStream` descriptor types. Errors are normalized from errno into a
+target-independent network error enum. RUE-985 subsequently extended the same
+public address enum and TCP paths with IPv6. UDP, DNS, TLS, and
+nonblocking/readiness APIs remain outside the implemented surface.
 
 ## Context
 
-Rue's standard library can perform file IO, but cannot yet connect to a service
-or accept a TCP connection. RUE-713 is the design gate for that facility. The
-main decisions are the initial protocol and platform scope, a public address
-shape that does not fossilize IPv4, and a sound boundary between Rue values and
-kernel ABI structures.
+Before this design was implemented, Rue's standard library could perform file
+IO but could not connect to a service or accept a TCP connection. RUE-713 was
+the design gate for that facility. The main decisions were the initial protocol
+and platform scope, a public address shape that would not fossilize IPv4, and a
+sound boundary between Rue values and kernel ABI structures.
 
 Current source and tests constrain this ADR. ADR-0057 and RUE-712 established
 `std.fs` as pure Rue over `@syscall`, including errno normalization and the
@@ -81,17 +81,19 @@ polling, or readiness API. UDP is deferred without a current issue;
 nonblocking/readiness also needs no issue now. These boundaries keep v1 focused
 on the smallest end-to-end client/server facility.
 
-### 2. Public addresses are IPv4 today without being IPv4-shaped forever
+### 2. The public address enum supports compatible family extensions
 
-The public address API follows Rust's extensible shape: an enum has one IPv4
-variant initially, rather than putting four octets directly into every network
-operation. Conceptually:
+The public address API follows Rust's extensible shape. The original v1 enum had
+one IPv4 variant rather than putting four octets directly into every network
+operation; RUE-985 added the IPv6 variant without reshaping those operations.
+Conceptually:
 
 ```rue
 struct Ipv4Addr { a: u8, b: u8, c: u8, d: u8 }
 
 enum IpAddr {
     V4(Ipv4Addr),
+    V6(Ipv6Addr),
 }
 
 struct SockAddr {
@@ -103,7 +105,8 @@ struct SockAddr {
 Names may be adjusted to match standard-library conventions, but the contract
 is an extensible address enum plus a socket address carrying an address and
 port. The top-level connect/bind surface must not be shaped as four IPv4 octets.
-RUE-982 owns the IPv4 types and `SockAddr`; RUE-985 tracks adding IPv6.
+RUE-982 introduced the IPv4 types and `SockAddr`; RUE-985 extended the same
+model with `Ipv6Addr` and `IpAddr.V6`.
 
 ### 3. `SockAddr` owns explicit kernel marshalling
 
@@ -132,6 +135,13 @@ physical representation matches the kernel.
 This boundary is deliberate isolation. IPv6 has a different structure and
 size; adding it extends the `SockAddr` marshaller without exposing kernel
 layouts through the public API.
+
+The IPv6 extension uses the target's 28-byte `sockaddr_in6`: a target-correct
+family prefix, big-endian port, zero flowinfo, 16 address octets in network
+order, and zero scope ID. Linux uses `AF_INET6=10` as a native/little-endian
+`u16`; Darwin uses `sin6_len=28` followed by `AF_INET6=30`. Kernel-filled
+addresses with nonzero flowinfo or scope are rejected until those values have
+a lossless public representation.
 
 ### 4. Byte order is explicit, reusable Rue library code
 
@@ -219,8 +229,8 @@ port, impose bounded timeouts, and clean up both processes and descriptors on
 success or failure. This is real compiled-binary coverage, not only unit tests
 of marshalling helpers.
 
-RUE-985 (IPv6) remains deferred work related to RUE-713; it is not in the v1
-dependency chain.
+IPv6 remains outside the original v1 dependency chain, but RUE-985 subsequently
+added it through the address-model and marshalling extension point above.
 
 ## Consequences
 
@@ -229,7 +239,7 @@ dependency chain.
 - Rue programs gain a minimal, useful TCP client and server facility without
   expanding the Rust runtime or its cross-target archive surface.
 - Explicit marshalling prevents accidental dependence on Rue struct layout and
-  gives future IPv6 support one well-defined extension point.
+  provided IPv6 with one well-defined extension point.
 - Address and error APIs are portable shapes rather than Linux integer/layout
   details leaking into user code.
 - Separate affine listener and stream types make descriptor ownership and valid
@@ -237,7 +247,8 @@ dependency chain.
 
 ### Negative
 
-- v1 is IPv4-only.
+- IPv6 flowinfo and scope ID are not represented publicly; decoding rejects
+  nonzero values rather than discarding them.
 - Syscall numbers, socket constants, errno mappings, and ABI marshalling remain
   target-maintained library data.
 - Without traits, `File` and `TcpStream` have deliberately duplicated method
@@ -248,7 +259,8 @@ dependency chain.
 
 - The design adds no language feature, preview gate, compiler intrinsic, or
   runtime Rust helper.
-- DNS, TLS, UDP, IPv6, and readiness remain separable library work.
+- DNS, TLS, UDP, textual IPv6 conversion, zone-name resolution, and readiness
+  remain separable library work.
 
 ## Alternatives Considered
 
@@ -273,7 +285,7 @@ dependency chain.
 
 ## Future Work
 
-- RUE-985: IPv6 address variants and kernel marshalling.
+- Textual IPv6 parsing/formatting and interface-name zone resolution.
 - UDP, nonblocking/readiness, DNS, and TLS after their requirements are settled.
 
 ## References
@@ -284,4 +296,4 @@ dependency chain.
 - ADR-0059 — endianness remains explicit source-defined library policy
 - RUE-945 — implemented Darwin `@syscall` error normalization
 - RUE-970, RUE-982, RUE-983, RUE-984 — v1 implementation chain
-- RUE-985 — deferred IPv6 work
+- RUE-985 — IPv6 address variants and kernel marshalling

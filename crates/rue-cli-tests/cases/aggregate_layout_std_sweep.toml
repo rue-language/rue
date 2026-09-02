@@ -377,7 +377,8 @@ differential_opt = true
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Ipv4Addr { a: u8, b: u8, c: u8, d: u8 }
-enum IpAddr { V4(Ipv4Addr) }
+struct Ipv6Addr { bytes: [u8; 16] }
+enum IpAddr { V4(Ipv4Addr), V6(Ipv6Addr) }
 struct SockAddr { ip: IpAddr, port: u16 }
 enum NetworkError {
     Unsupported, PermissionDenied, AddressInUse, AddressNotAvailable,
@@ -390,7 +391,15 @@ fn local_addr_ok() -> NetResult {
 }
 fn local_addr_err() -> NetResult { NetResult.Err(NetworkError.Other(111)) }
 fn octet_sum(ip: IpAddr) -> i64 {
-    match ip { IpAddr.V4(v4) => @intCast(v4.a) + @intCast(v4.b) + @intCast(v4.c) + @intCast(v4.d), }
+    match ip {
+        IpAddr.V4(v4) => @intCast(v4.a) + @intCast(v4.b) + @intCast(v4.c) + @intCast(v4.d),
+        IpAddr.V6(v6) => {
+            let mut total: i64 = 0;
+            let mut i: u64 = 0;
+            while i < 16 { total += @intCast(v6.bytes[i]); i += 1; }
+            total
+        },
+    }
 }
 fn err_code(e: NetworkError) -> i64 {
     match e {
