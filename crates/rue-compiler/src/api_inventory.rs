@@ -1948,7 +1948,7 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 44] = [
     (3_611, 15_282_171_189_445_768_455),
     (4_802, 13_585_732_442_571_114_436),
     (2_906, 14_218_343_244_686_701_314),
-    (51_712, 9_461_444_034_308_602_479),
+    (52_489, 6_374_263_992_901_889_153),
     (8_705, 12_932_725_391_049_087_488),
     (14_038, 8_977_560_222_769_304_814),
     (380, 6_623_933_847_739_557_204),
@@ -1965,12 +1965,12 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 44] = [
 // identity even when constructor, caller, and macro token counts do not.
 const CONSTRUCTION_TOKEN_STRUCT_IDENTITY: (usize, u64) = (80, 5_227_448_979_315_228_973);
 const CONSTRUCTION_TOKEN_IMPL_IDENTITY: (usize, u64) = (108, 2_765_439_612_714_245_239);
-const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (10_358, 1_319_503_141_837_805_034);
+const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (10_370, 17_166_209_434_529_888_216);
 const COMPILER_CRATE_ROOT_NAMESPACE_IDENTITY: (usize, u64, usize, u64) = (
-    107,
-    16_471_930_814_342_494_057,
-    219,
-    9_233_980_844_921_801_843,
+    108,
+    17_193_940_575_781_086_638,
+    220,
+    3_538_585_967_376_714_744,
 );
 const COMPILER_SESSION_ROOT_IDENTITY: (usize, u64) = (3_375, 11_197_616_651_825_656_461);
 const COMPILER_SESSION_CONSTRUCTOR_IDENTITY: (usize, u64) = (82, 10_721_269_354_679_246_675);
@@ -4366,7 +4366,7 @@ pub(super) use register_parse_import_parse;"#;
     ));
     let nested_module_owners = module_owner_inventory(&compiler_module_sources);
     let nested_module_fingerprint = source_inventory_fingerprint(&nested_module_owners);
-    let expected_nested_module_identity = (144, 5_193_339_148_943_817_537);
+    let expected_nested_module_identity = (146, 2_781_450_530_666_229_298);
     assert_eq!(
         (nested_module_owners.len(), nested_module_fingerprint),
         expected_nested_module_identity,
@@ -5379,6 +5379,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("semantic_identity", include_str!("semantic_identity.rs")),
     ("session", SESSION_PRODUCTION_SOURCE),
     ("shared_segments", include_str!("shared_segments.rs")),
+    ("skolem", include_str!("skolem.rs")),
     ("source_identity", include_str!("source_identity.rs")),
     ("source_metadata", include_str!("source_metadata.rs")),
     ("source_snapshot", include_str!("source_snapshot.rs")),

@@ -105,6 +105,7 @@ mod tests {
         include_str!("analysis/instructions.rs"),
         include_str!("analysis/calls.rs"),
         include_str!("analysis/interfaces.rs"),
+        include_str!("analysis/skolem.rs"),
         include_str!("analysis/intrinsics.rs"),
         include_str!("analysis/builtin_ops.rs"),
         include_str!("analysis/ownership.rs"),

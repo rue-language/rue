@@ -195,12 +195,12 @@ interface it does not conform to. Verification of the assertion itself
 
 {{ rule(id="6.7:16", cat="normative") }}
 
-A bound does not change how the callee's body is analyzed: as for every
-generic function (4.14:25), the body is analyzed per specialization, with the
-type argument substituted for `T`. Within the body, `T` denotes the argument
-type, and the bound does not restrict which of the argument type's members the
-body may use. (A future revision may check the body once against the bound;
-see the design record.)
+A bound does not change how a specialization is analyzed: as for every
+generic function (4.14:25), each specialization is analyzed with the type
+argument substituted for `T`, and within it `T` denotes the argument type.
+In addition, the body is checked once against the bound itself (6.7:19), so
+a body that uses a member the bound does not provide is an error at the
+definition, whatever types the function is later applied to.
 
 {{ rule(id="6.7:17", cat="example") }}
 
@@ -222,6 +222,89 @@ struct Id is Equatable {
 // contains(Id, borrow ids, borrow needle)   // OK: Id is Equatable
 // contains(i64, borrow nums, borrow 3)      // error: i64 does not conform to Equatable
 ```
+
+## Definition-site checking
+
+{{ rule(id="6.7:19", cat="normative") }}
+
+For every function that declares at least one interface-bounded comptime
+type parameter and whose comptime parameters are all type parameters
+(bounded, or plain `type`), in every module of the program's import graph
+(10.5), the compiler performs one *skolem check*, whether or not the function
+is ever called: it analyzes the body once with each bounded parameter
+`comptime T: A + B` bound to the *skolem type* of its bound set (6.7:20) and
+each unbounded `comptime U: type` bound to an opaque skolem with no members.
+The check is an instantiation of the function like any other, so type
+inference, ownership, exclusivity, and drop analysis run over the body
+unchanged. It is not a use of the function: an uncalled function is still
+reported as unused.
+
+{{ rule(id="6.7:20", cat="normative") }}
+
+The skolem type of a bound set is a fieldless nominal type, distinct from
+every program type and from every other skolem, that conforms to exactly the
+interfaces of the bound set and the interfaces they refine (6.7:7). Its
+inherent members are exactly the union of the requirements of those
+interfaces: each method or associated-function requirement with its
+requirement signature after substituting the skolem for `Self`, and each
+type-valued associated constant requirement `const Element: type;` bound to
+a fresh opaque skolem, written `T.Element` in diagnostics. It is a move type
+(3.8) with no destructor and no drop glue, has no fields, and has no
+operators (4.2, 4.3): a body may only move, borrow, and drop values of `T`, call
+its requirements, and pass `T` where a bound its own bound covers is
+required.
+
+{{ rule(id="6.7:21", cat="legality-rule") }}
+
+Two interfaces of one bound set (including the interfaces they refine)
+**MAY** declare a requirement of the same name only with the same signature
+(compared as in 6.7:10); the skolem then has one member of that name.
+Otherwise the bound provides no single member of that name, and the
+parameter is a compile-time error (E0307) that names the member and the
+bound.
+
+{{ rule(id="6.7:22", cat="normative") }}
+
+The skolem check is analysis-only. Every diagnostic it reports is placed at
+the body span that produced it, renders the skolem as the parameter's name
+(`T`), never as an internal name, and carries the note
+``while checking `f` against the bound of parameter `T` `` (or, with several
+comptime parameters, ``... against the bounds of parameters `T` and `U` ``).
+The check produces no symbol and no code: it never reaches control-flow
+graph construction, code generation, or linking, and nothing its body
+references becomes reachable through it. In particular, the bodiless
+requirements of an interface are never analyzed or emitted.
+
+{{ rule(id="6.7:23", cat="example") }}
+
+```rue
+interface Show { fn show(borrow self) -> i64; }
+struct Val is Show {
+    n: i64,
+    fn show(borrow self) -> i64 { self.n }
+    fn extra(borrow self) -> i64 { 1 }
+}
+
+// error at the definition, even though `render` is never called and `Val`
+// has `extra`:
+//   no method named 'extra' found for type 'T'
+//   = note: while checking `render` against the bound of parameter `T`
+fn render(comptime T: Show, borrow x: T) -> i64 { x.show() + x.extra() }
+
+// error at the parameter: conflicting requirements `len` in bound
+// `Sized + Counted`
+interface Sized { fn len(borrow self) -> u64; }
+interface Counted { fn len(borrow self) -> i64; }
+fn measure(comptime T: Sized + Counted, borrow x: T) -> u64 { x.len() }
+```
+
+{{ rule(id="6.7:24", cat="normative") }}
+
+A function with a comptime value parameter and a comptime type constructor
+(a function whose result is `type`, 4.14) receive no skolem check: their
+bodies are analyzed per instantiation only, as before this section, and a
+use of a member outside a bound in such a body is reported only when the
+function is instantiated.
 
 ## Name resolution
 

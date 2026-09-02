@@ -296,6 +296,26 @@ pub(crate) trait DeclarationFacts {
         span: Span,
     ) -> CompileResult<Option<RequirementSignature>>;
 
+    /// The user-facing name of a skolem struct (spec 6.7:20) — the bounded
+    /// parameter it stands for — or `None` for an ordinary struct.
+    fn skolem_display_name(&mut self, struct_id: StructId) -> Option<Arc<str>>;
+
+    /// Whether a skolem's synthesized members are already installed.
+    fn skolem_prepared(&self, struct_id: StructId) -> bool;
+
+    /// The span of the analyzed function's comptime parameter that a skolem
+    /// stands for, where a bound-set conflict is reported (spec 6.7:21);
+    /// the function's own span when the parameter cannot be located.
+    fn skolem_parameter_span(&self, display: &str) -> Span;
+
+    /// Install the synthesized inherent members of a skolem (spec 6.7:20)
+    /// so the ordinary named-method lookup answers for it.
+    fn install_skolem_members(
+        &mut self,
+        struct_id: StructId,
+        members: Vec<super::analysis::SkolemMember>,
+    );
+
     fn declaration_binding_active(&self) -> bool;
 
     fn known_linear_during_binding(&self, ty: Type) -> Option<bool>;
@@ -831,6 +851,22 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     ) -> CompileResult<Option<RequirementSignature>> {
         self.storage
             .interface_requirement_signature(interface, name, self_type, assoc_types, span)
+    }
+    pub(crate) fn skolem_display_name(&mut self, struct_id: StructId) -> Option<Arc<str>> {
+        self.storage.skolem_display_name(struct_id)
+    }
+    pub(crate) fn skolem_prepared(&self, struct_id: StructId) -> bool {
+        self.storage.skolem_prepared(struct_id)
+    }
+    pub(crate) fn skolem_parameter_span(&self, display: &str) -> Span {
+        self.storage.skolem_parameter_span(display)
+    }
+    pub(crate) fn install_skolem_members(
+        &mut self,
+        struct_id: StructId,
+        members: Vec<super::analysis::SkolemMember>,
+    ) {
+        self.storage.install_skolem_members(struct_id, members)
     }
     pub(crate) fn format_type_name(&self, ty: Type) -> String {
         self.storage.friendly_type_display(ty)

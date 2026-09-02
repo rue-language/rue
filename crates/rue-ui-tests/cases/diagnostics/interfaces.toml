@@ -127,3 +127,85 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["interface"]
+
+[[case]]
+name = "skolem_check_note_rendering"
+description = """
+A diagnostic from a skolem check (spec 6.7:22) sits at the body span, renders
+the skolem as the parameter's name, and carries the note naming the function
+and the parameter whose bound the body was checked against.
+"""
+preview = "interfaces"
+source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val is Show {
+    n: i64,
+    fn show(borrow self) -> i64 { self.n }
+    fn extra(borrow self) -> i64 { 1 }
+}
+fn render(comptime T: Show, borrow x: T) -> i64 { x.show() + x.extra() }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0411]: no method named 'extra' found for type 'T'
+ --> test.rue:7:62
+  |
+7 | fn render(comptime T: Show, borrow x: T) -> i64 { x.show() + x.extra() }
+  |                                                              ^^^^^^^^^
+  |
+  = note: while checking `render` against the bound of parameter `T`
+"""
+
+[[case]]
+name = "conflicting_bound_requirements_point_at_the_parameter"
+description = "E0307 (spec 6.7:21) is anchored at the bounded parameter and names the member and the whole bound."
+preview = "interfaces"
+source = """
+interface Sized { fn len(borrow self) -> u64; }
+interface Counted { fn len(borrow self) -> i64; }
+fn measure(comptime T: Sized + Counted, borrow x: T) -> u64 { x.len() }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0307]: conflicting requirements `len` in bound `Sized + Counted`
+ --> test.rue:3:21
+  |
+3 | fn measure(comptime T: Sized + Counted, borrow x: T) -> u64 { x.len() }
+  |                     ^
+  |
+  = note: while checking `measure` against the bound of parameter `T`
+"""
+
+[[case]]
+name = "skolem_failing_a_nested_bound_suggests_widening_the_bound"
+description = "Under a skolem check, E0305's help suggests growing the parameter's bound rather than asserting a conformance for `T`."
+preview = "interfaces"
+source = """
+interface Show { fn show(borrow self) -> i64; }
+interface Twice { fn twice(borrow self) -> i64; }
+fn twice(comptime T: Twice, borrow x: T) -> i64 { x.twice() }
+fn render(comptime T: Show, borrow x: T) -> i64 { twice(T, borrow x) }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "[E0305]: type `T` does not conform to interface `Twice`",
+    "required by the bound on parameter `T`",
+    "= note: while checking `render` against the bound of parameter `T`",
+    "= help: add `Twice` to the bound of parameter `T`: `comptime T: ... + Twice`",
+]
+
+[[case]]
+name = "skolem_check_is_not_a_use"
+description = "The check reaches an uncalled bounded function's body without counting as a use (spec 6.7:19): the unused-function warning still fires and the program compiles."
+preview = "interfaces"
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn render(comptime T: Show, borrow x: T) -> i64 { x.show() }
+fn main() -> i32 { 0 }
+"""
+exit_code = 0
+warning_contains = ["unused function 'render'"]
+expected_warning_count = 1

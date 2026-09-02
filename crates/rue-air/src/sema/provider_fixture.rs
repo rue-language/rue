@@ -128,6 +128,9 @@ pub(crate) struct FixtureFacts {
     module_bindings: AHashMap<(FixtureModule, Arc<str>), FixtureModule>,
     module_files: AHashMap<FixtureModule, FileId>,
     qualified_consts: AHashMap<(FixtureModule, Arc<str>), FixtureKey>,
+    /// The nominals that are skolems (spec 6.7:20), with the bounded
+    /// parameter name each stands for.
+    skolems: AHashMap<FixtureKey, Arc<str>>,
 }
 
 /// The in-memory durable fact source handed to the production body host. Facts
@@ -144,6 +147,10 @@ impl DurableNominalSource<FixtureKey, FixtureModule> for FixtureFactSource {
 
     fn nominal_file_id(&self, key: &FixtureKey) -> Option<FileId> {
         self.0.nominals.contains_key(key).then_some(self.0.file)
+    }
+
+    fn skolem_display_name(&self, key: &FixtureKey) -> Option<Arc<str>> {
+        self.0.skolems.get(key).cloned()
     }
 }
 
@@ -702,6 +709,44 @@ impl ProviderFixture {
                 },
             },
         );
+        key
+    }
+
+    /// Declare the skolem standing for comptime parameter `parameter` with
+    /// the given bound set and associated types (spec 6.7:20): the
+    /// compiler's shape exactly — a fieldless move struct under a reserved
+    /// unspellable name whose header asserts the bounds, displayed as the
+    /// parameter's name.
+    pub(crate) fn declare_skolem(
+        &mut self,
+        parameter: &str,
+        bounds: &[FixtureKey],
+        assoc_types: &[(&str, FixtureKey)],
+    ) -> FixtureKey {
+        let key = self.declare_struct_with(
+            &format!("\0skolem\0{parameter}"),
+            Vec::new(),
+            false,
+            StructShape {
+                conformance: DurableConformanceFacts {
+                    conformances: bounds
+                        .iter()
+                        .map(|interface| crate::DurableConformance {
+                            interface: interface.clone(),
+                            start: 0,
+                            end: 0,
+                        })
+                        .collect(),
+                    assoc_types: assoc_types
+                        .iter()
+                        .map(|(name, key)| (Arc::from(*name), FixtureType::Nominal(key.clone())))
+                        .collect(),
+                    ..DurableConformanceFacts::default()
+                },
+                ..StructShape::default()
+            },
+        );
+        self.facts.skolems.insert(key.clone(), Arc::from(parameter));
         key
     }
 

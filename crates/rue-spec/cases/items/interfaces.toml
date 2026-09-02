@@ -372,9 +372,9 @@ compile_fail = true
 error_contains = ["E0305", "Twice"]
 
 [[case]]
-name = "bound_does_not_restrict_the_body"
-spec = ["6.7:16"]
-description = "The body is analyzed per specialization: a member outside the bound is usable because the argument type has it."
+name = "bound_restricts_the_body_at_the_definition"
+spec = ["6.7:16", "6.7:19"]
+description = "Every caller's type has `extra`, and the specialization for `Val` would analyze; the skolem check still rejects the member the bound does not provide, at the definition."
 preview = "interfaces"
 preview_should_pass = true
 source = """
@@ -387,7 +387,11 @@ struct Val is Show {
 fn render(comptime T: Show, borrow x: T) -> i64 { x.show() + x.extra() }
 fn main() -> i32 { @intCast(render(Val, borrow Val { n: 3 })) }
 """
-exit_code = 4
+compile_fail = true
+error_contains = [
+    "no method named 'extra' found for type 'T'",
+    "while checking `render` against the bound of parameter `T`",
+]
 
 [[case]]
 name = "bound_must_name_an_interface"
@@ -414,3 +418,254 @@ fn main() -> i32 { 0 }
 """
 compile_fail = true
 error_contains = ["expected a type, found interface `Show`"]
+
+# ---------------------------------------------------------------------------
+# Definition-site checking by skolemization (6.7:19 – 6.7:24)
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "skolem_check_runs_for_an_uncalled_function"
+spec = ["6.7:19", "6.7:22"]
+description = "`render` is never called, and the only conforming type has `extra`; the body is still checked against the bound alone, and the diagnostic names the member, `T`, and the check."
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val is Show {
+    n: i64,
+    fn show(borrow self) -> i64 { self.n }
+    fn extra(borrow self) -> i64 { 1 }
+}
+fn render(comptime T: Show, borrow x: T) -> i64 { x.show() + x.extra() }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "E0411",
+    "no method named 'extra' found for type 'T'",
+    "while checking `render` against the bound of parameter `T`",
+]
+
+[[case]]
+name = "skolem_check_accepts_a_body_within_its_bound"
+spec = ["6.7:19", "6.7:20", "6.7:22"]
+description = "A body that uses only the bound's requirement passes the check, and the program still specializes, links, and runs: the check adds no code."
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val is Show { n: i64, fn show(borrow self) -> i64 { self.n } }
+fn render(comptime T: Show, borrow x: T) -> i64 { x.show() }
+fn main() -> i32 { @intCast(render(Val, borrow Val { n: 3 })) }
+"""
+exit_code = 3
+
+[[case]]
+name = "skolem_of_a_composed_bound_has_every_requirement"
+spec = ["6.7:20"]
+description = "The skolem for `Show + Twice` has the members of both interfaces."
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+interface Twice { fn twice(borrow self) -> i64; }
+struct Val is Show + Twice {
+    n: i64,
+    fn show(borrow self) -> i64 { self.n }
+    fn twice(borrow self) -> i64 { self.n * 2 }
+}
+fn both(comptime T: Show + Twice, borrow x: T) -> i64 { x.show() + x.twice() }
+fn main() -> i32 { @intCast(both(Val, borrow Val { n: 3 })) }
+"""
+exit_code = 9
+
+[[case]]
+name = "skolem_of_a_refining_bound_has_the_refined_requirements"
+spec = ["6.7:20"]
+description = "The skolem for `Loud` (which refines `Show`) has `show`, and conforms to `Show`, so it satisfies a nested bound on `Show`."
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+interface Loud: Show { fn twice(borrow self) -> i64; }
+struct Val is Loud {
+    n: i64,
+    fn show(borrow self) -> i64 { self.n }
+    fn twice(borrow self) -> i64 { self.n * 2 }
+}
+fn render(comptime T: Show, borrow x: T) -> i64 { x.show() }
+fn loud(comptime T: Loud, borrow x: T) -> i64 { render(T, borrow x) + x.twice() }
+fn main() -> i32 { @intCast(loud(Val, borrow Val { n: 3 })) }
+"""
+exit_code = 9
+
+[[case]]
+name = "skolem_conforms_only_to_its_bound"
+spec = ["6.7:20", "6.7:22"]
+description = "Passing `T` where a bound the parameter's own bound does not cover is required is E0305 at the definition, naming `T`."
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+interface Twice { fn twice(borrow self) -> i64; }
+fn twice(comptime T: Twice, borrow x: T) -> i64 { x.twice() }
+fn render(comptime T: Show, borrow x: T) -> i64 { twice(T, borrow x) }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "E0305",
+    "type `T` does not conform to interface `Twice`",
+    "while checking `render` against the bound of parameter `T`",
+    "add `Twice` to the bound of parameter `T`",
+]
+
+[[case]]
+name = "associated_type_requirement_in_a_skolem_body"
+spec = ["6.7:20"]
+description = "`next` returns `Option(Element)`; under the skolem it returns `Option(T.Element)`, an opaque type the body can bind, drop, and unwrap with `?`."
+preview = "interfaces"
+preview_should_pass = true
+real_std = true
+source = """
+const std = @import("std");
+interface Sequence {
+    const Element: type;
+    fn next(inout self) -> std.option.Option(Element);
+    fn done(borrow self) -> bool;
+}
+struct Range is Sequence {
+    cur: i64,
+    end: i64,
+    pub const Element = i64;
+    fn next(inout self) -> std.option.Option(i64) {
+        let O = std.option.Option(i64);
+        if self.cur >= self.end { return O.None; }
+        let v = self.cur;
+        self.cur += 1;
+        O.Some(v)
+    }
+    fn done(borrow self) -> bool { self.cur >= self.end }
+}
+fn count(comptime T: Sequence, inout s: T) -> i64 {
+    let mut n: i64 = 0;
+    while !s.done() {
+        let _item = s.next();
+        n += 1;
+    }
+    n
+}
+fn take_one(comptime T: Sequence, inout s: T) -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
+    let _item = s.next()?;
+    O.Some(1)
+}
+fn main() -> i32 {
+    let mut r = Range { cur: 0, end: 5 };
+    let O = std.option.Option(i64);
+    let taken = match take_one(Range, inout r) { O.Some(v) => v, O.None => 0 };
+    @intCast(count(Range, inout r) + taken)
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "conflicting_requirements_in_a_bound_set"
+spec = ["6.7:21"]
+description = "Two interfaces of one bound declare `len` with different result types: the bound provides no single `len`, reported at the parameter."
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Sized { fn len(borrow self) -> u64; }
+interface Counted { fn len(borrow self) -> i64; }
+fn measure(comptime T: Sized + Counted, borrow x: T) -> u64 { x.len() }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0307", "conflicting requirements `len` in bound `Sized + Counted`"]
+
+[[case]]
+name = "agreeing_requirements_in_a_bound_set"
+spec = ["6.7:21"]
+description = "Two interfaces declaring `len` with the same signature contribute one member."
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Sized { fn len(borrow self) -> u64; }
+interface Counted { fn len(borrow self) -> u64; }
+struct Buf is Sized + Counted { n: u64, fn len(borrow self) -> u64 { self.n } }
+fn measure(comptime T: Sized + Counted, borrow x: T) -> u64 { x.len() }
+fn main() -> i32 { @intCast(measure(Buf, borrow Buf { n: 4 })) }
+"""
+exit_code = 4
+
+[[case]]
+name = "skolem_is_a_move_type"
+spec = ["6.7:20", "6.7:22"]
+description = "Ownership analysis runs over the skolem body: a `T` value moved twice is a use after move, even though the only conforming type is copyable."
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn consume(comptime T: Show, x: T) -> i64 { x.show() }
+fn twice(comptime T: Show, x: T) -> i64 { consume(T, x) + consume(T, x) }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "E0205",
+    "use of moved value 'x'",
+    "while checking `twice` against the bound of parameter `T`",
+]
+
+[[case]]
+name = "operators_are_not_requirements"
+spec = ["6.7:20"]
+description = "A skolem has no operators: `<` on `T` is a type mismatch naming `T`."
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn less(comptime T: Show, borrow a: T, borrow b: T) -> bool { a < b }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "E0206",
+    "expected integer, found T",
+    "while checking `less` against the bound of parameter `T`",
+]
+
+[[case]]
+name = "unbounded_type_parameters_are_opaque_skolems"
+spec = ["6.7:19", "6.7:20"]
+description = "In a checked function, `comptime U: type` is an opaque skolem: its values can be moved and dropped and nothing else."
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val is Show { n: i64, fn show(borrow self) -> i64 { self.n } }
+fn pair(comptime T: Show, comptime U: type, x: T, y: U) -> i64 {
+    let _kept = y;
+    let shown = x;
+    shown.show()
+}
+fn main() -> i32 { @intCast(pair(Val, i64, Val { n: 4 }, 7)) }
+"""
+exit_code = 4
+
+[[case]]
+name = "skolem_check_scope"
+spec = ["6.7:24"]
+description = "A function with a comptime value parameter and a comptime type constructor are outside the check: uncalled, their out-of-bound uses are not reported."
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn scaled(comptime T: Show, comptime n: i64, borrow x: T) -> i64 { x.extra() * n }
+fn Wrapped(comptime T: Show) -> type {
+    struct { v: T, fn get(borrow self) -> i64 { self.v.extra() } }
+}
+fn main() -> i32 { 0 }
+"""
+exit_code = 0

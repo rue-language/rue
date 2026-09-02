@@ -1566,6 +1566,10 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::InterfaceBoundNotSatisfied {
                 ty: left,
                 interface: right,
+            }
+            | E::ConflictingBoundRequirements {
+                member: left,
+                bound: right,
             } => left
                 .retained_charge()
                 .saturating_add(right.retained_charge()),

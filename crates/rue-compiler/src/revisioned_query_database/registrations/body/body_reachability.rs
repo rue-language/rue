@@ -639,6 +639,18 @@ $runtime
                         // one memo claim and dependency validation per reached
                         // body without adding an independent invalidation edge.
                         let references = transaction.references();
+                        // A skolem check is analysis-only (spec 6.7:22):
+                        // nothing it references is scheduled, so the bound's
+                        // requirement stubs, the callees it names, and the
+                        // drop glue of its skolem-typed values never become
+                        // reachable bodies. Its diagnostics are still
+                        // collected: the check stays a reached body.
+                        let scheduled_references: &[crate::body_query::BodyReference] =
+                            if crate::skolem::instance_is_skolem_check(instance.as_ref()) {
+                                &[]
+                            } else {
+                                &references.0
+                            };
                         reached_body_keys.push(body_key.clone());
                         // A deterministic body diagnostic is terminal for this
                         // body's dependents. Keep scheduling references that
@@ -692,7 +704,7 @@ $runtime
                                 break;
                             }
                         }
-                        for reference in references.0.iter() {
+                        for reference in scheduled_references {
                             match reference {
                                 crate::body_query::BodyReference::Callable(callable) => {
                                     let abi = context.query_registered(

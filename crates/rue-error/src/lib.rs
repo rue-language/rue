@@ -207,7 +207,7 @@ impl ErrorCode {
     /// inlining its body at the call site (ADR-0062), so an accessor-call
     /// cycle has no finite expansion.
     pub const ACCESSOR_RECURSION: Self = Self(261);
-    // E0300-E0306 form the interface block (spec 6.7, `--preview interfaces`).
+    // E0300-E0307 form the interface block (spec 6.7, `--preview interfaces`).
     /// A conformance assertion, refinement list, or bound names an interface
     /// that does not exist in scope (spec 6.7:18).
     pub const INTERFACE_NOT_FOUND: Self = Self(300);
@@ -228,6 +228,9 @@ impl ErrorCode {
     /// A comptime parameter bound (spec 6.7:14), a conformance assertion, or
     /// a refinement list names something that is not an interface.
     pub const BOUND_IS_NOT_AN_INTERFACE: Self = Self(306);
+    /// Two interfaces of one bound set declare a requirement of the same
+    /// name with different signatures (spec 6.7:21).
+    pub const CONFLICTING_BOUND_REQUIREMENTS: Self = Self(307);
 
     // ========================================================================
     // Struct/enum errors (E0400-E0499)
@@ -1743,7 +1746,7 @@ pub enum ErrorKind {
     AccessorRecursion { method: String },
 
     // ========================================================================
-    // Interface errors (E0300-E0306, spec 6.7, `--preview interfaces`)
+    // Interface errors (E0300-E0307, spec 6.7, `--preview interfaces`)
     // ========================================================================
     /// A conformance assertion, refinement list, or bound names an unknown
     /// interface.
@@ -1785,6 +1788,11 @@ pub enum ErrorKind {
     /// list names something that is not an interface.
     #[error("`{name}` is not an interface")]
     BoundIsNotAnInterface { name: String },
+    /// Two interfaces of one bound set declare a requirement of the same
+    /// name with different signatures, so the bound provides no single
+    /// member of that name (spec 6.7:21).
+    #[error("conflicting requirements `{member}` in bound `{bound}`")]
+    ConflictingBoundRequirements { member: String, bound: String },
     /// Cannot move `self` out of a destructor body (RUE-139). The compiler
     /// drops a value by running its destructor and THEN dropping its fields;
     /// moving `self` to a new owner (a call argument, another binding, ...)
@@ -2345,7 +2353,7 @@ impl ErrorKind {
             }
             ErrorKind::AccessorRecursion { .. } => ErrorCode::ACCESSOR_RECURSION,
 
-            // Interface errors (E0300-E0306)
+            // Interface errors (E0300-E0307)
             ErrorKind::InterfaceNotFound { .. } => ErrorCode::INTERFACE_NOT_FOUND,
             ErrorKind::DuplicateInterfaceRequirement { .. } => {
                 ErrorCode::DUPLICATE_INTERFACE_REQUIREMENT
@@ -2357,6 +2365,9 @@ impl ErrorKind {
                 ErrorCode::INTERFACE_BOUND_NOT_SATISFIED
             }
             ErrorKind::BoundIsNotAnInterface { .. } => ErrorCode::BOUND_IS_NOT_AN_INTERFACE,
+            ErrorKind::ConflictingBoundRequirements { .. } => {
+                ErrorCode::CONFLICTING_BOUND_REQUIREMENTS
+            }
             ErrorKind::InoutKeywordMissing => ErrorCode::INOUT_KEYWORD_MISSING,
             ErrorKind::BorrowKeywordMissing => ErrorCode::BORROW_KEYWORD_MISSING,
             ErrorKind::UnexpectedCallArgumentMode { .. } => {
@@ -3329,9 +3340,9 @@ mod tests {
 
     #[test]
     fn test_interface_error_codes() {
-        // Spec 6.7: the interface diagnostics occupy E0300-E0306 in the
+        // Spec 6.7: the interface diagnostics occupy E0300-E0307 in the
         // semantic band, immediately after the borrow-accessor block.
-        let cases: [(ErrorKind, ErrorCode, &str); 7] = [
+        let cases: [(ErrorKind, ErrorCode, &str); 8] = [
             (
                 ErrorKind::InterfaceNotFound {
                     name: "Equatable".into(),
@@ -3390,6 +3401,14 @@ mod tests {
                 },
                 ErrorCode::BOUND_IS_NOT_AN_INTERFACE,
                 "E0306",
+            ),
+            (
+                ErrorKind::ConflictingBoundRequirements {
+                    member: "len".into(),
+                    bound: "Sized + Counted".into(),
+                },
+                ErrorCode::CONFLICTING_BOUND_REQUIREMENTS,
+                "E0307",
             ),
         ];
         for (kind, code, rendered) in cases {

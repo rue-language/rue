@@ -129,6 +129,17 @@ impl CompilerSession {
                 .cloned()
                 .map(crate::FunctionInstanceKey::Definition),
         );
+        // Every bounded function in the import cone gets its skolem check
+        // whether or not it is called (spec 6.7:19): the check is a root of
+        // the same closure, so its diagnostics are collected with every
+        // other body's. Bounds exist only under the preview, so a program
+        // without the preview scans nothing.
+        if options
+            .preview_features
+            .contains(&rue_error::PreviewFeature::Interfaces)
+        {
+            roots.extend(crate::skolem::skolem_check_roots(&projection.declarations));
+        }
         let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
             target: options.target,
             preview_features: StablePreviewFeatures::new(&options.preview_features),
@@ -582,6 +593,7 @@ impl CompilerSession {
             .closure
             .reached
             .iter()
+            .filter(|identity| !crate::skolem::instance_is_skolem_check(identity))
             .cloned()
             .collect::<BTreeSet<_>>();
         identities.extend(
@@ -643,6 +655,12 @@ impl CompilerSession {
             else {
                 continue;
             };
+            // A skolem check is analysis-only (spec 6.7:22): it has no
+            // symbol, no CFG, and no code.
+            if crate::skolem::instance_is_skolem_check(&closure_body.key.instance) {
+                work.cfg.skolem_checks_filtered += 1;
+                continue;
+            }
             let locator = self
                 .queries
                 .revisioned
@@ -2176,11 +2194,14 @@ fn rooted_unused_function_warnings(
         }
         })
         .collect::<BTreeSet<_>>();
+    // A skolem check reaches its function without any call: it is not a use
+    // (spec 6.7:19), so an uncalled bounded function still warns.
     referenced.extend(
         graph
             .closure
             .reached
             .iter()
+            .filter(|instance| !crate::skolem::instance_is_skolem_check(instance))
             .filter_map(source_definition)
             .cloned(),
     );

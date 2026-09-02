@@ -227,6 +227,16 @@ pub trait DurableNominalSource<K, M> {
         None
     }
 
+    /// The user-facing name of a skolem type (spec 6.7:20) — the bounded
+    /// comptime parameter it stands for, such as `T`, or `T.Element` for
+    /// one of its associated types — or `None` when `key` names an ordinary
+    /// nominal. A skolem's durable `name` is a reserved, unspellable symbol
+    /// that keeps it distinct from every program type in the pool; this is
+    /// what every diagnostic renders instead.
+    fn skolem_display_name(&self, _key: &K) -> Option<Arc<str>> {
+        None
+    }
+
     /// The freestanding conformance assertions visible from the body being
     /// analyzed: those of its own module and of every module that module
     /// transitively imports (spec 6.7:15). Struct-header assertions are
@@ -1423,7 +1433,12 @@ where
         let symbol = self
             .intern_name(name.as_ref())
             .map_err(IdentityMintError::Interner)?;
-        let name = name.clone();
+        // A skolem's durable `name` is its unique pool symbol; the type the
+        // user reads is the bounded parameter's name (spec 6.7:22).
+        let name = self
+            .source
+            .skolem_display_name(key)
+            .unwrap_or_else(|| name.clone());
         match body {
             DurableNominalBody::Struct {
                 fields,
@@ -1590,7 +1605,12 @@ where
         let symbol = self
             .intern_name(name.as_ref())
             .map_err(IdentityMintError::Interner)?;
-        let name = name.clone();
+        // A skolem's durable `name` is its unique pool symbol; the type the
+        // user reads is the bounded parameter's name (spec 6.7:22).
+        let name = self
+            .source
+            .skolem_display_name(key)
+            .unwrap_or_else(|| name.clone());
 
         match body {
             DurableNominalBody::Struct {

@@ -62,3 +62,31 @@ args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0305", "type `Val` does not conform to interface `Show`"]
 compile_stderr_not_contains = ["internal compiler error"]
+
+[[case]]
+name = "skolem_check_covers_imported_modules"
+description = """
+The skolem check (spec 6.7:19) runs for every bounded function in the import
+graph: a helper module's function that is never called still fails the build
+at its definition, with the note, and the build produces no executable.
+"""
+files = [
+    { path = "main.rue", source = """
+const helper = @import("helper.rue");
+fn main() -> i32 { @intCast(helper.answer()) }
+""" },
+    { path = "helper.rue", source = """
+interface Show { fn show(borrow self) -> i64; }
+pub fn answer() -> i64 { 3 }
+pub fn render(comptime T: Show, borrow x: T) -> i64 { x.show() + x.extra() }
+""" },
+]
+args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "E0411",
+    "no method named 'extra' found for type 'T'",
+    "helper.rue:3",
+    "while checking `render` against the bound of parameter `T`",
+]
+compile_stderr_not_contains = ["internal compiler error"]

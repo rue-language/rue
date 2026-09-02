@@ -60,20 +60,29 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let Some(assertion) = self.assertion_satisfying(argument, bound) else {
                 let ty = self.format_type_name(argument);
                 let interface = self.interface_display_name(bound);
+                // Under a skolem check (spec 6.7:19) the argument is the
+                // caller's own bounded parameter: nothing can be asserted
+                // about it, only its bound can grow.
+                let help = match argument
+                    .as_struct()
+                    .and_then(|skolem| self.skolem_display_name(skolem))
+                {
+                    Some(skolem) => format!(
+                        "add `{interface}` to the bound of parameter `{skolem}`: `comptime {skolem}: ... + {interface}`"
+                    ),
+                    None => format!(
+                        "add `{ty} is {interface};` to assert the conformance, or a `struct {ty} is {interface}` header"
+                    ),
+                };
                 return Err(CompileError::new(
-                    ErrorKind::InterfaceBoundNotSatisfied {
-                        ty: ty.clone(),
-                        interface: interface.clone(),
-                    },
+                    ErrorKind::InterfaceBoundNotSatisfied { ty, interface },
                     argument_span,
                 )
                 .with_label(
                     format!("required by the bound on parameter `{parameter}`"),
                     call_span,
                 )
-                .with_help(format!(
-                    "add `{ty} is {interface};` to assert the conformance, or a `struct {ty} is {interface}` header"
-                )));
+                .with_help(help));
             };
             self.verify_conformance(argument, assertion, call_span)?;
         }
@@ -291,7 +300,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// The interface's source name for diagnostics.
-    fn interface_display_name(&mut self, interface: StructId) -> String {
+    pub(crate) fn interface_display_name(&mut self, interface: StructId) -> String {
         match self.interface_facts(interface) {
             Some(facts) => facts.name.to_string(),
             None => self.format_type_name(Type::new_struct(interface)),
@@ -299,23 +308,25 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 }
 
+/// Fixture helpers shared by the interface and skolem tests: the durable
+/// shapes the nucleus produces for interface shells, bounded parameters, and
+/// requirement signatures.
 #[cfg(test)]
-mod tests {
+pub(super) mod interface_fixtures {
     use crate::sema::provider_fixture::{
-        FixtureKey, FixtureModule, MethodShape, ProviderFixture, StructShape, mode_param,
+        FixtureKey, FixtureModule, MethodShape, ProviderFixture, StructShape,
     };
     use crate::{
         DurableCallableTypeSyntax, DurableConformance, DurableConformanceFacts,
         DurableSignatureParameter, SemanticImportType, SemanticParameterMode,
     };
-    use rue_error::{ErrorKind, PreviewFeature};
     use std::sync::Arc;
 
-    type T = SemanticImportType<FixtureKey, FixtureModule>;
+    pub(in crate::sema) type T = SemanticImportType<FixtureKey, FixtureModule>;
 
     /// `comptime T: <bounds>` — the durable shape the nucleus produces for a
     /// bounded comptime type parameter (spec 6.7:14).
-    fn bounded_type_param(
+    pub(in crate::sema) fn bounded_type_param(
         name: &str,
         bounds: &[FixtureKey],
     ) -> DurableSignatureParameter<FixtureKey, FixtureModule> {
@@ -328,7 +339,7 @@ mod tests {
         }
     }
 
-    fn assertion(interface: &FixtureKey) -> DurableConformance<FixtureKey> {
+    pub(in crate::sema) fn assertion(interface: &FixtureKey) -> DurableConformance<FixtureKey> {
         DurableConformance {
             interface: interface.clone(),
             start: 0,
@@ -338,7 +349,7 @@ mod tests {
 
     /// Declare an interface shell with the given refinement list, type-valued
     /// requirements, and method-requirement names.
-    fn declare_interface(
+    pub(in crate::sema) fn declare_interface(
         fixture: &mut ProviderFixture,
         name: &str,
         parents: &[FixtureKey],
@@ -365,7 +376,7 @@ mod tests {
     }
 
     /// A `borrow self` method with concrete parameter and result types.
-    fn declare_borrow_method(
+    pub(in crate::sema) fn declare_borrow_method(
         fixture: &mut ProviderFixture,
         owner: &FixtureKey,
         name: &str,
@@ -385,6 +396,19 @@ mod tests {
             },
         )
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::interface_fixtures::{
+        T, assertion, bounded_type_param, declare_borrow_method, declare_interface,
+    };
+    use crate::sema::provider_fixture::{
+        FixtureKey, MethodShape, ProviderFixture, StructShape, mode_param,
+    };
+    use crate::{DurableCallableTypeSyntax, DurableConformanceFacts, SemanticParameterMode};
+    use rue_error::{ErrorKind, PreviewFeature};
+    use std::sync::Arc;
 
     /// The retained syntax of `fn equals(borrow self, borrow other: Self) -> bool`
     /// as an interface requirement: `Self` is the owner placeholder

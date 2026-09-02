@@ -42,6 +42,9 @@ pub struct CfgConstructionWork {
     pub drop_glue_functions_synthesized: usize,
     pub functions_considered: usize,
     pub comptime_functions_filtered: usize,
+    /// Skolem checks (spec 6.7:19) among the reached bodies: analyzed for
+    /// their diagnostics, never lowered to a CFG.
+    pub skolem_checks_filtered: usize,
     pub materialization_index_builds: usize,
     pub materialization_declarations_scanned: usize,
     pub materialization_anonymous_nominals_scanned: usize,

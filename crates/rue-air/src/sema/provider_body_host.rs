@@ -1292,6 +1292,11 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     ctor_displays: AHashMap<Type, String>,
     current_anonymous_identity:
         Option<FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>,
+    /// The synthesized inherent members of every skolem prepared for this
+    /// body (spec 6.7:20), keyed by member name. Present, possibly empty,
+    /// for each prepared skolem; the named-method lookup answers a skolem
+    /// from here and never from the interface shells' own candidates.
+    skolem_members: RefCell<AHashMap<StructId, AHashMap<Spur, MethodCallInfo>>>,
 }
 
 impl<'a, P, S, K, M> ProviderBodyHost<'a, P, S, K, M>
@@ -1456,6 +1461,7 @@ where
             deferred_ownership: Vec::new(),
             ctor_displays: AHashMap::new(),
             current_anonymous_identity: None,
+            skolem_members: RefCell::new(AHashMap::new()),
         };
         for identity in &well_known.nominals {
             if host
@@ -2108,6 +2114,12 @@ where
         {
             return Some(info);
         }
+        // A skolem's members are its bound's requirements, already
+        // instantiated and registered by `install_skolem_members`; it has no
+        // declaration to consult (spec 6.7:20).
+        if let Some(members) = self.skolem_members.borrow().get(&struct_id) {
+            return members.get(&symbol).copied();
+        }
         let owner_type = Type::new_struct(struct_id);
         let receiver_key = self
             .nominal_tokens
@@ -2433,6 +2445,64 @@ where
             .and_then(|symbol| self.function_tokens.borrow().get(&symbol).cloned())
             .map(|(_, key)| key)?;
         DurableCallableSource::function(&self.source, &key)
+    }
+
+    /// Register one synthesized skolem member (spec 6.7:20): its call
+    /// signature in the parameter arena, and the requirement stub of the
+    /// interface it comes from as the callee identity a call records. The
+    /// stub is never analyzed or emitted — a skolem body is analysis-only
+    /// (spec 6.7:22) — so recording it draws nothing into the closure.
+    fn register_skolem_member(
+        &self,
+        struct_id: StructId,
+        member: &super::analysis::SkolemMember,
+    ) -> Option<MethodCallInfo> {
+        let RequirementSignature {
+            has_self,
+            self_mode,
+            params,
+            result,
+        } = &member.signature;
+        let names = params
+            .iter()
+            .map(|(name, _, _)| self.intern_name(name.as_ref()))
+            .collect::<Option<Vec<_>>>()?;
+        let range = self.state.allocate_params(
+            names,
+            params.iter().map(|(_, _, ty)| *ty),
+            params.iter().map(|(_, mode, _)| *mode),
+            params.iter().map(|_| false),
+        );
+        let interface_key = self.durable_struct_key(member.interface)?;
+        let owner = self.source.definition_name(&interface_key)?;
+        let (key, _) = self
+            .source
+            .named_member(&interface_key, &owner, &member.name)?;
+        let full_symbol = self.member_callable_symbol(struct_id, &member.name, *has_self)?;
+        let kind = if *has_self {
+            crate::StableDefinitionKind::Method
+        } else {
+            crate::StableDefinitionKind::AssociatedFunction
+        };
+        let token = self.endpoint.register_body_owner(
+            key.clone(),
+            self.owner_file,
+            &member.name,
+            kind,
+            Some(&owner),
+        )?;
+        self.function_tokens
+            .borrow_mut()
+            .insert(full_symbol, (token, key));
+        Some(MethodCallInfo {
+            struct_type: Type::new_struct(struct_id),
+            has_self: *has_self,
+            self_mode: *self_mode,
+            params: range,
+            return_type: *result,
+            returns_borrow: false,
+            returns_inout: false,
+        })
     }
 
     fn nominal_type_for_symbol(&self, file: FileId, symbol: Spur) -> Option<Type> {
@@ -5224,6 +5294,49 @@ where
         }))
     }
 
+    fn skolem_display_name(&mut self, struct_id: StructId) -> Option<Arc<str>> {
+        let key = self.durable_struct_key(struct_id)?;
+        self.source.skolem_display_name(&key)
+    }
+
+    fn skolem_prepared(&self, struct_id: StructId) -> bool {
+        self.skolem_members.borrow().contains_key(&struct_id)
+    }
+
+    fn skolem_parameter_span(&self, display: &str) -> Span {
+        // `T.Element` stands for an associated type of parameter `T`; the
+        // parameter is what the source declares.
+        let parameter = display.split('.').next().unwrap_or(display);
+        let Some(info) = self.endpoint.endpoint_function_info(self.function_symbol) else {
+            return Span::with_file(self.owner_file, 0, 0);
+        };
+        if let InstData::FnDecl { params, .. } = &self.rir.rir().get(info.declaration).data {
+            for param in self.rir.rir().params(params) {
+                if self.interner.resolve(&param.name) == parameter {
+                    return param.span;
+                }
+            }
+        }
+        info.span
+    }
+
+    fn install_skolem_members(
+        &mut self,
+        struct_id: StructId,
+        members: Vec<super::analysis::SkolemMember>,
+    ) {
+        let mut table = AHashMap::with_capacity(members.len());
+        for member in members {
+            let Some(symbol) = self.intern_name(member.name.as_ref()) else {
+                continue;
+            };
+            if let Some(info) = self.register_skolem_member(struct_id, &member) {
+                table.insert(symbol, info);
+            }
+        }
+        self.skolem_members.borrow_mut().insert(struct_id, table);
+    }
+
     fn declaration_binding_active(&self) -> bool {
         false
     }
@@ -6925,6 +7038,9 @@ where
                     "provider specialization value argument is unavailable: {failure:?}"
                 )))
             })?;
+        // A skolem check is this same entry with skolems as the type
+        // arguments (spec 6.7:19); their members exist only once synthesized.
+        OrdinaryBodyEngine::new(&mut host).prepare_skolems(&type_args)?;
         let key = crate::specialize::SpecializationKey {
             base_name: host.function_symbol,
             type_args,

@@ -1184,7 +1184,15 @@ impl BodyTransactionEvaluator {
                             },
                         }
                     }
-                    Err(error) => body_failure_with_source(error, &input.source),
+                    Err(error) => {
+                        // A skolem check's diagnostics say which bound the
+                        // body was checked against (spec 6.7:22).
+                        let error = match crate::skolem::skolem_check_note(&definition, arguments) {
+                            Some(note) => error.with_note(note),
+                            None => error,
+                        };
+                        body_failure_with_source(error, &input.source)
+                    }
                 }
             } else if let crate::FunctionInstanceKey::AnonymousMember { owner, member } =
                 &key.instance

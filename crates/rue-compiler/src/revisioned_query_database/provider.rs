@@ -1225,7 +1225,13 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
     }
 
     fn definition_name(&self, definition: &crate::StableDefinitionKey) -> Option<Arc<str>> {
-        Some(definition.shared_name().clone())
+        // A skolem is read as the parameter it stands for (spec 6.7:22).
+        Some(
+            crate::skolem::SkolemIdentity::parse(definition).map_or_else(
+                || definition.shared_name().clone(),
+                |skolem| skolem.display_name(),
+            ),
+        )
     }
 
     fn reduce_comptime_call(
@@ -1487,6 +1493,10 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
             .map(|source| rue_span::Span::with_file(source.file_id, start, end))
     }
 
+    fn skolem_display_name(&self, key: &crate::StableDefinitionKey) -> Option<Arc<str>> {
+        crate::skolem::SkolemIdentity::parse(key).map(|skolem| skolem.display_name())
+    }
+
     fn nominal(
         &self,
         key: &crate::StableDefinitionKey,
@@ -1502,6 +1512,14 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
                 .meter()
                 .nominal_materialization_reuses
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Some(nominal);
+        }
+        if let Some(skolem) = crate::skolem::SkolemIdentity::parse(key) {
+            let nominal = self.skolem_nominal(key, &skolem)?;
+            self.durable_payloads
+                .borrow_mut()
+                .named_nominals
+                .insert(key.clone(), nominal.clone());
             return Some(nominal);
         }
         if let Some((nominal, anonymous_nominals)) = self
@@ -1744,6 +1762,99 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
 }
 
 impl CompilerBodyDurableSource<'_> {
+    /// The durable shape of a skolem (spec 6.7:20), rebuilt from the bounded
+    /// function's signature: a fieldless move struct with no destructor,
+    /// under the skolem's reserved name, whose header asserts exactly the
+    /// parameter's bound set and whose associated types are the opaque
+    /// skolems of every associated-type requirement the bounds and the
+    /// interfaces they refine declare. An associated-type skolem asserts
+    /// nothing: an associated-type requirement carries no bound. The
+    /// members are not durable facts — the body host synthesizes them from
+    /// the requirement signatures when it prepares the skolem.
+    fn skolem_nominal(
+        &self,
+        key: &crate::StableDefinitionKey,
+        skolem: &crate::skolem::SkolemIdentity,
+    ) -> Option<rue_air::DurableNominal<crate::StableDefinitionKey, ModuleId>> {
+        let candidate = self.candidate(&skolem.function)?;
+        let signature = self.signature_for_candidate(&candidate.declaration)?;
+        let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
+            parameters,
+            ..
+        } = signature.signature
+        else {
+            return None;
+        };
+        let parameter = parameters
+            .iter()
+            .find(|parameter| parameter.name == skolem.parameter)?;
+        let bounds: &[crate::StableDefinitionKey] = if skolem.assoc.is_some() {
+            &[]
+        } else {
+            &parameter.bounds
+        };
+        // The refinement closure of the bound set (spec 6.7:7), walked once
+        // for the associated-type names it declares; acyclic by rule, and the
+        // visited list keeps an ill-formed cycle from looping.
+        let mut closure = bounds.to_vec();
+        let mut assoc_names = Vec::new();
+        let mut next = 0;
+        while next < closure.len() {
+            let current = closure[next].clone();
+            next += 1;
+            let Some(nominal) = rue_air::DurableNominalSource::nominal(self, &current) else {
+                continue;
+            };
+            let rue_air::DurableNominalBody::Struct { conformance, .. } = nominal.body else {
+                continue;
+            };
+            for parent in conformance.conformances.iter() {
+                if !closure.contains(&parent.interface) {
+                    closure.push(parent.interface.clone());
+                }
+            }
+            for (name, _) in conformance.assoc_types.iter() {
+                if !assoc_names.contains(name) {
+                    assoc_names.push(name.clone());
+                }
+            }
+        }
+        let assoc_types = assoc_names
+            .into_iter()
+            .map(|name| {
+                let assoc = crate::DurableType::Nominal(skolem.assoc(&name).key());
+                (name, assoc)
+            })
+            .collect();
+        Some(rue_air::DurableNominal {
+            name: Arc::from(key.name()),
+            module_path: Arc::from(key.module().logical_path()),
+            is_public: false,
+            is_builtin: false,
+            lang_item: None,
+            is_repr_c: false,
+            has_destructor: false,
+            body: rue_air::DurableNominalBody::Struct {
+                fields: Arc::from([]),
+                is_copy: false,
+                is_linear: false,
+                conformance: rue_air::DurableConformanceFacts {
+                    is_interface: false,
+                    conformances: bounds
+                        .iter()
+                        .map(|interface| rue_air::DurableConformance {
+                            interface: interface.clone(),
+                            start: 0,
+                            end: 0,
+                        })
+                        .collect(),
+                    assoc_types,
+                    requirements: Arc::from([]),
+                },
+            },
+        })
+    }
+
     fn method_from_signature(
         &self,
         key: &crate::StableDefinitionKey,

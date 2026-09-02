@@ -4453,6 +4453,38 @@ mod tests {
     }
 
     #[test]
+    fn skolem_checks_are_analyzed_but_never_lowered() {
+        // The bounded function's skolem check (spec 6.7:19) is a reached
+        // body of the closure, and the only body the CFG pass sets aside
+        // (spec 6.7:22); the program's own bodies lower as before.
+        let snapshot = SourceSnapshot::single(
+            "<skolem-check>",
+            "interface Show { fn show(borrow self) -> i64; } struct Val is Show { n: i64, fn show(borrow self) -> i64 { self.n } } fn render(comptime T: Show, borrow x: T) -> i64 { x.show() } fn main() -> i32 { @intCast(render(Val, borrow Val { n: 3 })) }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let output = session
+            .rooted_cfg(&CompileOptions {
+                preview_features: PreviewFeatures::from([PreviewFeature::Interfaces]),
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert_eq!(output.work.cfg.skolem_checks_filtered, 1);
+        assert!(
+            output
+                .cfgs
+                .iter()
+                .all(|unit| !crate::skolem::instance_is_skolem_check(&unit.function))
+        );
+        // `main`, `Val.show`, and the `render(Val)` specialization.
+        assert_eq!(output.work.cfg.functions_considered, 3);
+    }
+
+    #[test]
     fn phase5_keeps_exported_and_recursive_functions_reachable() {
         let snapshot = SourceSnapshot::single(
             "<phase5-roots>",

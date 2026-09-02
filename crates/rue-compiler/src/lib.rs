@@ -69,6 +69,7 @@ mod semantic_query_nucleus;
 mod semantic_symbols;
 mod session;
 mod shared_segments;
+mod skolem;
 mod source_identity;
 mod source_metadata;
 mod source_snapshot;

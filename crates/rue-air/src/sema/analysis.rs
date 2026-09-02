@@ -393,4 +393,6 @@ mod intrinsics;
 mod ownership;
 pub(crate) use ownership::{AccessorEscapeSite, CallOperands, FirstClassStrSite};
 mod pointers;
+mod skolem;
+pub(crate) use skolem::SkolemMember;
 mod type_inference;
