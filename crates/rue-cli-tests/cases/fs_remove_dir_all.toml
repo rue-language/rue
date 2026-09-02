@@ -1,0 +1,345 @@
+# std.fs recursive directory removal (RUE-1334). These cases exercise the
+# public pure-Rue consumer against real native filesystems. They are ungated so
+# Linux x86-64/AArch64 and macOS ARM64 all run the same contract.
+
+[section]
+id = "cli.fs_remove_dir_all"
+name = "std.fs recursive directory removal"
+description = "Fd-anchored iterative post-order remove_dir_all sharing the canonical dirent scanner (RUE-1334)."
+
+# One generated tree covers empty, nested, deep, and wide shapes. Its 192 levels
+# exercise the explicit-stack path without making platform path limits brittle;
+# width crosses the 8 KiB directory-enumeration refill boundary.
+[[case]]
+name = "remove_dir_all_empty_nested_deep_and_wide"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn mk(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+fn padded(n: u64, width: u64) -> SB {
+    let mut reversed = SB.new();
+    let mut v = n;
+    let mut c: u64 = 0;
+    while c < width {
+        let d: u8 = @intCast(48 + (v % 10));
+        reversed.push(d);
+        v = v / 10;
+        c += 1;
+    }
+    let mut out = SB.new();
+    let mut i = reversed.len();
+    while i > 0 {
+        i -= 1;
+        out.push(SB.byte_at_borrowed(borrow reversed, i));
+    }
+    out
+}
+
+fn touch(borrow path: SB) -> bool {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let OR = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+    match F.create(borrow path) {
+        OR.Ok(f) => match f.close() { CR.Ok(_u) => true, CR.Err(_e) => false },
+        OR.Err(_e) => false,
+    }
+}
+
+fn gone(borrow path: SB) -> bool {
+    let FE = std.fs.FileError;
+    let MR = std.result.Result(std.fs.Metadata, FE);
+    match std.fs.metadata(borrow path) {
+        MR.Ok(_md) => false,
+        MR.Err(e) => match e { FE.NotFound => true, _ => false },
+    }
+}
+
+fn main() -> i32 {
+    let FE = std.fs.FileError;
+    let CR = std.result.Result((), FE);
+
+    match std.fs.create_dir(borrow mk("empty")) { CR.Ok(_u) => {}, CR.Err(_e) => { return 61; } };
+    match std.fs.remove_dir_all(borrow mk("empty")) { CR.Ok(_u) => {}, CR.Err(_e) => { return 62; } };
+    if !gone(borrow mk("empty")) { return 63; }
+
+    match std.fs.create_dir_all(borrow mk("tree/nested/leaf")) { CR.Ok(_u) => {}, CR.Err(_e) => { return 64; } };
+    if !touch(borrow mk("tree/root.txt")) { return 65; }
+    if !touch(borrow mk("tree/nested/middle.txt")) { return 66; }
+    if !touch(borrow mk("tree/nested/leaf/end.txt")) { return 67; }
+
+    let mut deep = mk("tree/deep");
+    match std.fs.create_dir(borrow deep) { CR.Ok(_u) => {}, CR.Err(_e) => { return 68; } };
+    let mut depth: u64 = 0;
+    while depth < 192 {
+        deep.append_str(borrow "/d");
+        match std.fs.create_dir(borrow deep) { CR.Ok(_u) => {}, CR.Err(_e) => { return 69; } };
+        depth += 1;
+    }
+    deep.append_str(borrow "/bottom.txt");
+    if !touch(borrow deep) { return 70; }
+
+    match std.fs.create_dir(borrow mk("tree/wide")) { CR.Ok(_u) => {}, CR.Err(_e) => { return 71; } };
+    let mut n: u64 = 0;
+    while n < 600 {
+        let mut path = mk("tree/wide/entry_");
+        let digits = padded(n, 4);
+        path.append_borrowed(borrow digits);
+        if !touch(borrow path) { return 72; }
+        n += 1;
+    }
+
+    match std.fs.remove_dir_all(borrow mk("tree")) { CR.Ok(_u) => {}, CR.Err(_e) => { return 73; } };
+    if !gone(borrow mk("tree")) { return 74; }
+
+    // Exercise component-by-component parent anchoring and repeated trailing
+    // separator normalization on an ordinary directory root.
+    match std.fs.create_dir_all(borrow mk("holder/target/child")) { CR.Ok(_u) => {}, CR.Err(_e) => { return 75; } };
+    if !touch(borrow mk("holder/target/child/file.txt")) { return 76; }
+    match std.fs.remove_dir_all(borrow mk("holder/target///")) { CR.Ok(_u) => {}, CR.Err(_e) => { return 77; } };
+    if !gone(borrow mk("holder/target")) { return 78; }
+    match std.fs.remove_dir_all(borrow mk("holder")) { CR.Ok(_u) => {}, CR.Err(_e) => { return 79; } };
+
+    @dbg(depth);
+    @dbg(n);
+    0
+}
+""" }]
+stdout = """192
+600
+"""
+exit_code = 0
+
+# Directory symlink entries and a trailing-separator symlink root are unlinked,
+# not traversed. Both point at `outside`, whose sentinel must survive both calls.
+# The harness has no concurrent fixture mutation hook and Rue exposes neither
+# threads nor process spawning, so a deterministic between-syscall rename race
+# cannot be staged here. The parent-link case pins the redirect shape at the
+# stable endpoint; std.fs documents and enforces the race invariant by retaining
+# parent fds and using O_NOFOLLOW plus unlinkat for every descendant operation.
+[[case]]
+name = "remove_dir_all_never_follows_directory_symlinks"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+symlinks = [
+    { link = "tree/link", target = "../outside" },
+    { link = "root_link", target = "outside" },
+    { link = "parent_link", target = "outside_parent" },
+]
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn mk(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+fn exists_file(s: str) -> bool {
+    let FE = std.fs.FileError;
+    let MR = std.result.Result(std.fs.Metadata, FE);
+    match std.fs.metadata(borrow mk(s)) {
+        MR.Ok(md) => md.is_file(),
+        MR.Err(_e) => false,
+    }
+}
+
+fn gone(s: str) -> bool {
+    let FE = std.fs.FileError;
+    let MR = std.result.Result(std.fs.Metadata, FE);
+    match std.fs.metadata(borrow mk(s)) {
+        MR.Ok(_md) => false,
+        MR.Err(e) => match e { FE.NotFound => true, _ => false },
+    }
+}
+
+fn main() -> i32 {
+    let FE = std.fs.FileError;
+    let CR = std.result.Result((), FE);
+
+    match std.fs.remove_dir_all(borrow mk("tree")) { CR.Ok(_u) => {}, CR.Err(_e) => { return 61; } };
+    if !exists_file("outside/sentinel.txt") { return 62; }
+
+    match std.fs.remove_dir_all(borrow mk("root_link/")) { CR.Ok(_u) => {}, CR.Err(_e) => { return 63; } };
+    if !exists_file("outside/sentinel.txt") { return 64; }
+    if !gone("root_link") { return 65; }
+
+    // An intermediate symlink must be rejected by the component-at-a-time
+    // O_NOFOLLOW anchor. Following it would delete outside_parent/victim.
+    match std.fs.remove_dir_all(borrow mk("parent_link/victim")) {
+        CR.Ok(_u) => { return 66; },
+        CR.Err(_e) => {},
+    };
+    if !exists_file("outside_parent/victim/sentinel.txt") { return 67; }
+    if gone("outside_parent/victim") { return 68; }
+
+    @dbg(1);
+    0
+}
+""" },
+    { path = "tree/ordinary.txt", source = "" },
+    { path = "outside/sentinel.txt", source = "safe" },
+    { path = "outside_parent/victim/sentinel.txt", source = "safe" },
+]
+stdout = "1\n"
+exit_code = 0
+
+# Missing and non-directory roots fail without claiming success or deleting an
+# ordinary file. NUL rejection also proves the root metadata check keeps the
+# same deterministic InvalidInput normalization as the underlying operations.
+[[case]]
+name = "remove_dir_all_missing_file_and_nul_errors"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn mk(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let OR = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+    let MR = std.result.Result(std.fs.Metadata, FE);
+
+    match std.fs.remove_dir_all(borrow mk("missing")) {
+        CR.Ok(_u) => { return 61; },
+        CR.Err(e) => match e { FE.NotFound => {}, _ => { return 62; } },
+    };
+
+    match F.create(borrow mk("plain.txt")) {
+        OR.Ok(f) => match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 63; } },
+        OR.Err(_e) => { return 64; },
+    };
+    match std.fs.remove_dir_all(borrow mk("plain.txt")) {
+        CR.Ok(_u) => { return 65; },
+        CR.Err(e) => match e { FE.Other(raw) => { if raw != 20 { return 66; } }, _ => { return 66; } },
+    };
+    match std.fs.metadata(borrow mk("plain.txt")) {
+        MR.Ok(md) => { if !md.is_file() { return 67; } },
+        MR.Err(_e) => { return 68; },
+    };
+
+    let mut nul = mk("plain.txt");
+    nul.push(0);
+    nul.append_str(borrow "/ignored");
+    match std.fs.remove_dir_all(borrow nul) {
+        CR.Ok(_u) => { return 69; },
+        CR.Err(e) => match e { FE.InvalidInput => {}, _ => { return 70; } },
+    };
+
+    @dbg(0);
+    0
+}
+""" }]
+stdout = "0\n"
+exit_code = 0
+
+# A mode-zero directory deterministically rejects the root open for an ordinary
+# user. The case restores permissions before every assertion/exit and verifies
+# the failed call removed nothing. The fchmodat syscall is test-only setup: the
+# public contract under test remains std.fs.remove_dir_all.
+[[case]]
+name = "remove_dir_all_permission_denied_is_not_partial_success"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn sys_fchmodat() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => match @target_os() { Os.Linux => 268, Os.Macos => 467 },
+        Arch.Aarch64 => match @target_os() { Os.Linux => 53, Os.Macos => 467 },
+    }
+}
+
+fn at_fdcwd() -> u64 {
+    match @target_os() {
+        Os.Linux => 18446744073709551516,
+        Os.Macos => 18446744073709551614,
+    }
+}
+
+fn chmod_locked(mode: u64) -> bool {
+    let n: u64 = 7;
+    let p: ptr mut u8 = checked { @alloc(n, 1) };
+    if checked { @ptr_to_int(p) } == 0 { @panic("out of memory"); }
+    checked {
+        @ptr_write(@ptr_offset(p, 0), 108);
+        @ptr_write(@ptr_offset(p, 1), 111);
+        @ptr_write(@ptr_offset(p, 2), 99);
+        @ptr_write(@ptr_offset(p, 3), 107);
+        @ptr_write(@ptr_offset(p, 4), 101);
+        @ptr_write(@ptr_offset(p, 5), 100);
+        @ptr_write(@ptr_offset(p, 6), 0);
+    };
+    let addr: u64 = checked { @ptr_to_int(p) };
+    let ret: i64 = checked { @syscall(sys_fchmodat(), at_fdcwd(), addr, mode, 0) };
+    checked { @free(p, n, 1); };
+    ret >= 0
+}
+
+fn mk(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+fn touch(borrow path: SB) -> bool {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let OR = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+    match F.create(borrow path) {
+        OR.Ok(f) => match f.close() { CR.Ok(_u) => true, CR.Err(_e) => false },
+        OR.Err(_e) => false,
+    }
+}
+
+fn exists_file(borrow path: SB) -> bool {
+    let FE = std.fs.FileError;
+    let MR = std.result.Result(std.fs.Metadata, FE);
+    match std.fs.metadata(borrow path) {
+        MR.Ok(md) => md.is_file(),
+        MR.Err(_e) => false,
+    }
+}
+
+fn main() -> i32 {
+    let FE = std.fs.FileError;
+    let CR = std.result.Result((), FE);
+    match std.fs.create_dir(borrow mk("locked")) { CR.Ok(_u) => {}, CR.Err(_e) => { return 61; } };
+    if !touch(borrow mk("locked/kept.txt")) { return 62; }
+    if !chmod_locked(0) { return 63; }
+
+    let mut outcome: i32 = 0;
+    match std.fs.remove_dir_all(borrow mk("locked")) {
+        CR.Ok(_u) => { outcome = 64; },
+        CR.Err(e) => match e { FE.PermissionDenied => {}, _ => { outcome = 65; } },
+    };
+
+    // Restore search permission before inspecting or cleaning the fixture.
+    if !chmod_locked(493) { return 66; }
+    if outcome != 0 { return outcome; }
+    if !exists_file(borrow mk("locked/kept.txt")) { return 67; }
+    match std.fs.remove_dir_all(borrow mk("locked")) { CR.Ok(_u) => {}, CR.Err(_e) => { return 68; } };
+
+    @dbg(1);
+    0
+}
+""" }]
+stdout = "1\n"
+exit_code = 0

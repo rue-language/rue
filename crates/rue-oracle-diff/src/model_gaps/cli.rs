@@ -313,6 +313,28 @@ const ENTRIES: &[Entry] = &[
         external(ExternalDependencyKind::SystemCall),
         &[],
     ),
+    // RUE-1334: recursive removal is a source-defined consumer of the same
+    // directory-enumeration and filesystem-syscall boundary. The symlink case
+    // stages multiple files and is therefore oracle-ineligible, like the two
+    // directory-enumeration symlink cases above.
+    Entry::new(
+        "cli.fs_remove_dir_all",
+        "remove_dir_all_empty_nested_deep_and_wide",
+        external(ExternalDependencyKind::SystemCall),
+        &[],
+    ),
+    Entry::new(
+        "cli.fs_remove_dir_all",
+        "remove_dir_all_missing_file_and_nul_errors",
+        external(ExternalDependencyKind::SystemCall),
+        &[],
+    ),
+    Entry::new(
+        "cli.fs_remove_dir_all",
+        "remove_dir_all_permission_denied_is_not_partial_success",
+        external(ExternalDependencyKind::SystemCall),
+        &[],
+    ),
     // RUE-954: the literal-threading regression cases invoke a real dup(2)
     // syscall, which the oracle does not model.
     Entry::new(
