@@ -1,4 +1,4 @@
-# std.net blocking TCP v1 (RUE-983, ADR-0060) — real sockets over loopback.
+# std.net blocking TCP (RUE-983/RUE-985, ADR-0060) — real sockets over loopback.
 #
 # The loopback case runs the whole blocking client/server surface in one process:
 # bind on an ephemeral port (port 0 + local_addr, so no fixed port is
@@ -11,8 +11,8 @@
 
 [section]
 id = "cli.std_net_tcp"
-name = "Standard library v1 — std.net blocking TCP (RUE-983/RUE-986)"
-description = "TcpListener/TcpStream over loopback: connect/accept/read/write/shutdown/close."
+name = "Standard library — std.net blocking TCP (RUE-983/RUE-985/RUE-986)"
+description = "IPv4/IPv6 TcpListener/TcpStream loopback: connect/accept/read/write/shutdown/close."
 
 [[case]]
 name = "tcp_loopback_round_trip"
@@ -399,6 +399,72 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "1\n"
+
+[[case]]
+name = "tcp_ipv6_loopback_round_trip"
+description = "IPv6 ::1 bind/local_addr/connect/accept and byte transfer use sockaddr_in6 end to end."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn fail(code: i32) -> i32 { @dbg(code); 1 }
+
+fn main() -> i32 {
+    let RL = std.result.Result(std.net.TcpListener, std.net.NetworkError);
+    let RS = std.result.Result(std.net.TcpStream, std.net.NetworkError);
+    let RA = std.result.Result(std.net.SockAddr, std.net.NetworkError);
+    let RU = std.result.Result(u64, std.net.NetworkError);
+    let RUnit = std.result.Result((), std.net.NetworkError);
+
+    let mut listener = match std.net.TcpListener.bind(
+        std.net.SockAddr.v6(std.net.Ipv6Addr.localhost(), 0)
+    ) {
+        RL.Ok(l) => l,
+        RL.Err(e) => { return fail(201); },
+    };
+    let local = match listener.local_addr() {
+        RA.Ok(a) => a,
+        RA.Err(e) => { return fail(202); },
+    };
+    let port = local.port;
+    let local_bytes = local.to_sockaddr_in6();
+    if port == 0 || local_bytes[23] != 1 { return fail(203); }
+    @dbg(1);
+
+    let mut client = match std.net.TcpStream.connect(
+        std.net.SockAddr.v6(std.net.Ipv6Addr.localhost(), port)
+    ) {
+        RS.Ok(s) => s,
+        RS.Err(e) => { return fail(204); },
+    };
+    let mut server = match listener.accept() {
+        RS.Ok(s) => s,
+        RS.Err(e) => { return fail(205); },
+    };
+    let mut out = std.arraybuf.ArrayBuf(u8).new();
+    out.push(118); out.push(54);
+    match client.write_all(borrow out) {
+        RUnit.Ok(u) => {},
+        RUnit.Err(e) => { return fail(206); },
+    }
+    let mut input = std.arraybuf.ArrayBuf(u8).with_capacity(8);
+    match server.read(inout input) {
+        RU.Ok(n) => {
+            if n != 2 { return fail(207); }
+            @dbg(input.get_or(0, 0)); @dbg(input.get_or(1, 0));
+        },
+        RU.Err(e) => { return fail(208); },
+    }
+    match client.close() { RUnit.Ok(u) => {}, RUnit.Err(e) => { return fail(209); } }
+    match server.close() { RUnit.Ok(u) => {}, RUnit.Err(e) => { return fail(210); } }
+    match listener.close() { RUnit.Ok(u) => {}, RUnit.Err(e) => { return fail(211); } }
+    @dbg(2);
+    0
+}
+""" }]
+stdout = "1\n118\n54\n2\n"
 
 # Darwin's orderly FIN semantics may allow sends after a peer EOF. Shut down
 # the peer's receive direction, close it, and shut down the client's send

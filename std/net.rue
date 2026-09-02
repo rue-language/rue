@@ -7,18 +7,16 @@
 // byte array that checked code hands to `@syscall` (ADR-0060 §3).
 //
 // The public shape follows Rust's extensible address model (ADR-0060 §2): an
-// `IpAddr` enum with one IPv4 variant today, so the top-level surface is not
-// four-octets-shaped forever. IPv6 adds a variant later (RUE-985); it is not a
-// speculative representation here.
+// `IpAddr` enum carries either an IPv4 or IPv6 address, so the top-level socket
+// surface is independent of the kernel address-family layout.
 //
 //     const std = @import("std");
 //     let addr = std.net.SockAddr.v4(std.net.Ipv4Addr.localhost(), 8080);
 //     let bytes = addr.to_sockaddr_in();     // target sockaddr_in, 16 bytes
 //
-// PLATFORM SCOPE (ADR-0060 §7): the marshalled layout is the target's IPv4
-// `sockaddr_in`. Linux uses a native/little-endian family field; Darwin uses
-// `sin_len` followed by the one-byte family field. Both supported layouts are
-// exactly 16 bytes and are selected by the target-aware ABI helpers below.
+// PLATFORM SCOPE (ADR-0060 §7): Linux uses native/little-endian family fields;
+// Darwin uses a leading length byte and one-byte family. `sockaddr_in` is 16
+// bytes and `sockaddr_in6` is 28 bytes on every supported target.
 
 const binary = @import("binary.rue");
 const option = @import("option.rue");
@@ -29,11 +27,24 @@ fn _af_inet() -> u16 {
     2
 }
 
+// AF_INET6 differs between Linux and Darwin.
+fn _af_inet6() -> u16 {
+    match @target_os() {
+        Os.Linux => 10,
+        Os.Macos => 30,
+    }
+}
+
 // Byte size of the marshalled target `sockaddr_in`. Callers pass this as the
 // address length at the syscall boundary and validate kernel-returned lengths
 // against it before decoding.
 pub fn sockaddr_in_len() -> u64 {
     16
+}
+
+// Byte size of the marshalled target `sockaddr_in6`.
+pub fn sockaddr_in6_len() -> u64 {
+    28
 }
 
 // An IPv4 address as its four dotted-quad octets: `a.b.c.d`.
@@ -64,10 +75,35 @@ pub struct Ipv4Addr {
     }
 }
 
-// An IP address. v1 carries IPv4 only; IPv6 becomes a second variant later
-// (RUE-985) without reshaping every network operation.
+// An IPv6 address as 16 octets in network order. Text parsing and zone-name
+// resolution are deliberately separate concerns; scope and flow fields are
+// deterministically zero at this socket-address boundary.
+pub struct Ipv6Addr {
+    bytes: [u8; 16],
+
+    fn new(bytes: [u8; 16]) -> Ipv6Addr {
+        Ipv6Addr { bytes: bytes }
+    }
+
+    // The loopback address ::1.
+    fn localhost() -> Ipv6Addr {
+        Ipv6Addr.new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+    }
+
+    // The unspecified "any" address ::.
+    fn unspecified() -> Ipv6Addr {
+        Ipv6Addr.new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    }
+
+    fn octets(borrow self) -> [u8; 16] {
+        self.bytes
+    }
+}
+
+// An IP address. Adding V6 preserves the accepted ADR-0060 top-level shape.
 pub enum IpAddr {
     V4(Ipv4Addr),
+    V6(Ipv6Addr),
 }
 
 // A socket address: an IP address plus a TCP/UDP port.
@@ -81,6 +117,10 @@ pub struct SockAddr {
 
     fn v4(ip: Ipv4Addr, port: u16) -> SockAddr {
         SockAddr { ip: IpAddr.V4(ip), port: port }
+    }
+
+    fn v6(ip: Ipv6Addr, port: u16) -> SockAddr {
+        SockAddr { ip: IpAddr.V6(ip), port: port }
     }
 
     // Encode this address as the target `sockaddr_in` byte layout (ADR-0060
@@ -115,13 +155,14 @@ pub struct SockAddr {
                     0, 0, 0, 0, 0, 0, 0, 0,
                 ],
             },
+            IpAddr.V6(v6) => @panic("IPv6 address cannot be encoded as sockaddr_in"),
         }
     }
 
     // Decode a kernel-filled target `sockaddr_in`. Returns `None` unless the
     // target's family (and Darwin sin_len) is valid; the caller has already
     // validated the returned address length at the syscall boundary (ADR-0060
-    // §3). The trailing padding bytes are ignored.
+    // §3). Padding must be the canonical all-zero layout.
     fn from_sockaddr_in(b: [u8; 16]) -> option.Option(SockAddr) {
         let O = option.Option(SockAddr);
         match @target_os() {
@@ -133,10 +174,113 @@ pub struct SockAddr {
                 if b[0] != 16 || b[1] != @intCast(_af_inet()) { return O.None; }
             },
         }
+        if b[8] != 0 || b[9] != 0 || b[10] != 0 || b[11] != 0 {
+            return O.None;
+        }
+        if b[12] != 0 || b[13] != 0 || b[14] != 0 || b[15] != 0 {
+            return O.None;
+        }
         let port = binary.u16_from_be_bytes([b[2], b[3]]);
         let ip = Ipv4Addr.new(b[4], b[5], b[6], b[7]);
         O.Some(SockAddr.v4(ip, port))
     }
+
+    // Encode this address as the target `sockaddr_in6` layout. Both layouts
+    // use a big-endian port, zero flowinfo, 16 network-order address octets,
+    // and zero scope_id. Linux's family is native/little-endian; Darwin uses
+    // sin6_len=28 followed by its one-byte AF_INET6 value.
+    fn to_sockaddr_in6(self) -> [u8; 28] {
+        let pb = binary.u16_to_be_bytes(self.port);
+        match self.ip {
+            IpAddr.V4(v4) => @panic("IPv4 address cannot be encoded as sockaddr_in6"),
+            IpAddr.V6(v6) => {
+                let a = v6.bytes;
+                match @target_os() {
+                    Os.Linux => {
+                        let fam = binary.u16_to_le_bytes(_af_inet6());
+                        [
+                            fam[0], fam[1], pb[0], pb[1],
+                            0, 0, 0, 0,
+                            a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7],
+                            a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15],
+                            0, 0, 0, 0,
+                        ]
+                    },
+                    Os.Macos => [
+                        28, @intCast(_af_inet6()), pb[0], pb[1],
+                        0, 0, 0, 0,
+                        a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7],
+                        a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15],
+                        0, 0, 0, 0,
+                    ],
+                }
+            },
+        }
+    }
+
+    // Decode a complete target `sockaddr_in6`. Flowinfo and scope_id must be
+    // zero because the current public value has no fields that could preserve
+    // them; rejecting rather than silently discarding them is fail-closed.
+    fn from_sockaddr_in6(b: [u8; 28]) -> option.Option(SockAddr) {
+        let O = option.Option(SockAddr);
+        match @target_os() {
+            Os.Linux => {
+                let fam = binary.u16_from_le_bytes([b[0], b[1]]);
+                if fam != _af_inet6() { return O.None; }
+            },
+            Os.Macos => {
+                if b[0] != 28 || b[1] != @intCast(_af_inet6()) { return O.None; }
+            },
+        }
+        if b[4] != 0 || b[5] != 0 || b[6] != 0 || b[7] != 0 {
+            return O.None;
+        }
+        if b[24] != 0 || b[25] != 0 || b[26] != 0 || b[27] != 0 {
+            return O.None;
+        }
+        let port = binary.u16_from_be_bytes([b[2], b[3]]);
+        let ip = Ipv6Addr.new([
+            b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15],
+            b[16], b[17], b[18], b[19], b[20], b[21], b[22], b[23],
+        ]);
+        O.Some(SockAddr.v6(ip, port))
+    }
+
+    // The single syscall-boundary projection. It keeps the selected domain,
+    // byte image, and length together so they cannot disagree.
+    fn _to_kernel(self) -> _KernelSockAddr {
+        let port = self.port;
+        match self.ip {
+            IpAddr.V4(v4) => {
+                let b = SockAddr.v4(v4, port).to_sockaddr_in();
+                _KernelSockAddr {
+                    domain: @intCast(_af_inet()),
+                    len: sockaddr_in_len(),
+                    bytes: [
+                        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                        b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15],
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    ],
+                }
+            },
+            IpAddr.V6(v6) => {
+                let b = SockAddr.v6(v6, port).to_sockaddr_in6();
+                _KernelSockAddr {
+                    domain: @intCast(_af_inet6()),
+                    len: sockaddr_in6_len(),
+                    bytes: b,
+                }
+            },
+        }
+    }
+}
+
+// Internal canonical socket-call address. The first `len` bytes are the exact
+// target sockaddr image; the remaining bytes are never passed to the kernel.
+struct _KernelSockAddr {
+    domain: u64,
+    len: u64,
+    bytes: [u8; 28],
 }
 
 // ===========================================================================
@@ -475,30 +619,27 @@ fn _normalize_macos_errno(e: i64) -> NetworkError {
     }
 }
 
-// Serialize a marshalled sockaddr_in value into a kernel-addressable 16-byte
-// heap buffer. A `[u8; 16]` VALUE lives in 8-byte logical slots (ADR-0040),
-// so its storage is not the contiguous byte image the kernel needs; this is
-// the one copy from value space into byte space. Caller frees with
-// `@free(buf, sockaddr_in_len(), 1)`.
-fn _sockaddr_to_kernel_buf(b: [u8; 16]) -> ptr mut u8 {
-    let buf: ptr mut u8 = checked { @alloc(sockaddr_in_len(), 1) };
+// Serialize the canonical address projection into a contiguous kernel buffer.
+// Rue array values live in 8-byte logical slots (ADR-0040), so their storage
+// is not itself a socket ABI byte image. Caller frees with `addr.len`.
+fn _sockaddr_to_kernel_buf(borrow addr: _KernelSockAddr) -> ptr mut u8 {
+    let buf: ptr mut u8 = checked { @alloc(addr.len, 1) };
     if checked { @ptr_to_int(buf) } == 0 {
         @panic("out of memory");
     }
     let mut i: u64 = 0;
-    while i < 16 {
-        checked { @ptr_write(@ptr_offset(buf, i), b[i]); };
+    while i < addr.len {
+        checked { @ptr_write(@ptr_offset(buf, i), addr.bytes[i]); };
         i += 1;
     }
     buf
 }
 
-// Create an AF_INET SOCK_STREAM socket, or the normalized error.
-fn _new_stream_socket() -> result.Result(i32, NetworkError) {
+// Create a stream socket in the address's selected domain.
+fn _new_stream_socket(domain: u64) -> result.Result(i32, NetworkError) {
     let R = result.Result(i32, NetworkError);
-    let af: u64 = @intCast(_af_inet());
     let proto: u64 = 0;
-    let ret: i64 = checked { @syscall(_sys_socket(), af, _sock_stream(), proto) };
+    let ret: i64 = checked { @syscall(_sys_socket(), domain, _sock_stream(), proto) };
     if ret < 0 {
         R.Err(_normalize_net_errno(0 - ret))
     } else {
@@ -531,16 +672,17 @@ pub struct TcpStream {
         if !_net_supported() {
             return R.Err(NetworkError.Unsupported);
         }
+        let kernel_addr = addr._to_kernel();
         let RS = result.Result(i32, NetworkError);
-        let fd = match _new_stream_socket() {
+        let fd = match _new_stream_socket(kernel_addr.domain) {
             RS.Ok(fd) => fd,
             RS.Err(e) => { return R.Err(e); },
         };
-        let buf = _sockaddr_to_kernel_buf(addr.to_sockaddr_in());
+        let buf = _sockaddr_to_kernel_buf(borrow kernel_addr);
         let baddr: u64 = checked { @ptr_to_int(buf) };
         let fd_u: u64 = @intCast(fd);
-        let ret: i64 = checked { @syscall(_sys_connect(), fd_u, baddr, sockaddr_in_len()) };
-        checked { @free(buf, sockaddr_in_len(), 1); };
+        let ret: i64 = checked { @syscall(_sys_connect(), fd_u, baddr, kernel_addr.len) };
+        checked { @free(buf, kernel_addr.len, 1); };
         if ret < 0 {
             _close_raw(fd);
             return R.Err(_normalize_net_errno(0 - ret));
@@ -720,16 +862,17 @@ pub struct TcpListener {
         if !_net_supported() {
             return R.Err(NetworkError.Unsupported);
         }
+        let kernel_addr = addr._to_kernel();
         let RS = result.Result(i32, NetworkError);
-        let fd = match _new_stream_socket() {
+        let fd = match _new_stream_socket(kernel_addr.domain) {
             RS.Ok(fd) => fd,
             RS.Err(e) => { return R.Err(e); },
         };
-        let buf = _sockaddr_to_kernel_buf(addr.to_sockaddr_in());
+        let buf = _sockaddr_to_kernel_buf(borrow kernel_addr);
         let baddr: u64 = checked { @ptr_to_int(buf) };
         let fd_u: u64 = @intCast(fd);
-        let bret: i64 = checked { @syscall(_sys_bind(), fd_u, baddr, sockaddr_in_len()) };
-        checked { @free(buf, sockaddr_in_len(), 1); };
+        let bret: i64 = checked { @syscall(_sys_bind(), fd_u, baddr, kernel_addr.len) };
+        checked { @free(buf, kernel_addr.len, 1); };
         if bret < 0 {
             _close_raw(fd);
             return R.Err(_normalize_net_errno(0 - bret));
@@ -748,17 +891,18 @@ pub struct TcpListener {
     // (ADR-0060 §3).
     fn local_addr(inout self) -> result.Result(SockAddr, NetworkError) {
         let R = result.Result(SockAddr, NetworkError);
-        let abuf: ptr mut u8 = checked { @alloc(sockaddr_in_len(), 1) };
+        let abuf: ptr mut u8 = checked { @alloc(sockaddr_in6_len(), 1) };
         if checked { @ptr_to_int(abuf) } == 0 {
             @panic("out of memory");
         }
-        // socklen_t in/out argument: starts at 16, kernel writes the actual
-        // length back (little-endian u32 on both v1 targets).
+        // socklen_t in/out argument: starts at the largest supported address,
+        // and the kernel writes the actual family-specific length back as a
+        // little-endian u32 on every supported target.
         let lbuf: ptr mut u8 = checked { @alloc(4, 1) };
         if checked { @ptr_to_int(lbuf) } == 0 {
             @panic("out of memory");
         }
-        checked { @ptr_write(@ptr_offset(lbuf, 0), 16); };
+        checked { @ptr_write(@ptr_offset(lbuf, 0), 28); };
         checked { @ptr_write(@ptr_offset(lbuf, 1), 0); };
         checked { @ptr_write(@ptr_offset(lbuf, 2), 0); };
         checked { @ptr_write(@ptr_offset(lbuf, 3), 0); };
@@ -767,7 +911,7 @@ pub struct TcpListener {
         let fd_u: u64 = @intCast(self.fd);
         let ret: i64 = checked { @syscall(_sys_getsockname(), fd_u, aaddr, laddr) };
         if ret < 0 {
-            checked { @free(abuf, sockaddr_in_len(), 1); };
+            checked { @free(abuf, sockaddr_in6_len(), 1); };
             checked { @free(lbuf, 4, 1); };
             return R.Err(_normalize_net_errno(0 - ret));
         }
@@ -777,8 +921,8 @@ pub struct TcpListener {
         let l3 = checked { @ptr_read(@ptr_offset(lbuf, 3)) };
         checked { @free(lbuf, 4, 1); };
         let written_len = binary.u32_from_le_bytes([l0, l1, l2, l3]);
-        if written_len != 16 {
-            checked { @free(abuf, sockaddr_in_len(), 1); };
+        if written_len != 16 && written_len != 28 {
+            checked { @free(abuf, sockaddr_in6_len(), 1); };
             return R.Err(NetworkError.InvalidInput);
         }
         let b0 = checked { @ptr_read(@ptr_offset(abuf, 0)) };
@@ -789,10 +933,48 @@ pub struct TcpListener {
         let b5 = checked { @ptr_read(@ptr_offset(abuf, 5)) };
         let b6 = checked { @ptr_read(@ptr_offset(abuf, 6)) };
         let b7 = checked { @ptr_read(@ptr_offset(abuf, 7)) };
-        checked { @free(abuf, sockaddr_in_len(), 1); };
-        let bytes: [u8; 16] = [b0, b1, b2, b3, b4, b5, b6, b7, 0, 0, 0, 0, 0, 0, 0, 0];
+        let b8 = checked { @ptr_read(@ptr_offset(abuf, 8)) };
+        let b9 = checked { @ptr_read(@ptr_offset(abuf, 9)) };
+        let b10 = checked { @ptr_read(@ptr_offset(abuf, 10)) };
+        let b11 = checked { @ptr_read(@ptr_offset(abuf, 11)) };
+        let b12 = checked { @ptr_read(@ptr_offset(abuf, 12)) };
+        let b13 = checked { @ptr_read(@ptr_offset(abuf, 13)) };
+        let b14 = checked { @ptr_read(@ptr_offset(abuf, 14)) };
+        let b15 = checked { @ptr_read(@ptr_offset(abuf, 15)) };
         let O = option.Option(SockAddr);
-        match SockAddr.from_sockaddr_in(bytes) {
+        if written_len == 16 {
+            checked { @free(abuf, sockaddr_in6_len(), 1); };
+            let bytes: [u8; 16] = [
+                b0, b1, b2, b3, b4, b5, b6, b7,
+                b8, b9, b10, b11, b12, b13, b14, b15,
+            ];
+            return match SockAddr.from_sockaddr_in(bytes) {
+                O.Some(a) => R.Ok(a),
+                O.None => R.Err(NetworkError.InvalidInput),
+            };
+        }
+        // Only a validated 28-byte result reaches these reads. In particular,
+        // an IPv4 result never reads the uninitialized tail of the buffer.
+        let b16 = checked { @ptr_read(@ptr_offset(abuf, 16)) };
+        let b17 = checked { @ptr_read(@ptr_offset(abuf, 17)) };
+        let b18 = checked { @ptr_read(@ptr_offset(abuf, 18)) };
+        let b19 = checked { @ptr_read(@ptr_offset(abuf, 19)) };
+        let b20 = checked { @ptr_read(@ptr_offset(abuf, 20)) };
+        let b21 = checked { @ptr_read(@ptr_offset(abuf, 21)) };
+        let b22 = checked { @ptr_read(@ptr_offset(abuf, 22)) };
+        let b23 = checked { @ptr_read(@ptr_offset(abuf, 23)) };
+        let b24 = checked { @ptr_read(@ptr_offset(abuf, 24)) };
+        let b25 = checked { @ptr_read(@ptr_offset(abuf, 25)) };
+        let b26 = checked { @ptr_read(@ptr_offset(abuf, 26)) };
+        let b27 = checked { @ptr_read(@ptr_offset(abuf, 27)) };
+        checked { @free(abuf, sockaddr_in6_len(), 1); };
+        let bytes: [u8; 28] = [
+            b0, b1, b2, b3, b4, b5, b6, b7,
+            b8, b9, b10, b11, b12, b13, b14, b15,
+            b16, b17, b18, b19, b20, b21, b22, b23,
+            b24, b25, b26, b27,
+        ];
+        match SockAddr.from_sockaddr_in6(bytes) {
             O.Some(a) => R.Ok(a),
             O.None => R.Err(NetworkError.InvalidInput),
         }

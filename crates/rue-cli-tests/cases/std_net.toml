@@ -1,4 +1,4 @@
-# std.net address model + target sockaddr_in marshalling (RUE-982/RUE-986,
+# std.net IPv4/IPv6 address model + target sockaddr marshalling (RUE-982/RUE-985/RUE-986,
 # ADR-0060).
 #
 # The marshaller is the ONE place that knows the kernel byte layout, so these
@@ -8,8 +8,8 @@
 
 [section]
 id = "cli.std_net"
-name = "Standard library v1 — std.net addresses (RUE-982)"
-description = "Ipv4Addr/IpAddr/SockAddr and byte-exact target sockaddr_in marshalling."
+name = "Standard library — std.net addresses (RUE-982/RUE-985)"
+description = "Ipv4Addr/Ipv6Addr/IpAddr/SockAddr and byte-exact target sockaddr marshalling."
 
 # Every byte of the marshalled sockaddr_in, plus octets() and the named
 # constructors. Port 0x1f90 (8080) has distinct hi/lo bytes, and the address
@@ -145,3 +145,127 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "443\n16\n2\n192\n2\n1\n"
+
+[[case]]
+name = "net_sockaddr_in6_exact_layout"
+description = "Linux sockaddr_in6 uses AF_INET6, be port, zero flow/scope, and 16 exact address octets."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+only_on = ["x86-64-linux", "aarch64-linux"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let ip = std.net.Ipv6Addr.new([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    let octets = ip.octets();
+    @dbg(octets[0]); @dbg(octets[15]);
+    let b = std.net.SockAddr.v6(ip, 0x1f90).to_sockaddr_in6();
+    @dbg(b[0]); @dbg(b[1]); @dbg(b[2]); @dbg(b[3]);
+    let mut flow_scope_zeros: i32 = 0;
+    let mut i: u64 = 4;
+    while i < 8 { if b[i] == 0 { flow_scope_zeros += 1; } i += 1; }
+    i = 24;
+    while i < 28 { if b[i] == 0 { flow_scope_zeros += 1; } i += 1; }
+    @dbg(flow_scope_zeros);
+    i = 8;
+    while i < 24 { @dbg(b[i]); i += 1; }
+    @dbg(std.net.sockaddr_in6_len());
+    let lo = std.net.Ipv6Addr.localhost().octets();
+    @dbg(lo[0]); @dbg(lo[14]); @dbg(lo[15]);
+    let any = std.net.Ipv6Addr.unspecified().octets();
+    @dbg(any[0]); @dbg(any[15]);
+    0
+}
+""" }]
+stdout = "1\n16\n10\n0\n31\n144\n8\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n28\n0\n0\n1\n0\n0\n"
+
+[[case]]
+name = "net_sockaddr_in6_darwin_exact_layout"
+description = "Darwin sockaddr_in6 uses sin6_len=28, AF_INET6=30, be port, zero flow/scope, and exact octets."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+only_on = ["aarch64-macos"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let b = std.net.SockAddr.v6(
+        std.net.Ipv6Addr.new([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
+        0x1f90
+    ).to_sockaddr_in6();
+    @dbg(b[0]); @dbg(b[1]); @dbg(b[2]); @dbg(b[3]);
+    @dbg(b[4]); @dbg(b[7]); @dbg(b[8]); @dbg(b[23]); @dbg(b[24]); @dbg(b[27]);
+    @dbg(std.net.sockaddr_in6_len());
+    0
+}
+""" }]
+stdout = "28\n30\n31\n144\n0\n0\n1\n16\n0\n0\n28\n"
+
+[[case]]
+name = "net_sockaddr_in6_decode_and_reject_malformed"
+description = "sockaddr_in6 round-trips and rejects wrong family plus nonzero flowinfo/scope_id."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn rejected(b: [u8; 28]) -> i32 {
+    let O = std.option.Option(std.net.SockAddr);
+    match std.net.SockAddr.from_sockaddr_in6(b) {
+        O.Some(a) => 0,
+        O.None => 1,
+    }
+}
+
+fn rejected4(b: [u8; 16]) -> i32 {
+    let O = std.option.Option(std.net.SockAddr);
+    match std.net.SockAddr.from_sockaddr_in(b) {
+        O.Some(a) => 0,
+        O.None => 1,
+    }
+}
+
+fn main() -> i32 {
+    let O = std.option.Option(std.net.SockAddr);
+    let addr = std.net.SockAddr.v6(std.net.Ipv6Addr.localhost(), 443);
+    let good = addr.to_sockaddr_in6();
+    match std.net.SockAddr.from_sockaddr_in6(good) {
+        O.Some(back) => {
+            @dbg(back.port);
+            let b = back.to_sockaddr_in6();
+            @dbg(b[8]); @dbg(b[22]); @dbg(b[23]);
+        },
+        O.None => { @dbg(0 - 1); },
+    }
+    let wrong_family = match @target_os() {
+        Os.Linux => [2, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+        Os.Macos => [28, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+    };
+    @dbg(rejected(wrong_family));
+    // Linux has no embedded length byte, so its distinct control counterfeits
+    // AF_INET6 in big-endian order. Darwin instead counterfeits sin6_len.
+    let wrong_prefix = match @target_os() {
+        Os.Linux => [0, 10, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+        Os.Macos => [27, 30, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+    };
+    @dbg(rejected(wrong_prefix));
+    let flow = match @target_os() {
+        Os.Linux => [10, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+        Os.Macos => [28, 30, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+    };
+    @dbg(rejected(flow));
+    let scope = match @target_os() {
+        Os.Linux => [10, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0],
+        Os.Macos => [28, 30, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0],
+    };
+    @dbg(rejected(scope));
+    let counterfeit4 = match @target_os() {
+        Os.Linux => [2, 0, 0, 1, 127, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+        Os.Macos => [16, 2, 0, 1, 127, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+    };
+    @dbg(rejected4(counterfeit4));
+    0
+}
+""" }]
+stdout = "443\n0\n0\n1\n1\n1\n1\n1\n1\n"
