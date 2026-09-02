@@ -245,6 +245,7 @@ pub(crate) fn semantic_nucleus_failure_is_internal_error(
         | F::DiagnosticAtDeclaration { kind, .. }
         | F::DuplicateDeclaration { kind, .. }
         | F::DiagnosticAtProducerRange { kind, .. }
+        | F::DiagnosticAtModuleRange { kind, .. }
         | F::OwnershipGate { kind, .. }
         | F::DiagnosticWithHelp { kind, .. }
         | F::DiagnosticWithNote { kind, .. } => kind,
@@ -793,6 +794,30 @@ impl RevisionedQueryDatabase {
                     ),
                 });
             };
+            // Freestanding conformance assertions (spec 6.7:9) belong to no
+            // declaration; resolving them here is what makes their preview
+            // gate and name errors surface for a program that never relies
+            // on them.
+            let terminal = context
+                .query_registered(
+                    semantic_nucleus,
+                    Key::ModuleConformances(
+                        crate::semantic_query_nucleus::ModuleSemanticQueryKey {
+                            module: module.clone(),
+                            configuration: configuration.clone(),
+                        },
+                    ),
+                )
+                .map_err(SemanticNucleusBatchFailure::Query)?;
+            let rue_query::QueryOutcome::Success(conformances) = terminal.outcome() else {
+                unreachable!("SemanticNucleus publishes typed values")
+            };
+            if let Value::Failure(failure) = conformances {
+                return Err(SemanticNucleusBatchFailure::Stable {
+                    declaration: None,
+                    failure: Box::new(failure.clone()),
+                });
+            }
             let mut functions = BTreeMap::new();
             let mut function_names = BTreeMap::new();
             let mut type_names = BTreeMap::new();

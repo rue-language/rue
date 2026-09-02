@@ -471,7 +471,7 @@ pub(crate) fn definition_parts(item: &Item) -> Option<DefinitionParts> {
             declaration_span: interface.span,
         },
         // A freestanding conformance assertion names no definition (spec
-        // 6.7:9); `parsed_modules` records the omission explicitly.
+        // 6.7:9, 6.7:11); the semantic nucleus resolves it per module.
         Item::Conformance(_) => return None,
         Item::DropFn(drop_function) => DefinitionParts {
             namespace: DefinitionNamespace::Destructor,

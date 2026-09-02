@@ -1482,6 +1482,10 @@ fn comptime_instdata_evaluation_has_one_production_authority() {
             include_str!("sema/analysis/instructions.rs"),
         ),
         (
+            "sema/analysis/interfaces",
+            include_str!("sema/analysis/interfaces.rs"),
+        ),
+        (
             "sema/analysis/intrinsics",
             include_str!("sema/analysis/intrinsics.rs"),
         ),
@@ -3748,6 +3752,10 @@ fn sema_diagnostics_use_the_friendly_type_display_authority() {
         (
             "sema/analysis/instructions",
             include_str!("sema/analysis/instructions.rs"),
+        ),
+        (
+            "sema/analysis/interfaces",
+            include_str!("sema/analysis/interfaces.rs"),
         ),
         (
             "sema/analysis/intrinsics",

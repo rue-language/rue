@@ -41,10 +41,11 @@ use super::provider::{
 };
 use super::{
     BodyFactProvider, BodyRirBundle, DurableAnonymousShape, DurableAnonymousSource,
-    DurableBodyLookupSource, DurableCallableSource, DurableComptimeCallOutcome, DurableConst,
-    DurableConstSource, DurableFunction, DurableMethod, DurableNominal, DurableNominalBody,
-    DurableNominalSource, DurableReducedComptimeCall, DurableSignatureParameter,
-    ProviderOrdinaryBody, ProviderWellKnownOptionFacts, analyze_provider_ordinary_body,
+    DurableBodyLookupSource, DurableCallableSource, DurableCallableTypeSyntax,
+    DurableComptimeCallOutcome, DurableConformanceFacts, DurableConst, DurableConstSource,
+    DurableFunction, DurableMethod, DurableNominal, DurableNominalBody, DurableNominalSource,
+    DurableReducedComptimeCall, DurableSignatureParameter, ProviderOrdinaryBody,
+    ProviderWellKnownOptionFacts, analyze_provider_ordinary_body,
     analyze_provider_specialized_body,
 };
 use crate::types::LangItem;
@@ -528,6 +529,7 @@ pub(crate) fn value_param(
         ty,
         mode: SemanticParameterMode::Value,
         is_comptime: false,
+        bounds: Arc::from([]),
     }
 }
 
@@ -540,6 +542,7 @@ pub(crate) fn comptime_value_param(
         ty,
         mode: SemanticParameterMode::Value,
         is_comptime: true,
+        bounds: Arc::from([]),
     }
 }
 
@@ -551,6 +554,7 @@ pub(crate) fn comptime_type_param(
         ty: SemanticImportType::ComptimeType,
         mode: SemanticParameterMode::Value,
         is_comptime: true,
+        bounds: Arc::from([]),
     }
 }
 
@@ -564,6 +568,7 @@ pub(crate) fn mode_param(
         ty,
         mode,
         is_comptime: false,
+        bounds: Arc::from([]),
     }
 }
 
@@ -576,6 +581,10 @@ pub(crate) struct MethodShape {
     pub(crate) is_accessor: bool,
     pub(crate) returns_borrow: bool,
     pub(crate) returns_inout: bool,
+    /// The exact parameter and result type syntax, for a signature whose
+    /// durable types are deferred placeholders (an interface requirement
+    /// naming `Self`, spec 6.7:5).
+    pub(crate) type_syntax: Option<DurableCallableTypeSyntax>,
 }
 
 impl Default for MethodShape {
@@ -586,6 +595,7 @@ impl Default for MethodShape {
             is_accessor: false,
             returns_borrow: false,
             returns_inout: false,
+            type_syntax: None,
         }
     }
 }
@@ -599,6 +609,9 @@ pub(crate) struct StructShape {
     pub(crate) has_destructor: bool,
     pub(crate) lang_item: Option<LangItem>,
     pub(crate) is_repr_c: bool,
+    /// The interface facts of the shell (spec 6.7): `is_interface`, header
+    /// assertions or refinements, associated types, requirement names.
+    pub(crate) conformance: DurableConformanceFacts<FixtureKey, FixtureModule>,
 }
 
 /// Builder for one single-module provider fixture: explicit durable
@@ -623,6 +636,11 @@ impl ProviderFixture {
                 option_by_payload: Vec::new(),
             },
         }
+    }
+
+    /// Enable a preview feature for every body this fixture analyzes.
+    pub(crate) fn enable_preview(&mut self, feature: rue_error::PreviewFeature) {
+        self.preview.insert(feature);
     }
 
     pub(crate) fn declare_function(
@@ -680,6 +698,7 @@ impl ProviderFixture {
                         .collect(),
                     is_copy,
                     is_linear: shape.is_linear,
+                    conformance: shape.conformance,
                 },
             },
         );
@@ -744,7 +763,7 @@ impl ProviderFixture {
                 receiver: SemanticImportType::Nominal(owner.clone()),
                 parameters: parameters.into(),
                 result,
-                type_syntax: None,
+                type_syntax: shape.type_syntax,
                 has_self: shape.has_self,
                 self_mode: shape.self_mode,
                 is_accessor: shape.is_accessor,

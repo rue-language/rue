@@ -536,6 +536,14 @@ pub(crate) struct CompilerBodyDurableSource<'a> {
     pub(super) visibility_domains: Rc<rue_air::SemanticVisibilityDomainCache<crate::FileId>>,
     pub(crate) source_locators:
         Rc<std::cell::RefCell<AHashMap<ModuleId, rue_air::DurableBodySourceLocator>>>,
+    /// The module of the body this source serves, which bounds the
+    /// freestanding conformance assertions it can see (spec 6.7:15).
+    pub(super) owner_module: Option<ModuleId>,
+    /// The visible freestanding assertions, aggregated once per source over
+    /// the owner module's transitive import cone.
+    pub(super) visible_conformances: Rc<
+        std::cell::RefCell<Option<Arc<[crate::durable_semantics::DurableConformanceAssertion]>>>,
+    >,
 }
 
 pub(super) struct ResolvedDeclarationCandidate {
@@ -554,6 +562,7 @@ impl<'a> CompilerBodyDurableSource<'a> {
         let mut source_locators = AHashMap::new();
         let mut dynamic_anonymous = CanonicalAnonymousNominalRegistry::default();
         dynamic_anonymous.extend(anonymous.iter());
+        let owner_module = owner_source.as_ref().map(|(module, _)| module.clone());
         if let Some((module, locator)) = owner_source {
             source_paths.insert(locator.file_id, locator.physical_path.clone());
             source_locators.insert(module, locator);
@@ -565,7 +574,48 @@ impl<'a> CompilerBodyDurableSource<'a> {
             source_paths: Rc::new(std::cell::RefCell::new(source_paths)),
             visibility_domains: Rc::new(rue_air::SemanticVisibilityDomainCache::default()),
             source_locators: Rc::new(std::cell::RefCell::new(source_locators)),
+            owner_module,
+            visible_conformances: Rc::new(std::cell::RefCell::new(None)),
         }
+    }
+
+    /// The freestanding conformance assertions of the owner module and of
+    /// every module it transitively imports (spec 6.7:15), read from the
+    /// per-module nucleus projection. A module whose assertions failed to
+    /// resolve contributes nothing here: the declaration-semantics driver
+    /// already reported that failure at the assertion.
+    fn visible_conformances(&self) -> Arc<[crate::durable_semantics::DurableConformanceAssertion]> {
+        if let Some(assertions) = self.visible_conformances.borrow().as_ref() {
+            return assertions.clone();
+        }
+        let mut assertions = Vec::new();
+        let mut pending = self.owner_module.iter().cloned().collect::<Vec<_>>();
+        let mut visited = BTreeSet::new();
+        while let Some(module) = pending.pop() {
+            if !visited.insert(module.clone()) {
+                continue;
+            }
+            let query = crate::semantic_query_nucleus::SemanticNucleusKey::ModuleConformances(
+                crate::semantic_query_nucleus::ModuleSemanticQueryKey {
+                    module: module.clone(),
+                    configuration: self.provider.queries.configuration.clone(),
+                },
+            );
+            if let Some(crate::semantic_query_nucleus::SemanticNucleusValue::ModuleConformances(
+                resolved,
+            )) = self.provider.nucleus(query)
+            {
+                assertions.extend(resolved.iter().cloned());
+            }
+            for specifier in self.provider.import_specifiers(&module).unwrap_or_default() {
+                if let Some(target) = self.provider.import_target(&module, &specifier) {
+                    pending.push(target);
+                }
+            }
+        }
+        let assertions: Arc<[_]> = assertions.into();
+        *self.visible_conformances.borrow_mut() = Some(assertions.clone());
+        assertions
     }
 
     pub(super) fn candidate(
@@ -1415,6 +1465,28 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
             .map(|source| source.file_id)
     }
 
+    fn nominal_producer_span(
+        &self,
+        key: &crate::StableDefinitionKey,
+        start: u32,
+        end: u32,
+    ) -> Option<rue_span::Span> {
+        let candidate = self.candidate(key)?;
+        self.provider
+            .producer_relative_span(&candidate.declaration, start, end)
+    }
+
+    fn visible_conformance_assertions(
+        &self,
+    ) -> Arc<[crate::durable_semantics::DurableConformanceAssertion]> {
+        self.visible_conformances()
+    }
+
+    fn module_range_span(&self, module: &ModuleId, start: u32, end: u32) -> Option<rue_span::Span> {
+        rue_air::DurableBodyLookupSource::module_source(self, module)
+            .map(|source| rue_span::Span::with_file(source.file_id, start, end))
+    }
+
     fn nominal(
         &self,
         key: &crate::StableDefinitionKey,
@@ -1491,11 +1563,13 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
                 fields,
                 is_copy,
                 is_linear,
+                conformance,
                 ..
             } => rue_air::DurableNominalBody::Struct {
                 fields,
                 is_copy,
                 is_linear,
+                conformance,
             },
             Projection::Enum {
                 variants,
@@ -1641,8 +1715,41 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
             .meter()
             .method_materializations
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let owner = key.owner()?;
         let signature = self.signature(key)?;
+        self.method_from_signature(key, signature)
+    }
+
+    fn requirement_signature(
+        &self,
+        key: &crate::StableDefinitionKey,
+    ) -> Option<rue_air::DurableMethod<crate::StableDefinitionKey, ModuleId>> {
+        // The signature terminal alone: `signature` would also record a body
+        // reference to the requirement stub, and a stub is never a body the
+        // closure should reach.
+        let candidate = self.candidate(key)?;
+        let query = crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
+            self.provider.declaration_query_key(&candidate.declaration),
+        );
+        let Some(crate::semantic_query_nucleus::SemanticNucleusValue::Signature(signature)) =
+            self.provider.nucleus(query)
+        else {
+            return None;
+        };
+        self.method_from_signature(key, signature)
+    }
+
+    fn uses_deferred_body_type_placeholders(&self) -> bool {
+        true
+    }
+}
+
+impl CompilerBodyDurableSource<'_> {
+    fn method_from_signature(
+        &self,
+        key: &crate::StableDefinitionKey,
+        signature: crate::semantic_query_nucleus::ResolvedDeclarationSignature,
+    ) -> Option<rue_air::DurableMethod<crate::StableDefinitionKey, ModuleId>> {
+        let owner = key.owner()?;
         let type_syntax = signature.callable_type_syntax;
         let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
             parameters,
@@ -1676,10 +1783,6 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
             returns_inout: accessor_result_mode
                 == crate::durable_semantics::DurableParameterMode::Inout,
         })
-    }
-
-    fn uses_deferred_body_type_placeholders(&self) -> bool {
-        true
     }
 }
 

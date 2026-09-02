@@ -248,6 +248,7 @@ fn foreign_signature_agreement_uses_resolved_identity_mode_and_comptime_not_name
         ty,
         mode,
         is_comptime,
+        bounds: Arc::from([]),
     };
     let left = [parameter("left", Type::I64, Mode::Value, false)];
     let renamed = [parameter("right", Type::I64, Mode::Value, false)];
@@ -2119,6 +2120,7 @@ fn direct_identity_and_signature_families_are_complete_per_declaration() {
                     is_copy,
                     is_linear,
                     is_repr_c,
+                    ..
                 } = signature
                 else {
                     panic!("S must project a struct signature: {signature:?}")
@@ -5352,6 +5354,7 @@ fn semantic_nucleus_resolves_exact_signatures_without_whole_module_semantics() {
                     is_copy: false,
                     is_linear: false,
                     is_repr_c: false,
+                    conformance: Default::default(),
                 },
                 callable_type_syntax: None,
                 anonymous_nominals: Arc::from([]),

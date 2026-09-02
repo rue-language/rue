@@ -1,0 +1,64 @@
+[section]
+id = "cli.interfaces"
+name = "The interfaces preview gate through the driver"
+description = """
+Spec 6.7 (`--preview interfaces`): the whole feature sits behind one preview
+flag, so the driver is where both directions of the gate meet the real
+binary. Without the flag an interface declaration is E1100; with it a program
+that declares an interface, asserts conformance in a struct header and
+freestanding, and calls through a bounded comptime parameter compiles, links,
+and runs. The bound is erased after analysis, so the executable is an ordinary
+specialization.
+"""
+
+[[case]]
+name = "interface_without_preview_is_gated"
+description = "Without --preview interfaces the declaration is the standard gated-feature error, naming the flag."
+files = [{ path = "main.rue", source = """
+interface Show { fn show(borrow self) -> i64; }
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "E1100",
+    "an `interface` declaration requires preview feature `interfaces`",
+    "use --preview interfaces to enable this feature (ADR-0005)",
+]
+
+[[case]]
+name = "bounded_program_runs_end_to_end"
+description = "With the flag a header assertion, a freestanding assertion, and a refining bound all resolve, verify, and run."
+files = [{ path = "main.rue", source = """
+interface Show { fn show(borrow self) -> i64; }
+interface Loud: Show { fn twice(borrow self) -> i64; }
+struct Val is Show {
+    n: i64,
+    fn show(borrow self) -> i64 { self.n }
+    fn twice(borrow self) -> i64 { self.n * 2 }
+}
+Val is Loud;
+fn render(comptime T: Loud, borrow x: T) -> i64 { x.show() + x.twice() }
+fn main() -> i32 {
+    let v = Val { n: 3 };
+    @dbg(render(Val, borrow v));
+    @intCast(render(Val, borrow v))
+}
+""" }]
+args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
+stdout = "9\n"
+exit_code = 9
+
+[[case]]
+name = "unsatisfied_bound_is_a_driver_error"
+description = "A bound the argument type does not satisfy fails the build with E0305 at the call and no ICE."
+files = [{ path = "main.rue", source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val { n: i64, fn show(borrow self) -> i64 { self.n } }
+fn render(comptime T: Show, borrow x: T) -> i64 { x.show() }
+fn main() -> i32 { @intCast(render(Val, borrow Val { n: 3 })) }
+""" }]
+args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0305", "type `Val` does not conform to interface `Show`"]
+compile_stderr_not_contains = ["internal compiler error"]

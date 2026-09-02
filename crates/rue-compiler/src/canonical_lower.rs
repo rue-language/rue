@@ -1087,8 +1087,8 @@ fn candidate_root_index(
                 }));
             }
             // A freestanding conformance assertion has no declaration
-            // candidate (`parsed_modules::conformance_assertion_awaits_semantic_lowering`),
-            // so its root has no key to join.
+            // candidate (spec 6.7:11; the semantic nucleus resolves it per
+            // module), so its root has no key to join.
             Roots::Conformance(_) => {}
             Roots::Extern(functions) => {
                 emitted.extend(functions.iter().map(|declaration| EmittedDeclarationRoot {

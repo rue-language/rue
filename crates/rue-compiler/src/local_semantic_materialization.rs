@@ -1033,6 +1033,7 @@ pub(crate) fn materialize_semantic_body_with_indexes_in_space(
                 fields,
                 is_copy,
                 is_linear,
+                ..
             } => (
                 rue_air::SemanticImportNominalKind::Struct,
                 rue_air::SemanticLocalNominalShape::Struct {
@@ -1629,6 +1630,8 @@ pub(crate) fn select_materialization_facts(
                                     fields: Arc::new([]),
                                     is_copy: false,
                                     is_linear: false,
+                                    conformance:
+                                        crate::durable_semantics::DurableConformanceFacts::default(),
                                 }
                             }
                             DurableDeclarationPayload::Enum { .. } => {
@@ -2086,6 +2089,7 @@ mod tests {
                 fields: Arc::new([]),
                 is_copy: false,
                 is_linear: false,
+                conformance: crate::durable_semantics::DurableConformanceFacts::default(),
             },
         };
         assert_eq!(
@@ -2164,6 +2168,7 @@ mod tests {
                     fields: Arc::new([]),
                     is_copy: false,
                     is_linear: false,
+                    conformance: crate::durable_semantics::DurableConformanceFacts::default(),
                 },
             },
             DurableDeclarationSemantic {
@@ -2223,6 +2228,7 @@ mod tests {
                     fields: Arc::new([]),
                     is_copy: false,
                     is_linear: false,
+                    conformance: crate::durable_semantics::DurableConformanceFacts::default(),
                 },
             },
             DurableDeclarationSemantic {

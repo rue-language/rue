@@ -471,9 +471,25 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     match value {
                         Some(ConstValue::Type(ty)) => {
                             type_subst.insert(param_names[i], ty);
+                            self.check_interface_bounds(
+                                &fn_info,
+                                i,
+                                param_names[i],
+                                ty,
+                                self.body_rir_ref().get(args.get(i).unwrap().value).span,
+                                span,
+                            )?;
                         }
                         Some(ConstValue::Unit) => {
                             type_subst.insert(param_names[i], Type::UNIT);
+                            self.check_interface_bounds(
+                                &fn_info,
+                                i,
+                                param_names[i],
+                                Type::UNIT,
+                                self.body_rir_ref().get(args.get(i).unwrap().value).span,
+                                span,
+                            )?;
                         }
                         Some(_) => {
                             return Err(CompileError::new(
@@ -619,9 +635,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         // This is a TYPE parameter - expect a TypeConst instruction
                         let inst = argument;
                         if let AirInstData::TypeConst(ty) = &inst.data {
-                            type_args.push(*ty);
+                            let ty = *ty;
+                            type_args.push(ty);
                             // Record the substitution: param_name -> concrete_type
-                            type_subst.insert(param_names[i], *ty);
+                            type_subst.insert(param_names[i], ty);
+                            // A bounded parameter (spec 6.7:14) accepts only a
+                            // conforming type argument (spec 6.7:15).
+                            self.check_interface_bounds(
+                                &fn_info,
+                                i,
+                                param_names[i],
+                                ty,
+                                self.body_rir_ref().get(args.get(i).unwrap().value).span,
+                                span,
+                            )?;
                         } else if matches!(inst.data, AirInstData::UnitConst) {
                             // `()` in a `comptime T: type` position is the unit
                             // TYPE (RUE-565); the declared parameter kind
@@ -629,6 +656,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             // ConstValue::Unit arm in the reduction path above.
                             type_args.push(Type::UNIT);
                             type_subst.insert(param_names[i], Type::UNIT);
+                            self.check_interface_bounds(
+                                &fn_info,
+                                i,
+                                param_names[i],
+                                Type::UNIT,
+                                self.body_rir_ref().get(args.get(i).unwrap().value).span,
+                                span,
+                            )?;
                         } else {
                             // Not a type - this is an error for type parameters
                             return Err(CompileError::new(

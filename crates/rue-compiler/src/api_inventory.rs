@@ -1930,7 +1930,7 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 44] = [
     (753, 3_150_885_663_910_159_936),
     (2_598, 10_270_973_964_375_394_836),
     (11_514, 1_556_117_829_400_373_530),
-    (103_771, 11_567_462_448_468_948_481),
+    (108_085, 10_690_589_073_287_771_281),
     (1_955, 14_719_450_878_729_356_170),
     (5_205, 1_989_823_130_239_107_246),
     (872, 14_092_162_116_261_787_003),
@@ -4610,7 +4610,7 @@ pub(super) use register_parse_import_parse;"#;
         (
             "revisioned_database::register_semantic_semantic_nucleus".to_owned(),
             "family".to_owned(),
-            18,
+            19,
         ),
         (
             "revisioned_database::semantic".to_owned(),
@@ -5068,7 +5068,7 @@ fn revisioned_body_and_program_assembly_have_exact_source_owners() {
             });
     assert_eq!(
         (shared_declarations.len(), shared_fingerprint),
-        (54, 18_319_594_177_463_541_342),
+        (55, 11_095_382_754_162_013_991),
         "database-tree shared body/program API changed"
     );
 }

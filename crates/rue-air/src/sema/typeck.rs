@@ -57,6 +57,10 @@ pub(super) trait TypeSyntaxHost {
         name: Spur,
         kind: TypeSyntaxNamedKind,
     ) -> CompileResult<Option<crate::SemanticTypeFact<Type, FileId>>>;
+    /// Whether a selected named type is an `interface` shell (spec 6.7),
+    /// which is not a type and is refused wherever body syntax asks for one
+    /// (spec 6.7:18).
+    fn type_syntax_is_interface(&self, ty: Type) -> bool;
     fn type_syntax_make_str(&mut self, span: Span) -> CompileResult<Type>;
     fn type_syntax_make_array(
         &mut self,
@@ -175,6 +179,23 @@ type SemaProviderResult<T> = crate::SemanticProviderResult<T, Infallible, Compil
 
 fn provider_failure<T>(result: CompileResult<T>) -> SemaProviderResult<T> {
     result.map_err(crate::SemanticProviderError::Failure)
+}
+
+/// The diagnostic for an interface name where a type is required (spec
+/// 6.7:18). It is a type mismatch in the type language: the position expects
+/// a type and an interface is a set of requirements, usable only as a
+/// comptime parameter bound.
+pub(crate) fn interface_used_as_type_error(name: &str, span: Span) -> CompileError {
+    CompileError::new(
+        ErrorKind::TypeMismatch {
+            expected: "a type".to_owned(),
+            found: format!("interface `{name}`"),
+        },
+        span,
+    )
+    .with_help(format!(
+        "an interface is not a type; bound a comptime type parameter with it instead: `comptime T: {name}`"
+    ))
 }
 
 impl<H: TypeSyntaxHost> crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>
@@ -352,6 +373,14 @@ impl<H: TypeSyntaxHost>
     ) -> SemaProviderResult<()> {
         match kind {
             crate::SemanticTypeFactKind::Struct | crate::SemanticTypeFactKind::Enum => {
+                // An interface is named like a type but is not one (spec
+                // 6.7:18): body syntax only ever reaches an interface shell
+                // here in a position that requires a type.
+                if self.host.type_syntax_is_interface(fact.value) {
+                    return Err(crate::SemanticProviderError::Failure(
+                        interface_used_as_type_error(name, self.state.span),
+                    ));
+                }
                 self.observe_materialized_type_fact(fact.value);
             }
             crate::SemanticTypeFactKind::Constant => {

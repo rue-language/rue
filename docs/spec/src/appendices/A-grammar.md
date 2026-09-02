@@ -24,6 +24,15 @@ this appendix governs.
 <!-- grammar-sync(id="9.3:1a", production="extern_export", role="appendix") -->
 <!-- grammar-sync(id="6.6:2", production="primary", role="appendix", relation="contains", symbol="yield_expr") -->
 <!-- grammar-sync(id="6.6:2", production="yield_expr", role="appendix") -->
+<!-- grammar-sync(id="6.7:2", production="interface_def", role="appendix") -->
+<!-- grammar-sync(id="6.7:2", production="interface_list", role="appendix") -->
+<!-- grammar-sync(id="6.7:2", production="interface_ref", role="appendix") -->
+<!-- grammar-sync(id="6.7:2", production="interface_member", role="appendix") -->
+<!-- grammar-sync(id="6.7:2", production="interface_const", role="appendix") -->
+<!-- grammar-sync(id="6.7:2", production="interface_fn", role="appendix") -->
+<!-- grammar-sync(id="6.7:2", production="interface_params", role="appendix") -->
+<!-- grammar-sync(id="6.7:2", production="conformance_decl", role="appendix") -->
+<!-- grammar-sync(id="6.7:2", production="interface_bound", role="appendix") -->
 
 <!-- grammar-sync(id="2.1:26", production="INTEGER", role="appendix", relation="contains", symbol="byte_literal") -->
 <!-- grammar-sync(id="2.1:26", production="byte_literal", role="appendix") -->
@@ -38,7 +47,8 @@ this appendix governs.
 ```ebnf
 (* Program structure *)
 program        = { item } ;
-item           = function | extern_block | extern_export | struct_def | enum_def | drop_fn | const_decl ;
+item           = function | extern_block | extern_export | struct_def | enum_def | drop_fn | const_decl
+               | interface_def | conformance_decl ;
 
 (* Directives and intrinsics *)
 directives     = { directive } ;
@@ -57,7 +67,11 @@ result         = "->" [ "borrow" | "inout" ] type ; (* marks a place-returning
                                                         receiver modes pair —
                                                         a legality rule *)
 params         = param { "," param } [ "," ] ;
-param          = [ param_mode ] IDENT ":" type ;
+param          = [ param_mode ] IDENT ":" type { "+" type } ;
+                                               (* the "+" continuation is an
+                                                  interface bound and is legal
+                                                  only on a "comptime"
+                                                  parameter (6.7:14) *)
 param_mode     = "comptime" | "inout" | "borrow" ;
 block          = { statement } [ expression ] ;
 
@@ -69,11 +83,16 @@ extern_result  = "->" type ;
 extern_export  = "pub" "extern" STRING [ "unchecked" ] "fn" IDENT
                  "(" [ params ] ")" [ result ] "{" block "}" ;
 
-(* Structs: fields first (comma-separated), then inline methods *)
+(* Structs: fields first (comma-separated), then associated type
+   declarations, then inline methods. The "is" list asserts conformance to
+   interfaces (6.7:9, preview) *)
 struct_def     = directives [ "pub" ] [ "linear" ]
-                 "struct" IDENT "{" [ struct_fields ] { method } "}" ;
+                 "struct" IDENT [ struct_conformance ]
+                 "{" [ struct_fields ] { struct_assoc_type } { method } "}" ;
+struct_conformance = "is" interface_list ;
 struct_fields  = struct_field { "," struct_field } [ "," ] ;
 struct_field   = IDENT ":" type ;
+struct_assoc_type = [ "pub" ] "const" IDENT "=" type ";" ;
 method         = directives "fn" IDENT
                  "(" [ [ "inout" | "borrow" | "mut" ] "self" [ "," params ] | params ] ")"
                  [ result ] "{" block "}" ;
@@ -82,6 +101,18 @@ method         = directives "fn" IDENT
 enum_def       = directives [ "pub" ] "enum" IDENT "{" [ enum_variants ] "}" ;
 enum_variants  = enum_variant { "," enum_variant } [ "," ] ;
 enum_variant   = IDENT [ "(" type { "," type } [ "," ] ")" ] ;  (* optional tuple payload; at least one type inside the parens *)
+
+(* Interfaces and conformance assertions (6.7, preview `interfaces`) *)
+interface_def   = [ "pub" ] "interface" IDENT [ ":" interface_list ]
+                  "{" { interface_member } "}" ;
+interface_list  = interface_ref { "+" interface_ref } ;
+interface_ref   = IDENT { "." IDENT } ;
+interface_member = interface_const | interface_fn ;
+interface_const = "const" IDENT ":" "type" ";" ;
+interface_fn    = "fn" IDENT "(" [ interface_params ] ")" [ result ] ";" ;
+interface_params = [ "inout" | "borrow" ] "self" [ "," params ] | params ;
+conformance_decl = type "is" interface_list ";" ;
+interface_bound = "comptime" IDENT ":" interface_list ;
 
 (* Destructors *)
 drop_fn        = "drop" "fn" IDENT "(" "self" ")" "{" block "}" ;

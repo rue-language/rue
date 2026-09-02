@@ -12,9 +12,77 @@ $runtime
                         SemanticNucleusValue as Value,
                     };
 
+                    // The per-module queries have no declaration shell: a
+                    // freestanding conformance assertion is a bodiless fact
+                    // with no identity (spec 6.7:11), resolved per module.
+                    let Some(declaration) = key.declaration() else {
+                        let Key::ModuleConformances(query) = key else {
+                            unreachable!("only per-module nucleus keys have no declaration")
+                        };
+                        let parsed_module = context.query_registered(
+                            &$parse_for_semantic_nucleus,
+                            ModuleQueryKey(query.module.clone()),
+                        )?;
+                        let rue_query::QueryOutcome::Success(parsed_module) =
+                            parsed_module.outcome()
+                        else {
+                            unreachable!("ParseModule publishes typed values")
+                        };
+                        let value = match &parsed_module.result {
+                            Err(_) => Value::Failure(Failure::Syntax(Arc::from(
+                                "conformance assertion module failed to parse",
+                            ))),
+                            Ok(parsed) => {
+                                let mut provider = SemanticNucleusTypeProvider {
+                                    context,
+                                    family,
+                                    shells: &$shells_for_semantic_nucleus,
+                                    names: &$names_for_semantic_nucleus,
+                                    configuration: query.configuration.clone(),
+                                    substitutions: BTreeMap::new(),
+                                    value_substitutions: BTreeMap::new(),
+                                    deferred_value_parameters: BTreeMap::new(),
+                                    anonymous_nominals: BTreeMap::new(),
+                                    dependency_source:
+                                        crate::semantic_query_nucleus::module_conformances_source(
+                                            &query.module,
+                                        ),
+                                    dependency_kind:
+                                        rue_air::DeclarationTypeDependencyKind::Signature,
+                                    dependencies: BTreeSet::new(),
+                                    deferred_ownership: BTreeSet::new(),
+                                    ownership_properties: BTreeMap::new(),
+                                };
+                                match resolve_module_conformances(
+                                    &mut provider,
+                                    &query.module,
+                                    parsed,
+                                ) {
+                                    Ok(assertions) => Value::ModuleConformances(assertions.into()),
+                                    Err(ResolveSemanticSignatureError::Abort(QueryAbort::Cycle(
+                                        nodes,
+                                    ))) => Value::Failure(Failure::Cycle(
+                                        semantic_nucleus_cycle_names(&nodes),
+                                    )),
+                                    Err(ResolveSemanticSignatureError::Abort(abort)) => {
+                                        return Err(abort);
+                                    }
+                                    Err(ResolveSemanticSignatureError::Failure(failure)) => {
+                                        Value::Failure(*failure)
+                                    }
+                                }
+                            }
+                        };
+                        let kind = if matches!(value, Value::Failure(_)) {
+                            QueryTerminalKind::Failure
+                        } else {
+                            QueryTerminalKind::Success
+                        };
+                        return Ok(QueryOutput::success(value).with_terminal_kind(kind));
+                    };
                     let shell = context.query_registered(
                         &$shells_for_semantic_nucleus,
-                        DeclarationShellQueryKey(key.declaration().clone()),
+                        DeclarationShellQueryKey(declaration.clone()),
                     )?;
                     let rue_query::QueryOutcome::Success(shell) = shell.outcome() else {
                         unreachable!("DeclarationShell publishes typed values")
@@ -30,6 +98,9 @@ $runtime
                         }
                     };
                     let value = match key {
+                        Key::ModuleConformances(_) => {
+                            unreachable!("per-module nucleus keys are answered before the shell")
+                        }
                         #[cfg(test)]
                         Key::EngineCycleProbe(_) => {
                             let _ = context.query_registered(family, key.clone())?;

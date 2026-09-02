@@ -2790,8 +2790,9 @@ fn build_definition_index(
         // definition.
         let item_parts: Vec<_> = if let Item::Extern(block) = item {
             crate::definition_snapshot::extern_definition_parts(block).collect()
-        } else if let Item::Conformance(conformance) = item {
-            conformance_assertion_awaits_semantic_lowering(conformance);
+        } else if let Item::Conformance(_) = item {
+            // A freestanding conformance assertion names no definition
+            // (spec 6.7:9); the semantic nucleus resolves it per module.
             Vec::new()
         } else {
             let Some(parts) = definition_parts(item) else {
@@ -2891,6 +2892,8 @@ fn build_definition_index(
                     is_generic,
                     is_unchecked,
                     is_extern,
+                    is_interface: category == DeclarationCandidateCategory::Struct
+                        && matches!(item, Item::Interface(_)),
                     signature_fingerprint,
                 },
                 ast_locator,
@@ -3115,9 +3118,12 @@ fn build_definition_index(
                     )?;
                 }
             }
-            Item::Conformance(conformance) => {
-                conformance_assertion_awaits_semantic_lowering(conformance);
-            }
+            // A freestanding conformance assertion has no declaration
+            // candidate: it is a bodiless, idempotent fact with no identity
+            // (spec 6.7:11). The semantic nucleus resolves each module's
+            // assertions as one per-module projection
+            // (`SemanticNucleusKey::ModuleConformances`).
+            Item::Conformance(_) => {}
             Item::DropFn(value) => push(
                 DeclarationCandidateCategory::Destructor,
                 resolve_name(value.type_name)?,
@@ -3357,9 +3363,8 @@ fn build_definition_index(
                     methods: requirements.into(),
                 });
             }
-            Item::Conformance(conformance) => {
-                conformance_assertion_awaits_semantic_lowering(conformance);
-            }
+            // No candidate, so no RIR recipe: see the candidate index above.
+            Item::Conformance(_) => {}
             Item::Extern(block) => {
                 let functions = block
                     .fns
@@ -3445,19 +3450,6 @@ fn signature_prefix(declaration: Span, payload: Span) -> CompileResult<Span> {
         declaration.start,
         payload.start,
     ))
-}
-
-/// A freestanding conformance assertion (`Type is Interface;`, spec 6.7:9)
-/// names no definition and owns no body, so it has no declaration candidate:
-/// the candidate index is keyed by name, and every consumer of its keys
-/// (definition merging, exact RIR recipes, durable body identity) is
-/// declaration-shaped. Its RIR form is `InstData::ConformanceDecl`, which
-/// `rue_rir::AstGen` produces from the item and which the semantic phase of
-/// the interfaces preview consumes when it verifies assertions; until that
-/// phase installs assertions in the canonical module, the parsed module
-/// records nothing for the item and this function is the single site that
-/// names the omission.
-fn conformance_assertion_awaits_semantic_lowering(_conformance: &rue_parser::ast::ConformanceDecl) {
 }
 
 fn signature_fragments_excluding_method_bodies(

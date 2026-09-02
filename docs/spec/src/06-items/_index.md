@@ -32,6 +32,8 @@ The item kinds are:
 - **Constants** (`const`, 6.5).
 - **Top-level destructors** (`drop fn`, 3.9), which are declared at the top
   level rather than inside any enclosing block.
+- **Interfaces** (`interface`, 6.7) and conformance assertions (`is`), a
+  preview feature.
 
 Rue has no separate `impl` block: methods and associated functions are written
 inside the struct body (6.4), and a user-defined destructor for a named struct

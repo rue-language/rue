@@ -1,0 +1,129 @@
+# Interface diagnostics (spec 6.7, preview `interfaces`).
+#
+# The spec cases in `crates/rue-spec/cases/items/interfaces.toml` pin the
+# codes and the rule they enforce; these cases pin the rendering that a user
+# reads: the expected/found signature pair of a mismatch (E0303), the help
+# text of an unsatisfied bound (E0305), and the keyword reservation of
+# `interface` (spec 2.4:2a).
+
+[section]
+id = "diagnostics.interfaces"
+name = "Interface diagnostics"
+description = "Rendering of the interface preview's conformance and bound diagnostics."
+
+[[case]]
+name = "signature_mismatch_shows_expected_and_found"
+description = """
+E0303 renders both signatures in source order — the member's actual signature
+and the requirement's expected one after substituting the asserted type for
+`Self` — and points at the assertion, with the call that relied on it as a
+secondary label.
+"""
+preview = "interfaces"
+source = """
+interface Equatable { fn equals(borrow self, borrow other: Self) -> bool; }
+struct Id is Equatable {
+    n: i64,
+    fn equals(borrow self, other: Id) -> bool { self.n == other.n }
+}
+fn same(comptime T: Equatable, borrow a: T, borrow b: T) -> bool { a.equals(borrow b) }
+fn main() -> i32 {
+    let a = Id { n: 1 };
+    if same(Id, borrow a, borrow a) { 0 } else { 1 }
+}
+"""
+compile_fail = true
+expected_error = """
+error: [E0303]: type `Id` does not conform to `Equatable`: member `equals` has signature `fn equals(borrow self, _: Id) -> bool`, but the requirement is `fn equals(borrow self, borrow _: Id) -> bool`
+ --> test.rue:2:14
+  |
+2 | struct Id is Equatable {
+  |              ^^^^^^^^^
+3 |     n: i64,
+...
+8 |     let a = Id { n: 1 };
+9 |     if same(Id, borrow a, borrow a) { 0 } else { 1 }
+  |        ---------------------------- info: conformance relied on here
+  |
+"""
+
+[[case]]
+name = "unsatisfied_bound_names_parameter_and_offers_assertion"
+description = "E0305 sits on the type argument, labels the call with the bounded parameter, and shows the assertion that would satisfy it."
+preview = "interfaces"
+source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val { n: i64, fn show(borrow self) -> i64 { self.n } }
+fn render(comptime T: Show, borrow x: T) -> i64 { x.show() }
+fn main() -> i32 { @intCast(render(Val, borrow Val { n: 3 })) }
+"""
+compile_fail = true
+expected_error = """
+error: [E0305]: type `Val` does not conform to interface `Show`
+ --> test.rue:4:36
+  |
+4 | fn main() -> i32 { @intCast(render(Val, borrow Val { n: 3 })) }
+  |                             -------^^^---------------------- info: required by the bound on parameter `T`
+  |
+  = help: add `Val is Show;` to assert the conformance, or a `struct Val is Show` header
+"""
+
+[[case]]
+name = "missing_member_is_reported_at_the_assertion"
+description = "E0302 points at the header assertion, not at the call, and names the type, the interface, and the member."
+preview = "interfaces"
+source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val is Show { n: i64 }
+fn render(comptime T: Show, borrow x: T) -> i64 { 0 }
+fn main() -> i32 { @intCast(render(Val, borrow Val { n: 3 })) }
+"""
+compile_fail = true
+error_contains = [
+    "[E0302]: type `Val` does not conform to `Show`: missing member `show`",
+    "2:15",
+    "conformance relied on here",
+]
+
+[[case]]
+name = "every_unsatisfied_requirement_is_named"
+description = "One assertion with two failures reports one diagnostic: the first failure as the message, the others as labels on the assertion."
+preview = "interfaces"
+source = """
+interface Both { fn a(borrow self) -> i64; fn b(borrow self) -> i64; }
+struct V is Both { n: i64, fn a(inout self) -> i64 { self.n } }
+fn r(comptime T: Both, borrow x: T) -> i64 { 0 }
+fn main() -> i32 { @intCast(r(V, borrow V { n: 1 })) }
+"""
+compile_fail = true
+error_contains = [
+    "[E0303]: type `V` does not conform to `Both`: member `a` has signature `fn a(inout self) -> i64`, but the requirement is `fn a(borrow self) -> i64`",
+    "missing member `b`",
+]
+
+[[case]]
+name = "interface_where_a_type_is_required"
+description = "An interface name in a type position is a type mismatch with the bound as the suggested spelling (spec 6.7:18)."
+preview = "interfaces"
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn render(comptime T: Show, x: i64) -> i64 { x }
+fn main() -> i32 { @intCast(render(Show, 3)) }
+"""
+compile_fail = true
+error_contains = [
+    "[E0206]: type mismatch: expected a type, found interface `Show`",
+    "bound a comptime type parameter with it instead: `comptime T: Show`",
+]
+
+[[case]]
+name = "interface_is_a_reserved_word"
+description = "`interface` is a keyword (spec 2.4:2a): it cannot name a binding, even without the preview."
+source = """
+fn main() -> i32 {
+    let interface = 1;
+    interface
+}
+"""
+compile_fail = true
+error_contains = ["interface"]

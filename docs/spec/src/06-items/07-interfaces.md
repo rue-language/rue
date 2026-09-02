@@ -21,6 +21,15 @@ section requires `--preview interfaces` (6.7:3).
 
 {{ rule(id="6.7:2", cat="syntax") }}
 
+<!-- grammar-sync(id="6.7:2", production="interface_def", role="source") -->
+<!-- grammar-sync(id="6.7:2", production="interface_list", role="source") -->
+<!-- grammar-sync(id="6.7:2", production="interface_ref", role="source") -->
+<!-- grammar-sync(id="6.7:2", production="interface_member", role="source") -->
+<!-- grammar-sync(id="6.7:2", production="interface_const", role="source") -->
+<!-- grammar-sync(id="6.7:2", production="interface_fn", role="source") -->
+<!-- grammar-sync(id="6.7:2", production="interface_params", role="source") -->
+<!-- grammar-sync(id="6.7:2", production="conformance_decl", role="source") -->
+<!-- grammar-sync(id="6.7:2", production="interface_bound", role="source") -->
 ```ebnf
 interface_def   = [ "pub" ] "interface" IDENT [ ":" interface_list ]
                   "{" { interface_member } "}" ;
@@ -177,10 +186,12 @@ displayed with it.
 At every call that binds a type argument to a bounded comptime parameter,
 the argument type **MUST** conform to every interface in the bound; that is,
 a conformance assertion for the argument type and each interface (or an
-interface refining it, 6.7:12) must exist in the program. Otherwise the call
-is a compile-time error at the call site that names the argument type, the
-parameter, and each interface it does not conform to. Verification of the
-assertion itself (6.7:10) is reported at the assertion, not at the call.
+interface refining it, 6.7:12) must be visible at the call: in the argument
+type's struct header, in the calling module, or in a module the calling
+module transitively imports. Otherwise the call is a compile-time error at
+the call site that names the argument type, the parameter, and each
+interface it does not conform to. Verification of the assertion itself
+(6.7:10) is reported at the assertion, not at the call.
 
 {{ rule(id="6.7:16", cat="normative") }}
 

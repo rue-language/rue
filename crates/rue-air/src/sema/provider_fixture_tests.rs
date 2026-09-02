@@ -1541,6 +1541,7 @@ fn provider_accessor_body_analyzes_stably() {
             is_accessor: true,
             returns_borrow: true,
             returns_inout: false,
+            type_syntax: None,
         },
     );
     let body = fixture

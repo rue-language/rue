@@ -174,6 +174,10 @@ pub(crate) struct DeclarationShellFact {
     pub(crate) is_generic: bool,
     pub(crate) is_unchecked: bool,
     pub(crate) is_extern: bool,
+    /// Whether a struct-category candidate is an `interface` shell (spec
+    /// 6.7). Read from the shell so a bound or assertion can tell an
+    /// interface from a struct without demanding either one's signature.
+    pub(crate) is_interface: bool,
     /// Hash of parser-authored signature partitions with whitespace removed.
     /// Bodies and constant initializers are deliberately excluded.
     pub(crate) signature_fingerprint: [u8; 32],

@@ -1,0 +1,416 @@
+# Interfaces (preview) — specification cases for chapter 6.7.
+#
+# Every construct in this chapter is behind `--preview interfaces` (6.7:3), so
+# each passing case sets `preview = "interfaces"` and `preview_should_pass`.
+
+[section]
+id = "items.interfaces"
+spec_chapter = "6.7"
+name = "Interfaces"
+description = "Interface declarations, conformance assertions, and interface bounds on comptime parameters."
+
+# ---------------------------------------------------------------------------
+# Preview gate (6.7:3)
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "interface_requires_preview"
+spec = ["6.7:3"]
+source = """
+interface Equatable {
+    fn equals(borrow self, borrow other: Self) -> bool;
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1100", "interfaces"]
+
+[[case]]
+name = "conformance_requires_preview"
+spec = ["6.7:3"]
+source = """
+struct Id { n: i64, fn equals(borrow self, borrow other: Id) -> bool { self.n == other.n } }
+Id is Equatable;
+interface Equatable { fn equals(borrow self, borrow other: Self) -> bool; }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1100", "interfaces"]
+
+[[case]]
+name = "bound_requires_preview"
+spec = ["6.7:3", "6.7:14"]
+source = """
+interface Equatable { fn equals(borrow self, borrow other: Self) -> bool; }
+fn same(comptime T: Equatable, borrow a: T, borrow b: T) -> bool { a.equals(borrow b) }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1100", "interfaces"]
+
+# ---------------------------------------------------------------------------
+# Declarations (6.7:4 – 6.7:8)
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "interface_declaration_and_header_conformance"
+spec = ["6.7:1", "6.7:2", "6.7:4", "6.7:5", "6.7:9", "6.7:10"]
+description = "An interface with a method requirement; a struct conforms via its header and is used through a bound."
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Equatable {
+    fn equals(borrow self, borrow other: Self) -> bool;
+}
+struct Id is Equatable {
+    n: i64,
+    fn equals(borrow self, borrow other: Id) -> bool { self.n == other.n }
+}
+fn same(comptime T: Equatable, borrow a: T, borrow b: T) -> bool { a.equals(borrow b) }
+fn main() -> i32 {
+    let a = Id { n: 7 };
+    let b = Id { n: 7 };
+    if same(Id, borrow a, borrow b) { 7 } else { 0 }
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "associated_type_requirement"
+spec = ["6.7:5", "6.7:10"]
+description = "A `const Element: type;` requirement is satisfied by `pub const Element = i64;` and substituted into the requirement's signature."
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Sequence {
+    const Element: type;
+    fn next(inout self) -> Element;
+    fn done(borrow self) -> bool;
+}
+struct Range is Sequence {
+    cur: i64,
+    end: i64,
+    pub const Element = i64;
+    fn next(inout self) -> i64 {
+        let v = self.cur;
+        self.cur += 1;
+        v
+    }
+    fn done(borrow self) -> bool { self.cur >= self.end }
+}
+fn drain(comptime T: Sequence, inout s: T) -> i64 {
+    let mut count: i64 = 0;
+    while !s.done() {
+        let _v = s.next();
+        count += 1;
+    }
+    count
+}
+fn main() -> i32 {
+    let mut r = Range { cur: 0, end: 5 };
+    @intCast(drain(Range, inout r))
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "associated_type_value_is_substituted_into_requirements"
+spec = ["6.7:5", "6.7:10"]
+description = "The requirement `-> Element` is compared after substituting the type's `Element`; a member returning another type mismatches."
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Sequence {
+    const Element: type;
+    fn next(inout self) -> Element;
+}
+struct Range is Sequence {
+    cur: i64,
+    pub const Element = i64;
+    fn next(inout self) -> i32 { 0 }
+}
+fn drain(comptime T: Sequence, inout s: T) -> i64 { 0 }
+fn main() -> i32 { let mut r = Range { cur: 0 }; @intCast(drain(Range, inout r)) }
+"""
+compile_fail = true
+error_contains = ["E0303", "next", "fn next(inout self) -> i32", "fn next(inout self) -> i64"]
+
+[[case]]
+name = "interface_name_must_be_unique_in_module"
+spec = ["6.7:4"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Show { n: i64 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0405"]
+
+[[case]]
+name = "duplicate_requirement_is_an_error"
+spec = ["6.7:6"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show {
+    fn show(borrow self) -> i64;
+    fn show(borrow self) -> i64;
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0301", "show"]
+
+[[case]]
+name = "empty_interface_is_an_error"
+spec = ["6.7:6"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Marker { }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["interface `Marker` is empty"]
+
+[[case]]
+name = "refinement_requires_parent_conformance"
+spec = ["6.7:7", "6.7:12"]
+description = "Asserting a refining interface asserts and verifies its parents; a bound on the refining interface is satisfied by that assertion."
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Named { fn name_len(borrow self) -> i64; }
+interface Sized: Named { fn size(borrow self) -> i64; }
+struct Box is Sized {
+    w: i64,
+    fn name_len(borrow self) -> i64 { 3 }
+    fn size(borrow self) -> i64 { self.w }
+}
+fn total(comptime T: Sized, borrow x: T) -> i64 { x.name_len() + x.size() }
+fn main() -> i32 { @intCast(total(Box, borrow Box { w: 4 })) }
+"""
+exit_code = 7
+
+[[case]]
+name = "refinement_parent_unsatisfied_is_reported"
+spec = ["6.7:12", "6.7:10"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Named { fn name_len(borrow self) -> i64; }
+interface Sized: Named { fn size(borrow self) -> i64; }
+struct Box is Sized {
+    w: i64,
+    fn size(borrow self) -> i64 { self.w }
+}
+fn total(comptime T: Sized, borrow x: T) -> i64 { x.size() }
+fn main() -> i32 { @intCast(total(Box, borrow Box { w: 4 })) }
+"""
+compile_fail = true
+error_contains = ["E0302", "name_len", "Named"]
+
+# ---------------------------------------------------------------------------
+# Conformance assertions (6.7:9 – 6.7:13)
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "freestanding_assertion_is_equivalent_to_header"
+spec = ["6.7:9"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val { n: i64, fn show(borrow self) -> i64 { self.n } }
+Val is Show;
+fn render(comptime T: Show, borrow x: T) -> i64 { x.show() }
+fn main() -> i32 { @intCast(render(Val, borrow Val { n: 9 })) }
+"""
+exit_code = 9
+
+[[case]]
+name = "repeated_assertion_is_idempotent"
+spec = ["6.7:11"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val is Show { n: i64, fn show(borrow self) -> i64 { self.n } }
+Val is Show;
+Val is Show;
+fn render(comptime T: Show, borrow x: T) -> i64 { x.show() }
+fn main() -> i32 { @intCast(render(Val, borrow Val { n: 3 })) }
+"""
+exit_code = 3
+
+[[case]]
+name = "missing_member_fails_verification"
+spec = ["6.7:10"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val is Show { n: i64 }
+fn render(comptime T: Show, borrow x: T) -> i64 { x.show() }
+fn main() -> i32 { @intCast(render(Val, borrow Val { n: 3 })) }
+"""
+compile_fail = true
+error_contains = ["E0302", "Val", "Show", "show"]
+
+[[case]]
+name = "wrong_receiver_mode_fails_verification"
+spec = ["6.7:10"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val is Show { n: i64, fn show(inout self) -> i64 { self.n } }
+fn render(comptime T: Show, borrow x: T) -> i64 { x.show() }
+fn main() -> i32 { @intCast(render(Val, borrow Val { n: 3 })) }
+"""
+compile_fail = true
+error_contains = ["E0303", "show", "borrow self"]
+
+[[case]]
+name = "wrong_parameter_type_fails_verification"
+spec = ["6.7:10"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Equatable { fn equals(borrow self, borrow other: Self) -> bool; }
+struct Id is Equatable { n: i64, fn equals(borrow self, borrow other: i64) -> bool { self.n == other } }
+fn same(comptime T: Equatable, borrow a: T, borrow b: T) -> bool { a.equals(borrow b) }
+fn main() -> i32 { let a = Id { n: 1 }; if same(Id, borrow a, borrow a) { 0 } else { 1 } }
+"""
+compile_fail = true
+error_contains = ["E0303", "equals", "borrow _: Id", "borrow _: i64"]
+
+[[case]]
+name = "missing_associated_type_fails_verification"
+spec = ["6.7:10"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Sequence { const Element: type; fn next(inout self) -> Element; }
+struct Range is Sequence {
+    cur: i64,
+    fn next(inout self) -> i64 { 0 }
+}
+fn drain(comptime T: Sequence, inout s: T) -> i64 { 0 }
+fn main() -> i32 { let mut r = Range { cur: 0 }; @intCast(drain(Range, inout r)) }
+"""
+compile_fail = true
+error_contains = ["E0304", "missing associated type `Element`"]
+
+[[case]]
+name = "assertion_of_unknown_interface"
+spec = ["6.7:18"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+struct Val is Nope { n: i64 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0300", "Nope"]
+
+# ---------------------------------------------------------------------------
+# Bounds (6.7:14 – 6.7:17)
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "unsatisfied_bound_is_reported_at_the_call"
+spec = ["6.7:15"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val { n: i64, fn show(borrow self) -> i64 { self.n } }
+fn render(comptime T: Show, borrow x: T) -> i64 { x.show() }
+fn main() -> i32 { @intCast(render(Val, borrow Val { n: 3 })) }
+"""
+compile_fail = true
+error_contains = ["E0305", "type `Val` does not conform to interface `Show`", "required by the bound on parameter `T`"]
+
+[[case]]
+name = "composed_bound_requires_every_interface"
+spec = ["6.7:14", "6.7:15"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+interface Twice { fn twice(borrow self) -> i64; }
+struct Val is Show + Twice {
+    n: i64,
+    fn show(borrow self) -> i64 { self.n }
+    fn twice(borrow self) -> i64 { self.n * 2 }
+}
+fn both(comptime T: Show + Twice, borrow x: T) -> i64 { x.show() + x.twice() }
+fn main() -> i32 { @intCast(both(Val, borrow Val { n: 3 })) }
+"""
+exit_code = 9
+
+[[case]]
+name = "composed_bound_missing_one_interface"
+spec = ["6.7:15"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+interface Twice { fn twice(borrow self) -> i64; }
+struct Val is Show {
+    n: i64,
+    fn show(borrow self) -> i64 { self.n }
+    fn twice(borrow self) -> i64 { self.n * 2 }
+}
+fn both(comptime T: Show + Twice, borrow x: T) -> i64 { x.show() + x.twice() }
+fn main() -> i32 { @intCast(both(Val, borrow Val { n: 3 })) }
+"""
+compile_fail = true
+error_contains = ["E0305", "Twice"]
+
+[[case]]
+name = "bound_does_not_restrict_the_body"
+spec = ["6.7:16"]
+description = "The body is analyzed per specialization: a member outside the bound is usable because the argument type has it."
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val is Show {
+    n: i64,
+    fn show(borrow self) -> i64 { self.n }
+    fn extra(borrow self) -> i64 { 1 }
+}
+fn render(comptime T: Show, borrow x: T) -> i64 { x.show() + x.extra() }
+fn main() -> i32 { @intCast(render(Val, borrow Val { n: 3 })) }
+"""
+exit_code = 4
+
+[[case]]
+name = "bound_must_name_an_interface"
+spec = ["6.7:14"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+struct Plain { n: i64 }
+fn f(comptime T: Plain, x: T) -> T { x }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0306", "Plain"]
+
+[[case]]
+name = "interface_is_not_a_type"
+spec = ["6.7:18"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn f(x: Show) -> i64 { 0 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["expected a type, found interface `Show`"]

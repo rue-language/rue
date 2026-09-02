@@ -8,7 +8,7 @@ use lasso::Spur;
 use rue_span::{FileId, Span};
 
 use crate::param_arena::ParamRange;
-use crate::types::Type;
+use crate::types::{StructId, Type};
 
 /// Information about a function.
 #[derive(Debug, Clone, Copy)]
@@ -227,4 +227,40 @@ pub struct ConstInfo {
     pub value: crate::sema::ConstValue,
     /// Span of the const declaration
     pub span: Span,
+}
+
+/// The declaration facts of an `interface` shell (spec 6.7), read by
+/// conformance verification. `parents` are the interfaces it refines
+/// (spec 6.7:7); `assoc_requirements` are its `const Name: type;`
+/// requirements; `method_requirements` name its method and
+/// associated-function requirements, whose signatures are the shell's own
+/// methods.
+#[derive(Debug, Clone)]
+pub(crate) struct InterfaceFacts {
+    pub name: std::sync::Arc<str>,
+    pub parents: Vec<StructId>,
+    pub assoc_requirements: Vec<std::sync::Arc<str>>,
+    pub method_requirements: Vec<std::sync::Arc<str>>,
+}
+
+/// One conformance assertion for a subject type (spec 6.7:9): the asserted
+/// interface and, when the host analyzes against a concrete snapshot, the
+/// span of the assertion itself (a struct header's `is` list or a
+/// freestanding `Type is I;`), where a failed verification is reported.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ConformanceAssertion {
+    pub interface: StructId,
+    pub span: Option<Span>,
+}
+
+/// An interface requirement's signature after substituting a subject type
+/// for `Self` and the subject's associated types for the interface's
+/// associated-constant names (spec 6.7:10), in the vocabulary a subject's
+/// inherent member is compared against.
+#[derive(Debug, Clone)]
+pub(crate) struct RequirementSignature {
+    pub has_self: bool,
+    pub self_mode: rue_rir::RirParamMode,
+    pub params: Vec<(std::sync::Arc<str>, rue_rir::RirParamMode, Type)>,
+    pub result: Type,
 }

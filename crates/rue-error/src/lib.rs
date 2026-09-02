@@ -225,8 +225,8 @@ impl ErrorCode {
     /// A call binds a type argument that does not conform to every interface
     /// in the parameter's bound (spec 6.7:15).
     pub const INTERFACE_BOUND_NOT_SATISFIED: Self = Self(305);
-    /// A comptime parameter bound names something that is not an interface
-    /// (spec 6.7:14).
+    /// A comptime parameter bound (spec 6.7:14), a conformance assertion, or
+    /// a refinement list names something that is not an interface.
     pub const BOUND_IS_NOT_AN_INTERFACE: Self = Self(306);
 
     // ========================================================================
@@ -1781,8 +1781,9 @@ pub enum ErrorKind {
     /// A call binds a type argument that does not conform to a bound.
     #[error("type `{ty}` does not conform to interface `{interface}`")]
     InterfaceBoundNotSatisfied { ty: String, interface: String },
-    /// A comptime parameter bound names something that is not an interface.
-    #[error("`{name}` is not an interface and cannot be used as a bound")]
+    /// A comptime parameter bound, a conformance assertion, or a refinement
+    /// list names something that is not an interface.
+    #[error("`{name}` is not an interface")]
     BoundIsNotAnInterface { name: String },
     /// Cannot move `self` out of a destructor body (RUE-139). The compiler
     /// drops a value by running its destructor and THEN dropping its fields;

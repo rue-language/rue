@@ -18,6 +18,15 @@ pub type DurableType = SemanticImportType<StableDefinitionKey, ModuleId>;
 /// The durable specialization of rue-air's canonical constant algebra.
 pub type DurableConstValue = SemanticImportConstValue<StableDefinitionKey, ModuleId>;
 
+/// The durable specialization of a struct-shaped declaration's interface
+/// facts (spec 6.7).
+pub type DurableConformanceFacts = rue_air::DurableConformanceFacts<StableDefinitionKey, ModuleId>;
+
+/// The durable specialization of one resolved freestanding conformance
+/// assertion (`Type is I;`, spec 6.7:9).
+pub type DurableConformanceAssertion =
+    rue_air::DurableConformanceAssertion<StableDefinitionKey, ModuleId>;
+
 /// Query-owned materialization payload for one anonymous nominal referenced by
 /// declaration semantics. Identity remains separate from shape so recursive
 /// uses and structurally equal aliases can be joined before fields are filled.
@@ -401,6 +410,7 @@ pub enum DurableDeclarationPayload {
         fields: Arc<[(Arc<str>, DurableType)]>,
         is_copy: bool,
         is_linear: bool,
+        conformance: DurableConformanceFacts,
     },
     Enum {
         variants: Arc<[(Arc<str>, Arc<[DurableType]>)]>,
@@ -475,6 +485,31 @@ impl RetainedCharge for DurableSemanticParameter {
         self.name
             .retained_charge()
             .saturating_add(self.ty.retained_charge())
+            .saturating_add(self.bounds.retained_charge())
+    }
+}
+
+impl RetainedCharge for rue_air::DurableConformance<StableDefinitionKey> {
+    fn retained_charge(&self) -> u64 {
+        self.interface.retained_charge()
+    }
+}
+
+impl RetainedCharge for DurableConformanceFacts {
+    fn retained_charge(&self) -> u64 {
+        self.conformances
+            .retained_charge()
+            .saturating_add(self.assoc_types.retained_charge())
+            .saturating_add(self.requirements.retained_charge())
+    }
+}
+
+impl RetainedCharge for DurableConformanceAssertion {
+    fn retained_charge(&self) -> u64 {
+        self.subject
+            .retained_charge()
+            .saturating_add(self.interfaces.retained_charge())
+            .saturating_add(self.module.retained_charge())
     }
 }
 
@@ -486,7 +521,13 @@ impl RetainedCharge for DurableDeclarationPayload {
             } => parameters
                 .retained_charge()
                 .saturating_add(result.retained_charge()),
-            Self::Struct { fields, .. } => fields.retained_charge(),
+            Self::Struct {
+                fields,
+                conformance,
+                ..
+            } => fields
+                .retained_charge()
+                .saturating_add(conformance.retained_charge()),
             Self::Enum { variants, .. } => variants.retained_charge(),
             Self::Const { ty, value } => {
                 ty.retained_charge().saturating_add(value.retained_charge())

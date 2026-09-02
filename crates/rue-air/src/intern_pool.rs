@@ -663,6 +663,14 @@ struct TypeInternPoolInner {
     /// FFI-safety.
     repr_c_structs: Arc<AHashSet<StructId>>,
 
+    /// Structs that are `interface` shells (spec 6.7): an interface lowers to
+    /// the fieldless struct shape and its requirements are its methods, so
+    /// the shell is a struct in the pool. The marker is what makes it not a
+    /// type: body type resolution refuses an interface where a type is
+    /// required (spec 6.7:18), and conformance verification reads its
+    /// requirements. A side set for the same reason as `repr_c_structs`.
+    interface_structs: Arc<AHashSet<StructId>>,
+
     /// Latched once a registration asked for a pool index past the published
     /// 24-bit `Type` payload ceiling (spec Appendix C.6:1,
     /// [`MAX_COMPOSITE_TYPES`]).
@@ -828,6 +836,7 @@ impl TypeInternPoolInner {
             struct_lang_items: Arc::default(),
             lang_item_structs: Arc::default(),
             repr_c_structs: Arc::default(),
+            interface_structs: Arc::default(),
             capacity_exceeded: false,
         }
     }
@@ -1023,6 +1032,7 @@ impl TypeInternPoolInner {
         flat.struct_lang_items = self.struct_lang_items.clone();
         flat.lang_item_structs = self.lang_item_structs.clone();
         flat.repr_c_structs = self.repr_c_structs.clone();
+        flat.interface_structs = self.interface_structs.clone();
         flat.capacity_exceeded |= self.capacity_exceeded;
         flat
     }
@@ -1072,6 +1082,7 @@ impl TypeInternPoolInner {
             struct_lang_items: Arc::clone(&self.struct_lang_items),
             lang_item_structs: Arc::clone(&self.lang_item_structs),
             repr_c_structs: Arc::clone(&self.repr_c_structs),
+            interface_structs: Arc::clone(&self.interface_structs),
             capacity_exceeded,
         }
     }
@@ -3444,6 +3455,21 @@ impl TypeInternPool {
         inner.repr_c_structs.contains(&struct_id)
     }
 
+    /// Record that a struct is an `interface` shell (spec 6.7). Set when the
+    /// shell's durable nominal is registered; read by body type resolution
+    /// (an interface is not a type, spec 6.7:18) and by conformance
+    /// verification.
+    pub fn set_struct_interface(&self, struct_id: StructId) {
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        Arc::make_mut(&mut inner.interface_structs).insert(struct_id);
+    }
+
+    /// Whether a struct is an `interface` shell.
+    pub fn is_struct_interface(&self, struct_id: StructId) -> bool {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        inner.interface_structs.contains(&struct_id)
+    }
+
     /// Get an enum definition by EnumId.
     ///
     /// This method resolves the pool-issued identity and returns the shared
@@ -4007,6 +4033,11 @@ impl FrozenTypeInternPool {
     /// frozen pool for the FFI predicates and the classifier.
     pub fn is_struct_repr_c(&self, id: StructId) -> bool {
         self.inner.repr_c_structs.contains(&id)
+    }
+
+    /// Whether a struct is an `interface` shell (spec 6.7).
+    pub fn is_struct_interface(&self, id: StructId) -> bool {
+        self.inner.interface_structs.contains(&id)
     }
 
     pub fn struct_symbol_name(&self, id: StructId) -> String {

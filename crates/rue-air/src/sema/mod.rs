@@ -121,7 +121,8 @@ pub use body_endpoint::ProviderEndpointFacts;
 pub use body_identity::{
     BodyRirBundle, BodyRirIndexAttribution, BodyRirView, DurableAnonymousMethod,
     DurableAnonymousMethodType, DurableAnonymousShape, DurableAnonymousSource,
-    DurableCallableSource, DurableCallableTypeSyntax, DurableConst, DurableConstSource,
+    DurableCallableSource, DurableCallableTypeSyntax, DurableConformance,
+    DurableConformanceAssertion, DurableConformanceFacts, DurableConst, DurableConstSource,
     DurableFunction, DurableMethod, DurableNominal, DurableNominalBody, DurableNominalSource,
     DurableSignatureParameter, ProviderBodyAnalysisState, ProviderIdentityContext,
 };

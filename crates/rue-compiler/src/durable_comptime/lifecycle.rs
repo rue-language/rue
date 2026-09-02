@@ -2267,6 +2267,7 @@ mod effect_lifecycle_tests {
             ty,
             mode: DurableParameterMode::Value,
             is_comptime: true,
+            bounds: Arc::from([]),
         }
     }
 

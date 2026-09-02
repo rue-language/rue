@@ -168,10 +168,12 @@ impl rue_air::DurableNominalSource<StableDefinitionKey, ModuleId> for DurableDec
                 fields,
                 is_copy,
                 is_linear,
+                conformance,
             } => rue_air::DurableNominalBody::Struct {
                 fields: fields.clone().into(),
                 is_copy: *is_copy,
                 is_linear: *is_linear,
+                conformance: conformance.clone(),
             },
             Payload::Enum {
                 variants,

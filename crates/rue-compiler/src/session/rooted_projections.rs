@@ -2277,11 +2277,39 @@ fn semantic_nucleus_failure_diagnostics(
     declaration: Option<&crate::declaration_candidate::DeclarationCandidateKey>,
     failure: &crate::semantic_query_nucleus::SemanticNucleusFailure,
 ) -> CompileErrors {
+    let mut diagnostics = CompileErrors::new();
+    for error in
+        semantic_nucleus_failure_diagnostics_unassisted(modules, declaration, failure).into_iter()
+    {
+        // Every preview gate reads the same way, wherever it is anchored:
+        // the declaration-level gates say which flag enables the feature
+        // exactly as the body-level `require_preview` does.
+        let error = match &error.kind {
+            ErrorKind::PreviewFeatureRequired { feature, .. } => {
+                let help = format!(
+                    "use --preview {} to enable this feature ({})",
+                    feature.name(),
+                    feature.adr()
+                );
+                error.with_help(help)
+            }
+            _ => error,
+        };
+        diagnostics.push(error);
+    }
+    diagnostics
+}
+
+fn semantic_nucleus_failure_diagnostics_unassisted(
+    modules: &[Arc<crate::parsed_modules::ParsedModule>],
+    declaration: Option<&crate::declaration_candidate::DeclarationCandidateKey>,
+    failure: &crate::semantic_query_nucleus::SemanticNucleusFailure,
+) -> CompileErrors {
     use crate::semantic_query_nucleus::SemanticNucleusFailure as F;
     if let F::DuplicateDeclarations(failures) = failure {
         let mut diagnostics = CompileErrors::new();
         for failure in failures.iter() {
-            diagnostics.extend(semantic_nucleus_failure_diagnostics(
+            diagnostics.extend(semantic_nucleus_failure_diagnostics_unassisted(
                 modules,
                 None,
                 &F::DuplicateDeclaration {
@@ -2432,6 +2460,22 @@ fn semantic_nucleus_failure_diagnostics(
             rue_span::Span::with_file(producer.file_id, start, end),
         ));
     }
+    if let F::DiagnosticAtModuleRange {
+        kind,
+        module,
+        start,
+        end,
+    } = failure
+        && let Some(file) = modules
+            .iter()
+            .find(|candidate| candidate.module_id() == module)
+            .map(|module| module.file_id())
+    {
+        return CompileErrors::from(CompileError::new(
+            kind.clone(),
+            rue_span::Span::with_file(file, *start, *end),
+        ));
+    }
     if let F::OwnershipGate { kind, gate } = failure {
         let primary_span = declaration.and_then(|key| {
             modules
@@ -2521,6 +2565,7 @@ fn semantic_nucleus_failure_diagnostics(
             unreachable!("foreign-signature conflicts return above")
         }
         F::DiagnosticAtProducerRange { kind, .. } => (kind.clone(), None, None),
+        F::DiagnosticAtModuleRange { kind, .. } => (kind.clone(), None, None),
         F::OwnershipGate { kind, .. } => (kind.clone(), None, None),
         F::DiagnosticWithHelp { kind, help } => (kind.clone(), Some(help.clone()), None),
         F::DiagnosticWithNote { kind, note } => (kind.clone(), None, Some(note.clone())),

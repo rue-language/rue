@@ -30,7 +30,9 @@ use super::fact_mode::{
     ArrayLengthRequest, BodyAnalysisReadHost, ModulePrefixRequest, StructuredTypeSyntax,
     StructuredTypeSyntaxRequest, TypeSyntaxResult,
 };
-use super::info::{FunctionCallInfo, MethodCallInfo};
+use super::info::{
+    ConformanceAssertion, FunctionCallInfo, InterfaceFacts, MethodCallInfo, RequirementSignature,
+};
 use super::{
     AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyAnalysisWork, ConstInfo, ConstValue,
     DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind, FunctionInfo,
@@ -260,6 +262,40 @@ pub(crate) trait DeclarationFacts {
         span: Span,
     ) -> CompileResult<()>;
 
+    /// The interface facts of `interface` when it is an `interface` shell
+    /// (spec 6.7), or `None` for an ordinary struct.
+    fn interface_facts(&mut self, interface: StructId) -> Option<InterfaceFacts>;
+
+    /// The associated type `name` declared in the body of the struct
+    /// `subject` (`pub const Name = Type;`, spec 6.7:10).
+    fn assoc_type(&mut self, subject: Type, name: &str) -> Option<Type>;
+
+    /// Every conformance assertion for `subject` this body can see: the
+    /// subject's struct-header list and the freestanding assertions of the
+    /// body's module and the modules it transitively imports (spec 6.7:15).
+    fn conformance_assertions(&mut self, subject: Type) -> Vec<ConformanceAssertion>;
+
+    /// The interfaces bounding comptime parameter `index` of `function`
+    /// (spec 6.7:14); empty for an unbounded parameter.
+    fn comptime_parameter_bounds(
+        &mut self,
+        function: &FunctionCallInfo,
+        index: usize,
+    ) -> Vec<StructId>;
+
+    /// The signature of requirement `name` of `interface` with `self_type`
+    /// substituted for `Self` and `assoc_types` for the interface's
+    /// associated-constant names (spec 6.7:10). `None` when the interface
+    /// declares no such requirement.
+    fn interface_requirement_signature(
+        &mut self,
+        interface: StructId,
+        name: &str,
+        self_type: Type,
+        assoc_types: &[(Arc<str>, Type)],
+        span: Span,
+    ) -> CompileResult<Option<RequirementSignature>>;
+
     fn declaration_binding_active(&self) -> bool;
 
     fn known_linear_during_binding(&self, ty: Type) -> Option<bool>;
@@ -464,6 +500,12 @@ pub(crate) struct OrdinaryBodyEngine<'h, H: OrdinaryBodyAnalysisHost> {
     storage: &'h mut H,
     comptime_reduction_memo:
         ComptimeCompletedCallMemo<IssuedStableProducerId, Target, Type, ConstValue, ConstValue>,
+    /// Conformance assertions this body has already verified against the
+    /// subject's inherent members (spec 6.7:10), keyed by subject type and
+    /// interface. Repeated assertions of one fact are identical (spec
+    /// 6.7:11), so one verification per body answers every call relying on
+    /// it.
+    pub(super) verified_conformances: AHashSet<(Type, StructId)>,
 }
 
 #[cfg(test)]
@@ -529,6 +571,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         Self {
             storage,
             comptime_reduction_memo: ComptimeCompletedCallMemo::new(),
+            verified_conformances: AHashSet::new(),
         }
     }
 
@@ -761,6 +804,33 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         span: Span,
     ) -> CompileResult<()> {
         self.storage.require_preview(feature, what, span)
+    }
+    pub(crate) fn interface_facts(&mut self, interface: StructId) -> Option<InterfaceFacts> {
+        self.storage.interface_facts(interface)
+    }
+    pub(crate) fn assoc_type(&mut self, subject: Type, name: &str) -> Option<Type> {
+        self.storage.assoc_type(subject, name)
+    }
+    pub(crate) fn conformance_assertions(&mut self, subject: Type) -> Vec<ConformanceAssertion> {
+        self.storage.conformance_assertions(subject)
+    }
+    pub(crate) fn comptime_parameter_bounds(
+        &mut self,
+        function: &FunctionCallInfo,
+        index: usize,
+    ) -> Vec<StructId> {
+        self.storage.comptime_parameter_bounds(function, index)
+    }
+    pub(crate) fn interface_requirement_signature(
+        &mut self,
+        interface: StructId,
+        name: &str,
+        self_type: Type,
+        assoc_types: &[(Arc<str>, Type)],
+        span: Span,
+    ) -> CompileResult<Option<RequirementSignature>> {
+        self.storage
+            .interface_requirement_signature(interface, name, self_type, assoc_types, span)
     }
     pub(crate) fn format_type_name(&self, ty: Type) -> String {
         self.storage.friendly_type_display(ty)

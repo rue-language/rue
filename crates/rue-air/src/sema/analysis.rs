@@ -388,6 +388,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 mod builtin_ops;
 mod calls;
 mod instructions;
+mod interfaces;
 mod intrinsics;
 mod ownership;
 pub(crate) use ownership::{AccessorEscapeSite, CallOperands, FirstClassStrSite};
