@@ -15,7 +15,10 @@
 // (lseek with a `Whence` enum) and `File.tell`; `File.metadata`/`fs.metadata`
 // (fstat/newfstatat -> `Metadata` with size + is_file/is_dir); `fs.rename`,
 // `fs.remove` (unlinkat); and directory create/remove (`fs.create_dir`,
-// `fs.create_dir_all`, `fs.remove_dir` via mkdirat/unlinkat+AT_REMOVEDIR).
+// `fs.create_dir_all`, `fs.remove_dir`, and `fs.remove_dir_all` via
+// mkdirat/unlinkat+AT_REMOVEDIR). The recursive remover shares the canonical
+// dirent scanner with `read_dir`, but keeps its destructive traversal anchored
+// to already-open directory descriptors.
 // `create_dir_all` (RUE-995) is pure composition over `create_dir`: it scans the
 // path for `/` bytes and creates each prefix, because Rue has no path type yet.
 //
@@ -401,7 +404,7 @@ fn _o_append() -> u64 {
 //   flag         x86-64 Linux        aarch64 Linux
 //   O_DIRECTORY  0o200000 = 65536    0o40000  = 16384
 //   O_DIRECT     0o40000  = 16384    0o200000 = 65536
-//   O_NOFOLLOW   0o400000 = 262144   0o100000 = 32768
+//   O_NOFOLLOW   0o400000 = 131072   0o100000 = 32768
 //
 // So an OS-only dispatch does not merely pass a useless flag on aarch64 — it
 // passes O_DIRECT, and opening a directory with O_DIRECT fails EINVAL on the
@@ -447,6 +450,28 @@ fn _o_directory() -> u64 {
     }
 }
 
+// O_NOFOLLOW rejects a symbolic link in the final component of openat. Linux
+// swaps this flag's value between x86-64 and aarch64 just as it does
+// O_DIRECTORY; macOS uses 0x100 on both supported architectures. Recursive
+// removal combines it with component-by-component fd-relative opens, so no
+// component used as a directory can be replaced by a followed symlink.
+fn _o_nofollow() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 131072, // 0o400000
+                Os.Macos => 256,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 32768, // 0o100000 (arm64 override)
+                Os.Macos => 256,
+            }
+        },
+    }
+}
+
 // Default mode for newly created files: 0o644.
 fn _create_mode() -> u64 { 420 }
 
@@ -463,15 +488,14 @@ fn _at_removedir() -> u64 {
 }
 
 // AT_SYMLINK_NOFOLLOW: the *at flag that stats the LINK rather than its target.
-// Linux 0x100=256; macOS 0x0020=32. Header-checked but NOT pinned by a test on
-// any target: its only caller is the DT_UNKNOWN fallback below, and every
-// filesystem CI runs on (ext4, tmpfs, APFS) populates `d_type`, so no case
-// reaches it. Treat a change here as unvalidated. Genuinely
+// Linux 0x100=256; macOS 0x0020=32. Root classification in `remove_dir_all` is
+// pinned by the trailing-separator root-symlink case. Its other use is the
+// DT_UNKNOWN fallback below; filesystems CI runs on normally populate `d_type`,
+// so that path remains header-checked rather than directly pinned. Genuinely
 // arch-independent on Linux, unlike the `O_*` flags: the `AT_*` values live in
 // `include/uapi/linux/fcntl.h`, which has no per-arch variant to override them
-// (see `_o_directory` for the flags that do). Used only by the
-// directory-enumeration DT_UNKNOWN fallback, which must reproduce `d_type`'s own
-// no-follow semantics.
+// (see `_o_directory` for the flags that do). The fallback must reproduce
+// `d_type`'s own no-follow semantics.
 fn _at_symlink_nofollow() -> u64 {
     match @target_os() {
         Os.Linux => 256,
@@ -714,8 +738,13 @@ fn _path_to_cbuf(borrow path: strbuf.StrBuf) -> ptr mut u8 {
 pub struct File {
     fd: i32,
 
-    // Shared openat path used by the three constructors.
-    fn _open_with(borrow path: strbuf.StrBuf, flags: u64, mode: u64) -> result.Result(File, FileError) {
+    // Shared openat path used by the constructors and fd-relative internals.
+    fn _openat_with(
+        dirfd: u64,
+        borrow path: strbuf.StrBuf,
+        flags: u64,
+        mode: u64,
+    ) -> result.Result(File, FileError) {
         let R = result.Result(File, FileError);
         if _path_has_nul(borrow path) {
             return R.Err(FileError.InvalidInput);
@@ -723,7 +752,7 @@ pub struct File {
         let cbuf = _path_to_cbuf(borrow path);
         let addr: u64 = checked { @ptr_to_int(cbuf) };
         let free_len = path.len() + 1;
-        let ret: i64 = checked { @syscall(_sys_openat(), _at_fdcwd(), addr, flags, mode) };
+        let ret: i64 = checked { @syscall(_sys_openat(), dirfd, addr, flags, mode) };
         checked { @free(cbuf, free_len, 1); };
         if ret < 0 {
             R.Err(_normalize_errno(0 - ret))
@@ -731,6 +760,10 @@ pub struct File {
             let fd: i32 = @intCast(ret);
             R.Ok(File { fd: fd })
         }
+    }
+
+    fn _open_with(borrow path: strbuf.StrBuf, flags: u64, mode: u64) -> result.Result(File, FileError) {
+        File._openat_with(_at_fdcwd(), borrow path, flags, mode)
     }
 
     // Open an existing file read-only (O_RDONLY).
@@ -955,18 +988,21 @@ drop fn File(self) {
 }
 
 // ---------------------------------------------------------------------------
-// Path-based operations (ADR-0057 v1 follow-ups). Each marshals its path(s)
-// through the same NUL-appended `_path_to_cbuf` the constructors use, issues an
-// *at syscall relative to AT_FDCWD (uniform with `openat`), and normalizes the
-// errno through the shared per-OS tables. No new errno class appears, so the
-// tables are unchanged.
+// Path operations (ADR-0057 v1 follow-ups). Public operations use AT_FDCWD;
+// private fd-relative variants serve anchored traversal. Both marshal through
+// the same NUL-appended `_path_to_cbuf` and normalize errno through the shared
+// per-OS tables. No new errno class appears, so the tables are unchanged.
 // ---------------------------------------------------------------------------
 
-// newfstatat(AT_FDCWD, path, .., flags) with the caller choosing the *at flags.
-// `metadata` passes 0 (follow symlinks); the directory-enumeration DT_UNKNOWN
-// fallback passes AT_SYMLINK_NOFOLLOW so the kind it derives matches what
-// `d_type` would have reported.
-fn _metadata_at(borrow path: strbuf.StrBuf, flags: u64) -> result.Result(Metadata, FileError) {
+// newfstatat(dirfd, path, .., flags) with the caller choosing the descriptor and
+// *at flags. `metadata` uses AT_FDCWD and flags 0 (follow symlinks); the
+// directory-enumeration DT_UNKNOWN fallback uses its already-open directory and
+// AT_SYMLINK_NOFOLLOW so the kind matches what `d_type` would have reported.
+fn _metadata_at_dir(
+    dirfd: u64,
+    borrow path: strbuf.StrBuf,
+    flags: u64,
+) -> result.Result(Metadata, FileError) {
     let R = result.Result(Metadata, FileError);
     if _path_has_nul(borrow path) {
         return R.Err(FileError.InvalidInput);
@@ -981,7 +1017,7 @@ fn _metadata_at(borrow path: strbuf.StrBuf, flags: u64) -> result.Result(Metadat
         @panic("out of memory");
     }
     let saddr: u64 = checked { @ptr_to_int(sbuf) };
-    let ret: i64 = checked { @syscall(_sys_newfstatat(), _at_fdcwd(), paddr, saddr, flags) };
+    let ret: i64 = checked { @syscall(_sys_newfstatat(), dirfd, paddr, saddr, flags) };
     checked { @free(cbuf, free_len, 1); };
     if ret < 0 {
         checked { @free(sbuf, sz, 8); };
@@ -990,6 +1026,10 @@ fn _metadata_at(borrow path: strbuf.StrBuf, flags: u64) -> result.Result(Metadat
     let md = _decode_stat(sbuf);
     checked { @free(sbuf, sz, 8); };
     R.Ok(md)
+}
+
+fn _metadata_at(borrow path: strbuf.StrBuf, flags: u64) -> result.Result(Metadata, FileError) {
+    _metadata_at_dir(_at_fdcwd(), borrow path, flags)
 }
 
 // Size + type metadata for a path, via newfstatat(AT_FDCWD, path, .., 0). This
@@ -1025,21 +1065,8 @@ pub fn rename(borrow from: strbuf.StrBuf, borrow to: strbuf.StrBuf) -> result.Re
 // Remove a file (not a directory): unlinkat(AT_FDCWD, path, 0). Removing a
 // directory path fails (EISDIR/EPERM -> the normalized error); use `remove_dir`.
 pub fn remove(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
-    let R = result.Result((), FileError);
-    if _path_has_nul(borrow path) {
-        return R.Err(FileError.InvalidInput);
-    }
-    let cbuf = _path_to_cbuf(borrow path);
-    let addr: u64 = checked { @ptr_to_int(cbuf) };
-    let free_len = path.len() + 1;
     let no_flags: u64 = 0; // no AT_REMOVEDIR: unlink a file, not a directory
-    let ret: i64 = checked { @syscall(_sys_unlinkat(), _at_fdcwd(), addr, no_flags) };
-    checked { @free(cbuf, free_len, 1); };
-    if ret < 0 {
-        R.Err(_normalize_errno(0 - ret))
-    } else {
-        R.Ok(())
-    }
+    _unlinkat_dir(_at_fdcwd(), borrow path, no_flags)
 }
 
 // mkdirat(AT_FDCWD, path, 0o755), returning the RAW syscall result: `>= 0` on
@@ -1199,19 +1226,37 @@ pub fn create_dir_all(borrow path: strbuf.StrBuf) -> result.Result((), FileError
 // Remove an empty directory: unlinkat(AT_FDCWD, path, AT_REMOVEDIR). A
 // non-empty directory is `Err` (ENOTEMPTY -> `Other`, or the normalized case).
 pub fn remove_dir(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
+    _unlinkat_dir(_at_fdcwd(), borrow path, _at_removedir())
+}
+
+// The fd-relative form is private because its `dirfd` is meaningful only while
+// the owning `File` remains alive. Recursive removal uses it for every mutation
+// after anchoring the requested path.
+fn _unlinkat_dir(
+    dirfd: u64,
+    borrow name: strbuf.StrBuf,
+    flags: u64,
+) -> result.Result((), FileError) {
     let R = result.Result((), FileError);
-    if _path_has_nul(borrow path) {
+    if _path_has_nul(borrow name) {
         return R.Err(FileError.InvalidInput);
     }
-    let cbuf = _path_to_cbuf(borrow path);
+    let cbuf = _path_to_cbuf(borrow name);
     let addr: u64 = checked { @ptr_to_int(cbuf) };
-    let free_len = path.len() + 1;
-    let ret: i64 = checked { @syscall(_sys_unlinkat(), _at_fdcwd(), addr, _at_removedir()) };
+    let free_len = name.len() + 1;
+    let ret: i64 = checked { @syscall(_sys_unlinkat(), dirfd, addr, flags) };
     checked { @free(cbuf, free_len, 1); };
     if ret < 0 {
         R.Err(_normalize_errno(0 - ret))
     } else {
         R.Ok(())
+    }
+}
+
+fn _close_fd(fd: i32) {
+    if fd >= 0 {
+        let fd_u: u64 = @intCast(fd);
+        checked { @syscall(_sys_close(), fd_u); };
     }
 }
 
@@ -1250,10 +1295,10 @@ pub fn remove_dir(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
 // without `ftype`, some network and overlay filesystems, and older kernels all
 // report DT_UNKNOWN (0). Believing it would silently mis-type entries and make
 // `walk` skip real subtrees, so this module pays for the honest answer instead:
-// an entry whose `d_type` is DT_UNKNOWN is resolved with a
-// newfstatat(AT_SYMLINK_NOFOLLOW) on its path. AT_SYMLINK_NOFOLLOW is what makes
-// the fallback agree with `d_type`, which describes the entry itself and never a
-// symlink's target. If that stat also fails — the entry was removed between the
+// an entry whose `d_type` is DT_UNKNOWN is resolved with an fd-relative
+// newfstatat(AT_SYMLINK_NOFOLLOW) on its base name. AT_SYMLINK_NOFOLLOW is what
+// makes the fallback agree with `d_type`, which describes the entry itself and
+// never a symlink's target. If that stat also fails — the entry was removed between the
 // getdents and the stat, most plausibly — the entry is reported as
 // `FileKind.Other` rather than failing the whole listing; `Other` is the "not a
 // file, not a directory, do not descend" answer, which is the safe reading of an
@@ -1386,7 +1431,7 @@ fn _kind_of_code(code: u8) -> FileKind {
 // Resolve an entry's kind from its `d_type`, falling back to a no-follow stat of
 // `path` when the filesystem reported DT_UNKNOWN. See the DT_UNKNOWN note above
 // for why the fallback exists and why a failed fallback is `Other`.
-fn _kind_for(dtype: u8, borrow path: strbuf.StrBuf) -> u8 {
+fn _kind_for_at(dtype: u8, dirfd: u64, borrow name: strbuf.StrBuf) -> u8 {
     if dtype == _dt_dir() {
         return _KIND_DIR();
     }
@@ -1400,7 +1445,7 @@ fn _kind_for(dtype: u8, borrow path: strbuf.StrBuf) -> u8 {
         return _KIND_OTHER();
     }
     let MR = result.Result(Metadata, FileError);
-    match _metadata_at(borrow path, _at_symlink_nofollow()) {
+    match _metadata_at_dir(dirfd, borrow name, _at_symlink_nofollow()) {
         MR.Ok(md) => {
             if md.is_dir() {
                 _KIND_DIR()
@@ -1708,6 +1753,7 @@ fn _is_dot_entry(buf: ptr mut u8, start: u64, len: u64) -> bool {
 fn _scan_dirents(
     buf: ptr mut u8,
     n: u64,
+    dirfd: u64,
     borrow parent: strbuf.StrBuf,
     inout out: DirEntries,
 ) {
@@ -1746,8 +1792,9 @@ fn _scan_dirents(
 
         if name_len > 0 && !_is_dot_entry(buf, name_start, name_len) {
             let full = _join_entry_path(borrow parent, buf, name_start, name_len);
-            let kind = _kind_for(dtype, borrow full);
             let name_begin = full.len() - name_len;
+            let name = full.substring(name_begin, name_len);
+            let kind = _kind_for_at(dtype, dirfd, borrow name);
             out._push(borrow full, name_begin, kind);
         }
         off = record_end;
@@ -1768,20 +1815,11 @@ fn _scan_dirents(
 // atomic view: a directory being modified concurrently may list an entry that is
 // gone by the time the caller opens it. That is inherent to the syscall, not to
 // this wrapper.
-pub fn read_dir(borrow path: strbuf.StrBuf) -> result.Result(DirEntries, FileError) {
+fn _read_dir_fd(
+    fd_u: u64,
+    borrow path: strbuf.StrBuf,
+) -> result.Result(DirEntries, FileError) {
     let R = result.Result(DirEntries, FileError);
-    let FR = result.Result(File, FileError);
-
-    // O_DIRECTORY moves the "not a directory" rejection to the open, so no
-    // descriptor for a non-directory is ever held (see `_o_directory`). The
-    // `File` is owned, so the fd closes on every exit from here.
-    let dir = match File._open_with(borrow path, _o_rdonly() | _o_directory(), 0) {
-        FR.Ok(f) => f,
-        FR.Err(e) => {
-            return R.Err(e);
-        },
-    };
-    let fd_u: u64 = @intCast(dir.fd);
 
     let cap = _dirent_buf_size();
     let buf: ptr mut u8 = checked { @alloc(cap, 8) };
@@ -1828,7 +1866,7 @@ pub fn read_dir(borrow path: strbuf.StrBuf) -> result.Result(DirEntries, FileErr
             reading = false;
         } else {
             let filled: u64 = @intCast(ret);
-            _scan_dirents(buf, filled, borrow path, inout entries);
+            _scan_dirents(buf, filled, fd_u, borrow path, inout entries);
         }
     }
 
@@ -1840,6 +1878,23 @@ pub fn read_dir(borrow path: strbuf.StrBuf) -> result.Result(DirEntries, FileErr
     }
     let order = _sorted_order(borrow entries);
     R.Ok(_reorder(borrow entries, borrow order))
+}
+
+pub fn read_dir(borrow path: strbuf.StrBuf) -> result.Result(DirEntries, FileError) {
+    let R = result.Result(DirEntries, FileError);
+    let FR = result.Result(File, FileError);
+
+    // O_DIRECTORY moves the "not a directory" rejection to the open, so no
+    // descriptor for a non-directory is ever held (see `_o_directory`). The
+    // `File` is owned, so the fd closes on every exit from here.
+    let dir = match File._open_with(borrow path, _o_rdonly() | _o_directory(), 0) {
+        FR.Ok(f) => f,
+        FR.Err(e) => {
+            return R.Err(e);
+        },
+    };
+    let fd_u: u64 = @intCast(dir.fd);
+    _read_dir_fd(fd_u, borrow path)
 }
 
 // Every entry in the tree rooted at `root`, excluding `root` itself and every
@@ -1917,6 +1972,284 @@ pub fn walk(borrow root: strbuf.StrBuf) -> result.Result(DirEntries, FileError) 
     }
 
     R.Ok(out)
+}
+
+struct _RemoveRoot {
+    parent: File,
+    name: strbuf.StrBuf,
+}
+
+fn _normalized_remove_root(borrow root: strbuf.StrBuf) -> strbuf.StrBuf {
+    let mut n = root.len();
+    let one: u64 = 1;
+    while n > one && strbuf.StrBuf.byte_at_borrowed(borrow root, n - one) == _path_separator() {
+        n -= one;
+    }
+    root.substring(0, n)
+}
+
+// Open every parent component relative to the descriptor for `.` or `/`.
+// O_NOFOLLOW applies at each step, so replacing any component with a symlink
+// cannot redirect the later traversal. The returned final name is intentionally
+// not opened here: the caller first classifies it with fd-relative no-follow
+// metadata, preserving root-symlink removal semantics.
+fn _anchor_remove_root(borrow root: strbuf.StrBuf) -> result.Result(_RemoveRoot, FileError) {
+    let R = result.Result(_RemoveRoot, FileError);
+    let FR = result.Result(File, FileError);
+    if _path_has_nul(borrow root) {
+        return R.Err(FileError.InvalidInput);
+    }
+
+    let normalized = _normalized_remove_root(borrow root);
+    let n = normalized.len();
+    let zero: u64 = 0;
+    let one: u64 = 1;
+    let slash = _path_separator();
+    let absolute = n > zero && strbuf.StrBuf.byte_at_borrowed(borrow normalized, zero) == slash;
+    let anchor_name = if absolute { strbuf.StrBuf.from_str(borrow "/") } else { strbuf.StrBuf.from_str(borrow ".") };
+    let mut current = match File._open_with(
+        borrow anchor_name,
+        _o_rdonly() | _o_directory() | _o_nofollow(),
+        0,
+    ) {
+        FR.Ok(f) => f,
+        FR.Err(e) => { return R.Err(e); },
+    };
+
+    // `/` has no basename. Keeping the absolute spelling as the final name
+    // preserves its meaning for metadata/open/unlinkat without converting it
+    // to the empty path.
+    if absolute && n == one {
+        return R.Ok(_RemoveRoot { parent: current, name: normalized });
+    }
+
+    let mut i: u64 = zero;
+    if absolute {
+        i = one;
+    }
+    while i < n {
+        while i < n && strbuf.StrBuf.byte_at_borrowed(borrow normalized, i) == slash {
+            i += one;
+        }
+        let start = i;
+        while i < n && strbuf.StrBuf.byte_at_borrowed(borrow normalized, i) != slash {
+            i += one;
+        }
+        let component = normalized.substring(start, i - start);
+        let mut next = i;
+        while next < n && strbuf.StrBuf.byte_at_borrowed(borrow normalized, next) == slash {
+            next += one;
+        }
+        if next == n {
+            return R.Ok(_RemoveRoot { parent: current, name: component });
+        }
+        let current_fd: u64 = @intCast(current.fd);
+        current = match File._openat_with(
+            current_fd,
+            borrow component,
+            _o_rdonly() | _o_directory() | _o_nofollow(),
+            0,
+        ) {
+            FR.Ok(f) => f,
+            FR.Err(e) => { return R.Err(e); },
+        };
+        i = next;
+    }
+    R.Ok(_RemoveRoot { parent: current, name: normalized })
+}
+
+fn _errno_eloop() -> i64 {
+    match @target_os() {
+        Os.Linux => 40,
+        Os.Macos => 62,
+    }
+}
+
+fn _errno_enotdir() -> i64 { 20 }
+
+fn _is_replaced_directory_error(e: FileError) -> bool {
+    match e {
+        FileError.Other(raw) => raw == _errno_enotdir() || raw == _errno_eloop(),
+        _ => false,
+    }
+}
+
+fn _remove_task_state_rmdir() -> u8 { 255 }
+
+fn _close_pending_dirs(
+    inout kinds: arraybuf.ArrayBuf(u8),
+    inout dirfds: arraybuf.ArrayBuf(i32),
+) {
+    while kinds.len() > 0 {
+        let kind = kinds.pop_or(_KIND_OTHER());
+        let fd = dirfds.pop_or(-1);
+        if kind == _remove_task_state_rmdir() {
+            _close_fd(fd);
+        }
+    }
+}
+
+// Remove a directory and all of its contents without following directory
+// symlinks. The requested parent and every descendant directory are held open;
+// enumeration and unlinkat are relative to those descriptors. A rename or
+// symlink swap can therefore make an operation fail truthfully, but cannot
+// redirect deletion outside the directory that was opened.
+//
+// The explicit heap task stack is post-order: a directory-removal marker is
+// pushed before its children and therefore popped after them. Open descriptors
+// are bounded by current traversal depth, not tree width. On failure, pending
+// owned descriptors close while unwinding and already-removed entries stay
+// removed.
+pub fn remove_dir_all(borrow root: strbuf.StrBuf) -> result.Result((), FileError) {
+    let R = result.Result((), FileError);
+    let one: u64 = 1;
+    let AR = result.Result(_RemoveRoot, FileError);
+    let MR = result.Result(Metadata, FileError);
+    let FR = result.Result(File, FileError);
+    let DR = result.Result(DirEntries, FileError);
+    let Names = arraybuf.ArrayBuf(strbuf.StrBuf);
+    let I32s = arraybuf.ArrayBuf(i32);
+    let U8s = arraybuf.ArrayBuf(u8);
+    let ON = option.Option(strbuf.StrBuf);
+
+    let anchored = match _anchor_remove_root(borrow root) {
+        AR.Ok(a) => a,
+        AR.Err(e) => { return R.Err(e); },
+    };
+    let parent_fd: u64 = @intCast(anchored.parent.fd);
+    let root_md = match _metadata_at_dir(parent_fd, borrow anchored.name, _at_symlink_nofollow()) {
+        MR.Ok(md) => md,
+        MR.Err(e) => { return R.Err(e); },
+    };
+    if root_md.is_symlink() {
+        return _unlinkat_dir(parent_fd, borrow anchored.name, 0);
+    }
+
+    // Opening a regular file with O_DIRECTORY supplies the native ENOTDIR
+    // result (20 on Linux and macOS) without ever unlinking that file.
+    let mut root_dir = match File._openat_with(
+        parent_fd,
+        borrow anchored.name,
+        _o_rdonly() | _o_directory() | _o_nofollow(),
+        0,
+    ) {
+        FR.Ok(f) => f,
+        FR.Err(e) => {
+            // An anchored directory may have become a file or symlink between
+            // no-follow stat and openat. Unlink that replacement without
+            // following it; a stable ordinary-file root still returns ENOTDIR.
+            if root_md.is_dir() && _is_replaced_directory_error(e) {
+                return _unlinkat_dir(parent_fd, borrow anchored.name, 0);
+            }
+            return R.Err(e);
+        },
+    };
+
+    let mut parents = I32s.new();
+    let mut names = Names.new();
+    let mut kinds = U8s.new();
+    let mut dirfds = I32s.new();
+
+    // The root directory is already open; transfer its descriptor to the
+    // marker stack so exactly that value owns the eventual close.
+    let root_fd = root_dir.fd;
+    root_dir.fd = -1;
+    parents.push(anchored.parent.fd);
+    names.push(anchored.name);
+    kinds.push(_remove_task_state_rmdir());
+    dirfds.push(root_fd);
+
+    let first = match _read_dir_fd(@intCast(root_fd), borrow strbuf.StrBuf.new()) {
+        DR.Ok(listing) => listing,
+        DR.Err(e) => {
+            _close_pending_dirs(inout kinds, inout dirfds);
+            return R.Err(e);
+        },
+    };
+    let mut first_i = first.len();
+    while first_i > 0 {
+        first_i -= one;
+        parents.push(root_fd);
+        names.push(first.name(first_i));
+        kinds.push(first.kinds.get_or(first_i, _KIND_OTHER()));
+        dirfds.push(-1);
+    }
+
+    while names.len() > 0 {
+        let name = match names.pop() {
+            ON.Some(n) => n,
+            ON.None => { return R.Ok(()); },
+        };
+        let task_parent = parents.pop_or(-1);
+        let kind = kinds.pop_or(_KIND_OTHER());
+        let task_dirfd = dirfds.pop_or(-1);
+        let task_parent_u: u64 = @intCast(task_parent);
+
+        if kind == _remove_task_state_rmdir() {
+            _close_fd(task_dirfd);
+            match _unlinkat_dir(task_parent_u, borrow name, _at_removedir()) {
+                R.Ok(_u) => {},
+                R.Err(e) => {
+                    _close_pending_dirs(inout kinds, inout dirfds);
+                    return R.Err(e);
+                },
+            }
+        } else if kind == _KIND_DIR() {
+            let mut child = match File._openat_with(
+                task_parent_u,
+                borrow name,
+                _o_rdonly() | _o_directory() | _o_nofollow(),
+                0,
+            ) {
+                FR.Ok(f) => f,
+                FR.Err(e) => {
+                    if _is_replaced_directory_error(e) {
+                        match _unlinkat_dir(task_parent_u, borrow name, 0) {
+                            R.Ok(_u) => {},
+                            R.Err(unlink_error) => {
+                                _close_pending_dirs(inout kinds, inout dirfds);
+                                return R.Err(unlink_error);
+                            },
+                        }
+                        continue;
+                    }
+                    _close_pending_dirs(inout kinds, inout dirfds);
+                    return R.Err(e);
+                },
+            };
+            let child_fd = child.fd;
+            child.fd = -1;
+            parents.push(task_parent);
+            names.push(name);
+            kinds.push(_remove_task_state_rmdir());
+            dirfds.push(child_fd);
+
+            let listing = match _read_dir_fd(@intCast(child_fd), borrow strbuf.StrBuf.new()) {
+                DR.Ok(l) => l,
+                DR.Err(e) => {
+                    _close_pending_dirs(inout kinds, inout dirfds);
+                    return R.Err(e);
+                },
+            };
+            let mut i = listing.len();
+            while i > 0 {
+                i -= one;
+                parents.push(child_fd);
+                names.push(listing.name(i));
+                kinds.push(listing.kinds.get_or(i, _KIND_OTHER()));
+                dirfds.push(-1);
+            }
+        } else {
+            match _unlinkat_dir(task_parent_u, borrow name, 0) {
+                R.Ok(_u) => {},
+                R.Err(e) => {
+                    _close_pending_dirs(inout kinds, inout dirfds);
+                    return R.Err(e);
+                },
+            }
+        }
+    }
+    R.Ok(())
 }
 
 // Push a listing onto the walk's pending stack in reverse index order, so the

@@ -21,8 +21,8 @@
 //   `extend_str`.
 // - std.fs.File: File IO (open/create/append/read/write/seek/tell/metadata/close
 //   over @syscall) plus fs.rename/remove/create_dir/create_dir_all/
-//   remove_dir/metadata, and directory enumeration via fs.read_dir/fs.walk
-//   (deterministically ordered `DirEntries`)
+//   remove_dir/remove_dir_all/metadata, and directory enumeration via
+//   fs.read_dir/fs.walk (deterministically ordered `DirEntries`)
 // - std.binary: endianness-explicit integer<->byte conversions
 // - std.net: IPv4/IPv6 address model + target sockaddr marshalling and TCP
 // - std.c: transparent C scalar-type aliases for the FFI boundary
@@ -40,8 +40,9 @@ pub const strbuf = @import("strbuf.rue");
 pub const arraybuf = @import("arraybuf.rue");
 
 // File IO (RUE-712, ADR-0057): pure-Rue std.fs over @syscall. v0 open/read/
-// write/close plus the v1 follow-ups seek/stat/rename/remove/directories, and
-// directory enumeration (RUE-1481, ADR-0072): read_dir/walk over getdents64.
+// write/close plus the v1 follow-ups seek/stat/rename/remove/directories
+// (including recursive remove_dir_all), and directory enumeration (RUE-1481,
+// ADR-0072): read_dir/walk over getdents64.
 pub const fs = @import("fs.rue");
 
 // Endianness-explicit integer<->byte conversions (RUE-970, ADR-0059/0060).
