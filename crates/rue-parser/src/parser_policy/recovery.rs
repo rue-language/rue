@@ -37,6 +37,7 @@ pub(crate) fn item_recovery_action(
         TokenKind::Fn
             | TokenKind::Struct
             | TokenKind::Enum
+            | TokenKind::Interface
             | TokenKind::Drop
             | TokenKind::Const
             | TokenKind::Pub
@@ -60,6 +61,7 @@ mod tests {
             TokenKind::Fn,
             TokenKind::Struct,
             TokenKind::Enum,
+            TokenKind::Interface,
             TokenKind::Drop,
             TokenKind::Const,
             TokenKind::Pub,

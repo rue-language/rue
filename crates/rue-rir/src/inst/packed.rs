@@ -369,7 +369,10 @@ impl PackedValidatedRir {
                     &[],
                     owner.is_public,
                     owner.is_linear,
+                    false,
                     owner.name,
+                    &[],
+                    &[],
                     &[],
                     &[owner.declaration],
                     span,
@@ -650,6 +653,7 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
             InstData::FnDecl { .. }
             | InstData::ConstDecl { .. }
             | InstData::EnumDecl { .. }
+            | InstData::ConformanceDecl { .. }
             | InstData::DropFnDecl { .. } => true,
             InstData::StructDecl { methods, .. } => rir.struct_methods(methods).len() == 0,
             _ => false,
@@ -1145,6 +1149,20 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                     self.byte(12)?;
                     self.u32(value)?;
                 }
+                RirStructuralPathSegment::ParameterBound { param, index } => {
+                    self.byte(13)?;
+                    self.u32(param)?;
+                    self.u32(index)?;
+                }
+                RirStructuralPathSegment::Conformance(value) => {
+                    self.byte(14)?;
+                    self.u32(value)?;
+                }
+                RirStructuralPathSegment::ConformanceSubject => self.byte(15)?,
+                RirStructuralPathSegment::AssociatedType(value) => {
+                    self.byte(16)?;
+                    self.u32(value)?;
+                }
             }
         }
         Ok(())
@@ -1207,6 +1225,18 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
             self.check()?;
             self.symbol(name)?;
             self.reference(value)?;
+        }
+        Ok(())
+    }
+
+    fn type_references(
+        &mut self,
+        values: RirSlice<'_, RirTypeSyntaxRef>,
+    ) -> Result<(), PackedRirEncodeError<E>> {
+        self.count(values.len())?;
+        for value in values.values() {
+            self.check()?;
+            self.type_reference(value)?;
         }
         Ok(())
     }
@@ -1436,6 +1466,7 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                     self.type_reference(parameter.ty)?;
                     self.byte(encode_param_mode(parameter.mode))?;
                     self.boolean(parameter.is_comptime)?;
+                    self.type_references(rir.interface_refs(&parameter.bounds))?;
                     self.basis_span(
                         RirSpanSlot::new(
                             instruction,
@@ -1541,18 +1572,33 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                 directives,
                 is_pub,
                 is_linear,
+                is_interface,
                 name,
                 fields,
+                conformances,
+                assoc_types,
                 methods,
             } => {
                 self.byte(46)?;
                 self.directives(rir, instruction, directives, |ordinal| {
                     RirSpanField::StructDirective { directive: ordinal }
                 })?;
-                self.byte(*is_pub as u8 | ((*is_linear as u8) << 1))?;
+                self.byte(
+                    *is_pub as u8 | ((*is_linear as u8) << 1) | ((*is_interface as u8) << 2),
+                )?;
                 self.symbol(*name)?;
                 self.fields(rir.struct_fields(fields))?;
+                self.type_references(rir.interface_refs(conformances))?;
+                self.fields(rir.assoc_types(assoc_types))?;
                 self.refs(rir.struct_methods(methods))?;
+            }
+            InstData::ConformanceDecl {
+                subject,
+                interfaces,
+            } => {
+                self.byte(64)?;
+                self.type_reference(*subject)?;
+                self.type_references(rir.interface_refs(interfaces))?;
             }
             InstData::StructInit {
                 module,
@@ -2590,6 +2636,23 @@ impl<
         Ok(values)
     }
 
+    fn type_references(
+        &mut self,
+        reader: &mut Reader<'_>,
+        family: &'static str,
+    ) -> Result<Vec<RirTypeSyntaxRef>, PackedRirAppendError<E>> {
+        let count = Self::count(reader, family, 1)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .map_err(|_| Self::capacity(family))?;
+        for _ in 0..count {
+            self.check()?;
+            values.push(self.type_reference(reader)?);
+        }
+        Ok(values)
+    }
+
     fn field_inits(
         &mut self,
         reader: &mut Reader<'_>,
@@ -2832,6 +2895,8 @@ impl<
                     let ty = self.type_reference(reader)?;
                     let mode = decode_param_mode(reader.byte()?)?;
                     let is_comptime = reader.boolean("comptime parameter")?;
+                    let bounds = self.type_references(reader, "parameter bounds")?;
+                    let bounds = self.destination.add_parameter_bounds(&bounds)?;
                     let parameter = u32::try_from(ordinal).map_err(|_| {
                         PackedRirDecodeError::CountOutOfBounds {
                             family: "parameters",
@@ -2845,6 +2910,7 @@ impl<
                         mode,
                         is_comptime,
                         span: parameter_span,
+                        bounds,
                     });
                 }
                 let return_type = self.type_reference(reader)?;
@@ -2949,7 +3015,7 @@ impl<
                     RirSpanField::StructDirective { directive }
                 })?;
                 let flags = reader.byte()?;
-                if flags & !3 != 0 {
+                if flags & !7 != 0 {
                     return Err(PackedRirDecodeError::InvalidTag {
                         family: "struct flags",
                         tag: flags,
@@ -2958,6 +3024,8 @@ impl<
                 }
                 let name = self.symbol(reader)?;
                 let fields = self.fields(reader)?;
+                let conformances = self.type_references(reader, "struct conformances")?;
+                let assoc_types = self.fields(reader)?;
                 let encoded_methods = self.refs(reader, "struct methods")?;
                 if self.source_instruction == self.instructions - 1
                     && self.root_methods.is_some()
@@ -2977,11 +3045,20 @@ impl<
                     &directives,
                     flags & 1 != 0,
                     flags & 2 != 0,
+                    flags & 4 != 0,
                     name,
                     &fields,
+                    &conformances,
+                    &assoc_types,
                     methods,
                     span,
                 )?
+            }
+            64 => {
+                let subject = self.type_reference(reader)?;
+                let interfaces = self.type_references(reader, "conformance interfaces")?;
+                self.destination
+                    .add_conformance_decl(subject, &interfaces, span)?
             }
             47 => {
                 let module = self.optional_ref(reader)?;
@@ -3192,7 +3269,7 @@ impl<
             .map_err(|_| Self::capacity("structural anchor"))?;
         for _ in 0..count {
             self.check()?;
-            let tag = Self::byte_tag(reader, "structural anchor segment", 12)?;
+            let tag = Self::byte_tag(reader, "structural anchor segment", 16)?;
             let segment = match tag {
                 0 => RirStructuralPathSegment::Body,
                 1 => RirStructuralPathSegment::ParameterType(reader.u32()?),
@@ -3210,6 +3287,13 @@ impl<
                 10 => RirStructuralPathSegment::AnonymousType(reader.u32()?),
                 11 => RirStructuralPathSegment::StringLiteral(reader.u32()?),
                 12 => RirStructuralPathSegment::ReadOnlyData(reader.u32()?),
+                13 => RirStructuralPathSegment::ParameterBound {
+                    param: reader.u32()?,
+                    index: reader.u32()?,
+                },
+                14 => RirStructuralPathSegment::Conformance(reader.u32()?),
+                15 => RirStructuralPathSegment::ConformanceSubject,
+                16 => RirStructuralPathSegment::AssociatedType(reader.u32()?),
                 _ => unreachable!(),
             };
             segments.push(segment);
@@ -4146,6 +4230,13 @@ mod tests {
             RirStructuralPathSegment::AnonymousType(10),
             RirStructuralPathSegment::StringLiteral(11),
             RirStructuralPathSegment::ReadOnlyData(12),
+            RirStructuralPathSegment::ParameterBound {
+                param: 13,
+                index: 14,
+            },
+            RirStructuralPathSegment::Conformance(15),
+            RirStructuralPathSegment::ConformanceSubject,
+            RirStructuralPathSegment::AssociatedType(16),
         ]);
         let directive = RirDirective {
             name: a,
@@ -4236,6 +4327,7 @@ mod tests {
         refs.push(matched);
         add!(InstData::Break { value: Some(unit) });
         add!(InstData::Continue);
+        let bounds = editor.add_parameter_bounds(&[type_a]).unwrap();
         let function = editor
             .add_fn_decl(
                 std::slice::from_ref(&directive),
@@ -4250,6 +4342,7 @@ mod tests {
                     mode: RirParamMode::Borrow,
                     is_comptime: true,
                     span,
+                    bounds,
                 }],
                 type_b,
                 block,
@@ -4309,11 +4402,19 @@ mod tests {
                     std::slice::from_ref(&directive),
                     true,
                     true,
+                    true,
                     a,
                     &[(a, type_b)],
+                    &[type_a],
+                    &[(b, type_a)],
                     &[function],
                     span,
                 )
+                .unwrap(),
+        );
+        refs.push(
+            editor
+                .add_conformance_decl(type_a, &[type_b, type_a], span)
                 .unwrap(),
         );
         refs.push(
@@ -4385,17 +4486,17 @@ mod tests {
         refs.push(root);
         assert_eq!(
             refs.len(),
-            63,
+            64,
             "fixture must contain exactly one of every InstData variant"
         );
-        assert_eq!(editor.len(), 63);
+        assert_eq!(editor.len(), 64);
         let variants = editor
             .iter()
             .map(|(_, instruction)| std::mem::discriminant(&instruction.data))
             .collect::<ahash::AHashSet<_>>();
-        assert_eq!(variants.len(), 63, "fixture duplicated an InstData variant");
+        assert_eq!(variants.len(), 64, "fixture duplicated an InstData variant");
         let payload_stats = editor.payload_storage_stats();
-        assert_eq!(RIR_PAYLOAD_FAMILY_NAMES.len(), 17);
+        assert_eq!(RIR_PAYLOAD_FAMILY_NAMES.len(), 19);
         assert!(
             payload_stats
                 .family_logical_bytes
@@ -4556,12 +4657,12 @@ mod tests {
         let packed = pack(&source, &symbols, root);
         let header = Header::parse(packed.as_bytes()).unwrap();
         let mut bad_tag = packed.as_bytes().to_vec();
-        bad_tag[header.instructions_offset + 3] = 13;
+        bad_tag[header.instructions_offset + 3] = 17;
         assert_eq!(
             decode_error(PackedValidatedRir(Arc::from(bad_tag))),
             PackedRirDecodeError::InvalidTag {
                 family: "structural anchor segment",
-                tag: 13
+                tag: 17
             }
         );
         let mut bad_count = packed.as_bytes().to_vec();
@@ -4817,8 +4918,11 @@ mod tests {
                 &[],
                 false,
                 false,
+                false,
                 a,
                 &[(a, structure_field)],
+                &[],
+                &[],
                 &[],
                 Span::new(0, 1),
             )
@@ -4911,7 +5015,18 @@ mod tests {
             )
             .unwrap();
         let methodful_root = methodful
-            .add_struct_decl(&[], false, false, a, &[], &[method], Span::new(0, 1))
+            .add_struct_decl(
+                &[],
+                false,
+                false,
+                false,
+                a,
+                &[],
+                &[],
+                &[],
+                &[method],
+                Span::new(0, 1),
+            )
             .unwrap();
         let methodful = finish_metadata_fixture(methodful, &symbols);
         assert!(matches!(
@@ -4966,8 +5081,11 @@ mod tests {
                 &[],
                 false,
                 false,
+                false,
                 name,
                 &[(name, shell_field_type)],
+                &[],
+                &[],
                 &[],
                 Span::new(0, 1),
             )

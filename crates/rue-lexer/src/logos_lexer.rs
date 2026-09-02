@@ -515,6 +515,8 @@ pub enum LogosTokenKind {
     Enum,
     #[token("impl")]
     Impl,
+    #[token("interface")]
+    Interface,
     #[token("drop")]
     Drop,
     #[token("linear")]
@@ -766,6 +768,7 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::Struct => TokenKind::Struct,
             LogosTokenKind::Enum => TokenKind::Enum,
             LogosTokenKind::Impl => TokenKind::Impl,
+            LogosTokenKind::Interface => TokenKind::Interface,
             LogosTokenKind::Drop => TokenKind::Drop,
             LogosTokenKind::Linear => TokenKind::Linear,
             LogosTokenKind::SelfValue => TokenKind::SelfValue,
@@ -1772,6 +1775,23 @@ mod tests {
         assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("typex"));
         assert_eq!(get_ident_str(&tokens[2].kind, &interner), Some("typeof"));
         assert_eq!(get_ident_str(&tokens[3].kind, &interner), Some("implement"));
+    }
+
+    #[test]
+    fn test_logos_interface_is_a_keyword_and_is_stays_an_identifier() {
+        // `interface` is a reserved keyword (spec 2.4:2, `--preview
+        // interfaces`); `is` is contextual and lexes as an ordinary identifier
+        // so existing programs that use it as a name keep lexing unchanged.
+        let lexer = LogosLexer::new("interface is interfaces isnt");
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Interface));
+        assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("is"));
+        assert_eq!(
+            get_ident_str(&tokens[2].kind, &interner),
+            Some("interfaces")
+        );
+        assert_eq!(get_ident_str(&tokens[3].kind, &interner), Some("isnt"));
+        assert!(matches!(tokens[4].kind, TokenKind::Eof));
     }
 
     #[test]

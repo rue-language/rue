@@ -9,7 +9,9 @@
 use ahash::{AHashMap, AHashSet};
 use lasso::{Spur, ThreadedRodeo};
 
-use rue_parser::ast::{ConstDecl, DropFn, ExternBlock, ExternFn};
+use rue_parser::ast::{
+    ConformanceDecl, ConstDecl, DropFn, ExternBlock, ExternFn, InterfaceDecl, MethodSig, Param,
+};
 use rue_parser::intrinsics::{OFFSET_OF_INTRINSIC, TYPE_INTRINSICS};
 use rue_parser::{
     ArgMode, ArrayLength, AssignStatement, AssignTarget, BinaryOp, CallArg, CompoundOp, Directive,
@@ -89,6 +91,8 @@ pub struct AstGen<'a> {
     /// dynamically interned at their call sites.
     self_symbol: Option<Spur>,
     u64_symbol: Option<Spur>,
+    type_symbol: Option<Spur>,
+    panic_symbol: Option<Spur>,
     normalize_symbol: Box<dyn Fn(Spur) -> Spur + 'a>,
     cancellation_check: Option<Box<dyn FnMut() -> bool + 'a>>,
     canceled: bool,
@@ -117,6 +121,15 @@ pub enum AstGenItemRoots {
         declaration: AstGenDeclarationRoot,
         methods: Box<[AstGenDeclarationRoot]>,
     },
+    /// An `interface` item: its `StructDecl` shell (`is_interface`) and one
+    /// root per method or associated-function requirement, in the order
+    /// [`InterfaceDecl::method_requirements`] yields them.
+    Interface {
+        declaration: AstGenDeclarationRoot,
+        requirements: Box<[AstGenDeclarationRoot]>,
+    },
+    /// A freestanding conformance assertion (`ConformanceDecl`).
+    Conformance(AstGenDeclarationRoot),
     Enum(AstGenDeclarationRoot),
     DropFn(AstGenDeclarationRoot),
     Extern(Box<[AstGenDeclarationRoot]>),
@@ -139,19 +152,37 @@ pub struct AstGenDeclarationRoot {
 pub enum AstGenCandidate<'ast> {
     Function(&'ast Function),
     StructShell(&'ast StructDecl),
+    /// The methodless `StructDecl` shell of an interface (`is_interface`).
+    InterfaceShell(&'ast InterfaceDecl),
     Enum(&'ast EnumDecl),
     DropFn(&'ast DropFn),
     Const(&'ast ConstDecl),
-    Method { method: &'ast Method, ordinal: u32 },
+    Method {
+        method: &'ast Method,
+        ordinal: u32,
+    },
+    /// One method or associated-function requirement of `interface`, at its
+    /// ordinal among [`InterfaceDecl::method_requirements`].
+    InterfaceRequirement {
+        interface: &'ast InterfaceDecl,
+        requirement: &'ast MethodSig,
+        ordinal: u32,
+    },
     ExternFn(&'ast ExternFn),
+    Conformance(&'ast ConformanceDecl),
 }
 
+/// The shell data shared by structs and interfaces (see
+/// [`InstData::StructDecl`]).
 struct PreparedStruct {
     directives: Vec<RirDirective>,
     is_public: bool,
     is_linear: bool,
+    is_interface: bool,
     name: Spur,
     fields: Vec<(Spur, crate::RirTypeSyntaxRef)>,
+    conformances: Vec<crate::RirTypeSyntaxRef>,
+    assoc_types: Vec<(Spur, crate::RirTypeSyntaxRef)>,
     span: rue_span::Span,
 }
 
@@ -174,6 +205,8 @@ impl<'a> AstGen<'a> {
             producer_root_depth: 0,
             self_symbol: None,
             u64_symbol: None,
+            type_symbol: None,
+            panic_symbol: None,
             normalize_symbol: Box::new(normalize_symbol),
             cancellation_check: None,
             canceled: false,
@@ -258,6 +291,23 @@ impl<'a> AstGen<'a> {
             AstGenCandidate::StructShell(value) => {
                 let prepared = self.prepare_struct(value);
                 self.capture_declaration(|this| this.emit_struct(prepared, &[]))
+            }
+            AstGenCandidate::InterfaceShell(value) => {
+                let prepared = self.prepare_interface(value);
+                self.capture_declaration(|this| this.emit_struct(prepared, &[]))
+            }
+            AstGenCandidate::InterfaceRequirement {
+                interface,
+                requirement,
+                ordinal,
+            } => self.capture_declaration(|this| {
+                this.with_structural_segment(
+                    crate::RirStructuralPathSegment::Method(ordinal),
+                    |this| this.gen_interface_requirement(interface, requirement),
+                )
+            }),
+            AstGenCandidate::Conformance(value) => {
+                self.capture_declaration(|this| this.gen_conformance(value))
             }
             AstGenCandidate::Enum(value) => self.capture_declaration(|this| this.gen_enum(value)),
             AstGenCandidate::DropFn(value) => {
@@ -402,6 +452,24 @@ impl<'a> AstGen<'a> {
         }
         let symbol = self.intern("u64");
         self.u64_symbol = Some(symbol);
+        symbol
+    }
+
+    fn intern_fixed_type(&mut self) -> Spur {
+        if let Some(symbol) = self.type_symbol {
+            return symbol;
+        }
+        let symbol = self.intern("type");
+        self.type_symbol = Some(symbol);
+        symbol
+    }
+
+    fn intern_fixed_panic(&mut self) -> Spur {
+        if let Some(symbol) = self.panic_symbol {
+            return symbol;
+        }
+        let symbol = self.intern("panic");
+        self.panic_symbol = Some(symbol);
         symbol
     }
 
@@ -554,6 +622,16 @@ impl<'a> AstGen<'a> {
                     methods: methods.into_boxed_slice(),
                 }
             }
+            Item::Interface(interface) => {
+                let (declaration, requirements) = self.gen_interface(interface);
+                AstGenItemRoots::Interface {
+                    declaration,
+                    requirements: requirements.into_boxed_slice(),
+                }
+            }
+            Item::Conformance(conformance) => AstGenItemRoots::Conformance(
+                self.capture_declaration(|this| this.gen_conformance(conformance)),
+            ),
             Item::Enum(enum_decl) => {
                 AstGenItemRoots::Enum(self.capture_declaration(|this| this.gen_enum(enum_decl)))
             }
@@ -591,7 +669,22 @@ impl<'a> AstGen<'a> {
     /// grammar through a string.
     fn intern_type(&mut self, ty: &TypeExpr) -> crate::RirTypeSyntaxRef {
         let normalizer = &self.normalize_symbol;
-        match self.rir.add_parser_type(ty, |symbol| normalizer(symbol)) {
+        let result = self.rir.add_parser_type(ty, |symbol| normalizer(symbol));
+        self.type_syntax_or_fallback(result)
+    }
+
+    /// Project a compiler-interned name (already in the semantic symbol
+    /// universe, so not subject to normalization) as a named type.
+    fn named_type(&mut self, symbol: Spur) -> crate::RirTypeSyntaxRef {
+        let result = self.rir.add_named_type(symbol);
+        self.type_syntax_or_fallback(result)
+    }
+
+    fn type_syntax_or_fallback(
+        &mut self,
+        result: Result<crate::RirTypeSyntaxRef, crate::RirTypeSyntaxBuildError>,
+    ) -> crate::RirTypeSyntaxRef {
+        match result {
             Ok(reference) => reference,
             Err(error) => {
                 if self.payload_error.is_none() {
@@ -649,14 +742,74 @@ impl<'a> AstGen<'a> {
                 (field_name, field_type)
             })
             .collect();
+        let conformances = self.intern_interface_list(&struct_decl.conformances);
+        let assoc_types = struct_decl
+            .assoc_types
+            .iter()
+            .enumerate()
+            .map(|(index, assoc)| {
+                let assoc_name = self.symbol(assoc.name.name);
+                let assoc_type = self.intern_type_at(
+                    crate::RirStructuralPathSegment::AssociatedType(index as u32),
+                    &assoc.ty,
+                );
+                (assoc_name, assoc_type)
+            })
+            .collect();
         PreparedStruct {
             directives,
             is_public: struct_decl.visibility == Visibility::Public,
             is_linear: struct_decl.is_linear,
+            is_interface: false,
             name,
             fields,
+            conformances,
+            assoc_types,
             span: struct_decl.span,
         }
+    }
+
+    /// Prepare an interface's shell in the struct shape: no fields, the
+    /// refined interfaces as conformances, and each associated type
+    /// requirement paired with the `type` keyword's named type.
+    fn prepare_interface(&mut self, interface: &InterfaceDecl) -> PreparedStruct {
+        let directives = self.convert_directives(&interface.directives);
+        let name = self.symbol(interface.name.name);
+        let conformances = self.intern_interface_list(&interface.parents);
+        let type_keyword = self.intern_fixed_type();
+        let assoc_types = interface
+            .assoc_type_requirements()
+            .map(|requirement| {
+                let requirement_name = self.symbol(requirement.name.name);
+                let requirement_type = self.named_type(type_keyword);
+                (requirement_name, requirement_type)
+            })
+            .collect();
+        PreparedStruct {
+            directives,
+            is_public: interface.visibility == Visibility::Public,
+            is_linear: false,
+            is_interface: true,
+            name,
+            fields: Vec::new(),
+            conformances,
+            assoc_types,
+            span: interface.span,
+        }
+    }
+
+    /// Lower a header conformance list, refinement list, or assertion list.
+    fn intern_interface_list(&mut self, interfaces: &[TypeExpr]) -> Vec<crate::RirTypeSyntaxRef> {
+        interfaces
+            .iter()
+            .enumerate()
+            .map(|(index, interface)| {
+                self.intern_type_at(
+                    crate::RirStructuralPathSegment::Conformance(index as u32),
+                    interface,
+                )
+            })
+            .collect()
     }
 
     fn emit_struct(&mut self, prepared: PreparedStruct, methods: &[InstRef]) -> InstRef {
@@ -665,12 +818,172 @@ impl<'a> AstGen<'a> {
                 &prepared.directives,
                 prepared.is_public,
                 prepared.is_linear,
+                prepared.is_interface,
                 prepared.name,
                 &prepared.fields,
+                &prepared.conformances,
+                &prepared.assoc_types,
                 methods,
                 prepared.span,
             )
             .record_failure(&mut self.payload_error)
+    }
+
+    fn gen_interface(
+        &mut self,
+        interface: &InterfaceDecl,
+    ) -> (AstGenDeclarationRoot, Vec<AstGenDeclarationRoot>) {
+        // Prepare the shell first so the symbol insertion order matches the
+        // struct path, where the shell precedes its members in the arena but
+        // is prepared before them.
+        let prepared = self.prepare_interface(interface);
+        let requirements: Vec<_> = interface
+            .method_requirements()
+            .enumerate()
+            .map(|(index, requirement)| {
+                self.capture_declaration(|this| {
+                    this.with_structural_segment(
+                        crate::RirStructuralPathSegment::Method(index as u32),
+                        |this| this.gen_interface_requirement(interface, requirement),
+                    )
+                })
+            })
+            .collect();
+        let requirement_refs = requirements
+            .iter()
+            .map(|requirement| requirement.declaration)
+            .collect::<Vec<_>>();
+        let declaration =
+            self.capture_declaration(|this| this.emit_struct(prepared, &requirement_refs));
+        (declaration, requirements)
+    }
+
+    /// Lower one method or associated-function requirement as a method whose
+    /// body is a single `@panic("interface requirement I.m has no body")`
+    /// call, the same instruction the source intrinsic produces. A
+    /// requirement has no source body; the stub keeps every method consumer
+    /// total while marking the declaration as never meant to run.
+    fn gen_interface_requirement(
+        &mut self,
+        interface: &InterfaceDecl,
+        requirement: &MethodSig,
+    ) -> InstRef {
+        self.with_bodyless_producer_root(|this| {
+            let directives = this.convert_directives(&requirement.directives);
+            let name = this.symbol(requirement.name.name);
+            let return_type = match &requirement.return_type {
+                Some(ty) => this.intern_type_at(crate::RirStructuralPathSegment::ReturnType, ty),
+                None => this.intern_type(&TypeExpr::Unit(requirement.span)),
+            };
+            let params = this.lower_params(&requirement.params);
+            // Both names are AST-origin symbols and resolve only after
+            // normalization into the generator's symbol universe.
+            let interface_name = this.symbol(interface.name.name);
+            let message = this.intern(format!(
+                "interface requirement {}.{} has no body",
+                this.interner.resolve(&interface_name),
+                this.interner.resolve(&name)
+            ));
+            let message = this.rir.add_inst(Inst {
+                data: InstData::StringConst {
+                    content: message,
+                    anchor: this.string_literal_anchor(0),
+                },
+                span: requirement.span,
+            });
+            let panic = this.intern_fixed_panic();
+            let call = this
+                .rir
+                .add_intrinsic(panic, &[message], requirement.span)
+                .record_failure(&mut this.payload_error);
+            let body = this
+                .rir
+                .add_block(&[call], requirement.span)
+                .record_failure(&mut this.payload_error);
+            let has_self = requirement.receiver.is_some();
+            let self_mode = match &requirement.receiver {
+                Some(receiver) => this.convert_param_mode(receiver.mode),
+                None => RirParamMode::Normal,
+            };
+            let self_is_mut = requirement
+                .receiver
+                .as_ref()
+                .is_some_and(|receiver| receiver.is_mut);
+            this.rir
+                .add_fn_decl_with_return_modes(
+                    &directives,
+                    false,
+                    false,
+                    false,
+                    false,
+                    name,
+                    &params,
+                    return_type,
+                    body,
+                    has_self,
+                    self_mode,
+                    self_is_mut,
+                    requirement
+                        .place_return
+                        .is_some_and(|mode| mode.is_borrow()),
+                    requirement.place_return.is_some_and(|mode| mode.is_inout()),
+                    requirement.span,
+                )
+                .record_failure(&mut this.payload_error)
+        })
+    }
+
+    /// Lower a freestanding conformance assertion `Type is A + B;`.
+    fn gen_conformance(&mut self, conformance: &ConformanceDecl) -> InstRef {
+        self.with_bodyless_producer_root(|this| {
+            let subject = this.intern_type_at(
+                crate::RirStructuralPathSegment::ConformanceSubject,
+                &conformance.subject,
+            );
+            let interfaces = this.intern_interface_list(&conformance.interfaces);
+            this.rir
+                .add_conformance_decl(subject, &interfaces, conformance.span)
+                .record_failure(&mut this.payload_error)
+        })
+    }
+
+    /// Lower a parameter list, including each composed comptime bound's
+    /// further interfaces (spec 6.7:14).
+    fn lower_params(&mut self, params: &[Param]) -> Vec<RirParam> {
+        params
+            .iter()
+            .enumerate()
+            .map(|(index, p)| {
+                let bounds = p
+                    .bounds
+                    .iter()
+                    .enumerate()
+                    .map(|(bound, ty)| {
+                        self.intern_type_at(
+                            crate::RirStructuralPathSegment::ParameterBound {
+                                param: index as u32,
+                                index: bound as u32,
+                            },
+                            ty,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                RirParam {
+                    name: self.symbol(p.name.name),
+                    ty: self.intern_type_at(
+                        crate::RirStructuralPathSegment::ParameterType(index as u32),
+                        &p.ty,
+                    ),
+                    mode: self.convert_param_mode(p.mode),
+                    is_comptime: p.mode == ParamMode::Comptime,
+                    span: p.name.span,
+                    bounds: self
+                        .rir
+                        .add_parameter_bounds(&bounds)
+                        .record_failure(&mut self.payload_error),
+                }
+            })
+            .collect()
     }
 
     fn gen_enum(&mut self, enum_decl: &EnumDecl) -> InstRef {
@@ -776,21 +1089,7 @@ impl<'a> AstGen<'a> {
         };
 
         // Convert parameters (excluding self, which is handled specially by sema)
-        let params: Vec<_> = method
-            .params
-            .iter()
-            .enumerate()
-            .map(|(index, p)| RirParam {
-                name: self.symbol(p.name.name),
-                ty: self.intern_type_at(
-                    crate::RirStructuralPathSegment::ParameterType(index as u32),
-                    &p.ty,
-                ),
-                mode: self.convert_param_mode(p.mode),
-                is_comptime: p.mode == ParamMode::Comptime,
-                span: p.name.span,
-            })
-            .collect();
+        let params = self.lower_params(&method.params);
         // Generate body expression
         let body = self.gen_expr_at(crate::RirStructuralPathSegment::Body, &method.body);
 
@@ -904,21 +1203,7 @@ impl<'a> AstGen<'a> {
         };
 
         // Convert parameters
-        let params: Vec<_> = func
-            .params
-            .iter()
-            .enumerate()
-            .map(|(index, p)| RirParam {
-                name: self.symbol(p.name.name),
-                ty: self.intern_type_at(
-                    crate::RirStructuralPathSegment::ParameterType(index as u32),
-                    &p.ty,
-                ),
-                mode: self.convert_param_mode(p.mode),
-                is_comptime: p.mode == ParamMode::Comptime,
-                span: p.name.span,
-            })
-            .collect();
+        let params = self.lower_params(&func.params);
         // Generate body expression
         let body = self.gen_expr_at(crate::RirStructuralPathSegment::Body, &func.body);
 
@@ -971,21 +1256,7 @@ impl<'a> AstGen<'a> {
             Some(ty) => self.intern_type_at(crate::RirStructuralPathSegment::ReturnType, ty),
             None => self.intern_type(&TypeExpr::Unit(foreign.span)),
         };
-        let params: Vec<_> = foreign
-            .params
-            .iter()
-            .enumerate()
-            .map(|(index, p)| RirParam {
-                name: self.symbol(p.name.name),
-                ty: self.intern_type_at(
-                    crate::RirStructuralPathSegment::ParameterType(index as u32),
-                    &p.ty,
-                ),
-                mode: self.convert_param_mode(p.mode),
-                is_comptime: p.mode == ParamMode::Comptime,
-                span: p.name.span,
-            })
-            .collect();
+        let params = self.lower_params(&foreign.params);
         // A foreign declaration has no body; synthesize a unit placeholder that
         // is never analyzed or code-generated (guarded by `is_extern`).
         let body = self.rir.add_inst(Inst {
@@ -3309,6 +3580,327 @@ mod tests {
             }
             _ => panic!("expected StructDecl"),
         }
+    }
+
+    fn find_struct_decls(rir: &Rir) -> Vec<InstRef> {
+        rir.iter()
+            .filter(|(_, inst)| matches!(inst.data, InstData::StructDecl { .. }))
+            .map(|(reference, _)| reference)
+            .collect()
+    }
+
+    #[test]
+    fn interfaces_lower_to_interface_shells_with_panic_stub_requirements() {
+        let (rir, interner) = gen_rir(
+            "pub interface Collection: Sequence + Equatable { \
+                 const Element: type; \
+                 fn len(borrow self) -> u64; \
+                 fn next(inout self) -> Option(Element); \
+                 fn make(n: i64) -> Self; \
+                 fn get(borrow self, i: u64) -> borrow Element; \
+             }",
+        );
+        let shells = find_struct_decls(&rir);
+        assert_eq!(shells.len(), 1);
+        let InstData::StructDecl {
+            is_pub,
+            is_linear,
+            is_interface,
+            name,
+            fields,
+            conformances,
+            assoc_types,
+            methods,
+            ..
+        } = &rir.get(shells[0]).data
+        else {
+            unreachable!()
+        };
+        assert!(*is_pub && !*is_linear && *is_interface);
+        assert_eq!(interner.resolve(name), "Collection");
+        assert_eq!(rir.struct_fields(fields).len(), 0);
+        let parents: Vec<_> = rir
+            .interface_refs(conformances)
+            .values()
+            .map(|ty| type_spelling(&rir, &interner, ty))
+            .collect();
+        assert_eq!(parents, ["Sequence", "Equatable"]);
+        let assoc: Vec<_> = rir
+            .assoc_types(assoc_types)
+            .values()
+            .map(|(assoc_name, ty)| {
+                (
+                    interner.resolve(&assoc_name).to_owned(),
+                    type_spelling(&rir, &interner, ty),
+                )
+            })
+            .collect();
+        assert_eq!(assoc, [("Element".to_owned(), "type".to_owned())]);
+        let methods: Vec<_> = rir.struct_methods(methods).values().collect();
+        assert_eq!(methods.len(), 4);
+        let expected = [
+            ("len", true, RirParamMode::Borrow, 0, "u64", false),
+            (
+                "next",
+                true,
+                RirParamMode::Inout,
+                0,
+                "Option(Element)",
+                false,
+            ),
+            ("make", false, RirParamMode::Normal, 1, "Self", false),
+            ("get", true, RirParamMode::Borrow, 1, "Element", true),
+        ];
+        for (method, (expected_name, expected_self, mode, arity, result, borrow)) in
+            methods.iter().zip(expected)
+        {
+            let InstData::FnDecl {
+                name,
+                params,
+                return_type,
+                body,
+                has_self,
+                self_mode,
+                returns_borrow,
+                is_pub,
+                ..
+            } = &rir.get(*method).data
+            else {
+                panic!("expected FnDecl")
+            };
+            assert_eq!(interner.resolve(name), expected_name);
+            assert_eq!(*has_self, expected_self);
+            assert_eq!(*self_mode, mode);
+            assert_eq!(rir.params(params).len(), arity);
+            assert_eq!(type_spelling(&rir, &interner, *return_type), result);
+            assert_eq!(*returns_borrow, borrow);
+            assert!(!*is_pub);
+            // The stub body is a block holding one `@panic("...")` call.
+            let InstData::Block { instructions } = &rir.get(*body).data else {
+                panic!("expected a block body")
+            };
+            let calls: Vec<_> = rir.block_insts(instructions).values().collect();
+            assert_eq!(calls.len(), 1);
+            let InstData::Intrinsic { name, args } = &rir.get(calls[0]).data else {
+                panic!("expected an intrinsic call")
+            };
+            assert_eq!(interner.resolve(name), "panic");
+            let args: Vec<_> = rir.intrinsic_args(args).values().collect();
+            assert_eq!(args.len(), 1);
+            let InstData::StringConst { content, .. } = &rir.get(args[0]).data else {
+                panic!("expected the panic message")
+            };
+            assert_eq!(
+                interner.resolve(content),
+                format!("interface requirement Collection.{expected_name} has no body")
+            );
+        }
+        // Every requirement precedes the shell, exactly as struct methods do.
+        assert!(methods.iter().all(|method| *method < shells[0]));
+    }
+
+    #[test]
+    fn struct_headers_lower_conformances_and_associated_types() {
+        let (rir, interner) = gen_rir(
+            "struct Range is Sequence + Equatable { \
+                 cur: i64, \
+                 pub const Element = i64; \
+                 const Hidden = [u8; 4]; \
+                 fn next(inout self) -> i64 { self.cur } \
+             }",
+        );
+        let shells = find_struct_decls(&rir);
+        let InstData::StructDecl {
+            is_interface,
+            fields,
+            conformances,
+            assoc_types,
+            methods,
+            ..
+        } = &rir.get(shells[0]).data
+        else {
+            unreachable!()
+        };
+        assert!(!*is_interface);
+        assert_eq!(rir.struct_fields(fields).len(), 1);
+        assert_eq!(rir.struct_methods(methods).len(), 1);
+        let conformances: Vec<_> = rir
+            .interface_refs(conformances)
+            .values()
+            .map(|ty| type_spelling(&rir, &interner, ty))
+            .collect();
+        assert_eq!(conformances, ["Sequence", "Equatable"]);
+        let assoc: Vec<_> = rir
+            .assoc_types(assoc_types)
+            .values()
+            .map(|(assoc_name, ty)| {
+                (
+                    interner.resolve(&assoc_name).to_owned(),
+                    type_spelling(&rir, &interner, ty),
+                )
+            })
+            .collect();
+        assert_eq!(
+            assoc,
+            [
+                ("Element".to_owned(), "i64".to_owned()),
+                ("Hidden".to_owned(), "[u8; 4]".to_owned())
+            ]
+        );
+        // A plain struct carries the empty lists.
+        let (rir, _) = gen_rir("struct P { x: i32 }");
+        let InstData::StructDecl {
+            conformances,
+            assoc_types,
+            ..
+        } = &rir.get(find_struct_decls(&rir)[0]).data
+        else {
+            unreachable!()
+        };
+        assert_eq!(rir.interface_refs(conformances).len(), 0);
+        assert_eq!(rir.assoc_types(assoc_types).len(), 0);
+    }
+
+    #[test]
+    fn freestanding_conformance_assertions_lower_to_conformance_decls() {
+        let (rir, interner) = gen_rir("i64 is Equatable; ArrayBuf(u64) is Collection + m.Display;");
+        let decls: Vec<_> = rir
+            .iter()
+            .filter_map(|(_, inst)| match &inst.data {
+                InstData::ConformanceDecl {
+                    subject,
+                    interfaces,
+                } => Some((
+                    type_spelling(&rir, &interner, *subject),
+                    rir.interface_refs(interfaces)
+                        .values()
+                        .map(|ty| type_spelling(&rir, &interner, ty))
+                        .collect::<Vec<_>>(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(decls.len(), 2);
+        assert_eq!(decls[0].0, "i64");
+        assert_eq!(decls[0].1, ["Equatable"]);
+        assert_eq!(decls[1].0, "ArrayBuf(u64)");
+        assert_eq!(decls[1].1, ["Collection", "m.Display"]);
+        assert_eq!(rir.len(), 2);
+    }
+
+    #[test]
+    fn comptime_parameter_bounds_lower_alongside_the_parameter_type() {
+        let (rir, interner) =
+            gen_rir("fn f(comptime T: Equatable + Sequence, comptime U: type, x: T) -> T { x }");
+        let (_, decl) = rir.iter().last().unwrap();
+        let InstData::FnDecl { params, .. } = &decl.data else {
+            panic!("expected FnDecl")
+        };
+        let params: Vec<_> = rir
+            .params(params)
+            .values()
+            .map(|param| {
+                (
+                    type_spelling(&rir, &interner, param.ty),
+                    rir.interface_refs(&param.bounds)
+                        .values()
+                        .map(|ty| type_spelling(&rir, &interner, ty))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            params[0],
+            ("Equatable".to_owned(), vec!["Sequence".to_owned()])
+        );
+        assert_eq!(params[1], ("type".to_owned(), Vec::new()));
+        assert_eq!(params[2], ("T".to_owned(), Vec::new()));
+    }
+
+    #[test]
+    fn candidate_primitives_lower_interface_shells_and_requirements() {
+        let source = "interface I { fn f(borrow self) -> i32; fn g() -> i32; }";
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        let parser = Parser::new(tokens, interner);
+        let (ast, interner) = parser.parse().unwrap();
+        let Item::Interface(interface) = &ast.items[0] else {
+            panic!("expected interface syntax")
+        };
+        let requirements: Vec<_> = interface.method_requirements().collect();
+
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        let f = astgen.append_candidate_with_root(AstGenCandidate::InterfaceRequirement {
+            interface,
+            requirement: requirements[0],
+            ordinal: 0,
+        });
+        let g = astgen.append_candidate_with_root(AstGenCandidate::InterfaceRequirement {
+            interface,
+            requirement: requirements[1],
+            ordinal: 1,
+        });
+        let shell = astgen.append_candidate_with_root(AstGenCandidate::InterfaceShell(interface));
+        let rir = astgen.finish();
+
+        assert_eq!(f.start, 0);
+        assert_eq!(f.end, g.start);
+        assert_eq!(g.end, shell.start);
+        assert_eq!(shell.end, rir.len() as u32);
+        assert!(matches!(
+            rir.get(f.declaration).data,
+            InstData::FnDecl { has_self: true, .. }
+        ));
+        assert!(matches!(
+            rir.get(g.declaration).data,
+            InstData::FnDecl {
+                has_self: false,
+                ..
+            }
+        ));
+        let InstData::StructDecl {
+            is_interface,
+            methods,
+            ..
+        } = &rir.get(shell.declaration).data
+        else {
+            panic!("candidate shell must end in StructDecl")
+        };
+        assert!(*is_interface);
+        assert!(rir.struct_methods(methods).is_empty());
+    }
+
+    #[test]
+    fn rir_printer_renders_interface_syntax() {
+        let (rir, interner) = gen_rir(
+            "pub interface Sequence { const Element: type; fn next(inout self) -> Option(Element); } \
+             struct Range is Sequence { cur: i64, pub const Element = i64; fn next(inout self) -> Option(i64) { Option(i64).None } } \
+             i64 is Equatable + Sequence; \
+             fn f(comptime T: Equatable + Sequence, x: T) -> T { x }",
+        );
+        let printed = RirPrinter::new(&rir, &interner).to_string();
+        assert!(
+            printed.contains("pub interface Sequence {  } assoc: [Element = type] methods: ["),
+            "{printed}"
+        );
+        assert!(
+            printed.contains(
+                "struct Range is Sequence { cur: i64 } assoc: [Element = i64] methods: ["
+            ),
+            "{printed}"
+        );
+        assert!(
+            printed.contains("conformance i64 is Equatable + Sequence\n"),
+            "{printed}"
+        );
+        assert!(
+            printed.contains("fn f(comptime T: Equatable + Sequence, x: T) -> T {"),
+            "{printed}"
+        );
+        assert!(
+            printed.contains("fn next(inout self, ) -> Option(Element) {"),
+            "{printed}"
+        );
     }
 
     #[test]

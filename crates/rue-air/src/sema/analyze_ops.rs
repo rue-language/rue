@@ -423,7 +423,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
 
         match &inst.data {
-            InstData::DropFnDecl { .. } => {
+            InstData::DropFnDecl { .. } | InstData::ConformanceDecl { .. } => {
                 // These are processed during collection phase, just return Unit
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::UnitConst,

@@ -74,11 +74,13 @@ impl RirParamMode {
 }
 
 /// A parameter in a function declaration.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RirParam {
     /// Parameter name
     pub name: Spur,
-    /// Parameter type
+    /// Parameter type. For a bounded comptime type parameter this is the
+    /// first interface of the bound (spec 6.7:14); the interface/`type`
+    /// classification of a single name happens semantically.
     pub ty: RirTypeSyntaxRef,
     /// Parameter passing mode
     pub mode: RirParamMode,
@@ -86,6 +88,11 @@ pub struct RirParam {
     /// the `comptime` modifier; carried separately from `mode`, which stays
     /// `Normal` for comptime parameters)
     pub is_comptime: bool,
+    /// The further interfaces of a composed comptime bound
+    /// (`comptime T: A + B` carries `B` here). Empty for every other
+    /// parameter. The payload is issued by [`RirEditor::add_parameter_bounds`]
+    /// before the owning declaration is built.
+    pub bounds: RirInterfaceRefsRange,
     /// Span of the parameter's name, used to point diagnostics (e.g. the
     /// duplicate-parameter error, RUE-349) at the offending occurrence.
     pub span: Span,
@@ -213,11 +220,27 @@ pub enum RirStructuralPathSegment {
     Branch(u32),
     MatchArm(u32),
     FieldType(u32),
-    VariantPayload { variant: u32, payload: u32 },
+    VariantPayload {
+        variant: u32,
+        payload: u32,
+    },
     Method(u32),
     AnonymousType(u32),
     StringLiteral(u32),
     ReadOnlyData(u32),
+    /// The `index`th further interface of parameter `param`'s composed
+    /// bound (spec 6.7:14).
+    ParameterBound {
+        param: u32,
+        index: u32,
+    },
+    /// The `n`th interface of a header conformance list, refinement list,
+    /// or freestanding assertion (spec 6.7:7, 6.7:9).
+    Conformance(u32),
+    /// The subject type of a freestanding conformance assertion.
+    ConformanceSubject,
+    /// The type of the `n`th associated type declaration or requirement.
+    AssociatedType(u32),
 }
 
 /// Trivia- and absolute-position-insensitive identity of a structural source
@@ -608,12 +631,38 @@ pub enum InstData {
         is_pub: bool,
         /// Whether this struct is a linear type (must be consumed)
         is_linear: bool,
+        /// Whether this declaration is an `interface` (spec 6.7) rather than
+        /// a struct. An interface lowers to the struct shape: it has no
+        /// fields, its refined interfaces are its `conformances`, each
+        /// type-valued associated constant requirement is an `assoc_types`
+        /// entry whose type is the `type` keyword, and each method or
+        /// associated-function requirement is a method whose body is a
+        /// `@panic` intrinsic call, so the shell, member, and signature paths
+        /// that serve structs serve interfaces unchanged.
+        is_interface: bool,
         /// Struct name
         name: Spur,
         /// Index into extra data where fields start
         fields: RirStructFieldsRange,
+        /// Interfaces asserted in the header (`struct S is A + B`, spec
+        /// 6.7:9), or the refined interfaces of an interface (spec 6.7:7).
+        conformances: RirInterfaceRefsRange,
+        /// Associated type declarations `pub const Name = Type;` (spec 6.7:10)
+        /// as (name, type) pairs. For an interface, each entry is a
+        /// requirement and its type is the `type` keyword.
+        assoc_types: RirAssocTypesRange,
         /// Index into extra data where method refs start
         methods: RirStructMethodsRange,
+    },
+
+    /// Freestanding conformance assertion `Type is Interface + Other;`
+    /// (spec 6.7:9). Header assertions are recorded on the `StructDecl`
+    /// instead.
+    ConformanceDecl {
+        /// The type asserted to conform.
+        subject: RirTypeSyntaxRef,
+        /// The interfaces it is asserted to conform to, in source order.
+        interfaces: RirInterfaceRefsRange,
     },
 
     /// Struct literal: creates a new struct instance

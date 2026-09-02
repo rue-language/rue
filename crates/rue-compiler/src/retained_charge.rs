@@ -78,7 +78,7 @@ fn array_length_charge(length: &ast::ArrayLength) -> u64 {
 }
 
 fn param_charge(param: &ast::Param) -> u64 {
-    type_charge(&param.ty)
+    type_charge(&param.ty).saturating_add(owned_slice_charge(&param.bounds, type_charge))
 }
 
 fn enum_variant_charge(variant: &ast::EnumVariant) -> u64 {
@@ -236,10 +236,29 @@ fn item_charge(item: &ast::Item) -> u64 {
             .saturating_add(expr_charge(&function.body))
             .saturating_add(function.export_abi.retained_charge()),
         ast::Item::Struct(value) => directives_charge(&value.directives)
+            .saturating_add(owned_slice_charge(&value.conformances, type_charge))
             .saturating_add(owned_slice_charge(&value.fields, |field| {
                 type_charge(&field.ty)
             }))
+            .saturating_add(owned_slice_charge(&value.assoc_types, |assoc| {
+                type_charge(&assoc.ty)
+            }))
             .saturating_add(owned_slice_charge(&value.methods, method_charge)),
+        ast::Item::Interface(value) => directives_charge(&value.directives)
+            .saturating_add(owned_slice_charge(&value.parents, type_charge))
+            .saturating_add(owned_slice_charge(
+                &value.requirements,
+                |requirement| match requirement {
+                    ast::InterfaceRequirement::Method(signature) => {
+                        directives_charge(&signature.directives)
+                            .saturating_add(owned_slice_charge(&signature.params, param_charge))
+                            .saturating_add(signature.return_type.as_ref().map_or(0, type_charge))
+                    }
+                    ast::InterfaceRequirement::AssocType(_) => 0,
+                },
+            )),
+        ast::Item::Conformance(value) => type_charge(&value.subject)
+            .saturating_add(owned_slice_charge(&value.interfaces, type_charge)),
         ast::Item::Enum(value) => directives_charge(&value.directives)
             .saturating_add(owned_slice_charge(&value.variants, enum_variant_charge)),
         ast::Item::DropFn(value) => expr_charge(&value.body),
@@ -1403,6 +1422,8 @@ impl RetainedCharge for rue_error::ErrorKind {
             }
             | E::AccessorParamModeUnsupported { mode: value }
             | E::AccessorRecursion { method: value }
+            | E::InterfaceNotFound { name: value }
+            | E::BoundIsNotAnInterface { name: value }
             | E::MoveSelfOutOfDestructor { type_name: value }
             | E::CopyStructWithDestructor { type_name: value }
             | E::QuestionOutsideOptionFn { return_type: value }
@@ -1537,9 +1558,29 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::ExportSignatureUnsupported {
                 name: left,
                 reason: right,
+            }
+            | E::DuplicateInterfaceRequirement {
+                interface: left,
+                member: right,
+            }
+            | E::InterfaceBoundNotSatisfied {
+                ty: left,
+                interface: right,
             } => left
                 .retained_charge()
                 .saturating_add(right.retained_charge()),
+            E::InterfaceMemberMissing(value) | E::MissingAssociatedType(value) => {
+                (std::mem::size_of_val(value.as_ref()) as u64)
+                    .saturating_add(value.ty.retained_charge())
+                    .saturating_add(value.interface.retained_charge())
+                    .saturating_add(value.member.retained_charge())
+            }
+            E::InterfaceSignatureMismatch(value) => (std::mem::size_of_val(value.as_ref()) as u64)
+                .saturating_add(value.ty.retained_charge())
+                .saturating_add(value.interface.retained_charge())
+                .saturating_add(value.member.retained_charge())
+                .saturating_add(value.expected.retained_charge())
+                .saturating_add(value.found.retained_charge()),
 
             E::UnexpectedToken { expected, found } => expected
                 .retained_charge()

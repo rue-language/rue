@@ -576,6 +576,20 @@ fn encode_anchor(value: &StructuralAnchor, output: &mut String) {
             tag(output, 12);
             number(output, *index);
         }
+        StructuralPathSegment::ParameterBound { param, index } => {
+            tag(output, 13);
+            number(output, *param);
+            number(output, *index);
+        }
+        StructuralPathSegment::Conformance(index) => {
+            tag(output, 14);
+            number(output, *index);
+        }
+        StructuralPathSegment::ConformanceSubject => tag(output, 15),
+        StructuralPathSegment::AssociatedType(index) => {
+            tag(output, 16);
+            number(output, *index);
+        }
     });
 }
 

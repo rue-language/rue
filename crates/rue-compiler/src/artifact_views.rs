@@ -215,6 +215,7 @@ impl TokenView {
             False => "FALSE",
             Struct => "STRUCT",
             Enum => "ENUM",
+            Interface => "INTERFACE",
             Impl => "IMPL",
             Drop => "DROP",
             Linear => "LINEAR",
@@ -782,6 +783,58 @@ fn syntax_item_record(
                 None,
                 children,
             )
+        }
+        rue_parser::Item::Interface(interface) => {
+            let mut children = directive_records(owner, &interface.directives).collect::<Vec<_>>();
+            children.push(modifier_record(
+                interface.span,
+                "visibility",
+                visibility_name(interface.visibility),
+            ));
+            children.extend(
+                interface
+                    .parents
+                    .iter()
+                    .map(|parent| type_record(owner, parent)),
+            );
+            children.extend(
+                interface
+                    .requirements
+                    .iter()
+                    .map(|requirement| match requirement {
+                        rue_parser::InterfaceRequirement::Method(signature) => syntax_record(
+                            "interface_requirement",
+                            signature.span,
+                            Some(resolved_ident(owner, signature.name)),
+                            None,
+                            Vec::new(),
+                        ),
+                        rue_parser::InterfaceRequirement::AssocType(requirement) => syntax_record(
+                            "associated_type_requirement",
+                            requirement.span,
+                            Some(resolved_ident(owner, requirement.name)),
+                            None,
+                            Vec::new(),
+                        ),
+                    }),
+            );
+            syntax_record(
+                "interface",
+                interface.span,
+                Some(resolved_ident(owner, interface.name)),
+                None,
+                children,
+            )
+        }
+        rue_parser::Item::Conformance(conformance) => {
+            let mut children = vec![type_record(owner, &conformance.subject)];
+            children.extend(
+                conformance
+                    .interfaces
+                    .iter()
+                    .map(|interface| type_record(owner, interface)),
+            );
+            syntax_record("conformance", conformance.span, None, None, children)
         }
         rue_parser::Item::DropFn(drop_fn) => syntax_record(
             "drop_function",
@@ -1681,6 +1734,7 @@ fn rir_kind(data: &rue_rir::InstData) -> &'static str {
         Assign { .. } => "assignment",
         PlaceSet { .. } => "place_assignment",
         StructDecl { .. } => "struct_declaration",
+        ConformanceDecl { .. } => "conformance_declaration",
         StructInit { .. } => "struct_initializer",
         FieldGet { .. } => "field_read",
         FieldSet { .. } => "field_write",
@@ -1867,6 +1921,7 @@ fn rir_operands(rir: &rue_rir::Rir, data: &rue_rir::InstData) -> Vec<RirOperandR
         | OffsetOf { .. }
         | VarRef { .. }
         | EnumDecl { .. }
+        | ConformanceDecl { .. }
         | TypeConst { .. }
         | AnonEnumType { .. } => {}
     }

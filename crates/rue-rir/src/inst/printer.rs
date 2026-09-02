@@ -32,6 +32,22 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
             .render_type_with(reference, |symbol| self.interner.resolve(symbol))
             .unwrap_or_else(|| "<invalid-type>".to_owned())
     }
+    /// Render an interface list after `prefix`, `+`-separated, or nothing
+    /// when the list is empty.
+    fn format_interface_list(&self, prefix: &str, interfaces: &RirInterfaceRefsRange) -> String {
+        self.rir
+            .interface_refs(interfaces)
+            .values()
+            .enumerate()
+            .map(|(index, interface)| {
+                format!(
+                    "{}{}",
+                    if index == 0 { prefix } else { " + " },
+                    self.format_type(interface)
+                )
+            })
+            .collect()
+    }
     /// Create a new RIR printer.
     pub fn new(rir: &'a Rir, interner: &'b lasso::ThreadedRodeo) -> Self {
         Self {
@@ -480,12 +496,19 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                                 RirParamMode::Borrow => "borrow ",
                                 RirParamMode::Normal => "",
                             };
+                            let bounds = self
+                                .rir
+                                .interface_refs(&p.bounds)
+                                .values()
+                                .map(|bound| format!(" + {}", self.format_type(bound)))
+                                .collect::<String>();
                             format!(
-                                "{}{}{}: {}",
+                                "{}{}{}: {}{}",
                                 comptime_prefix,
                                 mode_prefix,
                                 self.interner.resolve(&p.name),
-                                self.format_type(p.ty)
+                                self.format_type(p.ty),
+                                bounds
                             )
                         })
                         .collect();
@@ -646,8 +669,11 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     directives,
                     is_pub,
                     is_linear,
+                    is_interface,
                     name,
                     fields,
+                    conformances,
+                    assoc_types,
                     methods,
                 } => {
                     let pub_str = if *is_pub { "pub " } else { "" };
@@ -675,15 +701,51 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                             .collect();
                         format!(" methods: [{}]", method_refs.join(", "))
                     };
+                    let keyword = if *is_interface { "interface" } else { "struct" };
+                    let conformances_str = self.format_interface_list(
+                        if *is_interface { ": " } else { " is " },
+                        conformances,
+                    );
+                    let assoc_types = self.rir.assoc_types(assoc_types);
+                    let assoc_types_str = if assoc_types.len() == 0 {
+                        String::new()
+                    } else {
+                        let entries: Vec<String> = assoc_types
+                            .values()
+                            .map(|(assoc_name, ty)| {
+                                format!(
+                                    "{} = {}",
+                                    self.interner.resolve(&assoc_name),
+                                    self.format_type(ty)
+                                )
+                            })
+                            .collect();
+                        format!(" assoc: [{}]", entries.join(", "))
+                    };
                     writeln!(
                         out,
-                        "{}{}{}struct {} {{ {} }}{}",
+                        "{}{}{}{} {}{} {{ {} }}{}{}",
                         directives_str,
                         pub_str,
                         linear_str,
+                        keyword,
                         name_str,
+                        conformances_str,
                         fields_str.join(", "),
+                        assoc_types_str,
                         methods_str
+                    )
+                    .unwrap();
+                }
+                InstData::ConformanceDecl {
+                    subject,
+                    interfaces,
+                } => {
+                    writeln!(
+                        out,
+                        "conformance {}{}",
+                        self.format_type(*subject),
+                        self.format_interface_list(" is ", interfaces)
                     )
                     .unwrap();
                 }

@@ -251,9 +251,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             | InstData::OffsetOf { .. } => self.analyze_intrinsic_ops(air, inst_ref, ctx),
 
             // Declaration no-ops (produce Unit in expression context)
-            InstData::DropFnDecl { .. } | InstData::FnDecl { .. } | InstData::ConstDecl { .. } => {
-                self.analyze_decl_noop(air, inst_ref, ctx)
-            }
+            InstData::DropFnDecl { .. }
+            | InstData::FnDecl { .. }
+            | InstData::ConstDecl { .. }
+            | InstData::ConformanceDecl { .. } => self.analyze_decl_noop(air, inst_ref, ctx),
 
             // Comptime block expression
             InstData::Comptime { expr } => {

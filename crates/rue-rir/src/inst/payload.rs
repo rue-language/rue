@@ -238,13 +238,19 @@ payload_family!(
     "anonymous enum variant payloads"
 );
 payload_family!(RirArrayElemsRange, ArrayElemsFamily, "array elements");
+payload_family!(
+    RirInterfaceRefsRange,
+    InterfaceRefsFamily,
+    "interface references"
+);
+payload_family!(RirAssocTypesRange, AssocTypesFamily, "associated types");
 
 /// Stable inventory of every owner-issued variable-payload family.
 ///
 /// Verification and benchmark tooling consumes this list so adding a schema
 /// family necessarily changes the cross-phase inventory rather than silently
 /// escaping its coverage.
-pub const RIR_PAYLOAD_FAMILY_NAMES: [&str; 17] = [
+pub const RIR_PAYLOAD_FAMILY_NAMES: [&str; 19] = [
     RirMatchArmsRange::FAMILY,
     RirDirectivesRange::FAMILY,
     RirParamsRange::FAMILY,
@@ -262,12 +268,14 @@ pub const RIR_PAYLOAD_FAMILY_NAMES: [&str; 17] = [
     RirEnumPayloadsRange::FAMILY,
     RirAnonEnumPayloadsRange::FAMILY,
     RirArrayElemsRange::FAMILY,
+    RirInterfaceRefsRange::FAMILY,
+    RirAssocTypesRange::FAMILY,
 ];
 
 /// Read-only accounting for the compact RIR payload store.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RirPayloadStorageStats {
-    pub family_logical_bytes: [usize; 17],
+    pub family_logical_bytes: [usize; 19],
     pub word_store_logical_bytes: usize,
     pub word_store_capacity_bytes: usize,
     pub nonempty_variable_envelopes: usize,
@@ -544,9 +552,12 @@ const CALL_ARG_SCHEMA: FixedPayloadSchema = FixedPayloadSchema {
 };
 const CALL_ARG_VALUE: usize = 0;
 const CALL_ARG_MODE: usize = 1;
-/// `[name, ty, mode, is_comptime, span.file, span.start, span.end]`.
+/// `[name, ty, mode, is_comptime, span.file, span.start, span.end,
+/// bounds.start, bounds.extent]`. The bounds words locate the parameter's
+/// own interface-reference payload (spec 6.7:14), issued before the owning
+/// declaration; `[0, 0]` is the empty bound.
 const PARAM_SCHEMA: FixedPayloadSchema = FixedPayloadSchema {
-    width: 7,
+    width: 9,
     symbol_offsets: &[PARAM_NAME],
 };
 const PARAM_NAME: usize = 0;
@@ -556,6 +567,8 @@ const PARAM_COMPTIME: usize = 3;
 const PARAM_SPAN_FILE: usize = 4;
 const PARAM_SPAN_START: usize = 5;
 const PARAM_SPAN_END: usize = 6;
+const PARAM_BOUNDS_START: usize = 7;
+const PARAM_BOUNDS_EXTENT: usize = 8;
 
 /// Stored representation of match arm in the extra array.
 /// Layout: pattern data + [body: u32]
@@ -1187,7 +1200,8 @@ impl Rir {
 
     /// Store RirParams and return (start, len).
     /// Layout: [name: u32, ty: u32, mode: u32, is_comptime: u32,
-    ///          span.file_id: u32, span.start: u32, span.end: u32] per param
+    ///          span.file_id: u32, span.start: u32, span.end: u32,
+    ///          bounds.start: u32, bounds.extent: u32] per param
     pub(crate) fn add_params(
         &mut self,
         params: &[RirParam],
@@ -1211,10 +1225,44 @@ impl Rir {
                         param.span.file_id.index(),
                         param.span.start,
                         param.span.end,
+                        param.bounds.start(),
+                        param.bounds.extent(),
                     ]);
                 }
             })?;
         Ok(RirParamsRange::from_parts(start, extent))
+    }
+
+    /// Store the further interfaces of one composed comptime bound, or any
+    /// other interface list, and return its range.
+    /// Layout: [type: u32] per interface
+    pub(crate) fn add_interface_refs(
+        &mut self,
+        interfaces: &[RirTypeSyntaxRef],
+    ) -> Result<RirInterfaceRefsRange, RirPayloadBuildError> {
+        let family = RirInterfaceRefsRange::FAMILY;
+        let words = interfaces
+            .len()
+            .checked_mul(REF_SCHEMA.width)
+            .ok_or(RirPayloadBuildError::ResourceLimitExceeded { family })?;
+        let (start, extent) = self.append_payload_direct(family, words, |data| {
+            data.extend(interfaces.iter().map(|ty| ty.as_u32()));
+        })?;
+        Ok(RirInterfaceRefsRange::from_parts(start, extent))
+    }
+
+    /// Retrieve an interface list: a parameter's further bounds, a struct's
+    /// header conformances or an interface's refined interfaces, or a
+    /// freestanding assertion's interfaces.
+    pub fn interface_refs(&self, range: &RirInterfaceRefsRange) -> RirTypeSyntaxRefs<'_> {
+        let data = self
+            .payload_words(range, |r| {
+                (r.start(), r.extent(), RirInterfaceRefsRange::FAMILY)
+            })
+            .expect("validated RIR range");
+        self.fixed_view(data, REF_SCHEMA.width, |record| {
+            RirTypeSyntaxRef::from_u32(record[0])
+        })
     }
 
     /// Retrieve RirParams from the extra array.
@@ -1231,6 +1279,10 @@ impl Rir {
                 FileId::new(chunk[PARAM_SPAN_FILE]),
                 chunk[PARAM_SPAN_START],
                 chunk[PARAM_SPAN_END],
+            ),
+            bounds: RirInterfaceRefsRange::from_parts(
+                chunk[PARAM_BOUNDS_START],
+                chunk[PARAM_BOUNDS_EXTENT],
             ),
         })
     }
@@ -1478,6 +1530,16 @@ impl Rir {
             RirAnonStructFieldsRange::from_parts,
         )
     }
+    pub(crate) fn add_assoc_types(
+        &mut self,
+        assoc_types: &[(Spur, RirTypeSyntaxRef)],
+    ) -> Result<RirAssocTypesRange, RirPayloadBuildError> {
+        self.add_field_decl_words(
+            RirAssocTypesRange::FAMILY,
+            assoc_types,
+            RirAssocTypesRange::from_parts,
+        )
+    }
 
     /// Retrieve field declarations from the extra array.
     fn field_decl_view<R>(
@@ -1509,6 +1571,16 @@ impl Rir {
     ) -> RirSlice<'_, (Spur, RirTypeSyntaxRef)> {
         self.field_decl_view(range, |r| {
             (r.start(), r.extent(), RirAnonStructFieldsRange::FAMILY)
+        })
+    }
+    /// Retrieve a struct's associated type declarations or an interface's
+    /// associated type requirements as (name, type) pairs.
+    pub fn assoc_types(
+        &self,
+        range: &RirAssocTypesRange,
+    ) -> RirSlice<'_, (Spur, RirTypeSyntaxRef)> {
+        self.field_decl_view(range, |r| {
+            (r.start(), r.extent(), RirAssocTypesRange::FAMILY)
         })
     }
 

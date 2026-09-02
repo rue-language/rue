@@ -244,6 +244,11 @@ mod typed_payload_tests {
             }])
             .unwrap();
         assert_eq!(rir.call_args(&call).get(0).unwrap().value, r1);
+        let bounds = rir.add_interface_refs(&[type_a, type_b]).unwrap();
+        assert_eq!(
+            rir.interface_refs(&bounds).values().collect::<Vec<_>>(),
+            [type_a, type_b]
+        );
         let params = rir
             .add_params(&[RirParam {
                 name: a,
@@ -251,9 +256,13 @@ mod typed_payload_tests {
                 mode: RirParamMode::Borrow,
                 is_comptime: true,
                 span: span(),
+                bounds: bounds.clone(),
             }])
             .unwrap();
         assert_eq!(rir.params(&params).get(0).unwrap().name, a);
+        assert_eq!(rir.params(&params).get(0).unwrap().bounds, bounds);
+        let assoc_types = rir.add_assoc_types(&[(b, type_a)]).unwrap();
+        assert_eq!(rir.assoc_types(&assoc_types).get(0).unwrap(), (b, type_a));
         let arms = rir
             .add_match_arms(&[(RirPattern::Wildcard(span()), r0)])
             .unwrap();
@@ -312,6 +321,7 @@ mod typed_payload_tests {
             args: vec![b],
             span: span(),
         }];
+        let bounds = editor.add_parameter_bounds(&[type_a]).unwrap();
         let function = editor
             .add_fn_decl(
                 &directives,
@@ -326,6 +336,7 @@ mod typed_payload_tests {
                     mode: RirParamMode::Borrow,
                     is_comptime: false,
                     span: span(),
+                    bounds,
                 }],
                 type_b,
                 block,
@@ -335,6 +346,9 @@ mod typed_payload_tests {
                 false,
                 span(),
             )
+            .unwrap();
+        editor
+            .add_conformance_decl(type_a, &[type_b], span())
             .unwrap();
         editor
             .add_match(
@@ -367,8 +381,11 @@ mod typed_payload_tests {
                 &directives,
                 true,
                 false,
+                true,
                 a,
                 &[(a, type_b)],
+                &[type_a],
+                &[(b, type_a)],
                 &[function],
                 span(),
             )
@@ -431,6 +448,7 @@ mod typed_payload_tests {
             data: InstData::UnitConst,
             span: at(0),
         });
+        let bounds = editor.add_parameter_bounds(&[]).unwrap();
         editor
             .add_fn_decl(
                 &[directive(2)],
@@ -445,6 +463,7 @@ mod typed_payload_tests {
                     mode: RirParamMode::Normal,
                     is_comptime: false,
                     span: at(3),
+                    bounds,
                 }],
                 type_b,
                 value,
@@ -503,8 +522,11 @@ mod typed_payload_tests {
                 &[directive(14)],
                 false,
                 false,
+                false,
                 a,
                 &[(a, type_b)],
+                &[],
+                &[],
                 &[],
                 at(13),
             )
@@ -905,7 +927,18 @@ mod typed_payload_tests {
             );
         }
         source
-            .add_struct_decl(&[], false, false, name, &[], &method_roots, span())
+            .add_struct_decl(
+                &[],
+                false,
+                false,
+                false,
+                name,
+                &[],
+                &[],
+                &[],
+                &method_roots,
+                span(),
+            )
             .unwrap();
         let source = ValidatedRir::finish(
             source,
@@ -971,8 +1004,11 @@ mod typed_payload_tests {
                 }],
                 true,
                 true,
+                false,
                 source_name,
                 &[(source_field, source_ty)],
+                &[],
+                &[],
                 &[],
                 Span::with_file(FileId::new(7), 3, 40),
             )
@@ -1052,13 +1088,16 @@ mod typed_payload_tests {
             directives,
             is_pub,
             is_linear,
+            is_interface,
             name,
             fields,
             methods: actual_methods,
+            ..
         } = &destination.get(InstRef::from_raw(4)).data
         else {
             panic!("composed shell must remain a struct declaration")
         };
+        assert!(!*is_interface);
         assert!(*is_pub);
         assert!(*is_linear);
         assert_eq!(destination_symbols.resolve(name), "Container");
@@ -1148,7 +1187,18 @@ mod typed_payload_tests {
             )
             .unwrap();
         let nonempty_root = with_method
-            .add_struct_decl(&[], false, false, name, &[], &[method], span())
+            .add_struct_decl(
+                &[],
+                false,
+                false,
+                false,
+                name,
+                &[],
+                &[],
+                &[],
+                &[method],
+                span(),
+            )
             .unwrap();
         let with_method = ValidatedRir::finish(with_method, &validation).unwrap();
 
@@ -1975,6 +2025,7 @@ mod typed_payload_tests {
         let arms = rir
             .add_match_arms(&[(RirPattern::Wildcard(span()), InstRef::from_raw(1))])
             .unwrap();
+        let bounds = rir.add_interface_refs(&[]).unwrap();
         let params = rir
             .add_params(&[RirParam {
                 name: a,
@@ -1982,6 +2033,7 @@ mod typed_payload_tests {
                 mode: RirParamMode::Normal,
                 is_comptime: false,
                 span: span(),
+                bounds,
             }])
             .unwrap();
         let inits = rir.add_field_inits(&[(a, InstRef::from_raw(0))]).unwrap();
@@ -2036,6 +2088,7 @@ mod typed_payload_tests {
 
         let mut rir = Rir::new();
         let type_a = install_named_types(&mut rir, &[a])[0];
+        let bounds = rir.add_interface_refs(&[]).unwrap();
         let params = rir
             .add_params(&[RirParam {
                 name: a,
@@ -2043,6 +2096,7 @@ mod typed_payload_tests {
                 mode: RirParamMode::Normal,
                 is_comptime: false,
                 span: span(),
+                bounds,
             }])
             .unwrap();
         assert_rejected(
@@ -2133,8 +2187,25 @@ mod typed_payload_tests {
                 directives: RirDirectivesRange::payload_fallback(),
                 is_pub: false,
                 is_linear: false,
+                is_interface: false,
                 name: a,
                 fields,
+                conformances: RirInterfaceRefsRange::payload_fallback(),
+                assoc_types: RirAssocTypesRange::payload_fallback(),
+                methods: RirStructMethodsRange::payload_fallback(),
+            }
+        );
+        fixed_symbol_case!(
+            |rir: &mut Rir| rir.add_assoc_types(&[(a, type_a)]).unwrap(),
+            |assoc_types| InstData::StructDecl {
+                directives: RirDirectivesRange::payload_fallback(),
+                is_pub: false,
+                is_linear: false,
+                is_interface: true,
+                name: a,
+                fields: RirStructFieldsRange::payload_fallback(),
+                conformances: RirInterfaceRefsRange::payload_fallback(),
+                assoc_types,
                 methods: RirStructMethodsRange::payload_fallback(),
             }
         );
@@ -2186,7 +2257,10 @@ mod typed_payload_tests {
             mode: RirParamMode::Borrow,
             is_comptime: true,
             span: span(),
+            bounds: RirInterfaceRefsRange::from_parts(0, 0),
         }];
+        let interface_refs = [type_a, type_b];
+        let assoc_types = [(a, type_b)];
         let calls = [RirCallArg {
             value: r0,
             mode: RirArgMode::Inout,
@@ -2240,7 +2314,9 @@ mod typed_payload_tests {
                     | RirMatchArmsRange::FAMILY
                     | RirFieldInitsRange::FAMILY
                     | RirStructFieldsRange::FAMILY
-                    | RirAnonStructFieldsRange::FAMILY => 0,
+                    | RirAnonStructFieldsRange::FAMILY
+                    | RirInterfaceRefsRange::FAMILY
+                    | RirAssocTypesRange::FAMILY => 0,
                     _ => logical_bytes,
                 };
                 Evidence {
@@ -2353,8 +2429,18 @@ mod typed_payload_tests {
                     .map(|v| v.len())
                     .sum::<usize>()
             ),
+            evidence!(
+                RirInterfaceRefsRange::FAMILY,
+                |rir: &mut Rir| { rir.add_interface_refs(&interface_refs).unwrap() },
+                |rir: &Rir, range| rir.interface_refs(range).len()
+            ),
+            evidence!(
+                RirAssocTypesRange::FAMILY,
+                |rir: &mut Rir| { rir.add_assoc_types(&assoc_types).unwrap() },
+                |rir: &Rir, range| rir.assoc_types(range).len()
+            ),
         ];
-        assert_eq!(evidence.len(), 17);
+        assert_eq!(evidence.len(), 19);
         for item in &evidence {
             let minimum_allocations = if item.peak_staging_bytes == 0 { 1 } else { 2 };
             assert!(

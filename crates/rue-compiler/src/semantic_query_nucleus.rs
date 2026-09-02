@@ -489,6 +489,40 @@ pub(crate) fn project_semantic_signature(
             },
             Some(&method.body),
         ),
+        ParsedDeclarationAstRef::InterfaceRequirement { requirement, .. } => callable(
+            &requirement.params,
+            requirement.return_type.as_ref(),
+            requirement.receiver.is_some(),
+            requirement.receiver.as_ref().map_or(
+                crate::declaration_candidate::DeclarationParameterMode::Value,
+                |receiver| parameter_mode(receiver.mode).0,
+            ),
+            false,
+            false,
+            false,
+            requirement.place_return.is_some(),
+            if requirement.place_return.is_some_and(|mode| mode.is_inout()) {
+                crate::declaration_candidate::DeclarationParameterMode::Inout
+            } else if requirement
+                .place_return
+                .is_some_and(|mode| mode.is_borrow())
+            {
+                crate::declaration_candidate::DeclarationParameterMode::Borrow
+            } else {
+                crate::declaration_candidate::DeclarationParameterMode::Value
+            },
+            None,
+        ),
+        // An interface's shell signature is the struct shape with no fields
+        // (spec 6.7); its conformances and requirements are RIR facts the
+        // semantic phase of the preview reads from the `StructDecl`.
+        ParsedDeclarationAstRef::Interface(_) => Ok(ParsedSemanticSignature::Struct {
+            syntax: rue_rir::RirTypeSyntaxBuilder::default().finish(),
+            fields: Arc::from([]),
+            is_copy: false,
+            is_linear: false,
+            is_repr_c: false,
+        }),
         ParsedDeclarationAstRef::Struct(structure) => {
             let mut syntax = rue_rir::RirTypeSyntaxBuilder::default();
             let fields = structure

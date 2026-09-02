@@ -2,6 +2,16 @@
 
 use super::*;
 
+/// The parsed head of a method: everything before the body or the `;`.
+pub(super) struct MethodHead {
+    pub(super) directives: Directives,
+    pub(super) name: Ident,
+    pub(super) receiver: Option<SelfParam>,
+    pub(super) params: Vec<Param>,
+    pub(super) return_type: Option<TypeExpr>,
+    pub(super) place_return: Option<PlaceReturn>,
+}
+
 impl Parser {
     pub(super) fn ty(&mut self) -> PResult<TypeExpr> {
         let start = self.start();
@@ -232,6 +242,27 @@ impl Parser {
 
     pub(super) fn method(&mut self) -> PResult<Method> {
         let start = self.start();
+        let head = self.method_head()?;
+        let anonymous_mark = self.anonymous_literal_mark();
+        let body = Expr::Block(self.block()?);
+        let contains_anonymous_type_literal = self.saw_anonymous_literal_since(anonymous_mark);
+        Ok(Method {
+            contains_anonymous_type_literal,
+            directives: head.directives,
+            name: head.name,
+            receiver: head.receiver,
+            params: head.params,
+            return_type: head.return_type,
+            place_return: head.place_return,
+            body,
+            span: self.span_from(start),
+        })
+    }
+
+    /// Parse `[@directives] fn name(receiver, params) [-> result]` up to but
+    /// not including the body. A struct method continues with a block; an
+    /// interface requirement continues with `;` (spec 6.7:5).
+    pub(super) fn method_head(&mut self) -> PResult<MethodHead> {
         let directives = self.directives()?;
         self.expect(TokenKind::Fn)?;
         let name = self.ident()?;
@@ -290,19 +321,13 @@ impl Parser {
         }
         self.expect(TokenKind::RParen)?;
         let (return_type, place_return) = self.return_type_with_place_mode()?;
-        let anonymous_mark = self.anonymous_literal_mark();
-        let body = Expr::Block(self.block()?);
-        let contains_anonymous_type_literal = self.saw_anonymous_literal_since(anonymous_mark);
-        Ok(Method {
-            contains_anonymous_type_literal,
+        Ok(MethodHead {
             directives,
             name,
             receiver,
             params,
             return_type,
             place_return,
-            body,
-            span: self.span_from(start),
         })
     }
 

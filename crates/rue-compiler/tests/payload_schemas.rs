@@ -11,7 +11,7 @@ use rue_cfg::CFG_PAYLOAD_FAMILY_NAMES;
 use rue_compiler::{CompileOptions, CompilerSession, SourceSnapshot};
 use rue_rir::RIR_PAYLOAD_FAMILY_NAMES;
 
-const EXPECTED_RIR: [&str; 17] = [
+const EXPECTED_RIR: [&str; 19] = [
     "match arms",
     "directives",
     "parameters",
@@ -29,6 +29,8 @@ const EXPECTED_RIR: [&str; 17] = [
     "enum variant payloads",
     "anonymous enum variant payloads",
     "array elements",
+    "interface references",
+    "associated types",
 ];
 
 const EXPECTED_AIR: [&str; 10] = [
@@ -76,7 +78,7 @@ macro_rules! row {
 /// malformed-range and malformed-scalar probes below. Round-trip evidence is
 /// owner-local so it constructs the private descriptor types; production
 /// publication, clone/rewrite, and stable display are exercised below.
-const COVERAGE_MATRIX: [CoverageRow; 37] = [
+const COVERAGE_MATRIX: [CoverageRow; 39] = [
     row!("RIR", "match arms"),
     row!("RIR", "directives"),
     row!("RIR", "parameters"),
@@ -94,6 +96,8 @@ const COVERAGE_MATRIX: [CoverageRow; 37] = [
     row!("RIR", "enum variant payloads"),
     row!("RIR", "anonymous enum variant payloads"),
     row!("RIR", "array elements"),
+    row!("RIR", "interface references"),
+    row!("RIR", "associated types"),
     row!("AIR", "match_arms"),
     row!("AIR", "call_args"),
     row!("AIR", "type_args"),
@@ -125,9 +129,9 @@ fn owner_schema_inventories_are_complete_and_deliberate() {
         .iter()
         .map(|row| row.family)
         .collect::<Vec<_>>();
-    assert_eq!(&mapped[..17], EXPECTED_RIR);
-    assert_eq!(&mapped[17..27], EXPECTED_AIR);
-    assert_eq!(&mapped[27..], EXPECTED_CFG);
+    assert_eq!(&mapped[..19], EXPECTED_RIR);
+    assert_eq!(&mapped[19..29], EXPECTED_AIR);
+    assert_eq!(&mapped[29..], EXPECTED_CFG);
     for row in COVERAGE_MATRIX {
         let index = match row.phase {
             "RIR" => EXPECTED_RIR.iter().position(|family| *family == row.family),

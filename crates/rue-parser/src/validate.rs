@@ -13,7 +13,10 @@
 //! `@syscall`, `@intCast`, ...) are validated by sema, which already rejects
 //! unknown intrinsics.
 
-use crate::ast::{Ast, Directive, Expr, IntrinsicArg, Item, Method, Statement, TypeExpr};
+use crate::ast::{
+    Ast, Directive, Expr, InterfaceDecl, InterfaceRequirement, IntrinsicArg, Item, Method,
+    Statement, TypeExpr,
+};
 use crate::parser_policy::diagnostics::ParserDiagnostics;
 use lasso::ThreadedRodeo;
 use rue_error::{CompileError, ErrorKind};
@@ -70,6 +73,7 @@ enum DirectiveSite {
     Function,
     Struct,
     Enum,
+    Interface,
     Method,
     Const,
     Let,
@@ -81,6 +85,7 @@ impl DirectiveSite {
             DirectiveSite::Function => "functions",
             DirectiveSite::Struct => "structs",
             DirectiveSite::Enum => "enums",
+            DirectiveSite::Interface => "interfaces",
             DirectiveSite::Method => "methods",
             DirectiveSite::Const => "const declarations",
             DirectiveSite::Let => "let statements",
@@ -236,6 +241,8 @@ impl Validator<'_> {
                     ));
                 }
             }
+            Item::Interface(interface) => self.check_interface(interface),
+            Item::Conformance(_) => {}
             Item::DropFn(d) => self.check_expr(&d.body),
             Item::Extern(_) => {}
             Item::Const(c) => {
@@ -249,6 +256,51 @@ impl Validator<'_> {
     fn check_method(&mut self, method: &Method) {
         self.check_directives(&method.directives, DirectiveSite::Method);
         self.check_expr(&method.body);
+    }
+
+    /// Enforce the syntactic legality rules of an interface body (spec
+    /// 6.7:6): at least one requirement, distinct requirement names, and no
+    /// directives on a requirement. Every other rule of chapter 6.7 needs
+    /// name resolution and is checked semantically.
+    fn check_interface(&mut self, interface: &InterfaceDecl) {
+        self.check_directives(&interface.directives, DirectiveSite::Interface);
+        let interface_name = self.interner.resolve(&interface.name.name);
+        if interface.requirements.is_empty() {
+            self.errors.push(CompileError::new(
+                ErrorKind::ParseError(format!(
+                    "interface `{interface_name}` is empty; an interface must declare at least one requirement"
+                )),
+                interface.span,
+            ));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for requirement in &interface.requirements {
+            let (name, span) = match requirement {
+                InterfaceRequirement::Method(signature) => {
+                    if let Some(directive) = signature.directives.first() {
+                        self.errors.push(CompileError::new(
+                            ErrorKind::ParseError(
+                                "an interface requirement cannot carry directives".to_string(),
+                            ),
+                            directive.span,
+                        ));
+                    }
+                    (signature.name, signature.span)
+                }
+                InterfaceRequirement::AssocType(requirement) => {
+                    (requirement.name, requirement.span)
+                }
+            };
+            if !seen.insert(name.name) {
+                self.errors.push(CompileError::new(
+                    ErrorKind::DuplicateInterfaceRequirement {
+                        interface: interface_name.to_string(),
+                        member: self.interner.resolve(&name.name).to_string(),
+                    },
+                    span,
+                ));
+            }
+        }
     }
 
     fn check_statement(&mut self, statement: &Statement) {

@@ -79,6 +79,13 @@ impl Rir {
                 } => {
                     account(1, directives.extent(), true);
                     account(2, params.extent(), false);
+                    if let Ok(words) = self
+                        .payload_words(params, |r| (r.start(), r.extent(), RirParamsRange::FAMILY))
+                    {
+                        for parameter in words.chunks_exact(PARAM_SCHEMA.width) {
+                            account(17, parameter[PARAM_BOUNDS_EXTENT], false);
+                        }
+                    }
                 }
                 InstData::ConstDecl { directives, .. } | InstData::Alloc { directives, .. } => {
                     account(1, directives.extent(), true)
@@ -92,12 +99,19 @@ impl Rir {
                 InstData::StructDecl {
                     directives,
                     fields,
+                    conformances,
+                    assoc_types,
                     methods,
                     ..
                 } => {
                     account(1, directives.extent(), true);
                     account(7, fields.extent(), false);
                     account(9, methods.extent(), false);
+                    account(17, conformances.extent(), false);
+                    account(18, assoc_types.extent(), false);
+                }
+                InstData::ConformanceDecl { interfaces, .. } => {
+                    account(17, interfaces.extent(), false)
                 }
                 InstData::AnonStructType {
                     fields, methods, ..
@@ -177,7 +191,7 @@ impl Rir {
             1 => rir.validate_variable_records(&range, parts, decoded_directive_record_extent),
             2 => rir.validate_fixed(&range, PARAM_SCHEMA.width, parts),
             3 => rir.validate_fixed(&range, CALL_ARG_SCHEMA.width, parts),
-            7 | 8 => rir.validate_fixed(&range, FIELD_DECL_SCHEMA.width, parts),
+            7 | 8 | 18 => rir.validate_fixed(&range, FIELD_DECL_SCHEMA.width, parts),
             11 => rir.validate_fixed(&range, FIELD_INIT_SCHEMA.width, parts),
             12 | 13 => rir.validate_fixed(&range, SYMBOL_SCHEMA.width, parts),
             14 | 15 => rir.validate_enum_payload_words(&range, 1, parts),

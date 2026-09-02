@@ -81,6 +81,11 @@ pub enum Item {
     Function(Function),
     Struct(StructDecl),
     Enum(EnumDecl),
+    /// An interface declaration (spec 6.7, `--preview interfaces`).
+    Interface(InterfaceDecl),
+    /// A freestanding conformance assertion `Type is Interface + Other;`
+    /// (spec 6.7:9, `--preview interfaces`).
+    Conformance(ConformanceDecl),
     DropFn(DropFn),
     /// A foreign-declaration block: `extern "C" { fn ...; }` (ADR-0064 C FFI).
     Extern(ExternBlock),
@@ -152,11 +157,136 @@ pub struct StructDecl {
     pub is_linear: bool,
     /// Struct name
     pub name: Ident,
+    /// Interfaces the header asserts conformance to: `struct Name is A + B`
+    /// (spec 6.7:9). Empty for a struct without a header assertion.
+    pub conformances: Vec<TypeExpr>,
     /// Struct fields
     pub fields: Vec<FieldDecl>,
+    /// Associated type declarations `pub const Name = Type;` that satisfy an
+    /// interface's type-valued associated constant requirements (spec 6.7:10).
+    /// They follow the fields and precede the methods in the body.
+    pub assoc_types: Vec<AssocTypeDecl>,
     /// Methods defined on this struct
     pub methods: Vec<Method>,
     /// Span covering the entire struct declaration
+    pub span: Span,
+}
+
+/// A type-valued associated constant declared in a struct body:
+/// `pub const Element = i64;` (spec 6.7:2, `struct_assoc_type`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssocTypeDecl {
+    /// Visibility of the declaration.
+    pub visibility: Visibility,
+    /// The associated type's name.
+    pub name: Ident,
+    /// The type it denotes.
+    pub ty: TypeExpr,
+    /// Span covering the entire declaration.
+    pub span: Span,
+}
+
+/// An interface declaration (spec 6.7).
+///
+/// ```rue
+/// pub interface Collection: Sequence + Equatable {
+///     const Element: type;
+///     fn len(borrow self) -> u64;
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceDecl {
+    /// Directives applied to this interface.
+    pub directives: Directives,
+    /// Visibility of this interface.
+    pub visibility: Visibility,
+    /// Interface name.
+    pub name: Ident,
+    /// Interfaces this one refines: `interface Name: Parent + Other`
+    /// (spec 6.7:7). Empty when the interface refines nothing.
+    pub parents: Vec<TypeExpr>,
+    /// The requirements, in source order.
+    pub requirements: Vec<InterfaceRequirement>,
+    /// Span covering the entire interface declaration.
+    pub span: Span,
+}
+
+impl InterfaceDecl {
+    /// The method and associated-function requirements in source order,
+    /// skipping associated-type requirements. Consumers that address a
+    /// requirement by ordinal (candidate locators, RIR method ordinals) count
+    /// through this iterator.
+    pub fn method_requirements(&self) -> impl Iterator<Item = &MethodSig> {
+        self.requirements
+            .iter()
+            .filter_map(|requirement| match requirement {
+                InterfaceRequirement::Method(signature) => Some(signature),
+                InterfaceRequirement::AssocType(_) => None,
+            })
+    }
+
+    /// The type-valued associated constant requirements in source order.
+    pub fn assoc_type_requirements(&self) -> impl Iterator<Item = &AssocTypeRequirement> {
+        self.requirements
+            .iter()
+            .filter_map(|requirement| match requirement {
+                InterfaceRequirement::AssocType(requirement) => Some(requirement),
+                InterfaceRequirement::Method(_) => None,
+            })
+    }
+}
+
+/// One member requirement of an interface (spec 6.7:5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InterfaceRequirement {
+    /// A bodiless method or associated-function signature.
+    Method(MethodSig),
+    /// A type-valued associated constant requirement `const Name: type;`.
+    AssocType(AssocTypeRequirement),
+}
+
+/// A type-valued associated constant requirement `const Name: type;`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssocTypeRequirement {
+    /// The associated type's name.
+    pub name: Ident,
+    /// Span covering the entire requirement.
+    pub span: Span,
+}
+
+/// A bodiless method signature: an interface method or associated-function
+/// requirement `fn name(params) -> ret;` (spec 6.7:5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodSig {
+    /// Directives written before the signature. The grammar shares its head
+    /// with struct methods, so they are parsed here and rejected during
+    /// validation (spec 6.7:6).
+    pub directives: Directives,
+    /// Requirement name.
+    pub name: Ident,
+    /// The receiver (None = associated-function requirement).
+    pub receiver: Option<SelfParam>,
+    /// Parameters, excluding the receiver.
+    pub params: Vec<Param>,
+    /// Return type (None means implicit unit `()`).
+    pub return_type: Option<TypeExpr>,
+    /// The optional place-returning qualifier and its keyword span.
+    pub place_return: Option<PlaceReturn>,
+    /// Span covering the entire signature, including the trailing `;`.
+    pub span: Span,
+}
+
+/// A freestanding conformance assertion `Type is Interface + Other;`
+/// (spec 6.7:9). The subject may be any type expression, including a
+/// primitive or a type-constructor application, so conformance can be
+/// asserted retroactively for types declared elsewhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConformanceDecl {
+    /// The type asserted to conform.
+    pub subject: TypeExpr,
+    /// The interfaces it is asserted to conform to, in source order.
+    pub interfaces: Vec<TypeExpr>,
+    /// Span covering the entire assertion, including the trailing `;`.
     pub span: Span,
 }
 
@@ -411,8 +541,14 @@ pub struct Param {
     pub mode: ParamMode,
     /// Parameter name
     pub name: Ident,
-    /// Parameter type
+    /// Parameter type. For a bounded comptime type parameter
+    /// (`comptime T: Equatable + Sequence`, spec 6.7:14) this is the first
+    /// interface named; whether a single name denotes `type`, an interface,
+    /// or a value type is classified semantically.
     pub ty: TypeExpr,
+    /// The further `+`-separated interfaces of a composed comptime bound.
+    /// Empty for every parameter that is not a composed bound.
+    pub bounds: Vec<TypeExpr>,
     /// Span covering the entire parameter
     pub span: Span,
 }
@@ -1573,15 +1709,49 @@ fn rebind_item(item: &mut Item, file_id: FileId) {
         Item::Struct(structure) => {
             rebind_directives(&mut structure.directives, file_id);
             rebind_ident(&mut structure.name, file_id);
+            for conformance in &mut structure.conformances {
+                rebind_type(conformance, file_id);
+            }
             for field in &mut structure.fields {
                 rebind_ident(&mut field.name, file_id);
                 rebind_type(&mut field.ty, file_id);
                 rebind_span(&mut field.span, file_id);
             }
+            for assoc in &mut structure.assoc_types {
+                rebind_ident(&mut assoc.name, file_id);
+                rebind_type(&mut assoc.ty, file_id);
+                rebind_span(&mut assoc.span, file_id);
+            }
             for method in &mut structure.methods {
                 rebind_method(method, file_id);
             }
             rebind_span(&mut structure.span, file_id);
+        }
+        Item::Interface(interface) => {
+            rebind_directives(&mut interface.directives, file_id);
+            rebind_ident(&mut interface.name, file_id);
+            for parent in &mut interface.parents {
+                rebind_type(parent, file_id);
+            }
+            for requirement in &mut interface.requirements {
+                match requirement {
+                    InterfaceRequirement::Method(signature) => {
+                        rebind_method_sig(signature, file_id)
+                    }
+                    InterfaceRequirement::AssocType(requirement) => {
+                        rebind_ident(&mut requirement.name, file_id);
+                        rebind_span(&mut requirement.span, file_id);
+                    }
+                }
+            }
+            rebind_span(&mut interface.span, file_id);
+        }
+        Item::Conformance(conformance) => {
+            rebind_type(&mut conformance.subject, file_id);
+            for interface in &mut conformance.interfaces {
+                rebind_type(interface, file_id);
+            }
+            rebind_span(&mut conformance.span, file_id);
         }
         Item::Enum(enumeration) => {
             rebind_directives(&mut enumeration.directives, file_id);
@@ -1622,6 +1792,21 @@ fn rebind_item(item: &mut Item, file_id: FileId) {
         }
         Item::Error(span) => rebind_span(span, file_id),
     }
+}
+
+fn rebind_method_sig(signature: &mut MethodSig, file_id: FileId) {
+    rebind_directives(&mut signature.directives, file_id);
+    rebind_ident(&mut signature.name, file_id);
+    if let Some(receiver) = &mut signature.receiver {
+        rebind_self_param(receiver, file_id);
+    }
+    for parameter in &mut signature.params {
+        rebind_param(parameter, file_id);
+    }
+    if let Some(return_type) = &mut signature.return_type {
+        rebind_type(return_type, file_id);
+    }
+    rebind_span(&mut signature.span, file_id);
 }
 
 fn rebind_method(method: &mut Method, file_id: FileId) {
@@ -1997,6 +2182,8 @@ impl fmt::Display for Ast {
                 Item::Function(func) => fmt_function(f, func, 0)?,
                 Item::Struct(s) => fmt_struct(f, s, 0)?,
                 Item::Enum(e) => fmt_enum(f, e, 0)?,
+                Item::Interface(interface) => fmt_interface(f, interface, 0)?,
+                Item::Conformance(conformance) => fmt_conformance(f, conformance, 0)?,
                 Item::DropFn(drop_fn) => fmt_drop_fn(f, drop_fn, 0)?,
                 Item::Extern(extern_block) => fmt_extern(f, extern_block, 0)?,
                 Item::Const(c) => fmt_const(f, c, 0)?,
@@ -2022,7 +2209,9 @@ fn fmt_struct(f: &mut fmt::Formatter<'_>, s: &StructDecl, level: usize) -> fmt::
     if s.is_linear {
         write!(f, "linear ")?;
     }
-    writeln!(f, "Struct sym:{}", s.name.name.into_usize())?;
+    write!(f, "Struct sym:{}", s.name.name.into_usize())?;
+    fmt_interface_list(f, " is ", &s.conformances)?;
+    writeln!(f)?;
     for field in &s.fields {
         indent(f, level + 1)?;
         writeln!(
@@ -2032,10 +2221,126 @@ fn fmt_struct(f: &mut fmt::Formatter<'_>, s: &StructDecl, level: usize) -> fmt::
             field.ty
         )?;
     }
+    for assoc in &s.assoc_types {
+        indent(f, level + 1)?;
+        if assoc.visibility == Visibility::Public {
+            write!(f, "pub ")?;
+        }
+        writeln!(
+            f,
+            "AssocType sym:{} = {}",
+            assoc.name.name.into_usize(),
+            assoc.ty
+        )?;
+    }
     for method in &s.methods {
         fmt_method(f, method, level + 1)?;
     }
     Ok(())
+}
+
+/// Print a `+`-separated interface list after `prefix`, or nothing when the
+/// list is empty.
+fn fmt_interface_list(
+    f: &mut fmt::Formatter<'_>,
+    prefix: &str,
+    interfaces: &[TypeExpr],
+) -> fmt::Result {
+    for (i, interface) in interfaces.iter().enumerate() {
+        write!(f, "{}{}", if i == 0 { prefix } else { " + " }, interface)?;
+    }
+    Ok(())
+}
+
+fn fmt_interface(
+    f: &mut fmt::Formatter<'_>,
+    interface: &InterfaceDecl,
+    level: usize,
+) -> fmt::Result {
+    indent(f, level)?;
+    for directive in &interface.directives {
+        write!(f, "@sym:{} ", directive.name.name.into_usize())?;
+    }
+    if interface.visibility == Visibility::Public {
+        write!(f, "pub ")?;
+    }
+    write!(f, "Interface sym:{}", interface.name.name.into_usize())?;
+    fmt_interface_list(f, ": ", &interface.parents)?;
+    writeln!(f)?;
+    for requirement in &interface.requirements {
+        match requirement {
+            InterfaceRequirement::Method(signature) => fmt_method_sig(f, signature, level + 1)?,
+            InterfaceRequirement::AssocType(requirement) => {
+                indent(f, level + 1)?;
+                writeln!(
+                    f,
+                    "AssocType sym:{} : type",
+                    requirement.name.name.into_usize()
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn fmt_conformance(
+    f: &mut fmt::Formatter<'_>,
+    conformance: &ConformanceDecl,
+    level: usize,
+) -> fmt::Result {
+    indent(f, level)?;
+    write!(f, "Conformance {}", conformance.subject)?;
+    fmt_interface_list(f, " is ", &conformance.interfaces)?;
+    writeln!(f)
+}
+
+/// Print the receiver, parameters, and result of a method head. Shared by
+/// struct methods and interface requirements, which differ only in whether a
+/// body follows.
+fn fmt_method_head(
+    f: &mut fmt::Formatter<'_>,
+    receiver: Option<&SelfParam>,
+    params: &[Param],
+    return_type: Option<&TypeExpr>,
+) -> fmt::Result {
+    write!(f, "(")?;
+    if let Some(receiver) = receiver {
+        match receiver.mode {
+            ParamMode::Inout => write!(f, "inout ")?,
+            ParamMode::Borrow => write!(f, "borrow ")?,
+            _ => {}
+        }
+        write!(f, "self")?;
+        if !params.is_empty() {
+            write!(f, ", ")?;
+        }
+    }
+    for (i, param) in params.iter().enumerate() {
+        if i > 0 {
+            write!(f, ", ")?;
+        }
+        fmt_param(f, param)?;
+    }
+    write!(f, ")")?;
+    if let Some(ret) = return_type {
+        write!(f, " -> {}", ret)?;
+    }
+    Ok(())
+}
+
+fn fmt_method_sig(f: &mut fmt::Formatter<'_>, signature: &MethodSig, level: usize) -> fmt::Result {
+    indent(f, level)?;
+    for directive in &signature.directives {
+        write!(f, "@sym:{} ", directive.name.name.into_usize())?;
+    }
+    write!(f, "Requirement sym:{}", signature.name.name.into_usize())?;
+    fmt_method_head(
+        f,
+        signature.receiver.as_ref(),
+        &signature.params,
+        signature.return_type.as_ref(),
+    )?;
+    writeln!(f)
 }
 
 fn fmt_enum(f: &mut fmt::Formatter<'_>, e: &EnumDecl, level: usize) -> fmt::Result {
@@ -2101,28 +2406,12 @@ fn fmt_drop_fn(f: &mut fmt::Formatter<'_>, drop_fn: &DropFn, level: usize) -> fm
 fn fmt_method(f: &mut fmt::Formatter<'_>, method: &Method, level: usize) -> fmt::Result {
     indent(f, level)?;
     write!(f, "Method sym:{}", method.name.name.into_usize())?;
-    write!(f, "(")?;
-    if let Some(receiver) = &method.receiver {
-        match receiver.mode {
-            ParamMode::Inout => write!(f, "inout ")?,
-            ParamMode::Borrow => write!(f, "borrow ")?,
-            _ => {}
-        }
-        write!(f, "self")?;
-        if !method.params.is_empty() {
-            write!(f, ", ")?;
-        }
-    }
-    for (i, param) in method.params.iter().enumerate() {
-        if i > 0 {
-            write!(f, ", ")?;
-        }
-        fmt_param(f, param)?;
-    }
-    write!(f, ")")?;
-    if let Some(ref ret) = method.return_type {
-        write!(f, " -> {}", ret)?;
-    }
+    fmt_method_head(
+        f,
+        method.receiver.as_ref(),
+        &method.params,
+        method.return_type.as_ref(),
+    )?;
     writeln!(f)?;
     fmt_expr(f, &method.body, level + 1)?;
     Ok(())
@@ -2135,7 +2424,8 @@ fn fmt_param(f: &mut fmt::Formatter<'_>, param: &Param) -> fmt::Result {
         ParamMode::Comptime => write!(f, "comptime ")?,
         ParamMode::Normal => {}
     }
-    write!(f, "sym:{}: {}", param.name.name.into_usize(), param.ty)
+    write!(f, "sym:{}: {}", param.name.name.into_usize(), param.ty)?;
+    fmt_interface_list(f, " + ", &param.bounds)
 }
 
 fn fmt_call_arg(f: &mut fmt::Formatter<'_>, arg: &CallArg, level: usize) -> fmt::Result {

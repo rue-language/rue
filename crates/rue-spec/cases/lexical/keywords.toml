@@ -348,3 +348,28 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# `interface` is reserved (spec 2.4:2, `--preview interfaces` chapter 6.7);
+# `is` is only a contextual keyword (2.4:2a) and stays an ordinary name.
+[[case]]
+name = "keyword_interface_reserved"
+error_contains = "[E0100]"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let interface = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "contextual_is_remains_an_identifier"
+spec = ["2.4:2a"]
+source = """
+struct Pair {
+    is: i32,
+    fn is(borrow self, is: i32) -> i32 { self.is + is }
+}
+fn is(is: i32) -> i32 { is }
+fn main() -> i32 {
+    let is = Pair { is: 40 };
+    is.is(is(2))
+}
+"""
+exit_code = 42

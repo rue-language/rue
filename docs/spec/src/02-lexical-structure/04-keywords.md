@@ -40,6 +40,7 @@ The following words are keywords and cannot be used as identifiers:
 | `struct` | Struct definition |
 | `enum` | Enum definition |
 | `impl` | Reserved syntax; Rue has no impl-block construct (6.0:1a) |
+| `interface` | Interface declaration (6.7, `--preview interfaces`) |
 | `self` | Self parameter in methods |
 | `drop` | Destructor declaration |
 | `pub` | Public visibility modifier |
@@ -49,6 +50,17 @@ The following words are keywords and cannot be used as identifiers:
 | `ptr` | Pointer type constructor (`ptr const T` / `ptr mut T`) |
 | `extern` | Foreign declaration block (`extern "C" { … }`, ADR-0064) |
 | `yield` | Accessor body exit (`-> borrow T`/`-> inout T` accessors, ADR-0062) |
+
+## Contextual Keywords
+
+{{ rule(id="2.4:2a", cat="normative") }}
+
+A *contextual keyword* is an identifier that has special meaning only in a
+grammatical position that expects it and is an ordinary identifier
+everywhere else. `is` is a contextual keyword: it introduces a conformance
+list after a struct name or after the subject type of a freestanding
+conformance assertion (6.7:2), and it remains usable as the name of a
+binding, parameter, field, function, or method.
 
 ## Type Names
 

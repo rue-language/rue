@@ -403,32 +403,78 @@ impl RirEditor {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Add a struct declaration shell. `interface` declarations use the same
+    /// builder with `is_interface = true`, no fields, their refined
+    /// interfaces as `conformances`, and their associated type requirements
+    /// as `assoc_types` (see [`InstData::StructDecl`]).
+    #[allow(clippy::too_many_arguments)]
     pub fn add_struct_decl(
         &mut self,
         directives: &[RirDirective],
         is_pub: bool,
         is_linear: bool,
+        is_interface: bool,
         name: Spur,
         fields: &[(Spur, RirTypeSyntaxRef)],
+        conformances: &[RirTypeSyntaxRef],
+        assoc_types: &[(Spur, RirTypeSyntaxRef)],
         methods: &[InstRef],
         span: Span,
     ) -> Result<InstRef, RirPayloadBuildError> {
         self.atomic(|rir| {
             let directives = rir.add_directives(directives)?;
             let fields = rir.add_struct_fields(fields)?;
+            let conformances = rir.add_interface_refs(conformances)?;
+            let assoc_types = rir.add_assoc_types(assoc_types)?;
             let methods = rir.add_struct_methods(methods)?;
             Ok(rir.add_inst(Inst {
                 data: InstData::StructDecl {
                     directives,
                     is_pub,
                     is_linear,
+                    is_interface,
                     name,
                     fields,
+                    conformances,
+                    assoc_types,
                     methods,
                 },
                 span,
             }))
         })
+    }
+
+    /// Add a freestanding conformance assertion `Type is Interface + Other;`.
+    pub fn add_conformance_decl(
+        &mut self,
+        subject: RirTypeSyntaxRef,
+        interfaces: &[RirTypeSyntaxRef],
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
+        self.atomic(|rir| {
+            let interfaces = rir.add_interface_refs(interfaces)?;
+            Ok(rir.add_inst(Inst {
+                data: InstData::ConformanceDecl {
+                    subject,
+                    interfaces,
+                },
+                span,
+            }))
+        })
+    }
+
+    /// Issue the further-interface payload of one composed comptime bound
+    /// (`comptime T: A + B` carries `[B]`), to be stored in
+    /// [`RirParam::bounds`] of a declaration built afterwards. The payload is
+    /// a parameter's own and is issued before its declaration for the same
+    /// reason method instructions precede their struct: the declaration
+    /// record refers to it by range. An empty slice yields the empty range
+    /// without touching storage.
+    pub fn add_parameter_bounds(
+        &mut self,
+        bounds: &[RirTypeSyntaxRef],
+    ) -> Result<RirInterfaceRefsRange, RirPayloadBuildError> {
+        self.atomic(|rir| rir.add_interface_refs(bounds))
     }
 
     pub fn add_struct_init(
@@ -1053,22 +1099,25 @@ impl RirEditor {
                                 })
                             })
                             .collect::<Result<Vec<_>, RirSpanRemapError<E>>>()?;
-                        let params = source
-                            .params(params)
-                            .values()
-                            .enumerate()
-                            .map(|(parameter, param)| {
-                                Ok(RirParam {
-                                    name: symbol(param.name),
-                                    ty: remap_type(param.ty),
-                                    span: take_span(RirSpanField::FunctionParameter {
-                                        parameter: u32::try_from(parameter)
-                                            .expect("validated parameter count is encoded as u32"),
-                                    })?,
-                                    ..param
-                                })
-                            })
-                            .collect::<Result<Vec<_>, RirSpanRemapError<E>>>()?;
+                        let source_params = source.params(params);
+                        let mut params = Vec::with_capacity(source_params.len());
+                        for (parameter, param) in source_params.values().enumerate() {
+                            let bounds = source
+                                .interface_refs(&param.bounds)
+                                .values()
+                                .map(remap_type)
+                                .collect::<Vec<_>>();
+                            params.push(RirParam {
+                                name: symbol(param.name),
+                                ty: remap_type(param.ty),
+                                span: take_span(RirSpanField::FunctionParameter {
+                                    parameter: u32::try_from(parameter)
+                                        .expect("validated parameter count is encoded as u32"),
+                                })?,
+                                bounds: self.add_parameter_bounds(&bounds)?,
+                                ..param
+                            });
+                        }
                         self.add_fn_decl_with_return_modes(
                             &directives,
                             *is_pub,
@@ -1219,8 +1268,11 @@ impl RirEditor {
                         directives,
                         is_pub,
                         is_linear,
+                        is_interface,
                         name,
                         fields,
+                        conformances,
+                        assoc_types,
                         methods,
                     } => {
                         let directives = source
@@ -1243,6 +1295,16 @@ impl RirEditor {
                             .values()
                             .map(|(name, ty)| (symbol(name), remap_type(ty)))
                             .collect::<Vec<_>>();
+                        let conformances = source
+                            .interface_refs(conformances)
+                            .values()
+                            .map(remap_type)
+                            .collect::<Vec<_>>();
+                        let assoc_types = source
+                            .assoc_types(assoc_types)
+                            .values()
+                            .map(|(name, ty)| (symbol(name), remap_type(ty)))
+                            .collect::<Vec<_>>();
                         let methods = struct_methods_override
                             .as_ref()
                             .filter(|override_| override_.source_root == source_instruction)
@@ -1260,11 +1322,25 @@ impl RirEditor {
                             &directives,
                             *is_pub,
                             *is_linear,
+                            *is_interface,
                             symbol(*name),
                             &fields,
+                            &conformances,
+                            &assoc_types,
                             &methods,
                             span,
                         )?
+                    }
+                    InstData::ConformanceDecl {
+                        subject,
+                        interfaces,
+                    } => {
+                        let interfaces = source
+                            .interface_refs(interfaces)
+                            .values()
+                            .map(remap_type)
+                            .collect::<Vec<_>>();
+                        self.add_conformance_decl(remap_type(*subject), &interfaces, span)?
                     }
                     InstData::StructInit {
                         module,

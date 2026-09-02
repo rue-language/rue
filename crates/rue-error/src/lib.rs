@@ -207,6 +207,27 @@ impl ErrorCode {
     /// inlining its body at the call site (ADR-0062), so an accessor-call
     /// cycle has no finite expansion.
     pub const ACCESSOR_RECURSION: Self = Self(261);
+    // E0300-E0306 form the interface block (spec 6.7, `--preview interfaces`).
+    /// A conformance assertion, refinement list, or bound names an interface
+    /// that does not exist in scope (spec 6.7:18).
+    pub const INTERFACE_NOT_FOUND: Self = Self(300);
+    /// Two requirements of one interface share a name (spec 6.7:6).
+    pub const DUPLICATE_INTERFACE_REQUIREMENT: Self = Self(301);
+    /// A conformance assertion names a type that has no inherent member of a
+    /// required name (spec 6.7:10).
+    pub const INTERFACE_MEMBER_MISSING: Self = Self(302);
+    /// A conformance assertion names a type whose inherent member exists but
+    /// does not have the requirement's signature (spec 6.7:10).
+    pub const INTERFACE_SIGNATURE_MISMATCH: Self = Self(303);
+    /// A conformance assertion names a type that declares no associated type
+    /// for a type-valued associated constant requirement (spec 6.7:10).
+    pub const MISSING_ASSOCIATED_TYPE: Self = Self(304);
+    /// A call binds a type argument that does not conform to every interface
+    /// in the parameter's bound (spec 6.7:15).
+    pub const INTERFACE_BOUND_NOT_SATISFIED: Self = Self(305);
+    /// A comptime parameter bound names something that is not an interface
+    /// (spec 6.7:14).
+    pub const BOUND_IS_NOT_AN_INTERFACE: Self = Self(306);
 
     // ========================================================================
     // Struct/enum errors (E0400-E0499)
@@ -666,6 +687,33 @@ pub struct ForeignSignatureConflictError {
     pub previously_declared: String,
 }
 
+/// Payload for `ErrorKind::InterfaceMemberMissing` and
+/// `ErrorKind::MissingAssociatedType`, boxed under the three-String policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceRequirementUnsatisfiedError {
+    /// The type the conformance assertion names.
+    pub ty: String,
+    /// The interface it is asserted to conform to.
+    pub interface: String,
+    /// The requirement that has no counterpart on the type.
+    pub member: String,
+}
+
+/// Payload for `ErrorKind::InterfaceSignatureMismatch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceSignatureMismatchError {
+    /// The type the conformance assertion names.
+    pub ty: String,
+    /// The interface it is asserted to conform to.
+    pub interface: String,
+    /// The requirement whose counterpart has the wrong signature.
+    pub member: String,
+    /// The requirement's signature after substituting the type for `Self`.
+    pub expected: String,
+    /// The inherent member's actual signature.
+    pub found: String,
+}
+
 /// Payload for `ErrorKind::LinearFieldDroppedByDestructure`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinearFieldDroppedByDestructureError {
@@ -717,6 +765,10 @@ pub enum PreviewFeature {
     Floats,
     /// Public enums may promise that importing matches include a wildcard.
     NonExhaustiveEnums,
+    /// Interfaces: `interface` declarations, `is` conformance assertions, and
+    /// interface bounds on comptime type parameters (spec 6.7). Gated until
+    /// conformance verification and bound checking are complete.
+    Interfaces,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -740,6 +792,7 @@ impl PreviewFeature {
             PreviewFeature::CFfi => "c_ffi",
             PreviewFeature::Floats => "floats",
             PreviewFeature::NonExhaustiveEnums => "non_exhaustive_enums",
+            PreviewFeature::Interfaces => "interfaces",
         }
     }
 
@@ -751,6 +804,7 @@ impl PreviewFeature {
             PreviewFeature::CFfi => "ADR-0064",
             PreviewFeature::Floats => "ADR-0065",
             PreviewFeature::NonExhaustiveEnums => "ADR-0005",
+            PreviewFeature::Interfaces => "ADR-0005",
         }
     }
 
@@ -761,6 +815,7 @@ impl PreviewFeature {
             PreviewFeature::CFfi,
             PreviewFeature::Floats,
             PreviewFeature::NonExhaustiveEnums,
+            PreviewFeature::Interfaces,
         ]
     }
 
@@ -787,6 +842,7 @@ impl std::str::FromStr for PreviewFeature {
             "c_ffi" => Ok(PreviewFeature::CFfi),
             "floats" => Ok(PreviewFeature::Floats),
             "non_exhaustive_enums" => Ok(PreviewFeature::NonExhaustiveEnums),
+            "interfaces" => Ok(PreviewFeature::Interfaces),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -1685,6 +1741,49 @@ pub enum ErrorKind {
         "recursive accessor `{method}`: an accessor may not invoke itself, directly or through other accessors, in its own body"
     )]
     AccessorRecursion { method: String },
+
+    // ========================================================================
+    // Interface errors (E0300-E0306, spec 6.7, `--preview interfaces`)
+    // ========================================================================
+    /// A conformance assertion, refinement list, or bound names an unknown
+    /// interface.
+    #[error("interface `{name}` not found")]
+    InterfaceNotFound { name: String },
+    /// Two requirements of one interface share a name.
+    #[error("interface `{interface}` declares requirement `{member}` more than once")]
+    DuplicateInterfaceRequirement { interface: String, member: String },
+    /// The asserted type has no inherent member of the requirement's name.
+    #[error(
+        "type `{}` does not conform to `{}`: missing member `{}`",
+        .0.ty,
+        .0.interface,
+        .0.member
+    )]
+    InterfaceMemberMissing(Box<InterfaceRequirementUnsatisfiedError>),
+    /// The asserted type's inherent member has the wrong signature.
+    #[error(
+        "type `{}` does not conform to `{}`: member `{}` has signature `{}`, but the requirement is `{}`",
+        .0.ty,
+        .0.interface,
+        .0.member,
+        .0.found,
+        .0.expected
+    )]
+    InterfaceSignatureMismatch(Box<InterfaceSignatureMismatchError>),
+    /// The asserted type declares no associated type of the requirement's name.
+    #[error(
+        "type `{}` does not conform to `{}`: missing associated type `{}`",
+        .0.ty,
+        .0.interface,
+        .0.member
+    )]
+    MissingAssociatedType(Box<InterfaceRequirementUnsatisfiedError>),
+    /// A call binds a type argument that does not conform to a bound.
+    #[error("type `{ty}` does not conform to interface `{interface}`")]
+    InterfaceBoundNotSatisfied { ty: String, interface: String },
+    /// A comptime parameter bound names something that is not an interface.
+    #[error("`{name}` is not an interface and cannot be used as a bound")]
+    BoundIsNotAnInterface { name: String },
     /// Cannot move `self` out of a destructor body (RUE-139). The compiler
     /// drops a value by running its destructor and THEN dropping its fields;
     /// moving `self` to a new owner (a call argument, another binding, ...)
@@ -2244,6 +2343,19 @@ impl ErrorKind {
                 ErrorCode::ACCESSOR_PARAM_MODE_UNSUPPORTED
             }
             ErrorKind::AccessorRecursion { .. } => ErrorCode::ACCESSOR_RECURSION,
+
+            // Interface errors (E0300-E0306)
+            ErrorKind::InterfaceNotFound { .. } => ErrorCode::INTERFACE_NOT_FOUND,
+            ErrorKind::DuplicateInterfaceRequirement { .. } => {
+                ErrorCode::DUPLICATE_INTERFACE_REQUIREMENT
+            }
+            ErrorKind::InterfaceMemberMissing(_) => ErrorCode::INTERFACE_MEMBER_MISSING,
+            ErrorKind::InterfaceSignatureMismatch(_) => ErrorCode::INTERFACE_SIGNATURE_MISMATCH,
+            ErrorKind::MissingAssociatedType(_) => ErrorCode::MISSING_ASSOCIATED_TYPE,
+            ErrorKind::InterfaceBoundNotSatisfied { .. } => {
+                ErrorCode::INTERFACE_BOUND_NOT_SATISFIED
+            }
+            ErrorKind::BoundIsNotAnInterface { .. } => ErrorCode::BOUND_IS_NOT_AN_INTERFACE,
             ErrorKind::InoutKeywordMissing => ErrorCode::INOUT_KEYWORD_MISSING,
             ErrorKind::BorrowKeywordMissing => ErrorCode::BORROW_KEYWORD_MISSING,
             ErrorKind::UnexpectedCallArgumentMode { .. } => {
@@ -3188,7 +3300,10 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, c_ffi, floats, non_exhaustive_enums");
+        assert_eq!(
+            names,
+            "test_infra, c_ffi, floats, non_exhaustive_enums, interfaces"
+        );
     }
 
     #[test]
@@ -3200,6 +3315,103 @@ mod tests {
         assert_eq!(feature.name(), "floats");
         assert_eq!(feature.adr(), "ADR-0065");
         assert!(PreviewFeature::all().contains(&PreviewFeature::Floats));
+    }
+
+    #[test]
+    fn test_preview_feature_interfaces() {
+        let feature: PreviewFeature = "interfaces".parse().unwrap();
+        assert_eq!(feature, PreviewFeature::Interfaces);
+        assert_eq!(feature.name(), "interfaces");
+        assert_eq!(feature.adr(), "ADR-0005");
+        assert!(PreviewFeature::all().contains(&PreviewFeature::Interfaces));
+    }
+
+    #[test]
+    fn test_interface_error_codes() {
+        // Spec 6.7: the interface diagnostics occupy E0300-E0306 in the
+        // semantic band, immediately after the borrow-accessor block.
+        let cases: [(ErrorKind, ErrorCode, &str); 7] = [
+            (
+                ErrorKind::InterfaceNotFound {
+                    name: "Equatable".into(),
+                },
+                ErrorCode::INTERFACE_NOT_FOUND,
+                "E0300",
+            ),
+            (
+                ErrorKind::DuplicateInterfaceRequirement {
+                    interface: "Equatable".into(),
+                    member: "equals".into(),
+                },
+                ErrorCode::DUPLICATE_INTERFACE_REQUIREMENT,
+                "E0301",
+            ),
+            (
+                ErrorKind::InterfaceMemberMissing(Box::new(InterfaceRequirementUnsatisfiedError {
+                    ty: "i64".into(),
+                    interface: "Equatable".into(),
+                    member: "equals".into(),
+                })),
+                ErrorCode::INTERFACE_MEMBER_MISSING,
+                "E0302",
+            ),
+            (
+                ErrorKind::InterfaceSignatureMismatch(Box::new(InterfaceSignatureMismatchError {
+                    ty: "Id".into(),
+                    interface: "Equatable".into(),
+                    member: "equals".into(),
+                    expected: "fn equals(borrow self, borrow other: Id) -> bool".into(),
+                    found: "fn equals(self, other: Id) -> bool".into(),
+                })),
+                ErrorCode::INTERFACE_SIGNATURE_MISMATCH,
+                "E0303",
+            ),
+            (
+                ErrorKind::MissingAssociatedType(Box::new(InterfaceRequirementUnsatisfiedError {
+                    ty: "Range".into(),
+                    interface: "Sequence".into(),
+                    member: "Element".into(),
+                })),
+                ErrorCode::MISSING_ASSOCIATED_TYPE,
+                "E0304",
+            ),
+            (
+                ErrorKind::InterfaceBoundNotSatisfied {
+                    ty: "i64".into(),
+                    interface: "Equatable".into(),
+                },
+                ErrorCode::INTERFACE_BOUND_NOT_SATISFIED,
+                "E0305",
+            ),
+            (
+                ErrorKind::BoundIsNotAnInterface {
+                    name: "Point".into(),
+                },
+                ErrorCode::BOUND_IS_NOT_AN_INTERFACE,
+                "E0306",
+            ),
+        ];
+        for (kind, code, rendered) in cases {
+            assert_eq!(kind.code(), code);
+            assert_eq!(code.to_string(), rendered);
+        }
+        assert_eq!(
+            ErrorKind::InterfaceBoundNotSatisfied {
+                ty: "i64".into(),
+                interface: "Equatable".into(),
+            }
+            .to_string(),
+            "type `i64` does not conform to interface `Equatable`"
+        );
+        assert_eq!(
+            ErrorKind::MissingAssociatedType(Box::new(InterfaceRequirementUnsatisfiedError {
+                ty: "Range".into(),
+                interface: "Sequence".into(),
+                member: "Element".into(),
+            }))
+            .to_string(),
+            "type `Range` does not conform to `Sequence`: missing associated type `Element`"
+        );
     }
 
     #[test]

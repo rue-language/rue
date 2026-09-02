@@ -94,7 +94,8 @@ pub enum TokenKind {
     False,
     Struct,
     Enum,
-    Impl, // impl (reserved; no impl blocks in Rue — methods live in struct bodies)
+    Impl,      // impl (reserved; no impl blocks in Rue — methods live in struct bodies)
+    Interface, // interface declaration (spec 6.7, `--preview interfaces`)
     Drop,
     Linear,    // linear struct modifier
     SelfValue, // self (value, not type)
@@ -221,6 +222,7 @@ impl TokenKind {
             TokenKind::Struct => "'struct'",
             TokenKind::Enum => "'enum'",
             TokenKind::Impl => "'impl'",
+            TokenKind::Interface => "'interface'",
             TokenKind::Drop => "'drop'",
             TokenKind::Linear => "'linear'",
             TokenKind::SelfValue => "'self'",
@@ -339,6 +341,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Struct => write!(f, "STRUCT"),
             TokenKind::Enum => write!(f, "ENUM"),
             TokenKind::Impl => write!(f, "IMPL"),
+            TokenKind::Interface => write!(f, "INTERFACE"),
             TokenKind::Drop => write!(f, "DROP"),
             TokenKind::Linear => write!(f, "LINEAR"),
             TokenKind::SelfValue => write!(f, "SELF"),

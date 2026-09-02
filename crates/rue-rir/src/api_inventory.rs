@@ -111,8 +111,8 @@ fn rir_payload_storage_and_raw_ranges_stay_owner_private() {
         );
     }
 
-    assert_eq!(payload.matches("payload_family!(").count(), 17);
-    assert_eq!(crate::RIR_PAYLOAD_FAMILY_NAMES.len(), 17);
+    assert_eq!(payload.matches("payload_family!(").count(), 19);
+    assert_eq!(crate::RIR_PAYLOAD_FAMILY_NAMES.len(), 19);
     assert!(editor.contains("fn atomic<T>("));
     assert!(editor.contains("self.rir.instructions.truncate(instruction_len)"));
     assert!(editor.contains("self.rir.extra.truncate(extra_len)"));

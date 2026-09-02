@@ -116,7 +116,7 @@ impl Shapes<'_> {
             "param",
             &format!(" mode={}", Self::param_mode(param.mode)),
             self.ty(&param.ty),
-            "_".into(),
+            list(param.bounds.iter().map(|bound| self.ty(bound))),
             "_".into(),
             "_".into(),
         )
@@ -910,6 +910,22 @@ impl Shapes<'_> {
                             ),
                         )
                     })
+                    .chain(v.assoc_types.iter().map(|assoc| {
+                        (
+                            assoc.span.start,
+                            node(
+                                "assoc-type",
+                                &format!(
+                                    " flags={}",
+                                    u8::from(assoc.visibility == Visibility::Public)
+                                ),
+                                self.ty(&assoc.ty),
+                                "_".into(),
+                                "_".into(),
+                                "_".into(),
+                            ),
+                        )
+                    }))
                     .chain(v.methods.iter().map(|m| (m.span.start, self.method(m))));
                 let mut members: Vec<_> = members.collect();
                 members.sort_by_key(|m| m.0);
@@ -918,10 +934,49 @@ impl Shapes<'_> {
                     &format!(" flags={flags}"),
                     self.directives(&v.directives),
                     list(members.into_iter().map(|m| m.1)),
-                    "_".into(),
+                    list(v.conformances.iter().map(|ty| self.ty(ty))),
                     "_".into(),
                 )
             }
+            Item::Interface(v) => {
+                let requirements = v.requirements.iter().map(|requirement| match requirement {
+                    InterfaceRequirement::Method(signature) => {
+                        let params = signature
+                            .receiver
+                            .iter()
+                            .map(|r| self.receiver(r))
+                            .chain(signature.params.iter().map(|p| self.param(p)));
+                        node(
+                            "requirement",
+                            "",
+                            self.directives(&signature.directives),
+                            list(params),
+                            signature
+                                .return_type
+                                .as_ref()
+                                .map_or("_".into(), |t| self.ty(t)),
+                            "_".into(),
+                        )
+                    }
+                    InterfaceRequirement::AssocType(_) => leaf("assoc-type-requirement"),
+                });
+                node(
+                    "interface",
+                    &format!(" flags={}", u8::from(v.visibility == Visibility::Public)),
+                    self.directives(&v.directives),
+                    list(requirements),
+                    list(v.parents.iter().map(|ty| self.ty(ty))),
+                    "_".into(),
+                )
+            }
+            Item::Conformance(v) => node(
+                "conformance",
+                "",
+                self.ty(&v.subject),
+                list(v.interfaces.iter().map(|ty| self.ty(ty))),
+                "_".into(),
+                "_".into(),
+            ),
             Item::Enum(v) => node(
                 "enum",
                 &format!(" flags={}", u8::from(v.visibility == Visibility::Public)),

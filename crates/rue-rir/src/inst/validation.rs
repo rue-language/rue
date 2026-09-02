@@ -359,6 +359,10 @@ impl Rir {
                         .chunks_exact(PARAM_SCHEMA.width)
                         .enumerate()
                     {
+                        self.validate_interface_refs_range(&RirInterfaceRefsRange::from_parts(
+                            words[PARAM_BOUNDS_START],
+                            words[PARAM_BOUNDS_EXTENT],
+                        ))?;
                         if words[PARAM_MODE] > RirParamMode::Borrow as u32 {
                             return Err(rir_payload_error! {
                                 family: RirParamsRange::FAMILY,
@@ -426,6 +430,8 @@ impl Rir {
                 InstData::StructDecl {
                     directives,
                     fields,
+                    conformances,
+                    assoc_types,
                     methods,
                     ..
                 } => {
@@ -433,9 +439,16 @@ impl Rir {
                     self.validate_fixed_symbols(fields, FIELD_DECL_SCHEMA, |r| {
                         (r.start(), r.extent(), RirStructFieldsRange::FAMILY)
                     })?;
+                    self.validate_interface_refs_range(conformances)?;
+                    self.validate_fixed_symbols(assoc_types, FIELD_DECL_SCHEMA, |r| {
+                        (r.start(), r.extent(), RirAssocTypesRange::FAMILY)
+                    })?;
                     self.validate_fixed(methods, REF_SCHEMA.width, |r| {
                         (r.start(), r.extent(), RirStructMethodsRange::FAMILY)
                     })?;
+                }
+                InstData::ConformanceDecl { interfaces, .. } => {
+                    self.validate_interface_refs_range(interfaces)?;
                 }
                 InstData::StructInit { fields, .. } => {
                     self.validate_fixed_symbols(fields, FIELD_INIT_SCHEMA, |r| {
@@ -747,6 +760,9 @@ impl Rir {
                         symbols!(param.name);
                         types!(param.ty);
                         check_span(index, param.span)?;
+                        for bound in self.interface_refs(&param.bounds) {
+                            types!(bound);
+                        }
                     }
                 }
                 InstData::ConstDecl {
@@ -833,12 +849,21 @@ impl Rir {
                     directives,
                     name,
                     fields,
+                    conformances,
+                    assoc_types,
                     methods,
                     ..
                 } => {
                     symbols!(*name);
                     for (field, ty) in self.struct_fields(fields) {
                         symbols!(field);
+                        types!(ty);
+                    }
+                    for interface in self.interface_refs(conformances) {
+                        types!(interface);
+                    }
+                    for (assoc, ty) in self.assoc_types(assoc_types) {
+                        symbols!(assoc);
                         types!(ty);
                     }
                     for reference in self.struct_methods(methods) {
@@ -872,6 +897,15 @@ impl Rir {
                     }
                     if let Some(span) = shorthand_span {
                         check_span(index, *span)?;
+                    }
+                }
+                InstData::ConformanceDecl {
+                    subject,
+                    interfaces,
+                } => {
+                    types!(*subject);
+                    for interface in self.interface_refs(interfaces) {
+                        types!(interface);
                     }
                 }
                 InstData::FieldGet { base, field } => {
@@ -999,6 +1033,7 @@ impl Rir {
             | InstData::TypeIntrinsic { .. }
             | InstData::OffsetOf { .. }
             | InstData::EnumDecl { .. }
+            | InstData::ConformanceDecl { .. }
             | InstData::AnonEnumType { .. } => {}
             InstData::Add { lhs, rhs }
             | InstData::Sub { lhs, rhs }
@@ -1096,6 +1131,15 @@ impl Rir {
                 value,
             } => out.extend([*base, *subscript, *value]),
         }
+    }
+
+    fn validate_interface_refs_range(
+        &self,
+        range: &RirInterfaceRefsRange,
+    ) -> Result<(), RirPayloadError> {
+        self.validate_fixed(range, REF_SCHEMA.width, |r| {
+            (r.start(), r.extent(), RirInterfaceRefsRange::FAMILY)
+        })
     }
 
     fn validate_directive_range(&self, range: &RirDirectivesRange) -> Result<(), RirPayloadError> {
