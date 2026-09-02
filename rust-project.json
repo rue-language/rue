@@ -358,10 +358,6 @@
           "name": "rue_air"
         },
         {
-          "crate": 4,
-          "name": "rue_builtins"
-        },
-        {
           "crate": 5,
           "name": "rue_cfg"
         },
@@ -1266,10 +1262,6 @@
           "name": "rue_perf_schema"
         },
         {
-          "crate": 20,
-          "name": "rue_rir"
-        },
-        {
           "crate": 26,
           "name": "rue_target"
         },
@@ -1332,10 +1324,6 @@
         {
           "crate": 18,
           "name": "rue_perf_schema"
-        },
-        {
-          "crate": 20,
-          "name": "rue_rir"
         },
         {
           "crate": 26,

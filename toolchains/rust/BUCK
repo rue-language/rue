@@ -9,6 +9,18 @@ load(":defs.bzl", "RUST_VERSION", "RUST_STD_RELEASES", "hermetic_rust_toolchain"
 load("@root//:test_defs.bzl", "rue_sh_test")
 
 export_file(
+    name = "rust-toolchain-declarations-source",
+    src = "BUCK",
+    visibility = ["root//:rustc-first-party-unused-deps-wrapper-tests"],
+)
+
+export_file(
+    name = "rust-toolchain-rule-source",
+    src = "defs.bzl",
+    visibility = ["root//:rustc-first-party-unused-deps-wrapper-tests"],
+)
+
+export_file(
     name = "merge-sysroot",
     src = "merge_sysroot.sh",
 )
@@ -184,6 +196,7 @@ hermetic_rust_toolchain(
     merge_script = ":merge-sysroot",
     target_triple = "x86_64-unknown-linux-gnu",
     default_edition = "2024",
+    report_unused_deps = True,
     deny_lints = ["warnings"],
     allow_lints = _CLIPPY_ALLOW,
     clippy_toml = "root//:clippy-config",
@@ -200,6 +213,7 @@ hermetic_rust_toolchain(
     merge_script = ":merge-sysroot",
     target_triple = "aarch64-unknown-linux-gnu",
     default_edition = "2024",
+    report_unused_deps = True,
     deny_lints = ["warnings"],
     allow_lints = _CLIPPY_ALLOW,
     clippy_toml = "root//:clippy-config",
@@ -216,6 +230,7 @@ hermetic_rust_toolchain(
     merge_script = ":merge-sysroot",
     target_triple = "aarch64-apple-darwin",
     default_edition = "2024",
+    report_unused_deps = True,
     deny_lints = ["warnings"],
     allow_lints = _CLIPPY_ALLOW,
     clippy_toml = "root//:clippy-config",
@@ -232,6 +247,7 @@ hermetic_rust_toolchain(
     merge_script = ":merge-sysroot",
     target_triple = "x86_64-apple-darwin",
     default_edition = "2024",
+    report_unused_deps = True,
     deny_lints = ["warnings"],
     allow_lints = _CLIPPY_ALLOW,
     clippy_toml = "root//:clippy-config",

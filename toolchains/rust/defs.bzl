@@ -129,7 +129,12 @@ def _hermetic_rust_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
     # merged sysroot contains relative links into it (RUE-316/RUE-1225).
     # This is the relocatable, canonical approach ($ORIGIN RPATH), not an
     # absolute-path LD_LIBRARY_PATH hack.
-    compiler = RunInfo(args = cmd_args(rustc_bin, hidden = [rustc_dist, std_dist]))
+    unused_deps_wrapper = ctx.attrs.unused_deps_wrapper[DefaultInfo].default_outputs[0]
+    compiler = RunInfo(args = cmd_args(
+        unused_deps_wrapper,
+        rustc_bin,
+        hidden = [rustc_dist, std_dist],
+    ))
     rustdoc = RunInfo(args = cmd_args(rustdoc_bin, hidden = [rustc_dist, std_dist]))
 
     # clippy-driver dynamically loads librustc_driver from rustc/lib/, but
@@ -152,12 +157,22 @@ def _hermetic_rust_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
             # Set library path for both macOS and Linux
             cmd_args(clippy_lib_dir, format = "export DYLD_LIBRARY_PATH=\"{}\""),
             cmd_args(clippy_lib_dir, format = "export LD_LIBRARY_PATH=\"{}\""),
-            cmd_args(clippy_bin, format = "exec {} \"$@\""),
+            cmd_args(
+                "exec python3 ",
+                unused_deps_wrapper,
+                " ",
+                clippy_bin,
+                " \"$@\"",
+                delimiter = "",
+            ),
         ],
         is_executable = True,
         allow_args = True,
     )
-    clippy_driver = RunInfo(args = cmd_args(clippy_wrapper, hidden = [clippy_bin, clippy_lib_dir, std_dist]))
+    clippy_driver = RunInfo(args = cmd_args(
+        clippy_wrapper,
+        hidden = [unused_deps_wrapper, clippy_bin, clippy_lib_dir, std_dist],
+    ))
 
     # Build a merged sysroot by running the checked-in shell script. Keeping the
     # script as an explicit action input ensures content changes invalidate the
@@ -224,6 +239,10 @@ hermetic_rust_toolchain = rule(
         ),
         "merge_script": attrs.source(
             doc = "Portable script that assembles a relocatable Rust sysroot",
+        ),
+        "unused_deps_wrapper": attrs.exec_dep(
+            providers = [DefaultInfo],
+            default = "root//:rustc-first-party-unused-deps-wrapper",
         ),
         "target_triple": attrs.string(
             doc = "The target triple (e.g., x86_64-unknown-linux-gnu)",
