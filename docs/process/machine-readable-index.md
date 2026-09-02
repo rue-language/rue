@@ -33,9 +33,13 @@ upper-case directories fail the index gate rather than being approximately
 slugified.
 
 The `error_spec_relationships` array contains only relationships proven by an
-existing spec case that both cites the rule through its structured `spec` field
-and asserts an exact `E`-code token through `error_contains` or a diagnostic
-header in `expected_error`. Each relationship carries the proving case and its
+existing spec case that cites the rule through its structured `spec` field and
+either declares a validated `expected_error_code`, asserts an exact `E`-code
+token through `error_contains`, or supplies that code in a diagnostic header in
+`expected_error`. Typed declarations are checked after parameter expansion
+against the compiler-owned inventory, and the ordinary spec run requires the
+real compiler to emit exactly one error with that code through
+`--error-format json`. Each relationship carries the proving case and its
 source path. Mentions in descriptions, source comments, rendered source
 excerpts, diagnostic prose, and issue text are deliberately ignored; absence
 from this array means “not mechanically proven by current metadata,” not

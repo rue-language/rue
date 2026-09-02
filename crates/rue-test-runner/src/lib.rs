@@ -3,7 +3,7 @@
 //! This crate provides common functionality for running compiler tests,
 //! including test case parsing, execution, and output comparison.
 
-use rue_error::PreviewFeature;
+use rue_error::{PreviewFeature, error_code_metadata};
 use rue_target::Target;
 use serde::{Deserialize, Deserializer};
 
@@ -287,6 +287,9 @@ pub struct Case {
     /// Expected exact error output (golden test)
     #[serde(default)]
     pub expected_error: Option<String>,
+    /// Expected canonical code of the single emitted compile error.
+    #[serde(default)]
+    pub expected_error_code: Option<String>,
     /// Expected tokens dump (golden test)
     #[serde(default)]
     pub expected_tokens: Option<String>,
@@ -1111,6 +1114,7 @@ const PARAM_OVERRIDE_KEYS: &[&str] = &[
     "timeout_ms",
     "error_contains",
     "expected_error",
+    "expected_error_code",
     "expected_tokens",
     "expected_ast",
     "expected_rir",
@@ -1163,6 +1167,7 @@ fn invalid_param_override_expectation(key: &str, value: &toml::Value) -> Option<
         "target"
         | "preview"
         | "expected_error"
+        | "expected_error_code"
         | "expected_tokens"
         | "expected_ast"
         | "expected_rir"
@@ -1198,6 +1203,7 @@ fn invalid_param_override_expectation(key: &str, value: &toml::Value) -> Option<
         "target"
         | "preview"
         | "expected_error"
+        | "expected_error_code"
         | "expected_tokens"
         | "expected_ast"
         | "expected_rir"
@@ -1267,6 +1273,10 @@ fn case_contains_placeholder(case: &Case, key: &str) -> bool {
             .any(|value| contains_placeholder(value, key))
         || case
             .expected_error
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
+            .expected_error_code
             .as_ref()
             .is_some_and(|value| contains_placeholder(value, key))
         || case
@@ -1450,6 +1460,7 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                         .collect(),
                 ),
                 expected_error: substitute_optional_string(&case.expected_error, &params),
+                expected_error_code: substitute_optional_string(&case.expected_error_code, &params),
                 expected_tokens: substitute_optional_string(&case.expected_tokens, &params),
                 expected_ast: substitute_optional_string(&case.expected_ast, &params),
                 expected_rir: substitute_optional_string(&case.expected_rir, &params),
@@ -1545,7 +1556,7 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                         .expect("validated u64 override"),
                 );
             }
-            // A per-param `error_contains` / `expected_error` lets a
+            // A per-param diagnostic assertion lets a
             // parameterized case give each variant its own diagnostic assertion
             // (e.g. a mix of failing and succeeding variants). Without honoring
             // it here, the override was silently dropped and never checked — the
@@ -1571,6 +1582,11 @@ pub fn expand_case(case: Case) -> Vec<Case> {
             if let Some(value) = params.get("expected_error") {
                 if let Some(s) = value.as_str() {
                     expanded.expected_error = Some(substitute_placeholders(s, &params));
+                }
+            }
+            if let Some(value) = params.get("expected_error_code") {
+                if let Some(s) = value.as_str() {
+                    expanded.expected_error_code = Some(substitute_placeholders(s, &params));
                 }
             }
             if let Some(value) = params.get("expected_tokens") {
@@ -1832,8 +1848,8 @@ pub fn validate_only_on_targets(test_file: &TestFile) -> Vec<UnknownPlatformErro
     errors
 }
 
-/// An error indicating a case declares a compile-error assertion
-/// (`error_contains` / `expected_error`) without `compile_fail = true`.
+/// An error indicating a case declares a compile-error assertion without
+/// `compile_fail = true`.
 ///
 /// Those assertions are only ever checked inside the `compile_fail` branch of
 /// [`run_test_case`]; on a case expected to compile they would silently never
@@ -1845,7 +1861,7 @@ pub struct StrayErrorAssertionError {
     pub test_name: String,
     /// The section ID the test belongs to.
     pub section_id: String,
-    /// Which field(s) were set: `error_contains`, `expected_error`, or both.
+    /// Which compile-error assertion fields were set.
     pub fields: String,
 }
 
@@ -1872,28 +1888,30 @@ pub fn validate_error_assertions(test_file: &TestFile) -> Vec<StrayErrorAssertio
         if case.compile_fail {
             continue;
         }
-        let has_error_contains = !case.error_contains.is_empty();
-        let has_expected_error = case.expected_error.is_some();
-        if !has_error_contains && !has_expected_error {
+        let fields = [
+            (!case.error_contains.is_empty()).then_some("`error_contains`"),
+            case.expected_error.is_some().then_some("`expected_error`"),
+            case.expected_error_code
+                .is_some()
+                .then_some("`expected_error_code`"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        if fields.is_empty() {
             continue;
         }
-        let fields = match (has_error_contains, has_expected_error) {
-            (true, true) => "`error_contains` and `expected_error`",
-            (true, false) => "`error_contains`",
-            (false, true) => "`expected_error`",
-            (false, false) => unreachable!(),
-        };
         errors.push(StrayErrorAssertionError {
             test_name: case.name.clone(),
             section_id: test_file.section.id.clone(),
-            fields: fields.to_string(),
+            fields: fields.join(", "),
         });
     }
     errors
 }
 
 /// An error indicating a `compile_fail` case declares no error assertion at all
-/// (neither `error_contains` nor `expected_error`).
+/// (`error_contains`, `expected_error`, or `expected_error_code`).
 ///
 /// Without an assertion, such a case passes on *any* rejection — a diagnostic
 /// for an unrelated reason, or (before ICE detection) even a compiler crash —
@@ -1912,10 +1930,10 @@ impl std::fmt::Display for BareCompileFailError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "test '{}::{}' is `compile_fail` but declares no `error_contains` or \
-             `expected_error` — it would pass on ANY rejection, verifying nothing \
+            "test '{}::{}' is `compile_fail` but declares no `error_contains`, \
+             `expected_error`, or `expected_error_code` — it would pass on ANY rejection, verifying nothing \
              about why the program is rejected. Add an assertion pinning the \
-             specific error (e.g. `error_contains = \"[E0206]\"`).",
+             specific error (e.g. `expected_error_code = \"E0206\"`).",
             self.section_id, self.test_name
         )
     }
@@ -1935,9 +1953,10 @@ pub fn validate_compile_fail_assertions(test_file: &TestFile) -> Vec<BareCompile
         if !case.compile_fail {
             continue;
         }
-        let has_error_contains = !case.error_contains.is_empty();
-        let has_expected_error = case.expected_error.is_some();
-        if has_error_contains || has_expected_error {
+        if !case.error_contains.is_empty()
+            || case.expected_error.is_some()
+            || case.expected_error_code.is_some()
+        {
             continue;
         }
         errors.push(BareCompileFailError {
@@ -1946,6 +1965,48 @@ pub fn validate_compile_fail_assertions(test_file: &TestFile) -> Vec<BareCompile
         });
     }
     errors
+}
+
+/// An expected diagnostic code that is not in the compiler-owned inventory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownExpectedErrorCodeError {
+    pub test_name: String,
+    pub section_id: String,
+    pub code: String,
+}
+
+impl std::fmt::Display for UnknownExpectedErrorCodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "test '{}::{}' declares unknown `expected_error_code` {:?}",
+            self.section_id, self.test_name, self.code
+        )
+    }
+}
+
+impl std::error::Error for UnknownExpectedErrorCodeError {}
+
+/// Validate typed diagnostic declarations against the canonical compiler
+/// inventory. This runs after parameter expansion, so placeholders and
+/// per-parameter overrides cannot bypass validation.
+pub fn validate_expected_error_codes(test_file: &TestFile) -> Vec<UnknownExpectedErrorCodeError> {
+    let known_codes = error_code_metadata()
+        .iter()
+        .map(|metadata| metadata.code.to_string())
+        .collect::<BTreeSet<_>>();
+    test_file
+        .case
+        .iter()
+        .filter_map(|case| {
+            let code = case.expected_error_code.as_ref()?;
+            (!known_codes.contains(code)).then_some(UnknownExpectedErrorCodeError {
+                test_name: case.name.clone(),
+                section_id: test_file.section.id.clone(),
+                code: code.clone(),
+            })
+        })
+        .collect()
 }
 
 /// An error indicating a `compile_fail` case declares an `exit_code`.
@@ -2211,6 +2272,7 @@ pub fn load_test_files(cases_dir: &Path) -> Result<Vec<(String, TestFile)>, Stri
     let mut preview_errors: Vec<UnknownPreviewFeatureError> = Vec::new();
     let mut platform_errors: Vec<UnknownPlatformError> = Vec::new();
     let mut stray_error_assertions: Vec<StrayErrorAssertionError> = Vec::new();
+    let mut unknown_expected_error_codes: Vec<UnknownExpectedErrorCodeError> = Vec::new();
     let mut bare_compile_fail: Vec<BareCompileFailError> = Vec::new();
     let mut compile_fail_exit_codes: Vec<CompileFailExitCodeError> = Vec::new();
     let mut compile_only_runtime_assertions: Vec<CompileOnlyRuntimeAssertionError> = Vec::new();
@@ -2248,6 +2310,11 @@ pub fn load_test_files(cases_dir: &Path) -> Result<Vec<(String, TestFile)>, Stri
 
                 // Reject compile-error assertions on cases that aren't compile_fail
                 stray_error_assertions.extend(validate_error_assertions(&spec));
+
+                // Typed diagnostic evidence must name a compiler-owned code.
+                // This is deliberately after expansion so every concrete
+                // parameter variant is checked.
+                unknown_expected_error_codes.extend(validate_expected_error_codes(&spec));
 
                 // Reject `compile_fail` cases that carry no error assertion at all
                 bare_compile_fail.extend(validate_compile_fail_assertions(&spec));
@@ -2332,6 +2399,18 @@ pub fn load_test_files(cases_dir: &Path) -> Result<Vec<(String, TestFile)>, Stri
             "{} case(s) set a compile-error assertion without `compile_fail`:\n  - {}",
             stray_error_assertions.len(),
             stray_error_assertions
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n  - ")
+        ));
+    }
+
+    if !unknown_expected_error_codes.is_empty() {
+        return Err(format!(
+            "{} case(s) declare unknown expected diagnostic codes:\n  - {}",
+            unknown_expected_error_codes.len(),
+            unknown_expected_error_codes
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
@@ -2919,6 +2998,68 @@ fn test_case_compiler_command(case: &Case, binary: &Path) -> Command {
     command
 }
 
+/// Parse the CLI's documented JSON-lines diagnostic framing and return every
+/// emitted error code in publication order. The typed spec assertion treats a
+/// malformed diagnostic as a harness failure rather than falling back to
+/// rendered prose.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StructuredDiagnostic {
+    code: String,
+    severity: String,
+    message: String,
+    #[allow(dead_code)]
+    spans: Vec<serde_json::Value>,
+    #[allow(dead_code)]
+    suggestions: Vec<serde_json::Value>,
+    #[allow(dead_code)]
+    notes: Vec<String>,
+    #[allow(dead_code)]
+    helps: Vec<String>,
+}
+
+fn parse_json_error_codes(stderr: &str) -> Result<Vec<String>, String> {
+    let mut codes = Vec::new();
+    for (line_index, line) in stderr.lines().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let diagnostics: Vec<StructuredDiagnostic> = serde_json::from_str(line).map_err(|error| {
+            format!(
+                "diagnostic line {} does not match the canonical JSON diagnostic schema: {error}",
+                line_index + 1
+            )
+        })?;
+        if diagnostics.is_empty() {
+            return Err(format!(
+                "diagnostic line {} is an empty JSON batch",
+                line_index + 1
+            ));
+        }
+        for (diagnostic_index, diagnostic) in diagnostics.into_iter().enumerate() {
+            if diagnostic.message.is_empty() {
+                return Err(format!(
+                    "diagnostic {} on line {} has an empty `message`",
+                    diagnostic_index + 1,
+                    line_index + 1
+                ));
+            }
+            match diagnostic.severity.as_str() {
+                "error" => codes.push(diagnostic.code),
+                "warning" => {}
+                other => {
+                    return Err(format!(
+                        "diagnostic {} on line {} has unknown severity {other:?}",
+                        diagnostic_index + 1,
+                        line_index + 1
+                    ));
+                }
+            }
+        }
+    }
+    Ok(codes)
+}
+
 /// Run a single test case.
 pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     // Create a temporary directory for this test
@@ -2964,7 +3105,7 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         if case.compile_fail {
             return Err(TestFailure::assertion(
                 "golden IR assertions cannot be combined with compile_fail \
-                 (use expected_error / error_contains for diagnostics instead)",
+                 (use expected_error_code / expected_error / error_contains for diagnostics instead)",
             ));
         }
 
@@ -3135,6 +3276,50 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
                 "Expected compilation to fail, but it succeeded\n  source: {}",
                 case.source
             )));
+        }
+
+        if let Some(expected_code) = &case.expected_error_code {
+            let mut json_cmd = build_command(rue_binary);
+            json_cmd.arg("--error-format").arg("json");
+            json_cmd.arg(&source_path);
+            json_cmd.arg("-o").arg(temp_dir.path().join("test-json"));
+            let json_output =
+                run_with_timeout(json_cmd, compile_timeout, None).map_err(|error| {
+                    error.with_context("Failed to run rue compiler for typed diagnostic assertion")
+                })?;
+            let json_stderr = String::from_utf8_lossy(&json_output.stderr);
+            if let Some(ice) = ice_message(&json_output.status, &json_stderr) {
+                return Err(ice.with_context(format!("source: {}", case.source)));
+            }
+            if json_output.status.success() {
+                return Err(TestFailure::assertion(
+                    "Typed diagnostic assertion invocation unexpectedly compiled successfully",
+                ));
+            }
+            let actual_codes = parse_json_error_codes(&json_stderr).map_err(|error| {
+                TestFailure::fatal(format!(
+                    "Malformed structured diagnostic metadata: {error}\n--- compiler stderr ---\n{json_stderr}"
+                ))
+            })?;
+            match actual_codes.as_slice() {
+                [actual_code] if actual_code == expected_code => {}
+                [actual_code] => {
+                    return Err(TestFailure::assertion(format!(
+                        "Diagnostic code mismatch: expected {expected_code}, emitted {actual_code}"
+                    )));
+                }
+                [] => {
+                    return Err(TestFailure::assertion(format!(
+                        "Diagnostic code mismatch: expected exactly one {expected_code} diagnostic, emitted none"
+                    )));
+                }
+                _ => {
+                    return Err(TestFailure::assertion(format!(
+                        "Ambiguous diagnostic emission: expected exactly one {expected_code} diagnostic, emitted {}",
+                        actual_codes.join(", ")
+                    )));
+                }
+            }
         }
 
         // Check exact error message (golden test)
@@ -3681,6 +3866,7 @@ params = [
             compile_only: false,
             error_contains: ErrorContains::default(),
             expected_error: None,
+            expected_error_code: None,
             expected_tokens: None,
             expected_ast: None,
             expected_rir: None,
@@ -3737,6 +3923,7 @@ params = [
             compile_only: false,
             error_contains: ErrorContains::default(),
             expected_error: None,
+            expected_error_code: None,
             expected_tokens: None,
             expected_ast: None,
             expected_rir: None,
@@ -3801,6 +3988,7 @@ params = [
             compile_only: false,
             error_contains: ErrorContains::default(),
             expected_error: None,
+            expected_error_code: None,
             expected_tokens: None,
             expected_ast: None,
             expected_rir: None,
@@ -3857,6 +4045,7 @@ params = [
             compile_only: false,
             error_contains: ErrorContains(vec!["{error_msg}".to_string()]),
             expected_error: None,
+            expected_error_code: None,
             expected_tokens: None,
             expected_ast: None,
             expected_rir: None,
@@ -4432,6 +4621,96 @@ params = [
     }
 
     #[cfg(unix)]
+    fn typed_diagnostic_case() -> Case {
+        Case {
+            name: "typed_diagnostic".to_string(),
+            source: "fn main() { missing }".to_string(),
+            compile_fail: true,
+            expected_error_code: Some("E0201".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_typed_diagnostic_assertion_accepts_one_exact_json_code() {
+        let (_directory, binary) = fake_compiler(
+            r#"#!/bin/sh
+case " $* " in
+  *" --error-format json "*) printf '%s\n' '[{"code":"E0201","helps":[],"message":"missing name","notes":[],"severity":"error","spans":[],"suggestions":[]}]' >&2 ;;
+  *) printf '%s\n' 'error: compile failed' >&2 ;;
+esac
+exit 1
+"#,
+        );
+        run_test_case(&typed_diagnostic_case(), &binary).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_typed_diagnostic_assertion_rejects_mismatch_and_duplicate_emission() {
+        for (json, expected_message) in [
+            (
+                r#"[{"code":"E0206","helps":[],"message":"mismatch","notes":[],"severity":"error","spans":[],"suggestions":[]}]"#,
+                "Diagnostic code mismatch",
+            ),
+            (
+                r#"[{"code":"E0201","helps":[],"message":"first","notes":[],"severity":"error","spans":[],"suggestions":[]},{"code":"E0201","helps":[],"message":"second","notes":[],"severity":"error","spans":[],"suggestions":[]}]"#,
+                "Ambiguous diagnostic emission",
+            ),
+            (
+                r#"[{"code":"W0001","helps":[],"message":"warning only","notes":[],"severity":"warning","spans":[],"suggestions":[]}]"#,
+                "emitted none",
+            ),
+        ] {
+            let script = format!(
+                "#!/bin/sh\ncase \" $* \" in\n  *\" --error-format json \"*) printf '%s\\n' '{json}' >&2 ;;\n  *) printf '%s\\n' 'error: compile failed' >&2 ;;\nesac\nexit 1\n"
+            );
+            let (_directory, binary) = fake_compiler(&script);
+            let error = run_test_case(&typed_diagnostic_case(), &binary).unwrap_err();
+            assert!(!error.is_fatal());
+            assert!(error.contains(expected_message));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_typed_diagnostic_assertion_preserves_compiler_options() {
+        let (_directory, binary) = fake_compiler(
+            r#"#!/bin/sh
+case " $* " in
+  *" --target x86-64-linux --preview modules -O2 --error-format json "*) printf '%s\n' '[{"code":"E0201","helps":[],"message":"missing name","notes":[],"severity":"error","spans":[],"suggestions":[]}]' >&2 ;;
+  *" --target x86-64-linux --preview modules -O2 "*) printf '%s\n' 'error: compile failed' >&2 ;;
+  *) printf '%s\n' 'missing compiler option' >&2; exit 2 ;;
+esac
+exit 1
+"#,
+        );
+        let mut case = typed_diagnostic_case();
+        case.target = Some("x86-64-linux".to_string());
+        case.preview = Some("modules".to_string());
+        case.opt_level = Some(2);
+        run_test_case(&case, &binary).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_typed_diagnostic_assertion_rejects_malformed_json_as_fatal() {
+        let (_directory, binary) = fake_compiler(
+            r#"#!/bin/sh
+case " $* " in
+  *" --error-format json "*) printf '%s\n' 'not-json' >&2 ;;
+  *) printf '%s\n' 'error: compile failed' >&2 ;;
+esac
+exit 1
+"#,
+        );
+        let error = run_test_case(&typed_diagnostic_case(), &binary).unwrap_err();
+        assert!(error.is_fatal());
+        assert!(error.contains("Malformed structured diagnostic metadata"));
+    }
+
+    #[cfg(unix)]
     #[test]
     fn test_fake_golden_compiler_panic_is_fatal() {
         let (_directory, binary) =
@@ -4585,6 +4864,7 @@ chmod +x "$output"
             compile_only: false,
             error_contains: ErrorContains::default(),
             expected_error: None,
+            expected_error_code: None,
             expected_tokens: None,
             expected_ast: None,
             expected_rir: None,
@@ -4815,6 +5095,84 @@ chmod +x "$output"
         let errors = validate_error_assertions(&tf);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].fields.contains("expected_error"));
+    }
+
+    #[test]
+    fn test_validate_error_assertions_rejects_expected_error_code_without_compile_fail() {
+        let mut case = make_test_case("typed_stray", None);
+        case.expected_error_code = Some("E0206".to_string());
+        let errors = validate_error_assertions(&make_test_file("sec", vec![case]));
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].fields.contains("expected_error_code"));
+    }
+
+    #[test]
+    fn test_validate_expected_error_codes_uses_compiler_inventory() {
+        let mut known = make_test_case("known", None);
+        known.expected_error_code = Some("E0206".to_string());
+        let mut unknown = make_test_case("unknown", None);
+        unknown.expected_error_code = Some("E9999".to_string());
+        let errors = validate_expected_error_codes(&make_test_file("sec", vec![known, unknown]));
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, "E9999");
+        assert_eq!(errors[0].test_name, "unknown");
+    }
+
+    #[test]
+    fn test_expected_error_code_override_is_expanded_then_validated() {
+        let test_file: TestFile = toml::from_str(
+            r#"
+[section]
+id = "sec"
+name = "Section"
+
+[[case]]
+name = "typed_{variant}"
+source = "fn main() { missing }"
+compile_fail = true
+params = [
+  { variant = "known", expected_error_code = "E0201" },
+  { variant = "unknown", expected_error_code = "E9999" },
+]
+"#,
+        )
+        .unwrap();
+        let expanded = expand_test_file(test_file);
+        assert_eq!(
+            expanded.case[0].expected_error_code.as_deref(),
+            Some("E0201")
+        );
+        let errors = validate_expected_error_codes(&expanded);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].test_name, "typed_unknown");
+    }
+
+    #[test]
+    fn test_expected_error_code_override_rejects_non_string_metadata() {
+        let case = case_with_param_override("expected_error_code = 206");
+        let errors = invalid_param_overrides(&case);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].key, "expected_error_code");
+        assert_eq!(errors[0].expected, "a string");
+    }
+
+    #[test]
+    fn test_json_error_code_parser_is_exact_and_fails_closed() {
+        let single = r#"[{"code":"E0206","helps":[],"message":"mismatch","notes":[],"severity":"error","spans":[],"suggestions":[]}]"#;
+        assert_eq!(parse_json_error_codes(single).unwrap(), vec!["E0206"]);
+
+        let duplicate = r#"[{"code":"E0206","helps":[],"message":"first","notes":[],"severity":"error","spans":[],"suggestions":[]},{"code":"E0206","helps":[],"message":"second","notes":[],"severity":"error","spans":[],"suggestions":[]}]"#;
+        assert_eq!(
+            parse_json_error_codes(duplicate).unwrap(),
+            vec!["E0206", "E0206"]
+        );
+        let warning = r#"[{"code":"W0001","helps":[],"message":"warning","notes":[],"severity":"warning","spans":[],"suggestions":[]}]"#;
+        assert!(parse_json_error_codes(warning).unwrap().is_empty());
+        assert!(parse_json_error_codes("[]").is_err());
+        assert!(parse_json_error_codes(r#"{"code":"E0206","severity":"error"}"#).is_err());
+        assert!(parse_json_error_codes(r#"[{"code":206,"severity":"error"}]"#).is_err());
+        assert!(parse_json_error_codes(r#"[{"code":"E0206","severity":"error"}]"#).is_err());
+        assert!(parse_json_error_codes("not json").is_err());
     }
 
     #[test]

@@ -16,6 +16,7 @@ rue_crate(
         "//crates/rue-target:rue-target",
         "//third-party:libc",
         "//third-party:serde",
+        "//third-party:serde_json",
         "//third-party:tempfile",
         "//third-party:toml",
     ],

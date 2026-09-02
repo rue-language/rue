@@ -1848,6 +1848,7 @@ fn asserts_executable_behavior(case: &rue_test_runner::Case) -> bool {
         || case.compile_fail
         || !case.error_contains.is_empty()
         || case.expected_error.is_some()
+        || case.expected_error_code.is_some()
 }
 
 /// Generates a complete traceability report linking specification to tests.

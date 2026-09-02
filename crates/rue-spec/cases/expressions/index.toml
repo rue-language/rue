@@ -107,6 +107,7 @@ exit_code = 20
 [[case]]
 name = "constant_index_out_of_bounds"
 error_contains = "[E0902]"
+expected_error_code = "E0902"
 spec = ["4.11:7"]
 source = """
 fn main() -> i32 {

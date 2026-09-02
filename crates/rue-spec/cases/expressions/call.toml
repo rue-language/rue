@@ -42,6 +42,7 @@ exit_code = 42
 [[case]]
 name = "too_few_arguments"
 error_contains = "[E0207]"
+expected_error_code = "E0207"
 spec = ["4.10:3"]
 source = """
 fn add(x: i32, y: i32) -> i32 { x + y }
@@ -66,6 +67,7 @@ compile_fail = true
 [[case]]
 name = "argument_type_mismatch"
 error_contains = "[E0206]"
+expected_error_code = "E0206"
 spec = ["4.10:4"]
 source = """
 fn foo(x: i32) -> i32 { x }
