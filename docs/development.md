@@ -39,7 +39,15 @@ For direct compiler invocations, resolve the binary through `scripts/rue-bin`:
 RUE="$(scripts/rue-bin)"
 "$RUE" main.rue -o program
 "$RUE" --emit air --emit cfg main.rue
+"$RUE" explain E0201
 ```
+
+`rue explain E####` prints the compiler-owned long-form explanation for a
+covered diagnostic code. The explanation includes a likely cause, examples,
+and local specification or documentation references. This command performs no
+source discovery or compilation. A well-formed code may not have a long-form
+explanation yet; malformed, unknown, retired, and not-yet-covered codes exit
+unsuccessfully.
 
 The model is exactly one root source file per compile; additional files are
 reached through `@import` and discovered transitively from the root. The legacy

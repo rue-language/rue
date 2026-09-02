@@ -1,0 +1,59 @@
+[section]
+id = "cli.explain"
+name = "Compiler-owned error explanations"
+description = """
+RUE-437: `rue explain E####` is a non-compiling CLI command backed by the
+canonical rue-error metadata identity. The deliberately invalid fixture proves
+the successful command returns before source loading or compilation.
+"""
+
+[[case]]
+name = "covered_code_is_explained_without_compiling"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0201"]
+compile_only = true
+compile_stdout_contains = [
+  "E0201: Undefined variable",
+  "Likely cause:",
+  "Undefined local:",
+  "Define the name before use:",
+  "docs/spec/src/10-modules/03-visibility.md (spec rule 10.3:8)",
+]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "malformed_code_is_rejected"
+files = [{ path = "main.rue", source = "fn main() {}\n" }]
+args = ["explain", "E201"]
+compile_fail = true
+error_contains = ["must have the form E followed by exactly four decimal digits"]
+compile_stdout_not_contains = ["E0201:"]
+
+[[case]]
+name = "unknown_code_is_rejected"
+files = [{ path = "main.rue", source = "fn main() {}\n" }]
+args = ["explain", "E9999"]
+compile_fail = true
+error_contains = ["unknown or retired error code E9999"]
+
+[[case]]
+name = "retired_code_is_rejected"
+files = [{ path = "main.rue", source = "fn main() {}\n" }]
+args = ["explain", "E0005"]
+compile_fail = true
+error_contains = ["unknown or retired error code E0005"]
+
+[[case]]
+name = "known_but_uncovered_code_is_rejected"
+files = [{ path = "main.rue", source = "fn main() {}\n" }]
+args = ["explain", "E0206"]
+compile_fail = true
+error_contains = ["no detailed explanation is available yet for E0206"]
+
+[[case]]
+name = "extra_argument_is_rejected"
+files = [{ path = "main.rue", source = "fn main() {}\n" }]
+args = ["explain", "E0201", "main.rue"]
+compile_fail = true
+error_contains = ["requires exactly one error code", "Usage: rue explain <E####>"]

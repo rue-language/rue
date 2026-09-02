@@ -98,6 +98,48 @@ pub struct ErrorCodeMetadata {
     pub source_path: &'static str,
 }
 
+/// A runnable example attached to an error-code explanation.
+///
+/// The fields are deliberately presentation-neutral so command-line and future
+/// machine-readable consumers can project the same compiler-owned record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ErrorCodeExample {
+    pub title: &'static str,
+    pub source: &'static str,
+}
+
+/// A canonical local reference attached to an error-code explanation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ErrorCodeReference {
+    pub title: &'static str,
+    pub path: &'static str,
+    pub rule: Option<&'static str>,
+}
+
+/// Compiler-owned long-form information for one public diagnostic code.
+///
+/// `metadata` points into [`error_code_metadata`], preserving the exact
+/// [`ErrorCode`] identity and symbolic name rather than copying them into a
+/// second registry. The remaining fields form a structured internal result
+/// that can be projected to other formats without scraping rendered prose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorCodeExplanation {
+    pub metadata: &'static ErrorCodeMetadata,
+    pub explanation: &'static str,
+    pub likely_cause: &'static str,
+    pub examples: &'static [ErrorCodeExample],
+    pub references: &'static [ErrorCodeReference],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ErrorCodeExplanationDeclaration {
+    code: ErrorCode,
+    explanation: &'static str,
+    likely_cause: &'static str,
+    examples: &'static [ErrorCodeExample],
+    references: &'static [ErrorCodeReference],
+}
+
 /// Maximum supported syntactic nesting depth.
 ///
 /// The parser (recursive-descent through bracketed constructs) and AstGen
@@ -110,7 +152,12 @@ pub struct ErrorCodeMetadata {
 pub const MAX_NESTING_DEPTH: usize = 256;
 
 macro_rules! define_error_codes {
-    ($( $(#[$meta:meta])* $name:ident = $value:literal; )*) => {
+    ($( $(#[$meta:meta])* $name:ident = $value:literal $(=> {
+        explanation: $explanation:literal,
+        likely_cause: $likely_cause:literal,
+        examples: [$($example:expr),* $(,)?],
+        references: [$($reference:expr),* $(,)?] $(,)?
+    })?; )*) => {
         impl ErrorCode {
             $(
                 $(#[$meta])*
@@ -120,6 +167,18 @@ macro_rules! define_error_codes {
 
         const ERROR_CODE_DECLARATIONS: &[(ErrorCode, &str)] = &[
             $((ErrorCode::$name, stringify!($name))),*
+        ];
+
+        const ERROR_CODE_EXPLANATION_DECLARATIONS: &[ErrorCodeExplanationDeclaration] = &[
+            $($(
+                ErrorCodeExplanationDeclaration {
+                    code: ErrorCode::$name,
+                    explanation: $explanation,
+                    likely_cause: $likely_cause,
+                    examples: &[$($example),*],
+                    references: &[$($reference),*],
+                },
+            )?)*
         ];
     };
 }
@@ -164,7 +223,27 @@ define_error_codes! {
     // Semantic errors (E0200-E0399)
     // ========================================================================
     NO_MAIN_FUNCTION = 200;
-    UNDEFINED_VARIABLE = 201;
+    UNDEFINED_VARIABLE = 201 => {
+        explanation: "Rue could not resolve a variable, constant, or enum type name used in an expression.",
+        likely_cause: "The name is misspelled, is outside its lexical scope, or belongs to another module and was used without that module's binding.",
+        examples: [
+            ErrorCodeExample {
+                title: "Undefined local",
+                source: "fn main() -> i32 {\n    answer\n}",
+            },
+            ErrorCodeExample {
+                title: "Define the name before use",
+                source: "fn main() -> i32 {\n    let answer = 42;\n    answer\n}",
+            },
+        ],
+        references: [
+            ErrorCodeReference {
+                title: "Module visibility and name resolution",
+                path: "docs/spec/src/10-modules/03-visibility.md",
+                rule: Some("10.3:8"),
+            },
+        ],
+    };
     UNDEFINED_FUNCTION = 202;
     ASSIGN_TO_IMMUTABLE = 203;
     UNKNOWN_TYPE = 204;
@@ -598,6 +677,35 @@ impl fmt::Display for ErrorCode {
     }
 }
 
+/// Error returned when parsing a public diagnostic code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ParseErrorCodeError {
+    #[error("error code must have the form E followed by exactly four decimal digits")]
+    Malformed,
+    #[error("unknown or retired error code {0}")]
+    Unknown(ErrorCode),
+}
+
+impl std::str::FromStr for ErrorCode {
+    type Err = ParseErrorCodeError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let digits = value
+            .strip_prefix('E')
+            .filter(|digits| digits.len() == 4 && digits.bytes().all(|byte| byte.is_ascii_digit()))
+            .ok_or(ParseErrorCodeError::Malformed)?;
+        let code = ErrorCode(
+            digits
+                .parse::<u16>()
+                .expect("four decimal digits always fit in u16"),
+        );
+        error_code_metadata()
+            .binary_search_by_key(&code.0, |entry| entry.code.0)
+            .map(|_| code)
+            .map_err(|_| ParseErrorCodeError::Unknown(code))
+    }
+}
+
 /// Return every public compiler error code in numeric order.
 ///
 /// `define_error_codes!` remains the single structural authority: it emits the
@@ -627,6 +735,38 @@ pub fn error_code_metadata() -> &'static [ErrorCodeMetadata] {
         metadata.sort_by_key(|entry| entry.code.0);
         metadata
     })
+}
+
+/// Return the compiler-owned long-form explanation for `code`, when this
+/// production tranche covers it.
+///
+/// Explanation declarations are emitted by the same macro invocation as the
+/// [`ErrorCode`] constants. At initialization they are joined to the canonical
+/// metadata inventory, so consumers cannot observe a copied code identity or
+/// symbolic-name registry.
+pub fn error_code_explanation(code: ErrorCode) -> Option<&'static ErrorCodeExplanation> {
+    static EXPLANATIONS: std::sync::OnceLock<Vec<ErrorCodeExplanation>> =
+        std::sync::OnceLock::new();
+    EXPLANATIONS
+        .get_or_init(|| {
+            ERROR_CODE_EXPLANATION_DECLARATIONS
+                .iter()
+                .map(|declaration| {
+                    let metadata_index = error_code_metadata()
+                        .binary_search_by_key(&declaration.code.0, |entry| entry.code.0)
+                        .expect("explanation macro entry must have canonical metadata");
+                    ErrorCodeExplanation {
+                        metadata: &error_code_metadata()[metadata_index],
+                        explanation: declaration.explanation,
+                        likely_cause: declaration.likely_cause,
+                        examples: declaration.examples,
+                        references: declaration.references,
+                    }
+                })
+                .collect()
+        })
+        .iter()
+        .find(|explanation| explanation.metadata.code == code)
 }
 
 // ============================================================================
@@ -2739,6 +2879,51 @@ mod tests {
 
         assert_eq!(metadata.len(), ERROR_CODE_DECLARATIONS.len());
         assert_eq!(metadata, error_code_metadata(), "metadata must reproduce");
+    }
+
+    #[test]
+    fn error_code_parsing_uses_the_canonical_inventory() {
+        assert_eq!("E0201".parse(), Ok(ErrorCode::UNDEFINED_VARIABLE));
+        assert_eq!(
+            "E0005".parse::<ErrorCode>(),
+            Err(ParseErrorCodeError::Unknown(ErrorCode(5)))
+        );
+        assert_eq!(
+            "E9999".parse::<ErrorCode>(),
+            Err(ParseErrorCodeError::Unknown(ErrorCode(9999)))
+        );
+        for malformed in ["0201", "e0201", "E201", "E02010", "E02A1", ""] {
+            assert_eq!(
+                malformed.parse::<ErrorCode>(),
+                Err(ParseErrorCodeError::Malformed),
+                "{malformed:?} must not be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn explanations_are_macro_owned_and_retain_metadata_identity() {
+        let mut seen = HashSet::new();
+        for declaration in ERROR_CODE_EXPLANATION_DECLARATIONS {
+            assert!(seen.insert(declaration.code), "duplicate explanation code");
+            let explanation = error_code_explanation(declaration.code)
+                .expect("each macro explanation declaration must be queryable");
+            let metadata = error_code_metadata()
+                .iter()
+                .find(|entry| entry.code == declaration.code)
+                .expect("each explanation must reference declared metadata");
+            assert!(std::ptr::eq(explanation.metadata, metadata));
+            assert!(!explanation.explanation.is_empty());
+            assert!(!explanation.likely_cause.is_empty());
+            assert!((1..=2).contains(&explanation.examples.len()));
+            assert!(!explanation.references.is_empty());
+        }
+
+        let explanation = error_code_explanation(ErrorCode::UNDEFINED_VARIABLE)
+            .expect("E0201 is the bounded first production explanation");
+        assert_eq!(explanation.metadata.name, "UNDEFINED_VARIABLE");
+        assert_eq!(explanation.references[0].rule, Some("10.3:8"));
+        assert!(error_code_explanation(ErrorCode::TYPE_MISMATCH).is_none());
     }
 
     /// `ErrorKind::code()` must cover the compiler-declared ErrorCode constants without
