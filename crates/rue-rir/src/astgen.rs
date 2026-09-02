@@ -19,7 +19,8 @@ use rue_parser::{
 
 use crate::inst::{
     Inst, InstData, InstRef, InternalIntrinsic, PayloadFallback, RepeatCount, Rir, RirArgMode,
-    RirCallArg, RirDirective, RirEditor, RirParam, RirParamMode, RirPattern,
+    RirCallArg, RirDeferredStructuralAnchor, RirDirective, RirEditor, RirParam, RirParamMode,
+    RirPattern,
 };
 
 trait RecordPayloadFailure<T> {
@@ -68,7 +69,7 @@ pub struct AstGen<'a> {
     /// route is relative to its producing definition and contains no spans or
     /// global instruction ordinals. Still the source of string-literal and
     /// read-only-data anchors; anonymous-type anchors no longer derive from it.
-    structural_path: Vec<crate::RirStructuralPathSegment>,
+    structural_path: Option<std::sync::Arc<crate::inst::RirStructuralPathPrefix>>,
     /// The single anonymous-type anchor authority (RUE-1089, Theme 1). Each
     /// value-position anonymous type literal reachable while reducing a producer
     /// body is recorded here by exact source span when that producer root is
@@ -168,7 +169,7 @@ impl<'a> AstGen<'a> {
             payload_error: None,
             for_counter: 0,
             compound_counter: 0,
-            structural_path: Vec::new(),
+            structural_path: None,
             anonymous_anchors: AHashMap::new(),
             authoritative_anonymous_anchors: false,
             producer_root_depth: 0,
@@ -410,9 +411,15 @@ impl<'a> AstGen<'a> {
         segment: crate::RirStructuralPathSegment,
         action: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        self.structural_path.push(segment);
+        let parent = self.structural_path.take();
+        let len = parent.as_ref().map_or(1, |parent| parent.len + 1);
+        self.structural_path = Some(std::sync::Arc::new(crate::inst::RirStructuralPathPrefix {
+            parent: parent.clone(),
+            segment,
+            len,
+        }));
         let result = action(self);
-        self.structural_path.pop();
+        self.structural_path = parent;
         result
     }
 
@@ -531,15 +538,18 @@ impl<'a> AstGen<'a> {
     }
 
     fn string_literal_anchor(&self, occurrence: u32) -> crate::RirStructuralAnchor {
-        let mut segments = self.structural_path.clone();
-        segments.push(crate::RirStructuralPathSegment::StringLiteral(occurrence));
-        crate::RirStructuralAnchor::new(segments)
+        RirDeferredStructuralAnchor::new(
+            self.structural_path.clone(),
+            crate::RirStructuralPathSegment::StringLiteral(occurrence),
+        )
+        .materialize()
     }
 
-    fn read_only_data_anchor(&self, occurrence: u32) -> crate::RirStructuralAnchor {
-        let mut segments = self.structural_path.clone();
-        segments.push(crate::RirStructuralPathSegment::ReadOnlyData(occurrence));
-        crate::RirStructuralAnchor::new(segments)
+    fn read_only_data_anchor(&self, occurrence: u32) -> RirDeferredStructuralAnchor {
+        RirDeferredStructuralAnchor::new(
+            self.structural_path.clone(),
+            crate::RirStructuralPathSegment::ReadOnlyData(occurrence),
+        )
     }
 
     fn gen_item(&mut self, item: &Item) -> AstGenItemRoots {
@@ -1057,13 +1067,11 @@ impl<'a> AstGen<'a> {
                 data: InstData::UnitConst,
                 span: lit.span,
             }),
-            Expr::Ident(ident) => self.rir.add_inst(Inst {
-                data: InstData::VarRef {
-                    name: self.symbol(ident.name),
-                    anchor: Some(self.read_only_data_anchor(0)),
-                },
-                span: ident.span,
-            }),
+            Expr::Ident(ident) => self.rir.add_deferred_var_ref(
+                self.symbol(ident.name),
+                self.read_only_data_anchor(0),
+                ident.span,
+            ),
             Expr::Binary(bin) => {
                 let lhs = self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), &bin.left);
                 let rhs = self.gen_expr_at(crate::RirStructuralPathSegment::Operand(1), &bin.right);
@@ -2309,13 +2317,10 @@ impl<'a> AstGen<'a> {
                 // reference to the name would, so a compound assignment to a
                 // module constant reports its error the same way a plain one
                 // does rather than diverging on anchor handling.
-                CompoundPlace::Var(name) => this.rir.add_inst(Inst {
-                    data: InstData::VarRef {
-                        name: *name,
-                        anchor: Some(this.read_only_data_anchor(0)),
-                    },
-                    span,
-                }),
+                CompoundPlace::Var(name) => {
+                    this.rir
+                        .add_deferred_var_ref(*name, this.read_only_data_anchor(0), span)
+                }
                 CompoundPlace::Projected { root, steps } => {
                     let base = this.gen_place_root(root);
                     this.gen_place_projections(base, steps)
@@ -2543,6 +2548,74 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
         (rir, interner)
+    }
+
+    fn deferred_read_anchors(source: &str, spelling: &str) -> Vec<RirDeferredStructuralAnchor> {
+        let (rir, interner) = gen_rir(source);
+        rir.iter()
+            .filter_map(|(reference, instruction)| match &instruction.data {
+                InstData::VarRef { name, anchor: None } if interner.resolve(name) == spelling => {
+                    rir.deferred_structural_anchor(reference).cloned()
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn deferred_identifier_and_compound_read_materialize_exact_old_paths() {
+        use crate::RirStructuralPathSegment as S;
+
+        let ordinary = deferred_read_anchors("fn f() -> i32 { X }", "X");
+        assert_eq!(ordinary.len(), 1);
+        assert_eq!(
+            ordinary[0].materialize(),
+            crate::RirStructuralAnchor::new(vec![
+                S::Body,
+                S::Body,
+                S::Operand(0),
+                S::ReadOnlyData(0)
+            ])
+        );
+
+        let compound = deferred_read_anchors("fn f() -> i32 { X += 1; X }", "X");
+        assert_eq!(compound.len(), 2);
+        assert_eq!(
+            compound[0].materialize(),
+            crate::RirStructuralAnchor::new(vec![
+                S::Body,
+                S::Body,
+                S::Statement(0),
+                S::Operand(COMPOUND_READ_SEGMENT),
+                S::ReadOnlyData(0),
+            ])
+        );
+        assert_eq!(
+            compound[1].materialize(),
+            crate::RirStructuralAnchor::new(vec![
+                S::Body,
+                S::Body,
+                S::Operand(0),
+                S::ReadOnlyData(0)
+            ])
+        );
+    }
+
+    #[test]
+    fn escaped_deferred_anchor_retains_only_its_own_producer_prefix() {
+        let small = deferred_read_anchors("fn keep() -> i32 { X }", "X").remove(0);
+        let mut large_source = "fn keep() -> i32 { X } fn unrelated() -> i32 { ".to_owned();
+        for _ in 0..2_000 {
+            large_source.push_str("unresolved; ");
+        }
+        large_source.push_str("0 }");
+        let escaped = deferred_read_anchors(&large_source, "X").remove(0);
+        assert_eq!(small, escaped);
+        assert_eq!(
+            small.retained_allocation_charge(),
+            escaped.retained_allocation_charge(),
+            "an escaped shallow occurrence must not retain unrelated producer paths"
+        );
     }
 
     #[test]

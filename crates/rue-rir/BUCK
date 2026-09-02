@@ -4,6 +4,7 @@ rue_crate(
     name = "rue-rir",
     deps = [
         "//crates/rue-lexer:rue-lexer",
+        "//crates/rue-error:rue-error",
         "//crates/rue-parser:rue-parser",
         "//crates/rue-span:rue-span",
         "//third-party:ahash",
@@ -17,6 +18,7 @@ native.rust_library(
     srcs = glob(["src/**/*.rs"]),
     deps = [
         "//crates/rue-lexer:rue-lexer",
+        "//crates/rue-error:rue-error",
         "//crates/rue-parser:rue-parser",
         "//crates/rue-span:rue-span",
         "//third-party:ahash",

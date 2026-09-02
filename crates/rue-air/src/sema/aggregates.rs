@@ -628,7 +628,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         air: &mut Air,
         module_id: crate::types::ModuleId,
         member_name: Spur,
-        atom_anchor: Option<rue_rir::RirStructuralAnchor>,
+        atom_anchor: Option<InstRef>,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
@@ -749,6 +749,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // A value const (e.g. `pub const ANSWER = ...`) accessed as a
             // module member: materialize the value that was evaluated at
             // declaration time, typed as declared (RUE-160).
+            let atom_anchor = match const_info.value {
+                ConstValue::String(_) => atom_anchor.and_then(|instruction| {
+                    self.body_rir_ref()
+                        .materialize_const_use_anchor(instruction)
+                }),
+                _ => None,
+            };
             let (data, ty) = self.materialize_const_value(
                 ctx,
                 const_info.value,

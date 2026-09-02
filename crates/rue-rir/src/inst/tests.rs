@@ -64,6 +64,8 @@ mod resource_limit_tests {
 mod typed_payload_tests {
     use super::*;
     use lasso::ThreadedRodeo;
+    use rue_lexer::Lexer;
+    use rue_parser::Parser;
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::cell::Cell;
     thread_local! {
@@ -130,6 +132,114 @@ mod typed_payload_tests {
             ALLOCATION_COUNT.with(Cell::get),
             ALLOCATION_BYTES.with(Cell::get),
         )
+    }
+
+    fn complete_source_evidence(source: &str) -> (usize, usize) {
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
+        let mut packed_len = 0;
+        let allocations = allocations_during(|| {
+            let mut astgen = crate::AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+            astgen.append_items(&ast.items);
+            let rir = ValidatedRir::finish(
+                astgen.finish_editor(),
+                &RirValidationContext {
+                    symbol_count: interner.len(),
+                    source_lengths: &[(FileId::DEFAULT, source.len() as u32)],
+                },
+            )
+            .unwrap();
+            let root = rir
+                .iter()
+                .find_map(|(reference, instruction)| {
+                    matches!(instruction.data, InstData::FnDecl { .. }).then_some(reference)
+                })
+                .unwrap();
+            let packed = rir
+                .try_pack_candidate(
+                    &interner,
+                    PackedRirMetadata {
+                        declaration: root,
+                        method_owner: None,
+                    },
+                    || Ok::<_, std::convert::Infallible>(()),
+                    |_slot, span| Ok((span.start, span.end)),
+                )
+                .unwrap();
+            packed_len = packed.as_bytes().len();
+            std::hint::black_box((rir.retained_allocation_charge(), packed.as_bytes()));
+        });
+        (allocations, packed_len)
+    }
+
+    fn repeated_expression_source(depth: usize, atom: &str, count: usize) -> String {
+        let mut source = "fn f() -> i32 { ".to_owned();
+        for _ in 0..depth {
+            source.push_str("{ ");
+        }
+        for index in 0..count {
+            if index != 0 {
+                source.push_str(" + ");
+            }
+            source.push_str(atom);
+        }
+        for _ in 0..depth {
+            source.push_str(" }");
+        }
+        source.push_str(" }");
+        source
+    }
+
+    #[test]
+    fn complete_unresolved_read_pipeline_has_no_per_occurrence_path_allocation() {
+        let count = 64;
+        for depth in [1, 32] {
+            let (identifiers, identifier_bytes) = complete_source_evidence(
+                &repeated_expression_source(depth, "MODULE_LOOKING", count),
+            );
+            let (literals, _) =
+                complete_source_evidence(&repeated_expression_source(depth, "1", count));
+            assert!(
+                identifiers <= literals + 12,
+                "{count} reads at depth {depth} added {} allocations; deferred reads must not allocate one path pointee per occurrence",
+                identifiers.saturating_sub(literals)
+            );
+            assert!(
+                identifier_bytes < 16_384,
+                "shared-prefix packing emitted {identifier_bytes} bytes for {count} reads at depth {depth}"
+            );
+        }
+
+        fn compound_source(depth: usize, count: usize) -> String {
+            let mut source = "fn f() -> i32 { ".to_owned();
+            for _ in 0..depth {
+                source.push_str("{ ");
+            }
+            for _ in 0..count {
+                source.push_str("MODULE_LOOKING += 1; ");
+            }
+            source.push('0');
+            for _ in 0..depth {
+                source.push_str(" }");
+            }
+            source.push_str(" }");
+            source
+        }
+
+        let (shallow_one, _) = complete_source_evidence(&compound_source(1, 1));
+        let (shallow_many, shallow_bytes) = complete_source_evidence(&compound_source(1, count));
+        let (deep_one, _) = complete_source_evidence(&compound_source(32, 1));
+        let (deep_many, deep_bytes) = complete_source_evidence(&compound_source(32, count));
+        let shallow_increment = shallow_many - shallow_one;
+        let deep_increment = deep_many - deep_one;
+        assert!(
+            deep_increment <= shallow_increment + 8,
+            "repeating compound reads added {deep_increment} allocations at depth 32 versus {shallow_increment} at depth 1"
+        );
+        assert!(
+            deep_bytes <= shallow_bytes + 512,
+            "nesting copied every compound path into packed RIR: shallow={shallow_bytes}, deep={deep_bytes}"
+        );
     }
 
     #[test]
@@ -862,6 +972,7 @@ mod typed_payload_tests {
         .unwrap();
 
         let dense = (rir.len() * std::mem::size_of::<Inst>()) as u64
+            + (rir.len() * std::mem::size_of::<Option<RirDeferredStructuralAnchor>>()) as u64
             + (rir.extra_len() * std::mem::size_of::<u32>()) as u64
             + rir.type_syntax().retained_allocation_charge();
         assert_eq!(

@@ -310,6 +310,10 @@ fn rir_structural_anchor_storage_is_tied_to_retained_charge() {
         1,
         "optional structural-anchor storage changed"
     );
+    assert!(
+        !include_str!("lib.rs").contains("RirDeferredStructuralAnchor,"),
+        "producer-private deferred anchors must not enter the public hub"
+    );
 
     let charge = source_region(
         validation,

@@ -258,12 +258,9 @@ pub(crate) fn root_variable_of(rir: &Rir, inst_ref: InstRef) -> Option<Spur> {
     }
 }
 
-pub(crate) fn const_use_anchor_of(
-    rir: &Rir,
-    inst_ref: InstRef,
-) -> Option<rue_rir::RirStructuralAnchor> {
+pub(crate) fn const_use_anchor_of(rir: &Rir, inst_ref: InstRef) -> Option<InstRef> {
     match &rir.get(inst_ref).data {
-        InstData::VarRef { anchor, .. } => anchor.clone(),
+        InstData::VarRef { .. } => Some(inst_ref),
         InstData::FieldGet { base, .. } => const_use_anchor_of(rir, *base),
         _ => None,
     }
