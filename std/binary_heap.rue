@@ -3,16 +3,35 @@
 // `P` carrying a payload `V`.
 //
 // Both read elements by copy while sifting, so they are for trivially-droppable
-// (`Copy`) element/payload types (RUE-651). A custom-comparator heap is the M4
-// follow-up (needs function values, RUE-643).
+// (`Copy`) element/payload types (RUE-651).
 //
 //     const std = @import("std");
 //     let H = std.binary_heap.BinaryHeap(i64);
 //     let mut h = H.new();
 //     h.push(5); h.push(1); h.push(3);
 //     h.pop();      // Some(1)  — smallest first
+//
+// `OrderedHeap(T)` is the interface-bounded form: a min-heap under
+// `std.interfaces.Ordered.less` (spec 6.7) for any conforming `T`, owning or
+// `Copy`, that compares elements in place through `ArrayBuf.get_ref` and
+// moves them with `ArrayBuf.swap`. It is the one heap a program's own type
+// needs, where `PriorityQueue` is the integer-priority special case:
+//
+//     struct Job is std.interfaces.Ordered {         // --preview interfaces
+//         priority: u64,
+//         name: StrBuf,
+//         fn less(borrow self, borrow other: Job) -> bool {
+//             self.priority < other.priority
+//         }
+//     }
+//     let H = std.binary_heap.OrderedHeap(Job);
+//
+// `BinaryHeap` and `PriorityQueue` keep their `<`-based bodies: an integer has
+// no methods and so cannot conform to `Ordered`, and a bounded parameter has
+// no `<` (spec 6.7:20), so one body cannot serve both.
 
 const arraybuf = @import("arraybuf.rue");
+const interfaces = @import("interfaces.rue");
 const option = @import("option.rue");
 const tuple = @import("tuple.rue");
 
@@ -188,6 +207,86 @@ pub fn PriorityQueue(comptime P: type, comptime V: type) -> type {
         // Remove and return the min-priority `(priority, payload)` pair.
         fn pop(inout self) -> option.Option(Item) {
             let O = option.Option(Item);
+            let n = self.data.len();
+            if n == 0 {
+                O.None
+            } else if n == 1 {
+                self.data.pop()
+            } else {
+                self.data.swap(0, n - 1);
+                let smallest = self.data.pop();
+                self._sift_down(0);
+                smallest
+            }
+        }
+    }
+}
+
+// A min-heap under `Ordered.less` over any conforming element type.
+pub fn OrderedHeap(comptime T: interfaces.Ordered) -> type {
+    let Buf = arraybuf.ArrayBuf(T);
+    struct {
+        data: Buf,
+
+        fn new() -> Self {
+            Self { data: Buf.new() }
+        }
+
+        fn len(borrow self) -> u64 {
+            self.data.len()
+        }
+        fn is_empty(borrow self) -> bool {
+            self.data.is_empty()
+        }
+
+        // Whether element `i` orders before element `j`, both read in place.
+        fn _less(borrow self, i: u64, j: u64) -> bool {
+            self.data.get_ref(i).less(borrow self.data.get_ref(j))
+        }
+
+        fn _sift_down(inout self, start: u64) {
+            let mut i = start;
+            let n = self.data.len();
+            loop {
+                let l = 2 * i + 1;
+                let r = 2 * i + 2;
+                let mut smallest = i;
+                if l < n {
+                    if self._less(l, smallest) {
+                        smallest = l;
+                    }
+                }
+                if r < n {
+                    if self._less(r, smallest) {
+                        smallest = r;
+                    }
+                }
+                if smallest == i {
+                    break;
+                }
+                self.data.swap(i, smallest);
+                i = smallest;
+            }
+        }
+
+        // Insert `x`, moving it into the heap.
+        fn push(inout self, x: T) {
+            self.data.push(x);
+            let mut i = self.data.len() - 1;
+            while i > 0 {
+                let parent = (i - 1) / 2;
+                if self._less(i, parent) {
+                    self.data.swap(i, parent);
+                    i = parent;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // Remove and return the least element (moved out), or `None`.
+        fn pop(inout self) -> option.Option(T) {
+            let O = option.Option(T);
             let n = self.data.len();
             if n == 0 {
                 O.None

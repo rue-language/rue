@@ -75,3 +75,9 @@ contract = "heavyweight_extra_long"
 [[automatic_example]]
 path = "caldera/main.rue"
 contract = "heavyweight_extra_long"
+
+# examples/hashmap declares its own `Key is Equatable + Hashable` conformance
+# (spec 6.7), which needs the interfaces preview; the ordinary budgets apply.
+[[automatic_example]]
+path = "hashmap/main.rue"
+preview = "interfaces"

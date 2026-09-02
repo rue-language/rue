@@ -1,8 +1,10 @@
-// wordfreq — a word-frequency counter, exercising std.strmap (RUE-939).
+// wordfreq — a word-frequency counter, exercising std.hashmap (RUE-939).
 //
 // Reads a text file named on the command line, tokenizes it into words (a word
 // is a maximal run of ASCII letters, folded to lowercase), counts occurrences in
-// a `std.strmap.StrMap(u64)`, and prints a deterministic summary:
+// a `std.hashmap.HashMap(StrBuf, u64)` — the generic map, keyed by `StrBuf`
+// through its `Hashable + Equatable` conformance (spec 6.7) — and prints a
+// deterministic summary:
 //
 //     words=<total number of word occurrences>
 //     distinct=<number of distinct words>
@@ -75,18 +77,19 @@ fn read_file(borrow path: StrBuf) -> OptBytes {
 }
 
 // Count one completed word: bump its tally, recording it in `order` the first
-// time it is seen.
+// time it is seen. `update` overwrites through the borrowed word; only a new
+// word is copied into the map, as its key.
 fn count_word(
     borrow word: StrBuf,
-    inout counts: std.strmap.StrMap(u64),
+    inout counts: std.hashmap.HashMap(StrBuf, u64),
     inout order: firstseen.FirstSeen,
 ) {
     match counts.get(borrow word) {
         OptU64.Some(c) => {
-            counts.insert(borrow word, c + 1);
+            counts.update(borrow word, c + 1);
         },
         OptU64.None => {
-            counts.insert(borrow word, 1);
+            counts.insert(word.copy(), 1);
             order.add(borrow word);
         },
     }
@@ -109,8 +112,8 @@ fn main() -> i32 {
         },
     };
 
-    let M = std.strmap.StrMap(u64);
-    let mut counts = M.new(0);
+    let M = std.hashmap.HashMap(StrBuf, u64);
+    let mut counts = M.new();
     let mut order = firstseen.FirstSeen.new();
     let mut words_total: u64 = 0;
 

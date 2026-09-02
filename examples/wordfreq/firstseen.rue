@@ -1,9 +1,9 @@
 // firstseen — records distinct words in first-seen (insertion) order.
 //
-// The frequency count itself lives in a `std.strmap.StrMap(u64)`, whose probe
-// order must never leak into program output. To break count ties by "which word
-// appeared first in the input", wordfreq keeps this parallel append-only list of
-// the distinct words in the order they were first seen.
+// The frequency count itself lives in a `std.hashmap.HashMap(StrBuf, u64)`,
+// whose probe order must never leak into program output. To break count ties
+// by "which word appeared first in the input", wordfreq keeps this parallel
+// append-only list of the distinct words in the order they were first seen.
 //
 // Like the map's key store (and examples/ruelex/interner.rue), words cannot live
 // in an `ArrayBuf(StrBuf)` (by-copy reads are gated for drop-glue element types,

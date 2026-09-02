@@ -1,17 +1,24 @@
 // Stable pooled strings for Harbor. Domain records carry integer ids so the
 // simulation arenas remain Copy and can be read repeatedly across modules.
+// Lookup goes through a `std.hashmap.HashMap(StrBuf, u64)` index, the generic
+// map keyed by `StrBuf`'s `Hashable + Equatable` conformance (spec 6.7), so
+// `intern` and `find` are amortized O(length) rather than a scan of every
+// pooled string.
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
 const U64s = std.arraybuf.ArrayBuf(u64);
+const Index = std.hashmap.HashMap(StrBuf, u64);
 const OptU8 = std.option.Option(u8);
+const OptU64 = std.option.Option(u64);
 
 pub struct Pool {
     bytes: StrBuf,
     offsets: U64s,
     lengths: U64s,
+    index: Index,
 
     fn new() -> Self {
-        Self { bytes: StrBuf.new(), offsets: U64s.new(), lengths: U64s.new() }
+        Self { bytes: StrBuf.new(), offsets: U64s.new(), lengths: U64s.new(), index: Index.new() }
     }
 
     fn len(borrow self) -> u64 { self.offsets.len() }
@@ -20,6 +27,7 @@ pub struct Pool {
         let found = self.find(borrow value);
         if found < self.len() { return found; }
         let id = self.len();
+        self.index.insert(value.copy(), id);
         self.offsets.push(self.bytes.len());
         self.lengths.push(value.len());
         let mut i: u64 = 0;
@@ -33,13 +41,12 @@ pub struct Pool {
 
     fn intern_literal(inout self, value: StrBuf) -> u64 { self.intern(borrow value) }
 
+    // The id of `value`, or `len()` when it is not pooled.
     fn find(borrow self, borrow value: StrBuf) -> u64 {
-        let mut id: u64 = 0;
-        while id < self.len() {
-            if self.equals(id, borrow value) { return id; }
-            id += 1;
+        match self.index.get(borrow value) {
+            OptU64.Some(id) => id,
+            OptU64.None => self.len(),
         }
-        self.len()
     }
 
     fn string_len(borrow self, id: u64) -> u64 {
@@ -54,6 +61,8 @@ pub struct Pool {
         }
     }
 
+    // Whether pooled string `id` has exactly the bytes of `value`, without
+    // interning `value`.
     fn equals(borrow self, id: u64, borrow value: StrBuf) -> bool {
         if self.string_len(id) != value.len() { return false; }
         let mut i: u64 = 0;

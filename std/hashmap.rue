@@ -1,0 +1,237 @@
+// std.hashmap — HashMap(K, V): an open-addressing hash map over any key type
+// that conforms to `std.interfaces.Hashable + Equatable` (spec 6.7) and a
+// `Copy` value type `V`.
+//
+//     const std = @import("std");
+//     let M = std.hashmap.HashMap(StrBuf, u64);
+//     let mut m = M.new();
+//     let k: StrBuf = "hello";
+//     m.insert(k, 100);          // the key is moved into the map
+//     let probe: StrBuf = "hello";
+//     m.get(borrow probe);       // Some(100)
+//
+// The key bound is what makes this the one map: `StrMap(V)` is now a thin
+// wrapper over `HashMap(StrBuf, V)`, and a program's own struct becomes a key
+// by conforming (under `--preview interfaces`). `IntMap` stays separate:
+// an integer type has no methods and so cannot conform to an interface
+// (spec 6.7:20), and a bounded parameter has no `==`.
+//
+// STORAGE — entries are dense and the index is separate, the shape of a
+// compact dictionary. `keys`, `vals`, and `hashes` are parallel arrays in
+// insertion order; `live` marks an entry that has not been removed; `slots`
+// is the open-addressed table, each slot holding `entry + 1` or `0` for
+// empty. Keys are read in place through `ArrayBuf.get_ref` (a `borrow`
+// accessor, so a drop-glue key such as `StrBuf` is never copied) and compared
+// through `K.equals`; cached hashes reject a slot before the key is touched.
+//
+// The dense layout is what a non-`Copy` key needs: an `ArrayBuf(K)` cannot be
+// filled with placeholder keys (that would copy one `K` into every slot), so
+// the table holds entry indices instead, and the entry arrays only ever
+// receive a key by move. A removal leaves the entry in place and dead — the
+// slot pointing at it acts as a tombstone — and `_rebuild` drops dead entries
+// by popping every entry out of the old arrays and pushing the live ones
+// into fresh ones, again by move. Values are `Copy` so that `get` can return
+// them by value (`ArrayBuf.get`), the same limit `StrMap` had; a `get_ref`
+// for owning values waits on the same representation work as `IntMap`'s
+// (RUE-679/RUE-687).
+//
+// GROWTH — the slot table doubles when the entry count (live plus dead)
+// would pass 70% of the slots; if most entries are dead the rebuild keeps
+// the same capacity and just compacts. Probing is bounded by the capacity,
+// so a table whose non-live slots are all tombstones cannot spin.
+
+const arraybuf = @import("arraybuf.rue");
+const interfaces = @import("interfaces.rue");
+const option = @import("option.rue");
+
+pub fn HashMap(comptime K: interfaces.Hashable + interfaces.Equatable, comptime V: type) -> type {
+    let Keys = arraybuf.ArrayBuf(K);
+    let Vals = arraybuf.ArrayBuf(V);
+    let U64s = arraybuf.ArrayBuf(u64);
+    let Flags = arraybuf.ArrayBuf(bool);
+    struct {
+        keys: Keys,
+        vals: Vals,
+        hashes: U64s,
+        live: Flags,
+        slots: U64s,
+        cap: u64,
+        count: u64,
+
+        fn new() -> Self {
+            let mut m = Self {
+                keys: Keys.new(),
+                vals: Vals.new(),
+                hashes: U64s.new(),
+                live: Flags.new(),
+                slots: U64s.new(),
+                cap: 0,
+                count: 0,
+            };
+            m._rebuild(8);
+            m
+        }
+
+        fn len(borrow self) -> u64 {
+            self.count
+        }
+        fn is_empty(borrow self) -> bool {
+            self.count == 0
+        }
+
+        // Rebuild the slot table at `new_cap` slots over the live entries
+        // only, moving each live key and value into fresh entry arrays. The
+        // entries come out in reverse order and go back in that order; the
+        // map's iteration order is not part of its contract.
+        fn _rebuild(inout self, new_cap: u64) {
+            let OK = option.Option(K);
+            let OV = option.Option(V);
+            let mut keys = Keys.new();
+            let mut vals = Vals.new();
+            let mut hashes = U64s.new();
+            let mut live = Flags.new();
+            loop {
+                let alive = self.live.pop_or(false);
+                let h = self.hashes.pop_or(0);
+                let v = self.vals.pop();
+                match self.keys.pop() {
+                    OK.Some(k) => {
+                        if alive {
+                            match v {
+                                OV.Some(x) => { vals.push(x); },
+                                OV.None => {},
+                            }
+                            keys.push(k);
+                            hashes.push(h);
+                            live.push(true);
+                        }
+                    },
+                    OK.None => { break; },
+                }
+            }
+            let mut slots = U64s.new();
+            let mut i: u64 = 0;
+            while i < new_cap {
+                slots.push(0);
+                i += 1;
+            }
+            let mut e: u64 = 0;
+            while e < keys.len() {
+                let mut idx = hashes.get_or(e, 0) % new_cap;
+                while slots.get_or(idx, 0) != 0 {
+                    idx = (idx + 1) % new_cap;
+                }
+                slots.set(idx, e + 1);
+                e += 1;
+            }
+            self.keys = keys;
+            self.vals = vals;
+            self.hashes = hashes;
+            self.live = live;
+            self.slots = slots;
+            self.cap = new_cap;
+        }
+
+        // The entry index holding `k` (whose hash is `h`), or `cap` when
+        // absent. Cheapest rejections first: the slot's liveness, then the
+        // cached hash, then `K.equals` on the key read in place.
+        fn _find(borrow self, borrow k: K, h: u64) -> u64 {
+            let mut idx = h % self.cap;
+            let mut probes: u64 = 0;
+            while probes < self.cap {
+                let s = self.slots.get_or(idx, 0);
+                if s == 0 {
+                    return self.cap;
+                }
+                let e = s - 1;
+                if self.live.get_or(e, false) && self.hashes.get_or(e, 0) == h {
+                    if self.keys.get_ref(e).equals(borrow k) {
+                        return e;
+                    }
+                }
+                idx = (idx + 1) % self.cap;
+                probes += 1;
+            }
+            self.cap
+        }
+
+        // Insert or overwrite `k -> v`. The key is moved into the map; an
+        // overwrite of a present key drops the incoming key and keeps the
+        // stored one.
+        fn insert(inout self, k: K, v: V) {
+            let h = k.hash();
+            let e = self._find(borrow k, h);
+            if e != self.cap {
+                self.vals.set(e, v);
+                return;
+            }
+            if self.keys.len() == 18446744073709551615 {
+                @panic("out of memory");
+            }
+            // Grow above 70% of the slots counting dead entries, without
+            // overflowing an intermediate product; keep the capacity when
+            // the live entries alone would fit comfortably.
+            let entries = self.keys.len() + 1;
+            let threshold = (self.cap / 10) * 7 + ((self.cap % 10) * 7) / 10;
+            if entries > threshold {
+                if (self.count + 1) * 2 > threshold {
+                    if self.cap > 9223372036854775807 {
+                        @panic("out of memory");
+                    }
+                    self._rebuild(self.cap * 2);
+                } else {
+                    self._rebuild(self.cap);
+                }
+            }
+            let mut idx = h % self.cap;
+            while self.slots.get_or(idx, 0) != 0 {
+                idx = (idx + 1) % self.cap;
+            }
+            self.slots.set(idx, self.keys.len() + 1);
+            self.keys.push(k);
+            self.vals.push(v);
+            self.hashes.push(h);
+            self.live.push(true);
+            self.count += 1;
+        }
+
+        // Overwrite the value of a PRESENT key; returns whether `k` was
+        // present. This is the by-borrow half of `insert` for a caller that
+        // owns no spare key: `StrMap.insert(borrow k, v)` tries `update`
+        // first and copies the key only when it is new.
+        fn update(inout self, borrow k: K, v: V) -> bool {
+            let e = self._find(borrow k, k.hash());
+            if e == self.cap {
+                return false;
+            }
+            self.vals.set(e, v);
+            true
+        }
+
+        // The value for `k`, or `None`.
+        fn get(borrow self, borrow k: K) -> option.Option(V) {
+            let O = option.Option(V);
+            let e = self._find(borrow k, k.hash());
+            if e == self.cap {
+                return O.None;
+            }
+            self.vals.get(e)
+        }
+
+        fn contains(borrow self, borrow k: K) -> bool {
+            self._find(borrow k, k.hash()) != self.cap
+        }
+
+        // Remove `k`; returns whether it was present. The entry stays in the
+        // arrays, dead, until the next rebuild compacts it away.
+        fn remove(inout self, borrow k: K) -> bool {
+            let e = self._find(borrow k, k.hash());
+            if e == self.cap {
+                return false;
+            }
+            self.live.set(e, false);
+            self.count -= 1;
+            true
+        }
+    }
+}

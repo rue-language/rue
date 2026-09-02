@@ -1,0 +1,212 @@
+# Standard library — the interface-bounded generics (spec 6.7) through the
+# real std bundle, from a program compiled WITHOUT `--preview interfaces`:
+# the trusted standard library is exempt from the gate (spec 6.7:25), and
+# `StrBuf` conforms to every std interface, so these are ordinary programs.
+#
+# Mirrors the score-accumulation smoke pattern of std_collections.toml: each
+# program runs the operations and exits 42 only when every check passes.
+
+[section]
+id = "cli.std_hashmap"
+name = "Standard library — HashMap, sort_by_order, OrderedHeap, and the bounded cmp/fmt helpers"
+description = "HashMap(K, V) keyed by Hashable + Equatable, sort_by_order / is_sorted_by_order and OrderedHeap over Ordered, cmp.equals / compare and fmt.display over StrBuf, through @import(\"std\") without the preview flag."
+
+[[case]]
+name = "std_hashmap_strbuf_keys_smoke"
+description = "HashMap(StrBuf, u64): insert/get roundtrip, update-in-place, overwrite via insert, missing key, contains, remove and re-insert, growth past several rebuilds with every key retrievable (17 checks -> exit 42)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let M = std.hashmap.HashMap(StrBuf, u64);
+    let OU = std.option.Option(u64);
+    let mut m = M.new();
+    let mut score: i64 = 0;
+
+    if m.is_empty() { score = score + 1; }
+
+    // insert / get roundtrip, two distinct keys -> distinct values. Keys are
+    // moved in; a fresh literal is the probe.
+    m.insert("apple", 1);
+    m.insert("banana", 2);
+    let apple: StrBuf = "apple";
+    let banana: StrBuf = "banana";
+    let cherry: StrBuf = "cherry";
+    match m.get(borrow apple) { OU.Some(v) => { if v == 1 { score = score + 1; } }, OU.None => {} }
+    match m.get(borrow banana) { OU.Some(v) => { if v == 2 { score = score + 1; } }, OU.None => {} }
+    if m.len() == 2 { score = score + 1; }
+
+    // update through a borrowed key: present -> true and the value changes
+    if m.update(borrow apple, 10) { score = score + 1; }
+    match m.get(borrow apple) { OU.Some(v) => { if v == 10 { score = score + 1; } }, OU.None => {} }
+    // update of an absent key: false, nothing inserted
+    if !m.update(borrow cherry, 3) { score = score + 1; }
+    if m.len() == 2 { score = score + 1; }
+
+    // insert of a present key overwrites without growing
+    m.insert("banana", 20);
+    match m.get(borrow banana) { OU.Some(v) => { if v == 20 { score = score + 1; } }, OU.None => {} }
+    if m.len() == 2 { score = score + 1; }
+
+    // missing key -> None; contains
+    match m.get(borrow cherry) { OU.Some(v) => {}, OU.None => { score = score + 1; } }
+    if m.contains(borrow apple) && !m.contains(borrow cherry) { score = score + 1; }
+
+    // remove, second remove is false, re-insert
+    if m.remove(borrow apple) { score = score + 1; }
+    if !m.remove(borrow apple) && !m.contains(borrow apple) && m.len() == 1 { score = score + 1; }
+    m.insert("apple", 7);
+    match m.get(borrow apple) { OU.Some(v) => { if v == 7 { score = score + 1; } }, OU.None => {} }
+
+    // growth: 200 generated keys through several rebuilds, all retrievable,
+    // then remove half and check the survivors and the count.
+    let mut i: u64 = 0;
+    while i < 200 {
+        let mut k = StrBuf.new();
+        k.push_str("key-");
+        k.push_str(@to_string(i));
+        m.insert(k, i * 3);
+        i += 1;
+    }
+    let mut ok = true;
+    i = 0;
+    while i < 200 {
+        let mut k = StrBuf.new();
+        k.push_str("key-");
+        k.push_str(@to_string(i));
+        match m.get(borrow k) { OU.Some(v) => { if v != i * 3 { ok = false; } }, OU.None => { ok = false; } }
+        if i % 2 == 0 { m.remove(borrow k); }
+        i += 1;
+    }
+    if ok { score = score + 1; }
+    let mut survivors_ok = true;
+    i = 0;
+    while i < 200 {
+        let mut k = StrBuf.new();
+        k.push_str("key-");
+        k.push_str(@to_string(i));
+        let present = m.contains(borrow k);
+        if present != (i % 2 == 1) { survivors_ok = false; }
+        i += 1;
+    }
+    if survivors_ok && m.len() == 102 && m.contains(borrow banana) { score = score + 1; }
+
+    if score == 17 { 42 } else { @intCast(score) }
+}
+""" }]
+
+[[case]]
+name = "std_sort_by_order_and_ordered_heap_smoke"
+description = "sort_by_order / is_sorted_by_order over ArrayBuf(StrBuf) (owning elements, never copied) and OrderedHeap(StrBuf) popping in byte-lexicographic order (10 checks -> exit 42)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const Names = std.arraybuf.ArrayBuf(StrBuf);
+const OptStr = std.option.Option(StrBuf);
+
+fn names_of(count: u64) -> Names {
+    // A deterministic scramble of `count` distinct names so the quicksort
+    // sees unsorted input with duplicates of length.
+    let mut out = Names.new();
+    let mut i: u64 = 0;
+    while i < count {
+        let mut s = StrBuf.new();
+        s.push_str("n");
+        s.push_str(@to_string((i * 37 + 11) % count));
+        out.push(s);
+        i += 1;
+    }
+    out
+}
+
+fn main() -> i32 {
+    let mut score: i64 = 0;
+
+    let mut xs = Names.new();
+    xs.push("pear"); xs.push("apple"); xs.push("fig"); xs.push("banana");
+    xs.push("apple"); xs.push("kiwi"); xs.push("cherry"); xs.push("app");
+    if !std.sort.is_sorted_by_order(StrBuf, borrow xs) { score = score + 1; }
+    std.sort.sort_by_order(StrBuf, inout xs);
+    if std.sort.is_sorted_by_order(StrBuf, borrow xs) { score = score + 1; }
+    // "app" < "apple" == "apple" < "banana" < ... < "pear"
+    if xs.get_ref(0).equals(borrow "app") && xs.get_ref(1).equals(borrow "apple")
+        && xs.get_ref(2).equals(borrow "apple") && xs.get_ref(7).equals(borrow "pear") {
+        score = score + 1;
+    }
+    if xs.len() == 8 { score = score + 1; }
+
+    // Empty and singleton inputs are sorted already.
+    let mut empty = Names.new();
+    std.sort.sort_by_order(StrBuf, inout empty);
+    if empty.len() == 0 && std.sort.is_sorted_by_order(StrBuf, borrow empty) { score = score + 1; }
+    let mut one = Names.new();
+    one.push("solo");
+    std.sort.sort_by_order(StrBuf, inout one);
+    if std.sort.is_sorted_by_order(StrBuf, borrow one) { score = score + 1; }
+
+    // A larger scrambled input, sorted and checked.
+    let mut many = names_of(500);
+    std.sort.sort_by_order(StrBuf, inout many);
+    if std.sort.is_sorted_by_order(StrBuf, borrow many) && many.len() == 500 { score = score + 1; }
+
+    // OrderedHeap: least first, moved out.
+    let H = std.binary_heap.OrderedHeap(StrBuf);
+    let mut h = H.new();
+    h.push("zeta"); h.push("beta"); h.push("alpha"); h.push("gamma"); h.push("delta");
+    if h.len() == 5 { score = score + 1; }
+    let first = match h.pop() { OptStr.Some(s) => s, OptStr.None => "" };
+    let second = match h.pop() { OptStr.Some(s) => s, OptStr.None => "" };
+    let third = match h.pop() { OptStr.Some(s) => s, OptStr.None => "" };
+    if first.equals(borrow "alpha") && second.equals(borrow "beta") && third.equals(borrow "delta") { score = score + 1; }
+    h.push("aardvark");
+    let fourth = match h.pop() { OptStr.Some(s) => s, OptStr.None => "" };
+    if fourth.equals(borrow "aardvark") && h.len() == 2 { score = score + 1; }
+
+    if score == 10 { 42 } else { @intCast(score) }
+}
+""" }]
+
+[[case]]
+name = "std_cmp_fmt_bounded_helpers_smoke"
+description = "cmp.equals / compare / min_by_order / max_by_order and fmt.display over StrBuf, plus StrBuf's own equals / less / hash / to_string (9 checks -> exit 42)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const O = std.cmp.Ordering;
+
+fn main() -> i32 {
+    let mut score: i64 = 0;
+    let a: StrBuf = "apple";
+    let b: StrBuf = "banana";
+    let a2: StrBuf = "apple";
+    let ap: StrBuf = "app";
+
+    if std.cmp.equals(StrBuf, borrow a, borrow a2) && !std.cmp.equals(StrBuf, borrow a, borrow b) { score = score + 1; }
+    match std.cmp.compare(StrBuf, borrow a, borrow b) { O.Less => { score = score + 1; }, O.Equal => {}, O.Greater => {} }
+    match std.cmp.compare(StrBuf, borrow a, borrow a2) { O.Less => {}, O.Equal => { score = score + 1; }, O.Greater => {} }
+    match std.cmp.compare(StrBuf, borrow a, borrow ap) { O.Less => {}, O.Equal => {}, O.Greater => { score = score + 1; } }
+    // A proper prefix orders first; equal strings are not `less` either way.
+    if ap.less(borrow a) && !a.less(borrow ap) && !a.less(borrow a2) { score = score + 1; }
+    let lo = std.cmp.min_by_order(StrBuf, "pear", "fig");
+    let hi = std.cmp.max_by_order(StrBuf, "pear", "fig");
+    if lo.equals(borrow "fig") && hi.equals(borrow "pear") { score = score + 1; }
+    // Display renders an independent copy.
+    let shown = std.fmt.display(StrBuf, borrow b);
+    if shown.equals(borrow b) && shown.len() == 6 { score = score + 1; }
+    // Hashable agrees with the one-shot std.hash entry point.
+    if a.hash() == std.hash.fnv1a_strbuf(borrow a) && a.hash() == a2.hash() { score = score + 1; }
+    if a.hash() != b.hash() { score = score + 1; }
+
+    if score == 9 { 42 } else { @intCast(score) }
+}
+""" }]

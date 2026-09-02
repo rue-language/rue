@@ -1,11 +1,16 @@
-// std.collections — StrMap(V): an interim open-addressing hash map with
-// `StrBuf` keys and `Copy` value type `V` (RUE-938). The generic `HashMap(K,V)`
-// (M4) needs function values / traits (RUE-643/RUE-246); this covers the common
-// string-keyed case now, alongside the integer-keyed `IntMap(V)`.
+// std.collections — StrMap(V): the `StrBuf`-keyed hash map with `Copy` values
+// (RUE-938), now a thin wrapper over `std.hashmap.HashMap(StrBuf, V)`: `StrBuf`
+// conforms to `Hashable + Equatable` (std.interfaces), so the generic map is
+// the one implementation and this module only adapts its key convention.
 //
-// `new(filler)` takes a throwaway `V` used to initialise empty value slots (Rue
-// has no generic zero-init); it is never read as a real value — the per-slot
-// state guards that.
+// The difference from `HashMap` is that every key here is BORROWED: `insert`
+// copies a new key into the map and leaves the caller's usable, where
+// `HashMap.insert` takes the key by move. That is the API this map has always
+// had, and what the interning pools in the examples rely on.
+//
+// `new(filler)` takes a throwaway `V`, which the map no longer needs (slots
+// hold no placeholder values); it is accepted and dropped so the constructor
+// keeps its signature. The value type stays `Copy`, as before.
 //
 //     const std = @import("std");
 //     let M = std.strmap.StrMap(u64);
@@ -13,299 +18,49 @@
 //     let k: StrBuf = "hello";
 //     m.insert(borrow k, 100);
 //     m.get(borrow k);        // Some(100)
-//
-// STORAGE — keys cannot live in `ArrayBuf(StrBuf)`, whose by-copy reads are
-// gated for drop-glue element types (RUE-651). Instead every key's bytes are
-// concatenated into one `pool: StrBuf`, and each slot records where its key
-// lives with parallel `ArrayBuf(u64)` arrays: `offs` (start byte in the pool),
-// `lens` (byte length), and `hashes` (the cached 64-bit key hash). Caching the
-// hash lets a rehash skip re-reading key bytes and lets a probe reject a slot on
-// the hash before comparing bytes. This mirrors the pooled-bytes interner in
-// examples/ruelex/interner.rue.
-//
-// POOL COMPACTION — inserting over a tombstone (or growing) appends the new
-// key's bytes to `pool` and leaves the old key's bytes stranded in it. Those
-// dead bytes would accumulate forever, so `_grow_to` rebuilds `pool` from
-// scratch, copying only the bytes of OCCUPIED slots. A rehash therefore also
-// compacts the key pool, and the old pool (with its dead bytes) is freed when
-// it is overwritten.
 
-const arraybuf = @import("arraybuf.rue");
+const hashmap = @import("hashmap.rue");
 const option = @import("option.rue");
 const strbuf = @import("strbuf.rue");
-const hash = @import("hash.rue");
 const StrBuf = strbuf.StrBuf;
 
-// Slot states.
-fn _EMPTY() -> u8 {
-    0
-}
-fn _OCCUPIED() -> u8 {
-    1
-}
-fn _TOMBSTONE() -> u8 {
-    2
-}
-
-// One byte of `value` at `index`, or 0 past the end. Reads through the
-// borrow-safe `byte_at` accessor so it never moves out of a borrowed `StrBuf`.
-fn _byte_of(borrow value: StrBuf, index: u64) -> u8 {
-    let O = option.Option(u8);
-    match value.byte_at(index) {
-        O.Some(x) => x,
-        O.None => 0,
-    }
-}
-
-// FNV-1a 64-bit hash of `key`'s bytes, from `std.hash` (RUE-682) — which is now
-// the one place the offset basis, prime, and XOR-then-multiply order are
-// written down. This module kept its own copy until std.hash existed; the two
-// computed the same value, so the cached hashes in an existing table are
-// unchanged by the switch.
-fn _fnv1a(borrow key: StrBuf) -> u64 {
-    hash.fnv1a_strbuf(borrow key)
-}
-
 pub fn StrMap(comptime V: type) -> type {
-    let U64s = arraybuf.ArrayBuf(u64);
-    let Vals = arraybuf.ArrayBuf(V);
-    let States = arraybuf.ArrayBuf(u8);
+    let Inner = hashmap.HashMap(StrBuf, V);
     struct {
-        pool: StrBuf,
-        offs: U64s,
-        lens: U64s,
-        hashes: U64s,
-        vals: Vals,
-        states: States,
-        count: u64,
-        cap: u64,
-        filler: V,
+        inner: Inner,
 
         fn new(filler: V) -> Self {
-            let ub = arraybuf.ArrayBuf(u64);
-            let vb = arraybuf.ArrayBuf(V);
-            let sb = arraybuf.ArrayBuf(u8);
-            let mut m = Self {
-                pool: StrBuf.new(),
-                offs: ub.new(),
-                lens: ub.new(),
-                hashes: ub.new(),
-                vals: vb.new(),
-                states: sb.new(),
-                count: 0,
-                cap: 0,
-                filler: filler,
-            };
-            m._grow_to(8);
-            m
+            let _unused = filler;
+            Self { inner: Inner.new() }
         }
 
         fn len(borrow self) -> u64 {
-            self.count
+            self.inner.len()
         }
         fn is_empty(borrow self) -> bool {
-            self.count == 0
+            self.inner.is_empty()
         }
 
-        // Whether the OCCUPIED slot `slot` holds exactly the bytes of `k`. The
-        // cached hash is compared first, then the length, then the pooled key
-        // bytes against the borrowed key — cheapest rejections first.
-        fn _key_eq(borrow self, slot: u64, borrow k: StrBuf, khash: u64, klen: u64) -> bool {
-            if self.hashes.get_or(slot, 0) != khash {
-                return false;
-            }
-            let len = self.lens.get_or(slot, 0);
-            if len != klen {
-                return false;
-            }
-            let off = self.offs.get_or(slot, 0);
-            let mut j: u64 = 0;
-            while j < len {
-                let a = _byte_of(borrow self.pool, off + j);
-                let b = _byte_of(borrow k, j);
-                if a != b {
-                    return false;
-                }
-                j += 1;
-            }
-            true
-        }
-
-        // Re-hash into a table of `new_cap` slots, rebuilding (compacting) the
-        // key pool so only live keys' bytes survive.
-        fn _grow_to(inout self, new_cap: u64) {
-            let ub = arraybuf.ArrayBuf(u64);
-            let vb = arraybuf.ArrayBuf(V);
-            let sb = arraybuf.ArrayBuf(u8);
-            let mut no = ub.new();
-            let mut nl = ub.new();
-            let mut nh = ub.new();
-            let mut nv = vb.new();
-            let mut ns = sb.new();
-            let mut np = StrBuf.new();
-            let mut i: u64 = 0;
-            while i < new_cap {
-                no.push(0);
-                nl.push(0);
-                nh.push(0);
-                nv.push(self.filler);
-                ns.push(_EMPTY());
-                i += 1;
-            }
-            // Move existing entries over, copying only live key bytes into the
-            // fresh pool (this is the compaction step).
-            let old_cap = self.cap;
-            let mut j: u64 = 0;
-            while j < old_cap {
-                if self.states.get_or(j, _EMPTY()) == _OCCUPIED() {
-                    let h = self.hashes.get_or(j, 0);
-                    let v = self.vals.get_or(j, self.filler);
-                    let old_off = self.offs.get_or(j, 0);
-                    let len = self.lens.get_or(j, 0);
-                    // Append this key's bytes to the compacted pool.
-                    let new_off = np.len();
-                    let mut b: u64 = 0;
-                    while b < len {
-                        np.push(_byte_of(borrow self.pool, old_off + b));
-                        b += 1;
-                    }
-                    // Insert into the new table by linear probing.
-                    let mut idx = h % new_cap;
-                    while ns.get_or(idx, _EMPTY()) == _OCCUPIED() {
-                        idx = (idx + 1) % new_cap;
-                    }
-                    no.set(idx, new_off);
-                    nl.set(idx, len);
-                    nh.set(idx, h);
-                    nv.set(idx, v);
-                    ns.set(idx, _OCCUPIED());
-                }
-                j += 1;
-            }
-            self.pool = np;
-            self.offs = no;
-            self.lens = nl;
-            self.hashes = nh;
-            self.vals = nv;
-            self.states = ns;
-            self.cap = new_cap;
-        }
-
-        // Write `k -> v` into `target`, appending the key bytes to the pool.
-        fn _place(inout self, target: u64, borrow k: StrBuf, khash: u64, klen: u64, v: V) {
-            let off = self.pool.len();
-            let mut j: u64 = 0;
-            while j < klen {
-                self.pool.push(_byte_of(borrow k, j));
-                j += 1;
-            }
-            self.offs.set(target, off);
-            self.lens.set(target, klen);
-            self.hashes.set(target, khash);
-            self.vals.set(target, v);
-            self.states.set(target, _OCCUPIED());
-            self.count += 1;
-        }
-
-        // Insert or overwrite `k -> v`.
+        // Insert or overwrite `k -> v`. A present key is updated in place;
+        // a new key is copied into the map.
         fn insert(inout self, borrow k: StrBuf, v: V) {
-            // Grow above 70% load without overflowing intermediate products.
-            if self.count == 18446744073709551615 {
-                @panic("out of memory");
+            if !self.inner.update(borrow k, v) {
+                self.inner.insert(k.copy(), v);
             }
-            let next_count = self.count + 1;
-            let threshold = (self.cap / 10) * 7 + ((self.cap % 10) * 7) / 10;
-            if next_count > threshold {
-                if self.cap > 9223372036854775807 {
-                    @panic("out of memory");
-                }
-                self._grow_to(self.cap * 2);
-            }
-            let khash = _fnv1a(borrow k);
-            let klen = k.len();
-            let mut idx = khash % self.cap;
-            let mut first_tomb: u64 = self.cap;
-            // Probe at most `cap` slots: a table can run out of EMPTY slots
-            // entirely (every non-live slot a tombstone) while `count` stays
-            // under the growth threshold, so an unbounded probe would spin.
-            let mut probes: u64 = 0;
-            while probes < self.cap {
-                let st = self.states.get_or(idx, _EMPTY());
-                if st == _EMPTY() {
-                    let target = if first_tomb < self.cap { first_tomb } else { idx };
-                    self._place(target, borrow k, khash, klen, v);
-                    return;
-                } else if st == _OCCUPIED() {
-                    if self._key_eq(idx, borrow k, khash, klen) {
-                        self.vals.set(idx, v);
-                        return;
-                    }
-                } else {
-                    if first_tomb >= self.cap {
-                        first_tomb = idx;
-                    }
-                }
-                idx = (idx + 1) % self.cap;
-                probes += 1;
-            }
-            // Every slot probed, none EMPTY and no key match. Growth keeps
-            // `count` below `cap`, so some slot is a tombstone; reuse the first.
-            self._place(first_tomb, borrow k, khash, klen, v);
         }
 
         // The value for `k`, or `None`.
         fn get(borrow self, borrow k: StrBuf) -> option.Option(V) {
-            let O = option.Option(V);
-            let khash = _fnv1a(borrow k);
-            let klen = k.len();
-            let mut idx = khash % self.cap;
-            let mut probes: u64 = 0;
-            while probes < self.cap {
-                let st = self.states.get_or(idx, _EMPTY());
-                if st == _EMPTY() {
-                    return O.None;
-                } else if st == _OCCUPIED() {
-                    if self._key_eq(idx, borrow k, khash, klen) {
-                        return O.Some(self.vals.get_or(idx, self.filler));
-                    }
-                }
-                idx = (idx + 1) % self.cap;
-                probes += 1;
-            }
-            O.None
+            self.inner.get(borrow k)
         }
 
         fn contains(borrow self, borrow k: StrBuf) -> bool {
-            let O = option.Option(V);
-            match self.get(borrow k) {
-                O.Some(v) => true,
-                O.None => false,
-            }
+            self.inner.contains(borrow k)
         }
 
-        // Remove `k`; returns whether it was present. The slot becomes a
-        // tombstone; its key bytes stay in the pool until the next `_grow_to`
-        // compacts them away.
+        // Remove `k`; returns whether it was present.
         fn remove(inout self, borrow k: StrBuf) -> bool {
-            let khash = _fnv1a(borrow k);
-            let klen = k.len();
-            let mut idx = khash % self.cap;
-            let mut probes: u64 = 0;
-            while probes < self.cap {
-                let st = self.states.get_or(idx, _EMPTY());
-                if st == _EMPTY() {
-                    return false;
-                } else if st == _OCCUPIED() {
-                    if self._key_eq(idx, borrow k, khash, klen) {
-                        self.states.set(idx, _TOMBSTONE());
-                        self.count -= 1;
-                        return true;
-                    }
-                }
-                idx = (idx + 1) % self.cap;
-                probes += 1;
-            }
-            false
+            self.inner.remove(borrow k)
         }
     }
 }

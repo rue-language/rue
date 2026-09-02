@@ -4960,7 +4960,8 @@ mod tests {
             .find(|entry| entry.path == "mosaic/main.rue")
             .expect("mosaic/main.rue must declare an automatic-example contract");
         assert_eq!(automatic.tier, CliCaseTier::Slow);
-        assert_eq!(automatic.contract, "heavyweight_long");
+        assert_eq!(automatic.contract.as_deref(), Some("heavyweight_long"));
+        assert_eq!(automatic.preview, None);
 
         assert_eq!(mosaic.section.tier, CliCaseTier::Slow);
         assert_eq!(mosaic.section.contract.as_deref(), Some("heavyweight_long"));
@@ -4969,6 +4970,23 @@ mod tests {
             authority.contracts["heavyweight_long"].timeout_profile,
             TimeoutProfile::Slow
         );
+    }
+
+    #[test]
+    fn hashmap_automatic_example_carries_the_interfaces_preview() {
+        // examples/hashmap declares its own conformance (spec 6.7), so its
+        // automatic entry exists to carry the preview flag: no contract, the
+        // premerge tier, and `preview = "interfaces"`.
+        let authority = toml::from_str::<TestFile>(include_str!("execution_contracts.toml"))
+            .expect("execution_contracts.toml parses as a corpus file");
+        let automatic = authority
+            .automatic_example
+            .iter()
+            .find(|entry| entry.path == "hashmap/main.rue")
+            .expect("hashmap/main.rue must declare an automatic-example entry");
+        assert_eq!(automatic.contract, None);
+        assert_eq!(automatic.tier, CliCaseTier::Premerge);
+        assert_eq!(automatic.preview.as_deref(), Some("interfaces"));
     }
 
     #[test]

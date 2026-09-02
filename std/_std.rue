@@ -13,7 +13,9 @@
 // - std.fmt: scalar-to-string formatting (int/bool, hex/binary)
 // - std.option.Option: Optional values
 // - std.result.Result: Fallible values (Ok/Err), propagated with `?`
-// - std.intmap.IntMap / std.strmap.StrMap: open-addressing hash maps
+// - std.hashmap.HashMap(K, V): open-addressing hash map over any
+//   `Hashable + Equatable` key; std.strmap.StrMap is its StrBuf-keyed form
+//   and std.intmap.IntMap the separate integer-keyed one
 // - std.hash: FNV-1a/64 and djb2 byte hashing (Hasher + one-shot helpers)
 // - std.strbuf.StrBuf: Growable strings, with copying bridges to str and
 //   ArrayBuf(u8) (`from_str`, `from_bytes`, `to_bytes`, and append variants)
@@ -64,6 +66,7 @@ pub const queue = @import("queue.rue");
 pub const deque = @import("deque.rue");
 pub const grid = @import("grid.rue");
 pub const binary_heap = @import("binary_heap.rue");
+pub const hashmap = @import("hashmap.rue");
 pub const intmap = @import("intmap.rue");
 pub const strmap = @import("strmap.rue");
 pub const bitset = @import("bitset.rue");

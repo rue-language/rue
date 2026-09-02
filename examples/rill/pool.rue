@@ -1,11 +1,13 @@
 // A pooled string table used for source identifiers, literals, and runtime
 // concatenation. Entries are described by offsets and lengths; no owned
-// StrBuf ever needs to be read by copy from an ArrayBuf. A retained StrMap
-// index makes intern and find amortized O(length) in pool size (RUE-1008).
+// StrBuf ever needs to be read by copy from an ArrayBuf. A retained
+// `std.hashmap.HashMap(StrBuf, u64)` index — the generic map keyed by
+// `StrBuf`'s `Hashable + Equatable` conformance (spec 6.7) — makes intern and
+// find amortized O(length) in pool size (RUE-1008).
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
 const U64s = std.arraybuf.ArrayBuf(u64);
-const U64Map = std.strmap.StrMap(u64);
+const U64Map = std.hashmap.HashMap(StrBuf, u64);
 const OptU8 = std.option.Option(u8);
 const OptU64 = std.option.Option(u64);
 
@@ -16,7 +18,7 @@ pub struct Pool {
     index: U64Map,
 
     fn new() -> Self {
-        Self { bytes: StrBuf.new(), offs: U64s.new(), lens: U64s.new(), index: U64Map.new(0) }
+        Self { bytes: StrBuf.new(), offs: U64s.new(), lens: U64s.new(), index: U64Map.new() }
     }
 
     fn byte_of(borrow value: StrBuf, i: u64) -> u8 {
@@ -62,7 +64,7 @@ pub struct Pool {
         let existing = self.find(borrow text);
         if existing != 18446744073709551615 { return existing; }
         let n = self.len();
-        self.index.insert(borrow text, n);
+        self.index.insert(text.copy(), n);
         let off = self.bytes.len();
         let len = text.len();
         let mut j: u64 = 0;

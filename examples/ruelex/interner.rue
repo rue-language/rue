@@ -10,23 +10,31 @@
 // Storage avoids `ArrayBuf(StrBuf)` (whose by-copy `get` is gated for
 // drop-glue element types): all interned bytes live concatenated in one
 // `pool: StrBuf`, with parallel `offs`/`lens` arrays of u64 describing each
-// entry's slice. Lookup is a linear scan with byte comparison.
+// entry's slice. Lookup is a `std.hashmap.HashMap(StrBuf, u64)` from key to
+// index — the generic map keyed by `StrBuf`'s `Hashable + Equatable`
+// conformance (spec 6.7) — so interning a token costs its length, not the
+// number of symbols seen so far. Indices are still assigned in order of
+// first appearance, which is the numbering the compiler uses.
 
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
 const U64s = std.arraybuf.ArrayBuf(u64);
+const Index = std.hashmap.HashMap(StrBuf, u64);
 const OptU8 = std.option.Option(u8);
+const OptU64 = std.option.Option(u64);
 
 pub struct Interner {
     pool: StrBuf,
     offs: U64s,
     lens: U64s,
+    index: Index,
 
     fn new() -> Self {
         Self {
             pool: StrBuf.new(),
             offs: U64s.new(),
             lens: U64s.new(),
+            index: Index.new(),
         }
     }
 
@@ -37,35 +45,14 @@ pub struct Interner {
         }
     }
 
-    // Whether interned entry `i` has exactly the bytes of `key`.
-    fn entry_eq(borrow self, i: u64, borrow key: StrBuf) -> bool {
-        let off = self.offs.get_or(i, 0);
-        let len = self.lens.get_or(i, 0);
-        if len != key.len() {
-            return false;
-        }
-        let mut j: u64 = 0;
-        while j < len {
-            let a = Self.byte_of(borrow self.pool, off + j);
-            let b = Self.byte_of(borrow key, j);
-            if a != b {
-                return false;
-            }
-            j += 1;
-        }
-        true
-    }
-
     // Return the symbol index for `key`, appending a new entry if unseen.
     fn intern(inout self, borrow key: StrBuf) -> u64 {
-        let n = self.offs.len();
-        let mut i: u64 = 0;
-        while i < n {
-            if self.entry_eq(i, borrow key) {
-                return i;
-            }
-            i += 1;
+        match self.index.get(borrow key) {
+            OptU64.Some(i) => { return i; },
+            OptU64.None => {},
         }
+        let n = self.offs.len();
+        self.index.insert(key.copy(), n);
         let off = self.pool.len();
         let len = key.len();
         let mut j: u64 = 0;
