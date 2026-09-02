@@ -62,6 +62,24 @@ export_file(
     visibility = ["PUBLIC"],
 )
 
+export_file(
+    name = "website-config",
+    src = "website/config.toml",
+    visibility = ["PUBLIC"],
+)
+
+export_file(
+    name = "spec-rule-template",
+    src = "website/templates/shortcodes/rule.html",
+    visibility = ["PUBLIC"],
+)
+
+export_file(
+    name = "spec-route-root",
+    src = "website/spec-route-root.txt",
+    visibility = ["PUBLIC"],
+)
+
 filegroup(
     name = "rustfmt-config",
     srcs = [".rustfmt.toml"],
@@ -313,6 +331,7 @@ filegroup(
 filegroup(
     name = "spec-docs",
     srcs = glob(["docs/spec/src/**"]),
+    visibility = ["PUBLIC"],
 )
 
 filegroup(
@@ -375,6 +394,16 @@ rue_sh_test(
     name = "spec-traceability",
     test = "//crates/rue-spec:rue-spec",
     args = ["--traceability"],
+    env = {
+        "RUE_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
+        "RUE_SPEC_DIR": "$(location :spec-docs)/docs/spec/src",
+    },
+)
+
+rue_sh_test(
+    name = "compiler-spec-machine-index",
+    test = "//crates/rue-spec:rue-spec",
+    args = ["--check-machine-index"],
     env = {
         "RUE_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
         "RUE_SPEC_DIR": "$(location :spec-docs)/docs/spec/src",
@@ -932,6 +961,7 @@ rue_test_suite(
     name = "repository-quality-gates",
     tests = [
         ":adr-registry-validation",
+        ":compiler-spec-machine-index",
         ":rustc-first-party-unused-deps-wrapper-tests",
         ":spec-traceability",
         ":tutorial-snippet-tests",
