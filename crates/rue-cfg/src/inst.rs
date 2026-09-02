@@ -876,12 +876,11 @@ pub const MAX_CFG_PAYLOAD_WORDS_PER_PROGRAM: u32 = u32::MAX;
 /// surfaced as `E1401` at the CFG construction and optimization boundaries.
 ///
 /// This ceiling is *checked*, not argued unreachable: CFG entities are not a
-/// small constant multiple of the RIR instructions that produce them. Drop
-/// elaboration re-emits one drop (and, for a path-dependent move, a flag-guard
-/// block) per live slot at **every** exit, so a body with `N` droppable
-/// bindings and `M` `return` statements lowers to on the order of `N * M`
-/// values and blocks — quadratic, from a body that is linear in its source. See
-/// spec C.6:5 for the arithmetic that disproves the unreachability hypothesis.
+/// fixed small multiple of the RIR instructions that produce them.  Cleanup
+/// regions are shared across compatible returns, but aggregate lowering,
+/// projections, and control-flow elaboration can still create many CFG-owned
+/// values and blocks. See spec C.6:5 for the arithmetic that disproves the
+/// unreachability hypothesis.
 pub const MAX_CFG_ENTITIES_PER_FUNCTION: u32 = u32::MAX;
 
 /// The `u32` identity the next block or value in a per-function arena of
@@ -1634,6 +1633,13 @@ impl Cfg {
     pub(crate) fn latched_capacity_error(&self) -> Option<CfgEditError> {
         self.capacity_exceeded
             .map(|family| CfgEditError::OwnerLimitExceeded { family })
+    }
+
+    /// Latch an implementation-limit failure owned by an auxiliary CFG
+    /// construction arena. The build boundary reports it through the same
+    /// E1401 path as block, value, and payload owner exhaustion.
+    pub(crate) fn latch_capacity_error(&mut self, family: &'static str) {
+        self.capacity_exceeded.get_or_insert(family);
     }
 
     /// Get a block by ID.
@@ -3667,7 +3673,7 @@ mod tests {
         // existing identity rather than a wrapped one.
         let mut cfg = Cfg::new(Type::I32, 0, 0, "f".into(), Vec::<bool>::new());
         cfg.new_block();
-        cfg.capacity_exceeded = Some("values");
+        cfg.latch_capacity_error("values");
         let error = cfg.latched_capacity_error().expect("latched");
         assert!(matches!(
             error,
