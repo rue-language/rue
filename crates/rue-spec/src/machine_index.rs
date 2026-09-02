@@ -275,6 +275,13 @@ pub fn generate(spec_dir: &Path, cases_dir: &Path) -> Result<Vec<u8>, String> {
             if let Some(assertion) = &case.expected_error {
                 codes.extend(diagnostic_header_error_codes(assertion));
             }
+            if let Some(code) = &case.expected_error_code {
+                // `load_test_files` validates typed declarations against the
+                // compiler-owned inventory after parameter expansion. Union
+                // them with schema-v1's existing exact structural evidence;
+                // never infer a new relationship from prose.
+                codes.insert(code.clone());
+            }
             for code in codes {
                 if !known_codes.contains(&code) {
                     return Err(format!(
@@ -391,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn index_bytes_are_reproducible_and_relationships_are_assertion_backed() {
+    fn index_bytes_are_reproducible_and_typed_evidence_is_additive() {
         let spec_dir = tempfile::tempdir().unwrap();
         let cases_dir = tempfile::tempdir().unwrap();
         fs::write(
@@ -409,7 +416,14 @@ name = "Test"
 name = "typed_failure"
 source = "fn main() { missing }"
 compile_fail = true
-error_contains = "E0201"
+expected_error_code = "E0201"
+spec = ["1.1:1"]
+
+[[case]]
+name = "schema_v1_structural_evidence"
+source = "fn main() { missing }"
+compile_fail = true
+error_contains = "E0206"
 spec = ["1.1:1"]
 "#,
         )
@@ -423,5 +437,40 @@ spec = ["1.1:1"]
         assert!(text.contains("\"title\": \"Test Rules\""));
         assert!(text.contains("\"error_code\": \"E0201\""));
         assert!(text.contains("https://rue-lang.dev/spec/01-test/#r-1.1:1"));
+        let index: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let relationships = index["error_spec_relationships"].as_array().unwrap();
+        assert_eq!(relationships.len(), 2);
+        assert_eq!(relationships[0]["error_code"], "E0201");
+        assert_eq!(relationships[0]["evidence"].as_array().unwrap().len(), 1);
+        assert_eq!(relationships[1]["error_code"], "E0206");
+        assert_eq!(relationships[1]["evidence"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn index_rejects_unknown_typed_diagnostic_evidence() {
+        let spec_dir = tempfile::tempdir().unwrap();
+        let cases_dir = tempfile::tempdir().unwrap();
+        fs::write(
+            spec_dir.path().join("01-test.md"),
+            "# Test Rules\n\n{{ rule(id=\"1.1:1\", cat=\"legality-rule\") }}\nRule.\n",
+        )
+        .unwrap();
+        fs::write(
+            cases_dir.path().join("test.toml"),
+            r#"[section]
+id = "test.section"
+name = "Test"
+
+[[case]]
+name = "unknown_code"
+source = "fn main() { missing }"
+compile_fail = true
+expected_error_code = "E9999"
+spec = ["1.1:1"]
+"#,
+        )
+        .unwrap();
+        let error = generate(spec_dir.path(), cases_dir.path()).unwrap_err();
+        assert!(error.contains("unknown `expected_error_code` \"E9999\""));
     }
 }

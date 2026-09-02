@@ -47,6 +47,7 @@ spec = ["4.2:5"]
 source = "fn main() -> i32 { 1 + true }"
 compile_fail = true
 error_contains = "type mismatch"
+expected_error_code = "E0206" # Exactly one emitted error must carry this code
 
 # Golden test (exact IR output)
 [[case]]
@@ -82,6 +83,14 @@ preview_should_pass = true       # Fails CI if this test fails
 source = "..."
 exit_code = 0
 ```
+
+`expected_error_code` is structured compiler-error evidence. It is valid only
+with `compile_fail = true`, must exactly match a code in the compiler's
+canonical inventory, and requires the compiler to emit exactly one error
+diagnostic with that code through `--error-format json`. Unlike
+`error_contains` and `expected_error`, it is not inferred from rendered text.
+The machine-readable error/specification index uses only this typed field when
+linking an error code to the normative rules cited by a case.
 
 #### Preview Feature Tests
 
