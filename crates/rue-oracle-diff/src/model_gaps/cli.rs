@@ -410,6 +410,12 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "cli.std_net_tcp",
+        "tcp_ipv6_loopback_round_trip",
+        external(ExternalDependencyKind::SystemCall),
+        &["aarch64-linux", "aarch64-macos", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.std_net_tcp",
         "tcp_loopback_round_trip",
         external(ExternalDependencyKind::SystemCall),
         &["aarch64-linux", "aarch64-macos", "x86-64-linux"],
