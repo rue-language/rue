@@ -141,8 +141,8 @@ jobs:
       # Guard against RUE-515 recurring: `emitter_aarch64` was registered in the
       # fuzzer but never invoked here, so aarch64 codegen got no nightly
       # byte-mutation budget. Fail fast if any target the fuzzer advertises via
-      # --list has no `--max-time` step in this file. A target intentionally kept
-      # off the nightly budget must be listed in NIGHTLY_EXEMPT with a reason.
+      # --list lacks its complete execution, cache, aggregation, or reporting
+      # contract. An intentional nightly exemption must include a reason here.
       - name: Verify every registered fuzz target is scheduled
         run: |
           NIGHTLY_EXEMPT=""   # none currently exempt
@@ -155,21 +155,13 @@ jobs:
           if [ "${#targets[@]}" -eq 0 ]; then
             echo "::error::could not enumerate fuzz targets from --list"; exit 1
           fi
-          missing=()
+          scheduled=()
           for t in "${targets[@]}"; do
             case " $NIGHTLY_EXEMPT " in *" $t "*) continue ;; esac
-            grep -qF -- "--mutate --max-time=300 --evolve-corpus=crates/rue-fuzz/nightly-corpus/${t} ${t} crates/rue-fuzz/nightly-input/${t}" .github/workflows/fuzz.yml || missing+=("$t")
-            grep -qF -- "path: crates/rue-fuzz/nightly-restored/${t}" .github/workflows/fuzz.yml || missing+=("${t}:restore-path")
-            restored_paths="$(grep -cF -- "path: crates/rue-fuzz/nightly-restored/${t}" .github/workflows/fuzz.yml || true)"
-            [ "$restored_paths" -ge 2 ] || missing+=("${t}:save-path")
-            grep -qF -- "key: rue-fuzz-corpus-v3-${t}-${{ github.run_id }}-${{ github.run_attempt }}" .github/workflows/fuzz.yml || missing+=("${t}:generation-key")
-            grep -qF -- "restore-keys: rue-fuzz-corpus-v3-${t}-" .github/workflows/fuzz.yml || missing+=("${t}:restore-prefix")
+            scheduled[${#scheduled[@]}]="$t"
           done
-          if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::error::registered fuzz target(s) not scheduled with an isolated five-minute corpus step: ${missing[*]}"
-            echo "Add the exact '--max-time=300' step (plus aggregation, reporting, and cache save entries), or add the target to NIGHTLY_EXEMPT."
-            exit 1
-          fi
+          python3 scripts/validate-fuzz-workflow.py \
+            .github/workflows/fuzz.yml "${scheduled[@]}"
           echo "All ${#targets[@]} registered fuzz targets are scheduled: ${targets[*]}"
 
       # Each fuzz step is continue-on-error so one crashing target no longer
