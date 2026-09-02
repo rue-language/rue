@@ -30,6 +30,25 @@ use crate::types::{Type, TypeKind};
 // ============================================================================
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
+    /// Resolve an integer expression through canonical inference, admitting
+    /// the narrowly scoped constructor-head recovery context when that walk
+    /// was deliberately skipped.
+    fn resolved_integer_type(
+        ctx: &AnalysisContext,
+        inst_ref: InstRef,
+        span: rue_span::Span,
+        context: &str,
+    ) -> CompileResult<Type> {
+        if let Some(ty) = ctx
+            .resolved_type_of(inst_ref)
+            .or(ctx.missing_inference_integer_type)
+        {
+            Ok(ty)
+        } else {
+            Self::get_resolved_type(ctx, inst_ref, span, context)
+        }
+    }
+
     // ========================================================================
     // Literals: IntConst, BoolConst, StringConst, UnitConst
     // ========================================================================
@@ -53,8 +72,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         match &inst.data {
             InstData::IntConst(value) => {
-                // Get the type from HM inference
-                let ty = Self::get_resolved_type(ctx, inst_ref, inst.span, "integer literal")?;
+                // Constructor-head recovery can make a call operand reachable
+                // to sema even though the unsuccessful head reduction kept it
+                // outside the ordinary inference walk. The call boundary
+                // supplies its declared parameter type as recovery context;
+                // use that integer type rather than turning the source-level
+                // "head is not a type" error into an unresolved-type ICE.
+                // Normal inferred literals still take the resolved-map path.
+                let ty = Self::resolved_integer_type(ctx, inst_ref, inst.span, "integer literal")?;
 
                 // Check if the literal value fits in the target type's range
                 if !ty.literal_fits(*value) {
@@ -179,7 +204,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         match &inst.data {
             InstData::Neg { operand } => {
                 // Get the resolved type from HM inference
-                let ty = Self::get_resolved_type(ctx, inst_ref, inst.span, "negation operator")?;
+                let ty =
+                    Self::resolved_integer_type(ctx, inst_ref, inst.span, "negation operator")?;
 
                 // Unary `-` requires a signed integer operand (i8/i16/i32/i64/
                 // isize). Reject unsigned integers (no negative range), bool, and
@@ -261,7 +287,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             InstData::BitNot { operand } => {
                 // Get the resolved type from HM inference
-                let ty = Self::get_resolved_type(ctx, inst_ref, inst.span, "bitwise NOT operator")?;
+                let ty =
+                    Self::resolved_integer_type(ctx, inst_ref, inst.span, "bitwise NOT operator")?;
 
                 // Bitwise NOT operates on integer types only
                 if !ty.is_integer() && !ty.is_error() && !ty.is_never() {

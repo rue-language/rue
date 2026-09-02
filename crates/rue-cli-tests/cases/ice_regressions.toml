@@ -23,6 +23,21 @@ name = "ICE regressions"
 description = "Minimal programs that used to crash the compiler; each must now compile-or-cleanly-error with no signal (RUE-51)."
 
 [[case]]
+name = "runtime_call_struct_head_literal_inference_rue1570"
+description = "RUE-1570: a runtime-valued call parsed as an inline struct-literal head skipped inference for its integer argument, so the intended type diagnostic became E9000."
+files = [{ path = "main.rue", source = """
+fn test(x: i32) -> i32 {
+    let y = if x > 5 { return 100 } else { x };
+    y * 2
+}
+fn main() -> i32 { test(3) { x };
+    y * 2}
+""" }]
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected a type, found i32"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "type inference did not resolve type"]
+
+[[case]]
 name = "generic_array_value_length_unknown_element_type_rue407"
 description = "RUE-407 / GitHub #1225: a deferred generic array type `[i3; N]` validated only the `N` length, then specialization panicked when the unknown element type failed substitution. Now it is a clean E0204."
 files = [{ path = "main.rue", source = """

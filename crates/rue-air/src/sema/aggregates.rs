@@ -333,7 +333,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // (RUE-596, spec 4.14:23): the head call reduces to a concrete type
             // at comptime; construct as if the type had been bound to a name
             // first (`let P = F(args); P { .. }`).
-            let head_result = self.analyze_inst(air, head_ref, ctx)?;
+            let recover_missing_arguments = ctx.resolved_type_of(head_ref).is_none();
+            let previous_recovery_scope = std::mem::replace(
+                &mut ctx.recover_missing_ctor_head_arguments,
+                recover_missing_arguments,
+            );
+            let head_result = self.analyze_inst(air, head_ref, ctx);
+            ctx.recover_missing_ctor_head_arguments = previous_recovery_scope;
+            let head_result = head_result?;
             continues &= head_result.continues;
             let AirInstData::TypeConst(reduced_ty) = air.get(head_result.air_ref).data else {
                 return Err(CompileError::new(

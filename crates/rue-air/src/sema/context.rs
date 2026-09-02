@@ -384,6 +384,19 @@ pub(crate) struct AnalysisContext<'a> {
     /// `Option(T)` (RUE-6, ADR-0038). Context never selects that nominal. Left
     /// `None` everywhere else, so no other analysis is affected.
     pub expected_type: Option<Type>,
+    /// Integer type supplied only while semantic recovery walks a call
+    /// argument whose root is absent from the inference result. This is
+    /// separate from `expected_type`: operator dispatch deliberately clears
+    /// ordinary result expectations before visiting operands, while every
+    /// integer node in a skipped malformed-constructor subtree still needs a
+    /// deterministic type. `None` on the canonical inferred path keeps a
+    /// genuinely missing inference fact classified as an internal error.
+    pub missing_inference_integer_type: Option<Type>,
+    /// Whether analysis is currently walking an inline constructor head that
+    /// inference deliberately skipped after comptime reduction failed. Only
+    /// call arguments reached inside this scope may synthesize the integer
+    /// recovery context above.
+    pub recover_missing_ctor_head_arguments: bool,
     /// The shared inference context for this body, threaded here so accessor
     /// call expansion (ADR-0062) can run type inference for the accessor's
     /// body on demand before splicing it into the caller.
@@ -706,6 +719,8 @@ impl<'a> AnalysisContext<'a> {
             referenced_functions: AHashSet::new(),
             referenced_methods: AHashSet::new(),
             expected_type: None,
+            missing_inference_integer_type: self.missing_inference_integer_type,
+            recover_missing_ctor_head_arguments: self.recover_missing_ctor_head_arguments,
             infer_ctx: self.infer_ctx,
             accessor_trailing_yield: self.accessor_trailing_yield,
             accessor_call_insts: self.accessor_call_insts.clone(),

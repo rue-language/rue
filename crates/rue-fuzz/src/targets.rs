@@ -1868,6 +1868,151 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sema_rejects_runtime_call_struct_heads_without_an_ice() {
+        // Saved sema-fuzzer finding for RUE-1570. The parser legitimately
+        // represents `test(3) { x }` as an inline constructor head; semantic
+        // analysis must reject the i32-returning head as a type without losing
+        // inference facts for the call's integer argument.
+        let saved = r#"
+fn test(x: i32) -> i32 {
+    let y = if x > 5 { return 100 } else { x };
+    y * 2
+}
+fn main() -> i32 { test(3) { x };
+    y * 2}
+"#;
+        let errors = query_semantics(saved).expect_err("runtime-valued constructor head rejects");
+        assert_eq!(errors.len(), 1, "diagnostic order changed: {errors:?}");
+        let primary = errors.iter().next().expect("one diagnostic was asserted");
+        assert!(
+            matches!(
+                &primary.kind,
+                rue_error::ErrorKind::TypeMismatch { expected, found }
+                    if expected == "a type" && found == "i32"
+            ),
+            "unexpected primary diagnostic: {primary:?}"
+        );
+
+        // Nearby recovered shapes cover contextual wide-literal inference,
+        // arithmetic and both integer unary operators. Logical `!` has a
+        // fixed bool type and confirms that recovery does not disturb it.
+        for source in [
+            "fn f(x: i64) -> i32 { 0 } fn main() -> i32 { f(2147483648) { missing }; 0 }",
+            "fn f(x: i64) -> i32 { 0 } fn main() -> i32 { f(-1) { missing }; 0 }",
+            "fn f(x: i64) -> i32 { 0 } fn main() -> i32 { f(~1) { missing }; 0 }",
+            "fn f(x: i64) -> i32 { 0 } fn main() -> i32 { f(1 + 2) { missing }; 0 }",
+            "fn f(x: i32) -> i32 { x } fn main() -> i32 { f(true) { missing }; 0 }",
+            "fn f(x: bool) -> i32 { 0 } fn main() -> i32 { f(3) { missing }; 0 }",
+            "fn f(x: bool) -> i32 { 0 } fn main() -> i32 { f(!false) { missing }; 0 }",
+        ] {
+            let errors = query_semantics(source).expect_err("malformed constructor head rejects");
+            assert_eq!(errors.len(), 1, "diagnostic order changed: {errors:?}");
+            let primary = errors.iter().next().expect("one diagnostic was asserted");
+            assert!(
+                matches!(
+                    &primary.kind,
+                    rue_error::ErrorKind::TypeMismatch { expected, found }
+                        if expected == "a type" && found == "i32"
+                ),
+                "unexpected primary diagnostic: {primary:?}"
+            );
+        }
+
+        // The recovered parameter type still governs unary legality; it is
+        // not merely a blanket i32 default for every skipped expression.
+        let errors =
+            query_semantics("fn f(x: u64) -> i32 { 0 } fn main() -> i32 { f(-1) { missing }; 0 }")
+                .expect_err("unsigned negation rejects");
+        assert_eq!(errors.len(), 1, "diagnostic order changed: {errors:?}");
+        assert!(
+            matches!(
+                errors.iter().next().map(|error| &error.kind),
+                Some(rue_error::ErrorKind::CannotNegate(found)) if found == "u64"
+            ),
+            "recovery lost the declared unsigned type: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn sema_constructor_head_recovery_survives_loop_recheck_forks() {
+        // Moving `p` changes the loop's back-edge ownership state and forces
+        // the scratch semantic pass. Its condition revisits the skipped `2`;
+        // recovery provenance must survive the context fork so the intended
+        // previous-iteration move error is not replaced by E9000.
+        let source = r#"
+struct P { x: i32 }
+fn consume(p: P) -> i32 { p.x }
+fn f(x: i32) -> i32 { x }
+fn main() -> i32 {
+    let p = P { x: 1 };
+    f({
+        let mut i = 0;
+        while i < 2 {
+            let _ = consume(p);
+            i = i + 1;
+        }
+        3
+    }) { missing };
+    0
+}
+"#;
+        let errors = query_semantics(source).expect_err("loop move on re-entry rejects");
+        assert_eq!(errors.len(), 1, "diagnostic order changed: {errors:?}");
+        let primary = errors.iter().next().expect("one diagnostic was asserted");
+        assert!(
+            matches!(primary.kind, rue_error::ErrorKind::UseAfterMove(_)),
+            "loop recheck lost constructor-head recovery provenance: {primary:?}"
+        );
+        assert!(
+            primary
+                .diagnostic()
+                .notes
+                .iter()
+                .any(|note| note.0.contains("previous iteration of the loop")),
+            "test did not exercise the loop recheck: {primary:?}"
+        );
+    }
+
+    #[test]
+    fn sema_constructor_head_recovery_preserves_valid_controls() {
+        for source in [
+            // Literal inference and diverging-if typing from the saved input.
+            "fn test(x: i32) -> i32 { let y = if x > 5 { return 100 } else { x }; y * 2 } fn main() -> i32 { test(3) }",
+            // A genuine inline type-constructor head with a literal comptime
+            // argument still reduces and constructs normally.
+            "fn Wrap(comptime n: i32) -> type { struct { value: i32 } } fn main() -> i32 { Wrap(3) { value: 42 }.value }",
+            // Operator roots retain canonical inference in successful inline
+            // constructor heads; recovery is never selected for these facts.
+            "fn Wrap(comptime n: i64) -> type { struct { value: i32 } } fn main() -> i32 { Wrap(-1) { value: 42 }.value }",
+            "fn Wrap(comptime n: i64) -> type { struct { value: i32 } } fn main() -> i32 { Wrap(~1) { value: 42 }.value }",
+            "fn Wrap(comptime n: i64) -> type { struct { value: i32 } } fn main() -> i32 { Wrap(1 + 2) { value: 42 }.value }",
+        ] {
+            let session = query_semantics(source).expect("valid control reaches semantic CFG");
+            assert_cfg_boundary_agreement(session);
+        }
+    }
+
+    #[test]
+    fn sema_constructor_head_recovery_preserves_array_diagnostic_order() {
+        let source = r#"
+const K: i32 = 3;
+fn Matrix(comptime T: type, comptime N: i32) -> type { struct { row: [T; N] } }
+fn sum(m: Matrix(i32, K)) -> i32 { m.row[0] + m.row[1] + m.row[2] }
+fn main() -> i32 {
+    let M = Matrix(i32, K);
+    sum(M { row: [40, 1, 1] }) { row: [T; N] }
+}
+"#;
+        let errors = query_semantics(source).expect_err("malformed generic construction rejects");
+        assert_eq!(errors.len(), 1, "diagnostic order changed: {errors:?}");
+        let primary = errors.iter().next().expect("one diagnostic was asserted");
+        assert!(
+            matches!(primary.kind, rue_error::ErrorKind::TypeAnnotationRequired),
+            "the established E0903 must precede the outer head error: {primary:?}"
+        );
+    }
+
     /// RUE-776: the `compiler` target must reach a strictly deeper boundary than
     /// `sema`. The sema query stops at the rooted CFG artifact; the compiler query
     /// must drive codegen and linking to a finished executable. If the compiler

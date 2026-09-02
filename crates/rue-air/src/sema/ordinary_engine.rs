@@ -2349,6 +2349,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             referenced_functions: AHashSet::new(),
             referenced_methods: AHashSet::new(),
             expected_type: None,
+            missing_inference_integer_type: None,
+            recover_missing_ctor_head_arguments: false,
             infer_ctx,
             accessor_trailing_yield: None,
             accessor_call_insts: AHashMap::new(),
