@@ -10,6 +10,7 @@ real.
 
 | File | Records | Status | Superseded by |
 | --- | --- | --- | --- |
+| [abstraction-design-survey.md](abstraction-design-survey.md) | Survey of abstraction mechanisms (traits, interfaces, comptime, dictionaries) across Carbon, Swift, Hylo, Zig, Go, Rust, Mojo, and Austral, with a corpus repetition census and a recommendation as input to the RUE-246 ruling. | current | — |
 | [adr-0076-symbol-handle-ordered-use-audit.md](adr-0076-symbol-handle-ordered-use-audit.md) | ADR-0076 Phase 1: the complete inventory of ordered and value-bearing symbol-handle uses, their conversions, and what a revision-shared interner still owes. | current | — |
 | [adr-0071-phase-1-reference-baseline.md](adr-0071-phase-1-reference-baseline.md) | The first complete `fresh_source_to_native_v1` reference measurements closing ADR-0071's measurement phase. | current | — |
 | [adr-0071-horizontal-vertical-ownership-reaudit.md](adr-0071-horizontal-vertical-ownership-reaudit.md) | Current-source whole-pipeline ownership re-audit after the accepted ADR-0071 and RUE-1510 work, with the next measured verticals. | current | — |
