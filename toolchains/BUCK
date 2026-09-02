@@ -23,6 +23,12 @@ load(":cxx_tools.bzl", "cxx_tools_with_linker")
 load(":rue.bzl", "rue_toolchain")
 load(":remote_test_execution.bzl", "noop_remote_test_execution_toolchain")
 
+export_file(
+    name = "rust-toolchain-registration-source",
+    src = "BUCK",
+    visibility = ["root//:rustc-first-party-unused-deps-wrapper-tests"],
+)
+
 cxx_tools_with_linker(
     name = "cxx-tools",
     linker = select({

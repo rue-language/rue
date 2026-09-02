@@ -33,6 +33,7 @@
 
 load("//:rue_rules.bzl", "rue_program", "rue_program_family", "rue_program_staging", "rue_program_test")
 load("//:test_defs.bzl", "rue_sh_test", "rue_test_suite")
+
 load(":corpus.bzl", "cached_corpus_suite")
 
 rue_sh_test(
@@ -931,10 +932,35 @@ rue_test_suite(
     name = "repository-quality-gates",
     tests = [
         ":adr-registry-validation",
+        ":rustc-first-party-unused-deps-wrapper-tests",
         ":spec-traceability",
         ":tutorial-snippet-tests",
         ":tutorial-snippet-tool-tests",
     ],
+)
+
+python_bootstrap_binary(
+    name = "rustc-first-party-unused-deps-wrapper",
+    main = "scripts/rustc-first-party-unused-deps.py",
+    visibility = ["PUBLIC"],
+)
+
+rue_sh_test(
+    name = "rustc-first-party-unused-deps-wrapper-tests",
+    test = "scripts/test-rustc-first-party-unused-deps.py",
+    resources = [
+        "scripts/rustc-first-party-unused-deps.py",
+        ":gatelib-sources",
+        "toolchains//:rust-toolchain-registration-source",
+        "toolchains//rust:rust-toolchain-declarations-source",
+        "toolchains//rust:rust-toolchain-rule-source",
+    ],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "RUE_RUST_TOOLCHAIN_DECLARATIONS": "$(location toolchains//rust:rust-toolchain-declarations-source)",
+        "RUE_RUST_TOOLCHAIN_REGISTRATION": "$(location toolchains//:rust-toolchain-registration-source)",
+        "RUE_RUST_TOOLCHAIN_RULE": "$(location toolchains//rust:rust-toolchain-rule-source)",
+    },
 )
 
 rue_sh_test(

@@ -5,7 +5,6 @@ rue_crate(
     test_platform = "native",
     deps = [
         "//crates/rue-air:rue-air",
-        "//crates/rue-builtins:rue-builtins",
         "//crates/rue-cfg:rue-cfg",
         "//crates/rue-error:rue-error",
         "//crates/rue-runtime-abi:rue-runtime-abi",
