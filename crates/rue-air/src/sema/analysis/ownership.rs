@@ -7147,8 +7147,31 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // literal-backed `cap == 0` header and an enum-typed fallible
             // intrinsic names its registry result — the same contextual
             // materialization a `let` with that annotation performs.
-            let prev_expected = if elaborates_borrow
-                && (param_ty.is_enum() || self.is_str_like(param_ty) || self.is_strbuf(param_ty))
+            // A malformed inline constructor head is intentionally absent
+            // from the inference walk when its comptime reduction fails. Its
+            // call operands can still be analyzed on the way to the stable
+            // "head is not a type" diagnostic. Give only such missing roots
+            // the callee's declared context, allowing integer literals (and
+            // literal expressions) to recover without changing ordinary
+            // inferred call arguments or repairing nested aggregate errors
+            // that have their own established diagnostics. Operator dispatch
+            // clears `expected_type`, so carry a separate integer context
+            // through the recovered subtree and restore it at this boundary.
+            let missing_inference_fact = ctx.recover_missing_ctor_head_arguments
+                && ctx.resolved_type_of(arg.value).is_none();
+            let previous_missing_integer_type = missing_inference_fact.then(|| {
+                let integer_type = if param_ty.is_integer() {
+                    param_ty
+                } else {
+                    Type::I32
+                };
+                ctx.missing_inference_integer_type.replace(integer_type)
+            });
+            let prev_expected = if missing_inference_fact
+                || (elaborates_borrow
+                    && (param_ty.is_enum()
+                        || self.is_str_like(param_ty)
+                        || self.is_strbuf(param_ty)))
             {
                 Some(ctx.expected_type.replace(param_ty))
             } else {
@@ -7157,6 +7180,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let arg_result = self.analyze_inst(air, arg.value, ctx);
             if let Some(previous) = prev_expected {
                 ctx.expected_type = previous;
+            }
+            if let Some(previous) = previous_missing_integer_type {
+                ctx.missing_inference_integer_type = previous;
             }
             ctx.ownership.byref_arg_root = prev_byref_root;
             let mut arg_result = arg_result?;
