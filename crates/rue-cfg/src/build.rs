@@ -11,6 +11,8 @@ use rue_air::{
     SourceParamAbi, StructId, Type, TypeKind, ValidatedAir,
 };
 use rue_error::{CompileError, CompileWarning, ErrorKind, WarningKind};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::CfgOutput;
 use crate::inst::{
@@ -99,6 +101,173 @@ type FieldPath = Vec<u32>;
 type MovedPathKey = (MovedSlot, FieldPath);
 type MovedPathMap = AHashMap<MovedSlot, AHashSet<FieldPath>>;
 
+/// One canonical scope-exit cleanup step.  The successor is part of the key,
+/// so interning steps from the end of a schedule toward its beginning shares
+/// compatible suffixes without merging unrelated CFG tails.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ReturnCleanupKey {
+    Local {
+        successor: BlockId,
+        slot: u32,
+        ty: Type,
+        span: rue_span::Span,
+        scope_depth: usize,
+        initialized: bool,
+        whole_moved: bool,
+        drop_flag: Option<u32>,
+        field_drop_flags: Vec<(FieldPath, u32)>,
+        definite_paths: Vec<FieldPath>,
+        maybe_paths: Vec<FieldPath>,
+    },
+    Param {
+        successor: BlockId,
+        abi_slot: u32,
+        ty: Type,
+        drop_flag: Option<u32>,
+        field_drop_flags: Vec<(FieldPath, u32)>,
+        definite_paths: Vec<FieldPath>,
+        maybe_paths: Vec<FieldPath>,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ReturnCleanupRegion {
+    entry: BlockId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum CleanupScopeIdentityKey {
+    Push {
+        parent: u32,
+    },
+    Slot {
+        parent: u32,
+        slot: u32,
+        ty: Type,
+        span: rue_span::Span,
+    },
+    Initialize {
+        parent: u32,
+        slot: u32,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MoveFactKind {
+    Whole,
+    DefinitePath,
+    MaybePath,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+struct MoveFactTrieNode {
+    terminal: bool,
+    zero: u64,
+    one: u64,
+}
+
+#[derive(Debug, Default)]
+struct MoveFactTrie {
+    nodes: Vec<MoveFactTrieNode>,
+    intern: AHashMap<MoveFactTrieNode, u64>,
+}
+
+impl MoveFactTrie {
+    fn node(&self, identity: u64) -> MoveFactTrieNode {
+        if identity == 0 {
+            MoveFactTrieNode::default()
+        } else {
+            self.nodes[identity as usize - 1]
+        }
+    }
+
+    fn intern_node(&mut self, node: MoveFactTrieNode) -> u64 {
+        if node == MoveFactTrieNode::default() {
+            return 0;
+        }
+        #[cfg(test)]
+        RETURN_CLEANUP_STATS.with(|stats| {
+            let mut next = stats.get();
+            next.canonical_node_hash_probes += 1;
+            stats.set(next);
+        });
+        if let Some(&identity) = self.intern.get(&node) {
+            return identity;
+        }
+        // A function's facts are derived from u32-indexed AIR entities, and
+        // each fact bit creates at most one node. A u64 identity therefore
+        // cannot be exhausted before the CFG's published E1401 owner limits.
+        let identity = self.nodes.len() as u64 + 1;
+        self.nodes.push(node);
+        #[cfg(test)]
+        RETURN_CLEANUP_STATS.with(|stats| {
+            let mut next = stats.get();
+            next.canonical_node_hash_probes += 1;
+            stats.set(next);
+        });
+        self.intern.insert(node, identity);
+        identity
+    }
+
+    fn set(&mut self, root: u64, bits: &[bool], present: bool) -> u64 {
+        let mut ancestry = Vec::with_capacity(bits.len());
+        let mut current = root;
+        for &bit in bits {
+            let node = self.node(current);
+            ancestry.push((node, bit));
+            current = if bit { node.one } else { node.zero };
+        }
+        let mut leaf = self.node(current);
+        leaf.terminal = present;
+        let mut rebuilt = self.intern_node(leaf);
+        for (mut node, bit) in ancestry.into_iter().rev() {
+            if bit {
+                node.one = rebuilt;
+            } else {
+                node.zero = rebuilt;
+            }
+            rebuilt = self.intern_node(node);
+        }
+        rebuilt
+    }
+}
+
+#[derive(Debug)]
+struct MoveStateIdentityArena {
+    facts: MoveFactTrie,
+    return_cleanup_cache: AHashMap<(u64, u32), ReturnCleanupRegion>,
+}
+
+impl Default for MoveStateIdentityArena {
+    fn default() -> Self {
+        Self {
+            facts: MoveFactTrie::default(),
+            return_cleanup_cache: AHashMap::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default)]
+struct ReturnCleanupStats {
+    cache_probes: usize,
+    schedule_visits: usize,
+    action_key_probes: usize,
+    action_state_path_visits: usize,
+    action_materialization_path_visits: usize,
+    path_segments_visited: usize,
+    action_key_path_segments_hashed: usize,
+    canonical_fact_updates: usize,
+    canonical_fact_bits_visited: usize,
+    canonical_node_hash_probes: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static RETURN_CLEANUP_STATS: std::cell::Cell<ReturnCleanupStats> =
+        std::cell::Cell::new(ReturnCleanupStats::default());
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Default)]
 struct MoveStateStats {
@@ -126,11 +295,115 @@ struct MoveState {
     /// `fields` is path-dependent: its scope-exit drop is emitted behind
     /// that path's runtime drop flag.
     maybe_fields: MovedPathMap,
+    /// Canonical semantic identity. Identical mutations from a shared state
+    /// converge through `identity_arena`, including separately lowered sibling
+    /// arms, and therefore resolve the same return-cleanup cache entry.
+    identity: u64,
+    identity_arena: Rc<RefCell<MoveStateIdentityArena>>,
     #[cfg(test)]
     stats: MoveStateStats,
 }
 
+#[derive(Debug, Default)]
+struct MovedSlotState {
+    whole_moved: bool,
+    definite_paths: AHashSet<FieldPath>,
+    maybe_paths: AHashSet<FieldPath>,
+}
+
 impl MoveState {
+    fn push_fact_word(bits: &mut Vec<bool>, word: u32) {
+        bits.extend((0..32).rev().map(|shift| (word & (1 << shift)) != 0));
+    }
+
+    fn fact_bits(kind: MoveFactKind, slot: MovedSlot, path: &[u32]) -> Vec<bool> {
+        let mut bits = Vec::with_capacity(68 + 32 * path.len());
+        bits.extend(match kind {
+            MoveFactKind::Whole => [false, false],
+            MoveFactKind::DefinitePath => [false, true],
+            MoveFactKind::MaybePath => [true, false],
+        });
+        let (is_param, slot) = match slot {
+            MovedSlot::Local(slot) => (false, slot),
+            MovedSlot::Param(slot) => (true, slot),
+        };
+        bits.push(is_param);
+        Self::push_fact_word(&mut bits, slot);
+        Self::push_fact_word(&mut bits, path.len() as u32);
+        for &segment in path {
+            Self::push_fact_word(&mut bits, segment);
+        }
+        bits
+    }
+
+    fn set_fact(&mut self, kind: MoveFactKind, slot: MovedSlot, path: &[u32], present: bool) {
+        let bits = Self::fact_bits(kind, slot, path);
+        #[cfg(test)]
+        RETURN_CLEANUP_STATS.with(|stats| {
+            let mut next = stats.get();
+            next.canonical_fact_updates += 1;
+            // One forward trie walk and one persistent rebuild visit each bit.
+            next.canonical_fact_bits_visited += 2 * bits.len();
+            stats.set(next);
+        });
+        let identity = self
+            .identity_arena
+            .borrow_mut()
+            .facts
+            .set(self.identity, &bits, present);
+        self.identity = identity;
+    }
+
+    fn rebuild_identity(&mut self) {
+        self.identity = 0;
+        let mut facts = Vec::new();
+        facts.extend(
+            self.slots
+                .iter()
+                .copied()
+                .map(|slot| (MoveFactKind::Whole, slot, Vec::new())),
+        );
+        for (&slot, paths) in &self.fields {
+            facts.extend(
+                paths
+                    .iter()
+                    .cloned()
+                    .map(|path| (MoveFactKind::DefinitePath, slot, path)),
+            );
+        }
+        for (&slot, paths) in &self.maybe_fields {
+            facts.extend(
+                paths
+                    .iter()
+                    .cloned()
+                    .map(|path| (MoveFactKind::MaybePath, slot, path)),
+            );
+        }
+        for (kind, slot, path) in facts {
+            self.set_fact(kind, slot, &path, true);
+        }
+    }
+
+    /// Install one action's explicit move facts and return the prior facts.
+    /// Cleanup action interning needs only this slot-local partition; swapping
+    /// it avoids cloning the complete move state once per live slot.
+    fn swap_slot_state(&mut self, slot: MovedSlot, state: MovedSlotState) -> MovedSlotState {
+        let previous = MovedSlotState {
+            whole_moved: self.slots.remove(&slot),
+            definite_paths: self.fields.remove(&slot).unwrap_or_default(),
+            maybe_paths: self.maybe_fields.remove(&slot).unwrap_or_default(),
+        };
+        if state.whole_moved {
+            self.slots.insert(slot);
+        }
+        if !state.definite_paths.is_empty() {
+            self.fields.insert(slot, state.definite_paths);
+        }
+        if !state.maybe_paths.is_empty() {
+            self.maybe_fields.insert(slot, state.maybe_paths);
+        }
+        previous
+    }
     #[cfg(test)]
     fn record_slot_path_visits(&self, count: usize) {
         self.stats
@@ -140,6 +413,29 @@ impl MoveState {
 
     /// Record that the slot's whole value moved out.
     fn mark_slot(&mut self, slot: MovedSlot) {
+        if !self.slots.contains(&slot) {
+            self.set_fact(MoveFactKind::Whole, slot, &[], true);
+        }
+        let definite_paths: Vec<_> = self
+            .fields
+            .get(&slot)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
+        for path in &definite_paths {
+            self.set_fact(MoveFactKind::DefinitePath, slot, path, false);
+        }
+        let maybe_paths: Vec<_> = self
+            .maybe_fields
+            .get(&slot)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
+        for path in &maybe_paths {
+            self.set_fact(MoveFactKind::MaybePath, slot, path, false);
+        }
         self.slots.insert(slot);
         // Whole-value move subsumes any per-field moves (and the slot's
         // whole-value drop flag takes over at runtime).
@@ -153,6 +449,20 @@ impl MoveState {
 
     /// Record that one struct field path of the slot moved out.
     fn mark_path(&mut self, slot: MovedSlot, path: FieldPath) {
+        if !self
+            .fields
+            .get(&slot)
+            .is_some_and(|paths| paths.contains(&path))
+        {
+            self.set_fact(MoveFactKind::DefinitePath, slot, &path, true);
+        }
+        if !self
+            .maybe_fields
+            .get(&slot)
+            .is_some_and(|paths| paths.contains(&path))
+        {
+            self.set_fact(MoveFactKind::MaybePath, slot, &path, true);
+        }
         self.fields.entry(slot).or_default().insert(path.clone());
         self.maybe_fields.entry(slot).or_default().insert(path);
     }
@@ -161,6 +471,29 @@ impl MoveState {
     /// state for it (whole-slot and per-field), so the new occupant is
     /// dropped at scope exit.
     fn clear_slot(&mut self, slot: MovedSlot) {
+        if self.slots.contains(&slot) {
+            self.set_fact(MoveFactKind::Whole, slot, &[], false);
+        }
+        let definite_paths: Vec<_> = self
+            .fields
+            .get(&slot)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
+        for path in &definite_paths {
+            self.set_fact(MoveFactKind::DefinitePath, slot, path, false);
+        }
+        let maybe_paths: Vec<_> = self
+            .maybe_fields
+            .get(&slot)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
+        for path in &maybe_paths {
+            self.set_fact(MoveFactKind::MaybePath, slot, path, false);
+        }
         self.slots.remove(&slot);
         #[cfg(test)]
         self.record_slot_path_visits(self.fields.get(&slot).map_or(0, |paths| paths.len()));
@@ -174,6 +507,38 @@ impl MoveState {
     /// everything nested inside it) holds a fresh value again and must be
     /// dropped at scope exit.
     fn clear_field(&mut self, slot: MovedSlot, field: u32) {
+        let changed = self
+            .fields
+            .get(&slot)
+            .is_some_and(|paths| paths.iter().any(|path| path.first() == Some(&field)))
+            || self
+                .maybe_fields
+                .get(&slot)
+                .is_some_and(|paths| paths.iter().any(|path| path.first() == Some(&field)));
+        if changed {
+            let definite_paths: Vec<_> = self
+                .fields
+                .get(&slot)
+                .into_iter()
+                .flatten()
+                .filter(|path| path.first() == Some(&field))
+                .cloned()
+                .collect();
+            for path in &definite_paths {
+                self.set_fact(MoveFactKind::DefinitePath, slot, path, false);
+            }
+            let maybe_paths: Vec<_> = self
+                .maybe_fields
+                .get(&slot)
+                .into_iter()
+                .flatten()
+                .filter(|path| path.first() == Some(&field))
+                .cloned()
+                .collect();
+            for path in &maybe_paths {
+                self.set_fact(MoveFactKind::MaybePath, slot, path, false);
+            }
+        }
         #[cfg(test)]
         self.record_slot_path_visits(
             self.fields.get(&slot).map_or(0, |paths| paths.len())
@@ -252,13 +617,33 @@ impl MoveState {
                 .or_default()
                 .extend(paths.iter().cloned());
         }
-        MoveState {
+        let mut result = MoveState {
             slots: self.slots.intersection(&other.slots).copied().collect(),
             fields,
             maybe_fields,
+            identity: self.identity,
+            identity_arena: Rc::clone(&self.identity_arena),
             #[cfg(test)]
             stats: MoveStateStats::default(),
+        };
+        if result.slots == self.slots
+            && result.fields == self.fields
+            && result.maybe_fields == self.maybe_fields
+        {
+            result.identity = self.identity;
+        } else if result.slots == other.slots
+            && result.fields == other.fields
+            && result.maybe_fields == other.maybe_fields
+        {
+            result.identity = other.identity;
+        } else {
+            // The fact trie represents the resulting semantic set itself, so
+            // rebuilding it is independent of predecessor order and join
+            // association. This work is charged once per fact in the join,
+            // matching the map intersection/union above.
+            result.rebuild_identity();
         }
+        result
     }
 }
 
@@ -292,6 +677,13 @@ pub struct CfgBuilder<'a> {
     /// Each scope contains the slots that became live in that scope.
     /// Used to emit StorageDead (and Drop if needed) at scope exit.
     scope_stack: Vec<Vec<LiveSlot>>,
+    /// Canonical persistent identity of the lexical live-slot schedule.
+    cleanup_scope_identity: u32,
+    cleanup_scope_parents: Vec<u32>,
+    cleanup_scope_intern: AHashMap<CleanupScopeIdentityKey, u32>,
+    next_cleanup_scope_identity: u32,
+    live_slot_count: usize,
+    has_droppable_params: bool,
     /// Runtime drop flags (RUE-108): one hidden i32 frame slot per droppable
     /// slot that is moved ANYWHERE in the function. The flag is 1 while the
     /// slot owns its value and 0 after a move; scope-exit drops for flagged
@@ -328,6 +720,12 @@ pub struct CfgBuilder<'a> {
     /// moving path skips it at runtime — drop exactly once on every path,
     /// and never a leak.
     moved: MoveState,
+    /// Canonical cleanup suffixes built while lowering returns.  Entries are
+    /// construction-time regions, not optimizer tail merges: a key includes
+    /// the exact cleanup action state and its already-canonical successor.
+    return_cleanup_regions: AHashMap<ReturnCleanupKey, ReturnCleanupRegion>,
+    /// Final return block shared by every return that needs cleanup.
+    return_cleanup_exit: Option<ReturnCleanupRegion>,
     implicit_named_destructors: AHashSet<StructId>,
     /// Aggregate types whose destructor dependencies have already been
     /// discovered for this CFG body. Keeps repeated drops linear in the size
@@ -541,11 +939,22 @@ impl<'a> CfgBuilder<'a> {
             allow_unreachable_code,
             errors: Vec::new(),
             scope_stack: vec![Vec::new()], // Start with one scope for the function body
+            cleanup_scope_identity: 1,
+            cleanup_scope_parents: vec![0],
+            cleanup_scope_intern: AHashMap::from([(
+                CleanupScopeIdentityKey::Push { parent: 0 },
+                1,
+            )]),
+            next_cleanup_scope_identity: 2,
+            live_slot_count: 0,
+            has_droppable_params: false,
             drop_flags: AHashMap::new(),
             field_drop_flags: AHashMap::new(),
             ever_moved: AHashSet::new(),
             ever_field_moved: AHashSet::new(),
             moved: MoveState::default(),
+            return_cleanup_regions: AHashMap::new(),
+            return_cleanup_exit: None,
             implicit_named_destructors: AHashSet::new(),
             implicit_destructor_types: AHashSet::new(),
             anonymous_destructor_dependency_incomplete: false,
@@ -555,6 +964,11 @@ impl<'a> CfgBuilder<'a> {
         // Create entry block
         builder.current_block = builder.cfg.new_block();
         builder.cfg.entry = builder.current_block;
+        builder.has_droppable_params = builder
+            .air
+            .param_drops()
+            .iter()
+            .any(|(_, ty)| builder.type_needs_drop(*ty));
 
         // Pre-scan for moves so drop flags can be initialized at the
         // value's init site, before the move is reached (RUE-108).
@@ -1132,13 +1546,22 @@ impl<'a> CfgBuilder<'a> {
                 // only now keeps those early-exit paths from loading and
                 // dropping uninitialized storage while still letting them
                 // emit StorageDead.
-                if let Some(live_slot) = self
+                let newly_initialized = self
                     .scope_stack
                     .iter_mut()
                     .rev()
                     .find_map(|scope| scope.iter_mut().rev().find(|live| live.slot == *slot))
-                {
-                    live_slot.initialized = true;
+                    .is_some_and(|live_slot| {
+                        let changed = !live_slot.initialized;
+                        live_slot.initialized = true;
+                        changed
+                    });
+                if newly_initialized {
+                    self.cleanup_scope_identity =
+                        self.intern_cleanup_scope_identity(CleanupScopeIdentityKey::Initialize {
+                            parent: self.cleanup_scope_identity,
+                            slot: *slot,
+                        });
                 }
                 ExprResult {
                     value: None,
@@ -1453,7 +1876,7 @@ impl<'a> CfgBuilder<'a> {
 
                 // Only push a scope if this is a real syntactic block (not a StorageLive wrapper)
                 if !is_storage_live_wrapper {
-                    self.scope_stack.push(Vec::new());
+                    self.push_cleanup_scope();
                 }
 
                 // Lower each statement.
@@ -1498,7 +1921,7 @@ impl<'a> CfgBuilder<'a> {
                         // after a `break`) would later pop THIS scope instead of its
                         // own and re-drop these slots on a live path.
                         if !is_storage_live_wrapper {
-                            self.scope_stack.pop();
+                            self.pop_cleanup_scope();
                         }
                         return ExprResult {
                             value: None,
@@ -1526,12 +1949,11 @@ impl<'a> CfgBuilder<'a> {
                 // Lower the final value
                 let mut result = self.lower_inst(*value);
 
-                // Pop scope and emit StorageDead (with Drop if needed) in reverse order.
-                // BUT: if the value diverged (break/continue/return), the diverging
-                // instruction already emitted drops for all scopes via emit_drops_for_all_scopes,
-                // so we must NOT emit duplicate StorageDead here.
+                // Pop the lexical scope. If its value diverged, the responsible
+                // instruction already routed control through the applicable
+                // cleanup, so this path must not emit duplicate StorageDead.
                 if !is_storage_live_wrapper {
-                    if let Some(scope_slots) = self.scope_stack.pop() {
+                    if let Some(scope_slots) = self.pop_cleanup_scope() {
                         // Only emit scope cleanup if the value didn't diverge
                         if !matches!(result.continuation, Continuation::Diverged) {
                             // Preserve a block result in frame storage before
@@ -2095,11 +2517,7 @@ impl<'a> CfgBuilder<'a> {
                     val
                 };
 
-                // Emit drops for all live slots before returning
-                self.emit_drops_for_all_scopes(span);
-
-                self.cfg
-                    .set_terminator(self.current_block, Terminator::Return { value: val });
+                self.branch_through_return_cleanup(val, span);
 
                 ExprResult {
                     value: None,
@@ -2498,14 +2916,12 @@ impl<'a> CfgBuilder<'a> {
                 // until Alloc successfully completes. Diverging initializers
                 // still end their storage without attempting to drop its
                 // uninitialized contents.
-                if let Some(scope) = self.scope_stack.last_mut() {
-                    scope.push(LiveSlot {
-                        slot: *slot,
-                        ty,
-                        span,
-                        initialized: false,
-                    });
-                }
+                self.record_live_slot(LiveSlot {
+                    slot: *slot,
+                    ty,
+                    span,
+                    initialized: false,
+                });
 
                 ExprResult {
                     value: None,
@@ -2956,40 +3372,412 @@ impl<'a> CfgBuilder<'a> {
             .collect()
     }
 
-    fn emit_drops_for_all_scopes(&mut self, span: rue_span::Span) {
-        // Collect all live slots in reverse order across all scopes
-        let all_slots: Vec<LiveSlot> = self
-            .scope_stack
-            .iter()
-            .rev()
-            .flat_map(|scope| scope.iter().rev().cloned())
-            .collect();
+    fn intern_cleanup_scope_identity(&mut self, key: CleanupScopeIdentityKey) -> u32 {
+        if let Some(&identity) = self.cleanup_scope_intern.get(&key) {
+            return identity;
+        }
+        let identity = self.next_cleanup_scope_identity;
+        let Some(next_identity) = self.next_cleanup_scope_identity.checked_add(1) else {
+            self.cfg.latch_capacity_error("cleanup scope identities");
+            // Construction is already doomed and the CFG boundary will emit
+            // E1401. Reusing the root sentinel avoids wrapping an identity.
+            return 0;
+        };
+        self.next_cleanup_scope_identity = next_identity;
+        self.cleanup_scope_intern.insert(key, identity);
+        identity
+    }
 
-        for live_slot in all_slots {
-            self.emit_drop_for_slot(&live_slot, span);
+    fn push_cleanup_scope(&mut self) {
+        let parent = self.cleanup_scope_identity;
+        self.cleanup_scope_parents.push(parent);
+        self.scope_stack.push(Vec::new());
+        self.cleanup_scope_identity =
+            self.intern_cleanup_scope_identity(CleanupScopeIdentityKey::Push { parent });
+    }
+
+    fn pop_cleanup_scope(&mut self) -> Option<Vec<LiveSlot>> {
+        let slots = self.scope_stack.pop()?;
+        self.live_slot_count -= slots.len();
+        self.cleanup_scope_identity = self
+            .cleanup_scope_parents
+            .pop()
+            .expect("cleanup scope identity stack must match lexical scopes");
+        Some(slots)
+    }
+
+    fn record_live_slot(&mut self, live_slot: LiveSlot) {
+        let key = CleanupScopeIdentityKey::Slot {
+            parent: self.cleanup_scope_identity,
+            slot: live_slot.slot,
+            ty: live_slot.ty,
+            span: live_slot.span,
+        };
+        if let Some(scope) = self.scope_stack.last_mut() {
+            scope.push(live_slot);
+            self.live_slot_count += 1;
+            self.cleanup_scope_identity = self.intern_cleanup_scope_identity(key);
+        }
+    }
+
+    /// Route a return through the canonical cleanup suffix for its exact live
+    /// lexical and move state.  The return value is an SSA block argument at
+    /// every shared entry, so unit, scalar, and aggregate results all remain
+    /// valid when paths converge before cleanup.
+    fn branch_through_return_cleanup(&mut self, value: Option<CfgValue>, span: rue_span::Span) {
+        if self.live_slot_count == 0 && !self.has_droppable_params {
+            self.cfg
+                .set_terminator(self.current_block, Terminator::Return { value });
+            return;
         }
 
-        // Drop owned parameters (unless their value was moved out on every
-        // path reaching this exit). The list is empty for destructors and
-        // drop-glue functions, which must not re-drop their own parameter.
-        //
-        // Reverse index rather than a reversed copy: the body needs `&mut
-        // self`, so the `param_drops()` borrow cannot span it.
+        #[cfg(test)]
+        RETURN_CLEANUP_STATS.with(|stats| {
+            let mut next = stats.get();
+            next.cache_probes += 1;
+            stats.set(next);
+        });
+        let cached = self
+            .moved
+            .identity_arena
+            .borrow()
+            .return_cleanup_cache
+            .get(&(self.moved.identity, self.cleanup_scope_identity))
+            .copied();
+        if let Some(region) = cached {
+            self.goto_return_cleanup(self.current_block, region.entry, value, span);
+            return;
+        }
+
+        let all_slots: Vec<(usize, LiveSlot)> = self
+            .scope_stack
+            .iter()
+            .enumerate()
+            .rev()
+            .flat_map(|(depth, scope)| scope.iter().rev().cloned().map(move |slot| (depth, slot)))
+            .collect();
+
+        #[cfg(test)]
+        RETURN_CLEANUP_STATS.with(|stats| {
+            let mut next = stats.get();
+            next.schedule_visits += all_slots.len() + self.air.param_drops().len();
+            stats.set(next);
+        });
+
+        let mut actions = Vec::with_capacity(all_slots.len() + self.air.param_drops().len());
+        for (scope_depth, live_slot) in all_slots {
+            let key = MovedSlot::Local(live_slot.slot);
+            let (definite_paths, maybe_paths) = self.return_cleanup_paths(key);
+            actions.push(ReturnCleanupKey::Local {
+                successor: BlockId(u32::MAX),
+                slot: live_slot.slot,
+                ty: live_slot.ty,
+                span: live_slot.span,
+                scope_depth,
+                initialized: live_slot.initialized,
+                whole_moved: self.moved.is_slot_moved(key),
+                drop_flag: self.drop_flags.get(&key).copied(),
+                field_drop_flags: self.return_cleanup_field_flags(key, &maybe_paths),
+                definite_paths,
+                maybe_paths,
+            });
+        }
+
         for index in (0..self.air.param_drops().len()).rev() {
             let (abi_slot, ty) = self.air.param_drops()[index];
             let key = MovedSlot::Param(abi_slot);
-            if self.moved.is_slot_moved(key) {
+            if self.moved.is_slot_moved(key) || !self.type_needs_drop(ty) {
                 continue;
             }
-            if self.type_needs_drop(ty) {
-                self.emit_guarded(key, span, |b| {
-                    if !b.emit_partial_drop(key, ty, span) {
-                        let param_val = b.emit(CfgInstData::Param { index: abi_slot }, ty, span);
-                        b.emit(CfgInstData::Drop { value: param_val }, Type::UNIT, span);
+            let (definite_paths, maybe_paths) = self.return_cleanup_paths(key);
+            actions.push(ReturnCleanupKey::Param {
+                successor: BlockId(u32::MAX),
+                abi_slot,
+                ty,
+                drop_flag: self.drop_flags.get(&key).copied(),
+                field_drop_flags: self.return_cleanup_field_flags(key, &maybe_paths),
+                definite_paths,
+                maybe_paths,
+            });
+        }
+
+        let exit = self.return_cleanup_exit();
+        let mut successor = exit;
+        for mut action in actions.into_iter().rev() {
+            match &mut action {
+                ReturnCleanupKey::Local {
+                    successor: next, ..
+                }
+                | ReturnCleanupKey::Param {
+                    successor: next, ..
+                } => *next = successor.entry,
+            }
+            successor = self.intern_return_cleanup(action, span);
+        }
+
+        self.moved
+            .identity_arena
+            .borrow_mut()
+            .return_cleanup_cache
+            .insert(
+                (self.moved.identity, self.cleanup_scope_identity),
+                successor,
+            );
+        self.goto_return_cleanup(self.current_block, successor.entry, value, span);
+    }
+
+    fn return_cleanup_paths(&self, key: MovedSlot) -> (Vec<FieldPath>, Vec<FieldPath>) {
+        let mut definite: Vec<_> = self
+            .moved
+            .fields
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
+        let mut maybe: Vec<_> = self
+            .moved
+            .maybe_fields
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
+        definite.sort_by(Self::compare_return_cleanup_paths);
+        maybe.sort_by(Self::compare_return_cleanup_paths);
+        #[cfg(test)]
+        RETURN_CLEANUP_STATS.with(|stats| {
+            let mut next = stats.get();
+            next.action_state_path_visits += definite.len() + maybe.len();
+            next.path_segments_visited +=
+                definite.iter().chain(&maybe).map(Vec::len).sum::<usize>();
+            stats.set(next);
+        });
+        (definite, maybe)
+    }
+
+    fn compare_return_cleanup_paths(left: &FieldPath, right: &FieldPath) -> std::cmp::Ordering {
+        #[cfg(test)]
+        RETURN_CLEANUP_STATS.with(|stats| {
+            let shared = left
+                .iter()
+                .zip(right)
+                .take_while(|(left, right)| left == right)
+                .count();
+            let compared = shared + usize::from(shared < left.len().min(right.len()));
+            let mut next = stats.get();
+            next.path_segments_visited += compared;
+            stats.set(next);
+        });
+        left.cmp(right)
+    }
+
+    fn return_cleanup_field_flags(
+        &self,
+        key: MovedSlot,
+        maybe_paths: &[FieldPath],
+    ) -> Vec<(FieldPath, u32)> {
+        #[cfg(test)]
+        RETURN_CLEANUP_STATS.with(|stats| {
+            let mut next = stats.get();
+            next.action_state_path_visits += maybe_paths.len();
+            next.path_segments_visited += 2 * maybe_paths.iter().map(Vec::len).sum::<usize>();
+            stats.set(next);
+        });
+        maybe_paths
+            .iter()
+            .filter_map(|path| {
+                self.field_drop_flags
+                    .get(&(key, path.clone()))
+                    .map(|&slot| (path.clone(), slot))
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn return_cleanup_key_path_segments(key: &ReturnCleanupKey) -> usize {
+        let (field_flags, definite, maybe) = match key {
+            ReturnCleanupKey::Local {
+                field_drop_flags,
+                definite_paths,
+                maybe_paths,
+                ..
+            }
+            | ReturnCleanupKey::Param {
+                field_drop_flags,
+                definite_paths,
+                maybe_paths,
+                ..
+            } => (field_drop_flags, definite_paths, maybe_paths),
+        };
+        field_flags
+            .iter()
+            .map(|(path, _)| path.len())
+            .sum::<usize>()
+            + definite.iter().map(Vec::len).sum::<usize>()
+            + maybe.iter().map(Vec::len).sum::<usize>()
+    }
+
+    fn return_cleanup_exit(&mut self) -> ReturnCleanupRegion {
+        if let Some(exit) = self.return_cleanup_exit {
+            return exit;
+        }
+        let entry = self.cfg.new_block();
+        let return_type = self.cfg.return_type();
+        let return_param =
+            (return_type != Type::UNIT).then(|| self.cfg.add_block_param(entry, return_type));
+        self.cfg.set_terminator(
+            entry,
+            Terminator::Return {
+                value: return_param,
+            },
+        );
+        let exit = ReturnCleanupRegion { entry };
+        self.return_cleanup_exit = Some(exit);
+        exit
+    }
+
+    fn intern_return_cleanup(
+        &mut self,
+        key: ReturnCleanupKey,
+        return_span: rue_span::Span,
+    ) -> ReturnCleanupRegion {
+        #[cfg(test)]
+        RETURN_CLEANUP_STATS.with(|stats| {
+            let mut next = stats.get();
+            next.action_key_probes += 1;
+            next.action_key_path_segments_hashed += Self::return_cleanup_key_path_segments(&key);
+            stats.set(next);
+        });
+        if let Some(region) = self.return_cleanup_regions.get(&key) {
+            return *region;
+        }
+
+        let saved_block = self.current_block;
+        let entry = self.cfg.new_block();
+        let return_type = self.cfg.return_type();
+        let return_param =
+            (return_type != Type::UNIT).then(|| self.cfg.add_block_param(entry, return_type));
+        self.current_block = entry;
+
+        let successor = match &key {
+            ReturnCleanupKey::Local {
+                successor,
+                slot,
+                ty,
+                span,
+                scope_depth: _,
+                initialized,
+                whole_moved,
+                drop_flag: _,
+                field_drop_flags: _,
+                definite_paths,
+                maybe_paths,
+            } => {
+                let moved_key = MovedSlot::Local(*slot);
+                #[cfg(test)]
+                RETURN_CLEANUP_STATS.with(|stats| {
+                    let mut next = stats.get();
+                    next.action_materialization_path_visits +=
+                        2 * (definite_paths.len() + maybe_paths.len());
+                    next.path_segments_visited += 2 * definite_paths
+                        .iter()
+                        .chain(maybe_paths)
+                        .map(Vec::len)
+                        .sum::<usize>();
+                    stats.set(next);
+                });
+                let previous = self.moved.swap_slot_state(
+                    moved_key,
+                    MovedSlotState {
+                        whole_moved: *whole_moved,
+                        definite_paths: definite_paths.iter().cloned().collect(),
+                        maybe_paths: maybe_paths.iter().cloned().collect(),
+                    },
+                );
+                self.emit_drop_for_slot(
+                    &LiveSlot {
+                        slot: *slot,
+                        ty: *ty,
+                        span: *span,
+                        initialized: *initialized,
+                    },
+                    *span,
+                );
+                self.moved.swap_slot_state(moved_key, previous);
+                *successor
+            }
+            ReturnCleanupKey::Param {
+                successor,
+                abi_slot,
+                ty,
+                drop_flag: _,
+                field_drop_flags: _,
+                definite_paths,
+                maybe_paths,
+            } => {
+                let moved_key = MovedSlot::Param(*abi_slot);
+                #[cfg(test)]
+                RETURN_CLEANUP_STATS.with(|stats| {
+                    let mut next = stats.get();
+                    next.action_materialization_path_visits +=
+                        2 * (definite_paths.len() + maybe_paths.len());
+                    next.path_segments_visited += 2 * definite_paths
+                        .iter()
+                        .chain(maybe_paths)
+                        .map(Vec::len)
+                        .sum::<usize>();
+                    stats.set(next);
+                });
+                let previous = self.moved.swap_slot_state(
+                    moved_key,
+                    MovedSlotState {
+                        whole_moved: false,
+                        definite_paths: definite_paths.iter().cloned().collect(),
+                        maybe_paths: maybe_paths.iter().cloned().collect(),
+                    },
+                );
+                self.emit_guarded(moved_key, return_span, |b| {
+                    if !b.emit_partial_drop(moved_key, *ty, return_span) {
+                        let param_val =
+                            b.emit(CfgInstData::Param { index: *abi_slot }, *ty, return_span);
+                        b.emit(
+                            CfgInstData::Drop { value: param_val },
+                            Type::UNIT,
+                            return_span,
+                        );
                     }
                 });
+                self.moved.swap_slot_state(moved_key, previous);
+                *successor
             }
-        }
+        };
+        self.goto_return_cleanup(self.current_block, successor, return_param, return_span);
+
+        self.current_block = saved_block;
+        let region = ReturnCleanupRegion { entry };
+        #[cfg(test)]
+        RETURN_CLEANUP_STATS.with(|stats| {
+            let mut next = stats.get();
+            next.action_key_probes += 1;
+            next.action_key_path_segments_hashed += Self::return_cleanup_key_path_segments(&key);
+            stats.set(next);
+        });
+        self.return_cleanup_regions.insert(key, region);
+        region
+    }
+
+    fn goto_return_cleanup(
+        &mut self,
+        source: BlockId,
+        target: BlockId,
+        value: Option<CfgValue>,
+        span: rue_span::Span,
+    ) {
+        let args_result = self.cfg.push_goto_args(value);
+        let args = self.payload_or(args_result, CfgGotoArgs::EMPTY, span);
+        self.cfg
+            .set_terminator(source, Terminator::Goto { target, args });
     }
 
     /// Emit drops for slots in scopes created inside the current loop (for break/continue).
@@ -4373,6 +5161,557 @@ mod tests {
             .count()
     }
 
+    fn count_storage_dead(cfg: &Cfg) -> usize {
+        cfg.blocks()
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .filter(|value| matches!(cfg.get_inst(**value).data, CfgInstData::StorageDead { .. }))
+            .count()
+    }
+
+    fn scalar_return_value(f: &mut BodyFixture, value: u64) -> u32 {
+        f.inst(SemanticBodyInstData::Const(value), SemanticImportType::I32)
+    }
+
+    fn unit_return_value(f: &mut BodyFixture, _: u64) -> u32 {
+        f.inst(SemanticBodyInstData::UnitConst, SemanticImportType::Unit)
+    }
+
+    fn pair_return_value(f: &mut BodyFixture, value: u64) -> u32 {
+        use SemanticBodyInstData as D;
+        let left = f.inst(D::Const(value), SemanticImportType::I32);
+        let right = f.inst(D::Const(value + 1), SemanticImportType::I32);
+        f.inst(
+            D::StructInit {
+                struct_key: NominalInstanceKey::Named("Pair"),
+                fields: [left, right].into(),
+                source_order: [0, 1].into(),
+            },
+            nominal_ty("Pair"),
+        )
+    }
+
+    fn compatible_return_tree(
+        f: &mut BodyFixture,
+        count: usize,
+        make_value: fn(&mut BodyFixture, u64) -> u32,
+    ) -> u32 {
+        use SemanticBodyInstData as D;
+        assert!(count > 0);
+        let value = make_value(f, count as u64);
+        let ret = f.inst(D::Ret(Some(value)), SemanticImportType::Never);
+        if count == 1 {
+            return ret;
+        }
+        let cond = f.inst(D::BoolConst(false), SemanticImportType::Bool);
+        let rest = compatible_return_tree(f, count - 1, make_value);
+        f.inst(
+            D::Branch {
+                cond,
+                then_value: ret,
+                else_value: Some(rest),
+            },
+            SemanticImportType::Never,
+        )
+    }
+
+    fn compatible_return_cfg(
+        local_count: u32,
+        return_count: usize,
+        return_type: ImportTy,
+        make_value: fn(&mut BodyFixture, u64) -> u32,
+    ) -> Cfg {
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(return_type);
+        declare_droppable_resource(&mut f);
+        f.num_locals = local_count;
+        let bindings: Vec<_> = (0..local_count)
+            .map(|slot| bind_fresh_resource(&mut f, slot, slot as u64 + 1))
+            .collect();
+        let returns = compatible_return_tree(&mut f, return_count, make_value);
+        f.inst(
+            D::Block {
+                statements: bindings.into(),
+                value: returns,
+            },
+            SemanticImportType::Never,
+        );
+        f.build_cfg()
+    }
+
+    fn partial_move_compatible_return_cfg(local_count: u32, return_count: usize) -> Cfg {
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        declare_droppable_resource(&mut f);
+        f.struct_nominal("H", &[("value", nominal_ty("StrBuf"))], None);
+        f.num_locals = local_count;
+        let mut statements = Vec::with_capacity(local_count as usize * 2);
+        for slot in 0..local_count {
+            let cap = f.inst(D::Const(slot as u64 + 1), SemanticImportType::U64);
+            let field = f.call_inst("StrBuf.with_capacity", &[cap], nominal_ty("StrBuf"));
+            let init = f.inst(
+                D::StructInit {
+                    struct_key: NominalInstanceKey::Named("H"),
+                    fields: [field].into(),
+                    source_order: [0].into(),
+                },
+                nominal_ty("H"),
+            );
+            let live = f.inst(D::StorageLive { slot }, nominal_ty("H"));
+            let alloc = f.inst(D::Alloc { slot, init }, SemanticImportType::Unit);
+            statements.push(f.inst(
+                D::Block {
+                    statements: [live].into(),
+                    value: alloc,
+                },
+                SemanticImportType::Unit,
+            ));
+
+            let place = f.place(
+                AirPlaceBase::Local(slot),
+                nominal_ty("H"),
+                &[SemanticBodyProjection::Field {
+                    struct_key: NominalInstanceKey::Named("H"),
+                    field_index: 0,
+                }],
+            );
+            let read = f.inst(D::PlaceRead { place }, nominal_ty("StrBuf"));
+            statements.push(f.inst(
+                D::MarkMoved {
+                    value: read,
+                    slot,
+                    is_param: false,
+                    place: Some(place),
+                },
+                nominal_ty("StrBuf"),
+            ));
+        }
+        let returns = compatible_return_tree(&mut f, return_count, scalar_return_value);
+        f.inst(
+            D::Block {
+                statements: statements.into(),
+                value: returns,
+            },
+            SemanticImportType::Never,
+        );
+        f.build_cfg()
+    }
+
+    fn sibling_whole_move_return_tree(f: &mut BodyFixture, count: usize) -> u32 {
+        use SemanticBodyInstData as D;
+        assert!(count > 0);
+        let loaded = f.inst(D::Load { slot: 0 }, nominal_ty("StrBuf"));
+        let moved = f.inst(
+            D::MarkMoved {
+                value: loaded,
+                slot: 0,
+                is_param: false,
+                place: None,
+            },
+            nominal_ty("StrBuf"),
+        );
+        let result = f.inst(D::Const(count as u64), SemanticImportType::I32);
+        let ret = f.inst(D::Ret(Some(result)), SemanticImportType::Never);
+        let arm = f.inst(
+            D::Block {
+                statements: [moved].into(),
+                value: ret,
+            },
+            SemanticImportType::Never,
+        );
+        if count == 1 {
+            return arm;
+        }
+        let cond = f.inst(D::BoolConst(false), SemanticImportType::Bool);
+        let rest = sibling_whole_move_return_tree(f, count - 1);
+        f.inst(
+            D::Branch {
+                cond,
+                then_value: arm,
+                else_value: Some(rest),
+            },
+            SemanticImportType::Never,
+        )
+    }
+
+    fn sibling_whole_move_return_cfg(local_count: u32, return_count: usize) -> Cfg {
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        declare_droppable_resource(&mut f);
+        f.num_locals = local_count;
+        let bindings: Vec<_> = (0..local_count)
+            .map(|slot| bind_fresh_resource(&mut f, slot, slot as u64 + 1))
+            .collect();
+        let returns = sibling_whole_move_return_tree(&mut f, return_count);
+        f.inst(
+            D::Block {
+                statements: bindings.into(),
+                value: returns,
+            },
+            SemanticImportType::Never,
+        );
+        f.build_cfg()
+    }
+
+    fn sibling_move_reinitialize_return_tree(f: &mut BodyFixture, slot: u32, count: u32) -> u32 {
+        use SemanticBodyInstData as D;
+        let loaded = f.inst(D::Load { slot }, nominal_ty("StrBuf"));
+        let moved = f.inst(
+            D::MarkMoved {
+                value: loaded,
+                slot,
+                is_param: false,
+                place: None,
+            },
+            nominal_ty("StrBuf"),
+        );
+        let capacity = f.inst(D::Const(slot as u64 + 100), SemanticImportType::U64);
+        let replacement = f.call_inst("StrBuf.with_capacity", &[capacity], nominal_ty("StrBuf"));
+        let store = f.inst(
+            D::Store {
+                slot,
+                value: replacement,
+            },
+            SemanticImportType::Unit,
+        );
+        let result = f.inst(D::Const(slot as u64), SemanticImportType::I32);
+        let ret = f.inst(D::Ret(Some(result)), SemanticImportType::Never);
+        let arm = f.inst(
+            D::Block {
+                statements: [moved, store].into(),
+                value: ret,
+            },
+            SemanticImportType::Never,
+        );
+        if count == 1 {
+            return arm;
+        }
+        let cond = f.inst(D::BoolConst(false), SemanticImportType::Bool);
+        let rest = sibling_move_reinitialize_return_tree(f, slot + 1, count - 1);
+        f.inst(
+            D::Branch {
+                cond,
+                then_value: arm,
+                else_value: Some(rest),
+            },
+            SemanticImportType::Never,
+        )
+    }
+
+    fn sibling_move_reinitialize_return_cfg(local_count: u32) -> Cfg {
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        declare_droppable_resource(&mut f);
+        f.num_locals = local_count;
+        let bindings: Vec<_> = (0..local_count)
+            .map(|slot| bind_fresh_resource(&mut f, slot, slot as u64 + 1))
+            .collect();
+        let returns = sibling_move_reinitialize_return_tree(&mut f, 0, local_count);
+        f.inst(
+            D::Block {
+                statements: bindings.into(),
+                value: returns,
+            },
+            SemanticImportType::Never,
+        );
+        f.build_cfg()
+    }
+
+    #[test]
+    fn compatible_returns_share_cleanup_for_unit_scalar_and_aggregate_values() {
+        let unit = compatible_return_cfg(1, 3, SemanticImportType::Unit, unit_return_value);
+        let scalar = compatible_return_cfg(1, 3, SemanticImportType::I32, scalar_return_value);
+
+        let mut aggregate_fixture = BodyFixture::new(nominal_ty("Pair"));
+        aggregate_fixture.struct_nominal(
+            "Pair",
+            &[
+                ("left", SemanticImportType::I32),
+                ("right", SemanticImportType::I32),
+            ],
+            None,
+        );
+        declare_droppable_resource(&mut aggregate_fixture);
+        aggregate_fixture.num_locals = 1;
+        let binding = bind_fresh_resource(&mut aggregate_fixture, 0, 1);
+        let returns = compatible_return_tree(&mut aggregate_fixture, 3, pair_return_value);
+        aggregate_fixture.inst(
+            SemanticBodyInstData::Block {
+                statements: [binding].into(),
+                value: returns,
+            },
+            SemanticImportType::Never,
+        );
+        let aggregate = aggregate_fixture.build_cfg();
+
+        for (shape, cfg) in [("unit", unit), ("scalar", scalar), ("aggregate", aggregate)] {
+            assert_eq!(
+                cfg.blocks()
+                    .iter()
+                    .filter(|block| matches!(block.terminator, Terminator::Return { .. }))
+                    .count(),
+                1,
+                "{shape} returns should converge on one final return"
+            );
+            assert_eq!(count_drops(&cfg), 1, "{shape} cleanup is emitted once");
+            assert_eq!(
+                count_storage_dead(&cfg),
+                1,
+                "{shape} cleanup suffix is shared"
+            );
+            assert_all_blocks_terminated(&cfg);
+        }
+    }
+
+    #[test]
+    fn compatible_return_cleanup_graph_is_linear_in_locals_plus_returns() {
+        const LOCALS: u32 = 32;
+        const RETURNS: usize = 48;
+        RETURN_CLEANUP_STATS.with(|stats| stats.set(ReturnCleanupStats::default()));
+        let cfg = compatible_return_cfg(
+            LOCALS,
+            RETURNS,
+            SemanticImportType::I32,
+            scalar_return_value,
+        );
+
+        assert_eq!(count_drops(&cfg), LOCALS as usize);
+        assert_eq!(count_storage_dead(&cfg), LOCALS as usize);
+        assert!(
+            cfg.block_count() < (LOCALS as usize + RETURNS) * 3,
+            "shared construction must stay O(N + M), not emit N cleanups per return"
+        );
+        let stats = RETURN_CLEANUP_STATS.with(std::cell::Cell::get);
+        assert_eq!(stats.cache_probes, RETURNS);
+        assert_eq!(stats.schedule_visits, LOCALS as usize);
+        assert_eq!(stats.action_key_probes, 2 * LOCALS as usize);
+        assert_eq!(stats.action_state_path_visits, 0);
+        assert_eq!(stats.action_materialization_path_visits, 0);
+        assert_eq!(stats.path_segments_visited, 0);
+        assert_eq!(stats.action_key_path_segments_hashed, 0);
+        assert_eq!(stats.canonical_fact_updates, 0);
+        assert_eq!(stats.canonical_fact_bits_visited, 0);
+        assert_eq!(stats.canonical_node_hash_probes, 0);
+        assert!(
+            stats.cache_probes + stats.schedule_visits + stats.action_key_probes
+                <= RETURNS + 3 * LOCALS as usize,
+            "explicit builder work must be O(N + M): {stats:?}"
+        );
+    }
+
+    #[test]
+    fn partial_move_cleanup_builder_work_is_linear_and_action_local() {
+        const LOCALS: u32 = 24;
+        const RETURNS: usize = 40;
+        RETURN_CLEANUP_STATS.with(|stats| stats.set(ReturnCleanupStats::default()));
+        let cfg = partial_move_compatible_return_cfg(LOCALS, RETURNS);
+        let stats = RETURN_CLEANUP_STATS.with(std::cell::Cell::get);
+
+        assert_eq!(stats.cache_probes, RETURNS);
+        assert_eq!(stats.schedule_visits, LOCALS as usize);
+        assert_eq!(stats.action_key_probes, 2 * LOCALS as usize);
+        assert_eq!(stats.action_state_path_visits, 3 * LOCALS as usize);
+        assert_eq!(
+            stats.action_materialization_path_visits,
+            4 * LOCALS as usize
+        );
+        assert_eq!(stats.path_segments_visited, 8 * LOCALS as usize);
+        assert_eq!(stats.action_key_path_segments_hashed, 6 * LOCALS as usize);
+        assert_eq!(stats.canonical_fact_updates, 2 * LOCALS as usize);
+        assert_eq!(stats.canonical_fact_bits_visited, 396 * LOCALS as usize);
+        assert!(
+            stats.canonical_node_hash_probes
+                <= 2 * (stats.canonical_fact_bits_visited / 2 + stats.canonical_fact_updates)
+        );
+        assert!(
+            stats.cache_probes
+                + stats.schedule_visits
+                + stats.action_key_probes
+                + stats.action_state_path_visits
+                + stats.action_materialization_path_visits
+                + stats.path_segments_visited
+                + stats.action_key_path_segments_hashed
+                + stats.canonical_fact_updates
+                + stats.canonical_fact_bits_visited
+                + stats.canonical_node_hash_probes
+                <= RETURNS + 822 * LOCALS as usize,
+            "partial-move cleanup work must be O(N + M): {stats:?}"
+        );
+        assert_eq!(count_storage_dead(&cfg), LOCALS as usize);
+        assert_all_blocks_terminated(&cfg);
+    }
+
+    #[test]
+    fn semantically_identical_sibling_moves_share_linear_cleanup_work() {
+        const LOCALS: u32 = 28;
+        const RETURNS: usize = 44;
+        RETURN_CLEANUP_STATS.with(|stats| stats.set(ReturnCleanupStats::default()));
+        let cfg = sibling_whole_move_return_cfg(LOCALS, RETURNS);
+        let stats = RETURN_CLEANUP_STATS.with(std::cell::Cell::get);
+
+        // Every moved value is owned and dropped by its arm; the shared exit
+        // drops the other live locals once.
+        assert_eq!(count_drops(&cfg), RETURNS + LOCALS as usize - 1);
+        assert_eq!(count_storage_dead(&cfg), LOCALS as usize);
+        assert_eq!(stats.cache_probes, RETURNS);
+        assert_eq!(stats.schedule_visits, LOCALS as usize);
+        assert_eq!(stats.action_key_probes, 2 * LOCALS as usize);
+        assert_eq!(stats.action_state_path_visits, 0);
+        assert_eq!(stats.action_materialization_path_visits, 0);
+        assert_eq!(stats.path_segments_visited, 0);
+        assert_eq!(stats.action_key_path_segments_hashed, 0);
+        assert_eq!(stats.canonical_fact_updates, RETURNS);
+        assert_eq!(stats.canonical_fact_bits_visited, 134 * RETURNS);
+        assert!(
+            stats.canonical_node_hash_probes
+                <= 2 * (stats.canonical_fact_bits_visited / 2 + stats.canonical_fact_updates)
+        );
+        assert!(
+            stats.cache_probes
+                + stats.schedule_visits
+                + stats.action_key_probes
+                + stats.canonical_fact_updates
+                + stats.canonical_fact_bits_visited
+                + stats.canonical_node_hash_probes
+                <= 272 * RETURNS + 3 * LOCALS as usize,
+            "identical sibling mutations must converge before return cleanup: {stats:?}"
+        );
+        assert!(cfg.block_count() < (LOCALS as usize + RETURNS) * 4);
+        assert_all_blocks_terminated(&cfg);
+    }
+
+    #[test]
+    fn move_then_reinitialize_sibling_states_share_linear_cleanup_work() {
+        const LOCALS: u32 = 36;
+        let returns = LOCALS as usize;
+        RETURN_CLEANUP_STATS.with(|stats| stats.set(ReturnCleanupStats::default()));
+        let cfg = sibling_move_reinitialize_return_cfg(LOCALS);
+        let stats = RETURN_CLEANUP_STATS.with(std::cell::Cell::get);
+
+        assert_eq!(stats.cache_probes, returns);
+        assert_eq!(stats.schedule_visits, LOCALS as usize);
+        assert_eq!(stats.action_key_probes, 2 * LOCALS as usize);
+        assert_eq!(stats.action_state_path_visits, 0);
+        assert_eq!(stats.action_materialization_path_visits, 0);
+        assert_eq!(stats.path_segments_visited, 0);
+        assert_eq!(stats.action_key_path_segments_hashed, 0);
+        assert_eq!(stats.canonical_fact_updates, 2 * returns);
+        assert_eq!(stats.canonical_fact_bits_visited, 268 * returns);
+        assert!(
+            stats.canonical_node_hash_probes
+                <= 2 * (stats.canonical_fact_bits_visited / 2 + stats.canonical_fact_updates)
+        );
+        assert!(
+            stats.cache_probes
+                + stats.schedule_visits
+                + stats.action_key_probes
+                + stats.canonical_fact_updates
+                + stats.canonical_fact_bits_visited
+                + stats.canonical_node_hash_probes
+                <= 543 * returns + 3 * LOCALS as usize,
+            "move-then-clear siblings must restore the exact empty identity: {stats:?}"
+        );
+        assert_eq!(count_storage_dead(&cfg), LOCALS as usize);
+        assert!(cfg.block_count() < LOCALS as usize * 8);
+        assert_all_blocks_terminated(&cfg);
+    }
+
+    #[test]
+    fn move_fact_identity_is_commutative_and_join_associative() {
+        let base = MoveState::default();
+        let slot = MovedSlot::Local(7);
+
+        let mut forward = base.clone();
+        forward.mark_path(slot, vec![1]);
+        forward.mark_path(slot, vec![2, 3]);
+        let mut reverse = base.clone();
+        reverse.mark_path(slot, vec![2, 3]);
+        reverse.mark_path(slot, vec![1]);
+        assert_eq!(forward.identity, reverse.identity);
+
+        let mut a = base.clone();
+        a.mark_path(slot, vec![0]);
+        a.mark_path(slot, vec![1]);
+        let mut b = base.clone();
+        b.mark_path(slot, vec![1]);
+        b.mark_path(slot, vec![2]);
+        let mut c = base;
+        c.mark_path(slot, vec![1]);
+        c.mark_path(slot, vec![3]);
+        let left_associated = a.intersect(&b).intersect(&c);
+        let right_associated = a.intersect(&b.intersect(&c));
+        assert_eq!(left_associated.slots, right_associated.slots);
+        assert_eq!(left_associated.fields, right_associated.fields);
+        assert_eq!(left_associated.maybe_fields, right_associated.maybe_fields);
+        assert_eq!(left_associated.identity, right_associated.identity);
+    }
+
+    #[test]
+    fn returns_with_distinct_move_state_do_not_share_cleanup() {
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        declare_droppable_resource(&mut f);
+        f.num_locals = 1;
+        let binding = bind_fresh_resource(&mut f, 0, 1);
+
+        let loaded = f.inst(D::Load { slot: 0 }, nominal_ty("StrBuf"));
+        let moved = f.inst(
+            D::MarkMoved {
+                value: loaded,
+                slot: 0,
+                is_param: false,
+                place: None,
+            },
+            nominal_ty("StrBuf"),
+        );
+        let moved_result = f.inst(D::Const(1), SemanticImportType::I32);
+        let moved_return = f.inst(D::Ret(Some(moved_result)), SemanticImportType::Never);
+        let moved_arm = f.inst(
+            D::Block {
+                statements: [moved].into(),
+                value: moved_return,
+            },
+            SemanticImportType::Never,
+        );
+
+        let live_result = f.inst(D::Const(2), SemanticImportType::I32);
+        let live_return = f.inst(D::Ret(Some(live_result)), SemanticImportType::Never);
+        let cond = f.inst(D::BoolConst(true), SemanticImportType::Bool);
+        let returns = f.inst(
+            D::Branch {
+                cond,
+                then_value: moved_arm,
+                else_value: Some(live_return),
+            },
+            SemanticImportType::Never,
+        );
+        f.inst(
+            D::Block {
+                statements: [binding].into(),
+                value: returns,
+            },
+            SemanticImportType::Never,
+        );
+        let cfg = f.build_cfg();
+
+        let slot_zero_deaths = cfg
+            .blocks()
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .filter(|value| {
+                matches!(
+                    cfg.get_inst(**value).data,
+                    CfgInstData::StorageDead { slot: 0, .. }
+                )
+            })
+            .count();
+        assert_eq!(
+            slot_zero_deaths, 2,
+            "different move states need distinct cleanup"
+        );
+        assert_all_blocks_terminated(&cfg);
+    }
+
     #[test]
     fn projected_only_parameter_preserves_logical_base_type() {
         // `fn read(borrow p: Pair) -> i32 { p.a }`: the only use of the
@@ -5324,17 +6663,27 @@ mod tests {
 
     /// The parameter slots dropped at exit, in the order the CFG drops them.
     fn dropped_param_order(cfg: &Cfg) -> Vec<u32> {
-        cfg.blocks()
-            .iter()
-            .flat_map(|block| block.insts.iter())
-            .filter_map(|value| match cfg.get_inst(*value).data {
-                CfgInstData::Drop { value } => match cfg.get_inst(value).data {
-                    CfgInstData::Param { index } => Some(index),
-                    _ => None,
-                },
-                _ => None,
-            })
-            .collect()
+        let mut order = Vec::new();
+        let mut block = cfg.entry;
+        let mut visited = AHashSet::new();
+        while visited.insert(block) {
+            let data = cfg.get_block(block);
+            order.extend(data.insts.iter().filter_map(|value| {
+                let CfgInstData::Drop { value } = cfg.get_inst(*value).data else {
+                    return None;
+                };
+                let CfgInstData::Param { index } = cfg.get_inst(value).data else {
+                    return None;
+                };
+                Some(index)
+            }));
+            match data.terminator {
+                Terminator::Goto { target, .. } => block = target,
+                Terminator::Return { .. } => break,
+                ref other => panic!("parameter cleanup unexpectedly branched via {other:?}"),
+            }
+        }
+        order
     }
 
     #[test]
