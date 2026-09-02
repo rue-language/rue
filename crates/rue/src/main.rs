@@ -1,4 +1,5 @@
 use std::env;
+use std::fmt::Write as _;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,7 +40,9 @@ use rue_compiler::{
 };
 #[cfg(test)]
 use rue_compiler::{CompilerSession, SourceMetadata, SourceSnapshot};
-use rue_error::{CompileError, DiagnosticWrapper, ErrorCode};
+use rue_error::{
+    CompileError, DiagnosticWrapper, ErrorCode, ErrorCodeExplanation, error_code_explanation,
+};
 use rue_perf_schema::{
     ArtifactHitEvidence, BuildBoundary, CompilerBoundaryEvidence, CompilerBuildProfile,
     CompilerConfigurationEvidence, CompilerCriticalPathEvidence, CompilerInputClass,
@@ -244,9 +247,13 @@ fn usage_text() -> String {
         "\
 Usage: rue [options] <root.rue> [output]
        rue [options] <root.rue> -o <output>
+       rue explain <E####>
 
 The compiler takes exactly one root source file and discovers every other
 file through its @import graph; pass build-system inputs with --source-manifest.
+
+Commands:
+  explain <E####>      Show the compiler-owned explanation for an error code
 
 Options:
   -o, --output <path>  Set output path
@@ -316,6 +323,8 @@ fn print_help() {
 enum ParseResult {
     /// Successfully parsed options (boxed: Options dwarfs the other variants).
     Options(Box<Options>),
+    /// Show compiler-owned information without entering the compile path.
+    Explain(ErrorCode),
     /// Parsing failed with an error.
     Error,
     /// User requested help or version (already printed, should exit 0).
@@ -380,6 +389,26 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     if args.is_empty() {
         print_usage();
         return ParseResult::Error;
+    }
+
+    if args[0] == "explain" {
+        let [_, code_text] = args else {
+            eprintln!("Error: `rue explain` requires exactly one error code");
+            eprintln!("Usage: rue explain <E####>");
+            return ParseResult::Error;
+        };
+        let code = match code_text.parse::<ErrorCode>() {
+            Ok(code) => code,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return ParseResult::Error;
+            }
+        };
+        if error_code_explanation(code).is_none() {
+            eprintln!("Error: no detailed explanation is available yet for {code}");
+            return ParseResult::Error;
+        }
+        return ParseResult::Explain(code);
     }
 
     let mut emit_stages = Vec::new();
@@ -688,15 +717,41 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     }))
 }
 
-fn parse_args() -> Option<Options> {
+fn parse_args() -> ParseResult {
     let args: Vec<String> = env::args().skip(1).collect();
     let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-    match parse_args_from(&args_refs) {
-        ParseResult::Options(opts) => Some(*opts),
-        ParseResult::Error => None,
-        ParseResult::Exit => std::process::exit(0),
+    parse_args_from(&args_refs)
+}
+
+fn render_error_code_explanation(explanation: &ErrorCodeExplanation) -> String {
+    let metadata = explanation.metadata;
+    let mut output = format!(
+        "{}: {}\n\n{}\n",
+        metadata.code, metadata.title, explanation.explanation
+    );
+    writeln!(output, "\nLikely cause:\n{}", explanation.likely_cause)
+        .expect("writing to a String cannot fail");
+    output.push_str("\nExamples:\n");
+    for example in explanation.examples {
+        writeln!(output, "\n{}:", example.title).expect("writing to a String cannot fail");
+        for line in example.source.lines() {
+            writeln!(output, "    {line}").expect("writing to a String cannot fail");
+        }
     }
+    output.push_str("\nReferences:\n");
+    for reference in explanation.references {
+        match reference.rule {
+            Some(rule) => writeln!(
+                output,
+                "- {}: {} (spec rule {rule})",
+                reference.title, reference.path
+            ),
+            None => writeln!(output, "- {}: {}", reference.title, reference.path),
+        }
+        .expect("writing to a String cannot fail");
+    }
+    output
 }
 
 fn validate_watch_modes(options: &Options) -> Result<(), &'static str> {
@@ -1880,8 +1935,15 @@ fn main() {
     }));
 
     let options = match parse_args() {
-        Some(opts) => opts,
-        None => std::process::exit(1),
+        ParseResult::Options(options) => *options,
+        ParseResult::Explain(code) => {
+            let explanation = error_code_explanation(code)
+                .expect("argument parsing only accepts codes with explanations");
+            print!("{}", render_error_code_explanation(explanation));
+            return;
+        }
+        ParseResult::Error => std::process::exit(1),
+        ParseResult::Exit => return,
     };
 
     // The hook above is installed BEFORE argument parsing, so a panic inside
@@ -2729,6 +2791,7 @@ mod tests {
             ParseResult::Options(opts) => *opts,
             ParseResult::Error => panic!("Expected Options, got Error"),
             ParseResult::Exit => panic!("Expected Options, got Exit"),
+            ParseResult::Explain(_) => panic!("Expected Options, got Explain"),
         }
     }
 
@@ -3774,6 +3837,34 @@ mod tests {
     #[test]
     fn parse_version_short() {
         assert!(is_exit(&parse_args_from(&["-V"])));
+    }
+
+    #[test]
+    fn parse_explain_uses_the_compiler_owned_error_code() {
+        let ParseResult::Explain(code) = parse_args_from(&["explain", "E0201"]) else {
+            panic!("expected explain command");
+        };
+        assert_eq!(code, ErrorCode::UNDEFINED_VARIABLE);
+        let explanation = error_code_explanation(code).expect("E0201 explanation");
+        let rendered = render_error_code_explanation(explanation);
+        assert!(rendered.starts_with("E0201: Undefined variable\n"));
+        assert!(rendered.contains("Likely cause:"));
+        assert!(rendered.contains("docs/spec/src/10-modules/03-visibility.md"));
+        assert!(rendered.contains("spec rule 10.3:8"));
+    }
+
+    #[test]
+    fn parse_explain_rejects_bad_unknown_retired_and_uncovered_codes() {
+        for args in [
+            &["explain"][..],
+            &["explain", "E0201", "extra"][..],
+            &["explain", "0201"][..],
+            &["explain", "E9999"][..],
+            &["explain", "E0005"][..],
+            &["explain", "E0206"][..],
+        ] {
+            assert!(is_error(&parse_args_from(args)), "accepted {args:?}");
+        }
     }
 
     // ========== Unknown option tests ==========

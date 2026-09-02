@@ -594,8 +594,13 @@ _CLI_TEST_ABSOLUTIZE = _CLI_TEST_BASE_ABSOLUTIZE + ["RUE_CLI_STAGED_PROGRAMS"]
 #
 # Raised 3800 -> 3900 after later corpus growth pushed the linux-arm64 derived
 # deadline to 3805, preserving that same headroom policy.
-_CLI_TESTS_TIMEOUT_SECONDS = 3900
-_CLI_SHARD_TIMEOUT_SECONDS = 1200
+#
+# Raised 3900 -> 4000 and the shared shard bound 1200 -> 1300 when RUE-437's
+# CLI command cases pushed their derived deadlines to 3903s and 1201s. Both
+# bounds retain the established ~100s growth margin instead of immediately
+# becoming flush with the current corpus again.
+_CLI_TESTS_TIMEOUT_SECONDS = 4000
+_CLI_SHARD_TIMEOUT_SECONDS = 1300
 
 # The bounded premerge CLI corpus in one invocation: the canonical target that a
 # local `./test.sh` full run executes and that the RUE-924 corpus-omission audit
