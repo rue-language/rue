@@ -694,10 +694,11 @@ impl RevisionedQueryDatabase {
             unreachable!("DeclarationSemanticsProjection publishes typed values")
         };
         match value {
-            SemanticNucleusProjectionValue::Available(projection) => Ok(projection.clone()),
+            SemanticNucleusProjectionValue::Available { projection, .. } => Ok(projection.clone()),
             SemanticNucleusProjectionValue::Failure {
                 declaration,
                 failure,
+                ..
             } => Err(SemanticNucleusBatchFailure::Stable {
                 declaration: declaration.clone(),
                 failure: failure.clone(),

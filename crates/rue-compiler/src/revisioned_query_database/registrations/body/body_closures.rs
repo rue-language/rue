@@ -54,7 +54,9 @@ macro_rules! register_body_body_closures {
                                 nominal.anonymous_identity_digest()
                             }
                         };
-                    if let SemanticNucleusProjectionValue::Available(projection) = declarations {
+                    if let SemanticNucleusProjectionValue::Available { projection, .. } =
+                        declarations
+                    {
                         for nominal in projection.anonymous_nominals.iter() {
                             register_body_closure_anonymous_digest(
                                 &mut anonymous_digest_owners,

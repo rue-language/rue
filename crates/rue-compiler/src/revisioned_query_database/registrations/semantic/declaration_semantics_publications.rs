@@ -39,7 +39,7 @@ $runtime
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .lease
                         .clone();
-                    let validation_fallbacks = [
+                    let mut validation_fallbacks = vec![
                         declaration_fallback,
                         closure_fallback,
                         reachability_fallback,
@@ -51,6 +51,11 @@ $runtime
                         &$projection_for_declaration_publication,
                         key.clone(),
                     )?;
+                    let rue_query::QueryOutcome::Success(projection_value) = projection.outcome()
+                    else {
+                        unreachable!("DeclarationSemanticsProjection publishes typed values")
+                    };
+                    validation_fallbacks.push(projection_value.retained_dependencies().clone());
                     let mut pending = context
                         .retain_observed_family(&$artifacts_for_declaration_publication)
                         .expect("candidate artifacts belong to this query runtime");
