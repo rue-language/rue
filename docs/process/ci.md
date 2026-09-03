@@ -158,7 +158,10 @@ names carry the `platform_native_` prefix; the target-independent compiler test
 selection remains in linux-premerge. A new compiler host assertion self-enrolls
 by following that ignore-and-prefix convention. A new native unit target
 self-enrolls through its graph attribute. Neither requires a workflow or
-validator target-list edit.
+validator target-list edit. The fake-tool shell suites (`//:wrapper-script-tests`
+and its siblings) carry the same label so the macOS lane runs them under the
+stock Bash 3.2; the repetition is declared in
+`scripts/validate-test-duplication.py`.
 
 The native lanes set `RUE_PLATFORM_CASE_SELECTION=native` through
 `scripts/run-native-platform-corpus.sh`. Both manifest-driven harnesses then

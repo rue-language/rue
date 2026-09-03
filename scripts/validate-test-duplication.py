@@ -180,6 +180,28 @@ ALLOWANCES = (
         ),
     ),
     Allowance(
+        kind="per-target",
+        targets=(
+            "//:affected-targets-tool-tests",
+            "//:build-sharing-tests",
+            "//:cleanup-script-tests",
+            "//:corpus-action-tests",
+            "//:wrapper-script-tests",
+        ),
+        platforms=("linux-arm64", "linux-x64", "macos-arm64"),
+        reason=(
+            "The fake-tool shell suites exercise scripts that developer Macs "
+            "and the macos-15 runner execute with the stock Bash 3.2, so they "
+            "carry `platform = \"native\"` (RUE-1936, after RUE-1506): the "
+            "macOS execution is the only one that catches a Bash 4 construct or "
+            "a process-model difference, and the Linux premerge pass stays the "
+            "broad-discovery run. They finish in seconds; the linux-arm64 "
+            "repetition is the cost of the label, not a claim of its own. "
+            "Each target here repeats on its own; an overlap BETWEEN any two of "
+            "them is a different fact and is not covered by this entry."
+        ),
+    ),
+    Allowance(
         targets=("//:cli-tests", "//:release-smoke"),
         platforms=("linux-x64",),
         reason=(
