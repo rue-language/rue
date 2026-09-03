@@ -956,14 +956,67 @@ define_error_codes! {
         references: [ErrorCodeReference { title: "Module-scoped top-level names", path: "docs/spec/src/10-modules/05-program-composition.md", rule: Some("10.5:1") }],
     };
     CONST_EXPR_NOT_SUPPORTED = 434;
-    DUPLICATE_VARIANT = 419;
-    UNKNOWN_VARIANT = 420;
-    UNKNOWN_ENUM_TYPE = 421;
+    DUPLICATE_VARIANT = 419 => {
+        explanation: "An enum declaration defines the same variant name more than once. Variant names identify the alternatives of one enum and must be unique within that enum.",
+        likely_cause: "A variant was copied, generated twice, or renamed to a name already used in the same enum. Remove the duplicate or give every variant in the enum a distinct name; another enum may independently use the same variant name.",
+        examples: [
+            ErrorCodeExample { title: "Duplicate variant name", source: "enum Color { Red, Green, Red }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use unique variant names", source: "enum Color { Red, Green, Blue }\nfn main() -> i32 {\n    let color = Color.Blue;\n    0\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Unique enum variant names", path: "docs/spec/src/06-items/03-enums.md", rule: Some("6.3:3") }],
+    };
+    UNKNOWN_VARIANT = 420 => {
+        explanation: "An enum variant expression or pattern names a variant that is not declared by the resolved enum type.",
+        likely_cause: "The variant name is misspelled, belongs to another enum, or was removed or renamed while uses remained. Check the variants declared by the named enum and use the exact matching name.",
+        examples: [
+            ErrorCodeExample { title: "Unknown variant on a known enum", source: "enum Color { Red, Green, Blue }\nfn main() -> i32 {\n    let color = Color.Yellow;\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use a declared variant", source: "enum Color { Red, Green, Blue }\nfn main() -> i32 {\n    let color = Color.Green;\n    0\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Enum variant references", path: "docs/spec/src/06-items/03-enums.md", rule: Some("6.3:4") },
+            ErrorCodeReference { title: "Unknown variants", path: "docs/spec/src/06-items/03-enums.md", rule: Some("6.3:5") },
+        ],
+    };
+    UNKNOWN_ENUM_TYPE = 421 => {
+        explanation: "An enum variant pattern names an enum type that cannot be resolved in that pattern's scope. This diagnostic is specific to enum-pattern lookup; an unresolved bare name in a value expression follows ordinary undefined-name diagnostics instead.",
+        likely_cause: "The pattern's enum name is misspelled, is not visible in the current module, or names a different kind of item. Use an enum type available in the pattern's scope and spell its path correctly.",
+        examples: [
+            ErrorCodeExample { title: "Unknown enum type in a pattern", source: "enum Color { Red, Blue }\nfn main() -> i32 {\n    let color = Color.Red;\n    match color {\n        Shade.Red => 1,\n        _ => 0,\n    }\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use the resolved enum type", source: "enum Color { Red, Blue }\nfn main() -> i32 {\n    let color = Color.Red;\n    match color {\n        Color.Red => 1,\n        Color.Blue => 0,\n    }\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Enum variant pattern syntax", path: "docs/spec/src/04-expressions/07-match-expressions.md", rule: Some("4.7:2") },
+            ErrorCodeReference { title: "Enum variant name lookup", path: "docs/spec/src/06-items/03-enums.md", rule: Some("6.3:4") },
+        ],
+    };
     // 422 (FIELD_WRONG_ORDER) is retired: struct-literal fields may now be
     // given in any order, matched to declared fields by name (RUE-9). Do not
     // reuse the number.
-    FIELD_ACCESS_ON_NON_STRUCT = 423;
-    INVALID_ASSIGNMENT_TARGET = 424;
+    FIELD_ACCESS_ON_NON_STRUCT = 423 => {
+        explanation: "A field-based operation was applied to a non-struct type. Both `.field` access and `@offset_of(Type, field)` require the value or type being inspected to be a struct.",
+        likely_cause: "The expression before `.field` has an unexpected scalar, enum, array, or other non-struct type, or the first argument to `@offset_of` is not a struct type. Check the relevant value or type and name fields only on a struct.",
+        examples: [
+            ErrorCodeExample { title: "Field access on an integer", source: "fn main() -> i32 {\n    let value: i32 = 42;\n    value.answer\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Access a field on a struct", source: "struct Answer { value: i32 }\nfn main() -> i32 {\n    let answer = Answer { value: 42 };\n    answer.value\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Field-access base types", path: "docs/spec/src/04-expressions/12-field-access.md", rule: Some("4.12:3") },
+            ErrorCodeReference { title: "Offset-of arguments", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:92") },
+            ErrorCodeReference { title: "Invalid offset-of types", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:95") },
+        ],
+    };
+    INVALID_ASSIGNMENT_TARGET = 424 => {
+        explanation: "An assignment target is syntactically accepted but does not resolve to a writable place. Writable roots include `let mut` locals, `inout` parameters, and receivers declared `mut self` or `inout self` within their method body; field and index projections from those roots remain places. An exclusive place-returning accessor over writable storage may also form or continue a place. Bare `self`, `borrow self`, ordinary values, and shared accessor results are not writable roots. Other diagnostics separately report places whose roots exist but lack permission to mutate.",
+        likely_cause: "The left-hand side is a temporary value, a value-returning or shared method call, or an accessor chain that does not yield an exclusive place. Assign through a mutable local, an `inout` parameter, an appropriately mutable receiver, a field or array element rooted in one, or an exclusive accessor that denotes writable storage.",
+        examples: [
+            ErrorCodeExample { title: "Assign through a value-returning method", source: "struct Counter {\n    value: i32,\n\n    fn current(self) -> i32 { self.value }\n}\nfn main() {\n    let mut counter = Counter { value: 0 };\n    counter.current() = 42;\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Assign through a mutable field place", source: "struct Counter { value: i32 }\nfn main() -> i32 {\n    let mut counter = Counter { value: 0 };\n    counter.value = 42;\n    counter.value\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Assignment stores into a place", path: "docs/spec/src/05-statements/02-assignment.md", rule: Some("5.2:1") },
+            ErrorCodeReference { title: "Assignment-place forms", path: "docs/spec/src/05-statements/02-assignment.md", rule: Some("5.2:2") },
+        ],
+    };
     INOUT_NON_LVALUE = 425;
     INOUT_EXCLUSIVE_ACCESS = 426;
     BORROW_NON_LVALUE = 427;
@@ -3802,6 +3855,47 @@ mod tests {
             expected
                 .into_iter()
                 .all(|code| error_code_explanation(code).is_some())
+        );
+    }
+
+    #[test]
+    fn active_enum_and_place_explanation_band_is_complete_and_bounded() {
+        let expected = [
+            ErrorCode::DUPLICATE_VARIANT,
+            ErrorCode::UNKNOWN_VARIANT,
+            ErrorCode::UNKNOWN_ENUM_TYPE,
+            ErrorCode::FIELD_ACCESS_ON_NON_STRUCT,
+            ErrorCode::INVALID_ASSIGNMENT_TARGET,
+        ];
+        let active = error_code_metadata()
+            .iter()
+            .filter(|metadata| (419..=424).contains(&metadata.code.0))
+            .map(|metadata| {
+                assert_eq!(metadata.source_path, "crates/rue-error/src/lib.rs");
+                metadata.code
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(active, expected);
+        let explained = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (419..=424)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(explained, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
+        );
+        let retired = ErrorCode(422);
+        assert!(RETIRED_ERROR_CODES.contains(&retired));
+        assert_eq!(error_code_explanation(retired), None);
+        assert_eq!(
+            retired.to_string().parse::<ErrorCode>(),
+            Err(ParseErrorCodeError::Unknown(retired))
         );
     }
 
