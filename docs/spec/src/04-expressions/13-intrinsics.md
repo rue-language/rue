@@ -42,7 +42,8 @@ recognizes. The tables below group names that may appear in any expression
 position (expression intrinsics), only inside a `checked` block (unchecked
 intrinsics, specified in §9.2), or only as an internal checked bridge. Rule
 4.13:5b separately records frontend-reserved names and test infrastructure.
-The contracts for the reserved expression intrinsics are stated in 4.13:5c–e.
+The abort intrinsics `@panic`, `@assert`, `@assert_eq`, and `@assert_ne` are
+specified normatively in 4.13:5c–5g.
 This inventory is kept in sync with the compiler's
 source-intrinsic recognition paths: the RIR type-intrinsic forms, the
 pre-interned names in `crates/rue-air/src/sema/known_symbols.rs`, and the
@@ -55,6 +56,10 @@ Expression intrinsics (usable in any expression position):
 | Intrinsic | Purpose | Arguments | Return Type |
 |-----------|---------|-----------|-------------|
 | `@dbg` | Print debug output | 1 expression (int, bool, or string) | `()` |
+| `@panic` | Abort with a message (§4.13:5c) | 0–1 expressions (text message) | `!` |
+| `@assert` | Abort unless a condition holds (§4.13:5d) | 1 expression (`bool`), 1 optional expression (text message) | `()` |
+| `@assert_eq` | Abort unless two values are equal, reporting both (§4.13:5f) | 2 expressions (one type, comparable with `==`) | `()` |
+| `@assert_ne` | Abort unless two values differ, reporting both (§4.13:5f) | 2 expressions (one type, comparable with `==`) | `()` |
 | `@size_of` | Get type size in bytes | 1 type | `i32` |
 | `@align_of` | Get type alignment in bytes | 1 type | `i32` |
 | `@require_droppable` | Enforce the owning-container element-type gate | 1 type | `()` |
@@ -122,12 +127,11 @@ see rule [6.6:7](@/06-items/06-borrow-accessors.md)):
 
 {{ rule(id="4.13:5b", cat="informative") }}
 
-The compiler frontend reserves the names `@cast`, `@panic`, `@assert`, and
-`@test_preview_gate`. The expression contracts for `@panic`, `@assert`, and
-`@cast` are specified in 4.13:5c, 4.13:5d, and 4.13:5e respectively. The
-`@test_preview_gate()` intrinsic is a zero-argument no-op used only to test the
-preview-feature gating machinery (`--preview test_infra`); it is test
-infrastructure, not a language feature.
+The compiler frontend reserves the names `@cast` and `@test_preview_gate`.
+`@cast` is not a valid conversion intrinsic; its rejection is specified in
+4.13:5e. The `@test_preview_gate()` intrinsic is a zero-argument no-op used only
+to test the preview-feature gating machinery (`--preview test_infra`); it is
+test infrastructure, not a language feature.
 
 {{ rule(id="4.13:5c", cat="dynamic-semantics") }}
 
@@ -148,6 +152,40 @@ a true condition has no effect.
 `@cast` is reserved but not a valid conversion intrinsic. A call to it **MUST**
 be rejected at compile time with a diagnostic directing the programmer to
 `@intCast`.
+
+{{ rule(id="4.13:5f", cat="dynamic-semantics") }}
+
+`@assert_eq(left, right)` and `@assert_ne(left, right)` each take exactly two
+expressions and have type `()`. Both operands **MUST** have the same type, and
+that type **MUST** be one `==` accepts (4.3:3); it is a compile-time error
+otherwise. Each operand is evaluated exactly once, left before right, and read
+without being consumed — the same borrowing `==` performs (4.3:3f). The
+assertion holds when `left == right` does, for `@assert_eq`, and when
+`left != right` does, for `@assert_ne`. When it holds the intrinsic has no
+effect. When it does not, the program writes
+`panic: assertion failed: left == right` (for `@assert_eq`) or
+`panic: assertion failed: left != right` (for `@assert_ne`) to standard error
+and terminates with status 101, exactly as `@assert` does.
+
+{{ rule(id="4.13:5g", cat="informative") }}
+
+Inside a test image the same failure is additionally reported as structured
+data: a record naming the failing kind, the intrinsic's source location, and
+both operands rendered as `expected` and `actual`. Ordinary builds are
+unaffected — the report goes to a descriptor a test runner supplies, and its
+absence is not an error. See
+[docs/process/test-events.md](https://github.com/rue-language/rue/blob/trunk/docs/process/test-events.md)
+for that surface, which is a tooling contract rather than a language rule.
+
+{{ rule(id="4.13:5h") }}
+
+```rue
+fn main() -> i32 {
+    @assert_eq(1 + 1, 2);
+    @assert_ne(1, 2);
+    42
+}
+```
 
 ## `@dbg`
 

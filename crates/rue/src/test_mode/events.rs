@@ -15,6 +15,7 @@
 
 use serde_json::{Map, Value};
 
+use super::diff;
 use super::verdict::Verdict;
 
 /// The event schema version, published in the stream's head event.
@@ -160,10 +161,40 @@ pub(crate) struct FailureRecord {
     pub(crate) signal: Option<i32>,
     pub(crate) location: Option<Location>,
     /// The open, versioned payload ADR-0083 §5.1 reserves for assertion
-    /// libraries. Empty until Phase 2.5's structured comparisons.
+    /// libraries. A comparison failure uses `expected`/`actual` instead.
     pub(crate) payload: Option<String>,
+    /// A comparison failure's two rendered operands and the diff between them
+    /// (ADR-0083 Phase 2.5). **Absent** on every other failure.
+    pub(crate) comparison: Option<Comparison>,
     /// The runner's own explanation, when it could not trust what it read.
     pub(crate) runner_note: Option<String>,
+}
+
+/// What a comparison assertion's failure frame carried, plus the runner's own
+/// diff of it.
+///
+/// The diff is computed here rather than by each consumer for the same reason
+/// every other field is: the event stream and the human rendering are one
+/// computation in one process, so a person and a tool can never be shown two
+/// different accounts of where two values differ.
+#[derive(Debug, Clone)]
+pub(crate) struct Comparison {
+    /// The left operand as the structural printer rendered it.
+    pub(crate) expected: String,
+    /// The right operand as the structural printer rendered it.
+    pub(crate) actual: String,
+    pub(crate) diff: Vec<diff::Hunk>,
+}
+
+impl Comparison {
+    pub(crate) fn new(expected: String, actual: String) -> Self {
+        let diff = diff::diff(&expected, &actual);
+        Self {
+            expected,
+            actual,
+            diff,
+        }
+    }
 }
 
 impl FailureRecord {
@@ -182,6 +213,34 @@ impl FailureRecord {
         }
         if let Some(payload) = &self.payload {
             object.insert("payload".to_owned(), Value::String(payload.clone()));
+        }
+        if let Some(comparison) = &self.comparison {
+            object.insert(
+                "expected".to_owned(),
+                Value::String(comparison.expected.clone()),
+            );
+            object.insert(
+                "actual".to_owned(),
+                Value::String(comparison.actual.clone()),
+            );
+            object.insert(
+                "diff".to_owned(),
+                Value::Array(
+                    comparison
+                        .diff
+                        .iter()
+                        .map(|hunk| {
+                            let mut entry = Map::new();
+                            entry.insert(
+                                "op".to_owned(),
+                                Value::String(hunk.op.as_str().to_owned()),
+                            );
+                            entry.insert("text".to_owned(), Value::String(hunk.text.clone()));
+                            Value::Object(entry)
+                        })
+                        .collect(),
+                ),
+            );
         }
         if let Some(note) = &self.runner_note {
             object.insert("runner_note".to_owned(), Value::String(note.clone()));
@@ -521,6 +580,65 @@ mod tests {
             line.contains("\"scratch_dir\":\"/tmp/rue-test-1-0\""),
             "{line}"
         );
+    }
+
+    /// A comparison failure publishes `expected`, `actual`, and the runner's
+    /// own `diff` — additive fields on the same `1.0` schema, in the same
+    /// alphabetical key order every other object uses (ADR-0083 Phase 2.5).
+    #[test]
+    fn a_comparison_failure_publishes_expected_actual_and_a_diff() {
+        let line = Event::TestFinished(Box::new(TestFinished {
+            id: "app/t.rue::bad".to_owned(),
+            verdict: Verdict::Fail(FailureKind::AssertEq),
+            duration_ms: 5,
+            failure: Some(FailureRecord {
+                kind: "assert_eq".to_owned(),
+                message: "assertion failed: left == right".to_owned(),
+                exit_code: Some(101),
+                comparison: Some(Comparison::new("41".to_owned(), "42".to_owned())),
+                ..FailureRecord::default()
+            }),
+            stdout: Capture::new(Vec::new(), 0, false),
+            stderr: Capture::new(Vec::new(), 0, false),
+            scratch_dir: None,
+            repro: Vec::new(),
+        }))
+        .to_ndjson();
+        assert!(
+            line.contains(
+                "\"failure\":{\"actual\":\"42\",\
+                 \"diff\":[{\"op\":\"equal\",\"text\":\"4\"},\
+                 {\"op\":\"delete\",\"text\":\"1\"},\
+                 {\"op\":\"insert\",\"text\":\"2\"}],\
+                 \"exit_code\":101,\"expected\":\"41\",\"kind\":\"assert_eq\","
+            ),
+            "{line}"
+        );
+        assert!(!line.contains("\"payload\""), "{line}");
+    }
+
+    /// Every other failure carries none of the three: a consumer distinguishes
+    /// a comparison by their presence, not by parsing the kind.
+    #[test]
+    fn a_non_comparison_failure_carries_no_comparison_fields() {
+        let line = Event::TestFinished(Box::new(TestFinished {
+            id: "app/t.rue::bad".to_owned(),
+            verdict: Verdict::Fail(FailureKind::Assert),
+            duration_ms: 1,
+            failure: Some(FailureRecord {
+                kind: "assert".to_owned(),
+                message: "assertion failed".to_owned(),
+                ..FailureRecord::default()
+            }),
+            stdout: Capture::new(Vec::new(), 0, false),
+            stderr: Capture::new(Vec::new(), 0, false),
+            scratch_dir: None,
+            repro: Vec::new(),
+        }))
+        .to_ndjson();
+        assert!(!line.contains("\"expected\""), "{line}");
+        assert!(!line.contains("\"actual\""), "{line}");
+        assert!(!line.contains("\"diff\""), "{line}");
     }
 
     /// Rue strings are arbitrary bytes written raw, so capture is lossless

@@ -2853,7 +2853,7 @@ witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
 | §6.9 call / return / inout copy-out; nested-`return` unwind with scope drops | 6.1:4/5/18, 4.9:1/7, 3.4:5/6b, 3.9:18 |
 | §6.10 loop / break dynamics | 4.8:18/21/22, 3.4:2 |
 | §6.11 drop relation (active enum payload; skip moved; explicit `@drop`; residue order) | 3.9:1/2/4/13/15/18/28/37–39, 6.3:20 |
-| §6.12 overflow/bounds/div-zero/`@panic` traps + exit code | 3.1:6/13, 4.13:5b, 8.1, 8.2, 8.3, Appendix B |
+| §6.12 overflow/bounds/div-zero/`@panic` traps + exit code | 3.1:6/13, 4.13:5c, 8.1, 8.2, 8.3, Appendix B |
 | §6.13 allocation store: handles, views, container equations | 3.7, 3.9 (drop order), 4.3:2 (string content equality); design citations: the RUE-390 ruling, ADR-0035/0041/0043, the RUE-386 str ruling, the RUE-388 linear-element gate |
 | §7 soundness | the informal safety intent throughout ch. 3 and 8 |
 

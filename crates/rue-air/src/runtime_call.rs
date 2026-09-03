@@ -157,6 +157,10 @@ pub enum RuntimeCallKind {
     TestFailureSite,
     /// Report a structured failure on the §5.1 channel, then abort.
     TestFail,
+    /// Report a structured comparison failure — the two rendered operands as
+    /// `expected` and `actual` — on the §5.1 channel, then abort. What
+    /// `@assert_eq` and `@assert_ne` lower to (ADR-0083 Phase 2.5).
+    TestFailComparison,
     /// Write the pinned malformed-selector diagnostic and return.
     TestUsageError,
 }
@@ -326,7 +330,7 @@ const TEST_FAIL: &[RuntimeOperandOrigin] = &[
 ];
 
 impl RuntimeCallKind {
-    pub const ALL: [Self; 46] = [
+    pub const ALL: [Self; 47] = [
         Self::StrByteAt,
         Self::StrCharScalar,
         Self::StrCharNext,
@@ -372,6 +376,7 @@ impl RuntimeCallKind {
         Self::TestComplete,
         Self::TestFailureSite,
         Self::TestFail,
+        Self::TestFailComparison,
         Self::TestUsageError,
     ];
 
@@ -420,6 +425,7 @@ impl RuntimeCallKind {
             Self::TestComplete => RuntimeHelperId::TestComplete,
             Self::TestFailureSite => RuntimeHelperId::TestFailureSite,
             Self::TestFail => RuntimeHelperId::TestFail,
+            Self::TestFailComparison => RuntimeHelperId::TestFailComparison,
             Self::TestUsageError => RuntimeHelperId::TestUsageError,
         }
     }
@@ -463,7 +469,10 @@ impl RuntimeCallKind {
             Self::ByteCopy | Self::ByteMove => BYTE_COPY,
             Self::ByteSet => BYTE_SET,
             Self::TestFailureSite => TEST_FAILURE_SITE,
-            Self::TestFail => TEST_FAIL,
+            // The comparison form carries `kind`, `left`, and `right` where the
+            // open form carries `kind`, `message`, and `payload`: three byte
+            // views either way, so one operand plan serves both.
+            Self::TestFail | Self::TestFailComparison => TEST_FAIL,
         }
     }
 

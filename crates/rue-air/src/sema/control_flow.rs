@@ -2038,7 +2038,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     ty: err_ty,
                     span,
                 });
-                let printer = self.error_printer_symbol(err_ty, span, ctx)?;
+                let printer = self.structural_printer_symbol(err_ty, span, ctx)?;
                 air.add_call(
                     None,
                     printer,
@@ -2111,7 +2111,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// Emit one ADR-0083 §5.1 failure-channel call by its manifest symbol.
-    fn runtime_channel_call(
+    ///
+    /// Shared with the comparison intrinsics (`@assert_eq`/`@assert_ne`,
+    /// ADR-0083 Phase 2.5), which report on the same channel.
+    pub(in crate::sema) fn runtime_channel_call(
         &mut self,
         air: &mut Air,
         runtime: crate::RuntimeCallKind,
@@ -2131,7 +2134,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// Materialize one compiler-authored `str` run in this body.
-    fn synthesized_string(
+    pub(in crate::sema) fn synthesized_string(
         &mut self,
         air: &mut Air,
         ctx: &mut AnalysisContext,
@@ -2147,24 +2150,26 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         })
     }
 
-    /// The body-local call symbol naming `err_ty`'s structural printer.
+    /// The body-local call symbol naming `value_ty`'s structural printer.
     ///
-    /// The identity is the error type alone, so a second `?` site on the same
+    /// The identity is the rendered type alone, so a second site on the same
     /// type reuses this symbol and the request synthesizes one printer for both
-    /// (ADR-0083 §1).
-    fn error_printer_symbol(
+    /// (ADR-0083 §1). Sites are `?` failure arms and the operands of
+    /// `@assert_eq`/`@assert_ne` (Phase 2.5) alike: both render a value the
+    /// same way, so both name the same instance.
+    pub(in crate::sema) fn structural_printer_symbol(
         &mut self,
-        err_ty: Type,
+        value_ty: Type,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<Spur> {
-        if let Some(symbol) = ctx.error_printer_symbols.get(&err_ty) {
+        if let Some(symbol) = ctx.error_printer_symbols.get(&value_ty) {
             return Ok(*symbol);
         }
-        let owner = self.canonical_type_instance(err_ty).map_err(|failure| {
+        let owner = self.canonical_type_instance(value_ty).map_err(|failure| {
             CompileError::new(
                 ErrorKind::InternalError(format!(
-                    "test-body `?` could not name its error type: {failure:?}"
+                    "a structural printer could not name its value type: {failure:?}"
                 )),
                 span,
             )
@@ -2175,7 +2180,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             symbol,
             crate::FunctionInstanceKey::ErrorPrinter(Node::new(owner)),
         );
-        ctx.error_printer_symbols.insert(err_ty, symbol);
+        ctx.error_printer_symbols.insert(value_ty, symbol);
         Ok(symbol)
     }
 

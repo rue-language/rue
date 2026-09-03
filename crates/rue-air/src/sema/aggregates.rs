@@ -182,6 +182,39 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ))
     }
 
+    /// Lower one comparison over two already-analyzed operands.
+    ///
+    /// This is the single comparison lowering. `==`/`!=`/`<`/… reach it from
+    /// `analyze_comparison` once their operands are analyzed, and
+    /// `@assert_eq`/`@assert_ne` reach it with the operands they evaluated once
+    /// for both the comparison and the rendering (ADR-0083 Phase 2.5). Sharing
+    /// it is what keeps `@assert_eq(a, b)` and `a == b` from being two answers
+    /// to the same question: the aggregate route (a `StrBuf`'s borrowed
+    /// `equals_borrowed`, 4.3:3) is reachable only here, so an intrinsic that
+    /// built its own `Eq` node would silently compare two string headers.
+    pub(super) fn build_comparison(
+        &mut self,
+        air: &mut Air,
+        comparison: AirInstData,
+        lhs: AnalysisResult,
+        rhs: AnalysisResult,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        if matches!(comparison, AirInstData::Eq(..) | AirInstData::Ne(..))
+            && let Some(result) =
+                self.try_prepare_aggregate_equality(air, &comparison, lhs, rhs, span, ctx)?
+        {
+            return Ok(result);
+        }
+        let air_ref = air.add_inst(AirInst {
+            data: comparison,
+            ty: Type::BOOL,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::BOOL))
+    }
+
     /// Prepare source-defined aggregate equality when the aggregate provides
     /// the canonical borrowed equality method.
     pub(super) fn try_prepare_aggregate_equality(

@@ -215,6 +215,9 @@ macro_rules! call_runtime_helper_implementation {
     (__rue_test_fail($($argument:expr),*)) => {
         crate::test_channel::__rue_test_fail($($argument),*)
     };
+    (__rue_test_fail_comparison($($argument:expr),*)) => {
+        crate::test_channel::__rue_test_fail_comparison($($argument),*)
+    };
     (__rue_test_usage_error($($argument:expr),*)) => {
         crate::test_channel::__rue_test_usage_error($($argument),*)
     };

@@ -59,6 +59,11 @@ pub struct KnownSymbols {
     pub panic: Spur,
     /// The `assert` intrinsic symbol.
     pub assert: Spur,
+    /// The `assert_eq` intrinsic symbol — the comparison family's equality
+    /// form (ADR-0083 Phase 2.5, spec 4.13:5f).
+    pub assert_eq: Spur,
+    /// The `assert_ne` intrinsic symbol — the same family's inequality form.
+    pub assert_ne: Spur,
     /// The `read_line` intrinsic symbol.
     pub read_line: Spur,
     /// The `to_string` intrinsic symbol - formats an i64 as a decimal String.
@@ -223,6 +228,8 @@ impl KnownSymbols {
             cast: intern("cast")?,
             panic: intern("panic")?,
             assert: intern("assert")?,
+            assert_eq: intern("assert_eq")?,
+            assert_ne: intern("assert_ne")?,
             read_line: intern("read_line")?,
             to_string: intern("to_string")?,
             print: intern("print")?,
@@ -313,6 +320,8 @@ mod tests {
         assert_eq!(interner.resolve(&known.cast), "cast");
         assert_eq!(interner.resolve(&known.panic), "panic");
         assert_eq!(interner.resolve(&known.assert), "assert");
+        assert_eq!(interner.resolve(&known.assert_eq), "assert_eq");
+        assert_eq!(interner.resolve(&known.assert_ne), "assert_ne");
         assert_eq!(interner.resolve(&known.read_line), "read_line");
         assert_eq!(interner.resolve(&known.print), "print");
         assert_eq!(interner.resolve(&known.println), "println");

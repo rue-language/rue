@@ -30,7 +30,7 @@ blocks (§1); discovery is the import closure for the MVP, with the
 unimported-test-file warning (§1); `--filter` narrows the run set and never
 the analysis root set (§2); and the structured failure channel is a
 dedicated inherited pipe (§5.1). Phases 1 through 2.5 (RUE-1618, RUE-1619,
-RUE-1620) are authorized to proceed on that basis.
+RUE-1620) are authorized to proceed on that basis, and are complete.
 
 Acceptance does not settle the lower-impact calls that Open Questions marks
 decidable within their phase — exit codes, `@assert` stabilization, the
@@ -329,14 +329,16 @@ $ rue test app/main.rue --filter parse_port      # run a subset
   per-test verdict, §3), `cached_pass`, and the `ice` failure kind are
   reserved in the schema for the deferred work (§6) and are unproducible in
   the MVP, whose whole-run compile failure is exit code `2`. A **failure
-  record** is data: kind (`assert` / `unhandled_error` / `trap:<class>` /
-  `exit` / `signal` / `timeout` / `output_overflow` / `incomplete` — the
-  last for exit 0 with no completion record, §3), the pinned runtime
-  message, exit code or signal, and a source location — the test
-  declaration's span, except `unhandled_error`, which carries the failing
-  `?` site (§1). Payload and location fields are extension points: richer
-  expected/actual payloads arrive through the failure channel (§5.1) as
-  additive minors, never by parsing prose. `capability_summary` is present
+  record** is data: kind (`assert` / `assert_eq` / `assert_ne` /
+  `unhandled_error` / `trap:<class>` / `exit` / `signal` / `timeout` /
+  `output_overflow` / `incomplete` — the last for exit 0 with no completion
+  record, §3), the pinned runtime message, exit code or signal, and a source
+  location — the test declaration's span, except `unhandled_error` and the
+  comparison kinds, which carry their own site (§1). Payload and location
+  fields are extension points, and Phase 2.5 used them: a comparison failure
+  carries `expected`, `actual`, and the runner's `diff` of the two as
+  additive minors on the same `1.0` schema, never as prose to be parsed.
+  `capability_summary` is present
   from v1.0 as `{"status": "unavailable"}` — zero claims, stated in-band —
   and is populated by the deferred capability ADR (§6) as an additive
   change inside a field consumers already handle.
@@ -501,10 +503,10 @@ eject-don't-degrade soundness posture the deferred capability ADR ratifies
 
 The channel through which a failing test reports structure — kind, message,
 expected/actual payload, failing-call-site location — is a documented
-runtime protocol. `@assert` today, `@assert_eq` in Phase 2.5, and the
-test-body `?` failure arm (§1) are sugar over the same channel any Rue
-function can invoke before aborting; user libraries emit the same records,
-and the stream carries them without knowing who produced them.
+runtime protocol. `@assert`, the comparison family `@assert_eq`/`@assert_ne`
+(Phase 2.5), and the test-body `?` failure arm (§1) are sugar over the same
+channel any Rue function can invoke before aborting; user libraries emit the
+same records, and the stream carries them without knowing who produced them.
 
 The mechanism — **ruled 2026-08-23** — is a **dedicated inherited pipe**:
 its own file descriptor, pinned in the §3 exec contract, written through a
@@ -664,10 +666,21 @@ companion project "rue test follow-ups" (§6).
       `main`), RUE-1918 (declared test-candidate inventory and the orphan
       warning), RUE-1920 (the `rue test` subcommand, runner, and event stream),
       RUE-1921 (`?` in test bodies with unwrap-and-report semantics).
-- [ ] **Phase 2.5: structured assertion payloads** - RUE-1620. `@assert_eq`
-      (and a minimal comparison family) as intrinsics producing
-      expected/actual through the §5.1 channel; machine-computed diffs in
-      `test_finished` events; human renderer built from the same payloads.
+- [x] **Phase 2.5: structured assertion payloads** - RUE-1620. `@assert_eq`
+      and `@assert_ne` as intrinsics producing expected/actual through the
+      §5.1 channel — one new runtime helper,
+      `__rue_test_fail_comparison` (ABI version 3), whose record carries the
+      two rendered operands where the open form carries a message and a
+      payload; machine-computed diffs in `test_finished` events, computed
+      once in the runner so the stream and the human rendering are one
+      computation; the human renderer built from those same values, with a
+      caret for a single-line pair and a `-`/`+` hunk listing for a
+      multi-line one. The family reuses the ordinary equality lowering and
+      the §1 structural printer rather than growing paths of its own, and
+      lowers identically inside and outside a test image. Settled the
+      `@assert` stabilization question below: the intrinsics are normative
+      (spec 4.13:5c - 4.13:5g) and assertion failure keeps exit 101,
+      distinguished by its pinned message.
       Pulled ahead of all deferred work deliberately: unstructured failure
       output is the primary agent token sink, and a runner that is
       agent-first in transport but prose in content has not met the bar.
@@ -810,10 +823,16 @@ site.
 
 ### Lower-impact decisions (decidable within their phase)
 
-- **Exit-code and `@assert` stabilization**: promote `@assert`/`@panic`
-  from the reserved intrinsic bucket (4.13:5b) to normative, and decide
-  whether assertion failure keeps exit 101 (recommended; distinguished by
-  pinned message) or gets a distinct code.
+- **Exit-code and `@assert` stabilization**: **settled in Phase 2.5
+  (RUE-1620)** as the recommendation. `@panic`, `@assert`, `@assert_eq`, and
+  `@assert_ne` left the reserved intrinsic bucket (4.13:5b) for normative
+  rules 4.13:5c - 4.13:5g, and assertion failure keeps exit **101**,
+  distinguished by its pinned message rather than by a status of its own. A
+  distinct code was rejected for the reason the taxonomy already relies on:
+  the runner classifies an abort by the last pinned stderr line, not by the
+  status, so a second status would add a number to branch on without adding
+  anything to distinguish — while costing every shell script that treats 101
+  as "the Rue program trapped" a special case.
 - **Exit-code contract** (§2): **settled in Phase 2c (RUE-1920)** as the
   0/1/2/3 proposal, empty-selection-as-error included, and published in
   `docs/process/test-events.md`. Everything that stops a `rue test` run from

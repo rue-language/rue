@@ -114,9 +114,10 @@ diagnostic and terminate the process with the runtime-error status.
 
 ## The test failure channel
 
-Five helpers exist only for `rue test` (ADR-0083 §3, §5.1). They are runner
-plumbing: no source spelling selects them, and the synthesized dispatcher `main`
-of a test image is their only caller in this revision.
+Six helpers implement the ADR-0083 §3 and §5.1 channel. Three are dispatcher
+plumbing no source spelling selects; the reporting helpers are what a test
+body's `?` and the comparison assertions lower to, in an ordinary executable as
+well as in a test image.
 
 - `__rue_test_normalize_process` narrows the captured argument count to one, so
   a test observes the pinned inventory rather than the selector it was
@@ -128,9 +129,23 @@ of a test image is their only caller in this revision.
   is register-only and x86-64 affords six. The first stages the location, the
   second emits the record and takes the ordinary panic path; nothing runs
   between them, and the staged file bytes must stay readable across both.
+- `__rue_test_fail_comparison` is the same terminal call for a comparison
+  assertion (Phase 2.5, ABI version 3): it carries the two rendered operands as
+  the record's `expected` and `actual` where `__rue_test_fail` carries a message
+  and the open payload. Its message is not a parameter — it is pinned by the
+  kind, `assertion failed: left == right` for `assert_eq` and
+  `assertion failed: left != right` for `assert_ne` — which is what keeps a
+  six-register call able to carry both operands. It pairs with
+  `__rue_test_failure_site` under the same adjacency rule.
 - `__rue_test_usage_error` writes one pinned diagnostic for a malformed
   selector and *returns*, unlike every other stderr-writing runtime path,
   because the dispatcher owns that case's exit status.
+
+`@assert_eq(l, r)` and `@assert_ne(l, r)` compile to the ordinary equality
+lowering plus, on the failing branch, the two rendering calls and this pair. The
+lowering does not depend on whether the request is a test one: an ordinary
+process simply has no descriptor 3, so the frame write fails with `EBADF` as
+designed and the pinned stderr message plus exit 101 is the whole report.
 
 The completion and failure records go to a dedicated inherited descriptor,
 number 3, one JSON object per line. Writes are best-effort: a test image run by

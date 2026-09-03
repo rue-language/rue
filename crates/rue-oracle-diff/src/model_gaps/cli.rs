@@ -363,6 +363,25 @@ const ENTRIES: &[Entry] = &[
         external(ExternalDependencyKind::SystemCall),
         &["x86-64-linux"],
     ),
+    // A failing `@assert_eq` renders both operands first (ADR-0083 Phase 2.5),
+    // and the compiler-synthesized structural printer opens by taking a bounded
+    // buffer from the allocation helper — reached as a runtime call, since the
+    // printer is written directly in semantic-body form rather than in source
+    // that could spell `@alloc`. The interpreter stops there, before the
+    // failure-channel calls the rendering precedes, so `@alloc` is the whole
+    // gap. The passing comparisons in the same section never reach it.
+    Entry::new(
+        "cli.rue_test_assert",
+        "an_ordinary_build_names_the_inequality_it_checked",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    Entry::new(
+        "cli.rue_test_assert",
+        "an_ordinary_build_traps_with_the_pinned_message",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
     Entry::new(
         "cli.slices",
         "slice_param_empty_array_len_zero",

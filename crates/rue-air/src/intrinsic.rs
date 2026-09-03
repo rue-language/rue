@@ -522,13 +522,17 @@ impl IntrinsicOperation {
             | RuntimeCallKind::StrPrintProjected
             | RuntimeCallKind::StrPrintlnAggregate
             | RuntimeCallKind::StrPrintlnProjected
-            // The ADR-0083 test channel is dispatcher and runner plumbing. No
-            // source spelling selects it, so it has no intrinsic identity —
-            // `@assert_eq` (Phase 2.5) is what will give `TestFail` one.
+            // The ADR-0083 test channel has no intrinsic identity. The
+            // dispatcher's own helpers are runner plumbing no source spelling
+            // selects; the reporting helpers are reached by a test body's `?`
+            // and by `@assert_eq`/`@assert_ne`, which emit the calls directly
+            // rather than through an `IntrinsicOperation` — a comparison is a
+            // branch around a pair of calls, not one conditional runtime call.
             | RuntimeCallKind::TestNormalizeProcess
             | RuntimeCallKind::TestComplete
             | RuntimeCallKind::TestFailureSite
             | RuntimeCallKind::TestFail
+            | RuntimeCallKind::TestFailComparison
             | RuntimeCallKind::TestUsageError => return None,
         })
     }
@@ -884,9 +888,9 @@ mod tests {
 
     // Every runtime call with no intrinsic spelling: the string and formatting
     // family, which sema selects from ordinary method calls, and the ADR-0083
-    // test channel, which only the synthesized dispatcher and the runner's own
-    // sugar reach.
-    const ORDINARY_CALL_ONLY: [RuntimeCallKind; 16] = [
+    // test channel, which the synthesized dispatcher and the assertion sugar
+    // emit as direct calls rather than through an `IntrinsicOperation`.
+    const ORDINARY_CALL_ONLY: [RuntimeCallKind; 17] = [
         RuntimeCallKind::StrByteAt,
         RuntimeCallKind::StrCharScalar,
         RuntimeCallKind::StrCharNext,
@@ -902,6 +906,7 @@ mod tests {
         RuntimeCallKind::TestComplete,
         RuntimeCallKind::TestFailureSite,
         RuntimeCallKind::TestFail,
+        RuntimeCallKind::TestFailComparison,
         RuntimeCallKind::TestUsageError,
     ];
 
@@ -1011,7 +1016,7 @@ mod tests {
             EXACT_RUNTIME_MAPPINGS.map(|(_, runtime)| runtime),
             "the exact intrinsic-to-runtime map drifted"
         );
-        assert_eq!(RuntimeCallKind::ALL.len(), 46);
+        assert_eq!(RuntimeCallKind::ALL.len(), 47);
         for kind in RuntimeCallKind::ALL {
             assert_eq!(
                 IntrinsicOperation::from_runtime_call(kind).is_some(),
