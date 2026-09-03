@@ -457,6 +457,72 @@ compile_stdout_contains = ["E0499: Container element is linear", "Instantiate a 
 compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
+# The active control-flow tranche covers loop targets and the exact trusted
+# Option/Result rules for `?`. Invalid source pins every `explain` invocation
+# as a non-compiling metadata path.
+[[case]]
+name = "break_outside_loop_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0500"]
+compile_only = true
+compile_stdout_contains = ["E0500: Break outside loop", "Break from a function body:", "Break from an enclosing loop:", "docs/spec/src/04-expressions/08-loop-expressions.md (spec rule 4.8:9)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "continue_outside_loop_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0501"]
+compile_only = true
+compile_stdout_contains = ["E0501: Continue outside loop", "Continue from a function body:", "Continue an enclosing loop:", "docs/spec/src/04-expressions/08-loop-expressions.md (spec rule 4.8:9)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "break_with_value_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0502"]
+compile_only = true
+compile_stdout_contains = ["E0502: Break with value", "Break with a value operand:", "Store the value before breaking:", "docs/spec/src/04-expressions/08-loop-expressions.md (spec rule 4.8:22)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "question_outside_option_function_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0503"]
+compile_only = true
+compile_stdout_contains = ["E0503: Question outside option fn", "Propagate Option from a plain-value function:", "Return trusted Option before propagating:", "docs/spec/src/04-expressions/15-try-expressions.md (spec rule 4.15:4)", "docs/spec/src/04-expressions/15-try-expressions.md (spec rule 4.15:7)"]
+compile_stdout_not_contains = ["Compiled", "error conversion"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "question_on_non_option_or_result_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0504"]
+compile_only = true
+compile_stdout_contains = ["E0504: Question on non option", "neither an exact specialization", "Apply try to a plain integer:", "Apply try to a trusted Option:", "docs/spec/src/04-expressions/15-try-expressions.md (spec rule 4.15:3)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "question_outside_result_function_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0505"]
+compile_only = true
+compile_stdout_contains = ["E0505: Question outside result fn", "Propagate Result from a plain-value function:", "Return trusted Result before propagating:", "docs/spec/src/04-expressions/15-try-expressions.md (spec rule 4.15:4)"]
+compile_stdout_not_contains = ["Compiled", "error conversion"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "question_result_error_type_mismatch_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0506"]
+compile_only = true
+compile_stdout_contains = ["E0506: Question err type mismatch", "does not perform error conversion", "Propagate a different Result error type:", "Use the same Result error type:", "docs/spec/src/04-expressions/15-try-expressions.md (spec rule 4.15:4)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
 [[case]]
 name = "malformed_code_is_rejected"
 files = [{ path = "main.rue", source = "fn main() {}\n" }]
