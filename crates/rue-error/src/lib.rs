@@ -192,6 +192,17 @@ fn error_code_category(code: ErrorCode) -> Option<ErrorCodeCategory> {
 pub struct ErrorCodeExample {
     pub title: &'static str,
     pub source: &'static str,
+    /// The result the canonical compiler must produce for this example.
+    pub outcome: ErrorCodeExampleOutcome,
+}
+
+/// The compiler result promised by an [`ErrorCodeExample`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorCodeExampleOutcome {
+    /// Compilation fails with the code that owns the example.
+    EmitsThisCode,
+    /// Compilation succeeds.
+    Compiles,
 }
 
 /// A canonical local reference attached to an error-code explanation.
@@ -316,7 +327,34 @@ define_error_codes! {
     // ========================================================================
     // Semantic errors (E0200-E0399)
     // ========================================================================
-    NO_MAIN_FUNCTION = 200;
+    NO_MAIN_FUNCTION = 200 => {
+        explanation: "Rue could not find the program entry-point function `main` in the root module.",
+        likely_cause: "The entry function is missing, is misspelled, or is declared only in an imported module. An executable Rue program must define `main` in its root source module.",
+        examples: [
+            ErrorCodeExample {
+                title: "Root module without main",
+                source: "fn start() -> i32 {\n    0\n}",
+                outcome: ErrorCodeExampleOutcome::EmitsThisCode,
+            },
+            ErrorCodeExample {
+                title: "Define the root entry point",
+                source: "fn main() -> i32 {\n    0\n}",
+                outcome: ErrorCodeExampleOutcome::Compiles,
+            },
+        ],
+        references: [
+            ErrorCodeReference {
+                title: "Program entry point",
+                path: "docs/spec/src/06-items/01-functions.md",
+                rule: Some("6.1:7"),
+            },
+            ErrorCodeReference {
+                title: "Root-module entry point",
+                path: "docs/spec/src/06-items/01-functions.md",
+                rule: Some("6.1:38"),
+            },
+        ],
+    };
     UNDEFINED_VARIABLE = 201 => {
         explanation: "Rue could not resolve a variable, constant, or enum type name used in an expression.",
         likely_cause: "The name is misspelled, is outside its lexical scope, or belongs to another module and was used without that module's binding.",
@@ -324,10 +362,12 @@ define_error_codes! {
             ErrorCodeExample {
                 title: "Undefined local",
                 source: "fn main() -> i32 {\n    answer\n}",
+                outcome: ErrorCodeExampleOutcome::EmitsThisCode,
             },
             ErrorCodeExample {
                 title: "Define the name before use",
                 source: "fn main() -> i32 {\n    let answer = 42;\n    answer\n}",
+                outcome: ErrorCodeExampleOutcome::Compiles,
             },
         ],
         references: [
@@ -338,23 +378,235 @@ define_error_codes! {
             },
         ],
     };
-    UNDEFINED_FUNCTION = 202;
-    ASSIGN_TO_IMMUTABLE = 203;
-    UNKNOWN_TYPE = 204;
-    USE_AFTER_MOVE = 205;
-    TYPE_MISMATCH = 206;
-    WRONG_ARGUMENT_COUNT = 207;
-    MOVE_WHILE_CALL_LOANED = 208;
-    UNEXPECTED_CALL_ARGUMENT_MODE = 209;
+    UNDEFINED_FUNCTION = 202 => {
+        explanation: "Rue could not resolve the function named by a call expression.",
+        likely_cause: "The function name is misspelled, is outside the current module's visible scope, or should be called through an imported module binding.",
+        examples: [
+            ErrorCodeExample {
+                title: "Call to an undefined function",
+                source: "fn main() -> i32 {\n    compute()\n}",
+                outcome: ErrorCodeExampleOutcome::EmitsThisCode,
+            },
+            ErrorCodeExample {
+                title: "Define the called function",
+                source: "fn compute() -> i32 { 42 }\nfn main() -> i32 {\n    compute()\n}",
+                outcome: ErrorCodeExampleOutcome::Compiles,
+            },
+        ],
+        references: [ErrorCodeReference {
+            title: "Module visibility and name resolution",
+            path: "docs/spec/src/10-modules/03-visibility.md",
+            rule: Some("10.3:8"),
+        }],
+    };
+    ASSIGN_TO_IMMUTABLE = 203 => {
+        explanation: "Rue rejected an assignment because its target belongs to a binding that was not declared mutable.",
+        likely_cause: "A variable, array, or struct value was introduced with `let` and later used as an assignment target. Bind it with `let mut` when mutation is intended.",
+        examples: [
+            ErrorCodeExample {
+                title: "Assignment to an immutable binding",
+                source: "fn main() -> i32 {\n    let value = 0;\n    value = 42;\n    value\n}",
+                outcome: ErrorCodeExampleOutcome::EmitsThisCode,
+            },
+            ErrorCodeExample {
+                title: "Declare the binding mutable",
+                source: "fn main() -> i32 {\n    let mut value = 0;\n    value = 42;\n    value\n}",
+                outcome: ErrorCodeExampleOutcome::Compiles,
+            },
+        ],
+        references: [ErrorCodeReference {
+            title: "Variable assignment",
+            path: "docs/spec/src/05-statements/02-assignment.md",
+            rule: Some("5.2:3"),
+        }],
+    };
+    UNKNOWN_TYPE = 204 => {
+        explanation: "Rue could not resolve a name used where a type was required.",
+        likely_cause: "The type name is misspelled, is outside the current module's visible scope, or belongs to an imported module but was written without that module binding.",
+        examples: [
+            ErrorCodeExample {
+                title: "Unknown annotation type",
+                source: "fn main() -> i32 {\n    let value: Number = 42;\n    value\n}",
+                outcome: ErrorCodeExampleOutcome::EmitsThisCode,
+            },
+            ErrorCodeExample {
+                title: "Use a type in scope",
+                source: "fn main() -> i32 {\n    let value: i32 = 42;\n    value\n}",
+                outcome: ErrorCodeExampleOutcome::Compiles,
+            },
+        ],
+        references: [ErrorCodeReference {
+            title: "Module visibility and name resolution",
+            path: "docs/spec/src/10-modules/03-visibility.md",
+            rule: Some("10.3:8"),
+        }],
+    };
+    USE_AFTER_MOVE = 205 => {
+        explanation: "Rue found a use of a move-type value after ownership of that value had already been transferred.",
+        likely_cause: "A struct or another non-`Copy` value was assigned, passed by value, or returned and then used again. Use the new owner, borrow the original when ownership need not transfer, or reinitialize the moved place before reusing it.",
+        examples: [
+            ErrorCodeExample {
+                title: "Use after ownership moves",
+                source: "struct Point { x: i32 }\nfn main() -> i32 {\n    let point = Point { x: 42 };\n    let moved = point;\n    point.x\n}",
+                outcome: ErrorCodeExampleOutcome::EmitsThisCode,
+            },
+            ErrorCodeExample {
+                title: "Use the new owner",
+                source: "struct Point { x: i32 }\nfn main() -> i32 {\n    let point = Point { x: 42 };\n    let moved = point;\n    moved.x\n}",
+                outcome: ErrorCodeExampleOutcome::Compiles,
+            },
+        ],
+        references: [ErrorCodeReference {
+            title: "Use after move",
+            path: "docs/spec/src/03-types/08-move-semantics.md",
+            rule: Some("3.8:5"),
+        }],
+    };
+    TYPE_MISMATCH = 206 => {
+        explanation: "An expression's type was incompatible with the type required by its surrounding context.",
+        likely_cause: "A return value, call argument, assignment, annotation, operator operand, or other expected-type position received a different concrete type without an allowed coercion.",
+        examples: [
+            ErrorCodeExample {
+                title: "Wrong return type",
+                source: "fn main() -> i32 {\n    true\n}",
+                outcome: ErrorCodeExampleOutcome::EmitsThisCode,
+            },
+            ErrorCodeExample {
+                title: "Return the declared type",
+                source: "fn main() -> i32 {\n    0\n}",
+                outcome: ErrorCodeExampleOutcome::Compiles,
+            },
+        ],
+        references: [ErrorCodeReference {
+            title: "Type compatibility",
+            path: "docs/spec/src/03-types/11-type-inference.md",
+            rule: Some("3.11:8"),
+        }],
+    };
+    WRONG_ARGUMENT_COUNT = 207 => {
+        explanation: "A call-like construct supplied the wrong number of values or bindings. This applies to function and built-in calls, enum tuple-variant construction (including a payload variant used as a bare value), and enum payload patterns with an explicit binding list.",
+        likely_cause: "A function or built-in call has a missing or extra argument; an enum value supplies the wrong number of payload values; a payload-carrying variant was used without constructing its payload; or a match pattern's parenthesized bindings do not match the variant's payload arity.",
+        examples: [
+            ErrorCodeExample {
+                title: "Missing call argument",
+                source: "fn identity(value: i32) -> i32 { value }\nfn main() -> i32 {\n    identity()\n}",
+                outcome: ErrorCodeExampleOutcome::EmitsThisCode,
+            },
+            ErrorCodeExample {
+                title: "Supply every argument",
+                source: "fn identity(value: i32) -> i32 { value }\nfn main() -> i32 {\n    identity(42)\n}",
+                outcome: ErrorCodeExampleOutcome::Compiles,
+            },
+        ],
+        references: [
+            ErrorCodeReference {
+                title: "Call argument arity and modes",
+                path: "docs/spec/src/04-expressions/10-call-expressions.md",
+                rule: Some("4.10:3"),
+            },
+            ErrorCodeReference {
+                title: "Enum payload-pattern arity",
+                path: "docs/spec/src/04-expressions/07-match-expressions.md",
+                rule: Some("4.7:30"),
+            },
+            ErrorCodeReference {
+                title: "Enum tuple-variant construction",
+                path: "docs/spec/src/06-items/03-enums.md",
+                rule: Some("6.3:16"),
+            },
+        ],
+    };
+    MOVE_WHILE_CALL_LOANED = 208 => {
+        explanation: "One call both loaned a non-`Copy` value through `borrow` or `inout` and tried to move that same value into another by-value argument.",
+        likely_cause: "Two arguments are rooted in the same binding, with one passed by reference and the other consuming the value. The loan spans the entire call, so the move would leave it referring to moved-from storage.",
+        examples: [
+            ErrorCodeExample {
+                title: "Move and loan in one call",
+                source: "struct Resource { id: i32 }\nfn use_both(inout left: Resource, right: Resource) {}\nfn main() {\n    let mut resource = Resource { id: 1 };\n    use_both(inout resource, resource);\n}",
+                outcome: ErrorCodeExampleOutcome::EmitsThisCode,
+            },
+            ErrorCodeExample {
+                title: "Use distinct owners",
+                source: "struct Resource { id: i32 }\nfn use_both(inout left: Resource, right: Resource) {}\nfn main() {\n    let mut left = Resource { id: 1 };\n    let right = Resource { id: 2 };\n    use_both(inout left, right);\n}",
+                outcome: ErrorCodeExampleOutcome::Compiles,
+            },
+        ],
+        references: [ErrorCodeReference {
+            title: "Moves that overlap call loans",
+            path: "docs/spec/src/06-items/01-functions.md",
+            rule: Some("6.1:36"),
+        }],
+    };
+    UNEXPECTED_CALL_ARGUMENT_MODE = 209 => {
+        explanation: "A call marked an argument `borrow` or `inout`, but the corresponding parameter is an ordinary unmarked parameter.",
+        likely_cause: "The call-site mode does not exactly match the function signature. Remove the keyword for a by-value parameter, or change the parameter mode if the function is meant to borrow or mutate caller-owned storage.",
+        examples: [
+            ErrorCodeExample {
+                title: "Borrow marker for an unmarked parameter",
+                source: "fn take(value: i32) -> i32 { value }\nfn main() -> i32 {\n    let value = 42;\n    take(borrow value)\n}",
+                outcome: ErrorCodeExampleOutcome::EmitsThisCode,
+            },
+            ErrorCodeExample {
+                title: "Match the parameter mode",
+                source: "fn take(value: i32) -> i32 { value }\nfn main() -> i32 {\n    let value = 42;\n    take(value)\n}",
+                outcome: ErrorCodeExampleOutcome::Compiles,
+            },
+        ],
+        references: [ErrorCodeReference {
+            title: "Call argument arity and modes",
+            path: "docs/spec/src/04-expressions/10-call-expressions.md",
+            rule: Some("4.10:3"),
+        }],
+    };
     /// Whole-value assignment to a second-class `inout str` view. The view
     /// grants exclusive access to the caller's bytes; it is not a first-class
     /// string header that may be rebound (RUE-641).
-    STR_VIEW_REASSIGNMENT = 210;
+    STR_VIEW_REASSIGNMENT = 210 => {
+        explanation: "Rue rejected whole-value assignment to an `inout str` view. The view may access caller-owned bytes, but its two-word view header is not an assignable string value.",
+        likely_cause: "Code inside a function with an `inout str` parameter tried to replace the parameter binding, such as `text = \"new\"`. Mutate through operations supported by the view, or replace the caller's concrete buffer outside the view-taking function.",
+        examples: [
+            ErrorCodeExample {
+                title: "Reassign an exclusive string view",
+                source: "fn replace(inout text: str) {\n    text = \"new\";\n}\nfn main() {\n    let mut text: Str(8) = \"old\";\n    replace(inout text);\n}",
+                outcome: ErrorCodeExampleOutcome::EmitsThisCode,
+            },
+            ErrorCodeExample {
+                title: "Read through the view without rebinding it",
+                source: "fn length(inout text: str) -> u64 {\n    text.len()\n}\nfn main() -> i32 {\n    let mut text: Str(8) = \"old\";\n    @intCast(length(inout text))\n}",
+                outcome: ErrorCodeExampleOutcome::Compiles,
+            },
+        ],
+        references: [ErrorCodeReference {
+            title: "First-class strings and borrowed views",
+            path: "docs/spec/src/03-types/07-string-type.md",
+            rule: Some("3.7:58"),
+        }],
+    };
     /// The executable entry point has parameters or a return type other than
     /// `i32` or `()` (spec 6.1:8, RUE-778). The runtime calls `main` with no
     /// arguments and consumes either its status code or the unit value, so a
     /// different source signature would violate the entry ABI.
-    INVALID_MAIN_SIGNATURE = 211;
+    INVALID_MAIN_SIGNATURE = 211 => {
+        explanation: "The root module's `main` function does not match Rue's fixed executable entry signature.",
+        likely_cause: "`main` declares a runtime or `comptime` parameter, or returns a type other than `i32` or `()`. The runtime supplies no source-level arguments and accepts only those two return forms.",
+        examples: [
+            ErrorCodeExample {
+                title: "Entry point with a parameter",
+                source: "fn main(value: i32) -> i32 {\n    value\n}",
+                outcome: ErrorCodeExampleOutcome::EmitsThisCode,
+            },
+            ErrorCodeExample {
+                title: "Use the executable entry signature",
+                source: "fn main() -> i32 {\n    0\n}",
+                outcome: ErrorCodeExampleOutcome::Compiles,
+            },
+        ],
+        references: [ErrorCodeReference {
+            title: "Main function signature",
+            path: "docs/spec/src/06-items/01-functions.md",
+            rule: Some("6.1:8"),
+        }],
+    };
     // E0250-E0261 form the borrow-accessor block (ADR-0062, RUE-662). The
     // ownership/borrow family's E04xx band is at its ceiling (E0499), so
     // accessor diagnostics live here in the semantic band instead.
@@ -3048,13 +3300,54 @@ mod tests {
             assert!(!explanation.likely_cause.is_empty());
             assert!((1..=2).contains(&explanation.examples.len()));
             assert!(!explanation.references.is_empty());
+            for example in explanation.examples {
+                assert!(!example.title.is_empty());
+                assert!(!example.source.is_empty());
+            }
+            for reference in explanation.references {
+                assert!(!reference.title.is_empty());
+                assert!(reference.path.starts_with("docs/spec/src/"));
+                assert!(reference.path.ends_with(".md"));
+                assert!(reference.rule.is_some_and(|rule| !rule.is_empty()));
+            }
         }
 
         let explanation = error_code_explanation(ErrorCode::UNDEFINED_VARIABLE)
-            .expect("E0201 is the bounded first production explanation");
+            .expect("E0201 retains its canonical explanation");
         assert_eq!(explanation.metadata.name, "UNDEFINED_VARIABLE");
         assert_eq!(explanation.references[0].rule, Some("10.3:8"));
-        assert!(error_code_explanation(ErrorCode::TYPE_MISMATCH).is_none());
+    }
+
+    #[test]
+    fn semantic_foundation_explanation_band_is_complete_and_bounded() {
+        let expected = [
+            ErrorCode::NO_MAIN_FUNCTION,
+            ErrorCode::UNDEFINED_VARIABLE,
+            ErrorCode::UNDEFINED_FUNCTION,
+            ErrorCode::ASSIGN_TO_IMMUTABLE,
+            ErrorCode::UNKNOWN_TYPE,
+            ErrorCode::USE_AFTER_MOVE,
+            ErrorCode::TYPE_MISMATCH,
+            ErrorCode::WRONG_ARGUMENT_COUNT,
+            ErrorCode::MOVE_WHILE_CALL_LOANED,
+            ErrorCode::UNEXPECTED_CALL_ARGUMENT_MODE,
+            ErrorCode::STR_VIEW_REASSIGNMENT,
+            ErrorCode::INVALID_MAIN_SIGNATURE,
+        ];
+        let actual = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (200..=211)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
+        );
     }
 
     /// `ErrorKind::code()` must cover the compiler-declared ErrorCode constants without
