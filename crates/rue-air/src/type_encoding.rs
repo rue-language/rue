@@ -8,7 +8,7 @@
 pub(crate) const TAG_MASK: u32 = 0xff;
 pub(crate) const PAYLOAD_SHIFT: u32 = 8;
 pub(crate) const MAX_PAYLOAD: u32 = u32::MAX >> PAYLOAD_SHIFT;
-pub(crate) const RESERVED_AFTER_PRIMITIVES_START: u32 = 13;
+pub(crate) const RESERVED_AFTER_PRIMITIVES_START: u32 = 16;
 pub(crate) const RESERVED_AFTER_PRIMITIVES_END: u32 = 99;
 pub(crate) const RESERVED_AFTER_COMPOSITES_START: u32 = 106;
 pub(crate) const RESERVED_AFTER_COMPOSITES_END: u32 = TAG_MASK;
@@ -29,6 +29,9 @@ pub(crate) enum Primitive {
     Error = 10,
     Never = 11,
     ComptimeType = 12,
+    F32 = 13,
+    F64 = 14,
+    ComptimeFloat = 15,
 }
 
 impl Primitive {
@@ -78,6 +81,9 @@ pub(crate) const fn decode(raw: u32) -> Option<Decoded> {
         10 => Some(Primitive::Error),
         11 => Some(Primitive::Never),
         12 => Some(Primitive::ComptimeType),
+        13 => Some(Primitive::F32),
+        14 => Some(Primitive::F64),
+        15 => Some(Primitive::ComptimeFloat),
         _ => None,
     };
     if let Some(primitive) = primitive {

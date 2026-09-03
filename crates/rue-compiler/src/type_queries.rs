@@ -544,6 +544,9 @@ pub(crate) fn type_instance(ty: &crate::durable_semantics::DurableType) -> crate
         T::Unit => crate::TypeInstanceKey::Unit,
         T::Never => crate::TypeInstanceKey::Never,
         T::ComptimeType => crate::TypeInstanceKey::ComptimeType,
+        T::F32 => crate::TypeInstanceKey::F32,
+        T::F64 => crate::TypeInstanceKey::F64,
+        T::ComptimeFloat => crate::TypeInstanceKey::ComptimeFloat,
         T::BuiltinNominal { kind, name } => crate::TypeInstanceKey::BuiltinNominal {
             kind: match kind {
                 rue_air::SemanticImportNominalKind::Struct => rue_air::AnonymousNominalKind::Struct,

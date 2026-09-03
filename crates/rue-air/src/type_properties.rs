@@ -147,7 +147,7 @@ fn encoding_shape_rejects_every_reserved_tag_and_primitive_payload() {
             assert_eq!(Type::try_from_u32(raw), None);
         }
     }
-    for primitive_tag in 0..=12 {
+    for primitive_tag in 0..=15 {
         for payload in [1, 0x12_3456, type_encoding::MAX_PAYLOAD] {
             let raw = (payload << type_encoding::PAYLOAD_SHIFT) | primitive_tag;
             assert!(!Type::is_valid_encoding(raw));

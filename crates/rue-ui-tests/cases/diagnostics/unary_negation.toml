@@ -1,7 +1,7 @@
 [section]
 id = "diagnostics.unary-negation"
 name = "Unary negation operand type"
-description = "Unary `-` requires a signed integer operand; bool, unit, and unsigned operands are rejected with E0801 and a helpful note (RUE-200)."
+description = "Unary `-` requires a signed integer or floating-point operand; bool, unit, and unsigned operands are rejected with E0801 and a helpful note (RUE-200, RUE-1070)."
 
 [[case]]
 name = "negate_bool_error_note"
@@ -15,7 +15,7 @@ compile_fail = true
 error_contains = [
     "E0801",
     "cannot apply unary operator `-` to type 'bool'",
-    "unary `-` requires a signed integer operand (i8, i16, i32, i64, isize)",
+    "unary `-` requires a signed integer or floating-point operand",
 ]
 
 [[case]]

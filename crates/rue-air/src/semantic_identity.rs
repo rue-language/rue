@@ -283,6 +283,7 @@ pub enum CanonicalArgumentValue<D, M> {
     Function(Node<FunctionInstanceKey<D, M>>),
     Unit,
     String(Arc<str>),
+    Float(Arc<str>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -340,6 +341,7 @@ where
                 CanonicalArgumentValue::Function(_) => "function".to_owned(),
                 CanonicalArgumentValue::Unit => "()".to_owned(),
                 CanonicalArgumentValue::String(value) => format!("\"{value}\""),
+                CanonicalArgumentValue::Float(value) => value.to_string(),
             });
         }
     }
@@ -458,6 +460,9 @@ pub enum TypeInstanceKey<D, M> {
     Unit,
     Never,
     ComptimeType,
+    F32,
+    F64,
+    ComptimeFloat,
     BuiltinNominal {
         kind: AnonymousNominalKind,
         name: Arc<str>,
@@ -520,6 +525,7 @@ impl<D, M> CanonicalArgumentValue<D, M> {
             )),
             Self::Unit => CanonicalArgumentValue::Unit,
             Self::String(value) => CanonicalArgumentValue::String(value.clone()),
+            Self::Float(value) => CanonicalArgumentValue::Float(value.clone()),
         })
     }
 }
@@ -656,6 +662,9 @@ impl<D, M> TypeInstanceKey<D, M> {
             Self::Unit => TypeInstanceKey::Unit,
             Self::Never => TypeInstanceKey::Never,
             Self::ComptimeType => TypeInstanceKey::ComptimeType,
+            Self::F32 => TypeInstanceKey::F32,
+            Self::F64 => TypeInstanceKey::F64,
+            Self::ComptimeFloat => TypeInstanceKey::ComptimeFloat,
             Self::BuiltinNominal { kind, name } => TypeInstanceKey::BuiltinNominal {
                 kind: *kind,
                 name: name.clone(),

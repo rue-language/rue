@@ -163,6 +163,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// from becoming a second aggregate type authority.
     pub(super) fn validate_equality_operand_type(&self, ty: Type, span: Span) -> CompileResult<()> {
         if ty.is_integer()
+            || ty.is_float()
             || ty == Type::BOOL
             || ty == Type::UNIT
             || ty.is_struct()
@@ -174,7 +175,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         Err(CompileError::new(
             ErrorKind::TypeMismatch {
-                expected: "integer, bool, string, unit, struct, array, or enum".to_string(),
+                expected: "integer, float, bool, string, unit, struct, array, or enum".to_string(),
                 found: self.format_type_name(ty),
             },
             span,
@@ -514,7 +515,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // range-check it first because this shortcut bypasses
                 // `analyze_literal`; `S { a: 300 }` with `a: u8` must produce
                 // E0800 rather than truncate to 44. (RUE-72)
-                if !expected_field_type.literal_fits(*value) {
+                let encoded = if expected_field_type == Type::F32 {
+                    u64::from((*value as f32).to_bits())
+                } else if expected_field_type == Type::F64 {
+                    (*value as f64).to_bits()
+                } else if expected_field_type.literal_fits(*value) {
+                    *value
+                } else {
                     return Err(CompileError::new(
                         ErrorKind::LiteralOutOfRange {
                             value: *value,
@@ -522,9 +529,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         },
                         field_inst.span,
                     ));
-                }
+                };
                 let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::Const(*value),
+                    data: AirInstData::Const(encoded),
                     ty: expected_field_type,
                     span: field_inst.span,
                 });

@@ -372,12 +372,16 @@ pub enum IntrinsicOperation {
     FieldPtr,
     Syscall,
     BitCast,
+    IntToFloat,
+    FloatToInt,
+    FloatCast,
+    TotalCmp,
 }
 
 impl IntrinsicOperation {
     /// Every semantic identity, kept in one place so consumers and tests can
     /// prove that dispatch remains exhaustive when a new intrinsic is added.
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 46] = [
         Self::PanicNoMessage,
         Self::Panic,
         Self::AssertFailed,
@@ -420,6 +424,10 @@ impl IntrinsicOperation {
         Self::FieldPtr,
         Self::Syscall,
         Self::BitCast,
+        Self::IntToFloat,
+        Self::FloatToInt,
+        Self::FloatCast,
+        Self::TotalCmp,
     ];
 
     /// The canonical spelling used for diagnostics and display. This is not
@@ -464,6 +472,10 @@ impl IntrinsicOperation {
             Self::FieldPtr => "field_ptr",
             Self::Syscall => "syscall",
             Self::BitCast => "bitCast",
+            Self::IntToFloat => "int_to_float",
+            Self::FloatToInt => "float_to_int",
+            Self::FloatCast => "float_cast",
+            Self::TotalCmp => "total_cmp",
         }
     }
 
@@ -572,6 +584,7 @@ impl IntrinsicOperation {
             | Self::FieldPtr
             | Self::Syscall
             | Self::BitCast => return None,
+            Self::IntToFloat | Self::FloatToInt | Self::FloatCast | Self::TotalCmp => return None,
         })
     }
 
@@ -620,6 +633,29 @@ impl IntrinsicOperation {
                 args.len() == 1
                     && (first.ty.is_ptr() || first.ty == Type::NEVER)
                     && result == Type::U64
+            }
+            Self::IntToFloat => {
+                args.len() == 1
+                    && (first.ty.is_integer() || first.ty == Type::NEVER)
+                    && result.is_float()
+            }
+            Self::FloatToInt => {
+                args.len() == 1
+                    && (first.ty.is_float() || first.ty == Type::NEVER)
+                    && result.is_integer()
+            }
+            Self::FloatCast => {
+                args.len() == 1
+                    && (first.ty == Type::NEVER || (first.ty.is_float() && first.ty != result))
+                    && result.is_float()
+            }
+            Self::TotalCmp => {
+                args.len() == 2
+                    && ((first.ty.is_float()
+                        && (args[1].ty == first.ty || args[1].ty == Type::NEVER))
+                        || (first.ty == Type::NEVER
+                            && (args[1].ty.is_float() || args[1].ty == Type::NEVER)))
+                    && result == Type::I32
             }
             Self::IntToPtr => {
                 args.len() == 1
@@ -749,7 +785,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::sync::Arc;
 
-    const EXACT_OPERATIONS: [(IntrinsicOperation, &str); 42] = [
+    const EXACT_OPERATIONS: [(IntrinsicOperation, &str); 46] = [
         (IntrinsicOperation::PanicNoMessage, "panic"),
         (IntrinsicOperation::Panic, "panic"),
         (IntrinsicOperation::AssertFailed, "assert"),
@@ -792,6 +828,10 @@ mod tests {
         (IntrinsicOperation::FieldPtr, "field_ptr"),
         (IntrinsicOperation::Syscall, "syscall"),
         (IntrinsicOperation::BitCast, "bitCast"),
+        (IntrinsicOperation::IntToFloat, "int_to_float"),
+        (IntrinsicOperation::FloatToInt, "float_to_int"),
+        (IntrinsicOperation::FloatCast, "float_cast"),
+        (IntrinsicOperation::TotalCmp, "total_cmp"),
     ];
 
     const EXACT_RUNTIME_MAPPINGS: [(IntrinsicOperation, RuntimeCallKind); 30] = [
@@ -867,7 +907,7 @@ mod tests {
 
     #[test]
     fn all_operations_are_unique_and_runtime_mapping_is_symmetric() {
-        assert_eq!(IntrinsicOperation::ALL.len(), 42);
+        assert_eq!(IntrinsicOperation::ALL.len(), 46);
         assert_eq!(
             IntrinsicOperation::ALL,
             EXACT_OPERATIONS.map(|(operation, _)| operation)
@@ -897,7 +937,7 @@ mod tests {
 
     #[test]
     fn inventory_and_runtime_partition_are_exact() {
-        const SPELLINGS: [&str; 36] = [
+        const SPELLINGS: [&str; 40] = [
             "panic",
             "assert",
             "dbg",
@@ -934,6 +974,10 @@ mod tests {
             "field_ptr",
             "syscall",
             "bitCast",
+            "int_to_float",
+            "float_to_int",
+            "float_cast",
+            "total_cmp",
         ];
         let spellings = IntrinsicOperation::ALL
             .iter()
@@ -952,7 +996,7 @@ mod tests {
                 .iter()
                 .filter(|operation| operation.runtime_call_kind().is_none())
                 .count(),
-            12
+            16
         );
         assert_eq!(
             runtime
@@ -1085,6 +1129,26 @@ mod tests {
                 vec![(Type::I64, normal)],
                 Type::U64,
             ),
+            (
+                IntrinsicOperation::IntToFloat,
+                vec![(Type::I32, normal)],
+                Type::F64,
+            ),
+            (
+                IntrinsicOperation::FloatToInt,
+                vec![(Type::F64, normal)],
+                Type::I32,
+            ),
+            (
+                IntrinsicOperation::FloatCast,
+                vec![(Type::F64, normal)],
+                Type::F32,
+            ),
+            (
+                IntrinsicOperation::TotalCmp,
+                vec![(Type::F32, normal), (Type::F32, normal)],
+                Type::I32,
+            ),
         ] {
             let args = describe(operation, args);
             assert!(
@@ -1178,6 +1242,26 @@ mod tests {
                 vec![(Type::BOOL, normal)],
                 Type::BOOL,
             ),
+            (
+                IntrinsicOperation::IntToFloat,
+                vec![(Type::F32, normal)],
+                Type::F64,
+            ),
+            (
+                IntrinsicOperation::FloatToInt,
+                vec![(Type::F32, normal)],
+                Type::F64,
+            ),
+            (
+                IntrinsicOperation::FloatCast,
+                vec![(Type::F32, normal)],
+                Type::F32,
+            ),
+            (
+                IntrinsicOperation::TotalCmp,
+                vec![(Type::F32, normal), (Type::F64, normal)],
+                Type::I32,
+            ),
         ];
         for (operation, args, result) in invalid {
             let args = describe(operation, args);
@@ -1209,6 +1293,31 @@ mod tests {
         };
 
         let accepted = [
+            (
+                IntrinsicOperation::IntToFloat,
+                vec![value(Type::NEVER)],
+                Type::F32,
+            ),
+            (
+                IntrinsicOperation::FloatToInt,
+                vec![value(Type::NEVER)],
+                Type::I32,
+            ),
+            (
+                IntrinsicOperation::FloatCast,
+                vec![value(Type::NEVER)],
+                Type::F64,
+            ),
+            (
+                IntrinsicOperation::TotalCmp,
+                vec![value(Type::NEVER), value(Type::F32)],
+                Type::I32,
+            ),
+            (
+                IntrinsicOperation::TotalCmp,
+                vec![value(Type::F64), value(Type::NEVER)],
+                Type::I32,
+            ),
             (
                 IntrinsicOperation::PtrToInt,
                 vec![value(Type::NEVER)],

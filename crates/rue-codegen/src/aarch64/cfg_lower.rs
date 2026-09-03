@@ -2127,6 +2127,12 @@ impl<'a> CfgLower<'a> {
             | rue_air::IntrinsicOperation::BoundsCheck => {
                 unreachable!("trap handled above")
             }
+            rue_air::IntrinsicOperation::IntToFloat
+            | rue_air::IntrinsicOperation::FloatToInt
+            | rue_air::IntrinsicOperation::FloatCast
+            | rue_air::IntrinsicOperation::TotalCmp => {
+                unreachable!("ADR-0065 Phase 4 rejects float operations at CFG construction")
+            }
         };
         crate::value_plan::MaterializedValue { primary, slots }
     }

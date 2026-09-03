@@ -117,6 +117,7 @@ pub struct Unifier {
     /// offending match arm) instead of surfacing later at an unrelated, wider
     /// span like the whole function body (RUE-133).
     int_literal_vars: AHashSet<TypeVarId>,
+    float_literal_vars: AHashSet<TypeVarId>,
     /// Variables rooted at string literals, plus variables joined with them.
     string_literal_vars: AHashSet<TypeVarId>,
     /// Concrete string types that may contextualize a literal.
@@ -135,6 +136,7 @@ impl Unifier {
         Unifier {
             substitution: Substitution::new(),
             int_literal_vars: AHashSet::new(),
+            float_literal_vars: AHashSet::new(),
             string_literal_vars: AHashSet::new(),
             string_literal_types: AHashSet::new(),
         }
@@ -148,6 +150,7 @@ impl Unifier {
         Unifier {
             substitution: Substitution::with_capacity(type_var_count as usize),
             int_literal_vars: AHashSet::new(),
+            float_literal_vars: AHashSet::new(),
             string_literal_vars: AHashSet::new(),
             string_literal_types: AHashSet::new(),
         }
@@ -161,6 +164,10 @@ impl Unifier {
     /// `int_literal_vars` field documentation.
     pub fn mark_int_literal_vars(&mut self, vars: &[TypeVarId]) {
         self.int_literal_vars.extend(vars.iter().copied());
+    }
+
+    pub fn mark_float_literal_vars(&mut self, vars: &[TypeVarId]) {
+        self.float_literal_vars.extend(vars.iter().copied());
     }
 
     /// Register string-literal variables and the concrete string types they
@@ -306,6 +313,11 @@ impl Unifier {
     /// rebind it to the concrete integer type.
     fn rebind_int_literal_to_concrete(&mut self, original: &InferType, concrete_ty: &Type) {
         if let InferType::Var(var) = original {
+            if self.int_literal_vars.contains(var) {
+                self.substitution
+                    .insert(*var, InferType::Concrete(*concrete_ty));
+                return;
+            }
             // Check if this variable is directly bound to IntLiteral
             if let Some(bound) = self.substitution.get(*var) {
                 if bound.is_int_literal() {
@@ -372,6 +384,35 @@ impl Unifier {
             }
         }
 
+        if self.float_literal_vars.contains(&var) {
+            match ty {
+                InferType::Var(other) => {
+                    self.float_literal_vars.insert(*other);
+                }
+                InferType::Concrete(t)
+                    if t.is_float()
+                        || *t == Type::COMPTIME_FLOAT
+                        || t.is_error()
+                        || t.is_never() => {}
+                InferType::Concrete(t) => {
+                    return UnifyResult::TypeMismatch {
+                        expected: InferType::Concrete(Type::COMPTIME_FLOAT),
+                        found: InferType::Concrete(*t),
+                    };
+                }
+                InferType::IntLiteral | InferType::Array { .. } => {
+                    return UnifyResult::TypeMismatch {
+                        expected: InferType::Concrete(Type::COMPTIME_FLOAT),
+                        found: ty.clone(),
+                    };
+                }
+            }
+        } else if let InferType::Var(other) = ty
+            && self.float_literal_vars.contains(other)
+        {
+            self.float_literal_vars.insert(var);
+        }
+
         if self.string_literal_vars.contains(&var) {
             match ty {
                 InferType::Var(other) => {
@@ -425,7 +466,11 @@ impl Unifier {
         let ty = self.substitution.apply(ty);
         match &ty {
             InferType::Concrete(concrete) => {
-                if concrete.is_signed() || concrete.is_error() || concrete.is_never() {
+                if concrete.is_signed()
+                    || concrete.is_float()
+                    || concrete.is_error()
+                    || concrete.is_never()
+                {
                     UnifyResult::Ok
                 } else if concrete.is_unsigned() {
                     UnifyResult::NotSigned { ty: *concrete }
@@ -459,6 +504,20 @@ impl Unifier {
             // Type variables and IntLiteral are OK - they will be resolved to integers
             InferType::Var(_) | InferType::IntLiteral => UnifyResult::Ok,
             // Arrays are not integers - return error
+            InferType::Array { .. } => UnifyResult::NotInteger { ty: Type::ERROR },
+        }
+    }
+
+    pub fn check_numeric(&self, ty: &InferType) -> UnifyResult {
+        let ty = self.substitution.apply(ty);
+        match &ty {
+            InferType::Concrete(t)
+                if t.is_integer() || t.is_float() || t.is_error() || t.is_never() =>
+            {
+                UnifyResult::Ok
+            }
+            InferType::Concrete(t) => UnifyResult::NotInteger { ty: *t },
+            InferType::Var(_) | InferType::IntLiteral => UnifyResult::Ok,
             InferType::Array { .. } => UnifyResult::NotInteger { ty: Type::ERROR },
         }
     }
@@ -524,12 +583,42 @@ impl Unifier {
                     }
                     continue;
                 }
+                Constraint::ContextualEqual(lhs, rhs, span) => {
+                    let lhs_applied = self.substitution.apply(lhs);
+                    let rhs_applied = self.substitution.apply(rhs);
+                    let integer_literal = matches!(lhs_applied, InferType::IntLiteral)
+                        || matches!(lhs, InferType::Var(var) if self.int_literal_vars.contains(var));
+                    let expected_float =
+                        matches!(rhs_applied, InferType::Concrete(Type::F32 | Type::F64));
+                    let exact_float =
+                        matches!(lhs_applied, InferType::Concrete(Type::COMPTIME_FLOAT));
+                    let result = if exact_float && expected_float {
+                        UnifyResult::Ok
+                    } else if integer_literal && expected_float {
+                        let InferType::Concrete(expected) = rhs_applied else {
+                            unreachable!()
+                        };
+                        self.rebind_int_literal_to_concrete(lhs, &expected);
+                        UnifyResult::Ok
+                    } else {
+                        self.unify_with(lhs, rhs, concrete_types_equal)
+                    };
+                    if !result.is_ok() {
+                        self.recover_from_error(lhs, rhs);
+                        errors.push(UnificationError::new(result, *span));
+                    }
+                    continue;
+                }
                 Constraint::IsSigned(ty, span) => {
                     let result = self.check_signed(ty);
                     (result, *span)
                 }
                 Constraint::IsInteger(ty, span) => {
                     let result = self.check_integer(ty);
+                    (result, *span)
+                }
+                Constraint::IsNumeric(ty, span) => {
+                    let result = self.check_numeric(ty);
                     (result, *span)
                 }
                 Constraint::IsUnsigned(ty, span) => {
@@ -836,6 +925,16 @@ mod tests {
         assert!(
             unifier
                 .check_signed(&InferType::Concrete(Type::I64))
+                .is_ok()
+        );
+        assert!(
+            unifier
+                .check_signed(&InferType::Concrete(Type::F32))
+                .is_ok()
+        );
+        assert!(
+            unifier
+                .check_signed(&InferType::Concrete(Type::F64))
                 .is_ok()
         );
     }
@@ -1148,6 +1247,68 @@ mod tests {
 
         assert_eq!(unifier.resolve(&InferType::Var(v0)), Some(Type::I32));
         assert_eq!(unifier.resolve(&InferType::Var(v2)), Some(Type::I32));
+    }
+
+    #[test]
+    fn float_literal_defaults_and_context_are_width_exact() {
+        let literal = TypeVarId::new(0);
+        let mut unifier = Unifier::new();
+        unifier.mark_float_literal_vars(&[literal]);
+        unifier.default_unconstrained_vars(&[literal], Type::F64);
+        assert_eq!(unifier.resolve(&InferType::Var(literal)), Some(Type::F64));
+
+        let contextual = TypeVarId::new(1);
+        let mut unifier = Unifier::new();
+        unifier.mark_float_literal_vars(&[contextual]);
+        assert!(
+            unifier
+                .solve_constraints(&[Constraint::equal(
+                    InferType::Var(contextual),
+                    InferType::Concrete(Type::F32),
+                    Span::new(0, 1),
+                )])
+                .is_empty()
+        );
+        assert_eq!(
+            unifier.resolve(&InferType::Var(contextual)),
+            Some(Type::F32)
+        );
+    }
+
+    #[test]
+    fn only_integer_literals_cross_the_implicit_integer_float_boundary() {
+        let mut literal_unifier = Unifier::new();
+        assert!(
+            literal_unifier
+                .solve_constraints(&[Constraint::contextual(
+                    InferType::IntLiteral,
+                    InferType::Concrete(Type::F32),
+                    Span::new(0, 1),
+                )])
+                .is_empty()
+        );
+        assert!(
+            !Unifier::new()
+                .solve_constraints(&[Constraint::equal(
+                    InferType::IntLiteral,
+                    InferType::Concrete(Type::F32),
+                    Span::new(0, 1),
+                )])
+                .is_empty()
+        );
+
+        for (lhs, rhs) in [(Type::I32, Type::F32), (Type::F32, Type::F64)] {
+            let mut runtime_unifier = Unifier::new();
+            assert!(
+                !runtime_unifier
+                    .solve_constraints(&[Constraint::equal(
+                        InferType::Concrete(lhs),
+                        InferType::Concrete(rhs),
+                        Span::new(0, 1),
+                    )])
+                    .is_empty()
+            );
+        }
     }
 
     #[test]

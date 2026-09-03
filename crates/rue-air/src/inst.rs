@@ -797,6 +797,7 @@ enum ConstValueTag {
     Unit,
     Type,
     Function,
+    Float,
 }
 
 impl ConstValueTag {
@@ -810,6 +811,7 @@ impl ConstValueTag {
             crate::sema::ConstValue::String(_) => {
                 unreachable!("string const values are rejected before tag classification")
             }
+            crate::sema::ConstValue::Float(_) => Self::Float,
         }
     }
 
@@ -820,13 +822,14 @@ impl ConstValueTag {
             Self::Unit => 2,
             Self::Type => 3,
             Self::Function => 4,
+            Self::Float => 5,
         }
     }
 
     const fn payload_width(self) -> usize {
         match self {
             Self::Integer => 4,
-            Self::Bool | Self::Type | Self::Function => 1,
+            Self::Bool | Self::Type | Self::Function | Self::Float => 1,
             Self::Unit => 0,
         }
     }
@@ -838,6 +841,7 @@ impl ConstValueTag {
             2 => Some(Self::Unit),
             3 => Some(Self::Type),
             4 => Some(Self::Function),
+            5 => Some(Self::Float),
             _ => None,
         }
     }
@@ -908,6 +912,13 @@ pub(crate) fn encode_const_values(
             }
             crate::sema::ConstValue::String(_) => {
                 unreachable!("string const values are rejected before encoding")
+            }
+            crate::sema::ConstValue::Float(value) => {
+                words.push(ConstValueTag::Float.word());
+                words.push(
+                    u32::try_from(value.issuing_interner_ordinal())
+                        .map_err(|_| error(AirBuildErrorKind::ResourceLimit))?,
+                );
             }
         }
     }
@@ -1050,6 +1061,9 @@ impl Iterator for ConstValueIterator<'_> {
                 Type::try_from_u32(payload[0]).expect("validated const type"),
             ),
             ConstValueTag::Function => crate::sema::ConstValue::Function(SymbolHandle::new(
+                Spur::try_from_usize(payload[0] as usize).expect("validated const symbol"),
+            )),
+            ConstValueTag::Float => crate::sema::ConstValue::Float(SymbolHandle::new(
                 Spur::try_from_usize(payload[0] as usize).expect("validated const symbol"),
             )),
         })

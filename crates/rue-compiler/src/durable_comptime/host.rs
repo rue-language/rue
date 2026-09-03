@@ -836,6 +836,22 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
         )))
     }
 
+    fn resolve_float_const(
+        &mut self,
+        content: Self::Name,
+        _span: rue_span::Span,
+    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
+        let Some(canonical) = rue_air::canonical_decimal_literal(content.0.as_ref()) else {
+            return rue_air::ComptimeOutcome::RuntimeDependent;
+        };
+        rue_air::ComptimeOutcome::Known(EvaluatedSemanticConst::Value(Arc::new(
+            TypedSemanticConst {
+                value: DurableConstValue::Float(Arc::from(canonical)),
+                ty: Some(DurableType::ComptimeFloat),
+            },
+        )))
+    }
+
     fn resolve_comptime_expression_intrinsic(
         &mut self,
         request: rue_air::ComptimeExpressionIntrinsicRequest<Self::Name>,

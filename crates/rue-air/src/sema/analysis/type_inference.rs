@@ -597,6 +597,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let (
             constraints,
             int_literal_vars,
+            float_literal_vars,
             string_literal_vars,
             string_literal_default,
             expr_types,
@@ -685,6 +686,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         // string value never occurs (RUE-957); skip rather than
                         // fabricate a type for it.
                         ConstValue::String(_) => continue,
+                        ConstValue::Float(_) => Type::COMPTIME_FLOAT,
                         ConstValue::Unit => Type::UNIT,
                     };
                     param_vars.entry(*name).or_insert(ParamVarInfo {
@@ -720,7 +722,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // implicit literal coercion while rejecting every other mismatched
             // tail before AIR/CFG construction (RUE-1652).
             if !frontier_mode {
-                cgen.add_constraint(Constraint::equal(
+                cgen.add_constraint(Constraint::contextual(
                     body_info.ty,
                     self.type_to_infer_type(return_type),
                     body_info.span,
@@ -731,6 +733,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let (
                 constraints,
                 int_literal_vars,
+                float_literal_vars,
                 string_literal_vars,
                 string_literal_default,
                 expr_types,
@@ -741,6 +744,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             (
                 constraints,
                 int_literal_vars,
+                float_literal_vars,
                 string_literal_vars,
                 string_literal_default,
                 expr_types,
@@ -756,6 +760,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Pre-size the substitution for better performance on large functions
         let mut unifier = Unifier::with_capacity(type_var_count);
         unifier.mark_int_literal_vars(&int_literal_vars);
+        unifier.mark_float_literal_vars(&float_literal_vars);
         // Literal contextualization is nominal. Admit only compiler-owned
         // identities: core `str`, the trusted std StrBuf language item when
         // imported, and synthetic fixed strings.
@@ -858,6 +863,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Default any unconstrained integer literals to i32
         unifier.default_int_literal_vars(&int_literal_vars);
+        unifier.default_unconstrained_vars(&float_literal_vars, Type::F64);
         unifier.default_unconstrained_vars(&string_literal_vars, string_literal_default);
 
         // Pre-collect all array types from resolved InferTypes before converting them.

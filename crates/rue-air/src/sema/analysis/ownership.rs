@@ -1885,6 +1885,31 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let local_id = ctx.add_local_read_only_data(content, anchor);
                 (AirInstData::StringConst(local_id), ty)
             }
+            ConstValue::Float(content) => {
+                let spelling = self.body_interner().resolve(&content.spur());
+                if ty == Type::COMPTIME_FLOAT {
+                    return Ok((AirInstData::Const(0), ty));
+                }
+                if !ty.is_float() {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: "f32 or f64".to_owned(),
+                            found: self.format_type_name(ty),
+                        },
+                        span,
+                    ));
+                }
+                let bits = crate::finite_float_literal_bits(spelling, ty).ok_or_else(|| {
+                    CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: format!("finite {} literal", self.format_type_name(ty)),
+                            found: spelling.to_owned(),
+                        },
+                        span,
+                    )
+                })?;
+                (AirInstData::Const(bits), ty)
+            }
         })
     }
 
@@ -2165,6 +2190,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         span,
                     ));
                 }
+                ConstValue::Float(content) => {
+                    let ty = resolved_ty.unwrap_or(Type::COMPTIME_FLOAT);
+                    let (data, ty) = self.materialize_const_value(
+                        ctx,
+                        ConstValue::Float(*content),
+                        ty,
+                        None,
+                        span,
+                    )?;
+                    let air_ref = air.add_inst(AirInst { data, ty, span });
+                    return Ok(AnalysisResult::new(air_ref, ty));
+                }
                 ConstValue::Unit => {
                     let air_ref = air.add_inst(AirInst {
                         data: AirInstData::Const(0),
@@ -2237,10 +2274,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }),
                 _ => None,
             };
+            let materialized_ty = if matches!(const_info.value, ConstValue::Float(_)) {
+                resolved_ty.filter(Type::is_float).unwrap_or(const_info.ty)
+            } else {
+                const_info.ty
+            };
             let (data, ty) = self.materialize_const_value(
                 ctx,
                 const_info.value,
-                const_info.ty,
+                materialized_ty,
                 atom_anchor,
                 span,
             )?;

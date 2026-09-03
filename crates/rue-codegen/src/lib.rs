@@ -877,7 +877,11 @@ mod tests {
             | IntrinsicOperation::RawMut
             | IntrinsicOperation::FieldPtr
             | IntrinsicOperation::Syscall
-            | IntrinsicOperation::BitCast => {
+            | IntrinsicOperation::BitCast
+            | IntrinsicOperation::IntToFloat
+            | IntrinsicOperation::FloatToInt
+            | IntrinsicOperation::FloatCast
+            | IntrinsicOperation::TotalCmp => {
                 panic!("fixture only accepts trap and debug operations")
             }
         };

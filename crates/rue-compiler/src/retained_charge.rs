@@ -550,6 +550,7 @@ impl<D: RetainedCharge, M: RetainedCharge> RetainedCharge
             Self::Type(value) => value.retained_charge(),
             Self::Function(value) => value.retained_charge(),
             Self::String(value) => value.retained_charge(),
+            Self::Float(value) => value.retained_charge(),
             Self::Integer(_) | Self::Bool(_) | Self::Unit => 0,
         }
     }
@@ -614,6 +615,9 @@ impl<D: RetainedCharge, M: RetainedCharge> RetainedCharge for rue_air::TypeInsta
             | Self::Unit
             | Self::Never
             | Self::ComptimeType
+            | Self::F32
+            | Self::F64
+            | Self::ComptimeFloat
             | Self::GenericParameter(_) => 0,
         }
     }
@@ -660,6 +664,9 @@ impl<K: RetainedCharge, M: RetainedCharge> RetainedCharge for rue_air::SemanticI
             | Self::Unit
             | Self::Never
             | Self::ComptimeType
+            | Self::F32
+            | Self::F64
+            | Self::ComptimeFloat
             | Self::GenericParameter(_) => 0,
         }
     }
@@ -673,6 +680,7 @@ impl<K: RetainedCharge, M: RetainedCharge> RetainedCharge
             Self::Type(value) => value.retained_charge(),
             Self::Function(value) => value.retained_charge(),
             Self::String(value) => value.retained_charge(),
+            Self::Float(value) => value.retained_charge(),
             Self::Integer(_) | Self::Bool(_) | Self::Unit => 0,
         }
     }

@@ -56,6 +56,9 @@ pub enum SemanticImportType<K, M> {
     Unit,
     Never,
     ComptimeType,
+    F32,
+    F64,
+    ComptimeFloat,
     BuiltinNominal {
         name: Arc<str>,
         kind: SemanticImportNominalKind,
@@ -100,6 +103,9 @@ macro_rules! semantic_import_type_schema {
             GenericParameter, SemanticImportType::GenericParameter(..), 18, "generic_parameter";
             AnonymousNominal, SemanticImportType::AnonymousNominal(..), 19, "anonymous_nominal";
             Slice, SemanticImportType::Slice { .. }, 20, "slice";
+            F32, SemanticImportType::F32, 21, "f32";
+            F64, SemanticImportType::F64, 22, "f64";
+            ComptimeFloat, SemanticImportType::ComptimeFloat, 23, "comptime_float";
         }
     };
 }
@@ -162,6 +168,9 @@ pub enum SemanticImportTypeFold<'a, K, M, T> {
     Unit,
     Never,
     ComptimeType,
+    F32,
+    F64,
+    ComptimeFloat,
     BuiltinNominal {
         name: &'a Arc<str>,
         kind: SemanticImportNominalKind,
@@ -193,6 +202,7 @@ pub enum SemanticImportConstValue<K, M> {
     /// interner symbols are process-local and cannot cross the import
     /// boundary.
     String(std::sync::Arc<str>),
+    Float(std::sync::Arc<str>),
 }
 
 macro_rules! semantic_import_const_schema {
@@ -204,6 +214,7 @@ macro_rules! semantic_import_const_schema {
             Function, SemanticImportConstValue::Function(..), 3, "function";
             Unit, SemanticImportConstValue::Unit, 4, "unit";
             String, SemanticImportConstValue::String(..), 5, "string";
+            Float, SemanticImportConstValue::Float(..), 6, "float";
         }
     };
 }
@@ -271,6 +282,9 @@ impl<K, M> SemanticImportType<K, M> {
             S::Unit => F::Unit,
             S::Never => F::Never,
             S::ComptimeType => F::ComptimeType,
+            S::F32 => F::F32,
+            S::F64 => F::F64,
+            S::ComptimeFloat => F::ComptimeFloat,
             S::BuiltinNominal { name, kind } => F::BuiltinNominal { name, kind: *kind },
             S::Nominal(key) => F::Nominal(key),
             S::AnonymousNominal(key) => F::AnonymousNominal(key),
@@ -314,6 +328,9 @@ impl<K, M> SemanticImportType<K, M> {
                 F::Unit => T::Unit,
                 F::Never => T::Never,
                 F::ComptimeType => T::ComptimeType,
+                F::F32 => T::F32,
+                F::F64 => T::F64,
+                F::ComptimeFloat => T::ComptimeFloat,
                 F::BuiltinNominal { name, kind } => T::BuiltinNominal {
                     name: name.clone(),
                     kind,
@@ -355,6 +372,7 @@ impl<K, M> SemanticImportConstValue<K, M> {
             Self::Function(value) => SemanticImportConstValue::Function(key(value)?),
             Self::Unit => SemanticImportConstValue::Unit,
             Self::String(value) => SemanticImportConstValue::String(value.clone()),
+            Self::Float(value) => SemanticImportConstValue::Float(value.clone()),
         })
     }
 }
@@ -468,6 +486,9 @@ fn import_type_identity<K: Clone + std::hash::Hash, M: Clone + std::hash::Hash>(
         S::Unit => TypeInstanceKey::Unit,
         S::Never => TypeInstanceKey::Never,
         S::ComptimeType => TypeInstanceKey::ComptimeType,
+        S::F32 => TypeInstanceKey::F32,
+        S::F64 => TypeInstanceKey::F64,
+        S::ComptimeFloat => TypeInstanceKey::ComptimeFloat,
         S::BuiltinNominal { name, kind } => TypeInstanceKey::BuiltinNominal {
             name: name.clone(),
             kind: match kind {
@@ -514,6 +535,9 @@ fn specialization_key<K: Clone + std::hash::Hash, M: Clone + std::hash::Hash>(
             SemanticImportConstValue::Unit => crate::CanonicalArgumentValue::Unit,
             SemanticImportConstValue::String(value) => {
                 crate::CanonicalArgumentValue::String(value.clone())
+            }
+            SemanticImportConstValue::Float(value) => {
+                crate::CanonicalArgumentValue::Float(value.clone())
             }
         })
         .collect::<Vec<_>>();
@@ -1846,6 +1870,9 @@ where
                 F::Unit => Type::UNIT,
                 F::Never => Type::NEVER,
                 F::ComptimeType => Type::COMPTIME_TYPE,
+                F::F32 => Type::F32,
+                F::F64 => Type::F64,
+                F::ComptimeFloat => Type::COMPTIME_FLOAT,
                 F::BuiltinNominal { name, kind } => {
                     match self.resolve_builtin_nominal_in_pool(type_pool, name, kind)? {
                         LocalNominal::Struct(id) => Type::new_struct(id),
@@ -1994,6 +2021,12 @@ where
                     .map_err(SemanticImportFailure::Interner)?
                     .into(),
             ),
+            SemanticImportConstValue::Float(content) => ConstValue::Float(
+                self.symbol_space
+                    .try_intern(content.as_ref())
+                    .map_err(SemanticImportFailure::Interner)?
+                    .into(),
+            ),
         })
     }
 
@@ -2039,6 +2072,9 @@ where
             crate::TypeKind::Unit => SemanticImportType::Unit,
             crate::TypeKind::Never => SemanticImportType::Never,
             crate::TypeKind::ComptimeType => SemanticImportType::ComptimeType,
+            crate::TypeKind::F32 => SemanticImportType::F32,
+            crate::TypeKind::F64 => SemanticImportType::F64,
+            crate::TypeKind::ComptimeFloat => SemanticImportType::ComptimeFloat,
             crate::TypeKind::Struct(id) => {
                 let def = self.type_pool.struct_def(id);
                 if crate::types::is_slice_struct_name(&def.name) {
@@ -2141,6 +2177,9 @@ where
             ConstValue::Unit => SemanticImportConstValue::Unit,
             ConstValue::String(content) => {
                 SemanticImportConstValue::String(Arc::from(self.interner.resolve(&content.spur())))
+            }
+            ConstValue::Float(content) => {
+                SemanticImportConstValue::Float(Arc::from(self.interner.resolve(&content.spur())))
             }
         })
     }
@@ -2383,7 +2422,7 @@ mod tests {
 
     #[test]
     fn canonical_schema_kinds_have_stable_unique_tags_and_names() {
-        assert_eq!(SEMANTIC_IMPORT_TYPE_KINDS.len(), 21);
+        assert_eq!(SEMANTIC_IMPORT_TYPE_KINDS.len(), 24);
         for (tag, kind) in SEMANTIC_IMPORT_TYPE_KINDS.iter().copied().enumerate() {
             assert_eq!(usize::from(kind.schema_tag()), tag);
             assert_eq!(kind.to_string(), kind.display_name());
@@ -2394,7 +2433,7 @@ mod tests {
             );
         }
 
-        assert_eq!(SEMANTIC_IMPORT_CONST_KINDS.len(), 6);
+        assert_eq!(SEMANTIC_IMPORT_CONST_KINDS.len(), 7);
         for (tag, kind) in SEMANTIC_IMPORT_CONST_KINDS.iter().copied().enumerate() {
             assert_eq!(usize::from(kind.schema_tag()), tag);
             assert_eq!(kind.to_string(), kind.display_name());
@@ -2446,6 +2485,9 @@ mod tests {
             ImportType::Unit,
             ImportType::Never,
             ImportType::ComptimeType,
+            ImportType::F32,
+            ImportType::F64,
+            ImportType::ComptimeFloat,
             ImportType::BuiltinNominal {
                 name: Arc::from("str"),
                 kind: SemanticImportNominalKind::Struct,
@@ -2486,6 +2528,9 @@ mod tests {
             Unit,
             Never,
             Comptime,
+            F32,
+            F64,
+            ComptimeFloat,
             Builtin,
             Nominal,
             Array,
@@ -2509,6 +2554,9 @@ mod tests {
             Tag::Unit,
             Tag::Never,
             Tag::Comptime,
+            Tag::F32,
+            Tag::F64,
+            Tag::ComptimeFloat,
             Tag::Builtin,
             Tag::Nominal,
             Tag::Array,
@@ -2536,6 +2584,9 @@ mod tests {
                         F::Unit => Tag::Unit,
                         F::Never => Tag::Never,
                         F::ComptimeType => Tag::Comptime,
+                        F::F32 => Tag::F32,
+                        F::F64 => Tag::F64,
+                        F::ComptimeFloat => Tag::ComptimeFloat,
                         F::BuiltinNominal { .. } => Tag::Builtin,
                         F::Nominal(_) => Tag::Nominal,
                         F::Array { .. } => Tag::Array,

@@ -152,6 +152,9 @@ fn canonical_type_from_live_cached(
         K::Unit => CanonicalType::Unit,
         K::Never => CanonicalType::Never,
         K::ComptimeType => CanonicalType::ComptimeType,
+        K::F32 => CanonicalType::F32,
+        K::F64 => CanonicalType::F64,
+        K::ComptimeFloat => CanonicalType::ComptimeFloat,
         K::Array(id) => {
             let (element, len) = pool.array_def(id);
             CanonicalType::Array {
@@ -204,6 +207,9 @@ fn canonical_type_from_instance(
         T::Unit => CanonicalType::Unit,
         T::Never => CanonicalType::Never,
         T::ComptimeType => CanonicalType::ComptimeType,
+        T::F32 => CanonicalType::F32,
+        T::F64 => CanonicalType::F64,
+        T::ComptimeFloat => CanonicalType::ComptimeFloat,
         T::BuiltinNominal { kind, name }
         | T::Nominal(crate::NominalInstanceKey::Builtin { kind, name }) => {
             CanonicalType::BuiltinNominal {
@@ -274,6 +280,9 @@ fn canonical_primitive(ty: Type) -> Option<CanonicalType> {
         K::Unit => CanonicalType::Unit,
         K::Never => CanonicalType::Never,
         K::ComptimeType => CanonicalType::ComptimeType,
+        K::F32 => CanonicalType::F32,
+        K::F64 => CanonicalType::F64,
+        K::ComptimeFloat => CanonicalType::ComptimeFloat,
         _ => return None,
     })
 }
@@ -292,6 +301,9 @@ fn live_primitive(ty: &CanonicalType) -> Option<Type> {
         CanonicalType::Unit => Type::UNIT,
         CanonicalType::Never => Type::NEVER,
         CanonicalType::ComptimeType => Type::COMPTIME_TYPE,
+        CanonicalType::F32 => Type::F32,
+        CanonicalType::F64 => Type::F64,
+        CanonicalType::ComptimeFloat => Type::COMPTIME_FLOAT,
         _ => return None,
     })
 }
@@ -320,6 +332,9 @@ fn canonical_type_instance(ty: &CanonicalType) -> Option<crate::TypeInstanceKey>
         CanonicalType::Unit => crate::TypeInstanceKey::Unit,
         CanonicalType::Never => crate::TypeInstanceKey::Never,
         CanonicalType::ComptimeType => crate::TypeInstanceKey::ComptimeType,
+        CanonicalType::F32 => crate::TypeInstanceKey::F32,
+        CanonicalType::F64 => crate::TypeInstanceKey::F64,
+        CanonicalType::ComptimeFloat => crate::TypeInstanceKey::ComptimeFloat,
         CanonicalType::BuiltinNominal { kind, name } => crate::TypeInstanceKey::BuiltinNominal {
             kind: match kind {
                 rue_air::SemanticImportNominalKind::Struct => crate::AnonymousNominalKind::Struct,

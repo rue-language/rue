@@ -1439,6 +1439,7 @@ fn comptime_instdata_evaluation_has_one_production_authority() {
             include_str!("declaration_validation.rs"),
         ),
         ("drop_glue_names", include_str!("drop_glue_names.rs")),
+        ("exact_decimal", include_str!("exact_decimal.rs")),
         ("ffi_predicates", include_str!("ffi_predicates.rs")),
         (
             "inference/constraint",
@@ -2215,7 +2216,7 @@ fn comptime_host_is_an_empty_umbrella_over_its_capabilities() {
             owner.push((rest.split('(').next().unwrap_or_default(), current));
         }
     }
-    assert_eq!(owner.len(), 64, "the host contract lost or gained a method");
+    assert_eq!(owner.len(), 65, "the host contract lost or gained a method");
     for (method, trait_name) in &owner {
         assert!(
             capabilities.contains(trait_name),

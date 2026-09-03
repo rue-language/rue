@@ -57,6 +57,9 @@ pub(crate) fn semantic_type_from_instance(
         T::Unit => S::Unit,
         T::Never => S::Never,
         T::ComptimeType => S::ComptimeType,
+        T::F32 => S::F32,
+        T::F64 => S::F64,
+        T::ComptimeFloat => S::ComptimeFloat,
         T::BuiltinNominal { kind, name } => S::BuiltinNominal {
             kind: match kind {
                 crate::AnonymousNominalKind::Struct => rue_air::SemanticImportNominalKind::Struct,
@@ -272,6 +275,9 @@ fn plan_type_matches_live(
         P::Unit => live == Type::UNIT,
         P::Never => live == Type::NEVER,
         P::ComptimeType => live == Type::COMPTIME_TYPE,
+        P::F32 => live == Type::F32,
+        P::F64 => live == Type::F64,
+        P::ComptimeFloat => live == Type::COMPTIME_FLOAT,
         P::PtrConst(pointee) => live.as_ptr_const().is_some_and(|id| {
             plan_type_matches_live(
                 pointee,
@@ -790,6 +796,9 @@ mod tests {
             TypeKind::Unit => T::Unit,
             TypeKind::Never => T::Never,
             TypeKind::ComptimeType => T::ComptimeType,
+            TypeKind::F32 => T::F32,
+            TypeKind::F64 => T::F64,
+            TypeKind::ComptimeFloat => T::ComptimeFloat,
             TypeKind::Struct(id) => T::BuiltinNominal {
                 kind: K::Struct,
                 name: type_pool.struct_def(id).name.clone().into(),

@@ -115,6 +115,9 @@ pub(in crate::sema) fn resolve_instance_type<P: BodyEndpointProvider>(
         T::Unit => Type::UNIT,
         T::Never => Type::NEVER,
         T::ComptimeType => Type::COMPTIME_TYPE,
+        T::F32 => Type::F32,
+        T::F64 => Type::F64,
+        T::ComptimeFloat => Type::COMPTIME_FLOAT,
         T::BuiltinNominal { kind, name } => {
             let symbol = facts
                 .endpoint_name_symbol(name.as_ref())

@@ -3144,6 +3144,9 @@ pub(super) fn primitive_durable_type(name: &str) -> Option<crate::DurableType> {
         "()" => T::Unit,
         "!" => T::Never,
         "type" => T::ComptimeType,
+        "f32" => T::F32,
+        "f64" => T::F64,
+        "comptime_float" => T::ComptimeFloat,
         _ => return None,
     })
 }

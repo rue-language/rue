@@ -29,6 +29,7 @@ pub(crate) fn durable_value_from_argument(
         }
         V::Unit => D::Unit,
         V::String(value) => D::String(value.clone()),
+        V::Float(value) => D::Float(value.clone()),
     })
 }
 

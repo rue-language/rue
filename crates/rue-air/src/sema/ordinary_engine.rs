@@ -1595,6 +1595,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             | crate::types::TypeKind::Error
             | crate::types::TypeKind::Module(_)
             | crate::types::TypeKind::ComptimeType
+            | crate::types::TypeKind::ComptimeFloat
+            | crate::types::TypeKind::F32
+            | crate::types::TypeKind::F64
             | crate::types::TypeKind::PtrConst(_)
             | crate::types::TypeKind::PtrMut(_) => true,
             crate::types::TypeKind::Enum(id) => self

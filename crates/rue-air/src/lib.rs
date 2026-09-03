@@ -16,6 +16,7 @@ mod builtin_universe;
 pub mod call_abi;
 pub mod declaration_validation;
 pub mod drop_glue_names;
+mod exact_decimal;
 pub mod ffi_predicates;
 mod inference;
 mod inst;
@@ -45,6 +46,9 @@ pub use call_abi::{
     NativeAbiTypeFacts, NativeCallAbi, ReturnClass, ScalarAbiExtension, TargetCAbiFlavor,
     TargetCCallAbi, is_slot_identical_layout, native_return_register_budget,
 };
+pub use exact_decimal::canonical_decimal_literal;
+pub use exact_decimal::finite_float_literal_bits;
+pub(crate) use exact_decimal::finite_float_literal_bits_with_sign;
 pub use ffi_predicates::{
     FfiPredicate, FfiPredicateFailure, FfiRejectReason, FfiTypePool, c_ffi_safe,
     c_passable_by_value, check_c_layout, has_c_layout, repr_c_marker_eligible,

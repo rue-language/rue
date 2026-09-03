@@ -1044,6 +1044,9 @@ fn type_may_need_drop_glue<K, M>(ty: &rue_air::SemanticImportType<K, M>) -> bool
         | T::Unit
         | T::Never
         | T::ComptimeType
+        | T::F32
+        | T::F64
+        | T::ComptimeFloat
         | T::PtrConst(_)
         | T::PtrMut(_)
         | T::Slice { .. }
@@ -1069,6 +1072,9 @@ fn type_instance_from_semantic(
         T::Unit => crate::TypeInstanceKey::Unit,
         T::Never => crate::TypeInstanceKey::Never,
         T::ComptimeType => crate::TypeInstanceKey::ComptimeType,
+        T::F32 => crate::TypeInstanceKey::F32,
+        T::F64 => crate::TypeInstanceKey::F64,
+        T::ComptimeFloat => crate::TypeInstanceKey::ComptimeFloat,
         T::BuiltinNominal { kind, name } => crate::TypeInstanceKey::BuiltinNominal {
             kind: match kind {
                 rue_air::SemanticImportNominalKind::Struct => crate::AnonymousNominalKind::Struct,

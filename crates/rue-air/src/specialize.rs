@@ -203,6 +203,9 @@ where
                 ConstValue::String(content) => crate::SemanticImportConstValue::String(
                     std::sync::Arc::from(host.resolve_publication_symbol(&content.spur())),
                 ),
+                ConstValue::Float(content) => crate::SemanticImportConstValue::Float(
+                    std::sync::Arc::from(host.resolve_publication_symbol(&content.spur())),
+                ),
             })
         })
         .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
@@ -586,6 +589,7 @@ fn mangle_const_value(interner: &ThreadedRodeo, value: &ConstValue) -> String {
         // interner index would be a link-name that depends on intern order.
         ConstValue::Function(name) => format!("vfn{}", interner.resolve(&name.spur())),
         ConstValue::String(content) => format!("vstr{}", interner.resolve(&content.spur())),
+        ConstValue::Float(content) => format!("vfloat{}", interner.resolve(&content.spur())),
     }
 }
 

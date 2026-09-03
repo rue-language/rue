@@ -234,6 +234,12 @@ pub enum TypeKind {
     Never,
     /// The comptime type - the type of types themselves
     ComptimeType,
+    /// IEEE-754 binary32 floating-point type.
+    F32,
+    /// IEEE-754 binary64 floating-point type.
+    F64,
+    /// Arbitrary-precision compile-time floating-point literal type.
+    ComptimeFloat,
 }
 
 /// A type in the Rue type system.
@@ -293,6 +299,9 @@ impl std::fmt::Debug for Type {
             TypeKind::Error => write!(f, "Type::ERROR"),
             TypeKind::Never => write!(f, "Type::NEVER"),
             TypeKind::ComptimeType => write!(f, "Type::COMPTIME_TYPE"),
+            TypeKind::F32 => write!(f, "Type::F32"),
+            TypeKind::F64 => write!(f, "Type::F64"),
+            TypeKind::ComptimeFloat => write!(f, "Type::COMPTIME_FLOAT"),
             TypeKind::Struct(id) => write!(f, "Type::new_struct({id:?})"),
             TypeKind::Enum(id) => write!(f, "Type::new_enum({id:?})"),
             TypeKind::Array(id) => write!(f, "Type::new_array({id:?})"),
@@ -335,6 +344,12 @@ impl Type {
     pub const NEVER: Type = Type(Primitive::Never.encode());
     /// The comptime type - the type of types themselves
     pub const COMPTIME_TYPE: Type = Type(Primitive::ComptimeType.encode());
+    /// IEEE-754 binary32 floating-point type.
+    pub const F32: Type = Type(Primitive::F32.encode());
+    /// IEEE-754 binary64 floating-point type.
+    pub const F64: Type = Type(Primitive::F64.encode());
+    /// Arbitrary-precision compile-time floating-point literal type.
+    pub const COMPTIME_FLOAT: Type = Type(Primitive::ComptimeFloat.encode());
 }
 
 // Composite type constructors
@@ -621,6 +636,9 @@ impl Type {
             Decoded::Primitive(Primitive::Error) => Some(TypeKind::Error),
             Decoded::Primitive(Primitive::Never) => Some(TypeKind::Never),
             Decoded::Primitive(Primitive::ComptimeType) => Some(TypeKind::ComptimeType),
+            Decoded::Primitive(Primitive::F32) => Some(TypeKind::F32),
+            Decoded::Primitive(Primitive::F64) => Some(TypeKind::F64),
+            Decoded::Primitive(Primitive::ComptimeFloat) => Some(TypeKind::ComptimeFloat),
             Decoded::Composite {
                 kind: Composite::Struct,
                 payload,
@@ -672,6 +690,9 @@ impl Type {
             TypeKind::Error => "<error>",
             TypeKind::Never => "!",
             TypeKind::ComptimeType => "type",
+            TypeKind::F32 => "f32",
+            TypeKind::F64 => "f64",
+            TypeKind::ComptimeFloat => "comptime_float",
         }
     }
 
@@ -746,6 +767,9 @@ impl Type {
             "!" => Type::NEVER,
             // The type of types - used for comptime type parameters
             "type" => Type::COMPTIME_TYPE,
+            "f32" => Type::F32,
+            "f64" => Type::F64,
+            "comptime_float" => Type::COMPTIME_FLOAT,
             _ => return None,
         })
     }
@@ -767,6 +791,12 @@ impl Type {
                     | Primitive::U64
             ))
         )
+    }
+
+    /// Check if this is a concrete runtime floating-point type.
+    #[inline]
+    pub fn is_float(&self) -> bool {
+        matches!(*self, Type::F32 | Type::F64)
     }
 
     /// Check if this is an error type.
@@ -1796,8 +1826,8 @@ mod tests {
 
     #[test]
     fn test_is_valid_encoding_primitives() {
-        // All primitive types (0-12) are valid
-        for i in 0..=12u32 {
+        // All primitive types (0-15) are valid
+        for i in 0..=15u32 {
             assert!(
                 Type::is_valid_encoding(i),
                 "primitive tag {} should be valid",

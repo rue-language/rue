@@ -1180,6 +1180,9 @@ where
             S::Unit => Type::UNIT,
             S::Never => Type::NEVER,
             S::ComptimeType => Type::COMPTIME_TYPE,
+            S::F32 => Type::F32,
+            S::F64 => Type::F64,
+            S::ComptimeFloat => Type::COMPTIME_FLOAT,
             S::BuiltinNominal { name, kind } => {
                 if let Some(capacity) = crate::types::fixed_string_capacity(name) {
                     if *kind != SemanticImportNominalKind::Struct {
@@ -2199,7 +2202,8 @@ pub(in crate::sema) fn semantic_import_type_mentions_generic_parameter<K, M>(
                 crate::CanonicalArgumentValue::Integer(_)
                 | crate::CanonicalArgumentValue::Bool(_)
                 | crate::CanonicalArgumentValue::Unit
-                | crate::CanonicalArgumentValue::String(_) => false,
+                | crate::CanonicalArgumentValue::String(_)
+                | crate::CanonicalArgumentValue::Float(_) => false,
             })
     }
 
@@ -2248,6 +2252,9 @@ pub(in crate::sema) fn semantic_import_type_mentions_generic_parameter<K, M>(
             | crate::TypeInstanceKey::Unit
             | crate::TypeInstanceKey::Never
             | crate::TypeInstanceKey::ComptimeType
+            | crate::TypeInstanceKey::F32
+            | crate::TypeInstanceKey::F64
+            | crate::TypeInstanceKey::ComptimeFloat
             | crate::TypeInstanceKey::BuiltinNominal { .. }
             | crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Builtin { .. })
             | crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(_))
@@ -2276,6 +2283,9 @@ pub(in crate::sema) fn semantic_import_type_mentions_generic_parameter<K, M>(
         | SemanticImportType::Unit
         | SemanticImportType::Never
         | SemanticImportType::ComptimeType
+        | SemanticImportType::F32
+        | SemanticImportType::F64
+        | SemanticImportType::ComptimeFloat
         | SemanticImportType::BuiltinNominal { .. }
         | SemanticImportType::Nominal(_)
         | SemanticImportType::Module(_) => false,
@@ -2833,6 +2843,11 @@ where
             }
             V::Unit => ConstValue::Unit,
             V::String(value) => ConstValue::String(
+                self.intern_name(value.as_ref())
+                    .map_err(IdentityMintError::Interner)?
+                    .into(),
+            ),
+            V::Float(value) => ConstValue::Float(
                 self.intern_name(value.as_ref())
                     .map_err(IdentityMintError::Interner)?
                     .into(),
@@ -3918,6 +3933,9 @@ mod tests {
             TypeKind::PtrMut(id) => format!("ptr mut {}", render(pool, pool.ptr_mut_def(id))),
             TypeKind::Module(_) => "<module>".into(),
             TypeKind::ComptimeType => "type".into(),
+            TypeKind::F32 => "f32".into(),
+            TypeKind::F64 => "f64".into(),
+            TypeKind::ComptimeFloat => "comptime_float".into(),
         }
     }
 
@@ -3939,6 +3957,9 @@ mod tests {
             | TypeKind::Error
             | TypeKind::Module(_)
             | TypeKind::ComptimeType
+            | TypeKind::F32
+            | TypeKind::F64
+            | TypeKind::ComptimeFloat
             | TypeKind::PtrConst(_)
             | TypeKind::PtrMut(_) => true,
             TypeKind::Enum(id) => pool

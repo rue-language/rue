@@ -1198,6 +1198,10 @@ fn unsupported_intrinsic_kind_for_operation(
         | rue_air::IntrinsicOperation::DebugU64
         | rue_air::IntrinsicOperation::DebugBool
         | rue_air::IntrinsicOperation::DebugStr
+        | rue_air::IntrinsicOperation::IntToFloat
+        | rue_air::IntrinsicOperation::FloatToInt
+        | rue_air::IntrinsicOperation::FloatCast
+        | rue_air::IntrinsicOperation::TotalCmp
         | rue_air::IntrinsicOperation::BitCast => {
             UnsupportedKind::ContractViolation(ContractViolationKind::UnexpectedIntrinsic)
         }
@@ -2121,7 +2125,11 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::Raw
             | rue_air::IntrinsicOperation::RawMut
             | rue_air::IntrinsicOperation::FieldPtr
+            | rue_air::IntrinsicOperation::IntToFloat
+            | rue_air::IntrinsicOperation::FloatToInt
+            | rue_air::IntrinsicOperation::FloatCast
             | rue_air::IntrinsicOperation::BitCast => args.len() == 1,
+            rue_air::IntrinsicOperation::TotalCmp => args.len() == 2,
             rue_air::IntrinsicOperation::PanicNoMessage => args.is_empty(),
             rue_air::IntrinsicOperation::AssertWithMessage => args.len() == 2,
         };
@@ -2261,6 +2269,10 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::DebugU64
             | rue_air::IntrinsicOperation::DebugBool
             | rue_air::IntrinsicOperation::DebugStr
+            | rue_air::IntrinsicOperation::IntToFloat
+            | rue_air::IntrinsicOperation::FloatToInt
+            | rue_air::IntrinsicOperation::FloatCast
+            | rue_air::IntrinsicOperation::TotalCmp
             | rue_air::IntrinsicOperation::BitCast => false,
         };
         if signature_matches {
@@ -2324,6 +2336,10 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::RawMut
             | rue_air::IntrinsicOperation::FieldPtr
             | rue_air::IntrinsicOperation::Syscall
+            | rue_air::IntrinsicOperation::IntToFloat
+            | rue_air::IntrinsicOperation::FloatToInt
+            | rue_air::IntrinsicOperation::FloatCast
+            | rue_air::IntrinsicOperation::TotalCmp
             | rue_air::IntrinsicOperation::BitCast => return Ok(None),
         };
         let arity_matches = match operation {
@@ -2368,6 +2384,10 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::RawMut
             | rue_air::IntrinsicOperation::FieldPtr
             | rue_air::IntrinsicOperation::Syscall
+            | rue_air::IntrinsicOperation::IntToFloat
+            | rue_air::IntrinsicOperation::FloatToInt
+            | rue_air::IntrinsicOperation::FloatCast
+            | rue_air::IntrinsicOperation::TotalCmp
             | rue_air::IntrinsicOperation::BitCast => false,
         };
         if !arity_matches {
@@ -2611,6 +2631,10 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::RawMut
             | rue_air::IntrinsicOperation::FieldPtr
             | rue_air::IntrinsicOperation::Syscall
+            | rue_air::IntrinsicOperation::IntToFloat
+            | rue_air::IntrinsicOperation::FloatToInt
+            | rue_air::IntrinsicOperation::FloatCast
+            | rue_air::IntrinsicOperation::TotalCmp
             | rue_air::IntrinsicOperation::BitCast => {
                 return Err(unsupported(
                     UnsupportedKind::ContractViolation(ContractViolationKind::UnexpectedIntrinsic),
@@ -3943,7 +3967,11 @@ impl<'a> Interp<'a> {
                     | rue_air::IntrinsicOperation::EnvLen
                     | rue_air::IntrinsicOperation::Raw
                     | rue_air::IntrinsicOperation::RawMut
-                    | rue_air::IntrinsicOperation::FieldPtr => {
+                    | rue_air::IntrinsicOperation::FieldPtr
+                    | rue_air::IntrinsicOperation::IntToFloat
+                    | rue_air::IntrinsicOperation::FloatToInt
+                    | rue_air::IntrinsicOperation::FloatCast
+                    | rue_air::IntrinsicOperation::TotalCmp => {
                         // Classify first: the same static arity/signature validation
                         // that gates a model-gap registration also gates execution, so
                         // a malformed intrinsic still reports its contract violation
@@ -6359,6 +6387,10 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::EnvPtr
             | rue_air::IntrinsicOperation::EnvLen
             | rue_air::IntrinsicOperation::Syscall
+            | rue_air::IntrinsicOperation::IntToFloat
+            | rue_air::IntrinsicOperation::FloatToInt
+            | rue_air::IntrinsicOperation::FloatCast
+            | rue_air::IntrinsicOperation::TotalCmp
             | rue_air::IntrinsicOperation::BitCast => Ok(None),
         }
     }

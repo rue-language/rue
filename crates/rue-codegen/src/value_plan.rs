@@ -1965,6 +1965,10 @@ fn intrinsic_runtime_call(
         | IntrinsicOperation::RawMut
         | IntrinsicOperation::FieldPtr
         | IntrinsicOperation::BitCast
+        | IntrinsicOperation::IntToFloat
+        | IntrinsicOperation::FloatToInt
+        | IntrinsicOperation::FloatCast
+        | IntrinsicOperation::TotalCmp
         | IntrinsicOperation::Syscall => {
             unreachable!("pure intrinsic cannot have a runtime-call mapping")
         }

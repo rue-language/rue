@@ -1560,10 +1560,8 @@ define_error_codes! {
     /// beside the other `extern "C"` rules, and is the import-side mirror of
     /// E1106's rejection of a `pub extern "C" fn` export named `main`.
     FOREIGN_ENTRY_POINT_DECLARATION = 1108;
-    /// A float literal was used with `--preview floats` enabled, but the
-    /// typing phases of ADR-0065 (Phase 4 onward) are not implemented yet.
-    /// Sits in the preview band beside E1100 because it is the second half of
-    /// the same gate: E1100 fires without the flag, E1109 with it. (RUE-1069)
+    /// A typed float reached the explicit ADR-0065 Phase 4 lowering boundary.
+    /// The source feature is enabled, but architecture lowering is not yet.
     FLOAT_NOT_YET_IMPLEMENTED = 1109;
 
     // ========================================================================
@@ -1854,9 +1852,8 @@ pub enum PreviewFeature {
     /// literals (ADR-0065, RUE-714). Gated until every phase of the M9 rollout
     /// — types and inference, both backends, the dtoa runtime — is complete
     /// (ADR-0065 Phase 10). The lexer and parser accept a float literal only
-    /// with this flag; the phases that would give it a type do not exist yet,
-    /// so an enabled float literal still stops at
-    /// [`ErrorKind::FloatNotYetImplemented`].
+    /// with this flag; Phase 4 types it, while executable builds still stop at
+    /// [`ErrorKind::FloatNotYetImplemented`] until backend phases land.
     Floats,
     /// Public enums may promise that importing matches include a wildcard.
     NonExhaustiveEnums,
@@ -3208,15 +3205,12 @@ pub enum ErrorKind {
     #[error("`@repr(c)` struct `{}` is not FFI-eligible: {}", .0.struct_name, .0.reason)]
     ReprCStructIneligible(Box<ReprCIneligibleError>),
 
-    /// A float literal was written with `--preview floats` enabled, but the
-    /// phases that give it a type do not exist yet (ADR-0065 Phase 4+,
-    /// RUE-714). Phases 2 and 3 land the literal token, the parser node, and
-    /// the untyped RIR node; semantic analysis has no `f32`/`f64` tag and no
-    /// `comptime_float` to coerce it with, so the literal is rejected here
-    /// with a clean diagnostic rather than reaching an unfinished typing path.
+    /// A typed float reached CFG construction before architecture-specific
+    /// lowering exists. Rejecting here prevents integer-oriented lowering from
+    /// silently reinterpreting its bits.
     #[error(
-        "floating-point literals are not yet supported at this compilation phase \
-         (ADR-0065 Phase 4, RUE-714)"
+        "floating-point lowering is not yet implemented after typed AIR \
+         (ADR-0065 Phase 4 boundary, RUE-1070)"
     )]
     FloatNotYetImplemented,
 

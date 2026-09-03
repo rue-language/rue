@@ -63,3 +63,14 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "--preview floats"
+
+[[case]]
+name = "float_intrinsic_requires_the_floats_feature"
+spec = ["8.4:1"]
+source = """
+fn main() -> i32 {
+    @float_to_int(@int_to_float(1))
+}
+"""
+compile_fail = true
+error_contains = "--preview floats"
