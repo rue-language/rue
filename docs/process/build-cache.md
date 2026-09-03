@@ -5,12 +5,13 @@ persistent action cache across daemon restarts** (noted in `ci.yml`). Every CI r
 and every isolated worktree rebuilds unchanged crates. We use **BuildBuddy** (free
 tier) for a shared remote action cache and opt-in remote execution.
 
-> **Status (RUE-316/RUE-320).** The remote platform, `$ORIGIN` toolchain-tree
-> fix, and execution-platform-scoped linker are in place. Native/default builds
-> keep `clang++`; the BuildBuddy execution configuration selects the ubiquitous
-> `cc` driver through an exec-dep while Rust's bundled lld performs the real
-> Linux link via `-fuse-ld=lld`. Full remote execution is supported as an
-> explicit `--prefer-remote` mode, not the default local-development policy.
+> **Status (RUE-316/RUE-320/RUE-1937).** The remote platform, `$ORIGIN`
+> toolchain-tree fix, and execution-platform-scoped C tools are in place. On
+> Linux every compile and link runs through the hermetic Zig distribution's
+> `zig cc`, selected through an exec-dep, so native, cache-only, and
+> remote-execution configurations use the same linker bytes; macOS keeps the
+> prelude's path clang tools. Full remote execution is supported as an explicit
+> `--prefer-remote` mode, not the default local-development policy.
 
 - **Remote action cache**: the repository `./buck2` wrapper supplies
   `--prefer-local`, so cache misses execute locally while hits are shared across
@@ -157,22 +158,40 @@ they're recorded here so a future config change doesn't silently regress:
    builds rather than tests, so repository `scripts/*.py` do not execute there.
    That the image's 3.10 happens to meet the 3.9 floor is incidental, not
    load-bearing.
-6. **Linker** (RUE-320): the remote worker needs **`cc`** instead of the absent
-   `clang++`. A `remote-execution` constraint is inserted only into the explicit
-   full-remote execution configuration. The cache-only configuration omits it
-   because its misses execute natively under `--prefer-local`. The C++ tools
-   provider is an exec-dep, so its linker select sees that constraint and
-   chooses `cc`; native/default and cache-only execution configurations retain
-   the prelude's `clang++`. The pinned prelude adds `-fuse-ld=lld` for Linux,
-   keeping the actual linker hermetic.
+6. **Linker** (RUE-320, then RUE-1937): the prelude's Rust rules take their
+   linker from the C++ toolchain, and the worker image has no `clang++`. RUE-320
+   answered that with a `remote-execution` constraint, inserted only into the
+   explicit full-remote execution configuration, on which the exec-dep C tools
+   provider selected the ubiquitous `cc`; the host compiler and its glibc still
+   differed between the worker and a developer machine, so a link's bytes did.
+   RUE-1937 replaced the host tools on Linux with the SHA-pinned Zig
+   distribution already fetched for mimalloc: `toolchains//:zig-cxx-tools`
+   wraps `zig cc`, `zig c++`, and `zig ar` (target `x86_64-linux-gnu.2.17` /
+   `aarch64-linux-gnu.2.17`, selected on the execution platform's CPU) with
+   the whole Zig tree as a hidden input and Zig's caches under
+   `BUCK_SCRATCH_PATH`. The linker, its bundled lld, compiler_rt, libunwind,
+   and the glibc symbol versions are then action inputs rather than host
+   properties, and a Linux link is identical natively, from the cache, and on
+   the worker. The `cc` override is gone; the `remote-execution` constraint
+   remains on the platform for any future worker-only selection. The prelude
+   still appends `-fuse-ld=lld` to Linux links; `zig cc` reports it as an
+   unused argument and links with its own lld regardless. One detail keeps
+   the compiler byte-reproducible across checkouts: Zig compiles the glibc
+   start files, libunwind, and compiler_rt from source during the link, with
+   DWARF whose `DW_AT_comp_dir` is the action's working directory, and any
+   Zig strip request becomes LLD's `-s` (symbol table included). The linker
+   wrapper therefore applies `toolchains/zig/runtime-debug-discard.ld`, which
+   discards the debug sections of inputs under the Zig cache directories and
+   nothing else. macOS is unchanged: the prelude's path clang tools plus
+   `-ld_classic`.
 7. **Rust action memory** (RUE-320): a cache-disabled cold graph exceeded
    BuildBuddy's default per-action memory estimate and the executor OOM-killed
    rustc. The remote platform requests 4 GB per action; this is an execution
    scheduling hint and does not affect native or cache-only builds.
 
-Change 4 (`$ORIGIN` toolchain-tree) is global and local-safe. Changes 1, 2, 3,
-5, 6, and 7 live in the opt-in `.buckconfig.local` / `remote_cache` execution
-path.
+Changes 4 (`$ORIGIN` toolchain-tree) and 6 (Zig C tools on Linux) are global
+and local-safe. Changes 1, 2, 3, 5, and 7 live in the opt-in
+`.buckconfig.local` / `remote_cache` execution path.
 
 ## CI
 

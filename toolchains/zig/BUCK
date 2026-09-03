@@ -63,6 +63,23 @@ export_file(
     src = "defs.bzl",
 )
 
+# Applied by the Linux linker wrapper in toolchains//:zig-cxx-tools; the file
+# explains what it discards and why.
+export_file(
+    name = "runtime-debug-discard.ld",
+    src = "runtime-debug-discard.ld",
+    visibility = ["toolchains//:zig-cxx-tools"],
+)
+
+rue_sh_test(
+    name = "runtime-debug-discard-test",
+    test = "runtime_debug_discard_test.sh",
+    args = [
+        "$(location :runtime-debug-discard.ld)",
+        "$(location :defs)",
+    ],
+)
+
 filegroup(
     name = "policy-inputs",
     srcs = {
