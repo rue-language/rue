@@ -37,6 +37,15 @@ jobs:
   platform-corpus:
     strategy:
       matrix: ${{ fromJSON(needs.affected-targets.outputs.corpus_matrix) }}
+
+  ci-contract:
+    steps:
+      - run: >-
+          scripts/validate-tier-ci-selectors.py
+          --test-defs test_defs.bzl
+          --test-tiers-bxl test_tiers.bxl
+          --affected-targets scripts/affected-targets
+          --workflow .github/workflows/ci.yml
 """
 
 AFFECTED_TARGETS = """#!/usr/bin/env bash
@@ -158,6 +167,17 @@ class TierCiSelectorTests(unittest.TestCase):
         )
         self.assertTrue(
             any("no longer derives the corpus matrix" in error for error in errors),
+            errors,
+        )
+
+    def test_direct_workflow_invocation_requires_affected_targets(self) -> None:
+        errors = self.validate(
+            ci=CI_WORKFLOW.replace(
+                "          --affected-targets scripts/affected-targets\n", "", 1
+            )
+        )
+        self.assertTrue(
+            any("direct scripts/validate-tier-ci-selectors.py" in error for error in errors),
             errors,
         )
 

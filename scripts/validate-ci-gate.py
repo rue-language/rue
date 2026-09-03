@@ -1380,6 +1380,10 @@ def validate(
         errors.append("ci-contract must run live graph ownership validation, not structural-only mode")
     if "scripts/validate-tier-ci-selectors.py" not in contract:
         errors.append("ci-contract no longer proves every test tier is CI-selected")
+    elif "--affected-targets scripts/affected-targets" not in contract:
+        errors.append(
+            "ci-contract tier selector must receive the canonical affected-targets input"
+        )
     # RUE-1507: the scheduled-workflow health check is the only thing that reads
     # unattended run history on a path a human actually looks at. Dropping the
     # step would restore the original silence without changing a single
