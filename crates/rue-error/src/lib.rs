@@ -871,15 +871,90 @@ define_error_codes! {
         references: [ErrorCodeReference { title: "Linear structs cannot be Copy", path: "docs/spec/src/03-types/08-move-semantics.md", rule: Some("3.8:37") }],
     };
     // 408, 409 retired with the @handle directive (RUE-199).
-    DUPLICATE_METHOD = 410;
-    UNDEFINED_METHOD = 411;
-    UNDEFINED_ASSOC_FN = 412;
-    METHOD_CALL_ON_NON_STRUCT = 413;
-    METHOD_CALLED_AS_ASSOC_FN = 414;
-    ASSOC_FN_CALLED_AS_METHOD = 415;
-    DUPLICATE_DESTRUCTOR = 416;
-    DESTRUCTOR_UNKNOWN_TYPE = 417;
-    DUPLICATE_CONSTANT = 418;
+    DUPLICATE_METHOD = 410 => {
+        explanation: "A struct definition declares more than one method or associated function with the same name. Both declaration forms share the struct's callable-member name space, so each callable member name must be unique within that struct.",
+        likely_cause: "A method or associated function was copied, renamed incompletely, or generated twice in one struct definition. Remove one declaration or give the callable members distinct names.",
+        examples: [
+            ErrorCodeExample { title: "Duplicate method declaration", source: "struct Point {\n    x: i32,\n\n    fn value(self) -> i32 { self.x }\n    fn value(self) -> i32 { self.x }\n}\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Give each method a unique name", source: "struct Point {\n    x: i32,\n\n    fn value(self) -> i32 { self.x }\n    fn doubled(self) -> i32 { self.x * 2 }\n}\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Unique method names", path: "docs/spec/src/06-items/04-impl-blocks.md", rule: Some("6.4:16") }],
+    };
+    UNDEFINED_METHOD = 411 => {
+        explanation: "A method call names no method available for the receiver's type. Rue resolves user-defined methods on the receiver's struct and supported built-in receiver methods, including operations on strings and slices.",
+        likely_cause: "The method name is misspelled, belongs to another receiver type, or is unavailable for this built-in receiver kind; an associated function may also have been intended. Check the receiver expression's type and the callable members that type provides.",
+        examples: [
+            ErrorCodeExample { title: "Unknown method name", source: "struct Point { x: i32 }\nfn main() -> i32 {\n    let point = Point { x: 42 };\n    point.value()\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Declare the method on the receiver type", source: "struct Point {\n    x: i32,\n\n    fn value(self) -> i32 { self.x }\n}\nfn main() -> i32 {\n    let point = Point { x: 42 };\n    point.value()\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Undefined method calls", path: "docs/spec/src/06-items/04-impl-blocks.md", rule: Some("6.4:21") }],
+    };
+    UNDEFINED_ASSOC_FN = 412 => {
+        explanation: "An associated-style call names no callable member on the selected type. For a struct, the missing member would be an associated function declared without `self`; this code also covers a missing called variant on an inline comptime-produced enum type.",
+        likely_cause: "The member or type name is wrong, a struct method requiring a receiver value was intended, or an inline comptime-produced enum has no variant with the called name. Check the selected type's declarations and use the call form that matches the intended member.",
+        examples: [
+            ErrorCodeExample { title: "Unknown associated function", source: "struct Point { x: i32 }\nfn main() -> i32 {\n    Point.origin().x\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Declare and call an associated function", source: "struct Point {\n    x: i32,\n\n    fn origin() -> Point { Point { x: 0 } }\n}\nfn main() -> i32 {\n    Point.origin().x\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Associated-function calls", path: "docs/spec/src/06-items/04-impl-blocks.md", rule: Some("6.4:13") },
+            ErrorCodeReference { title: "Tuple-variant construction", path: "docs/spec/src/06-items/03-enums.md", rule: Some("6.3:16") },
+        ],
+    };
+    METHOD_CALL_ON_NON_STRUCT = 413 => {
+        explanation: "A method-call expression uses a receiver whose type does not provide a matching method. User-defined methods belong to struct types; compiler-provided built-in receiver operations are resolved separately.",
+        likely_cause: "The receiver has an unexpected scalar or other non-struct type, or method syntax was used where an ordinary function or operator was intended. Check the receiver expression's type and choose an operation available for that type.",
+        examples: [
+            ErrorCodeExample { title: "Method call on an integer", source: "fn main() -> i32 {\n    let value: i32 = 42;\n    value.missing()\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use an operation defined for the value", source: "fn main() -> i32 {\n    let value: i32 = 40;\n    value + 2\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Method receivers must support methods", path: "docs/spec/src/06-items/04-impl-blocks.md", rule: Some("6.4:20") }],
+    };
+    METHOD_CALLED_AS_ASSOC_FN = 414 => {
+        explanation: "A function declared with a `self` receiver was called through its type as though it were an associated function. A method needs a receiver value to supply `self`.",
+        likely_cause: "The call uses `Type.method()` instead of `receiver.method()`, or the declaration accidentally includes a `self` parameter. Construct or obtain a receiver value, or remove `self` if the function is meant to be associated with the type rather than an instance.",
+        examples: [
+            ErrorCodeExample { title: "Method called through its type", source: "struct Point {\n    x: i32,\n\n    fn value(self) -> i32 { self.x }\n}\nfn main() -> i32 {\n    Point.value()\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Call the method on a receiver", source: "struct Point {\n    x: i32,\n\n    fn value(self) -> i32 { self.x }\n}\nfn main() -> i32 {\n    let point = Point { x: 42 };\n    point.value()\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Methods require receiver syntax", path: "docs/spec/src/06-items/04-impl-blocks.md", rule: Some("6.4:23") }],
+    };
+    ASSOC_FN_CALLED_AS_METHOD = 415 => {
+        explanation: "A function declared without a `self` receiver was called on a value as though it were a method. An associated function is selected through its struct type instead.",
+        likely_cause: "The call uses `receiver.function()` instead of `Type.function()`, or the declaration is missing its intended `self` parameter. Call it through the type, or add the appropriate receiver parameter when instance access is intended.",
+        examples: [
+            ErrorCodeExample { title: "Associated function called on a value", source: "struct Point {\n    x: i32,\n\n    fn origin() -> Point { Point { x: 0 } }\n}\nfn main() -> i32 {\n    let point = Point { x: 42 };\n    point.origin().x\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Call the associated function through its type", source: "struct Point {\n    x: i32,\n\n    fn origin() -> Point { Point { x: 0 } }\n}\nfn main() -> i32 {\n    Point.origin().x\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Associated functions require type syntax", path: "docs/spec/src/06-items/04-impl-blocks.md", rule: Some("6.4:22") }],
+    };
+    DUPLICATE_DESTRUCTOR = 416 => {
+        explanation: "More than one user-defined destructor is declared for the same struct type. Rue permits at most one destructor because dropping a value has one canonical user cleanup action.",
+        likely_cause: "A `drop fn` declaration was duplicated, or cleanup for one type was split across multiple destructor declarations. Combine the cleanup into a single destructor for that struct.",
+        examples: [
+            ErrorCodeExample { title: "Two destructors for one struct", source: "struct Resource { value: i32 }\ndrop fn Resource(self) {}\ndrop fn Resource(self) {}\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Keep one destructor per struct", source: "struct Resource { value: i32 }\ndrop fn Resource(self) {}\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "One destructor per struct", path: "docs/spec/src/03-types/09-destructors.md", rule: Some("3.9:26") }],
+    };
+    DESTRUCTOR_UNKNOWN_TYPE = 417 => {
+        explanation: "A top-level `drop fn` names a type that is not a struct defined in the same module. Destructor target lookup is module-local, so a struct elsewhere in the program does not satisfy the declaration.",
+        likely_cause: "The type name is misspelled, the struct declaration is missing from this module, or the name denotes a non-struct type. Declare the struct in the same module and make the destructor's type name match it exactly.",
+        examples: [
+            ErrorCodeExample { title: "Destructor for an unknown type", source: "drop fn Resource(self) {}\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Define the destructor's struct type", source: "struct Resource { value: i32 }\ndrop fn Resource(self) {}\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Destructor target types", path: "docs/spec/src/03-types/09-destructors.md", rule: Some("3.9:27") }],
+    };
+    DUPLICATE_CONSTANT = 418 => {
+        explanation: "A source file declares two top-level constants with the same name. Constant names are module-scoped, and a const/const collision within one file is ambiguous.",
+        likely_cause: "A constant declaration was copied, generated twice, or renamed to an existing constant's name. Remove one declaration or give each constant in the file a distinct name; another module may independently use the same name.",
+        examples: [
+            ErrorCodeExample { title: "Duplicate constant name", source: "const LIMIT: i32 = 40;\nconst LIMIT: i32 = 42;\nfn main() -> i32 { LIMIT }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use distinct constant names", source: "const BASE: i32 = 40;\nconst LIMIT: i32 = 42;\nfn main() -> i32 { LIMIT - BASE }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Module-scoped top-level names", path: "docs/spec/src/10-modules/05-program-composition.md", rule: Some("10.5:1") }],
+    };
     CONST_EXPR_NOT_SUPPORTED = 434;
     DUPLICATE_VARIANT = 419;
     UNKNOWN_VARIANT = 420;
@@ -3690,6 +3765,44 @@ mod tests {
                 Err(ParseErrorCodeError::Unknown(retired))
             );
         }
+    }
+
+    #[test]
+    fn active_method_and_item_explanation_band_is_complete_and_bounded() {
+        let expected = [
+            ErrorCode::DUPLICATE_METHOD,
+            ErrorCode::UNDEFINED_METHOD,
+            ErrorCode::UNDEFINED_ASSOC_FN,
+            ErrorCode::METHOD_CALL_ON_NON_STRUCT,
+            ErrorCode::METHOD_CALLED_AS_ASSOC_FN,
+            ErrorCode::ASSOC_FN_CALLED_AS_METHOD,
+            ErrorCode::DUPLICATE_DESTRUCTOR,
+            ErrorCode::DESTRUCTOR_UNKNOWN_TYPE,
+            ErrorCode::DUPLICATE_CONSTANT,
+        ];
+        let active = error_code_metadata()
+            .iter()
+            .filter(|metadata| (410..=418).contains(&metadata.code.0))
+            .map(|metadata| {
+                assert_eq!(metadata.source_path, "crates/rue-error/src/lib.rs");
+                metadata.code
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(active, expected);
+        let explained = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (410..=418)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(explained, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
+        );
     }
 
     /// `ErrorKind::code()` must cover the compiler-declared ErrorCode constants without

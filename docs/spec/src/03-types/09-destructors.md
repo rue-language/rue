@@ -187,7 +187,10 @@ Each struct type **MAY** have at most one user-defined destructor. A compile-tim
 
 {{ rule(id="3.9:27", cat="legality-rule") }}
 
-A user-defined destructor can only be declared for a struct type that is defined in the same compilation unit. A compile-time error is raised if the destructor references an unknown type or a non-struct type.
+A user-defined destructor can only be declared for a struct type that is defined
+in the same module. Destructor target lookup is module-local: a struct defined
+in another loaded module does not satisfy the declaration. A compile-time error
+is raised if the destructor references an unknown type or a non-struct type.
 
 {{ rule(id="3.9:28", cat="dynamic-semantics") }}
 
