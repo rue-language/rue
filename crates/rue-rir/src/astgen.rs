@@ -18,9 +18,9 @@ use rue_parser::{
 };
 
 use crate::inst::{
-    Inst, InstData, InstRef, InternalIntrinsic, PayloadFallback, RepeatCount, Rir, RirArgMode,
-    RirCallArg, RirDeferredStructuralAnchor, RirDirective, RirEditor, RirParam, RirParamMode,
-    RirPattern,
+    FnDeclFlags, Inst, InstData, InstRef, InternalIntrinsic, PayloadFallback, RepeatCount, Rir,
+    RirArgMode, RirCallArg, RirDeferredStructuralAnchor, RirDirective, RirEditor, RirParam,
+    RirParamMode, RirPattern,
 };
 
 trait RecordPayloadFailure<T> {
@@ -835,22 +835,18 @@ impl<'a> AstGen<'a> {
             .rir
             .add_fn_decl_with_return_modes(
                 &directives,
-                false,
-                false,
-                false,
-                // Methods are never C exports.
-                false,
-                // Methods are never test declarations.
-                false,
+                FnDeclFlags {
+                    has_self,
+                    self_mode,
+                    self_is_mut,
+                    returns_borrow: method.place_return.is_some_and(|mode| mode.is_borrow()),
+                    returns_inout: method.place_return.is_some_and(|mode| mode.is_inout()),
+                    ..FnDeclFlags::default()
+                },
                 name,
                 &params,
                 return_type,
                 body,
-                has_self,
-                self_mode,
-                self_is_mut,
-                method.place_return.is_some_and(|mode| mode.is_borrow()),
-                method.place_return.is_some_and(|mode| mode.is_inout()),
                 method.span,
             )
             .record_failure(&mut self.payload_error);
@@ -931,20 +927,14 @@ impl<'a> AstGen<'a> {
         self.rir
             .add_fn_decl_with_return_modes(
                 &directives,
-                false,
-                false,
-                false,
-                false,
-                true,
+                FnDeclFlags {
+                    is_test: true,
+                    ..FnDeclFlags::default()
+                },
                 name,
                 &[],
                 return_type,
                 body,
-                false,
-                RirParamMode::Normal,
-                false,
-                false,
-                false,
                 test.span,
             )
             .record_failure(&mut self.payload_error)
@@ -986,22 +976,19 @@ impl<'a> AstGen<'a> {
             .rir
             .add_fn_decl_with_return_modes(
                 &directives,
-                func.visibility == Visibility::Public,
-                func.is_unchecked,
-                false,
-                // `pub extern "C" fn` marks a Rue-to-C export (ADR-0064 P4).
-                func.export_abi.is_some(),
-                // A `fn` is never a test declaration.
-                false,
+                FnDeclFlags {
+                    is_pub: func.visibility == Visibility::Public,
+                    is_unchecked: func.is_unchecked,
+                    // `pub extern "C" fn` marks a Rue-to-C export (ADR-0064 P4).
+                    is_c_export: func.export_abi.is_some(),
+                    returns_borrow: func.place_return.is_some_and(|mode| mode.is_borrow()),
+                    returns_inout: func.place_return.is_some_and(|mode| mode.is_inout()),
+                    ..FnDeclFlags::default()
+                },
                 name,
                 &params,
                 return_type,
                 body,
-                false,
-                RirParamMode::Normal,
-                false,
-                func.place_return.is_some_and(|mode| mode.is_borrow()),
-                func.place_return.is_some_and(|mode| mode.is_inout()),
                 func.span,
             )
             .record_failure(&mut self.payload_error);
