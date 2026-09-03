@@ -329,6 +329,134 @@ args = ["explain", "E0479"]
 compile_fail = true
 error_contains = ["unknown or retired error code E0479"]
 
+# This bounded tranche covers linear payloads, second-class slices, field
+# pointers, parameters, fixed/growable strings, linear overwrite, and the
+# owning-container element gate. Invalid source pins `explain` as a metadata
+# path; each assertion also names the corrected compiler-validated control.
+[[case]]
+name = "linear_payload_discard_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0486"]
+compile_only = true
+compile_stdout_contains = ["E0486: Linear payload discarded", "Discard a linear match payload:", "Bind and consume the linear payload:", "docs/spec/src/04-expressions/07-match-expressions.md (spec rule 4.7:30)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "slice_return_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0487"]
+compile_only = true
+compile_stdout_contains = ["E0487: Slice return not allowed", "Return a second-class slice:", "Use the slice within the call:", "docs/spec/src/07-arrays/02-slices.md (spec rule 7.2:4)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "slice_aggregate_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0488"]
+compile_only = true
+compile_stdout_contains = ["E0488: Slice in aggregate field", "Store a slice in a struct:", "Store an owning fixed array:", "docs/spec/src/07-arrays/02-slices.md (spec rule 7.2:5)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "slice_escape_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0489"]
+compile_only = true
+compile_stdout_contains = ["E0489: Slice escapes scope", "Bind a slice to a local:", "Read a slice parameter directly:", "docs/spec/src/07-arrays/02-slices.md (spec rule 7.2:6)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "field_pointer_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0490"]
+compile_only = true
+compile_stdout_contains = ["E0490: Field ptr requires field", "Request a field pointer for a whole value:", "Request a pointer to a named field:", "docs/spec/src/09-unchecked-code/02-intrinsics.md (spec rule 9.2:17)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "duplicate_parameter_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0491"]
+compile_only = true
+compile_stdout_contains = ["E0491: Duplicate parameter", "Repeat a function parameter name:", "Give parameters distinct names:", "docs/spec/src/06-items/01-functions.md (spec rule 6.1:34)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "fixed_string_capacity_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0492"]
+compile_only = true
+compile_stdout_contains = ["E0492: Str fixed capacity exceeded", "Exceed a fixed string capacity:", "Choose sufficient fixed capacity:", "docs/spec/src/03-types/07-string-type.md (spec rule 3.7:51)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "linear_overwrite_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0493"]
+compile_only = true
+compile_stdout_contains = ["E0493: Linear value overwritten", "Overwrite a live linear local:", "Reinitialize after consuming the old value:", "docs/spec/src/03-types/08-move-semantics.md (spec rule 3.8:77)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "linear_inout_overwrite_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0494"]
+compile_only = true
+compile_stdout_contains = ["E0494: Linear value overwritten through inout", "Overwrite a linear inout parameter:", "Mutate a non-linear field through inout:", "docs/spec/src/03-types/08-move-semantics.md (spec rule 3.8:77)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "buffer_first_class_string_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0495"]
+compile_only = true
+compile_stdout_contains = ["E0495: Buffer not first class str", "Pass a buffer as first-class str:", "Borrow the buffer for string access:", "docs/spec/src/03-types/07-string-type.md (spec rule 3.7:59)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "inout_string_provenance_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0496"]
+compile_only = true
+compile_stdout_contains = ["E0496: Inout str requires local buffer", "Request an exclusive view of static str:", "Use a local buffer for an exclusive view:", "docs/spec/src/03-types/07-string-type.md (spec rule 3.7:60)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "string_view_escape_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0497"]
+compile_only = true
+compile_stdout_contains = ["E0497: Str view not first class", "Return a borrowed string view:", "Read the string view within its call:", "docs/spec/src/03-types/07-string-type.md (spec rule 3.7:59)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "retired_container_destructor_code_is_rejected"
+files = [{ path = "main.rue", source = "fn main() {}\n" }]
+args = ["explain", "E0498"]
+compile_fail = true
+error_contains = ["unknown or retired error code E0498"]
+
+[[case]]
+name = "linear_container_element_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0499"]
+compile_only = true
+compile_stdout_contains = ["E0499: Container element is linear", "Instantiate a droppable-gated container with a linear element:", "Use a non-linear container element:", "docs/spec/src/04-expressions/13-intrinsics.md (spec rule 4.13:5a)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
 [[case]]
 name = "malformed_code_is_rejected"
 files = [{ path = "main.rue", source = "fn main() {}\n" }]
