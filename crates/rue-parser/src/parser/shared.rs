@@ -201,6 +201,7 @@ impl Parser {
                     recovery::ItemRecoveryPosition::Initial,
                     &self.kind(),
                     brace_depth,
+                    self.at_test_item(),
                 ),
                 recovery::ItemRecoveryAction::Consume
             );
@@ -216,6 +217,7 @@ impl Parser {
                 recovery::ItemRecoveryPosition::AfterProgress,
                 &self.kind(),
                 brace_depth,
+                self.at_test_item(),
             ) == recovery::ItemRecoveryAction::Consume
         {
             match self.kind() {

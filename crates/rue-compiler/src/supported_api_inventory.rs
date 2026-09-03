@@ -51,6 +51,7 @@ stable|import_graph|dependency-artifact|source-loaders+embedders|ImportDirective
 stable|lib|runtime-config|cli+embedders|configure_thread_pool|pub fn configure_thread_pool(jobs:usize)->usize
 stable|queries|compilation-config|cli+embedders|CompileOptions|pub use queries::CompileOptions
 stable|queries|compilation-config|cli+embedders|LinkerMode|pub use queries::LinkerMode
+stable|queries|compilation-config|cli+embedders|RootSelection|pub use queries::RootSelection
 stable|queries|compile-artifact|cli+embedders|CompileOutput|pub use queries::CompileOutput
 stable|queries|compile-artifact|cli+embedders|SourceView|pub use queries::SourceView
 stable|queries|one-shot-operation|cli+embedders|compile_snapshot|pub use queries::compile_snapshot

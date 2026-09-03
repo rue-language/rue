@@ -665,6 +665,13 @@ define_error_codes! {
     /// inlining its body at the call site (ADR-0062), so an accessor-call
     /// cycle has no finite expansion.
     ACCESSOR_RECURSION = 261;
+    /// Two `test "name" { .. }` declarations in one module share a name
+    /// (ADR-0083 §1, RUE-1618). A test's name is its identity within its
+    /// module, so a duplicate makes the pair unaddressable by a filter or a
+    /// stable test ID. Like the accessor block above, it sits in the semantic
+    /// band rather than with its E04xx duplicate-definition siblings because
+    /// that band is at its ceiling (E0499).
+    DUPLICATE_TEST_DEFINITION = 262;
 
     // ========================================================================
     // Struct/enum errors (E0400-E0499)
@@ -1270,6 +1277,12 @@ pub enum PreviewFeature {
     Floats,
     /// Public enums may promise that importing matches include a wildcard.
     NonExhaustiveEnums,
+    /// Test declarations: the `test "name" { .. }` language item (ADR-0083
+    /// §1, RUE-1618). The gate covers a parser change, so any request whose
+    /// closure contains a test item — an executable build included, which
+    /// parses test items for the unused-item scan — needs the flag to compile
+    /// at all. `rue test` will not enable it implicitly.
+    TestDeclarations,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -1293,6 +1306,7 @@ impl PreviewFeature {
             PreviewFeature::CFfi => "c_ffi",
             PreviewFeature::Floats => "floats",
             PreviewFeature::NonExhaustiveEnums => "non_exhaustive_enums",
+            PreviewFeature::TestDeclarations => "test_declarations",
         }
     }
 
@@ -1304,6 +1318,7 @@ impl PreviewFeature {
             PreviewFeature::CFfi => "ADR-0064",
             PreviewFeature::Floats => "ADR-0065",
             PreviewFeature::NonExhaustiveEnums => "ADR-0005",
+            PreviewFeature::TestDeclarations => "ADR-0083",
         }
     }
 
@@ -1314,7 +1329,25 @@ impl PreviewFeature {
             PreviewFeature::CFfi,
             PreviewFeature::Floats,
             PreviewFeature::NonExhaustiveEnums,
+            PreviewFeature::TestDeclarations,
         ]
+    }
+
+    /// The `help:` line every preview-gate diagnostic carries: which flag
+    /// enables the feature, and which ADR governs it.
+    ///
+    /// This is the single authority for that wording. Three sites raise
+    /// [`ErrorKind::PreviewFeatureRequired`] — body analysis, the comptime
+    /// host, and the request-level closure gate — and a user who hits any of
+    /// them is being told the same thing, so the sentence is assembled once
+    /// here rather than hand-formatted at each site where the three could
+    /// silently drift apart.
+    pub fn enable_help(self) -> String {
+        format!(
+            "use --preview {} to enable this feature ({})",
+            self.name(),
+            self.adr()
+        )
     }
 
     /// Get a comma-separated list of all feature names (for help text).
@@ -1340,6 +1373,7 @@ impl std::str::FromStr for PreviewFeature {
             "c_ffi" => Ok(PreviewFeature::CFfi),
             "floats" => Ok(PreviewFeature::Floats),
             "non_exhaustive_enums" => Ok(PreviewFeature::NonExhaustiveEnums),
+            "test_declarations" => Ok(PreviewFeature::TestDeclarations),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -1930,6 +1964,12 @@ pub enum ErrorKind {
     /// Definitions with the same name but different kinds cannot coexist.
     #[error("duplicate definition: `{name}` conflicts with an existing item of a different kind")]
     DuplicateMixedKindDefinition { name: String },
+
+    /// Two `test "name" { .. }` declarations in one module share a name
+    /// (ADR-0083 §1). Keyed among test declarations only: a test never
+    /// collides with a function, type, or constant of the same spelling.
+    #[error("duplicate test definition: \"{test_name}\" is already defined in this module")]
+    DuplicateTestDefinition { test_name: String },
     /// Linear value was not consumed before going out of scope
     #[error("linear value '{0}' must be consumed but was dropped")]
     LinearValueNotConsumed(String),
@@ -2724,6 +2764,7 @@ impl ErrorKind {
             ErrorKind::ReservedTypeName { .. } => ErrorCode::RESERVED_TYPE_NAME,
             ErrorKind::ReservedFunctionName { .. } => ErrorCode::RESERVED_FUNCTION_NAME,
             ErrorKind::DuplicateTypeDefinition { .. } => ErrorCode::DUPLICATE_TYPE_DEFINITION,
+            ErrorKind::DuplicateTestDefinition { .. } => ErrorCode::DUPLICATE_TEST_DEFINITION,
             ErrorKind::DuplicateFunctionDefinition { .. }
             | ErrorKind::DuplicateMixedKindDefinition { .. } => {
                 ErrorCode::DUPLICATE_FUNCTION_DEFINITION
@@ -3866,7 +3907,10 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, c_ffi, floats, non_exhaustive_enums");
+        assert_eq!(
+            names,
+            "test_infra, c_ffi, floats, non_exhaustive_enums, test_declarations"
+        );
     }
 
     #[test]

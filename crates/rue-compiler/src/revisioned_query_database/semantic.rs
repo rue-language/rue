@@ -458,6 +458,7 @@ pub(super) fn stable_syntax_candidate_set(
         K::Method => [Some(C::Method), None],
         K::AssociatedFunction => [Some(C::AssociatedFunction), None],
         K::Destructor => [Some(C::Destructor), None],
+        K::Test => [Some(C::Test), None],
     };
     let owner = match key.owner() {
         Some(owner) => Some(DeclarationCandidateOwner {

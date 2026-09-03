@@ -75,6 +75,42 @@ pub struct CompileOptions {
     /// `extern "C"` symbols from these members. Linking-only: this does not
     /// participate in the semantic or codegen cache identity.
     pub link_archives: Vec<std::path::PathBuf>,
+    /// Which declarations root the request (ADR-0083 §1). Defaults to
+    /// [`RootSelection::Executable`].
+    pub root_selection: RootSelection,
+}
+
+/// The root set a semantic request analyzes.
+///
+/// A request's roots decide everything downstream: which bodies are analyzed,
+/// which reach a CFG, and which are code-generated and linked. There is one
+/// authority for that choice — `CompilerSession::rooted_body_graph` — and this
+/// is its only input.
+///
+/// The two selections are disjoint by construction, which is what makes
+/// ADR-0083 §1's "test items are roots, not reachable code" checkable: an
+/// executable request never analyzes, lowers, or links a test body, so a test
+/// body carrying a type error compiles clean as an executable and fails only
+/// under [`RootSelection::Tests`].
+///
+/// # Stability
+///
+/// Phase 1 publishes this for in-tree tooling and tests; there is no CLI
+/// spelling for anything but the default. The variant set is expected to grow
+/// with ADR-0083 Phase 2 — per-target selection and filtered run sets are
+/// named there — so it is `#[non_exhaustive]`: match it with a wildcard arm
+/// rather than exhaustively, and treat an unrecognized selection as
+/// [`RootSelection::Executable`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RootSelection {
+    /// The program entry point `main` plus every `extern "C"` export, which
+    /// join it as co-equal roots. This is the default everywhere.
+    #[default]
+    Executable,
+    /// Every test declaration in the request's module closure. A test request
+    /// does not require — and does not root — `main` (ADR-0083 §1).
+    Tests,
 }
 
 impl Default for CompileOptions {
@@ -86,6 +122,7 @@ impl Default for CompileOptions {
             opt_level: OptLevel::default(),
             preview_features: PreviewFeatures::new(),
             link_archives: Vec::new(),
+            root_selection: RootSelection::Executable,
         }
     }
 }

@@ -623,7 +623,7 @@ classification stated (§5.1, §5.2).
 Filed in the Linear project "rue test MVP"; the deferred layers live in the
 companion project "rue test follow-ups" (§6).
 
-- [ ] **Phase 1: `test` declarations** - RUE-1618. Grammar/lexer/parser
+- [x] **Phase 1: `test` declarations** - RUE-1618. Grammar/lexer/parser
       (first contextual keyword, directives allowed), RIR item, a new
       `Test` kind in the closed stable-definition taxonomy plus its
       namespace decision, semantic analysis as ordinary bodies rooted only

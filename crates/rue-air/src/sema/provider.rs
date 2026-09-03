@@ -40,6 +40,10 @@ pub enum ProviderNamespace {
     ModuleItem,
     /// Destructor declarations, keyed by the type name following `drop fn`.
     Destructor,
+    /// Test declarations, keyed by the test's name string (ADR-0083 §1). A
+    /// name-resolution lookup never reaches this namespace: a test's name is a
+    /// string literal, so no expression can name it.
+    Test,
 }
 
 /// The syntactic kind of a resolved candidate. Owned mirror of the compiler's
@@ -57,6 +61,8 @@ pub enum ProviderDefinitionKind {
     Destructor,
     /// A file-level constant.
     Const,
+    /// A `test "name" { .. }` declaration (ADR-0083 §1).
+    Test,
 }
 
 /// One owned name-resolution candidate: its namespace, kind, visibility,

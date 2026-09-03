@@ -3146,6 +3146,13 @@ impl BodyRirIndex {
         self.declarations.first_free_function(source, Some(file_id))
     }
 
+    /// The first test-declaration RIR handle for `(source, file)` (ADR-0083
+    /// §1). Test declarations are indexed apart from free functions, so a
+    /// `test "parse"` and a `fn parse` in one file answer different queries.
+    pub(in crate::sema) fn first_test(&self, source: Spur, file_id: FileId) -> Option<InstRef> {
+        self.declarations.first_test(source, file_id)
+    }
+
     /// The named-method RIR declaration for a named struct owner, keyed by the
     /// durable-available `(owner_file, owner_type_name, method_name)` preimage of
     /// the epoch's `(StructId, method_name)` key. Equal to

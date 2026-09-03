@@ -59,11 +59,58 @@ impl Parser {
             TokenKind::Const => self
                 .const_decl(start, directives, visibility)
                 .map(Item::Const),
+            // `test "name" { .. }` (ADR-0083 §1). `test` is Rue's first
+            // contextual keyword: it is recognized here only when it is an
+            // identifier spelled `test` followed by a string literal, so a
+            // `fn test`, a `const test`, and a local `let test = ..` all keep
+            // their ordinary meaning. A `pub`/`unchecked` prefix is not part of
+            // the production, so `pub test "x" {}` falls through to the
+            // unexpected-token arm below.
+            _ if visibility == Visibility::Private && self.at_test_item() => {
+                self.test_decl(start, directives).map(Item::Test)
+            }
             _ => {
-                self.unexpected("'@' or 'pub' or 'unchecked' or 'fn' or …");
+                self.unexpected("'@' or 'pub' or 'unchecked' or 'fn' or 'test' or …");
                 Err(())
             }
         }
+    }
+
+    /// Whether the cursor is at the contextual `test` keyword introducing a
+    /// test declaration: an identifier spelled `test` immediately followed by a
+    /// string literal (ADR-0083 §1). This is the single authority on the
+    /// contextual-keyword decision; item recovery consults it too.
+    pub(super) fn at_test_item(&self) -> bool {
+        matches!(self.kind(), TokenKind::Ident(spur) if spur == self.syms.test_kw)
+            && matches!(self.nth(1), TokenKind::String(_))
+    }
+
+    /// Parse `test "name" { .. }`. The caller has already parsed directives and
+    /// established that [`Parser::at_test_item`] holds.
+    fn test_decl(&mut self, start: u32, directives: Directives) -> PResult<TestDecl> {
+        self.bump(); // the contextual `test` keyword
+        let name = match self.kind() {
+            TokenKind::String(value) => {
+                let span = self.bump().span;
+                StringLit { value, span }
+            }
+            _ => {
+                self.unexpected("a test name string literal");
+                return Err(());
+            }
+        };
+        let header_span = self.span_from(start);
+        let anonymous_mark = self.anonymous_literal_mark();
+        let body = Expr::Block(self.block()?);
+        let contains_anonymous_type_literal = self.saw_anonymous_literal_since(anonymous_mark);
+        Ok(TestDecl {
+            directives,
+            name,
+            body,
+            span: self.span_from(start),
+            header_span,
+            contains_anonymous_type_literal,
+        })
     }
 
     fn function(

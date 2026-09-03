@@ -253,7 +253,10 @@ fn duplicate_errors<'a>(
                         enums.insert(name, definition());
                     }
                 }
-                DefinitionKind::Destructor | DefinitionKind::Const => {}
+                // A test's name is a string literal in its own namespace, so
+                // it collides with nothing here; duplicate test names are
+                // diagnosed per module by the semantic nucleus (ADR-0083 §1).
+                DefinitionKind::Destructor | DefinitionKind::Const | DefinitionKind::Test => {}
             }
         }
     }

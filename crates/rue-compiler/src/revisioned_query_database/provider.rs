@@ -88,6 +88,7 @@ pub(super) fn provider_namespace_to_definition(
     match namespace {
         rue_air::ProviderNamespace::ModuleItem => DefinitionNamespace::ModuleItem,
         rue_air::ProviderNamespace::Destructor => DefinitionNamespace::Destructor,
+        rue_air::ProviderNamespace::Test => DefinitionNamespace::Test,
     }
 }
 
@@ -98,6 +99,7 @@ pub(super) fn definition_namespace_to_provider(
     match namespace {
         DefinitionNamespace::ModuleItem => rue_air::ProviderNamespace::ModuleItem,
         DefinitionNamespace::Destructor => rue_air::ProviderNamespace::Destructor,
+        DefinitionNamespace::Test => rue_air::ProviderNamespace::Test,
     }
 }
 
@@ -109,6 +111,7 @@ pub(super) fn definition_kind_to_provider(kind: DefinitionKind) -> rue_air::Prov
         DefinitionKind::Enum => rue_air::ProviderDefinitionKind::Enum,
         DefinitionKind::Destructor => rue_air::ProviderDefinitionKind::Destructor,
         DefinitionKind::Const => rue_air::ProviderDefinitionKind::Const,
+        DefinitionKind::Test => rue_air::ProviderDefinitionKind::Test,
     }
 }
 
@@ -3116,6 +3119,7 @@ pub(super) fn provider_definition_category(
         rue_air::ProviderDefinitionKind::Enum => Cat::Enum,
         rue_air::ProviderDefinitionKind::Const => Cat::ConstCandidate,
         rue_air::ProviderDefinitionKind::Destructor => Cat::Destructor,
+        rue_air::ProviderDefinitionKind::Test => Cat::Test,
     }
 }
 

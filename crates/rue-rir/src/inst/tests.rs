@@ -2165,6 +2165,7 @@ mod typed_payload_tests {
                 is_unchecked: false,
                 is_extern: false,
                 is_c_export: false,
+                is_test: false,
                 name: a,
                 params,
                 return_type: type_a,

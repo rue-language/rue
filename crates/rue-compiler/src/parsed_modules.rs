@@ -13,7 +13,7 @@ use ahash::AHashMap;
 use lasso::Key;
 use lasso::{RodeoResolver, Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind};
-use rue_parser::{AssignTarget, Ast, Expr, IntrinsicArg, Item, TypeExpr, ast::Visibility};
+use rue_parser::{AssignTarget, Ast, Expr, Ident, IntrinsicArg, Item, TypeExpr, ast::Visibility};
 use rue_span::{FileId, Span};
 use sha2::{Digest, Sha256};
 
@@ -473,6 +473,8 @@ pub enum ParsedDeclarationAstRef<'a> {
     ExternFunction {
         function: &'a rue_parser::ast::ExternFn,
     },
+    /// A `test "name" { .. }` declaration (ADR-0083 §1).
+    Test(&'a rue_parser::ast::TestDecl),
 }
 
 /// Parser-private range into the module's source-ordered import table for one
@@ -909,6 +911,19 @@ impl ParsedModule {
                     && key.owner.is_none())
                 .then_some(ParsedDeclarationAstRef::ExternFunction { function })
             }
+            (
+                ParsedDeclarationAstLocator::TopLevel { item: ordinal },
+                DeclarationCandidateCategory::Test,
+            ) => match item(ordinal)? {
+                Item::Test(value)
+                    if span_matches(value.span)
+                        && name_matches(value.name.value, key.name.as_ref())
+                        && key.owner.is_none() =>
+                {
+                    Some(ParsedDeclarationAstRef::Test(value))
+                }
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -2470,6 +2485,20 @@ fn collect_module_projections(
                     }
                 }
             }
+            // A test body participates in the whole-program syntactic scan
+            // exactly as a function body does (ADR-0083 §1): imports inside it
+            // are discovered, and calls inside it count as references, so a
+            // helper used only by a test does not warn as unused in an
+            // executable build.
+            Item::Test(value) => {
+                let mut collector =
+                    ParsedBodyProjectionCollector::new(module, resolver, &mut projections.imports);
+                collector.visit_callable(&[], None, &value.body, false)?;
+                projections.warning_call_heads.insert(
+                    ParsedDeclarationAstLocator::TopLevel { item: item_index },
+                    collector.finish(),
+                );
+            }
             Item::Error(_) => {}
         }
     }
@@ -2535,6 +2564,7 @@ fn project_warning_call_heads(
             | DeclarationCandidateCategory::Destructor
             | DeclarationCandidateCategory::Method
             | DeclarationCandidateCategory::AssociatedFunction
+            | DeclarationCandidateCategory::Test
     );
     if !owns_warning_body {
         if raw_heads.contains_key(&locator) {
@@ -2775,6 +2805,7 @@ fn build_definition_index(
                     | DeclarationCandidateCategory::Destructor
                     | DeclarationCandidateCategory::Method
                     | DeclarationCandidateCategory::AssociatedFunction
+                    | DeclarationCandidateCategory::Test
             ) {
                 Some(declaration_import_range(declaration_span, import_sites)?)
             } else {
@@ -3015,6 +3046,33 @@ fn build_definition_index(
                     )?;
                 }
             }
+            // A test declaration is a body-owning candidate with no parameters,
+            // no receiver, and no visibility of its own (ADR-0083 §1). Its name
+            // is the test's string literal, keyed inside the `Test` category so
+            // it cannot collide with a function or type of the same spelling.
+            Item::Test(value) => push(
+                DeclarationCandidateCategory::Test,
+                resolve_name(Ident {
+                    name: value.name.value,
+                    span: value.name.span,
+                })?,
+                None,
+                ParsedDeclarationAstLocator::TopLevel { item: item_index },
+                false,
+                Arc::from([]),
+                None,
+                false,
+                false,
+                false,
+                false,
+                false,
+                Arc::from([]),
+                value.span,
+                vec![signature_prefix(value.span, value.body.span())?],
+                None,
+                Some(value.body.span()),
+                declaration_anonymous_sites_for(value.contains_anonymous_type_literal, &value.body),
+            )?,
             Item::Error(_) => {}
         }
     }
@@ -3159,7 +3217,11 @@ fn build_definition_index(
         let item =
             u32::try_from(item).map_err(|_| invalid_input("parsed item ordinal exceeds u32"))?;
         match syntax {
-            Item::Function(_) | Item::Enum(_) | Item::Const(_) | Item::DropFn(_) => {
+            Item::Function(_)
+            | Item::Enum(_)
+            | Item::Const(_)
+            | Item::DropFn(_)
+            | Item::Test(_) => {
                 rir_recipes.push(ParsedRirRecipe::Single(exact_key(
                     ParsedDeclarationAstLocator::TopLevel { item },
                 )?));
@@ -3462,6 +3524,7 @@ extern "C" { fn getpid() -> i32; }
                 ParsedDeclarationAstRef::ExternFunction { function } => {
                     (C::ExternFunction, function.span)
                 }
+                ParsedDeclarationAstRef::Test(value) => (C::Test, value.span),
             };
             assert_eq!(category, key.category);
             assert_eq!(span, locator.declaration_span);
@@ -3482,6 +3545,7 @@ extern "C" { fn getpid() -> i32; }
                 ParsedDeclarationAstRef::Destructor(value) => value.span,
                 ParsedDeclarationAstRef::Method { method, .. } => method.span,
                 ParsedDeclarationAstRef::ExternFunction { function, .. } => function.span,
+                ParsedDeclarationAstRef::Test(value) => value.span,
             };
             assert_eq!(span.file_id, FileId::new(9));
         }

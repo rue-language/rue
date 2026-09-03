@@ -778,6 +778,11 @@ pub enum StableDefinitionNamespace {
     Type,
     Destructor,
     Method,
+    /// Test declarations (ADR-0083 §1). A test is named by a string literal
+    /// and is never resolvable by name from code, so it shares no namespace
+    /// with functions, types, or consts: the non-collision is structural
+    /// rather than a convention two same-named definitions could violate.
+    Test,
 }
 
 /// Reviewable inventory of every stable semantic namespace.
@@ -786,6 +791,7 @@ pub const STABLE_DEFINITION_NAMESPACES: &[StableDefinitionNamespace] = &[
     StableDefinitionNamespace::Type,
     StableDefinitionNamespace::Destructor,
     StableDefinitionNamespace::Method,
+    StableDefinitionNamespace::Test,
 ];
 
 // One reviewable source generates the stable kind enum, inventory, namespace,
@@ -802,6 +808,7 @@ macro_rules! stable_definition_kind_schema {
             Destructor, Destructor, true, true;
             Method, Method, true, true;
             AssociatedFunction, Method, true, true;
+            Test, Test, true, false;
         }
     };
 }
@@ -867,6 +874,7 @@ mod tests {
             (K::Destructor, N::Destructor, true, true),
             (K::Method, N::Method, true, true),
             (K::AssociatedFunction, N::Method, true, true),
+            (K::Test, N::Test, true, false),
         ];
         for (kind, namespace, owns_body, requires_owner) in cases {
             assert_eq!(kind.namespace(), namespace);

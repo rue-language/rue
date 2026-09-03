@@ -72,6 +72,21 @@ pub fn stable_definition_component(
     )
 }
 
+/// The digest of a test declaration's name, spelled as 32 lowercase hex digits.
+///
+/// A test is named by a string literal (ADR-0083 §1), so its name may contain
+/// spaces, punctuation, and any other Unicode — none of which a linker symbol
+/// may carry. The symbol scheme therefore names a test by the digest of its
+/// name rather than by the name itself, under the same fixed-seed FNV-1a used
+/// for anonymous nominals: identical across warm, fresh, and differently
+/// scheduled compiles of the same source, and dependent on nothing but the
+/// name's bytes.
+pub fn stable_test_name_digest_component(name: &str) -> String {
+    let mut hasher = StableFnv1a128::new();
+    hasher.write(name.as_bytes());
+    format!("{:032x}", hasher.digest())
+}
+
 /// The stable-content string of one INSTALLED module endpoint:
 /// `M\u{1}{module_path}`. The module analog of
 /// [`stable_definition_component`], shared by the same two relocation paths;

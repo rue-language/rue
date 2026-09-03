@@ -573,6 +573,13 @@ pub enum InstData {
         /// and is code-generated; the flag only marks that a C entry thunk must
         /// be emitted and that the signature is validated for the C boundary.
         is_c_export: bool,
+        /// Whether this declaration is a `test "name" { .. }` item (ADR-0083
+        /// §1) rather than a `fn`. A test lowers to an ordinary `FnDecl` — no
+        /// parameters, unit return type, an analyzed body — and this flag is
+        /// the only thing that distinguishes the two, so it participates in
+        /// structural identity and digests: a test edited into a function of
+        /// the same name is a different declaration, not a cache hit.
+        is_test: bool,
         name: Spur,
         /// Index into extra data where params start
         params: RirParamsRange,

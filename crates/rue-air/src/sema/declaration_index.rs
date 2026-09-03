@@ -51,6 +51,7 @@ struct FunctionCandidate {
     file_id: FileId,
     name: Spur,
     has_self: bool,
+    is_test: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -70,6 +71,10 @@ pub(super) struct RirDeclarationIndex {
     free_functions: Vec<InstRef>,
     free_functions_by_file_name: AHashMap<(FileId, Spur), Vec<InstRef>>,
     free_functions_by_name: AHashMap<Spur, Vec<InstRef>>,
+    /// Test declarations keyed by `(file, name)` (ADR-0083 §1). Disjoint from
+    /// the free-function index: a test is not callable and never resolves a
+    /// name, so the two key spaces cannot collide.
+    tests_by_file_name: AHashMap<(FileId, Spur), Vec<InstRef>>,
     named_methods: Vec<InstRef>,
     anonymous_methods: Vec<InstRef>,
     destructors: Vec<RirDestructorDeclaration>,
@@ -100,13 +105,19 @@ impl RirDeclarationIndex {
         for (source_order, (inst_ref, inst)) in rir.iter().enumerate() {
             work.rir_instructions_visited += 1;
             match &inst.data {
-                InstData::FnDecl { name, has_self, .. } => {
+                InstData::FnDecl {
+                    name,
+                    has_self,
+                    is_test,
+                    ..
+                } => {
                     function_candidates.push(FunctionCandidate {
                         declaration: inst_ref,
                         source_order: source_order as u32,
                         file_id: inst.span.file_id,
                         name: *name,
                         has_self: *has_self,
+                        is_test: *is_test,
                     });
                 }
                 InstData::StructDecl { name, methods, .. } => {
@@ -183,6 +194,11 @@ impl RirDeclarationIndex {
         let mut free_functions = Vec::new();
         let mut free_functions_by_file_name = AHashMap::<(FileId, Spur), Vec<InstRef>>::new();
         let mut free_functions_by_name = AHashMap::<Spur, Vec<InstRef>>::new();
+        // Test declarations lower to `FnDecl`s but are NOT free functions: a
+        // test's name is a string literal that no call can name (ADR-0083 §1),
+        // so indexing one as a free function would both make it callable and
+        // let `test "parse"` shadow `fn parse`. They get their own index.
+        let mut tests_by_file_name = AHashMap::<(FileId, Spur), Vec<InstRef>>::new();
         let mut named_methods = Vec::new();
         let mut anonymous_methods = Vec::new();
         let mut shell_declarations = nominal_candidates
@@ -199,6 +215,11 @@ impl RirDeclarationIndex {
                 named_methods.push(candidate.declaration);
             } else if anonymous_method_refs.contains(&candidate.declaration) {
                 anonymous_methods.push(candidate.declaration);
+            } else if candidate.is_test {
+                tests_by_file_name
+                    .entry((candidate.file_id, candidate.name))
+                    .or_default()
+                    .push(candidate.declaration);
             } else if !candidate.has_self {
                 free_functions.push(candidate.declaration);
                 free_functions_by_file_name
@@ -237,6 +258,7 @@ impl RirDeclarationIndex {
             free_functions,
             free_functions_by_file_name,
             free_functions_by_name,
+            tests_by_file_name,
             named_methods,
             anonymous_methods,
             destructors,
@@ -266,6 +288,15 @@ impl RirDeclarationIndex {
         );
         debug_assert_eq!(self.work.destructors_indexed, self.destructors.len());
         self.work
+    }
+
+    /// The first test declaration named `name` in `file_id` (ADR-0083 §1).
+    /// Test declarations live in their own index, disjoint from free
+    /// functions, so a test and a function may share a spelling.
+    pub(super) fn first_test(&self, name: Spur, file_id: FileId) -> Option<InstRef> {
+        self.tests_by_file_name
+            .get(&(file_id, name))
+            .and_then(|candidates| candidates.first().copied())
     }
 
     pub(super) fn first_free_function(

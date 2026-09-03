@@ -434,6 +434,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     is_unchecked,
                     is_extern,
                     is_c_export,
+                    is_test,
                     name,
                     params,
                     return_type,
@@ -497,19 +498,28 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     } else {
                         ""
                     };
-                    writeln!(
-                        out,
-                        "{}{}{}fn {}({}{}) -> {}{} {{",
-                        directives_str,
-                        pub_str,
-                        unchecked_str,
-                        name_str,
-                        self_str,
-                        params_str.join(", "),
-                        borrow_str,
-                        ret_str
-                    )
-                    .unwrap();
+                    // A test declaration lowers to an ordinary `FnDecl`, so the
+                    // printer renders it in its own source spelling —
+                    // `test "name" { .. }` — rather than as a `fn` no source
+                    // could have written (ADR-0083 §1). It has no parameters,
+                    // no receiver and a unit return type, so nothing is lost.
+                    if *is_test {
+                        writeln!(out, "{directives_str}test \"{name_str}\" {{").unwrap();
+                    } else {
+                        writeln!(
+                            out,
+                            "{}{}{}fn {}({}{}) -> {}{} {{",
+                            directives_str,
+                            pub_str,
+                            unchecked_str,
+                            name_str,
+                            self_str,
+                            params_str.join(", "),
+                            borrow_str,
+                            ret_str
+                        )
+                        .unwrap();
+                    }
                     writeln!(out, "    {}", self.display_ref(*body)).unwrap();
                     writeln!(out, "}}").unwrap();
                 }

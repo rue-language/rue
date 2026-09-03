@@ -185,6 +185,7 @@ fn source_compile_options(
         opt_level,
         preview_features: rue_compiler::PreviewFeatures::new(),
         link_archives: Vec::new(),
+        root_selection: rue_compiler::RootSelection::Executable,
     }
 }
 

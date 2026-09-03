@@ -24,6 +24,8 @@ this appendix governs.
 <!-- grammar-sync(id="9.3:1a", production="extern_export", role="appendix") -->
 <!-- grammar-sync(id="6.6:2", production="primary", role="appendix", relation="contains", symbol="yield_expr") -->
 <!-- grammar-sync(id="6.6:2", production="yield_expr", role="appendix") -->
+<!-- grammar-sync(id="6.7:2", production="item", role="appendix", relation="contains", symbol="test_item") -->
+<!-- grammar-sync(id="6.7:2", production="test_item", role="appendix") -->
 
 <!-- grammar-sync(id="2.1:26", production="INTEGER", role="appendix", relation="contains", symbol="byte_literal") -->
 <!-- grammar-sync(id="2.1:26", production="byte_literal", role="appendix") -->
@@ -38,7 +40,7 @@ this appendix governs.
 ```ebnf
 (* Program structure *)
 program        = { item } ;
-item           = function | extern_block | extern_export | struct_def | enum_def | drop_fn | const_decl ;
+item           = function | extern_block | extern_export | struct_def | enum_def | drop_fn | const_decl | test_item ;
 
 (* Directives and intrinsics *)
 directives     = { directive } ;
@@ -88,6 +90,11 @@ drop_fn        = "drop" "fn" IDENT "(" "self" ")" "{" block "}" ;
 
 (* Constants (also used for module re-exports) *)
 const_decl     = directives [ "pub" ] "const" IDENT [ ":" type ] "=" expression ";" ;
+
+(* Tests. `test` is a contextual keyword: it introduces a test only at item
+   position and only when followed by a STRING. Name uniqueness within a
+   module and the `test_declarations` preview gate are legality rules. *)
+test_item      = directives "test" STRING "{" block "}" ;
 
 (* Statements *)
 statement      = let_stmt | assign_stmt | expr_stmt ;

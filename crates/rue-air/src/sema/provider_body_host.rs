@@ -1661,6 +1661,9 @@ where
                 crate::StableDefinitionKind::Destructor => self
                     .endpoint
                     .destructor(self.owner_file, self.owner_name.as_deref()?)?,
+                crate::StableDefinitionKind::Test => {
+                    self.endpoint.first_test(name, self.owner_file)?
+                }
                 _ => return None,
             }
         };
@@ -1677,6 +1680,15 @@ where
             return Some(info);
         }
         if symbol == self.function_symbol {
+            // A test's body-owner facts come from the test index: it is absent
+            // from the name-keyed free-function maps by construction, since a
+            // test is never named by an expression (ADR-0083 §1).
+            if self.owner_kind == crate::StableDefinitionKind::Test {
+                return self
+                    .endpoint
+                    .endpoint_test_info(&self.key, self.owner_file, symbol)
+                    .map(FunctionCallInfo::from_body);
+            }
             return self
                 .endpoint
                 .endpoint_function_info(symbol)
@@ -1790,7 +1802,10 @@ where
                     | crate::StableDefinitionKind::ModuleBinding
                     | crate::StableDefinitionKind::Destructor
                     | crate::StableDefinitionKind::Method
-                    | crate::StableDefinitionKind::AssociatedFunction => {
+                    | crate::StableDefinitionKind::AssociatedFunction
+                    // A test declaration owns a body and names no owning type,
+                    // so `definition_owner_name` is `None` for it (ADR-0083 §1).
+                    | crate::StableDefinitionKind::Test => {
                         let owner = self.source.definition_owner_name(definition);
                         self.endpoint
                             .register_body_owner(
@@ -4958,11 +4973,7 @@ where
                 },
                 span,
             )
-            .with_help(format!(
-                "use --preview {} to enable this feature ({})",
-                feature.name(),
-                feature.adr()
-            )))
+            .with_help(feature.enable_help()))
         }
     }
 
@@ -5788,6 +5799,76 @@ where
                         body,
                         declaration_span,
                         owner_type,
+                    )?,
+                    body_span,
+                )
+            }
+            // A test declaration is an ordinary `()`-returning, parameterless
+            // body (ADR-0083 §1), so it reuses the free-function mechanics
+            // above rather than forking a second analysis path. The only
+            // differences are where the declaration is found — its own RIR
+            // index, since a test's name is not a callable name — and the
+            // preview gate, which is repeated here so a test-rooted request is
+            // gated even when the request-level check is bypassed.
+            crate::StableDefinitionKind::Test => {
+                let declaration = host.endpoint.first_test(name, owner_file).ok_or_else(|| {
+                    CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(format!(
+                        "test declaration `{name}` has no RIR declaration"
+                    )))
+                })?;
+                let instruction = host.rir.rir().get(declaration);
+                let declaration_span = instruction.span;
+                host.require_preview(
+                    rue_error::PreviewFeature::TestDeclarations,
+                    "a test declaration",
+                    declaration_span,
+                )?;
+                let InstData::FnDecl {
+                    return_type,
+                    body,
+                    directives,
+                    ..
+                } = &instruction.data
+                else {
+                    unreachable!("registered provider test points at FnDecl")
+                };
+                let (return_type, body, directives) = (*return_type, *body, directives.clone());
+                let body_span = host.rir.rir().get(body).span;
+                let allow = |warning_name: &str| {
+                    let allow_symbol = host.rir.rir_interner().get("allow");
+                    let warning_symbol = host.rir.rir_interner().get(warning_name);
+                    host.rir
+                        .rir()
+                        .directives(&directives)
+                        .iter()
+                        .any(|directive| {
+                            Some(directive.name) == allow_symbol
+                                && directive
+                                    .args
+                                    .iter()
+                                    .any(|arg| Some(*arg) == warning_symbol)
+                        })
+                };
+                let allow_unused_variable = allow("unused_variable");
+                let allow_unreachable_code = allow("unreachable_code");
+                let return_type = host.resolve_body_type(return_type, declaration_span)?;
+                host.endpoint
+                    .finalize_containment_metadata()
+                    .ok_or_else(|| {
+                        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                            "provider test containment metadata is unavailable".into(),
+                        ))
+                    })?;
+                (
+                    OrdinaryBodyEngine::new(&mut host).analyze_single_function_resolved(
+                        &infer,
+                        name,
+                        return_type,
+                        Vec::new(),
+                        body,
+                        declaration_span,
+                        allow_unused_variable,
+                        allow_unreachable_code,
                     )?,
                     body_span,
                 )

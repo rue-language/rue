@@ -711,6 +711,69 @@ where
         self.rir.rir_index().first_free_function(symbol, file)
     }
 
+    /// (R) The first test-declaration RIR handle for `(source_name, file)`
+    /// (ADR-0083 §1). Test declarations are indexed separately from free
+    /// functions, so this never answers with — nor is answered by — a `fn`.
+    pub fn first_test(&self, source_name: &str, file: FileId) -> Option<InstRef> {
+        let symbol = self.rir.rir_interner().get(source_name)?;
+        self.rir.rir_index().first_test(symbol, file)
+    }
+
+    /// (R) The body-owner facts for one test declaration (ADR-0083 §1).
+    ///
+    /// The free-function analog reaches its key through the endpoint's
+    /// name-keyed overlay maps. A test is never named by any expression, so it
+    /// is deliberately absent from those maps — a `test "parse"` must not be
+    /// reachable as, nor collide with, a `fn parse` — and the caller supplies
+    /// the owner key and file it already holds instead. Everything after the
+    /// lookup is the free-function path: no parameters, unit return, and the
+    /// declaration's `@allow` directives.
+    pub fn endpoint_test_info(&self, key: &K, file: FileId, name: Spur) -> Option<FunctionInfo> {
+        let declaration = self.rir.rir_index().first_test(name, file)?;
+        let inst = self.rir.rir().get(declaration);
+        let rue_rir::InstData::FnDecl {
+            body,
+            return_type,
+            directives,
+            is_test: true,
+            ..
+        } = &inst.data
+        else {
+            return None;
+        };
+        let allow = |warning_name: &str| {
+            let allow_sym = self.rir.rir_interner().get("allow");
+            let warning_sym = self.rir.rir_interner().get(warning_name);
+            self.rir
+                .rir()
+                .directives(directives)
+                .iter()
+                .any(|directive| {
+                    Some(directive.name) == allow_sym
+                        && directive.args.iter().any(|arg| Some(*arg) == warning_sym)
+                })
+        };
+        self.identity
+            .pool_mut()?
+            .resolve_function(
+                key,
+                FunctionIdentityHandle {
+                    body: *body,
+                    declaration,
+                    span: inst.span,
+                    return_type_syntax: *return_type,
+                    returns_type: false,
+                    is_extern: false,
+                    is_c_export: false,
+                    allow_unused_function: allow("unused_function"),
+                    allow_unused_variable: allow("unused_variable"),
+                    allow_unreachable_code: allow("unreachable_code"),
+                    file_id: inst.span.file_id,
+                },
+            )
+            .ok()
+    }
+
     /// (R) The named-method RIR declaration for `(owner_file, owner_type_name,
     /// method)` — the durable-available preimage of the epoch's `(StructId,
     /// method)` key, answered by [`BodyRirIndex`]. Keyed by the preimage directly

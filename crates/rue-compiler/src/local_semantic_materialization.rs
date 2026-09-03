@@ -729,6 +729,24 @@ fn live_callable_symbol(identity: &FunctionInstanceKey) -> Option<String> {
                 };
                 Some(format!("{owner}{separator}{member}"))
             }
+            // A test declaration's linker symbol is
+            // `__rue_test_{module}__{digest}` (ADR-0083 §1): the same mangled
+            // module component a function uses, then the 32-hex fixed-seed
+            // FNV-1a digest of the test's NAME. The raw name is never embedded
+            // — it is a string literal and may contain spaces, punctuation, or
+            // any other Unicode a symbol may not carry — and the digest is a
+            // function of the name's bytes alone, so it is identical across
+            // warm, fresh, and differently scheduled compiles. The exact test
+            // identity, not the digest, stays the semantic authority; this only
+            // decides how the symbol is spelled.
+            StableDefinitionKind::Test => {
+                let module = rue_air::mangle_symbol_component(&rue_air::normalize_module_path(
+                    definition.module().logical_path(),
+                ));
+                let digest =
+                    rue_air::stable_digest::stable_test_name_digest_component(definition.name());
+                Some(format!("__rue_test_{module}__{digest}"))
+            }
             _ => None,
         },
         FunctionInstanceKey::Specialization { base, arguments } => {

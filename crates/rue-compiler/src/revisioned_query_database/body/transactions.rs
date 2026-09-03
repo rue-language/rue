@@ -528,6 +528,9 @@ impl BodyTransactionEvaluator {
                         | crate::StableDefinitionKind::Method
                         | crate::StableDefinitionKind::AssociatedFunction
                         | crate::StableDefinitionKind::Destructor
+                        // A test declaration owns an ordinary `()`-typed body
+                        // and reaches the same analyzer (ADR-0083 §1).
+                        | crate::StableDefinitionKind::Test
                 ) {
                 let input = self.body_input.resolve(context, key)?;
                 let input = match input {

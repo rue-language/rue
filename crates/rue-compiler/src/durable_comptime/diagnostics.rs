@@ -379,6 +379,22 @@ pub(super) fn durable_diagnostic_failure(
     DurableComptimeHostFailure::semantic(Box::new(SemanticNucleusFailure::Diagnostic(kind)))
 }
 
+/// A durable comptime diagnostic that carries a `help:` line.
+///
+/// The plain [`durable_diagnostic_failure`] has no help slot; the nucleus
+/// failure it builds does, so a gate whose diagnostic is meaningless without
+/// its remedy (the preview gates) uses this instead.
+pub(super) fn durable_diagnostic_failure_with_help(
+    _site: &DurableComptimeDiagnosticSite,
+    kind: rue_error::ErrorKind,
+    help: String,
+) -> DurableComptimeHostFailure {
+    DurableComptimeHostFailure::semantic(Box::new(SemanticNucleusFailure::DiagnosticWithHelp {
+        kind,
+        help: std::sync::Arc::from(help.as_str()),
+    }))
+}
+
 pub(super) fn durable_host_error(
     error: DurableComptimeFailure,
 ) -> rue_air::ComptimeHostError<DurableComptimeHostFailure> {
