@@ -15,3 +15,19 @@ export_file(
     src = "incremental-fixtures.toml",
     visibility = ["//crates/rue-bench:"],
 )
+
+# The scaling probes' committed generator output and the generators themselves
+# (RUE-1264). `//:scale-probe-generator-check` re-runs each generator's
+# `--check` against these; it declares them through this target because a
+# root-package glob cannot descend into this package, so the root-level
+# `glob(["performance/workloads/scale_*/**"])` it used to carry matched
+# nothing and a probe edit was served the previous run's pass.
+filegroup(
+    name = "scale-probe-sources",
+    srcs = glob([
+        "workloads/scale_modules/**",
+        "workloads/scale_functions/**",
+        "workloads/scale_instantiations/**",
+    ]),
+    visibility = ["//:"],
+)

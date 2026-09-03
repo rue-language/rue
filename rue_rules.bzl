@@ -93,10 +93,10 @@ def _resolve(ctx: AnalysisContext):
     toolchain = ctx.attrs._rue_toolchain[RueToolchainInfo]
     resolved_target = ctx.attrs.rue_target or toolchain.native_target
     opt_level = ctx.attrs.opt_level or toolchain.default_opt_level
-    # A filegroup's output directory contains its srcs at package-relative
-    # paths, hence the `/std` suffix — the same shape as `$(location :std)/std`
-    # in the corpus suites.
-    std_dir = cmd_args(toolchain.std, format = "{}/std")
+    # //std:std is declared in the std package, so its output directory is
+    # the std root itself, the same artifact `$(location //std:std)` names in
+    # the corpus suites.
+    std_dir = toolchain.std
     return toolchain, resolved_target, opt_level, std_dir
 
 

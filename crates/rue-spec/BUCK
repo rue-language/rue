@@ -35,7 +35,7 @@ command_alias(
     exe = ":rue-spec",
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
-        "RUE_REAL_STD_PATH": "$(location root//:std)/std",
+        "RUE_REAL_STD_PATH": "$(location //std:std)",
         "RUE_SPEC_CASES": "$(location :cases)/cases",
     },
     visibility = ["PUBLIC"],

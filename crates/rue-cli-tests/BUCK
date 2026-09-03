@@ -11,11 +11,11 @@ rue_binary(
     mapped_srcs = {
         "cases/execution_contracts.toml": "src/execution_contracts.toml",
         "cases/examples_mosaic.toml": "src/examples_mosaic.toml",
-        "//:std-sort-source": "src/std_sort.rue",
-        "//:std-rawbuf-source": "src/std_rawbuf.rue",
-        "//:std-arraybuf-source": "src/std_arraybuf.rue",
-        "//:std-strbuf-source": "src/std_strbuf.rue",
-        "//:std-strings-source": "src/std_strings.rue",
+        "//std:sort-source": "src/std_sort.rue",
+        "//std:rawbuf-source": "src/std_rawbuf.rue",
+        "//std:arraybuf-source": "src/std_arraybuf.rue",
+        "//std:strbuf-source": "src/std_strbuf.rue",
+        "//std:strings-source": "src/std_strings.rue",
     },
     deps = [
         "//crates/rue-linker:rue-linker",
@@ -60,7 +60,7 @@ command_alias(
         "RUE_CLI_CASES": "$(location :cases)/cases",
         "RUE_EXAMPLES_DIR": "$(location root//:examples)/examples",
         "RUE_REPO_DIR": "$(location root//:cli-test-fixtures)",
-        "RUE_STD_DIR": "$(location root//:std)/std",
+        "RUE_STD_DIR": "$(location //std:std)",
     },
     visibility = ["PUBLIC"],
 )

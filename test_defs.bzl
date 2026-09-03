@@ -81,3 +81,27 @@ def rue_test_suite(name, tier = "premerge", platform = None, labels = [], **kwar
         labels = rue_test_labels(tier, platform, labels),
         **kwargs
     )
+
+# Every repository gate under scripts/ has a Python test of its own decision
+# logic (`test-validate-*.py`, `test-*.py`), declared with the same shape:
+# bytecode writing off so a Buck-materialized copy of the script tree stays
+# byte-identical between runs, the script under test as a resource so an edit
+# re-runs the test, and the shared gatelib helpers alongside it. Thirty of
+# these lived as hand-copied `rue_sh_test` blocks in the root BUCK file; one
+# macro makes the shape a fact rather than a convention, and gives the next
+# gate one line to add.
+_GATELIB_SOURCES = "//:gatelib-sources"
+_TOOL_TEST_ENV = {"PYTHONDONTWRITEBYTECODE": "1"}
+
+def rue_tool_test(name, test, resources = [], env = {}, gatelib = True, **kwargs):
+    """A gate's own unit tests. `resources` names what the test reads (usually
+    the gate script); `gatelib = False` opts out of the shared helpers for a
+    test that does not import them."""
+    native.sh_test(
+        name = name,
+        test = test,
+        resources = resources + ([_GATELIB_SOURCES] if gatelib else []),
+        env = _TOOL_TEST_ENV | env,
+        labels = rue_test_labels("premerge"),
+        **kwargs
+    )
