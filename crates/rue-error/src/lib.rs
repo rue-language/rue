@@ -1630,9 +1630,43 @@ define_error_codes! {
     // ========================================================================
     // Match errors (E0600-E0699)
     // ========================================================================
-    NON_EXHAUSTIVE_MATCH = 600;
-    EMPTY_MATCH = 601;
-    INVALID_MATCH_TYPE = 602;
+    NON_EXHAUSTIVE_MATCH = 600 => {
+        explanation: "A `match` must cover every possible value of its scrutinee type. Boolean matches need both literal cases, enum matches need every variant, and integer matches need an irrefutable wildcard arm; a wildcard also makes a boolean or enum match exhaustive.",
+        likely_cause: "One boolean literal or enum variant is missing, an integer match lists only specific values, or a match on an externally non-exhaustive enum omits the wildcard needed to cover variants that may be added outside the current module.",
+        examples: [
+            ErrorCodeExample { title: "Omit one boolean case", source: "fn main() -> i32 {\n    match true {\n        true => 1,\n    }\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Cover both boolean cases", source: "fn main() -> i32 {\n    match true {\n        true => 1,\n        false => 0,\n    }\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Match patterns must be exhaustive", path: "docs/spec/src/04-expressions/07-match-expressions.md", rule: Some("4.7:9") },
+            ErrorCodeReference { title: "Exhaustiveness rules by scrutinee type", path: "docs/spec/src/04-expressions/07-match-expressions.md", rule: Some("4.7:10") },
+            ErrorCodeReference { title: "External non-exhaustive enums require a wildcard", path: "docs/spec/src/06-items/03-enums.md", rule: Some("6.3:21") },
+        ],
+    };
+    EMPTY_MATCH = 601 => {
+        explanation: "A `match` with no arms is valid only when its scrutinee is an enum with zero variants. Every inhabited type has at least one possible value, so an empty arm list cannot cover it.",
+        likely_cause: "A match body was left empty while being drafted, or code attempted to use an empty match with an integer, boolean, or enum that has one or more variants. Add arms covering the scrutinee or reserve the empty form for a zero-variant enum.",
+        examples: [
+            ErrorCodeExample { title: "Leave an integer match empty", source: "fn main() -> i32 {\n    match 0 {}\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Add an exhaustive wildcard arm", source: "fn main() -> i32 {\n    match 0 {\n        _ => 0,\n    }\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Empty matches require a zero-variant enum", path: "docs/spec/src/04-expressions/07-match-expressions.md", rule: Some("4.7:26") },
+            ErrorCodeReference { title: "Empty matches have never type", path: "docs/spec/src/04-expressions/07-match-expressions.md", rule: Some("4.7:27") },
+        ],
+    };
+    INVALID_MATCH_TYPE = 602 => {
+        explanation: "Rue supports `match` scrutinees whose type is an integer, `bool`, or an enum. A value of any other type has no supported pattern domain, so the match is rejected before its arms are analyzed.",
+        likely_cause: "Code tries to match a string, struct, array, pointer, or another unsupported value directly. Match a supported field or discriminating value instead, or express the condition with another construct.",
+        examples: [
+            ErrorCodeExample { title: "Match a string value", source: "fn main() -> i32 {\n    match \"hello\" {\n        _ => 0,\n    }\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Match a supported integer value", source: "fn main() -> i32 {\n    match 1 {\n        _ => 0,\n    }\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Supported match pattern forms", path: "docs/spec/src/04-expressions/07-match-expressions.md", rule: Some("4.7:2") },
+            ErrorCodeReference { title: "Patterns must match the scrutinee type", path: "docs/spec/src/04-expressions/07-match-expressions.md", rule: Some("4.7:13") },
+        ],
+    };
 
     // ========================================================================
     // Intrinsic errors (E0700-E0799)
@@ -4186,6 +4220,38 @@ mod tests {
             .iter()
             .filter_map(|declaration| {
                 (500..=506)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(explained, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
+        );
+    }
+
+    #[test]
+    fn active_match_explanation_band_is_complete_and_bounded() {
+        let expected = [
+            ErrorCode::NON_EXHAUSTIVE_MATCH,
+            ErrorCode::EMPTY_MATCH,
+            ErrorCode::INVALID_MATCH_TYPE,
+        ];
+        let active = error_code_metadata()
+            .iter()
+            .filter_map(|metadata| {
+                (600..=699)
+                    .contains(&metadata.code.0)
+                    .then_some(metadata.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(active, expected);
+        let explained = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (600..=699)
                     .contains(&declaration.code.0)
                     .then_some(declaration.code)
             })

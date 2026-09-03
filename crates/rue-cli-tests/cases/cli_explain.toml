@@ -523,6 +523,36 @@ compile_stdout_contains = ["E0506: Question err type mismatch", "does not perfor
 compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
+# The active match band documents exhaustiveness, the zero-arm exception, and
+# the scrutinee types accepted by semantic analysis. Invalid source pins each
+# invocation as a non-compiling metadata path.
+[[case]]
+name = "non_exhaustive_match_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0600"]
+compile_only = true
+compile_stdout_contains = ["E0600: Non exhaustive match", "Omit one boolean case:", "Cover both boolean cases:", "docs/spec/src/04-expressions/07-match-expressions.md (spec rule 4.7:9)", "docs/spec/src/04-expressions/07-match-expressions.md (spec rule 4.7:10)", "docs/spec/src/06-items/03-enums.md (spec rule 6.3:21)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "empty_match_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0601"]
+compile_only = true
+compile_stdout_contains = ["E0601: Empty match", "Leave an integer match empty:", "Add an exhaustive wildcard arm:", "docs/spec/src/04-expressions/07-match-expressions.md (spec rule 4.7:26)", "docs/spec/src/04-expressions/07-match-expressions.md (spec rule 4.7:27)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "invalid_match_type_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0602"]
+compile_only = true
+compile_stdout_contains = ["E0602: Invalid match type", "Match a string value:", "Match a supported integer value:", "docs/spec/src/04-expressions/07-match-expressions.md (spec rule 4.7:2)", "docs/spec/src/04-expressions/07-match-expressions.md (spec rule 4.7:13)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
 [[case]]
 name = "malformed_code_is_rejected"
 files = [{ path = "main.rue", source = "fn main() {}\n" }]
