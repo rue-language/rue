@@ -83,6 +83,25 @@ struct StructMethodsOverride<'a> {
     destination_methods: &'a [InstRef],
 }
 
+/// Named declaration, receiver, and return-mode flags for a function node.
+///
+/// Keeping these independent properties named at construction sites prevents
+/// positional boolean drift while preserving the canonical [`InstData::FnDecl`]
+/// representation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FnDeclFlags {
+    pub is_pub: bool,
+    pub is_unchecked: bool,
+    pub is_extern: bool,
+    pub is_c_export: bool,
+    pub is_test: bool,
+    pub has_self: bool,
+    pub self_mode: RirParamMode,
+    pub self_is_mut: bool,
+    pub returns_borrow: bool,
+    pub returns_inout: bool,
+}
+
 fn remap_call_args(
     args: RirSlice<'_, RirCallArg>,
     remap_ref: impl Fn(InstRef) -> InstRef,
@@ -295,7 +314,6 @@ impl RirEditor {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn add_fn_decl(
         &mut self,
         directives: &[RirDirective],
@@ -315,44 +333,47 @@ impl RirEditor {
     ) -> Result<InstRef, RirPayloadBuildError> {
         self.add_fn_decl_with_return_modes(
             directives,
-            is_pub,
-            is_unchecked,
-            is_extern,
-            is_c_export,
-            false,
+            FnDeclFlags {
+                is_pub,
+                is_unchecked,
+                is_extern,
+                is_c_export,
+                has_self,
+                self_mode,
+                self_is_mut,
+                returns_borrow,
+                ..FnDeclFlags::default()
+            },
             name,
             params,
             return_type,
             body,
-            has_self,
-            self_mode,
-            self_is_mut,
-            returns_borrow,
-            false,
             span,
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn add_fn_decl_with_return_modes(
         &mut self,
         directives: &[RirDirective],
-        is_pub: bool,
-        is_unchecked: bool,
-        is_extern: bool,
-        is_c_export: bool,
-        is_test: bool,
+        flags: FnDeclFlags,
         name: Spur,
         params: &[RirParam],
         return_type: RirTypeSyntaxRef,
         body: InstRef,
-        has_self: bool,
-        self_mode: RirParamMode,
-        self_is_mut: bool,
-        returns_borrow: bool,
-        returns_inout: bool,
         span: Span,
     ) -> Result<InstRef, RirPayloadBuildError> {
+        let FnDeclFlags {
+            is_pub,
+            is_unchecked,
+            is_extern,
+            is_c_export,
+            is_test,
+            has_self,
+            self_mode,
+            self_is_mut,
+            returns_borrow,
+            returns_inout,
+        } = flags;
         self.atomic(|rir| {
             let directives = rir.add_directives(directives)?;
             let params = rir.add_params(params)?;
@@ -1100,20 +1121,22 @@ impl RirEditor {
                             .collect::<Result<Vec<_>, RirSpanRemapError<E>>>()?;
                         self.add_fn_decl_with_return_modes(
                             &directives,
-                            *is_pub,
-                            *is_unchecked,
-                            *is_extern,
-                            *is_c_export,
-                            *is_test,
+                            FnDeclFlags {
+                                is_pub: *is_pub,
+                                is_unchecked: *is_unchecked,
+                                is_extern: *is_extern,
+                                is_c_export: *is_c_export,
+                                is_test: *is_test,
+                                has_self: *has_self,
+                                self_mode: *self_mode,
+                                self_is_mut: *self_is_mut,
+                                returns_borrow: *returns_borrow,
+                                returns_inout: *returns_inout,
+                            },
                             symbol(*name),
                             &params,
                             remap_type(*return_type),
                             remap_ref(*body),
-                            *has_self,
-                            *self_mode,
-                            *self_is_mut,
-                            *returns_borrow,
-                            *returns_inout,
                             span,
                         )?
                     }

@@ -2998,20 +2998,22 @@ impl<
                 let self_mode = decode_param_mode(reader.byte()?)?;
                 self.destination.add_fn_decl_with_return_modes(
                     &directives,
-                    flags & 1 != 0,
-                    flags & 2 != 0,
-                    flags & 4 != 0,
-                    flags & 8 != 0,
-                    is_test,
+                    FnDeclFlags {
+                        is_pub: flags & 1 != 0,
+                        is_unchecked: flags & 2 != 0,
+                        is_extern: flags & 4 != 0,
+                        is_c_export: flags & 8 != 0,
+                        is_test,
+                        has_self: flags & 16 != 0,
+                        self_mode,
+                        self_is_mut: flags & 32 != 0,
+                        returns_borrow: flags & 64 != 0,
+                        returns_inout: flags & 128 != 0,
+                    },
                     name,
                     &params,
                     return_type,
                     body,
-                    flags & 16 != 0,
-                    self_mode,
-                    flags & 32 != 0,
-                    flags & 64 != 0,
-                    flags & 128 != 0,
                     span,
                 )?
             }
@@ -3795,20 +3797,14 @@ mod tests {
             let root = editor
                 .add_fn_decl_with_return_modes(
                     &[],
-                    false,
-                    false,
-                    false,
-                    false,
-                    is_test,
+                    FnDeclFlags {
+                        is_test,
+                        ..FnDeclFlags::default()
+                    },
                     name,
                     &[],
                     unit,
                     block,
-                    false,
-                    RirParamMode::Normal,
-                    false,
-                    false,
-                    false,
                     Span::new(0, 3),
                 )
                 .unwrap();
@@ -3838,6 +3834,231 @@ mod tests {
                 InstData::FnDecl { is_test: true, .. }
             ),
             "`is_test` must survive the round trip"
+        );
+    }
+
+    #[test]
+    fn fn_decl_named_flags_map_and_round_trip_independently() {
+        fn byte_deltas(left: &[u8], right: &[u8]) -> Vec<(usize, u8)> {
+            assert_eq!(left.len(), right.len());
+            left.iter()
+                .zip(right)
+                .enumerate()
+                .filter_map(|(index, (left, right))| {
+                    (left != right).then_some((index, left ^ right))
+                })
+                .collect()
+        }
+
+        fn flags_from(data: &InstData) -> FnDeclFlags {
+            let InstData::FnDecl {
+                is_pub,
+                is_unchecked,
+                is_extern,
+                is_c_export,
+                is_test,
+                has_self,
+                self_mode,
+                self_is_mut,
+                returns_borrow,
+                returns_inout,
+                ..
+            } = data
+            else {
+                panic!("expected function declaration")
+            };
+            FnDeclFlags {
+                is_pub: *is_pub,
+                is_unchecked: *is_unchecked,
+                is_extern: *is_extern,
+                is_c_export: *is_c_export,
+                is_test: *is_test,
+                has_self: *has_self,
+                self_mode: *self_mode,
+                self_is_mut: *self_is_mut,
+                returns_borrow: *returns_borrow,
+                returns_inout: *returns_inout,
+            }
+        }
+
+        let profiles = [
+            ("default", FnDeclFlags::default()),
+            (
+                "is_pub",
+                FnDeclFlags {
+                    is_pub: true,
+                    ..FnDeclFlags::default()
+                },
+            ),
+            (
+                "is_unchecked",
+                FnDeclFlags {
+                    is_unchecked: true,
+                    ..FnDeclFlags::default()
+                },
+            ),
+            (
+                "is_extern",
+                FnDeclFlags {
+                    is_extern: true,
+                    ..FnDeclFlags::default()
+                },
+            ),
+            (
+                "is_c_export",
+                FnDeclFlags {
+                    is_c_export: true,
+                    ..FnDeclFlags::default()
+                },
+            ),
+            (
+                "is_test",
+                FnDeclFlags {
+                    is_test: true,
+                    ..FnDeclFlags::default()
+                },
+            ),
+            (
+                "has_self",
+                FnDeclFlags {
+                    has_self: true,
+                    ..FnDeclFlags::default()
+                },
+            ),
+            (
+                "self_mode",
+                FnDeclFlags {
+                    self_mode: RirParamMode::Borrow,
+                    ..FnDeclFlags::default()
+                },
+            ),
+            (
+                "self_is_mut",
+                FnDeclFlags {
+                    self_is_mut: true,
+                    ..FnDeclFlags::default()
+                },
+            ),
+            (
+                "returns_borrow",
+                FnDeclFlags {
+                    returns_borrow: true,
+                    ..FnDeclFlags::default()
+                },
+            ),
+            (
+                "returns_inout",
+                FnDeclFlags {
+                    returns_inout: true,
+                    ..FnDeclFlags::default()
+                },
+            ),
+            (
+                "asymmetric",
+                FnDeclFlags {
+                    is_pub: true,
+                    is_unchecked: false,
+                    is_extern: true,
+                    is_c_export: false,
+                    is_test: true,
+                    has_self: false,
+                    self_mode: RirParamMode::Inout,
+                    self_is_mut: true,
+                    returns_borrow: false,
+                    returns_inout: true,
+                },
+            ),
+        ];
+
+        let mut packed_profiles = Vec::new();
+        for (label, expected) in profiles {
+            let symbols = ThreadedRodeo::new();
+            let name = symbols.get_or_intern("flags");
+            let mut editor = RirEditor::new();
+            let body = editor.add_inst(Inst {
+                data: InstData::UnitConst,
+                span: Span::new(1, 2),
+            });
+            let unit = editor.add_unit_type().unwrap();
+            let root = editor
+                .add_fn_decl_with_return_modes(
+                    &[],
+                    expected,
+                    name,
+                    &[],
+                    unit,
+                    body,
+                    Span::new(0, 3),
+                )
+                .unwrap();
+            assert_eq!(flags_from(&editor.get(root).data), expected, "{label}");
+
+            let context = RirValidationContext {
+                symbol_count: symbols.len(),
+                source_lengths: &[(FileId::DEFAULT, 3)],
+            };
+            let source = ValidatedRir::finish(editor, &context).unwrap();
+            let packed = pack(&source, &symbols, root);
+            let mut destination = RirEditor::new();
+            let appended = append(&packed, &mut destination).unwrap();
+            assert_eq!(
+                flags_from(&destination.get(appended.metadata.declaration).data),
+                expected,
+                "{label}"
+            );
+            let decoded = ValidatedRir::finish(destination, &context).unwrap();
+            assert!(source.exact_eq(&decoded), "{label}");
+            assert_eq!(
+                pack(&decoded, &symbols, appended.metadata.declaration).as_bytes(),
+                packed.as_bytes(),
+                "{label}"
+            );
+            packed_profiles.push((label, expected, packed.as_bytes().to_vec()));
+        }
+
+        let baseline = &packed_profiles[0].2;
+        let shared_flag_cases = [
+            (1, 1),
+            (2, 2),
+            (3, 4),
+            (4, 8),
+            (6, 16),
+            (8, 32),
+            (9, 64),
+            (10, 128),
+        ];
+        let shared_flag_offset = byte_deltas(baseline, &packed_profiles[1].2)[0].0;
+        for (profile, encoded_bit) in shared_flag_cases {
+            assert_eq!(
+                byte_deltas(baseline, &packed_profiles[profile].2),
+                [(shared_flag_offset, encoded_bit)],
+                "{} must retain its packed flag bit",
+                packed_profiles[profile].0
+            );
+        }
+
+        let test_delta = byte_deltas(baseline, &packed_profiles[5].2);
+        let self_mode_delta = byte_deltas(baseline, &packed_profiles[7].2);
+        assert_eq!(test_delta.len(), 1);
+        assert_eq!(test_delta[0].1, 1, "is_test retains its boolean byte");
+        assert_eq!(self_mode_delta.len(), 1);
+        assert_eq!(
+            self_mode_delta[0].1, 2,
+            "borrow self mode retains its encoded tag"
+        );
+        assert_ne!(test_delta[0].0, shared_flag_offset);
+        assert_ne!(self_mode_delta[0].0, shared_flag_offset);
+        assert_ne!(self_mode_delta[0].0, test_delta[0].0);
+
+        let asymmetric_delta = byte_deltas(baseline, &packed_profiles[11].2);
+        assert_eq!(
+            asymmetric_delta,
+            [
+                (shared_flag_offset, 1 | 4 | 32 | 128),
+                test_delta[0],
+                (self_mode_delta[0].0, 1),
+            ],
+            "asymmetric flags retain the exact packed byte layout"
         );
     }
 

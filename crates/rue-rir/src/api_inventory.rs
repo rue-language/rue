@@ -58,6 +58,55 @@ fn rir_instruction_layers_keep_their_canonical_owners() {
 }
 
 #[test]
+fn fn_decl_editor_api_keeps_flags_named() {
+    let editor = include_str!("inst/editor.rs");
+    let facade = include_str!("lib.rs");
+    let flags = source_region(editor, "pub struct FnDeclFlags {", "fn remap_call_args");
+    for field in [
+        "pub is_pub: bool,",
+        "pub is_unchecked: bool,",
+        "pub is_extern: bool,",
+        "pub is_c_export: bool,",
+        "pub is_test: bool,",
+        "pub has_self: bool,",
+        "pub self_mode: RirParamMode,",
+        "pub self_is_mut: bool,",
+        "pub returns_borrow: bool,",
+        "pub returns_inout: bool,",
+    ] {
+        assert!(flags.contains(field), "FnDeclFlags omits {field}");
+    }
+    assert!(editor.contains(
+        "#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]\npub struct FnDeclFlags {"
+    ));
+    assert!(facade.contains("FnDeclFlags, Inst, InstData"));
+
+    let constructor = source_region(
+        editor,
+        "pub fn add_fn_decl_with_return_modes(",
+        ") -> Result<InstRef, RirPayloadBuildError> {",
+    );
+    assert!(constructor.contains("flags: FnDeclFlags,"));
+    assert_eq!(constructor.matches("flags: FnDeclFlags,").count(), 1);
+    assert!(
+        !constructor.contains(": bool,"),
+        "function declaration flags became positional booleans again"
+    );
+
+    let _: fn(
+        &mut crate::RirEditor,
+        &[crate::RirDirective],
+        crate::FnDeclFlags,
+        lasso::Spur,
+        &[crate::RirParam],
+        crate::RirTypeSyntaxRef,
+        crate::InstRef,
+        rue_span::Span,
+    ) -> Result<crate::InstRef, crate::RirPayloadBuildError> =
+        crate::RirEditor::add_fn_decl_with_return_modes;
+}
+
+#[test]
 fn rir_payload_storage_and_raw_ranges_stay_owner_private() {
     let owner = include_str!("inst.rs");
     let payload = include_str!("inst/payload.rs");
