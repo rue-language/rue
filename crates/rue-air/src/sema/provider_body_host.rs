@@ -3705,6 +3705,23 @@ where
         self.nominal_type_for_symbol(key.0, key.1)
             .filter(|ty| ty.as_enum().is_some())
     }
+    fn inference_nominal_type_accessible(&self, accessing_file: FileId, ty: Type) -> bool {
+        let (defining_file, is_pub) = if let Some(id) = ty.as_struct() {
+            let def = self.type_pool.struct_def(id);
+            (def.file_id, def.is_pub)
+        } else if let Some(id) = ty.as_enum() {
+            let def = self.type_pool.enum_def(id);
+            (def.file_id, def.is_pub)
+        } else {
+            return false;
+        };
+        crate::sema::aggregate_resolution::is_accessible(
+            self,
+            accessing_file,
+            defining_file,
+            is_pub,
+        )
+    }
     fn inference_const_type(&self, key: (FileId, Spur)) -> Option<Type> {
         self.call_value_const(key.0, key.1)
             .map(|info| match info.value {

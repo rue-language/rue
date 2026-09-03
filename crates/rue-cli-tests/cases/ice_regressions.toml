@@ -23,6 +23,204 @@ name = "ICE regressions"
 description = "Minimal programs that used to crash the compiler; each must now compile-or-cleanly-error with no signal (RUE-51)."
 
 [[case]]
+name = "nominal_type_adjacent_to_if_tail_rue1418"
+description = "RUE-1418: a named type adjacent to a block-like if became the function tail and reached CFG as a non-unit return without a runtime value."
+files = [{ path = "main.rue", source = """
+struct S { v: [i32; 3] }
+
+fn main() -> i32 {
+    let a = S { v: [1, 2, 3] };
+    let b = S { v: [1, 2, 3] };
+    let c = S { v: [1, 2, 4] };
+    if a == b && a != c { 1 } else { 0 }S
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected i32, found type"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification failed", "has no value"]
+
+[[case]]
+name = "qualified_struct_type_adjacent_to_if_tail_rue1418"
+description = "RUE-1418: a module-qualified struct type tail is a compile-time type value and must be rejected before CFG publication."
+files = [
+    { path = "main.rue", source = """
+const m = @import("types.rue");
+fn main() -> i32 {
+    if true { 1 } else { 0 }m.S
+}
+""" },
+    { path = "types.rue", source = """
+pub struct S { value: i32 }
+""" },
+]
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected i32, found type"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification failed", "has no value"]
+
+[[case]]
+name = "private_qualified_struct_type_tail_keeps_privacy_rue1418"
+description = "RUE-1418 privacy control: an inaccessible qualified struct tail remains owned by sema's E0706 visibility check."
+files = [
+    { path = "main.rue", source = """
+const m = @import("sub/types.rue");
+fn main() -> i32 {
+    if true { 1 } else { 0 }m.S
+}
+""" },
+    { path = "sub/types.rue", source = """
+struct S { value: i32 }
+""" },
+]
+compile_fail = true
+error_contains = ["E0706", "struct `S` is private"]
+compile_stderr_not_contains = ["E0206", "E9000", "internal compiler error", "CFG verification failed", "has no value"]
+
+[[case]]
+name = "same_directory_private_qualified_struct_tail_rue1418"
+description = "RUE-1418 visibility control: a same-directory private struct is accessible but remains a compile-time type value."
+files = [
+    { path = "main.rue", source = """
+const m = @import("types.rue");
+fn main() -> i32 {
+    if true { 1 } else { 0 }m.S
+}
+""" },
+    { path = "types.rue", source = """
+struct S { value: i32 }
+""" },
+]
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected i32, found type"]
+compile_stderr_not_contains = ["E0706", "E9000", "internal compiler error", "CFG verification failed", "has no value"]
+
+[[case]]
+name = "same_directory_private_qualified_enum_tail_rue1418"
+description = "RUE-1418 visibility control: a same-directory private enum follows the accessible compile-time type path."
+files = [
+    { path = "main.rue", source = """
+const m = @import("types.rue");
+fn main() -> i32 {
+    if true { 1 } else { 0 }m.E
+}
+""" },
+    { path = "types.rue", source = """
+enum E { A }
+""" },
+]
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected i32, found type"]
+compile_stderr_not_contains = ["E0706", "E9000", "internal compiler error", "CFG verification failed", "has no value"]
+
+[[case]]
+name = "private_qualified_enum_type_tail_keeps_privacy_rue1418"
+description = "RUE-1418 privacy control: inaccessible qualified enums follow the same E0706 visibility path."
+files = [
+    { path = "main.rue", source = """
+const m = @import("sub/types.rue");
+fn main() -> i32 {
+    if true { 1 } else { 0 }m.E
+}
+""" },
+    { path = "sub/types.rue", source = """
+enum E { A }
+""" },
+]
+compile_fail = true
+error_contains = ["E0706", "enum `E` is private"]
+compile_stderr_not_contains = ["E0206", "E9000", "internal compiler error", "CFG verification failed", "has no value"]
+
+[[case]]
+name = "qualified_enum_type_adjacent_to_if_tail_rue1418"
+description = "RUE-1418: a module-qualified enum type tail follows the same compile-time type path as a qualified struct."
+files = [
+    { path = "main.rue", source = """
+const m = @import("types.rue");
+fn main() -> i32 {
+    if true { 1 } else { 0 }m.E
+}
+""" },
+    { path = "types.rue", source = """
+pub enum E { A }
+""" },
+]
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected i32, found type"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification failed", "has no value"]
+
+[[case]]
+name = "nominal_type_statement_after_if_rue1418"
+description = "RUE-1418 nearby recovery: whitespace and a semicolon make the named type a discarded statement and leave an ordinary unit-valued function body."
+files = [{ path = "main.rue", source = """
+struct S { v: [i32; 3] }
+fn main() -> i32 {
+    let a = S { v: [1, 2, 3] };
+    let b = S { v: [1, 2, 3] };
+    let c = S { v: [1, 2, 4] };
+    if a == b && a != c { 1 } else { 0 } S;
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected i32, found ()"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification failed", "has no value"]
+
+[[case]]
+name = "missing_else_value_after_struct_equality_rue1418"
+description = "RUE-1418 nearby recovery: a missing else value retains the branch-join diagnostic ahead of CFG publication."
+files = [{ path = "main.rue", source = """
+struct S { v: [i32; 3] }
+fn main() -> i32 {
+    let a = S { v: [1, 2, 3] };
+    let b = S { v: [1, 2, 3] };
+    let c = S { v: [1, 2, 4] };
+    if a == b && a != c { 1 } else { }
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected integer type, found ()"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification failed", "has no value"]
+
+[[case]]
+name = "struct_array_equality_if_tail_control_rue1418"
+description = "RUE-1418 control: struct and array equality, short-circuiting, and an implicit if result remain valid."
+files = [{ path = "main.rue", source = """
+struct S { v: [i32; 3] }
+fn main() -> i32 {
+    let a = S { v: [1, 2, 3] };
+    let b = S { v: [1, 2, 3] };
+    let c = S { v: [1, 2, 4] };
+    if a == b && a != c { 1 } else { 0 }
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "struct_array_equality_explicit_return_control_rue1418"
+description = "RUE-1418 control: the same branch result remains valid through an explicit return."
+files = [{ path = "main.rue", source = """
+struct S { v: [i32; 3] }
+fn main() -> i32 {
+    let a = S { v: [1, 2, 3] };
+    let b = S { v: [1, 2, 3] };
+    let c = S { v: [1, 2, 4] };
+    return if a == b && a != c { 1 } else { 0 };
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "nominal_type_explicit_return_rue1418"
+description = "RUE-1418 control: an explicitly returned type value retains the ordinary wrong-return-type diagnostic."
+files = [{ path = "main.rue", source = """
+struct S { v: [i32; 3] }
+fn main() -> i32 {
+    return S;
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected i32, found type"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification failed", "has no value"]
+
+[[case]]
 name = "runtime_call_struct_head_literal_inference_rue1570"
 description = "RUE-1570: a runtime-valued call parsed as an inline struct-literal head skipped inference for its integer argument, so the intended type diagnostic became E9000."
 files = [{ path = "main.rue", source = """
