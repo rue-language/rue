@@ -42,6 +42,12 @@ website/static/performance-data.json
 # a derived file there would move the identity on every build.
 website/source-excerpts.json
 
+# Compiler error pages projected from rue-error by rue-spec during every site
+# build. Keeping the route tree transient prevents a second stored registry.
+website/content/errors/
+website/content/.error-pages-staging/
+website/content/.error-pages-backup/
+
 # Isolated worktrees created by Claude Code workflow runs (fix cycles, audits).
 # Transient build trees, multi-GB each, and registered as git worktrees.
 .claude/worktrees/

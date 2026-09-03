@@ -7,6 +7,20 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 SPEC_ROUTE_ROOT="$(tr -d '\r\n' < website/spec-route-root.txt)"
+SPEC_BUILD_OUTPUT=""
+if ! SPEC_BUILD_OUTPUT="$("$ROOT/buck2" build //crates/rue-spec:rue-spec --show-simple-output)"; then
+    echo "error: failed to build rue-spec, which is required to generate compiler error pages" >&2
+    if [ -n "$SPEC_BUILD_OUTPUT" ]; then
+        printf '%s\n' "$SPEC_BUILD_OUTPUT" >&2
+    fi
+    exit 1
+fi
+SPEC_BIN="$(printf '%s\n' "$SPEC_BUILD_OUTPUT" | tail -1)"
+
+if [ -z "$SPEC_BIN" ] || [ ! -x "$SPEC_BIN" ]; then
+    echo "error: rue-spec is required to generate compiler error pages" >&2
+    exit 1
+fi
 
 case "$SPEC_ROUTE_ROOT" in
     ""|*[!a-z0-9/-]*|/*|*/|*//* )
@@ -14,6 +28,13 @@ case "$SPEC_ROUTE_ROOT" in
         exit 1
         ;;
 esac
+
+# Project the compiler-owned active error inventory into transient Zola
+# content. The generator also owns reference validation and reuses rue-spec's
+# canonical website/spec route authority; this shell remains a thin consumer.
+echo "Generating compiler error pages..."
+RUE_SPEC_DIR="$ROOT/docs/spec/src" \
+    "$SPEC_BIN" --error-pages
 
 # Copy spec content into the shared specification route root.
 # We use a copy rather than a symlink for Windows compatibility (symlinks
@@ -92,7 +113,6 @@ rm -rf "$PERF_DATA_ROOT"
 # until collection has run.
 echo "Deriving homepage status..."
 TRACEABILITY_JSON="$(mktemp)"
-SPEC_BIN="$("$ROOT/buck2" build //crates/rue-spec:rue-spec --show-simple-output 2>/dev/null | tail -1)"
 if [ -n "$SPEC_BIN" ] && [ -x "$SPEC_BIN" ]; then
     # `--json` exits 0 even on a coverage gap: failing that gap is the
     # traceability gate's job, and a red gate must not also break the site.

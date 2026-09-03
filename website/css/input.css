@@ -1,4 +1,10 @@
-@import "tailwindcss";
+@import "tailwindcss" source(none);
+@source "../templates";
+@source "../static/performance.js";
+@source "../static/runtime.js";
+@source "../static/search.js";
+/* Prose and Array.prototype.filter calls in those sources are not classes. */
+@source not inline("relative shrink filter");
 
 /* ============================================================
    Rue website — botanical field-notes identity (RUE-184)

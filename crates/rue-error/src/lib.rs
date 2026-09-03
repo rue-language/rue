@@ -80,6 +80,66 @@ pub fn interner_error_kind(kind: lasso::LassoErrorKind, message: impl Into<Strin
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ErrorCode(pub u16);
 
+/// Compiler-owned diagnostic category derived from the permanent numeric
+/// bands documented on [`ErrorCode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorCodeCategory {
+    Lexer,
+    Parser,
+    Semantic,
+    StructAndEnum,
+    ControlFlow,
+    Match,
+    Intrinsic,
+    LiteralAndOperator,
+    Array,
+    LinkerAndTarget,
+    PreviewFeature,
+    Comptime,
+    UncheckedCode,
+    CompilerInput,
+    DriverAndHost,
+    InternalCompiler,
+}
+
+impl ErrorCodeCategory {
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Lexer => "Lexer",
+            Self::Parser => "Parser",
+            Self::Semantic => "Semantic",
+            Self::StructAndEnum => "Struct and enum",
+            Self::ControlFlow => "Control flow",
+            Self::Match => "Match",
+            Self::Intrinsic => "Intrinsic",
+            Self::LiteralAndOperator => "Literal and operator",
+            Self::Array => "Array",
+            Self::LinkerAndTarget => "Linker and target",
+            Self::PreviewFeature => "Preview feature",
+            Self::Comptime => "Comptime",
+            Self::UncheckedCode => "Unchecked code",
+            Self::CompilerInput => "Compiler input",
+            Self::DriverAndHost => "Driver and host",
+            Self::InternalCompiler => "Internal compiler",
+        }
+    }
+}
+
+/// Public lifecycle promise for an active diagnostic code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorCodeStability {
+    /// The number is permanent and will not be reassigned after retirement.
+    Permanent,
+}
+
+impl ErrorCodeStability {
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Permanent => "Permanent",
+        }
+    }
+}
+
 /// Stable compiler-owned metadata for a public diagnostic code.
 ///
 /// The inventory is derived from the [`ErrorCode`] declarations in this file,
@@ -94,8 +154,34 @@ pub struct ErrorCodeMetadata {
     pub name: &'static str,
     /// Stable human-readable title derived from `name`.
     pub title: String,
+    /// Semantic category determined by the code's permanent numeric band.
+    pub category: ErrorCodeCategory,
+    /// Lifecycle promise for this active public code.
+    pub stability: ErrorCodeStability,
     /// Repository-relative source authority for the declaration.
     pub source_path: &'static str,
+}
+
+fn error_code_category(code: ErrorCode) -> Option<ErrorCodeCategory> {
+    Some(match code.0 {
+        1..=99 => ErrorCodeCategory::Lexer,
+        100..=199 => ErrorCodeCategory::Parser,
+        200..=399 => ErrorCodeCategory::Semantic,
+        400..=499 => ErrorCodeCategory::StructAndEnum,
+        500..=599 => ErrorCodeCategory::ControlFlow,
+        600..=699 => ErrorCodeCategory::Match,
+        700..=799 => ErrorCodeCategory::Intrinsic,
+        800..=899 => ErrorCodeCategory::LiteralAndOperator,
+        900..=999 => ErrorCodeCategory::Array,
+        1000..=1099 => ErrorCodeCategory::LinkerAndTarget,
+        1100..=1199 => ErrorCodeCategory::PreviewFeature,
+        1200..=1299 => ErrorCodeCategory::Comptime,
+        1300..=1399 => ErrorCodeCategory::UncheckedCode,
+        1400..=1499 => ErrorCodeCategory::CompilerInput,
+        1500..=1599 => ErrorCodeCategory::DriverAndHost,
+        9000..=9999 => ErrorCodeCategory::InternalCompiler,
+        _ => return None,
+    })
 }
 
 /// A runnable example attached to an error-code explanation.
@@ -152,7 +238,7 @@ struct ErrorCodeExplanationDeclaration {
 pub const MAX_NESTING_DEPTH: usize = 256;
 
 macro_rules! define_error_codes {
-    ($( $(#[$meta:meta])* $name:ident = $value:literal $(=> {
+    (retired: [$($retired:literal),* $(,)?]; $( $(#[$meta:meta])* $name:ident = $value:literal $(=> {
         explanation: $explanation:literal,
         likely_cause: $likely_cause:literal,
         examples: [$($example:expr),* $(,)?],
@@ -169,6 +255,12 @@ macro_rules! define_error_codes {
             $((ErrorCode::$name, stringify!($name))),*
         ];
 
+        /// Numeric codes that were public and are now retired.
+        ///
+        /// Retired codes remain permanently unavailable for reassignment.
+        /// Reserved gaps for work that has not shipped are deliberately absent.
+        pub const RETIRED_ERROR_CODES: &[ErrorCode] = &[$(ErrorCode($retired)),*];
+
         const ERROR_CODE_EXPLANATION_DECLARATIONS: &[ErrorCodeExplanationDeclaration] = &[
             $($(
                 ErrorCodeExplanationDeclaration {
@@ -184,6 +276,8 @@ macro_rules! define_error_codes {
 }
 
 define_error_codes! {
+    retired: [5, 101, 408, 409, 422, 438, 498, 708];
+
     // ========================================================================
     // Lexer errors (E0001-E0099)
     // ========================================================================
@@ -729,6 +823,9 @@ pub fn error_code_metadata() -> &'static [ErrorCodeMetadata] {
                 code,
                 name,
                 title,
+                category: error_code_category(code)
+                    .expect("declared ErrorCode must occupy a documented category band"),
+                stability: ErrorCodeStability::Permanent,
                 source_path: "crates/rue-error/src/lib.rs",
             });
         }
@@ -2874,11 +2971,45 @@ mod tests {
         assert!(metadata.iter().all(|entry| {
             !entry.name.is_empty()
                 && !entry.title.is_empty()
+                && !entry.category.title().is_empty()
+                && entry.stability == ErrorCodeStability::Permanent
                 && entry.source_path == "crates/rue-error/src/lib.rs"
         }));
 
+        assert_eq!(
+            error_code_category(ErrorCode::UNEXPECTED_CHARACTER),
+            Some(ErrorCodeCategory::Lexer)
+        );
+        assert_eq!(
+            error_code_category(ErrorCode::COMPILER_RESOURCE_LIMIT),
+            Some(ErrorCodeCategory::CompilerInput)
+        );
+        assert_eq!(error_code_category(ErrorCode(1600)), None);
+
         assert_eq!(metadata.len(), ERROR_CODE_DECLARATIONS.len());
         assert_eq!(metadata, error_code_metadata(), "metadata must reproduce");
+    }
+
+    #[test]
+    fn retired_error_codes_are_complete_ordered_and_disjoint_from_active_codes() {
+        assert!(
+            RETIRED_ERROR_CODES
+                .windows(2)
+                .all(|pair| pair[0].0 < pair[1].0),
+            "retired codes must be unique and numerically ordered"
+        );
+        for retired in RETIRED_ERROR_CODES {
+            assert!(
+                error_code_metadata()
+                    .binary_search_by_key(&retired.0, |entry| entry.code.0)
+                    .is_err(),
+                "retired code {retired} must not remain active"
+            );
+            assert_eq!(
+                retired.to_string().parse::<ErrorCode>(),
+                Err(ParseErrorCodeError::Unknown(*retired))
+            );
+        }
     }
 
     #[test]

@@ -3,8 +3,10 @@ load("//crates:defs.bzl", "rue_binary")
 rue_binary(
     name = "rue-spec",
     mapped_srcs = {
+        "//:error-page-template": "src/error-page-template.html",
         "//:spec-route-root": "src/spec-route-root.txt",
         "//:spec-rule-template": "src/spec-rule-template.html",
+        "//:website-build-script": "src/website-build.sh",
         "//:website-config": "src/website-config.toml",
     },
     deps = [
@@ -49,6 +51,18 @@ command_alias(
     args = ["--machine-index"],
     env = {
         "RUE_SPEC_CASES": "$(location :cases)/cases",
+        "RUE_SPEC_DIR": "$(location root//:spec-docs)/docs/spec/src",
+    },
+    visibility = ["PUBLIC"],
+)
+
+# Transient Zola content projected directly from the canonical compiler error
+# inventory and the shared specification-route authorities.
+command_alias(
+    name = "error-pages",
+    exe = ":rue-spec",
+    args = ["--error-pages"],
+    env = {
         "RUE_SPEC_DIR": "$(location root//:spec-docs)/docs/spec/src",
     },
     visibility = ["PUBLIC"],

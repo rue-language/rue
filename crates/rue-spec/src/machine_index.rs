@@ -154,20 +154,32 @@ fn content_route(source_path: &str) -> Result<String, String> {
     Ok(route)
 }
 
-fn canonical_url(
-    authorities: &WebsiteAuthorities,
-    source_path: &str,
-    id: &str,
-) -> Result<String, String> {
+pub(crate) fn canonical_spec_path(source_path: &str, id: &str) -> Result<String, String> {
+    let source_path = source_path.strip_prefix("docs/spec/src/").ok_or_else(|| {
+        format!(
+            "unsupported error-code reference path {source_path:?}: only docs/spec/src/*.md references have a local website route"
+        )
+    })?;
+    let authorities = website_authorities()?;
     let page = content_route(source_path)?;
     let route = if page.is_empty() {
         format!("{}/", authorities.spec_route_root)
     } else {
         format!("{}/{page}/", authorities.spec_route_root)
     };
+    Ok(format!("/{route}#{}{id}", authorities.anchor_prefix))
+}
+
+fn canonical_url(
+    authorities: &WebsiteAuthorities,
+    source_path: &str,
+    id: &str,
+) -> Result<String, String> {
+    let repository_path = format!("docs/spec/src/{source_path}");
     Ok(format!(
-        "{}/{route}#{}{id}",
-        authorities.base_url, authorities.anchor_prefix
+        "{}{}",
+        authorities.base_url,
+        canonical_spec_path(&repository_path, id)?
     ))
 }
 
@@ -395,6 +407,10 @@ mod tests {
         ] {
             assert!(content_route(path).is_err(), "unexpectedly routed {path}");
         }
+        assert!(
+            canonical_spec_path("README.md", "1.1:1").is_err(),
+            "non-specification reference paths must not acquire invented site routes"
+        );
     }
 
     #[test]

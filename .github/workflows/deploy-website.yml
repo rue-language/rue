@@ -17,6 +17,9 @@ on:
       # cases, so a case or a rule marker changes the published board even
       # though no file under website/ moved.
       - 'crates/rue-spec/**'
+      # Error pages consume the compiler-owned declaration inventory and its
+      # optional long explanations directly.
+      - 'crates/rue-error/**'
       # The runtime page cuts its side-by-side port excerpts out of the gazette
       # and peer sources when the site is built, so an edit to either one
       # changes the published page with no file under website/ moving. The peer
@@ -37,6 +40,9 @@ on:
       # cases, so a case or a rule marker changes the published board even
       # though no file under website/ moved.
       - 'crates/rue-spec/**'
+      # Error pages consume the compiler-owned declaration inventory and its
+      # optional long explanations directly.
+      - 'crates/rue-error/**'
       # The runtime page cuts its side-by-side port excerpts out of the gazette
       # and peer sources when the site is built, so an edit to either one
       # changes the published page with no file under website/ moving. The peer
