@@ -50,7 +50,10 @@ cxx_tools_info_toolchain(
 # deps(...)` and `rdeps(...)` fail on every Rust target with "Unknown target
 # `cxx_no_default_deps`". The prelude's own comment says the toolchains cell
 # is expected to provide it; aliasing the ordinary toolchain is that provision.
-alias(
+# It must be a `toolchain_alias`: a plain `alias` reaches a toolchain rule
+# through an ordinary dep, which configuration rejects the moment a `//...`
+# pattern includes this target.
+toolchain_alias(
     name = "cxx_no_default_deps",
     actual = ":cxx",
     visibility = ["PUBLIC"],
