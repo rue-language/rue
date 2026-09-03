@@ -627,3 +627,167 @@ whoever computes it — and one that needs the ADR-0063 body-independence ruling
 before it can be designed at all: a revision-shared canonical anonymous
 registry, 1.3 percent of the build with its projections, whose merge converges
 but whose visibility does not stay per-body.
+
+## RUE-1581: formatting attribution and the error-only method display (2026-09-03)
+
+RUE-1581 remeasured the historical `format_inner` residue with a clean baseline
+at trunk `145cea9843b051f2106957355835114505c00844` and an uncommitted worktree
+containing only the candidate change. The host was an arm64 Mac running
+macOS 26.6.2 (25G83). Valgrind does not support this host, so the instruction
+measurement ran in an official Ubuntu 24.04.4 arm64 container under Docker
+Desktop's LinuxKit 6.12.76 kernel, with Valgrind 3.22.0, clang 18.1.3, and ten
+visible CPUs. This is an arm64 remeasurement, not a continuation of the older
+x86-64 instruction series above; compare before and after only inside this
+pinned environment.
+
+The compiler was built inside that container from the clean trunk source with:
+
+```text
+./buck2 build //crates/rue:rue --target-platforms //platforms:release
+```
+
+The stable repository helper selected the release compiler; its ephemeral Buck
+artifact path is intentionally not part of the reproducer. Each cold observation
+used a fresh process, the repository standard library, one query worker, and the
+internal linker:
+
+```text
+cd /src
+RUE_BINARY="$(scripts/rue-bin --target-platforms //platforms:release)"
+RUE_STD_PATH=/src/std valgrind --tool=callgrind \
+  --callgrind-out-file=/tmp/rue-1581-lattice.callgrind \
+  "$RUE_BINARY" \
+  performance/workloads/lattice/main.rue -O3 -j1 \
+  -o /tmp/rue-1581-lattice
+callgrind_annotate --inclusive=yes --threshold=100 \
+  /tmp/rue-1581-lattice.callgrind
+callgrind_annotate --inclusive=yes --tree=caller --threshold=100 \
+  /tmp/rue-1581-lattice.callgrind
+```
+
+The clean baseline retired 9,495,842,124 instructions. Whole-program inclusive
+totals for Rust's recursive formatting machinery are not additive under this
+thin-LTO build: the optimizer folds `format_inner`, `Formatter::pad`, iterator,
+and display monomorphs into cycles, so `callgrind_annotate --inclusive=yes` can
+report a cycle-inclusive number larger than the process total. The durable
+attribution is therefore the named non-recursive Rue subtree, its caller tree
+and call count, checked against the exact source site; this avoids presenting a
+recursive inclusive total as work that can be subtracted from the build.
+
+### The material eager caller
+
+The baseline's material non-recursive formatting subtree was
+`ProviderBodyHost::friendly_type_display`: 51,655,936 instructions (0.5440
+percent). Its caller tree charged 50,546,756 instructions across 2,583 calls to
+`analysis::instructions::analyze_inst`. The current source resolved that folded
+frame to `analysis/calls.rs`: every otherwise-successful struct method call
+constructed `struct_name_str` before looking up the method. Only the
+`UndefinedMethod` and `AssocFnCalledAsMethod` error constructors read the
+string; the successful path did not.
+
+The fix keeps the same `friendly_type_display(Type::new_struct(struct_id))`
+call in each error constructor but moves it inside that constructor's branch.
+No semantic, symbol, type, body, query, or artifact identity reads this
+diagnostic spelling. The two exact presentation consumers remain E0411 and
+E0415, including the anonymous-constructor spelling supplied by the durable
+producer identity.
+
+With that change, two fresh-process observations retired 9,480,919,978 and
+9,481,198,772 instructions. The 278,794-instruction spread is 0.00294 percent;
+both observations are 14.64--14.92 million instructions (0.154--0.157 percent)
+below the baseline. The directly targeted `friendly_type_display` monomorph
+fell from 51,655,936 to 1,111,252/1,111,984 instructions, a 97.85 percent
+reduction. The companion monomorph was 3,977,680 before and
+3,680,221/3,684,457 after. `format_canonical_application`, reached while that
+old eager display rendered durable anonymous arguments, fell from 7,617,583
+combined instructions to 338,664 in the first after profile.
+
+The whole-program movement is contextual only: there is one baseline and two
+after observations, and changing an optimized binary changes inlining and
+layout while Rue's hash tables make the exact dynamic path process-dependent.
+It is therefore not equated with the removed subtree, and the two after-only
+observations do not establish a noise floor. The caller subtree and its 2,583
+calls are the strong evidence for what the source change removed.
+
+### Residual callers and their consumers
+
+The patched caller tree and current source classify the remaining sema
+presentation work as follows:
+
+| caller / current site | cold instructions | classification and reader |
+| --- | ---: | --- |
+| `EnumDefEntry::find_variant`, from the four `UnknownVariant` constructions in `sema/aggregates.rs` | 3,208,157 across 119 calls | Eager error spelling on a successful variant lookup. It is a proven no-reader path in this successful build, but only 0.0338 percent of total and below the note's established 0.13-percent action bar. |
+| `control_flow::check_pattern_int` | 1,398,455 across 48 calls | Eager integer-pattern type spelling, read only by E0800/E0801. It is 0.0148 percent and below the action scale. |
+| `comptime_eval::record_ctor_type_display` | 973,536 combined | Populates the request-local constructor-display accelerator after a comptime type constructor. `friendly_type_display` reads it when an exact diagnostic spelling is requested and no durable producer display is available; the successful Lattice run has no final diagnostic reader. At 0.0103 percent it is not material. |
+| `semantic_identity::format_canonical_application` | 338,664 combined after the fix | Concrete presentation consumer: reconstructs `Name(type, value)` for anonymous-type diagnostics from the durable callable signature and producer arguments. It is 0.0036 percent after the fix. |
+
+The remaining material `format_inner`/`Formatter::pad` caller groups outside
+that presentation cluster are consumer-backed. The raw caller tree names their
+optimized owners; source inspection determines the concrete reader. Recursive
+inclusive totals for these groups are ambiguous for the same thin-LTO cycle
+reason described above and cannot be added or attributed honestly. For scale,
+the after profile's non-inclusive owner totals included 86,590,565 instructions
+across the two `Task::record_work` monomorphs, 65,237,609 in the material
+`build_definition_index` closure, 4,755,898 across the two
+`struct_symbol_name` monomorphs, 1,537,759 across the two anonymous-nominal
+symbol monomorphs, and 1,136,797 across the two `record_optimization_stats`
+monomorphs. Those are owner self totals, not additive formatting costs.
+
+| caller group and representative current site | concrete current consumer |
+| --- | --- |
+| `TypeInternPool::{struct,enum}_symbol_name` and `file_symbol_component` in `crates/rue-air/src/intern_pool.rs`, plus `OrdinaryBodyEngine::method_symbol` in `crates/rue-air/src/sema/ordinary_engine.rs` | Canonical module-qualified nominal/member symbols consumed by callable dependency resolution, CFG/codegen, and the linker. |
+| `anonymous_nominal_source_symbol_with_plan_and_digest` in `crates/rue-compiler/src/semantic_identity.rs` and body identity mint/resolve in `crates/rue-air/src/sema/body_identity.rs` | Stable anonymous/type/function identities used as query keys and deterministic symbol components. |
+| `build_definition_index` in `crates/rue-compiler/src/parsed_modules.rs` and import-path construction in `crates/rue-compiler/src/import_discovery.rs` | Canonical declaration keys, physical/logical import identities, and diagnostics whose ordering and bytes are published. |
+| query `stable_identity` implementations in `crates/rue-compiler/src/revisioned_query_database`, `Task::record_work` in `crates/rue-query/src/task.rs`, and `record_optimization_stats` in `crates/rue-compiler/src/cfg_query.rs` | Query-node diagnostics and the published compiler-work/performance-schema keys and counters. |
+| drop-glue spelling in `crates/rue-air/src/drop_glue_names.rs`, its source-to-machine mapping in `crates/rue-compiler/src/durable_cfg.rs`, and linker symbol lookup in `crates/rue-linker/src/linker.rs` | Machine symbols, relocations, sections, and final artifact bytes. |
+
+Those strings all have concrete readers in the successful compile. Removing or
+changing them would alter query/performance contracts or artifact identity, not
+eliminate presentation work. `Formatter::pad_integral` was kept separate: its
+fixed-width digest/offset formatting is identity or artifact spelling, and is
+not the `Formatter::pad` residue named by this issue.
+
+### Contract and retained-session evidence
+
+The pre-change and post-change macOS Lattice executables both had SHA-256
+`64eb9400bc22aecdd9de543f76b69fdf8c48f3214f784b323e03a4f10041e1b4`.
+The checked-in friendly-diagnostic CLI group pins the complete critical E0411
+and E0415 messages in both human and JSON output, including the exact
+`Wrap(i64)` anonymous producer spelling and E0415 call-on-type help. Those four
+exact branch cases plus the four existing group cases pass (eight total) and
+exclude internal `__anon_`/`$Wrap` spellings where relevant.
+
+The full retained-session runner was also exercised with current tooling:
+
+```text
+rue-bench incremental --manifest performance/incremental.toml \
+  --fixtures performance/incremental-fixtures.toml \
+  --commit 7264501865525658a49a84314e044d6448bf41bb \
+  --repo-root /Users/steveklabnik/.codex/worktrees/6160/rue \
+  --out /private/tmp/rue-1581-incremental-7264501865525658a49a84314e044d6448bf41bb.json
+```
+
+The runner measured implementation commit
+`7264501865525658a49a84314e044d6448bf41bb`, which contains the compiler change
+and its exact CLI regressions. The later documentation-only commit does not
+alter compiler code, so this remains the exact compiler revision measured. All
+sixteen Mosaic/Lattice edit rows and the 1,000-revision retention witness
+passed. Successful no-op,
+unreachable-body, reached-body, signature, layout, import, and deletion rows
+reported zero structured-wait and abort-fallback display identities; only the
+intentional error-introduction rows exercised the abort-fallback display path.
+Every one of Lattice's five reached-body samples recomputed 5 artifacts and
+reused 5,309; its no-op row recomputed 2 and reused 5,151.
+
+### Verdict
+
+The measured clean baseline retained one material eager, no-reader presentation
+allocation: the receiver type rendered for every successful method call. Moving
+that render onto its two error branches removes the caller without changing
+either error.
+Every other observed material formatting group has an identity, metrics, or
+artifact consumer. The three remaining eager presentation sites total less
+than 0.06 percent of this cold build individually and collectively stay below
+the established action bar, so RUE-1581 does not broaden into a formatting or
+diagnostics redesign. No generated profile, temporary counter, benchmark
+output, or container artifact belongs in the repository.
