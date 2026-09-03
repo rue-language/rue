@@ -955,7 +955,18 @@ define_error_codes! {
         ],
         references: [ErrorCodeReference { title: "Module-scoped top-level names", path: "docs/spec/src/10-modules/05-program-composition.md", rule: Some("10.5:1") }],
     };
-    CONST_EXPR_NOT_SUPPORTED = 434;
+    CONST_EXPR_NOT_SUPPORTED = 434 => {
+        explanation: "Rue encountered an expression that is not supported as a constant value. Constant initializers accept the language's comptime-evaluable forms, string literals, module expressions, and function references used as callable aliases; ordinary runtime computation is rejected. A callable alias is not a first-class runtime value and is supported only as the callee of a call.",
+        likely_cause: "A constant initializer calls a runtime function, constructs an aggregate value, or otherwise depends on evaluation available only while the program runs; alternatively, code uses a callable alias as an ordinary value. Replace an initializer with supported constant operations and constant references, move the computation into a function, or invoke a callable alias directly.",
+        examples: [
+            ErrorCodeExample { title: "Call a runtime function in a constant initializer", source: "fn answer() -> i32 { 42 }\nconst ANSWER: i32 = answer();\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use comptime-evaluable constant arithmetic", source: "const BASE: i32 = 40;\nconst ANSWER: i32 = BASE + 2;\nfn main() -> i32 { ANSWER }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Comptime-evaluable constant initializers", path: "docs/spec/src/06-items/05-constants.md", rule: Some("6.5:2") },
+            ErrorCodeReference { title: "Callable function aliases", path: "docs/spec/src/06-items/05-constants.md", rule: Some("6.5:15") },
+        ],
+    };
     DUPLICATE_VARIANT = 419 => {
         explanation: "An enum declaration defines the same variant name more than once. Variant names identify the alternatives of one enum and must be unique within that enum.",
         likely_cause: "A variant was copied, generated twice, or renamed to a name already used in the same enum. Remove the duplicate or give every variant in the enum a distinct name; another enum may independently use the same variant name.",
@@ -1125,14 +1136,54 @@ define_error_codes! {
         ],
         references: [ErrorCodeReference { title: "Empty anonymous structs", path: "docs/spec/src/04-expressions/14-comptime.md", rule: Some("4.14:9") }],
     };
-    RESERVED_FUNCTION_NAME = 435;
-    DUPLICATE_FUNCTION_DEFINITION = 436;
-    MOVE_OUT_OF_INOUT = 437;
+    RESERVED_FUNCTION_NAME = 435 => {
+        explanation: "A user-defined function has a name reserved for a runtime or code-generation helper. Rue reserves every name beginning with `__rue_`, the entry-point symbols `_start` and `_main`, and the fixed memory-routine names `memcpy`, `memmove`, `memset`, `memcmp`, and `bcmp` so user code cannot collide with compiler- or runtime-emitted symbols.",
+        likely_cause: "The function was given an internal-looking name or the name of a platform entry point or memory routine. Rename the function to an ordinary user identifier that is outside the reserved set.",
+        examples: [
+            ErrorCodeExample { title: "Define a reserved runtime-helper name", source: "fn __rue_helper() -> i32 { 42 }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use an ordinary user function name", source: "fn rue_helper() -> i32 { 42 }\nfn main() -> i32 { rue_helper() }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Reserved function names", path: "docs/spec/src/06-items/_index.md", rule: Some("6.0:5") }],
+    };
+    DUPLICATE_FUNCTION_DEFINITION = 436 => {
+        explanation: "One source file defines the same top-level function name more than once, or reuses a top-level name across functions, constants, and user-defined types. E0436 covers both function/function duplicates and collisions between different top-level declaration kinds; the metadata name and code are shared intentionally.",
+        likely_cause: "A declaration was copied, renamed to an existing item, or generated twice in one module. Remove or rename one declaration. The same spelling may be used independently in another source file because top-level names are module-scoped.",
+        examples: [
+            ErrorCodeExample { title: "Define a function twice in one module", source: "fn answer() -> i32 { 40 }\nfn answer() -> i32 { 42 }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Give top-level functions distinct names", source: "fn base() -> i32 { 40 }\nfn answer() -> i32 { base() + 2 }\nfn main() -> i32 { answer() }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Module-scoped top-level name uniqueness", path: "docs/spec/src/10-modules/05-program-composition.md", rule: Some("10.5:1") }],
+    };
+    MOVE_OUT_OF_INOUT = 437 => {
+        explanation: "A function tries to move a non-Copy value, or a non-Copy part of one, out of an `inout` parameter. The callee has exclusive mutable access to caller-owned storage but does not own that storage's value, so moving it would leave the caller with an invalid or partially moved value.",
+        likely_cause: "The parameter was returned, assigned to a new owner, or passed to a by-value parameter. Mutate or replace it in place, forward it to another `inout` parameter, borrow it, or read only Copy fields. Move-then-reinitialize is also rejected because Rue does not track reinitialization of `inout` parameters.",
+        examples: [
+            ErrorCodeExample { title: "Move an inout value to a new owner", source: "struct Item { value: i32 }\nfn take(item: Item) -> i32 { item.value }\nfn inspect(inout item: Item) -> i32 { take(item) }\nfn main() -> i32 {\n    let mut item = Item { value: 42 };\n    inspect(inout item)\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Read a Copy field without moving the inout value", source: "struct Item { value: i32 }\nfn inspect(inout item: Item) -> i32 { item.value }\nfn main() -> i32 {\n    let mut item = Item { value: 42 };\n    inspect(inout item)\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Inout parameters cannot be moved out", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:35") }],
+    };
     // 438 (BY_REF_ARG_NOT_PLAIN_VARIABLE) is retired: by-ref arguments may
     // now be field/index projections (RUE-143). Do not reuse the number.
     // 439-441 are reserved by in-flight work; next free code is 444.
-    MOVE_SELF_OUT_OF_DESTRUCTOR = 442;
-    LINEAR_VALUE_NOT_CONSUMED_ON_ALL_PATHS = 443;
+    MOVE_SELF_OUT_OF_DESTRUCTOR = 442 => {
+        explanation: "A user-defined destructor moves its whole `self` value to a new owner. Rue runs a destructor before automatically dropping the value's remaining contents; if `self` escaped to another owner, that owner would later drop it and re-enter the same destructor.",
+        likely_cause: "The destructor passes `self` by value, returns it, binds it to another owned variable, or invokes a by-value receiver method. Keep `self` in place and perform cleanup by reading Copy fields, borrowing, or mutating in place instead; moving a non-Copy field is separately rejected.",
+        examples: [
+            ErrorCodeExample { title: "Move self into a call from its destructor", source: "struct Resource { value: i32 }\nfn consume(resource: Resource) -> i32 { resource.value }\ndrop fn Resource(self) { consume(self); }\nfn main() -> i32 {\n    let resource = Resource { value: 42 };\n    resource.value\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Read self without moving it", source: "struct Resource { value: i32 }\ndrop fn Resource(self) { @dbg(self.value); }\nfn main() -> i32 {\n    let resource = Resource { value: 42 };\n    resource.value\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Destructors cannot move self", path: "docs/spec/src/03-types/09-destructors.md", rule: Some("3.9:33") }],
+    };
+    LINEAR_VALUE_NOT_CONSUMED_ON_ALL_PATHS = 443 => {
+        explanation: "A linear value is consumed along some reachable control-flow paths but remains live along others that leave its scope. Linear obligations must be discharged on every path; otherwise an unconsumed path would implicitly drop the value.",
+        likely_cause: "An `if`, `match`, loop, or early exit consumes the value in only some alternatives. Restructure the control flow so every path that leaves the scope passes, returns, or otherwise moves the linear value to a consumer.",
+        examples: [
+            ErrorCodeExample { title: "Consume a linear value in only one branch", source: "linear struct Token { value: i32 }\nfn consume(token: Token) -> i32 { token.value }\nfn main() -> i32 {\n    let token = Token { value: 42 };\n    if true { consume(token) } else { 0 }\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Consume the linear value in every branch", source: "linear struct Token { value: i32 }\nfn consume(token: Token) -> i32 { token.value }\nfn main() -> i32 {\n    let token = Token { value: 42 };\n    if true { consume(token) } else { consume(token) }\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Linear consumption on every control-flow path", path: "docs/spec/src/03-types/08-move-semantics.md", rule: Some("3.8:50") }],
+    };
     // 444-455 are reserved by in-flight work; next free code is 458.
     MOVE_FIELD_OUT_OF_DESTRUCTOR_TYPE = 456;
     COPY_STRUCT_WITH_DESTRUCTOR = 457;
@@ -4050,6 +4101,63 @@ mod tests {
                 .into_iter()
                 .all(|code| error_code_explanation(code).is_some())
         );
+    }
+
+    #[test]
+    fn active_const_item_and_ownership_explanation_band_is_complete_and_bounded() {
+        let expected = [
+            ErrorCode::CONST_EXPR_NOT_SUPPORTED,
+            ErrorCode::RESERVED_FUNCTION_NAME,
+            ErrorCode::DUPLICATE_FUNCTION_DEFINITION,
+            ErrorCode::MOVE_OUT_OF_INOUT,
+            ErrorCode::MOVE_SELF_OUT_OF_DESTRUCTOR,
+            ErrorCode::LINEAR_VALUE_NOT_CONSUMED_ON_ALL_PATHS,
+        ];
+        let active = error_code_metadata()
+            .iter()
+            .filter(|metadata| (434..=443).contains(&metadata.code.0))
+            .map(|metadata| {
+                assert_eq!(metadata.source_path, "crates/rue-error/src/lib.rs");
+                metadata.code
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(active, expected);
+        let explained = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (434..=443)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(explained, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
+        );
+
+        let retired = ErrorCode(438);
+        assert!(RETIRED_ERROR_CODES.contains(&retired));
+        assert_eq!(error_code_explanation(retired), None);
+        assert_eq!(
+            retired.to_string().parse::<ErrorCode>(),
+            Err(ParseErrorCodeError::Unknown(retired))
+        );
+
+        for reserved in [ErrorCode(439), ErrorCode(440), ErrorCode(441)] {
+            assert!(!RETIRED_ERROR_CODES.contains(&reserved));
+            assert!(
+                error_code_metadata()
+                    .iter()
+                    .all(|metadata| metadata.code != reserved)
+            );
+            assert_eq!(error_code_explanation(reserved), None);
+            assert_eq!(
+                reserved.to_string().parse::<ErrorCode>(),
+                Err(ParseErrorCodeError::Unknown(reserved))
+            );
+        }
     }
 
     /// `ErrorKind::code()` must cover the compiler-declared ErrorCode constants without

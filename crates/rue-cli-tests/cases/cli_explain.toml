@@ -147,6 +147,20 @@ compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
 [[case]]
+name = "path_sensitive_linear_code_uses_the_same_compiler_owned_query"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0443"]
+compile_only = true
+compile_stdout_contains = [
+  "E0443: Linear value not consumed on all paths",
+  "Consume a linear value in only one branch:",
+  "Consume the linear value in every branch:",
+  "docs/spec/src/03-types/08-move-semantics.md (spec rule 3.8:50)",
+]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
 name = "malformed_code_is_rejected"
 files = [{ path = "main.rue", source = "fn main() {}\n" }]
 args = ["explain", "E201"]
