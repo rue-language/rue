@@ -3,6 +3,9 @@
 //! This crate provides common functionality for running compiler tests,
 //! including test case parsing, execution, and output comparison.
 
+pub mod pipe_drain;
+
+use pipe_drain::{PIPE_DRAIN_FINISH_TIMEOUT, spawn_pipe_drain};
 use rue_error::{PreviewFeature, error_code_metadata};
 use rue_target::Target;
 use serde::{Deserialize, Deserializer};
@@ -17,10 +20,9 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 pub const RUNTIME_ERROR_EXIT_CODE: i32 = 101;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
-use std::io::{Read as IoRead, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// The coordinates of one slice in a sharded test corpus (RUE-1116).
@@ -2619,122 +2621,6 @@ fn run_golden_ir_test(
     check_golden(&actual, expected, header_name)
 }
 
-enum DrainMessage {
-    Bytes(Vec<u8>),
-    Overflow,
-    Done,
-}
-
-struct PipeDrain {
-    rx: mpsc::Receiver<DrainMessage>,
-    bytes: Vec<u8>,
-    done: bool,
-    overflowed: bool,
-}
-
-impl PipeDrain {
-    fn poll(&mut self) {
-        // Bound work per child-status poll. An unbounded producer must not keep
-        // the timeout loop inside `try_recv` forever.
-        for _ in 0..64 {
-            match self.rx.try_recv() {
-                Ok(message) => self.handle(message),
-                Err(mpsc::TryRecvError::Empty) => return,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.done = true;
-                    return;
-                }
-            }
-        }
-    }
-
-    fn finish(&mut self, timeout: Duration) {
-        let deadline = Instant::now() + timeout;
-        while !self.done {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return;
-            }
-            match self.rx.recv_timeout(remaining) {
-                Ok(message) => self.handle(message),
-                Err(_) => {
-                    self.done = true;
-                    return;
-                }
-            }
-        }
-    }
-
-    fn handle(&mut self, message: DrainMessage) {
-        match message {
-            DrainMessage::Bytes(chunk) => self.bytes.extend(chunk),
-            DrainMessage::Overflow => self.overflowed = true,
-            DrainMessage::Done => self.done = true,
-        }
-    }
-}
-
-/// How long `run_with_timeout` waits for pipe-drain helpers after the child has
-/// exited or been killed.
-///
-/// A well-behaved child closes stdout/stderr promptly, so this normally just
-/// observes `DrainMessage::Done`. If a descendant process inherited a pipe fd
-/// and keeps it open, the reader thread may block forever; bounding collection
-/// keeps the harness moving and returns whatever bytes were already drained.
-const PIPE_DRAIN_FINISH_TIMEOUT: Duration = Duration::from_millis(500);
-
-/// Drain a pipe on a helper thread, sending chunks as they arrive.
-///
-/// Sending chunks incrementally matters: if the reader never reaches EOF
-/// because a daemonized descendant inherited the write end, the caller can
-/// still recover the bytes that were already read instead of blocking on a
-/// thread join.
-fn spawn_pipe_drain<R: IoRead + Send + 'static>(
-    pipe: Option<R>,
-    output_limit: Option<usize>,
-) -> PipeDrain {
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        if let Some(mut reader) = pipe {
-            let mut buf = [0; 8192];
-            let mut retained = 0usize;
-            let mut overflowed = false;
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if !overflowed {
-                            let keep = output_limit
-                                .map(|limit| n.min(limit.saturating_sub(retained)))
-                                .unwrap_or(n);
-                            if keep > 0
-                                && tx.send(DrainMessage::Bytes(buf[..keep].to_vec())).is_err()
-                            {
-                                return;
-                            }
-                            retained += keep;
-                            if keep < n {
-                                overflowed = true;
-                                if tx.send(DrainMessage::Overflow).is_err() {
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        }
-        let _ = tx.send(DrainMessage::Done);
-    });
-    PipeDrain {
-        rx,
-        bytes: Vec::new(),
-        done: false,
-        overflowed: false,
-    }
-}
-
 /// Marker prefix identifying a timeout failure. A timed-out run is a distinct
 /// failure class (like an ICE): the process ran past its wall-clock budget and
 /// was killed, rather than producing a wrong-but-finite result. Both this
@@ -2883,9 +2769,9 @@ fn run_with_timeout_impl(
     loop {
         stdout_drain.poll();
         stderr_drain.poll();
-        if stdout_drain.overflowed || stderr_drain.overflowed {
+        if stdout_drain.overflowed() || stderr_drain.overflowed() {
             kill_process_group(&mut child);
-            let stream = match (stdout_drain.overflowed, stderr_drain.overflowed) {
+            let stream = match (stdout_drain.overflowed(), stderr_drain.overflowed()) {
                 (true, true) => "stdout and stderr",
                 (true, false) => "stdout",
                 (false, true) => "stderr",
@@ -2904,8 +2790,8 @@ fn run_with_timeout_impl(
                 stdout_drain.finish(PIPE_DRAIN_FINISH_TIMEOUT);
                 stderr_drain.finish(PIPE_DRAIN_FINISH_TIMEOUT);
                 drop(stdin_writer);
-                if stdout_drain.overflowed || stderr_drain.overflowed {
-                    let stream = match (stdout_drain.overflowed, stderr_drain.overflowed) {
+                if stdout_drain.overflowed() || stderr_drain.overflowed() {
+                    let stream = match (stdout_drain.overflowed(), stderr_drain.overflowed()) {
                         (true, true) => "stdout and stderr",
                         (true, false) => "stdout",
                         (false, true) => "stderr",
@@ -2918,8 +2804,8 @@ fn run_with_timeout_impl(
                 }
                 return Ok(Output {
                     status,
-                    stdout: stdout_drain.bytes,
-                    stderr: stderr_drain.bytes,
+                    stdout: stdout_drain.into_bytes(),
+                    stderr: stderr_drain.into_bytes(),
                 });
             }
             Ok(None) => {

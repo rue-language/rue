@@ -1,0 +1,835 @@
+[section]
+id = "cli.rue_test"
+name = "The rue test subcommand, runner, and event stream"
+description = """
+RUE-1920 (ADR-0083 Phase 2c): `rue test` end to end through the real binary —
+subcommand dispatch, the verdict taxonomy against the real runtime, the exit-code
+contract, and the NDJSON event stream.
+
+Two things are pinned here that nothing else can pin. The verdict classification
+reads the runtime's own pinned abort messages, so these cases run real programs
+down each trap path: a runtime that reworded `assertion failed` or
+`error: division by zero` fails a case rather than silently reclassifying a trap
+as a bare `exit`. And the event schema is a consumer contract
+(docs/process/test-events.md), so the JSON cases assert exact object text —
+alphabetical keys included — which a field rename or a dropped field breaks.
+
+Cases that assert the event stream pass `-j1`: parallel workers interleave whole
+lines by design, and the schema promises the content of each line rather than an
+order across concurrent tests.
+"""
+
+# ========================= verdicts =========================
+
+[[case]]
+name = "a_passing_test_exits_zero_and_reports_a_count"
+description = "ADR-0083 §2: passes are a count, not a wall of green."
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "arithmetic still works" {
+    @assert(2 + 2 == 4);
+}
+
+test "so does comparison" {
+    @assert(1 < 2);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1"]
+driver_exit_code = 0
+compile_stdout_contains = ["2 passed ("]
+compile_stdout_not_contains = ["FAIL", "PASS "]
+
+[[case]]
+name = "a_failed_assert_is_kind_assert_and_exits_one"
+description = """
+The pinned `assertion failed` message from `__rue_assert_failed` is what the
+`assert` kind is classified from; this case runs the real runtime path.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "two plus two is five" {
+    @assert(2 + 2 == 5);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"failure":{"exit_code":101,"kind":"assert"',
+    '"message":"assertion failed"',
+    '"verdict":"fail"',
+    '"crash":0,"event":"run_finished","failed":1,"passed":0',
+]
+
+[[case]]
+name = "a_panicking_test_is_kind_trap_panic"
+description = "`@panic(msg)` writes the pinned `panic: <msg>` prefix and exits 101."
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "gives up" {
+    @panic("boom");
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = ['"kind":"trap:panic"', '"message":"panic: boom"']
+
+[[case]]
+name = "a_trapping_test_is_classified_by_its_runtime_message"
+description = """
+ADR-0083 §2's `trap:<class>` names come from the runtime's own pinned messages.
+This runs the division trap so `error: division by zero` is matched against the
+real `__rue_div_by_zero`, not against a retyped copy.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "divides by zero" {
+    let d: i32 = 0;
+    let n: i32 = 1;
+    @assert(n / d == 0);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = ['"kind":"trap:div_by_zero"', '"message":"error: division by zero"']
+
+[[case]]
+name = "an_early_exit_before_the_epilogue_is_incomplete"
+description = """
+ADR-0083 §3: a body calling `std.exit(0)` before its assertions must not report
+as a pass — that is false-positive test evidence. The dispatcher's completion
+record is what distinguishes them, and its absence is the `incomplete` kind.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+
+test "leaves before it checks anything" {
+    std.exit(0);
+    @assert(1 == 2);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"kind":"incomplete"',
+    "\"message\":\"the test exited 0 without the dispatcher's completion record\"",
+    '"verdict":"fail"',
+]
+
+[[case]]
+name = "a_hanging_test_times_out_and_is_its_own_verdict"
+description = """
+ADR-0083 §3: the per-test budget kills the process group and yields the
+`timeout` verdict, which is distinct from a failure so a suite can tell a wrong
+answer from a wedged one.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "never finishes" {
+    let mut i: i32 = 0;
+    while i >= 0 {
+        if i > 0 {
+            i = i - 1;
+        }
+    }
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--timeout-ms", "500", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"verdict":"timeout"',
+    '"kind":"timeout"',
+    'the process group was killed',
+    '"crash":0,"event":"run_finished","failed":0,"passed":0',
+    '"timeout":1',
+]
+
+[[case]]
+name = "a_flooding_test_is_killed_with_kind_output_overflow"
+description = """
+ADR-0083 §2: capture is bounded as bytes arrive, and exceeding a stream's budget
+kills the process group and yields `output_overflow` with the retained prefix
+attached. This writes past the 1 MiB default in 4 KiB lines.
+"""
+contract = "heavyweight_long"
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "floods its own stdout" {
+    let mut i: u64 = 0;
+    while i < 4096 {
+        @dbg("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+        i = i + 1;
+    }
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = ['"kind":"output_overflow"', '"verdict":"fail"']
+
+# ========================= listing and selection =========================
+
+[[case]]
+name = "list_prints_the_inventory_in_stable_id_order"
+description = "ADR-0083 §2: `--list` is discovery — no codegen, no linking, no execution."
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "beta" {
+    @assert(1 == 1);
+}
+
+test "alpha" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--list"]
+driver_exit_code = 0
+compile_stdout_contains = ["tests.rue::alpha\ntests.rue::beta\n"]
+
+[[case]]
+name = "list_json_emits_one_record_per_test_and_nothing_else"
+description = """
+The listing stream is inventory records only: no `run_started`, no
+`run_finished`, and every key alphabetical (docs/process/test-events.md).
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "alpha" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--list", "--format", "json"]
+driver_exit_code = 0
+compile_stdout_contains = [
+    '{"column":1,"event":"test","file":"tests.rue","id":"tests.rue::alpha","line":1,"module":"tests.rue","name":"alpha","schema":"1.0"}',
+]
+compile_stdout_not_contains = ["run_started", "run_finished", "test_finished"]
+
+[[case]]
+name = "a_filter_narrows_the_run_set_by_substring"
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "parse_port accepts" {
+    @assert(1 == 1);
+}
+
+test "parse_port rejects" {
+    @assert(1 == 1);
+}
+
+test "lexer eats spaces" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--list", "--filter", "parse_port"]
+driver_exit_code = 0
+compile_stdout_contains = ["tests.rue::parse_port accepts\ntests.rue::parse_port rejects\n"]
+compile_stdout_not_contains = ["lexer"]
+
+[[case]]
+name = "repeated_filters_union_rather_than_intersect"
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "parse_port accepts" {
+    @assert(1 == 1);
+}
+
+test "lexer eats spaces" {
+    @assert(1 == 1);
+}
+
+test "unrelated" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = [
+    "test", "main.rue", "--preview", "test_declarations", "--list",
+    "--filter", "parse_port", "--filter", "lexer",
+]
+driver_exit_code = 0
+compile_stdout_contains = ["tests.rue::lexer eats spaces\ntests.rue::parse_port accepts\n"]
+compile_stdout_not_contains = ["unrelated"]
+
+[[case]]
+name = "a_filter_matching_nothing_is_exit_three"
+description = """
+ADR-0083 §2: an empty selection is how a typo becomes false evidence, so it is
+its own exit code rather than a vacuous success.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "alpha" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--filter", "no_such_test", "-j1"]
+driver_exit_code = 3
+compile_stderr_contains = ["no tests matched the selection"]
+
+[[case]]
+name = "shard_one_of_two_takes_part_of_the_inventory"
+description = """
+`--shard K/N` partitions by the FNV-1a hash of the stable id, which
+docs/process/test-events.md specifies so an external scheduler computes the same
+partition. This case and the next assert the two halves are disjoint and
+together are the whole.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "alpha" {
+    @assert(1 == 1);
+}
+
+test "beta" {
+    @assert(1 == 1);
+}
+
+test "gamma" {
+    @assert(1 == 1);
+}
+
+test "delta" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--list", "--shard", "1/2"]
+driver_exit_code = 0
+compile_stdout_contains = ["tests.rue::alpha\ntests.rue::beta\ntests.rue::delta\n"]
+compile_stdout_not_contains = ["gamma"]
+
+[[case]]
+name = "shard_two_of_two_takes_the_rest"
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "alpha" {
+    @assert(1 == 1);
+}
+
+test "beta" {
+    @assert(1 == 1);
+}
+
+test "gamma" {
+    @assert(1 == 1);
+}
+
+test "delta" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--list", "--shard", "2/2"]
+driver_exit_code = 0
+compile_stdout_contains = ["tests.rue::gamma\n"]
+compile_stdout_not_contains = ["alpha", "beta", "delta"]
+
+# ========================= the event stream =========================
+
+[[case]]
+name = "the_event_stream_pins_its_schema_and_key_order"
+description = """
+docs/process/test-events.md is a consumer contract. Object keys are serialized
+in alphabetical order — the same determinism stance docs/process/diagnostics.md
+takes — so these are exact object fragments rather than field-presence checks.
+`capability_summary` is present from v1.0 with an explicit `unavailable` status,
+which is what lets the deferred capability ADR populate it additively.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "alpha" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "424242", "-j1", "--format", "json"]
+driver_exit_code = 0
+compile_stdout_contains = [
+    '{"event":"run_started","jobs":1,"opt_level":"0",',
+    '"plan":{"selected":1,"total":1},"root":"main.rue","schema":"1.0","seed":424242,',
+    '{"event":"test_started","id":"tests.rue::alpha"}',
+    '{"capability_summary":{"status":"unavailable"},',
+    '"stderr":{"bytes_total":0,"digest":"sha256:',
+    '"stdout":{"bytes_total":0,"digest":"sha256:',
+    '"verdict":"pass"',
+    '{"crash":0,"event":"run_finished","failed":0,"passed":1,"test_candidates":"none","timeout":0,',
+]
+# A pass carries digests, never inline bytes, and retains no scratch directory.
+compile_stdout_not_contains = ['"data"', "scratch_dir", '"shard"']
+
+[[case]]
+name = "a_failure_carries_its_bytes_scratch_directory_and_repro_argv"
+description = """
+ADR-0083 §3: every non-pass carries the exact argv that reproduces that one
+test — selected by the full stable id, never the bare name, and carrying the
+seed and the compile flags so the same image is rebuilt. Running that argv is
+the round trip the repro promises.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "fails on purpose" {
+    @assert(1 == 2);
+}
+""" },
+]
+args = [
+    "test", "main.rue", "--preview", "test_declarations", "--seed", "9",
+    "-j1", "--timeout-ms", "9000", "--format", "json",
+]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"repro":["rue","test","main.rue","--filter","tests.rue::fails on purpose","--seed","9",',
+    '"-O0","--preview","test_declarations","--timeout-ms","9000"]',
+    '"stderr":{"bytes_total":17,"data":"assertion failed\n","encoding":"utf8"}',
+    '"scratch_dir":"',
+]
+
+[[case]]
+name = "the_repro_argv_reproduces_the_same_verdict_alone"
+description = """
+The repro from the previous case, run as its own invocation: the same one test,
+the same `assert` verdict, and no other test in the run. A repro that selected
+by the bare name would also re-run the passing homonym below it.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "fails on purpose" {
+    @assert(1 == 2);
+}
+""" },
+    { path = "other.rue", source = """
+test "fails on purpose" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = [
+    "test", "main.rue", "--filter", "tests.rue::fails on purpose", "--seed", "9",
+    "-O0", "--preview", "test_declarations", "--timeout-ms", "9000",
+    "-j1", "--format", "json",
+]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"plan":{"selected":1,"total":1}',
+    '"kind":"assert"',
+    '"id":"tests.rue::fails on purpose"',
+    '"crash":0,"event":"run_finished","failed":1,"passed":0',
+]
+
+[[case]]
+name = "an_explicit_seed_is_honored_and_reported"
+description = """
+The seed is published in `run_started` and repeated in every repro argv, so a
+shuffle-dependent failure comes back. Determinism of the order it produces is
+pinned by the runner's own unit tests, which can run the planner twice.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "alpha" {
+    @assert(1 == 1);
+}
+
+test "beta" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "7", "-j1", "--format", "json"]
+driver_exit_code = 0
+compile_stdout_contains = ['"seed":7,', '"--seed","7"']
+
+[[case]]
+name = "a_shard_is_reported_in_the_head_event"
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "alpha" {
+    @assert(1 == 1);
+}
+
+test "beta" {
+    @assert(1 == 1);
+}
+
+test "gamma" {
+    @assert(1 == 1);
+}
+
+test "delta" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = [
+    "test", "main.rue", "--preview", "test_declarations", "--seed", "1",
+    "-j1", "--shard", "2/2", "--format", "json",
+]
+driver_exit_code = 0
+compile_stdout_contains = ['"shard":"2/2"', '"plan":{"selected":1,"total":4}']
+
+# ========================= the preview gate and the candidate inventory =========================
+
+[[case]]
+name = "test_mode_does_not_enable_the_preview_gate_for_you"
+description = """
+ADR-0083 §1, ruled: `--preview test_declarations` is required exactly as for a
+build. Auto-enabling it in test mode would make `rue test` the first flag to
+bypass ADR-0005's explicit opt-in while leaving the same files failing ordinary
+builds. A program that will not compile is the runner-error status.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "alpha" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue"]
+driver_exit_code = 2
+compile_stderr_contains = ["E1100", "test_declarations"]
+compile_stdout_not_contains = ["run_started"]
+
+[[case]]
+name = "an_orphaned_test_file_is_warned_about_and_reported_in_run_finished"
+description = """
+ADR-0083 §1: with a declared candidate inventory, a test file the closure never
+imports is reported — on stderr as a warning and in `run_finished` as data. It
+stays a warning: sibling build targets legitimately share a `srcs` glob.
+"""
+files = [
+    { path = "test-candidates.list", source = """
+main.rue
+tests.rue
+orphan_tests.rue
+""" },
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "alpha" {
+    @assert(1 == 1);
+}
+""" },
+    { path = "orphan_tests.rue", source = """
+test "nothing imports this file" {
+    @assert(1 == 1);
+}
+
+test "nor this one" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = [
+    "test", "main.rue", "--preview", "test_declarations",
+    "--test-candidates", "test-candidates.list", "--seed", "1", "-j1", "--format", "json",
+]
+driver_exit_code = 0
+compile_stderr_contains = [
+    "orphan_tests.rue",
+    "declares 2 tests but no module in the compiled closure imports it",
+]
+compile_stdout_contains = [
+    '"test_candidates":"declared"',
+    '"unimported_test_files":[{"parse_failed":false,"path":"orphan_tests.rue","tests":2}]',
+]
+
+[[case]]
+name = "without_an_inventory_the_summary_says_orphans_are_not_detected"
+description = """
+Silence would be read as "no orphans found". The run says instead that it did
+not look.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "alpha" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1"]
+driver_exit_code = 0
+compile_stdout_contains = [
+    "note: no --test-candidates inventory; unimported test files are not detected",
+]
+
+# ========================= dispatch and flag combinations =========================
+
+[[case]]
+name = "an_output_named_test_is_still_an_ordinary_build"
+description = """
+ADR-0083 §2's dispatch rule is value-aware over the eleven value-taking options
+precisely so this keeps meaning "output named `test`". If the scan regressed,
+this case would become a test run and stop producing an executable.
+"""
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    42
+}
+""" },
+]
+args = ["-o", "test", "main.rue"]
+output = "test"
+exit_code = 42
+compile_stdout_contains = ["Compiled main.rue -> test"]
+
+[[case]]
+name = "a_root_module_named_test_is_spelled_with_a_relative_path"
+description = "The documented disambiguation for a file literally named `test`."
+files = [
+    { path = "test", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "alpha" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "./test", "--preview", "test_declarations", "--list"]
+driver_exit_code = 0
+compile_stdout_contains = ["tests.rue::alpha"]
+
+[[case]]
+name = "test_mode_refuses_emit"
+description = "ADR-0083 §2: `--emit` owns stdout, which is the event stream's."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+""" },
+]
+args = ["test", "main.rue", "--emit", "ast"]
+driver_exit_code = 2
+compile_stderr_contains = ["`rue test` cannot be combined with --emit"]
+
+[[case]]
+name = "test_mode_refuses_an_output_path"
+description = "A test run publishes no executable to the user's output path."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+""" },
+]
+args = ["test", "main.rue", "-o", "prog"]
+driver_exit_code = 2
+compile_stderr_contains = ["`rue test` cannot be combined with -o/--output"]
+
+[[case]]
+name = "test_mode_refuses_watch_and_the_timing_surfaces"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+""" },
+]
+args = ["test", "main.rue", "--watch"]
+driver_exit_code = 2
+compile_stderr_contains = ["`rue test` cannot be combined with --watch"]
+
+[[case]]
+name = "a_test_only_flag_outside_test_mode_is_refused_by_name"
+description = """
+The reverse direction. Ignoring `rue --filter x main.rue` would let a mistyped
+invocation look like it worked.
+"""
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+""" },
+]
+args = ["--filter", "x", "main.rue"]
+compile_fail = true
+error_contains = ["--filter is only valid with the `rue test` subcommand"]
+
+[[case]]
+name = "a_test_run_takes_exactly_one_root_source"
+description = "ADR-0046 / RUE-767's one-root rule holds in test mode too."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "other.rue", source = """
+fn other() -> i32 {
+    0
+}
+""" },
+]
+args = ["test", "main.rue", "other.rue"]
+compile_fail = true
+error_contains = ["unexpected extra source file 'other.rue'"]

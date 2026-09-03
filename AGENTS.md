@@ -81,7 +81,9 @@ scripts/rue all                      # canonical union of all tiers
 scripts/rue unit compiler durable_   # one compiler unit test
 scripts/rue spec 4.2                 # filtered specification tests
 scripts/rue cli abi                  # filtered CLI integration tests
-scripts/rue test [pattern]           # broad/full suite
+scripts/rue test [pattern]           # broad/full suite (the maintainers' compiler-suite
+                                     # wrapper — unrelated to the language's own
+                                     # `rue test` subcommand, docs/process/test-events.md)
 scripts/rue fmt                      # format changed Rust files
 scripts/rue storage status           # inventory Buck disk use across worktrees
 scripts/rue storage plan             # dry-run stale cleanup in every registered worktree
