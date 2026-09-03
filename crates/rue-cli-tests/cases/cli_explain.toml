@@ -224,6 +224,111 @@ args = ["explain", "E0458"]
 compile_fail = true
 error_contains = ["unknown or retired error code E0458"]
 
+# This bounded tranche crosses ownership, arrays, parser resources, recursive
+# layout, patterns, and raw pointers. Every command uses invalid source to pin
+# `explain` as a deterministic, non-compiling metadata path.
+[[case]]
+name = "declared_linear_destructure_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0474"]
+compile_only = true
+compile_stdout_contains = ["E0474: Linear field dropped by destructure", "Destructure a declared-linear value with linear residue:", "docs/spec/src/03-types/08-move-semantics.md (spec rule 3.8:60)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "const_annotation_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0475"]
+compile_only = true
+compile_stdout_contains = ["E0475: Const missing type annotation", "Omit a value constant's type:", "docs/spec/src/06-items/05-constants.md (spec rule 6.5:4)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "linear_discard_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0478"]
+compile_only = true
+compile_stdout_contains = ["E0478: Linear value discarded", "Discard a linear value with a wildcard binding:", "docs/spec/src/05-statements/01-let-statements.md (spec rule 5.1:16)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "partially_moved_array_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0480"]
+compile_only = true
+compile_stdout_contains = ["E0480: Assign to partially moved array", "when the element type carries a linear value, it is legal only after every element has first been consumed", "Write the element that was moved out:", "docs/spec/src/03-types/08-move-semantics.md (spec rule 3.8:77)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "array_length_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0481"]
+compile_only = true
+compile_stdout_contains = ["E0481: Invalid array length", "Use a negative array length:", "docs/spec/src/03-types/05-array-types.md (spec rule 3.5:2)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "nesting_limit_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0482"]
+compile_only = true
+compile_stdout_contains = ["E0482: Nesting limit exceeded", "fixed syntactic nesting limit of 256 levels", "docs/spec/src/appendices/C-implementation-limits.md (spec rule C.6:3)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "recursive_type_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0483"]
+compile_only = true
+compile_stdout_contains = ["E0483: Recursive type infinite size", "Break recursion with pointer indirection:", "docs/spec/src/03-types/_index.md (spec rule 3.0:5)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "duplicate_pattern_binding_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0484"]
+compile_only = true
+compile_stdout_contains = ["E0484: Duplicate pattern binding", "Bind both payloads distinctly:", "docs/spec/src/04-expressions/07-match-expressions.md (spec rule 4.7:30)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "raw_place_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0485"]
+compile_only = true
+compile_stdout_contains = ["E0485: Raw requires place", "Take the address of a local place:", "docs/spec/src/09-unchecked-code/02-intrinsics.md (spec rule 9.2:6a)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "reserved_ownership_band_gaps_are_rejected"
+files = [{ path = "main.rue", source = "fn main() {}\n" }]
+args = ["explain", "E0476"]
+compile_fail = true
+error_contains = ["unknown or retired error code E0476"]
+
+[[case]]
+name = "second_reserved_ownership_band_gap_is_rejected"
+files = [{ path = "main.rue", source = "fn main() {}\n" }]
+args = ["explain", "E0477"]
+compile_fail = true
+error_contains = ["unknown or retired error code E0477"]
+
+[[case]]
+name = "third_reserved_ownership_band_gap_is_rejected"
+files = [{ path = "main.rue", source = "fn main() {}\n" }]
+args = ["explain", "E0479"]
+compile_fail = true
+error_contains = ["unknown or retired error code E0479"]
+
 [[case]]
 name = "malformed_code_is_rejected"
 files = [{ path = "main.rue", source = "fn main() {}\n" }]
