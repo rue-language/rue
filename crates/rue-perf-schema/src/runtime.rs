@@ -3054,7 +3054,7 @@ samples = 5
         let epoch = manifest
             .collection_epoch("aarch64-linux")
             .expect("aarch64-linux is a row of the v1 platform matrix");
-        assert_eq!(epoch.suite_revision, 5);
+        assert_eq!(epoch.suite_revision, 6);
         assert_eq!(epoch.target, "aarch64-linux");
         assert_eq!(epoch.optimization, OptimizationLevel::O3);
         assert_eq!(epoch.thread_policy, ThreadPolicy::SingleThreaded);
@@ -3082,7 +3082,7 @@ samples = 5
         let epoch = manifest
             .collection_epoch("aarch64-macos")
             .expect("aarch64-macos is the scheduled row of the v1 platform matrix");
-        assert_eq!(epoch.suite_revision, 5);
+        assert_eq!(epoch.suite_revision, 6);
         assert_eq!(epoch.target, "aarch64-macos");
         assert_eq!(epoch.optimization, OptimizationLevel::O3);
         assert_eq!(epoch.thread_policy, ThreadPolicy::SingleThreaded);
@@ -4680,7 +4680,16 @@ records_comparison_identity = true
                 panic!("gazette's fixture is a corpus tree");
             };
             assert_eq!(*scale, 1);
-            assert_eq!(excluded, &["performance.md", "runtime.md"]);
+            assert_eq!(
+                excluded,
+                &[
+                    ".error-pages-backup",
+                    ".error-pages-staging",
+                    "errors",
+                    "performance.md",
+                    "runtime.md",
+                ]
+            );
             assert_eq!(workload.oracle.kind, OracleKind::SemanticSitePages);
 
             let peers = epoch.peers.get("gazette").expect("a peer policy");
@@ -4704,7 +4713,26 @@ records_comparison_identity = true
             assert_eq!(epoch.flag_posture("gazette"), FlagPosture::Advisory);
             // The 10x rung is measured for Rue; the 100x one is the safety
             // valve of Decision 9 and is deliberately not collected yet.
-            assert!(suite.workload("gazette_10x").is_some());
+            let ten_x = suite
+                .workload("gazette_10x")
+                .expect("the 10x Gazette rung is measured");
+            let FixtureDeclaration::CorpusTree {
+                scale, excluded, ..
+            } = &ten_x.fixture
+            else {
+                panic!("gazette_10x's fixture is a corpus tree");
+            };
+            assert_eq!(*scale, 10);
+            assert_eq!(
+                excluded,
+                &[
+                    ".error-pages-backup",
+                    ".error-pages-staging",
+                    "errors",
+                    "performance.md",
+                    "runtime.md",
+                ]
+            );
             assert!(suite.workload("gazette_100x").is_none());
         }
     }

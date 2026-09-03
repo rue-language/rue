@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Corpus-driven checks of gazette against the LIVE rue-lang.dev corpus.
+"""Corpus-driven checks of gazette against rue-lang.dev's committed corpus.
 
-Several modes, one apparatus. All of them assemble the corpus exactly as
-`website/build.sh` does — site content plus the copied specification, with the
-spec's internal links rewritten — because ADR-0072 Decision 2 measures the site
-as it actually exists rather than a frozen snapshot.
+Several modes, one apparatus. All of them assemble committed site content plus
+the copied specification, with the spec's internal links rewritten. Ignored
+website-build output is not corpus content; generated compiler error pages and
+their atomic staging states are explicitly excluded and recorded in the fixture
+identity. ADR-0072 Decision 2 measures this moving committed corpus rather than
+a frozen snapshot.
 
     scripts/gazette-corpus-diff.py body
         RUE-1483's Markdown differential. Renders every content page's BODY
@@ -181,7 +183,12 @@ GAZETTE_PORT_REVISION = 2
 # of `status.json`'s rows are derived from the performance store, which is
 # the same benchmark-feeds-itself loop the `performance-data.json` exclusion
 # and ADR-0072 Decision 3's page carve-outs exist to prevent.
-PREPARER_REVISION = 4
+#
+# REVISION 5 (RUE-1906) explicitly excludes the compiler error pages and their
+# exact staging/backup siblings from `website/content`. They are ignored build
+# output, so copying them made a locally built checkout measure a different
+# corpus than clean CI. The exclusion is part of the recorded fixture identity.
+PREPARER_REVISION = 5
 
 # What gazette itself renders. Inside the workload identity. The peers' roots
 # are `peer_ports.PEER_PORT_ROOTS`, deliberately in the other file.
@@ -276,9 +283,14 @@ def corpus_rules() -> peer_ports.CorpusRules:
 #   identity depended on whether the website was ever built. No port's bytes
 #   moved. What did change is an assembly rule, which PREPARER_REVISION
 #   records.
+#
+#   RUE-1906. `errors/section.html` was added for compiler-owned generated
+#   error pages. They are transient Zola input explicitly excluded from the
+#   committed Gazette corpus, so no port follows and neither port revision
+#   advances. The assembly change is recorded by PREPARER_REVISION.
 PRODUCTION_TEMPLATE_ROOT = "website/templates"
 PRODUCTION_TEMPLATE_DIGEST = (
-    "12e9ab194652e71ff147598103aed456d63206e2a8ca53d8461aad6b145fff9d"
+    "3ba142b2b596b823d952fb9d6c7339ffda9f008353c80deb3150aac00437437f"
 )
 
 # Pages Zola emits no rendered body for, so `body` mode has nothing to compare
@@ -290,8 +302,22 @@ EXCLUSIONS = {
     ),
 }
 
-# Content EXCLUDED FROM THE BENCHMARK CORPUS, visibly rather than silently
-# (ADR-0072 Decision 3). Both entries are the same carve-out: a page whose
+# Generated error-page source is Zola build input rather than committed live
+# content. Keep these three exact root names together: the generator atomically
+# rotates among them, and Gazette must not race any of those states into its
+# corpus. `copytree` ignores them at the source root rather than copying then
+# deleting, so a concurrent rename cannot leave a partial fixture subtree.
+GENERATED_ERROR_CONTENT_REASON = (
+    "compiler error pages are generated Zola input, not committed Gazette "
+    "corpus content"
+)
+GENERATED_CONTENT_EXCLUSIONS = {
+    path: GENERATED_ERROR_CONTENT_REASON
+    for path in ("errors", ".error-pages-staging", ".error-pages-backup")
+}
+
+# Committed content EXCLUDED FROM THE BENCHMARK CORPUS, visibly rather than
+# silently (ADR-0072 Decision 3). Both entries are the same carve-out: a page whose
 # template reads derived benchmark data at build time would make the benchmark
 # an input to its own workload. `performance.md` is the carve-out the ADR names;
 # `runtime.md` is RUE-1049's page and is the same page in every respect that
@@ -311,6 +337,11 @@ CORPUS_EXCLUSIONS = {
         "renders the very series this workload produces"
     ),
 }
+
+
+def fixture_exclusions() -> dict[str, str]:
+    """Every content exclusion recorded in the fixture identity."""
+    return {**GENERATED_CONTENT_EXCLUSIONS, **CORPUS_EXCLUSIONS}
 
 # Internal links the LIVE CONTENT gets wrong, which Zola resolves exactly the
 # same way and emits exactly as dead. Gazette's job is to reproduce the routing,
@@ -340,7 +371,7 @@ EXCLUDED_LINKS_PER_PAGE = 4
 
 
 # ---------------------------------------------------------------------------
-# Corpus assembly — exactly what website/build.sh does
+# Corpus assembly — committed website content plus the canonical specification
 # ---------------------------------------------------------------------------
 
 # The one excluded feature the corpus itself turns on. See `assemble_corpus`.
@@ -348,7 +379,11 @@ PAGINATE_BY = re.compile(r"^paginate_by = .*\n", re.M)
 
 
 def assemble_corpus(dest: str, exclude: dict | None = None) -> list[str]:
-    """Copy site content plus the specification, rewriting spec-internal links.
+    """Copy committed content plus the spec, rewriting spec-internal links.
+
+    Generated compiler error-page source and its staging states are excluded
+    at the source-root copy boundary. They are ignored website-build output,
+    not committed content, and their exact names ride the fixture identity.
 
     ONE normalization is applied to the assembled tree, outside any measured
     window and applied to EVERY tool's copy of it, because ADR-0072 Decision 4's
@@ -387,7 +422,15 @@ def assemble_corpus(dest: str, exclude: dict | None = None) -> list[str]:
     `preparer_digest`, which are inside the fixture identity for exactly this
     reason: the rules are as much an input to the measured job as the bytes are.
     """
-    shutil.copytree(os.path.join(REPO, "website", "content"), dest)
+    content_source = os.path.join(REPO, "website", "content")
+    generated_names = set(GENERATED_CONTENT_EXCLUSIONS)
+
+    def ignore_generated_content(directory: str, names: list[str]) -> set[str]:
+        if os.path.normpath(directory) != os.path.normpath(content_source):
+            return set()
+        return generated_names.intersection(names)
+
+    shutil.copytree(content_source, dest, ignore=ignore_generated_content)
     spec_dest = os.path.join(dest, *SPEC_ROUTE_ROOT.split("/"))
     if os.path.exists(spec_dest):
         shutil.rmtree(spec_dest)
@@ -1170,7 +1213,7 @@ def prepare_fixture(root: str, scale: int) -> dict:
         "gazette_port_digest": port_digest,
         "gazette_port_files": port_files,
         "gazette_port_bytes": port_bytes,
-        "excluded": sorted(CORPUS_EXCLUSIONS),
+        "excluded": sorted(fixture_exclusions()),
     }
     # One digest over all of it, so an observation can be matched to a segment
     # with a single comparison. Every input class GAZETTE consumes is inside it:
@@ -2241,7 +2284,7 @@ def site_mode(options) -> int:
         print("  %-22s %d" % ("pages", len(model.pages)))
         print("  %-22s %d" % ("sections", len(model.sections)))
         print("excluded from the corpus:")
-        for rel, why in sorted(CORPUS_EXCLUSIONS.items()):
+        for rel, why in sorted(fixture_exclusions().items()):
             print("  %s — %s" % (rel, why))
 
         # --- determinism, and the metrics ---------------------------------

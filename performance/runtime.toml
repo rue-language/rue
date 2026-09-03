@@ -536,8 +536,86 @@ description = "the same corpus at ten copies, by deterministic path-prefixed dup
 kind = "semantic_site_pages"
 path = "scripts/gazette-corpus-diff.py"
 
+# ===========================================================================
+# SUITE REVISION 6 (RUE-1906) pins preparer revision 5: generated compiler
+# error-page source is explicitly outside the committed-content corpus.
+#
+# Revision 5's preparer copied ignored `website/content/errors` (or its exact
+# staging/backup siblings) whenever a local website build left them present,
+# while clean CI measured none of them. Revision 6 records those three exact
+# root exclusions in the fixture identity. Clean-checkout content bytes remain
+# unchanged, but the assembly rule changed, so revisions 1 through 5 remain
+# declared for existing records rather than being rewritten.
+# ===========================================================================
+[[suite]]
+revision = 6
+protocol_version = 1
+measured_boundary = "spawn_to_exit_v1"
+
+[[suite.workloads]]
+id = "wordfreq"
+source = "examples/wordfreq/main.rue"
+question = "How fast does a compiled Rue program tokenize and count words in tens of MiB of text?"
+program_args = ["{fixture}"]
+
+[suite.workloads.fixture]
+kind = "seeded_generator"
+category = "recorded"
+generator = "zipf_ascii_text"
+generator_revision = 1
+seed = 20260813
+bytes = 33554432
+vocabulary_size = 65536
+file_name = "wordfreq-input.txt"
+description = "32 MiB of deterministic ASCII word text with Zipf-distributed word ranks"
+
+[suite.workloads.oracle]
+kind = "golden_stdout"
+path = "performance/fixtures/wordfreq/expected-stdout.txt"
+
+[[suite.workloads]]
+id = "gazette"
+source = "examples/gazette/main.rue"
+question = "How fast does a compiled Rue program build the real rue-lang.dev site, against the production tools that build sites for a living?"
+program_args = ["build", "{fixture}", "-o", "{output}"]
+
+[suite.workloads.fixture]
+kind = "corpus_tree"
+category = "recorded"
+preparer = "scripts/gazette-corpus-diff.py"
+preparer_revision = 5
+scale = 1
+excluded = [".error-pages-backup", ".error-pages-staging", "errors", "performance.md", "runtime.md"]
+root_name = "gazette-site"
+description = "the committed rue-lang.dev content plus the canonical specification, excluding generated compiler error-page source and the two pages whose templates read derived benchmark data"
+
+[suite.workloads.oracle]
+kind = "semantic_site_pages"
+path = "scripts/gazette-corpus-diff.py"
+
+[[suite.workloads]]
+id = "gazette_10x"
+source = "examples/gazette/main.rue"
+question = "How does a compiled Rue site build scale with page count, at ten copies of the corpus?"
+program_args = ["build", "{fixture}", "-o", "{output}"]
+
+[suite.workloads.fixture]
+kind = "corpus_tree"
+category = "recorded"
+preparer = "scripts/gazette-corpus-diff.py"
+preparer_revision = 5
+scale = 10
+excluded = [".error-pages-backup", ".error-pages-staging", "errors", "performance.md", "runtime.md"]
+root_name = "gazette-site-10x"
+description = "the same committed-content corpus at ten copies, by deterministic path-prefixed duplication"
+
+[suite.workloads.oracle]
+kind = "semantic_site_pages"
+path = "scripts/gazette-corpus-diff.py"
+
 # The pinned reference regime. Epoch 1 implements suite revision 1, epoch 2
-# revision 2, epoch 3 revision 3, epoch 4 revision 4, and epoch 5 revision 5;
+# revision 2, epoch 3 revision 3, epoch 4 revision 4, epoch 5 revision 5, and
+# epoch 6 revision 6;
 # only the last collects. Declaring a new epoch rather than moving an old one
 # to the new revision is what keeps every record already in the store valid: a
 # stored report names the epoch it ran under, and that epoch must go on
@@ -1311,7 +1389,7 @@ canary_scale = 10
 records_comparison_identity = true
 
 # ===========================================================================
-# EPOCH 5: suite revision 5, the epoch that collects (RUE-1503).
+# EPOCH 5: suite revision 5, superseded by epoch 6 (RUE-1503).
 #
 # Everything about how these platforms run the workload is epoch 4's — same
 # runners, same sampling policies, same thread parity, same canary, same
@@ -1328,7 +1406,8 @@ records_comparison_identity = true
 # again for the same reason.
 #
 # The local rows that reproduce these three are epochs 9, 10, and 11, at the
-# end of the file with the rest of them.
+# end of the file with the rest of them. Epoch 6 and local rows 12 through 14
+# now carry collection under preparer revision 5.
 # ===========================================================================
 
 [[epoch]]
@@ -1340,7 +1419,7 @@ compiler_args = ["-O3"]
 optimization = "o3"
 thread_policy = "single_threaded"
 hardware_counters = "unavailable_on_hosted_runner"
-collection = true
+collection = false
 
 [epoch.environment]
 runner_label = "github-hosted"
@@ -1390,7 +1469,7 @@ compiler_args = ["-O3"]
 optimization = "o3"
 thread_policy = "single_threaded"
 hardware_counters = "unavailable_on_hosted_runner"
-collection = true
+collection = false
 
 [epoch.environment]
 runner_label = "github-hosted"
@@ -1432,7 +1511,7 @@ compiler_args = ["-O3"]
 optimization = "o3"
 thread_policy = "single_threaded"
 hardware_counters = "unavailable_on_hosted_runner"
-collection = true
+collection = false
 
 [epoch.environment]
 runner_label = "github-hosted"
@@ -1467,7 +1546,136 @@ canary_scale = 10
 records_comparison_identity = true
 
 # ===========================================================================
-# THE LOCAL ROWS, ONE PER TARGET (RUE-1498, extended by RUE-1496 and RUE-1503).
+# EPOCH 6: suite revision 6, the epoch that collects (RUE-1906).
+#
+# Execution and sampling are unchanged from epoch 5. These rows are new solely
+# because suite revision 6 pins preparer revision 5; epoch 5 remains declared
+# with collection disabled for observations made under its prior assembly rule.
+# ===========================================================================
+
+[[epoch]]
+id = 6
+platform = "x86_64-linux"
+suite_revision = 6
+target = "x86-64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+[epoch.sampling.wordfreq]
+samples = 5
+
+[epoch.sampling.gazette]
+samples = 5
+
+[epoch.sampling.gazette_10x]
+samples = 3
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+records_comparison_identity = true
+
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+records_comparison_identity = true
+
+[[epoch]]
+id = 6
+platform = "aarch64-linux"
+suite_revision = 6
+target = "aarch64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+[epoch.sampling.wordfreq]
+samples = 5
+
+[epoch.sampling.gazette]
+samples = 5
+
+[epoch.sampling.gazette_10x]
+samples = 3
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+records_comparison_identity = true
+
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+records_comparison_identity = true
+
+[[epoch]]
+id = 6
+platform = "aarch64-macos"
+suite_revision = 6
+target = "aarch64-macos"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "macos-15"
+
+[epoch.sampling.wordfreq]
+samples = 9
+
+[epoch.sampling.gazette]
+samples = 9
+
+[epoch.sampling.gazette_10x]
+samples = 3
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+records_comparison_identity = true
+
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+records_comparison_identity = true
+
+# ===========================================================================
+# THE LOCAL ROWS, ONE PER TARGET (RUE-1498, extended by RUE-1496, RUE-1503,
+# and RUE-1906).
 #
 # `local` is not a platform Rue targets. It is the pseudo-platform a
 # maintainer's own machine runs under, and a local run builds for its epoch's
@@ -1492,8 +1700,11 @@ records_comparison_identity = true
 #     epoch 9   x86-64-linux    suite revision 5
 #     epoch 10  aarch64-macos   suite revision 5
 #     epoch 11  aarch64-linux   suite revision 5
+#     epoch 12  x86-64-linux    suite revision 6
+#     epoch 13  aarch64-macos   suite revision 6
+#     epoch 14  aarch64-linux   suite revision 6
 #
-#     rue-bench runtime --platform local --epoch 10 \
+#     rue-bench runtime --platform local --epoch 13 \
 #       --compiler "$(scripts/rue-bin)" --commit "$(git rev-parse HEAD)" \
 #       --out /tmp/runtime.json --workdir /tmp/runtime-work
 #
@@ -1502,10 +1713,10 @@ records_comparison_identity = true
 # the previous revision's local rows along with its reference rows:
 # `crates/rue-bench/src/runtime.rs` refuses fixture preparation when the
 # checked-in preparer's revision differs from the pin its epoch's suite carries
-# — so epochs 4 through 8 above, which pin revisions 3 and 4, can no longer
+# — so epochs 4 through 11 above, which pin revisions 3 through 5, can no longer
 # prepare the gazette workloads at all. They stay declared, because records in
-# the store name them and those revisions are still readable, and epochs 9
-# through 11 are what a maintainer runs today.
+# the store name them and those revisions are still readable. Epochs 12 through
+# 14 are what a maintainer runs today.
 # `every_collected_platform_has_a_local_reproduction_epoch` is what turns that
 # from a thing to remember into a build break: it fires on all three collecting
 # rows the moment a new revision arrives.
@@ -1751,11 +1962,9 @@ canary_tool = "zola"
 canary_scale = 10
 records_comparison_identity = true
 
-# The revision-5 rows (RUE-1503), one per collecting target — what a
-# maintainer selects today, because the preparer revision suite 5 pins is the
-# one the checked-in script implements. As with every earlier extension, they
-# are copied from their revision-4 counterparts and differ from them in
-# `suite_revision` alone.
+# The revision-5 rows (RUE-1503), retained for observations made with preparer
+# revision 4. They are copied from their revision-4 counterparts and differ
+# from them in `suite_revision` alone.
 
 # x86-64 Linux at revision 5, the counterpart of epoch 6.
 [[epoch]]
@@ -1798,8 +2007,7 @@ canary_tool = "zola"
 canary_scale = 10
 records_comparison_identity = true
 
-# Apple Silicon at revision 5, the counterpart of epoch 7 and the row this
-# project's maintainers actually run.
+# Apple Silicon at revision 5, the counterpart of epoch 7.
 [[epoch]]
 id = 10
 platform = "local"
@@ -1845,6 +2053,130 @@ records_comparison_identity = true
 id = 11
 platform = "local"
 suite_revision = 5
+target = "aarch64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = false
+
+[epoch.environment]
+runner_label = "local"
+runner_image = "local"
+
+[epoch.sampling.wordfreq]
+samples = 2
+
+[epoch.sampling.gazette]
+samples = 2
+
+[epoch.sampling.gazette_10x]
+samples = 2
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+records_comparison_identity = true
+
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+records_comparison_identity = true
+
+# The revision-6 rows (RUE-1906), one per collecting target. These are what a
+# maintainer selects today because suite revision 6 pins the preparer revision
+# implemented by the checked-in script.
+
+[[epoch]]
+id = 12
+platform = "local"
+suite_revision = 6
+target = "x86-64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = false
+
+[epoch.environment]
+runner_label = "local"
+runner_image = "local"
+
+[epoch.sampling.wordfreq]
+samples = 2
+
+[epoch.sampling.gazette]
+samples = 2
+
+[epoch.sampling.gazette_10x]
+samples = 2
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+records_comparison_identity = true
+
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+records_comparison_identity = true
+
+[[epoch]]
+id = 13
+platform = "local"
+suite_revision = 6
+target = "aarch64-macos"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = false
+
+[epoch.environment]
+runner_label = "local"
+runner_image = "local"
+
+[epoch.sampling.wordfreq]
+samples = 2
+
+[epoch.sampling.gazette]
+samples = 2
+
+[epoch.sampling.gazette_10x]
+samples = 2
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+records_comparison_identity = true
+
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+records_comparison_identity = true
+
+[[epoch]]
+id = 14
+platform = "local"
+suite_revision = 6
 target = "aarch64-linux"
 compiler_args = ["-O3"]
 optimization = "o3"
