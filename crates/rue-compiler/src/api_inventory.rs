@@ -1965,12 +1965,12 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 44] = [
 // identity even when constructor, caller, and macro token counts do not.
 const CONSTRUCTION_TOKEN_STRUCT_IDENTITY: (usize, u64) = (80, 5_227_448_979_315_228_973);
 const CONSTRUCTION_TOKEN_IMPL_IDENTITY: (usize, u64) = (108, 2_765_439_612_714_245_239);
-const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (10_358, 1_319_503_141_837_805_034);
+const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (10_380, 4_871_274_390_997_435_514);
 const COMPILER_CRATE_ROOT_NAMESPACE_IDENTITY: (usize, u64, usize, u64) = (
     107,
-    16_471_930_814_342_494_057,
-    219,
-    9_233_980_844_921_801_843,
+    10_929_233_963_061_401_561,
+    220,
+    6_174_496_129_237_532_836,
 );
 const COMPILER_SESSION_ROOT_IDENTITY: (usize, u64) = (3_375, 11_197_616_651_825_656_461);
 const COMPILER_SESSION_CONSTRUCTOR_IDENTITY: (usize, u64) = (82, 10_721_269_354_679_246_675);
@@ -6703,7 +6703,9 @@ fn root_export_metadata(owner: &str, symbol: &str) -> (&'static str, &'static st
             _ => panic!("raw diagnostic type returned to the stable facade: {symbol}"),
         },
         "queries" => match symbol {
-            "CompileOptions" | "LinkerMode" => ("compilation-config", "cli+embedders"),
+            "CompileOptions" | "LinkerMode" | "RootSelection" => {
+                ("compilation-config", "cli+embedders")
+            }
             "compile_snapshot" => ("one-shot-operation", "cli+embedders"),
             "CompileOutput" | "SourceView" => ("compile-artifact", "cli+embedders"),
             _ => panic!("unclassified queries facade export: {symbol}"),

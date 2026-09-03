@@ -826,6 +826,20 @@ fn syntax_item_record(
                 children,
             )
         }
+        // A test declaration is recorded under its own kind with the test's
+        // name string as its name (ADR-0083 §1): a consumer of the syntax view
+        // must be able to tell `test "x"` from `fn x`.
+        rue_parser::Item::Test(test) => {
+            let mut children = directive_records(owner, &test.directives).collect::<Vec<_>>();
+            children.push(expr_record(owner, &test.body));
+            syntax_record(
+                "test",
+                test.span,
+                Some(Arc::from(owner.resolve_raw_symbol(test.name.value))),
+                None,
+                children,
+            )
+        }
         rue_parser::Item::Error(span) => syntax_record("error", *span, None, None, Vec::new()),
     }
 }

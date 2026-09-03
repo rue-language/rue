@@ -275,7 +275,13 @@ pub(super) struct RootedBodyGraph {
         Arc<[crate::semantic_query_nucleus::SemanticDeclarationDependency]>,
     pub(super) c_export_roots: Arc<[crate::StableDefinitionKey]>,
     pub(super) modules: Arc<[Arc<crate::parsed_modules::ParsedModule>]>,
-    pub(super) main: crate::StableDefinitionKey,
+    /// The program entry point, present only for a `RootSelection::Executable`
+    /// request. A test request has no entry point (ADR-0083 §1).
+    pub(super) main: Option<crate::StableDefinitionKey>,
+    /// The exact root set this graph was analyzed under — the single authority
+    /// consumers use instead of re-deriving roots from `main` and
+    /// `c_export_roots`.
+    pub(super) roots: Arc<[crate::FunctionInstanceKey]>,
     pub(super) closure: crate::body_query::BodyClosureOutput,
     pub(super) work: crate::CanonicalSemanticWork,
 }

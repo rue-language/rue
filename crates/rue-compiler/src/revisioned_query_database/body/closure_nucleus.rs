@@ -798,6 +798,11 @@ impl RevisionedQueryDatabase {
             let mut type_names = BTreeMap::new();
             let mut structs = BTreeMap::new();
             let mut enums = BTreeMap::new();
+            // Test names are keyed on their own (ADR-0083 §1): a test's name is
+            // a string literal that no expression can resolve, so `test "parse"`
+            // and `fn parse` in one module are not a collision — only a second
+            // `test "parse"` is.
+            let mut tests = BTreeMap::new();
             for candidate in order.iter().filter(|candidate| candidate.owner.is_none()) {
                 use crate::declaration_candidate::DeclarationCandidateCategory as C;
                 let name = candidate.name.clone();
@@ -874,6 +879,19 @@ impl RevisionedQueryDatabase {
                             })
                         }
                     }
+                    C::Test => {
+                        if let Some(first) = tests.get(&name) {
+                            Some((
+                                first,
+                                rue_error::ErrorKind::DuplicateTestDefinition {
+                                    test_name: name.to_string(),
+                                },
+                            ))
+                        } else {
+                            tests.insert(name.clone(), candidate.clone());
+                            None
+                        }
+                    }
                     C::ConstCandidate | C::Destructor | C::Method | C::AssociatedFunction => None,
                 };
                 if let Some((first, kind)) = duplicate {
@@ -903,7 +921,11 @@ impl RevisionedQueryDatabase {
                             .or_insert_with(|| candidate.clone());
                         enums.entry(name).or_insert_with(|| candidate.clone());
                     }
-                    C::ConstCandidate | C::Destructor | C::Method | C::AssociatedFunction => {}
+                    C::ConstCandidate
+                    | C::Destructor
+                    | C::Method
+                    | C::AssociatedFunction
+                    | C::Test => {}
                 }
             }
             let mut members =

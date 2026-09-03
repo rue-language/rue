@@ -192,6 +192,13 @@ mechanism), so the `PreviewFeature` enum is not empty.
   module remain exhaustively checked against the variants known there. Adding
   variants can still change layout, ABI, or runtime behavior, so the promise
   does not provide a binary compatibility guarantee.
+- `test_declarations` — the `test "name" { ... }` language item (RUE-1618). See
+  ADR-0083, which owns the feature. The gate covers a grammar change, so any
+  request whose module closure contains a test declaration needs the flag,
+  executable builds included; `rue test` will not enable it implicitly. It
+  gates semantic analysis and rooting only — pre-semantic requests
+  (`--emit tokens|ast|rir|deps`) present test items without the flag, exactly
+  as float literals do.
 
 ## Implementation Phases
 

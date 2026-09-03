@@ -1779,6 +1779,7 @@ pub(super) fn project_semantic_shell(
         C::Destructor => (N::Destructor, K::Destructor),
         C::Method => (N::Method, K::Method),
         C::AssociatedFunction => (N::Method, K::AssociatedFunction),
+        C::Test => (N::Test, K::Test),
     };
     let parameter_names = fact
         .parameters

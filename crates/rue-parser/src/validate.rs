@@ -73,6 +73,9 @@ enum DirectiveSite {
     Method,
     Const,
     Let,
+    /// A `test "name" { .. }` declaration (ADR-0083 §1). Accepts exactly the
+    /// directives a function accepts.
+    Test,
 }
 
 impl DirectiveSite {
@@ -84,6 +87,7 @@ impl DirectiveSite {
             DirectiveSite::Method => "methods",
             DirectiveSite::Const => "const declarations",
             DirectiveSite::Let => "let statements",
+            DirectiveSite::Test => "test declarations",
         }
     }
 }
@@ -179,11 +183,14 @@ impl Validator<'_> {
                 "allow" => {
                     if !matches!(
                         site,
-                        DirectiveSite::Function | DirectiveSite::Method | DirectiveSite::Let
+                        DirectiveSite::Function
+                            | DirectiveSite::Method
+                            | DirectiveSite::Test
+                            | DirectiveSite::Let
                     ) {
                         self.errors.push(CompileError::new(
                             ErrorKind::ParseError(format!(
-                                "@allow can only be applied to functions, methods, or let statements, not {}",
+                                "@allow can only be applied to functions, methods, test declarations, or let statements, not {}",
                                 site.description()
                             )),
                             directive.span,
@@ -237,6 +244,10 @@ impl Validator<'_> {
                 }
             }
             Item::DropFn(d) => self.check_expr(&d.body),
+            Item::Test(t) => {
+                self.check_directives(&t.directives, DirectiveSite::Test);
+                self.check_expr(&t.body);
+            }
             Item::Extern(_) => {}
             Item::Const(c) => {
                 self.check_directives(&c.directives, DirectiveSite::Const);

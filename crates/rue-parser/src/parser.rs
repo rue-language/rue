@@ -41,6 +41,10 @@ struct PrimitiveTypeSpurs {
     self_value: Spur,
     type_kw: Spur,
     as_kw: Spur,
+    /// The contextual `test` keyword (ADR-0083 §1). Only a keyword at item
+    /// position when followed by a string literal; an ordinary identifier
+    /// everywhere else.
+    test_kw: Spur,
     underscore: Spur,
     drop_kw: Spur,
     drop_marker: Spur,
@@ -77,6 +81,7 @@ impl PrimitiveTypeSpurs {
             self_value: intern("self")?,
             type_kw: intern("type")?,
             as_kw: intern("as")?,
+            test_kw: intern("test")?,
             drop_kw: intern("drop")?,
             drop_marker: intern("__drop")?,
             allow_directive: intern("allow")?,
@@ -102,6 +107,7 @@ impl PrimitiveTypeSpurs {
             self_value: symbol,
             type_kw: symbol,
             as_kw: symbol,
+            test_kw: symbol,
             drop_kw: symbol,
             drop_marker: symbol,
             allow_directive: symbol,
@@ -359,6 +365,105 @@ mod tests {
         ] {
             parse_source(source).unwrap_or_else(|errors| panic!("{errors:?}\n{source}"));
         }
+    }
+
+    #[test]
+    fn test_declarations_parse_with_and_without_directives() {
+        let (ast, interner) = parse_source(
+            "test \"parses a port\" { let x = 1; }\n\
+             @allow(unused_variable) test \"tolerates an unused binding\" { let y = 2; }",
+        )
+        .unwrap();
+        assert_eq!(ast.items.len(), 2);
+        let Item::Test(first) = &ast.items[0] else {
+            panic!("expected a test declaration, got {:?}", ast.items[0]);
+        };
+        assert_eq!(interner.resolve(&first.name.value), "parses a port");
+        assert!(first.directives.is_empty());
+        assert!(matches!(first.body, Expr::Block(_)));
+        // The header span covers `test "name"` and nothing of the body.
+        assert!(first.header_span.start == first.span.start);
+        assert!(first.header_span.end < first.span.end);
+
+        let Item::Test(second) = &ast.items[1] else {
+            panic!("expected a test declaration, got {:?}", ast.items[1]);
+        };
+        assert_eq!(
+            interner.resolve(&second.name.value),
+            "tolerates an unused binding"
+        );
+        assert_eq!(second.directives.len(), 1);
+    }
+
+    #[test]
+    fn contextual_test_keyword_stays_an_ordinary_identifier() {
+        // `test` is a keyword only at item position followed by a string
+        // (ADR-0083 §1). `fn test`, a local `let test`, and a `const test` all
+        // keep their ordinary meaning — `std/bitset.rue` has a live `fn test`.
+        let (ast, _) = parse_source(
+            "fn test(x: i32) -> i32 { x }\n\
+             const test: i32 = 1;\n\
+             fn main() -> i32 { let test = 2; test }",
+        )
+        .unwrap();
+        assert!(matches!(ast.items[0], Item::Function(_)));
+        assert!(matches!(ast.items[1], Item::Const(_)));
+        assert!(matches!(ast.items[2], Item::Function(_)));
+    }
+
+    #[test]
+    fn malformed_test_declarations_report_unexpected_tokens() {
+        for source in [
+            // `pub` and `unchecked` are not part of the production.
+            "pub test \"named\" { }",
+            "unchecked test \"named\" { }",
+            // A bare `test` at item position is an unknown item prefix.
+            "test { }",
+            "test;",
+            // A name with no block.
+            "test \"named\"",
+        ] {
+            let errors = parse_source(source)
+                .err()
+                .unwrap_or_else(|| panic!("expected a parse error for {source}"));
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| matches!(error.kind, ErrorKind::UnexpectedToken { .. })),
+                "{source}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_declaration_display_round_trips_through_the_ast_printer() {
+        let (ast, _) = parse_source("test \"round trip\" { let x = 1; }").unwrap();
+        let rendered = ast.to_string();
+        assert!(
+            rendered.starts_with("Test sym:"),
+            "test declarations render under their own kind: {rendered}"
+        );
+        assert!(rendered.contains("Let sym:"), "{rendered}");
+    }
+
+    #[test]
+    fn item_recovery_resynchronizes_on_a_test_declaration() {
+        // A malformed item must not swallow the test declaration that follows
+        // it: recovery treats the contextual `test` keyword as an item prefix
+        // even though its token is an ordinary identifier (ADR-0083 §1). The
+        // second test declaration here is itself malformed, so it reports its
+        // own diagnostic exactly when recovery stopped at it.
+        let source = "fn broken( -> i32 { 0 }\ntest \"a\" 1";
+        let errors = parse_source(source).unwrap_err();
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        let starts = errors
+            .iter()
+            .filter_map(|error| error.span().map(|span| span.start))
+            .collect::<Vec<_>>();
+        assert!(
+            starts.contains(&(source.rfind('1').expect("source has the trailing token") as u32)),
+            "{errors:?}"
+        );
     }
 
     #[test]

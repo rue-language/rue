@@ -969,6 +969,17 @@ impl Shapes<'_> {
                     "_".into(),
                 )
             }
+            // A test declaration (ADR-0083 §1) is its own node kind: it has no
+            // visibility, no parameters, and no result, so only its directives
+            // and body carry structure.
+            Item::Test(v) => node(
+                "test",
+                "",
+                self.directives(&v.directives),
+                self.expr(&v.body),
+                "_".into(),
+                "_".into(),
+            ),
             Item::Error(_) => leaf("error"),
         }
     }

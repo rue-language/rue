@@ -20,6 +20,10 @@ pub(crate) enum DeclarationCandidateCategory {
     Destructor,
     Method,
     AssociatedFunction,
+    /// A `test "name" { .. }` declaration (ADR-0083 §1). Its name is a string
+    /// literal, so it never collides with a function, type, or const of the
+    /// same spelling — duplicate detection is keyed within this category only.
+    Test,
 }
 
 /// Stable owner of a named member candidate.

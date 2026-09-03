@@ -253,6 +253,9 @@ fn item_charge(item: &ast::Item) -> u64 {
         ast::Item::Const(value) => directives_charge(&value.directives)
             .saturating_add(value.ty.as_ref().map_or(0, type_charge))
             .saturating_add(boxed_charge(&value.init, expr_charge)),
+        ast::Item::Test(value) => {
+            directives_charge(&value.directives).saturating_add(expr_charge(&value.body))
+        }
         ast::Item::Error(_) => 0,
     }
 }
@@ -1377,6 +1380,7 @@ impl RetainedCharge for rue_error::ErrorKind {
                 function_name: value,
             }
             | E::DuplicateMixedKindDefinition { name: value }
+            | E::DuplicateTestDefinition { test_name: value }
             | E::LinearValueDiscarded { type_name: value }
             | E::LinearValueOverwritten { type_name: value }
             | E::LinearValueOverwrittenThroughInout { type_name: value }

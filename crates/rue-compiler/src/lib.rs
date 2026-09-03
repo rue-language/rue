@@ -133,7 +133,9 @@ pub use import_graph::{
 };
 pub(crate) use import_graph::{ResolvedCodegenRevision, ResolvedProgramRevision};
 pub(crate) use parsed_modules::{InvalidImportShape, ParsedProgram};
-pub use queries::{CompileOptions, CompileOutput, LinkerMode, SourceView, compile_snapshot};
+pub use queries::{
+    CompileOptions, CompileOutput, LinkerMode, RootSelection, SourceView, compile_snapshot,
+};
 #[allow(unused_imports)]
 pub(crate) use semantic_identity::{
     AnonymousMemberKey, AnonymousMemberKind, AnonymousNominalKey, AnonymousNominalKind,

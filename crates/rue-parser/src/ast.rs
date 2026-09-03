@@ -86,9 +86,43 @@ pub enum Item {
     Extern(ExternBlock),
     /// Constant declaration (e.g., `const math = @import("math");`)
     Const(ConstDecl),
+    /// A test declaration: `test "name" { ... }` (ADR-0083 Phase 1).
+    Test(TestDecl),
     /// Error node for recovered parse errors at item level.
     /// Used by error recovery to continue parsing after a syntax error.
     Error(Span),
+}
+
+/// A test declaration: `test "name" { ... }` (ADR-0083 §1).
+///
+/// `test` is a contextual keyword — it is only a test declaration at item
+/// position and only when the next token is a string literal, so identifiers
+/// named `test` (`fn test`, `let test = ...`) keep their ordinary meaning.
+///
+/// The body is always an `Expr::Block` and is analyzed exactly like a
+/// `()`-returning function body with no parameters. Test declarations are
+/// roots only for a test request; an executable request never analyzes,
+/// lowers, or links one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestDecl {
+    /// Directives applied to this test (the same set functions accept).
+    pub directives: Directives,
+    /// The test's name: the string literal that follows the `test` keyword.
+    /// It is the test's identity within its module and must be unique there.
+    pub name: StringLit,
+    /// Test body. Always an `Expr::Block`, matching `Function::body`.
+    pub body: Expr,
+    /// Span covering the entire test declaration.
+    pub span: Span,
+    /// Span covering `test "name"` — the declaration's header, used as the
+    /// diagnostic span for duplicate-name and preview-gate reporting.
+    pub header_span: Span,
+    /// Whether the body contains a value-position anonymous `struct {..}` or
+    /// `enum {..}` literal. Recorded by the parser, which has the only two
+    /// production sites, so the definition index can skip the full
+    /// `anonymous_type_sites` body walk for the overwhelming majority of
+    /// declarations that contain none (RUE-1837).
+    pub contains_anonymous_type_literal: bool,
 }
 
 /// A constant declaration.
@@ -1620,6 +1654,13 @@ fn rebind_item(item: &mut Item, file_id: FileId) {
             rebind_expr(&mut constant.init, file_id);
             rebind_span(&mut constant.span, file_id);
         }
+        Item::Test(test) => {
+            rebind_directives(&mut test.directives, file_id);
+            rebind_span(&mut test.name.span, file_id);
+            rebind_expr(&mut test.body, file_id);
+            rebind_span(&mut test.header_span, file_id);
+            rebind_span(&mut test.span, file_id);
+        }
         Item::Error(span) => rebind_span(span, file_id),
     }
 }
@@ -2000,6 +2041,7 @@ impl fmt::Display for Ast {
                 Item::DropFn(drop_fn) => fmt_drop_fn(f, drop_fn, 0)?,
                 Item::Extern(extern_block) => fmt_extern(f, extern_block, 0)?,
                 Item::Const(c) => fmt_const(f, c, 0)?,
+                Item::Test(test) => fmt_test(f, test, 0)?,
                 Item::Error(span) => writeln!(f, "Error({:?})", span)?,
             }
         }
@@ -2095,6 +2137,16 @@ fn fmt_drop_fn(f: &mut fmt::Formatter<'_>, drop_fn: &DropFn, level: usize) -> fm
         drop_fn.type_name.name.into_usize()
     )?;
     fmt_expr(f, &drop_fn.body, level + 1)?;
+    Ok(())
+}
+
+/// Render a test declaration. The name is a string literal, and this printer
+/// has no interner, so the name is shown by symbol exactly as every other
+/// identifier and string literal in this rendering is (`Test sym:N`).
+fn fmt_test(f: &mut fmt::Formatter<'_>, test: &TestDecl, level: usize) -> fmt::Result {
+    indent(f, level)?;
+    writeln!(f, "Test sym:{}", test.name.value.into_usize())?;
+    fmt_expr(f, &test.body, level + 1)?;
     Ok(())
 }
 

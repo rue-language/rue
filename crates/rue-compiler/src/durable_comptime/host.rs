@@ -1623,13 +1623,18 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeRejections
         {
             return Ok(());
         }
+        // The same `help:` line body analysis and the request-level closure
+        // gate attach, assembled by the one authority in rue-error. This site
+        // used to drop it, so the identical diagnostic told a user how to
+        // enable the feature only when it happened to come from elsewhere.
         Err(rue_air::ComptimeHostError::HostFailure(
-            durable_diagnostic_failure(
+            durable_diagnostic_failure_with_help(
                 &self.diagnostic_site(site),
                 rue_error::ErrorKind::PreviewFeatureRequired {
                     feature,
                     what: what.to_owned(),
                 },
+                feature.enable_help(),
             ),
         ))
     }

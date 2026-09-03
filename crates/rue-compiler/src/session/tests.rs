@@ -5556,3 +5556,299 @@ fn unreachable_body_is_not_requested_by_production_reachability() {
         "an unreachable body must not have a retained transaction"
     );
 }
+
+fn test_declaration_options(root_selection: crate::RootSelection) -> CompileOptions {
+    CompileOptions {
+        preview_features: PreviewFeatures::from([PreviewFeature::TestDeclarations]),
+        root_selection,
+        ..CompileOptions::default()
+    }
+}
+
+/// The source names of the test declarations in a rooted CFG closure.
+fn test_units(output: &crate::session::RootedCfgOutput) -> Vec<&str> {
+    output
+        .functions()
+        .iter()
+        .filter(|unit| {
+            matches!(
+                &unit.function,
+                crate::FunctionInstanceKey::Definition(key)
+                    if key.kind() == crate::StableDefinitionKind::Test
+            )
+        })
+        .map(|unit| unit.source_name())
+        .collect()
+}
+
+/// The invisibility invariant of ADR-0083 §1: an executable request never
+/// analyzes a test body, and a test request does.
+#[test]
+fn test_bodies_are_analyzed_only_under_the_tests_root_selection() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        "fn main() -> i32 { 0 }\n\
+         test \"has a type error\" { let x: i32 = true; }",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+
+    // Executable: the test body is not a root, so its error is never reached.
+    session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Executable))
+        .expect("a test body's type error must not reject the executable program");
+
+    // Tests: the same body is a root, and the same error rejects the request.
+    let errors = session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Tests))
+        .expect_err("a test request roots the test body");
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error.kind, ErrorKind::TypeMismatch { .. })),
+        "unexpected diagnostics: {errors:?}"
+    );
+}
+
+/// A test request has no entry point: it must not demand `main` (ADR-0083 §1).
+#[test]
+fn tests_root_selection_does_not_require_a_main_function() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        "fn helper() -> i32 { 7 }\n\
+         test \"uses the helper\" { let x = helper(); }",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+
+    let errors = session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Executable))
+        .expect_err("an executable request still requires `main`");
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error.kind, ErrorKind::NoMainFunction)),
+        "unexpected diagnostics: {errors:?}"
+    );
+
+    let output = session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Tests))
+        .expect("a test request roots tests and needs no entry point");
+    assert_eq!(test_units(&output), vec!["uses the helper"]);
+}
+
+/// An executable request's CFG closure contains no test unit, and a test
+/// request's does (ADR-0083 §1).
+#[test]
+fn executable_cfg_closure_excludes_test_units() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        "fn helper() -> i32 { 7 }\n\
+         test \"exercises the helper\" { let x = helper(); }\n\
+         fn main() -> i32 { 0 }",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+
+    let executable = session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Executable))
+        .expect("the executable program compiles");
+    assert!(
+        test_units(&executable).is_empty(),
+        "an executable closure must contain no test unit: {:?}",
+        executable.functions()
+    );
+    // `helper` is called only from the test, so an executable request does not
+    // reach it either.
+    assert!(
+        !executable
+            .functions()
+            .iter()
+            .any(|unit| unit.source_name() == "helper"),
+        "a test-only helper is unreachable from `main`"
+    );
+
+    let tests = session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Tests))
+        .expect("the test closure compiles");
+    assert_eq!(test_units(&tests), vec!["exercises the helper"]);
+    assert!(
+        tests
+            .functions()
+            .iter()
+            .any(|unit| unit.source_name() == "helper"),
+        "a test closure reaches what its bodies call"
+    );
+
+    // The test's linker symbol is the ADR-0083 module-plus-name-digest scheme;
+    // it never embeds the raw name, which may contain spaces.
+    let symbol = tests
+        .functions()
+        .iter()
+        .find(|unit| unit.source_name() == "exercises the helper")
+        .map(|unit| crate::local_semantic_materialization::rooted_callable_symbol(&unit.function))
+        .expect("the test unit has a callable symbol");
+    assert!(
+        symbol.starts_with("__rue_test_main_2erue__"),
+        "unexpected test symbol: {symbol}"
+    );
+    assert!(!symbol.contains(' '), "unexpected test symbol: {symbol}");
+    assert!(
+        symbol.rsplit("__").next().is_some_and(
+            |digest| digest.len() == 32 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        ),
+        "unexpected test symbol: {symbol}"
+    );
+}
+
+/// A test body's calls are whole-program references, so a helper called only
+/// from a test does not warn as unused in an executable build (ADR-0083 §1).
+#[test]
+fn test_body_calls_count_as_warning_references_in_an_executable_build() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        "fn only_a_test_calls_me() -> i32 { 7 }\n\
+         test \"calls the helper\" { let x = only_a_test_calls_me(); }\n\
+         fn main() -> i32 { 0 }",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+    let output = session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Executable))
+        .expect("the executable program compiles");
+    assert!(
+        !output
+            .warnings()
+            .iter()
+            .any(|warning| format!("{warning:?}").contains("only_a_test_calls_me")),
+        "a helper referenced from a test body must not warn as unused: {:?}",
+        output.warnings()
+    );
+}
+
+/// The request-level preview gate of ADR-0083 §1 fires for an executable
+/// build, not only for a test request.
+#[test]
+fn test_declarations_require_their_preview_feature_in_every_request() {
+    let source =
+        SourceSnapshot::single("main.rue", "fn main() -> i32 { 0 }\ntest \"gated\" { }").unwrap();
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+    for selection in [
+        crate::RootSelection::Executable,
+        crate::RootSelection::Tests,
+    ] {
+        let errors = session
+            .rooted_cfg(&CompileOptions {
+                root_selection: selection,
+                ..CompileOptions::default()
+            })
+            .expect_err("a test declaration is gated in every request");
+        assert!(
+            errors.iter().any(|error| matches!(
+                &error.kind,
+                ErrorKind::PreviewFeatureRequired { feature, .. }
+                    if *feature == PreviewFeature::TestDeclarations
+            )),
+            "{selection:?}: unexpected diagnostics: {errors:?}"
+        );
+    }
+}
+
+/// Duplicate test names are rejected, and a test never collides with a
+/// same-named function (ADR-0083 §1).
+#[test]
+fn duplicate_test_names_are_rejected_and_never_collide_with_functions() {
+    let colliding = SourceSnapshot::single(
+        "main.rue",
+        "fn parse() -> i32 { 1 }\n\
+         test \"parse\" { let x = parse(); }\n\
+         fn main() -> i32 { parse() }",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+    session.update(&colliding).into_result().unwrap();
+    session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Executable))
+        .expect("a test may share its spelling with a function");
+
+    let duplicated = SourceSnapshot::single(
+        "main.rue",
+        "test \"same\" { }\ntest \"same\" { }\nfn main() -> i32 { 0 }",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+    session.update(&duplicated).into_result().unwrap();
+    let errors = session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Executable))
+        .expect_err("two tests may not share a name in one module");
+    assert!(
+        errors.iter().any(|error| matches!(
+            &error.kind,
+            ErrorKind::DuplicateTestDefinition { test_name } if test_name == "same"
+        )),
+        "unexpected diagnostics: {errors:?}"
+    );
+}
+
+/// Through ADR-0083 Phase 1, `?` in a test body stays the compile error it is
+/// in any other `()`-returning body. The rule is only observable under a test
+/// request, since an executable request never analyzes the body at all.
+#[test]
+fn question_operator_in_a_test_body_is_still_the_ordinary_error() {
+    let source = well_known_option_isolation_snapshot(
+        "const opt = @import(\"std/option.rue\");\n\
+         fn maybe(flag: bool) -> opt.Option(i32) {\n\
+             if flag { opt.Option(i32).Some(1) } else { opt.Option(i32).None }\n\
+         }\n\
+         test \"question mark is not yet allowed here\" {\n\
+             let value = maybe(true)?;\n\
+         }\n\
+         fn main() -> i32 { 0 }",
+    );
+    let mut session = CompilerSession::new();
+    publish_with_test_imports(&mut session, &source);
+    let errors = session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Tests))
+        .expect_err("`?` in a `()`-returning test body is rejected");
+    assert!(
+        errors.iter().any(|error| matches!(
+            error.kind,
+            ErrorKind::QuestionOutsideOptionFn { .. } | ErrorKind::QuestionOutsideResultFn { .. }
+        )),
+        "unexpected diagnostics: {errors:?}"
+    );
+}
+
+/// The differential CFG-transformation fault targets `main`, which a
+/// `RootSelection::Tests` graph does not have (ADR-0083 §1). Arming it on a
+/// test request must corrupt a test unit instead of panicking on a missing
+/// entry point.
+#[test]
+fn cfg_transformation_oracle_fault_tolerates_a_test_request_without_main() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        "fn helper() -> i32 { 1 }\n\
+         test \"compares two values\" { let same = helper() == helper(); }",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+
+    let options = test_declaration_options(crate::RootSelection::Tests);
+    session
+        .rooted_cfg(&options)
+        .expect("a test request compiles with no entry point");
+
+    assert!(session.inject_stale_query_for_oracle(
+        crate::unstable::DifferentialOracleFault::CfgTransformation
+    ));
+    // The assertion under test is that this returns rather than panicking; the
+    // fault deliberately corrupts the published CFG, so either outcome is
+    // acceptable as long as the request survives the missing `main`.
+    let _ = session.rooted_cfg(&options);
+}

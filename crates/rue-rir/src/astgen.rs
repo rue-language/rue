@@ -9,7 +9,7 @@
 use ahash::{AHashMap, AHashSet};
 use lasso::{Spur, ThreadedRodeo};
 
-use rue_parser::ast::{ConstDecl, DropFn, ExternBlock, ExternFn};
+use rue_parser::ast::{ConstDecl, DropFn, ExternBlock, ExternFn, TestDecl};
 use rue_parser::intrinsics::{OFFSET_OF_INTRINSIC, TYPE_INTRINSICS};
 use rue_parser::{
     ArgMode, ArrayLength, AssignStatement, AssignTarget, BinaryOp, CallArg, CompoundOp, Directive,
@@ -122,6 +122,8 @@ pub enum AstGenItemRoots {
     DropFn(AstGenDeclarationRoot),
     Extern(Box<[AstGenDeclarationRoot]>),
     Const(AstGenDeclarationRoot),
+    /// A `test "name" { .. }` declaration (ADR-0083 §1).
+    Test(AstGenDeclarationRoot),
     Error,
 }
 
@@ -145,6 +147,7 @@ pub enum AstGenCandidate<'ast> {
     Const(&'ast ConstDecl),
     Method { method: &'ast Method, ordinal: u32 },
     ExternFn(&'ast ExternFn),
+    Test(&'ast TestDecl),
 }
 
 struct PreparedStruct {
@@ -274,6 +277,7 @@ impl<'a> AstGen<'a> {
             AstGenCandidate::ExternFn(value) => self.capture_declaration(|this| {
                 this.with_bodyless_producer_root(|this| this.gen_extern_fn(value))
             }),
+            AstGenCandidate::Test(value) => self.capture_declaration(|this| this.gen_test(value)),
         }
     }
 
@@ -576,6 +580,9 @@ impl<'a> AstGen<'a> {
             Item::Const(const_decl) => {
                 AstGenItemRoots::Const(self.capture_declaration(|this| this.gen_const(const_decl)))
             }
+            Item::Test(test) => {
+                AstGenItemRoots::Test(self.capture_declaration(|this| this.gen_test(test)))
+            }
             // Error nodes from parser recovery are skipped - errors were already reported
             Item::Error(_) => AstGenItemRoots::Error,
         }
@@ -833,6 +840,8 @@ impl<'a> AstGen<'a> {
                 false,
                 // Methods are never C exports.
                 false,
+                // Methods are never test declarations.
+                false,
                 name,
                 &params,
                 return_type,
@@ -902,6 +911,45 @@ impl<'a> AstGen<'a> {
         self.with_producer_root(&func.body, |this| this.gen_function_body(func))
     }
 
+    /// Lower a `test "name" { .. }` item (ADR-0083 §1).
+    ///
+    /// A test is not its own RIR shape: it is an `FnDecl` with `is_test` set,
+    /// the interned test name as its symbol, no parameters, a unit return type
+    /// and a body lowered exactly as `gen_function_body` lowers a function's.
+    /// Semantic analysis therefore reaches it through the ordinary body path
+    /// and nothing downstream needs a second declaration form; only root
+    /// selection and the stable-definition taxonomy treat it differently.
+    fn gen_test(&mut self, test: &TestDecl) -> InstRef {
+        self.with_producer_root(&test.body, |this| this.gen_test_body(test))
+    }
+
+    fn gen_test_body(&mut self, test: &TestDecl) -> InstRef {
+        let directives = self.convert_directives(&test.directives);
+        let name = self.symbol(test.name.value);
+        let return_type = self.intern_type(&TypeExpr::Unit(test.span));
+        let body = self.gen_expr_at(crate::RirStructuralPathSegment::Body, &test.body);
+        self.rir
+            .add_fn_decl_with_return_modes(
+                &directives,
+                false,
+                false,
+                false,
+                false,
+                true,
+                name,
+                &[],
+                return_type,
+                body,
+                false,
+                RirParamMode::Normal,
+                false,
+                false,
+                false,
+                test.span,
+            )
+            .record_failure(&mut self.payload_error)
+    }
+
     fn gen_function_body(&mut self, func: &Function) -> InstRef {
         // Convert directives
         let directives = self.convert_directives(&func.directives);
@@ -943,6 +991,8 @@ impl<'a> AstGen<'a> {
                 false,
                 // `pub extern "C" fn` marks a Rue-to-C export (ADR-0064 P4).
                 func.export_abi.is_some(),
+                // A `fn` is never a test declaration.
+                false,
                 name,
                 &params,
                 return_type,

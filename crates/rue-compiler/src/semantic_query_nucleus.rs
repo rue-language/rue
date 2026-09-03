@@ -573,6 +573,21 @@ pub(crate) fn project_semantic_signature(
                     }),
             })
         }
+        // A test's signature is fixed by the grammar: no parameters, no
+        // receiver, unit result (ADR-0083 §1). It is projected as an ordinary
+        // callable so body analysis needs no second signature shape.
+        ParsedDeclarationAstRef::Test(_) => callable(
+            &[],
+            None,
+            false,
+            crate::declaration_candidate::DeclarationParameterMode::Value,
+            false,
+            false,
+            false,
+            false,
+            crate::declaration_candidate::DeclarationParameterMode::Value,
+            None,
+        ),
         ParsedDeclarationAstRef::Destructor(_) => Ok(ParsedSemanticSignature::Destructor),
         ParsedDeclarationAstRef::Const(_) => Err(Arc::from(
             "constant candidates have no signature projection",
@@ -1202,6 +1217,10 @@ pub(crate) fn direct_identity(
                 .as_ref()
                 .map(|owner| (Kind::Struct, Arc::<str>::clone(&owner.name))),
         ),
+        // A test declaration owns a body and no owning type (ADR-0083 §1). Its
+        // dedicated namespace is what makes the non-collision with a same-named
+        // function structural rather than conventional.
+        Category::Test => (Namespace::Test, Kind::Test, None),
         Category::ConstCandidate => return None,
     };
     Some(DeclarationIdentityProjection {

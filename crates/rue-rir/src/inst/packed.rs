@@ -21,7 +21,7 @@ const MAGIC: &[u8; 4] = b"RIRP";
 // Packed RIR is a private, ephemeral compiler-cache format. The cache header
 // version is checked before decoding, so changing this byte invalidates every
 // prior representation instead of requiring compatibility decoding.
-const VERSION: u8 = 5;
+const VERSION: u8 = 6;
 const HEADER_LEN: usize = 64;
 
 /// One fallible source intrinsic whose result requires a trusted `Option`
@@ -1541,6 +1541,7 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                 is_unchecked,
                 is_extern,
                 is_c_export,
+                is_test,
                 name,
                 params,
                 return_type,
@@ -1565,6 +1566,9 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                         | ((*returns_borrow as u8) << 6)
                         | ((*returns_inout as u8) << 7),
                 )?;
+                // The flag byte above is full; `is_test` (ADR-0083) rides in
+                // its own boolean rather than widening it.
+                self.boolean(*is_test)?;
                 self.symbol(*name)?;
                 let params = rir.params(params);
                 self.count(params.len())?;
@@ -2961,6 +2965,7 @@ impl<
                     RirSpanField::FunctionDirective { directive }
                 })?;
                 let flags = reader.byte()?;
+                let is_test = reader.boolean("test declaration")?;
                 let name = self.symbol(reader)?;
                 let count = Self::count(reader, "parameters", 4)?;
                 let mut params = Vec::new();
@@ -2997,6 +3002,7 @@ impl<
                     flags & 2 != 0,
                     flags & 4 != 0,
                     flags & 8 != 0,
+                    is_test,
                     name,
                     &params,
                     return_type,
@@ -3768,6 +3774,71 @@ mod tests {
 
     fn set_header(bytes: &mut [u8], offset: usize, value: usize) {
         bytes[offset..offset + 4].copy_from_slice(&(value as u32).to_le_bytes());
+    }
+
+    /// A test declaration lowers to an `FnDecl` distinguished only by
+    /// `is_test` (ADR-0083 §1), so that flag has to survive the packed
+    /// round trip and has to change the encoded bytes — otherwise a test
+    /// edited into a same-named function would be a cache hit.
+    #[test]
+    fn fn_decl_test_flag_round_trips_and_changes_the_packed_bytes() {
+        let build = |is_test: bool| {
+            let symbols = ThreadedRodeo::new();
+            let name = symbols.get_or_intern("a test name");
+            let mut editor = RirEditor::new();
+            let value = editor.add_inst(Inst {
+                data: InstData::UnitConst,
+                span: Span::new(1, 2),
+            });
+            let block = editor.add_block(&[value], Span::new(0, 3)).unwrap();
+            let unit = editor.add_unit_type().unwrap();
+            let root = editor
+                .add_fn_decl_with_return_modes(
+                    &[],
+                    false,
+                    false,
+                    false,
+                    false,
+                    is_test,
+                    name,
+                    &[],
+                    unit,
+                    block,
+                    false,
+                    RirParamMode::Normal,
+                    false,
+                    false,
+                    false,
+                    Span::new(0, 3),
+                )
+                .unwrap();
+            let context = RirValidationContext {
+                symbol_count: symbols.len(),
+                source_lengths: &[(FileId::DEFAULT, 3)],
+            };
+            let rir = ValidatedRir::finish(editor, &context).unwrap();
+            let packed = pack(&rir, &symbols, root);
+            (packed, root)
+        };
+
+        let (test_packed, test_root) = build(true);
+        let (function_packed, _) = build(false);
+        assert_ne!(
+            test_packed.as_bytes(),
+            function_packed.as_bytes(),
+            "`is_test` must be part of the packed representation"
+        );
+
+        let mut destination = RirEditor::new();
+        let appended = append(&test_packed, &mut destination).unwrap();
+        assert_eq!(appended.metadata.declaration, test_root);
+        assert!(
+            matches!(
+                destination.get(appended.metadata.declaration).data,
+                InstData::FnDecl { is_test: true, .. }
+            ),
+            "`is_test` must survive the round trip"
+        );
     }
 
     #[test]

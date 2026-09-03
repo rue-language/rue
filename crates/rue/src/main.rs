@@ -2015,6 +2015,9 @@ fn main() {
         opt_level: options.opt_level,
         preview_features: options.preview_features.clone(),
         link_archives: options.link_archives.clone(),
+        // The driver has no test-mode spelling yet; `rue test` arrives with
+        // ADR-0083 Phase 2 (RUE-1619).
+        root_selection: rue_compiler::RootSelection::Executable,
     };
 
     // Acquire any trusted toolchain modules a reached fallible intrinsic requires

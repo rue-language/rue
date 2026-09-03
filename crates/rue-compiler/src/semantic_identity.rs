@@ -497,6 +497,7 @@ fn encode_definition_namespace(value: crate::StableDefinitionNamespace, output: 
             crate::StableDefinitionNamespace::Type => 1,
             crate::StableDefinitionNamespace::Destructor => 2,
             crate::StableDefinitionNamespace::Method => 3,
+            crate::StableDefinitionNamespace::Test => 4,
         },
     );
 }
@@ -513,6 +514,7 @@ fn encode_definition_kind(value: crate::StableDefinitionKind, output: &mut Strin
             crate::StableDefinitionKind::Destructor => 5,
             crate::StableDefinitionKind::Method => 6,
             crate::StableDefinitionKind::AssociatedFunction => 7,
+            crate::StableDefinitionKind::Test => 8,
         },
     );
 }

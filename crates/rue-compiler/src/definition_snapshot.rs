@@ -31,6 +31,8 @@ pub enum DefinitionKind {
     Destructor,
     /// A file-level constant.
     Const,
+    /// A `test "name" { .. }` declaration (ADR-0083 §1).
+    Test,
 }
 
 /// The name-resolution namespace containing a parsed definition candidate.
@@ -42,6 +44,11 @@ pub enum DefinitionNamespace {
     ModuleItem,
     /// Destructor declarations, keyed by the type name following `drop fn`.
     Destructor,
+    /// Test declarations, keyed by the test's name string (ADR-0083 §1). A
+    /// test name is a string literal that no expression can resolve, so it
+    /// shares no key space with module items: a `test "parse"` and a
+    /// `fn parse` in one module are not duplicates of each other.
+    Test,
 }
 
 /// A durable name-binding key for one or more definition candidates.
@@ -473,6 +480,22 @@ pub(crate) fn definition_parts(item: &Item) -> Option<DefinitionParts> {
             visibility: Some(constant.visibility),
             name: constant.name,
             declaration_span: constant.span,
+        },
+        // A test's name is a string literal rather than an identifier, but
+        // `Ident` is exactly the pair the definition index needs — an interned
+        // symbol and the span that produced it — so the literal is carried in
+        // one (ADR-0083 §1). Nothing downstream re-lexes the name; it is
+        // resolved through the same interner and only ever compared or
+        // rendered.
+        Item::Test(test) => DefinitionParts {
+            namespace: DefinitionNamespace::Test,
+            kind: DefinitionKind::Test,
+            visibility: None,
+            name: Ident {
+                name: test.name.value,
+                span: test.name.span,
+            },
+            declaration_span: test.span,
         },
         // A foreign `extern "C"` block declares several definitions at once, so
         // it does not fit the one-item/one-definition shape here. The definition

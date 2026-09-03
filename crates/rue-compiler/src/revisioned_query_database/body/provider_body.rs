@@ -1074,6 +1074,12 @@ impl SemanticNucleusTypeProvider<'_> {
             DefinitionKind::Destructor => {
                 &[crate::declaration_candidate::DeclarationCandidateCategory::Destructor]
             }
+            // A test's name is a string literal, so no name lookup ever asks
+            // for one (ADR-0083 §1); the mapping is here only to keep the
+            // kind-to-category projection total.
+            DefinitionKind::Test => {
+                &[crate::declaration_candidate::DeclarationCandidateCategory::Test]
+            }
         };
         for category in categories {
             let key = crate::declaration_candidate::DeclarationCandidateKey {

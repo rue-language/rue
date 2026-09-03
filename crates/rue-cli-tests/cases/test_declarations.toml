@@ -1,0 +1,133 @@
+# Test declarations end to end through the real driver (ADR-0083 Phase 1,
+# RUE-1618).
+#
+# The shape here is the MVP idiom the ADR names: a root `main.rue` whose only
+# wiring to the test file is one aggregator `const tests = @import(...)`, and a
+# `parser_tests.rue` holding the tests plus the private helper they exercise.
+# The three things a driver user can observe in Phase 1 are pinned: the program
+# still builds and runs, the test bodies are absent from the executable's AIR,
+# and the declarations are present in the pre-semantic AST.
+
+[section]
+id = "cli.test_declarations"
+name = "Test declarations"
+description = "`test \"name\" { ... }` behind --preview test_declarations: an executable build ignores test bodies, the pre-semantic AST shows them, and the gate is required."
+
+[[case]]
+name = "aggregator_import_builds_and_runs"
+description = "The aggregator-import idiom compiles and runs: the test file is in the closure, its tests are parsed, and nothing about the program changes."
+files = [
+    { path = "main.rue", source = """
+const tests = @import("parser_tests.rue");
+
+fn main() -> i32 {
+    42
+}
+""" },
+    { path = "parser_tests.rue", source = """
+fn double(x: i32) -> i32 { x * 2 }
+
+test "double doubles" {
+    let y = double(21);
+}
+
+test "double handles zero" {
+    let z = double(0);
+}
+""" },
+]
+args = ["main.rue", "--preview", "test_declarations", "-o", "prog"]
+exit_code = 42
+
+[[case]]
+name = "aggregator_import_and_test_only_helper_emit_no_warnings"
+description = "ADR-0083 §1: the aggregator import must not fight the linter, and a helper called only from a test body must not warn as unused."
+files = [
+    { path = "main.rue", source = """
+const tests = @import("parser_tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "parser_tests.rue", source = """
+fn only_a_test_calls_me(x: i32) -> i32 { x + 1 }
+
+test "calls the helper" {
+    let value = only_a_test_calls_me(1);
+}
+""" },
+]
+args = ["main.rue", "--preview", "test_declarations", "-o", "prog"]
+exit_code = 0
+compile_stderr_not_contains = ["warning", "unused"]
+
+[[case]]
+name = "executable_air_contains_no_test_unit"
+description = "ADR-0083 §1: an executable request never analyzes or lowers a test body, so no test symbol reaches the AIR."
+files = [
+    { path = "main.rue", source = """
+const tests = @import("parser_tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "parser_tests.rue", source = """
+fn double(x: i32) -> i32 { x * 2 }
+
+test "double doubles" {
+    let y = double(21);
+}
+""" },
+]
+args = ["--emit", "air", "main.rue", "--preview", "test_declarations"]
+compile_only = true
+compile_stdout_contains = ["=== AIR ===", "function main:"]
+compile_stdout_not_contains = ["__rue_test_", "double doubles", "double"]
+
+[[case]]
+name = "pre_semantic_ast_shows_the_test_items"
+description = "The AST presentation is pre-semantic, so it carries the test declarations the executable's AIR does not."
+files = [
+    { path = "main.rue", source = """
+const tests = @import("parser_tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "parser_tests.rue", source = """
+test "double doubles" {
+    let y = 1;
+}
+""" },
+]
+args = ["--emit", "ast", "main.rue", "--preview", "test_declarations"]
+compile_only = true
+compile_stdout_contains = ["=== AST (parser_tests.rue) ===", "Test sym:"]
+
+[[case]]
+name = "without_the_preview_flag_the_build_is_gated"
+description = "ADR-0083 §1: a test item anywhere in the closure gates the request, executable builds included."
+files = [
+    { path = "main.rue", source = """
+const tests = @import("parser_tests.rue");
+
+fn main() -> i32 {
+    42
+}
+""" },
+    { path = "parser_tests.rue", source = """
+test "double doubles" {
+    let y = 1;
+}
+""" },
+]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "E1100",
+    "a test declaration requires preview feature `test_declarations`",
+    "use --preview test_declarations to enable this feature (ADR-0083)",
+]

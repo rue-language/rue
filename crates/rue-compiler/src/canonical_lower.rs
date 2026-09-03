@@ -656,6 +656,9 @@ fn lower_parsed_declaration_body_plan_internal(
             crate::parsed_modules::ParsedDeclarationAstRef::ExternFunction { function, .. } => {
                 (rue_rir::AstGenCandidate::ExternFn(function), None)
             }
+            crate::parsed_modules::ParsedDeclarationAstRef::Test(value) => {
+                (rue_rir::AstGenCandidate::Test(value), None)
+            }
         };
         let root = generator.append_candidate_with_root(producer);
         let editor = match generator.try_finish_editor_with_cancellation() {
@@ -754,11 +757,15 @@ fn validate_candidate_root(
     let name_matches =
         |name: &lasso::Spur| symbols.try_resolve(name) == Some(candidate.name.as_ref());
     let exact = match (&instruction.data, candidate.category) {
+        // `is_test` is part of the match, not a don't-care: a test lowers to an
+        // `FnDecl` too (ADR-0083 §1), so leaving it out would let a
+        // `test "parse"` satisfy a `fn parse` candidate key and vice versa.
         (
             rue_rir::InstData::FnDecl {
                 name,
                 has_self: false,
                 is_extern: false,
+                is_test: false,
                 ..
             },
             Category::Function | Category::AssociatedFunction,
@@ -768,6 +775,7 @@ fn validate_candidate_root(
                 name,
                 has_self: true,
                 is_extern: false,
+                is_test: false,
                 ..
             },
             Category::Method,
@@ -777,9 +785,20 @@ fn validate_candidate_root(
                 name,
                 has_self: false,
                 is_extern: true,
+                is_test: false,
                 ..
             },
             Category::ExternFunction,
+        ) => name_matches(name),
+        (
+            rue_rir::InstData::FnDecl {
+                name,
+                has_self: false,
+                is_extern: false,
+                is_test: true,
+                ..
+            },
+            Category::Test,
         ) => name_matches(name),
         (rue_rir::InstData::StructDecl { name, methods, .. }, Category::Struct) => {
             name_matches(name) && editor.struct_methods(methods).is_empty()
@@ -1031,7 +1050,8 @@ fn candidate_root_index(
             Roots::Function(declaration)
             | Roots::Enum(declaration)
             | Roots::DropFn(declaration)
-            | Roots::Const(declaration) => emitted.push(EmittedDeclarationRoot {
+            | Roots::Const(declaration)
+            | Roots::Test(declaration) => emitted.push(EmittedDeclarationRoot {
                 declaration: declaration.declaration,
                 instructions: declaration.start..declaration.end,
                 owner: None,

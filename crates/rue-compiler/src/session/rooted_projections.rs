@@ -69,71 +69,85 @@ impl CompilerSession {
                 ));
             }
         };
-        let Some(main_declaration) = projection.declarations.iter().find(|declaration| {
-            declaration.key.kind() == crate::StableDefinitionKind::Function
-                && declaration.key.name() == "main"
-                && declaration.key.module() == program.root()
-        }) else {
-            return Err(SemanticRequestControl::Compile(
-                CompileError::without_span(ErrorKind::NoMainFunction).into(),
-            ));
-        };
-        let crate::durable_semantics::DurableDeclarationPayload::Callable {
-            parameters,
-            result,
-            ..
-        } = &main_declaration.payload
-        else {
-            return Err(SemanticRequestControl::Compile(
-                CompileError::without_span(ErrorKind::NoMainFunction).into(),
-            ));
-        };
-        let invalid_main = if !parameters.is_empty() {
-            Some("`main` must not declare parameters")
-        } else if !matches!(
-            result,
-            crate::durable_semantics::DurableType::I32
-                | crate::durable_semantics::DurableType::Unit
-        ) {
-            Some("`main` must return `i32` or `()`")
-        } else {
-            None
-        };
-        if let Some(reason) = invalid_main {
-            let span = program.module(program.root()).and_then(|module| {
+        // ADR-0083 §1: the `test_declarations` gate covers a parser change, so
+        // ANY request whose closure contains a test item needs the flag —
+        // executable builds included, since they parse test items for the
+        // unused-item scan. This is the request-level half of the gate; the
+        // body-analysis half (`analyze_provider_ordinary_body`'s `Test` arm)
+        // catches a test-rooted request that reached analysis another way.
+        if !options
+            .preview_features
+            .contains(&rue_error::PreviewFeature::TestDeclarations)
+            && projection
+                .declarations
+                .iter()
+                .any(|declaration| declaration.key.kind() == crate::StableDefinitionKind::Test)
+        {
+            let kind = ErrorKind::PreviewFeatureRequired {
+                feature: rue_error::PreviewFeature::TestDeclarations,
+                what: "a test declaration".to_owned(),
+            };
+            // The first test item in module order, so the diagnostic points at
+            // the declaration a reader would fix first.
+            let span = program.modules().iter().find_map(|module| {
                 module.ast().items.iter().find_map(|item| match item {
-                    rue_parser::ast::Item::Function(function)
-                        if module.resolve_raw_symbol(function.name.name) == "main" =>
-                    {
-                        Some(function.span)
-                    }
+                    rue_parser::ast::Item::Test(test) => Some(test.header_span),
                     _ => None,
                 })
             });
-            let kind = ErrorKind::InvalidMainSignature { reason };
+            let error = match span {
+                Some(span) => CompileError::new(kind, span),
+                None => CompileError::without_span(kind),
+            };
             return Err(SemanticRequestControl::Compile(
-                match span {
-                    Some(span) => CompileError::new(kind, span),
-                    None => CompileError::without_span(kind),
-                }
-                .into(),
+                error
+                    .with_help(rue_error::PreviewFeature::TestDeclarations.enable_help())
+                    .into(),
             ));
         }
 
-        let main = main_declaration.key.clone();
-        let mut roots = BTreeSet::from([crate::FunctionInstanceKey::Definition(main.clone())]);
-        roots.extend(
-            projection
-                .c_export_roots
-                .iter()
-                .cloned()
-                .map(crate::FunctionInstanceKey::Definition),
-        );
+        // This is the single root-set authority. `RootSelection::Tests` roots
+        // every test declaration in the module closure and neither needs nor
+        // roots `main`; `RootSelection::Executable` roots `main` plus the
+        // c-export roots and never roots a test (ADR-0083 §1). The two sets are
+        // disjoint, which is what makes a test body invisible to an executable
+        // request rather than merely unreferenced by one.
+        let (main, roots) = match options.root_selection {
+            crate::RootSelection::Tests => {
+                let roots = projection
+                    .declarations
+                    .iter()
+                    .filter(|declaration| {
+                        declaration.key.kind() == crate::StableDefinitionKind::Test
+                    })
+                    .map(|declaration| {
+                        crate::FunctionInstanceKey::Definition(declaration.key.clone())
+                    })
+                    .collect::<BTreeSet<_>>();
+                (None, roots)
+            }
+            crate::RootSelection::Executable => {
+                let main = executable_main_declaration(&program, &projection)?;
+                let mut roots =
+                    BTreeSet::from([crate::FunctionInstanceKey::Definition(main.clone())]);
+                roots.extend(
+                    projection
+                        .c_export_roots
+                        .iter()
+                        .cloned()
+                        .map(crate::FunctionInstanceKey::Definition),
+                );
+                (Some(main), roots)
+            }
+        };
         let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
             target: options.target,
             preview_features: StablePreviewFeatures::new(&options.preview_features),
         };
+        let root_identities: Arc<[crate::FunctionInstanceKey]> =
+            roots.iter().cloned().collect::<Vec<_>>().into();
         drop(_declaration_graph_collection_span);
+
         // This compiler-owned consumer boundary includes retained-terminal
         // validation, query dispatch, deterministic terminal collection, and
         // the immediate work reduction. The timing layer records it
@@ -148,7 +162,7 @@ impl CompilerSession {
                 revision,
                 crate::body_query::BodyClosureQueryKey {
                     modules: modules.into(),
-                    roots: roots.into_iter().collect::<Vec<_>>().into(),
+                    roots: Arc::clone(&root_identities),
                     configuration: configuration.clone(),
                 },
                 cancellation.clone(),
@@ -324,6 +338,7 @@ impl CompilerSession {
             c_export_roots: projection.c_export_roots,
             modules: program.modules().to_vec().into(),
             main,
+            roots: root_identities,
             closure: closure.clone(),
             work,
         })
@@ -592,12 +607,17 @@ impl CompilerSession {
                 .cloned()
                 .map(|owner| crate::FunctionInstanceKey::DropGlue(Node::new(owner))),
         );
-        let main_identity = crate::FunctionInstanceKey::Definition(graph.main.clone());
+        // Only an executable request has a `main`, and only its symbol is
+        // spelled unmangled (ADR-0083 §1: a test request has no entry point).
+        let main_identity = graph
+            .main
+            .clone()
+            .map(crate::FunctionInstanceKey::Definition);
         let callable_symbols = identities
             .iter()
             .cloned()
             .map(|identity| {
-                let symbol = if identity == main_identity {
+                let symbol = if Some(&identity) == main_identity.as_ref() {
                     Arc::from("main")
                 } else {
                     crate::local_semantic_materialization::rooted_callable_symbol(&identity)
@@ -740,10 +760,25 @@ impl CompilerSession {
                 body_span,
             ));
         }
-        let fallback_span = cfg_inputs
-            .iter()
-            .find(|(identity, _, _)| identity == &main_identity)
-            .map_or(rue_span::Span::default(), |(_, _, span)| *span);
+        // Synthesized drop glue has no source of its own, so it borrows a span
+        // from a root of the request. An executable request keeps using `main`
+        // exactly as before; a test request has no `main` at all (ADR-0083 §1),
+        // so it falls back to its first root rather than to `Span::default()`,
+        // which would leave every drop-glue diagnostic in a test closure
+        // unlocated. `main` is preferred explicitly rather than taken as
+        // `roots.first()`: the root set is ordered by definition key, so a
+        // c-export can sort ahead of `main` in an executable graph.
+        let root_span = |root: &crate::FunctionInstanceKey| {
+            cfg_inputs
+                .iter()
+                .find(|(identity, _, _)| identity == root)
+                .map(|(_, _, span)| *span)
+        };
+        let fallback_span = main_identity
+            .as_ref()
+            .and_then(root_span)
+            .or_else(|| graph.roots.iter().find_map(root_span))
+            .unwrap_or_default();
         for (owner, facts) in graph.closure.demanded_drop_glue_plans.iter() {
             work.cfg.drop_glue_functions_synthesized += 1;
             work.cfg.materialization_fact_selections += 1;
@@ -1026,18 +1061,7 @@ impl CompilerSession {
         let (cfg_batch_key, attempt) = self.queries.revisioned.optimized_cfg_batch(
             graph.revision,
             optimized_keys,
-            std::iter::once(crate::FunctionInstanceKey::Definition(graph.main.clone()))
-                .chain(
-                    graph
-                        .c_export_roots
-                        .iter()
-                        .cloned()
-                        .map(crate::FunctionInstanceKey::Definition),
-                )
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>()
-                .into(),
+            Arc::clone(&graph.roots),
             cancellation,
         );
         let batch_execution = attempt.execution();
@@ -1333,11 +1357,25 @@ impl CompilerSession {
         }
         if self.oracle_fault == Some(crate::unstable::DifferentialOracleFault::CfgTransformation) {
             self.oracle_fault.take();
-            let main = cfgs
-                .iter_mut()
-                .find(|unit| unit.function == main_identity)
-                .expect("successful rooted CFG publishes main");
-            let record = Arc::make_mut(&mut main.record);
+            // The fault corrupts one root's CFG so the differential oracle
+            // observes a disagreement. `main` is that root for an executable
+            // request; a test request has no `main` (ADR-0083 §1), so the fault
+            // lands on the first published unit instead of panicking. An empty
+            // closure has nothing to corrupt and reports that as the same
+            // "no comparison to corrupt" error the injection failure reports.
+            let target = cfgs
+                .iter()
+                .position(|unit| Some(&unit.function) == main_identity.as_ref())
+                .or(if cfgs.is_empty() { None } else { Some(0) })
+                .map(|index| &mut cfgs[index]);
+            let Some(target) = target else {
+                return Err(CompileError::without_span(ErrorKind::InternalError(
+                    "differential CFG transformation fault had no equality comparison to corrupt"
+                        .into(),
+                ))
+                .into());
+            };
+            let record = Arc::make_mut(&mut target.record);
             if !record
                 .cfg
                 .inject_differential_comparison_fault(&record.type_pool)
@@ -2272,6 +2310,66 @@ fn rooted_unused_function_warnings(
     warnings
 }
 
+/// The root module's `main` declaration for an executable request, validated
+/// against the entry signature (spec 6.1:8).
+///
+/// A `RootSelection::Tests` request never calls this: a test request has no
+/// entry point, and requiring one would make a test-only module unanalyzable
+/// (ADR-0083 §1).
+fn executable_main_declaration(
+    program: &crate::parsed_modules::ParsedProgram,
+    projection: &crate::revisioned_query_database::SemanticNucleusProjection,
+) -> Result<crate::StableDefinitionKey, SemanticRequestControl> {
+    let Some(main_declaration) = projection.declarations.iter().find(|declaration| {
+        declaration.key.kind() == crate::StableDefinitionKind::Function
+            && declaration.key.name() == "main"
+            && declaration.key.module() == program.root()
+    }) else {
+        return Err(SemanticRequestControl::Compile(
+            CompileError::without_span(ErrorKind::NoMainFunction).into(),
+        ));
+    };
+    let crate::durable_semantics::DurableDeclarationPayload::Callable {
+        parameters, result, ..
+    } = &main_declaration.payload
+    else {
+        return Err(SemanticRequestControl::Compile(
+            CompileError::without_span(ErrorKind::NoMainFunction).into(),
+        ));
+    };
+    let invalid_main = if !parameters.is_empty() {
+        Some("`main` must not declare parameters")
+    } else if !matches!(
+        result,
+        crate::durable_semantics::DurableType::I32 | crate::durable_semantics::DurableType::Unit
+    ) {
+        Some("`main` must return `i32` or `()`")
+    } else {
+        None
+    };
+    if let Some(reason) = invalid_main {
+        let span = program.module(program.root()).and_then(|module| {
+            module.ast().items.iter().find_map(|item| match item {
+                rue_parser::ast::Item::Function(function)
+                    if module.resolve_raw_symbol(function.name.name) == "main" =>
+                {
+                    Some(function.span)
+                }
+                _ => None,
+            })
+        });
+        let kind = ErrorKind::InvalidMainSignature { reason };
+        return Err(SemanticRequestControl::Compile(
+            match span {
+                Some(span) => CompileError::new(kind, span),
+                None => CompileError::without_span(kind),
+            }
+            .into(),
+        ));
+    }
+    Ok(main_declaration.key.clone())
+}
+
 fn semantic_nucleus_failure_diagnostics(
     modules: &[Arc<crate::parsed_modules::ParsedModule>],
     declaration: Option<&crate::declaration_candidate::DeclarationCandidateKey>,
@@ -2404,10 +2502,33 @@ fn semantic_nucleus_failure_diagnostics(
             .declaration_locator(first)
             .map(|locator| locator.declaration_span)
     {
-        return CompileErrors::from(CompileError::new(kind.clone(), duplicate_span).with_label(
-            format!("first defined in {}", first_module.physical_path()),
-            first_span,
-        ));
+        // Every duplicate points at the whole offending declaration, which for
+        // a function or type is its signature plus body. A test declaration's
+        // body says nothing about why the name collides, so the diagnostic is
+        // narrowed to its `test "name"` header (ADR-0083 §1); the same
+        // narrowing applies to the first declaration's label.
+        let header = |module: &crate::parsed_modules::ParsedModule, declaration: rue_span::Span| {
+            if !matches!(kind, ErrorKind::DuplicateTestDefinition { .. }) {
+                return declaration;
+            }
+            module
+                .ast()
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    rue_parser::ast::Item::Test(test) if test.span == declaration => {
+                        Some(test.header_span)
+                    }
+                    _ => None,
+                })
+                .unwrap_or(declaration)
+        };
+        return CompileErrors::from(
+            CompileError::new(kind.clone(), header(module, duplicate_span)).with_label(
+                format!("first defined in {}", first_module.physical_path()),
+                header(first_module, first_span),
+            ),
+        );
     }
     if let F::DiagnosticAtProducerRange {
         kind,
