@@ -789,14 +789,87 @@ define_error_codes! {
     // ========================================================================
     // Struct/enum errors (E0400-E0499)
     // ========================================================================
-    MISSING_FIELDS = 400;
-    UNKNOWN_FIELD = 401;
-    DUPLICATE_FIELD = 402;
-    COPY_STRUCT_NON_COPY_FIELD = 403;
-    RESERVED_TYPE_NAME = 404;
-    DUPLICATE_TYPE_DEFINITION = 405;
-    LINEAR_VALUE_NOT_CONSUMED = 406;
-    LINEAR_STRUCT_COPY = 407;
+    MISSING_FIELDS = 400 => {
+        explanation: "A struct value was constructed without an initializer for every field declared by its type.",
+        likely_cause: "A field was omitted from the struct literal, often after the struct definition gained a new field. Supply each declared field exactly once; initializer order does not matter.",
+        examples: [
+            ErrorCodeExample { title: "Omitted struct field", source: "struct Point { x: i32, y: i32 }\nfn main() -> i32 {\n    let point = Point { x: 10 };\n    point.x\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Initialize every field", source: "struct Point { x: i32, y: i32 }\nfn main() -> i32 {\n    let point = Point { x: 10, y: 32 };\n    point.x + point.y\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Complete struct initialization", path: "docs/spec/src/03-types/06-struct-types.md", rule: Some("3.6:5") }],
+    };
+    UNKNOWN_FIELD = 401 => {
+        explanation: "A struct literal, field access, or another field-naming operation uses an identifier that is not a field of the relevant struct type.",
+        likely_cause: "The field name is misspelled, belongs to a different struct, or the struct definition was changed without updating its construction or use.",
+        examples: [
+            ErrorCodeExample { title: "Access an unknown field", source: "struct Point { x: i32, y: i32 }\nfn main() -> i32 {\n    let point = Point { x: 10, y: 32 };\n    point.z\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use a declared field", source: "struct Point { x: i32, y: i32 }\nfn main() -> i32 {\n    let point = Point { x: 10, y: 32 };\n    point.y\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Struct literal fields", path: "docs/spec/src/03-types/06-struct-types.md", rule: Some("3.6:15") },
+            ErrorCodeReference { title: "Valid field-access names", path: "docs/spec/src/04-expressions/12-field-access.md", rule: Some("4.12:4") },
+        ],
+    };
+    DUPLICATE_FIELD = 402 => {
+        explanation: "A struct declaration defines the same field name more than once, or a struct literal supplies more than one initializer for the same field.",
+        likely_cause: "A field declaration or initializer was duplicated, possibly after a rename or copy-and-paste edit. Give every declared field a unique name, and initialize each field at most once in a struct literal.",
+        examples: [
+            ErrorCodeExample { title: "Repeated field initializer", source: "struct Point { x: i32, y: i32 }\nfn main() -> i32 {\n    let point = Point { x: 10, x: 20, y: 32 };\n    point.y\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Initialize each field once", source: "struct Point { x: i32, y: i32 }\nfn main() -> i32 {\n    let point = Point { x: 10, y: 32 };\n    point.x + point.y\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Unique struct field declarations", path: "docs/spec/src/03-types/06-struct-types.md", rule: Some("3.6:6") },
+            ErrorCodeReference { title: "Struct literal field matching", path: "docs/spec/src/03-types/06-struct-types.md", rule: Some("3.6:15") },
+        ],
+    };
+    COPY_STRUCT_NON_COPY_FIELD = 403 => {
+        explanation: "A struct marked `@copy` contains a field whose type has move semantics. Implicitly duplicating the outer value would also have to duplicate that non-Copy field.",
+        likely_cause: "A field is a struct without `@copy`, a move-typed aggregate, or another type that cannot be implicitly duplicated. Remove `@copy` from the outer struct or make every field type Copy when that is semantically valid.",
+        examples: [
+            ErrorCodeExample { title: "Non-Copy field in a @copy struct", source: "struct Inner { value: i32 }\n@copy\nstruct Outer { inner: Inner }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use only Copy field types", source: "@copy\nstruct Inner { value: i32 }\n@copy\nstruct Outer { inner: Inner }\nfn main() -> i32 {\n    let outer = Outer { inner: Inner { value: 42 } };\n    let duplicate = outer;\n    outer.inner.value + duplicate.inner.value\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Copy struct field requirement", path: "docs/spec/src/03-types/08-move-semantics.md", rule: Some("3.8:18") }],
+    };
+    /// Retained compatibility metadata for compilers that reserved built-in
+    /// nominal spellings. Current Rue reserves no type names (spec 6.0:3), so
+    /// production compilation does not emit this code.
+    RESERVED_TYPE_NAME = 404 => {
+        explanation: "This code is retained for compatibility with older Rue compilers that rejected a user-defined type whose name was reserved for a built-in nominal. Current Rue reserves no type-name spellings and does not emit E0404.",
+        likely_cause: "If E0404 appears in stored output or from an older compiler, that compiler was enforcing a historical built-in type-name reservation. With a current compiler, user-defined type names participate in ordinary lexical and module lookup.",
+        examples: [ErrorCodeExample { title: "Built-in spellings are ordinary type names", source: "struct StrBuf { value: i32 }\nfn main() -> i32 {\n    StrBuf { value: 42 }.value\n}", outcome: ErrorCodeExampleOutcome::Compiles }],
+        references: [ErrorCodeReference { title: "Ordinary type-name lookup", path: "docs/spec/src/06-items/_index.md", rule: Some("6.0:3") }],
+    };
+    DUPLICATE_TYPE_DEFINITION = 405 => {
+        explanation: "A module defines more than one struct or enum with the same type name.",
+        likely_cause: "A type declaration was duplicated, or a struct and enum in the same module were given the same name. Rename or remove one declaration; separate modules may independently use the same type name.",
+        examples: [
+            ErrorCodeExample { title: "Duplicate type name", source: "struct Point { x: i32 }\nenum Point { Origin }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use unique type names in one module", source: "struct Point { x: i32 }\nenum Position { Origin }\nfn main() -> i32 {\n    Point { x: 42 }.x\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Type-name uniqueness", path: "docs/spec/src/06-items/_index.md", rule: Some("6.0:2") }],
+    };
+    LINEAR_VALUE_NOT_CONSUMED = 406 => {
+        explanation: "A value carrying a linear obligation reached the end of its scope without being consumed.",
+        likely_cause: "A binding of a declared-linear type, or an aggregate containing a linear value, was left live. Move it into a by-value consumer, return it to transfer the obligation, consume its declared-linear value through a field projection, or explicitly drop it when `@drop` is appropriate.",
+        examples: [
+            ErrorCodeExample { title: "Unconsumed linear value", source: "linear struct Token { value: i32 }\nfn main() -> i32 {\n    let token = Token { value: 42 };\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Pass the value to a consumer", source: "linear struct Token { value: i32 }\nfn consume(token: Token) -> i32 { token.value }\nfn main() -> i32 {\n    let token = Token { value: 42 };\n    consume(token)\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Linear values must be consumed", path: "docs/spec/src/03-types/08-move-semantics.md", rule: Some("3.8:32") },
+            ErrorCodeReference { title: "Linear consumption by use", path: "docs/spec/src/03-types/08-move-semantics.md", rule: Some("3.8:33") },
+        ],
+    };
+    LINEAR_STRUCT_COPY = 407 => {
+        explanation: "A struct was declared both `linear` and `@copy`. Linear values must have one tracked consumption, while Copy values may be duplicated implicitly.",
+        likely_cause: "The `@copy` directive was applied to a `linear struct`, combining incompatible ownership promises. Remove `@copy` and consume each linear value, or remove `linear` if freely duplicating the value is the intended behavior.",
+        examples: [
+            ErrorCodeExample { title: "Linear struct marked @copy", source: "@copy\nlinear struct Token { value: i32 }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Keep the value linear and consume it", source: "linear struct Token { value: i32 }\nfn consume(token: Token) -> i32 { token.value }\nfn main() -> i32 {\n    let token = Token { value: 42 };\n    consume(token)\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Linear structs cannot be Copy", path: "docs/spec/src/03-types/08-move-semantics.md", rule: Some("3.8:37") }],
+    };
     // 408, 409 retired with the @handle directive (RUE-199).
     DUPLICATE_METHOD = 410;
     UNDEFINED_METHOD = 411;
@@ -3572,6 +3645,51 @@ mod tests {
         );
         assert!(RETIRED_ERROR_CODES.contains(&ErrorCode(101)));
         assert_eq!(error_code_explanation(ErrorCode(101)), None);
+    }
+
+    #[test]
+    fn active_struct_foundation_explanation_band_is_complete_and_bounded() {
+        let expected = [
+            ErrorCode::MISSING_FIELDS,
+            ErrorCode::UNKNOWN_FIELD,
+            ErrorCode::DUPLICATE_FIELD,
+            ErrorCode::COPY_STRUCT_NON_COPY_FIELD,
+            ErrorCode::RESERVED_TYPE_NAME,
+            ErrorCode::DUPLICATE_TYPE_DEFINITION,
+            ErrorCode::LINEAR_VALUE_NOT_CONSUMED,
+            ErrorCode::LINEAR_STRUCT_COPY,
+        ];
+        let active = error_code_metadata()
+            .iter()
+            .filter(|metadata| (400..=409).contains(&metadata.code.0))
+            .map(|metadata| {
+                assert_eq!(metadata.source_path, "crates/rue-error/src/lib.rs");
+                metadata.code
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(active, expected);
+        let explained = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (400..=409)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(explained, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
+        );
+        for retired in [ErrorCode(408), ErrorCode(409)] {
+            assert!(RETIRED_ERROR_CODES.contains(&retired));
+            assert_eq!(error_code_explanation(retired), None);
+            assert_eq!(
+                retired.to_string().parse::<ErrorCode>(),
+                Err(ParseErrorCodeError::Unknown(retired))
+            );
+        }
     }
 
     /// `ErrorKind::code()` must cover the compiler-declared ErrorCode constants without
