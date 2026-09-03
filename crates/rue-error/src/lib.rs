@@ -1017,15 +1017,114 @@ define_error_codes! {
             ErrorCodeReference { title: "Assignment-place forms", path: "docs/spec/src/05-statements/02-assignment.md", rule: Some("5.2:2") },
         ],
     };
-    INOUT_NON_LVALUE = 425;
-    INOUT_EXCLUSIVE_ACCESS = 426;
-    BORROW_NON_LVALUE = 427;
-    MUTATE_BORROWED_VALUE = 428;
-    MOVE_OUT_OF_BORROW = 429;
-    BORROW_INOUT_CONFLICT = 430;
-    INOUT_KEYWORD_MISSING = 431;
-    BORROW_KEYWORD_MISSING = 432;
-    EMPTY_STRUCT = 433;
+    INOUT_NON_LVALUE = 425 => {
+        explanation: "An explicit `inout` argument or ordinary `inout self` receiver does not name mutable caller-owned storage. Exclusive access must write back through an addressable place: a mutable variable, field, or array element.",
+        likely_cause: "A literal, arithmetic expression, constant, or call result was passed `inout` or used directly as an `inout self` receiver. Bind the value to a mutable local first, or use an existing mutable place whose changes should remain visible after the call.",
+        examples: [
+            ErrorCodeExample { title: "Pass a computed value inout", source: "fn increment(inout value: i32) { value = value + 1; }\nfn main() -> i32 {\n    increment(inout 40 + 2);\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use a mutable place", source: "fn increment(inout value: i32) { value = value + 1; }\nfn main() -> i32 {\n    let mut value = 41;\n    increment(inout value);\n    value\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Inout arguments require places", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:17") },
+            ErrorCodeReference { title: "By-reference receivers require places", path: "docs/spec/src/06-items/04-impl-blocks.md", rule: Some("6.4:27") },
+        ],
+    };
+    INOUT_EXCLUSIVE_ACCESS = 426 => {
+        explanation: "One call grants more than one exclusive `inout` access to the same root variable through its arguments, receiver, or accessor-rooted places. Rue grants exclusive access at root granularity, so even different fields or elements of one aggregate cannot be independently loaned by the same call.",
+        likely_cause: "Two exclusive accesses use the same variable directly or project from the same struct or array. Split the operation into separate calls, or place independently accessed values in distinct root variables.",
+        examples: [
+            ErrorCodeExample { title: "Loan distinct fields of one root", source: "struct Pair { left: i32, right: i32 }\nfn swap(inout a: i32, inout b: i32) {\n    let old = a;\n    a = b;\n    b = old;\n}\nfn main() -> i32 {\n    let mut pair = Pair { left: 1, right: 2 };\n    swap(inout pair.left, inout pair.right);\n    pair.left\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Loan distinct root variables", source: "fn swap(inout a: i32, inout b: i32) {\n    let old = a;\n    a = b;\n    b = old;\n}\nfn main() -> i32 {\n    let mut left = 1;\n    let mut right = 2;\n    swap(inout left, inout right);\n    left + right\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "One exclusive argument loan per root", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:20") },
+            ErrorCodeReference { title: "Receiver loans participate in exclusivity", path: "docs/spec/src/06-items/04-impl-blocks.md", rule: Some("6.4:28") },
+            ErrorCodeReference { title: "Accessor exclusivity is root-based", path: "docs/spec/src/06-items/06-borrow-accessors.md", rule: Some("6.6:16") },
+        ],
+    };
+    BORROW_NON_LVALUE = 427 => {
+        explanation: "A place-required by-reference position does not name addressable storage. This includes implicit receiver autoref, shared or exclusive accessor receivers, and view coercions whose source must remain in place; unlike an ordinary explicit `borrow` operand, these positions cannot create promoted or temporary storage.",
+        likely_cause: "A `borrow self` method, a borrow or inout accessor, or a place-required view coercion was applied directly to a computed value such as a function or method result. Bind the result to a local before borrowing it. Ordinary explicit `borrow` function arguments may still use value expressions because those operands are elaborated separately.",
+        examples: [
+            ErrorCodeExample { title: "Borrow a computed method receiver", source: "struct Item { value: i32, fn read(borrow self) -> i32 { self.value } }\nfn make() -> Item { Item { value: 42 } }\nfn main() -> i32 { make().read() }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Bind the receiver to a place", source: "struct Item { value: i32, fn read(borrow self) -> i32 { self.value } }\nfn make() -> Item { Item { value: 42 } }\nfn main() -> i32 {\n    let item = make();\n    item.read()\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "By-reference receivers require places", path: "docs/spec/src/06-items/04-impl-blocks.md", rule: Some("6.4:27") },
+            ErrorCodeReference { title: "Accessor receivers require places", path: "docs/spec/src/06-items/06-borrow-accessors.md", rule: Some("6.6:8") },
+            ErrorCodeReference { title: "Explicit borrow operands may be values", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:39") },
+            ErrorCodeReference { title: "Slice coercion sources require places", path: "docs/spec/src/07-arrays/02-slices.md", rule: Some("7.2:13") },
+        ],
+    };
+    MUTATE_BORROWED_VALUE = 428 => {
+        explanation: "Code attempts to mutate storage held under a shared loan, such as a `borrow` parameter or a collection borrowed by `for`. The restriction covers the borrowed binding itself and every field or element projected from it, including passing any such place `inout`.",
+        likely_cause: "Code assigns through a shared-borrowed parameter or mutates a collection while iterating it, possibly by forwarding borrowed storage to a mutating operation. Use `inout` when caller-visible mutation is intended, perform the mutation outside the iteration, or limit the operation to reads.",
+        examples: [
+            ErrorCodeExample { title: "Mutate a field through a shared borrow", source: "struct Item { value: i32 }\nfn change(borrow item: Item) { item.value = 42; }\nfn main() -> i32 {\n    let item = Item { value: 0 };\n    change(borrow item);\n    item.value\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Read through a shared borrow", source: "struct Item { value: i32 }\nfn read(borrow item: Item) -> i32 { item.value }\nfn main() -> i32 {\n    let item = Item { value: 42 };\n    read(borrow item)\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Borrowed storage is read-only", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:24") },
+            ErrorCodeReference { title: "For iteration holds a shared loan", path: "docs/spec/src/04-expressions/08-loop-expressions.md", rule: Some("4.8:26") },
+        ],
+    };
+    MOVE_OUT_OF_BORROW = 429 => {
+        explanation: "Code tries to move a non-Copy value out of storage held under a shared loan, such as a `borrow` parameter or an element borrowed by `for`. Neither the whole borrowed value nor a non-Copy field or element belongs to the current operation, so transferring its ownership would invalidate the loaned storage.",
+        likely_cause: "A borrowed value or one of its non-Copy projections was returned, stored in an owned aggregate, or passed to a by-value consumer. Read Copy data through the loan, pass the value onward as `borrow`, or change the API or iteration so ownership transfers explicitly.",
+        examples: [
+            ErrorCodeExample { title: "Move a borrowed value into a consumer", source: "struct Item { value: i32 }\nfn consume(item: Item) -> i32 { item.value }\nfn invalid(borrow item: Item) -> i32 { consume(item) }\nfn main() -> i32 {\n    let item = Item { value: 42 };\n    invalid(borrow item)\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Borrow the value in the nested call", source: "struct Item { value: i32 }\nfn read(borrow item: Item) -> i32 { item.value }\nfn valid(borrow item: Item) -> i32 { read(borrow item) }\nfn main() -> i32 {\n    let item = Item { value: 42 };\n    valid(borrow item)\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Borrowed values cannot be moved", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:25") },
+            ErrorCodeReference { title: "For iteration holds a shared loan", path: "docs/spec/src/04-expressions/08-loop-expressions.md", rule: Some("4.8:26") },
+        ],
+    };
+    BORROW_INOUT_CONFLICT = 430 => {
+        explanation: "A call creates overlapping shared and exclusive loans of the same root variable. Rue's law of exclusivity permits either one `inout` access or any number of `borrow` accesses to a root. A nested `inout` during argument evaluation conflicts when the enclosing loan is shared or its operand has already been materialized as a view; an address-passed enclosing `inout` may instead observe the sequenced mutation.",
+        likely_cause: "One argument borrows a variable while another passes that variable, one of its projections, or a conflicting nested access `inout`. Separate the accesses into distinct calls, preserve any needed read in a value first, or operate on distinct root variables.",
+        examples: [
+            ErrorCodeExample { title: "Borrow and mutate fields of one root", source: "struct Pair { left: i32, right: i32 }\nfn copy_into(borrow source: i32, inout target: i32) { target = source; }\nfn main() -> i32 {\n    let mut pair = Pair { left: 42, right: 0 };\n    copy_into(borrow pair.left, inout pair.right);\n    pair.right\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Share the same root read-only", source: "fn add(borrow a: i32, borrow b: i32) -> i32 { a + b }\nfn main() -> i32 {\n    let value = 21;\n    add(borrow value, borrow value)\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Shared and exclusive loan conflicts", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:30") },
+            ErrorCodeReference { title: "Receiver loans participate in exclusivity", path: "docs/spec/src/06-items/04-impl-blocks.md", rule: Some("6.4:28") },
+        ],
+    };
+    INOUT_KEYWORD_MISSING = 431 => {
+        explanation: "A call passes an argument to an `inout` parameter without the required `inout` mode: the argument is unmarked or is marked `borrow`. The call site must select exclusive mutable access exactly.",
+        likely_cause: "The callee's parameter was changed to `inout`, or the call uses no marker or the wrong marker. Add or replace the marker with `inout` before an addressable mutable argument, or change the parameter mode if mutation and write-back are not intended.",
+        examples: [
+            ErrorCodeExample { title: "Omit the inout call-site marker", source: "fn increment(inout value: i32) { value = value + 1; }\nfn main() -> i32 {\n    let mut value = 41;\n    increment(value);\n    value\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Mark the exclusive argument", source: "fn increment(inout value: i32) { value = value + 1; }\nfn main() -> i32 {\n    let mut value = 41;\n    increment(inout value);\n    value\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Call argument modes must match exactly", path: "docs/spec/src/04-expressions/10-call-expressions.md", rule: Some("4.10:3") },
+            ErrorCodeReference { title: "Inout markers at call sites", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:16") },
+        ],
+    };
+    BORROW_KEYWORD_MISSING = 432 => {
+        explanation: "A call passes an argument to a `borrow` parameter without the required `borrow` mode: the argument is unmarked or is marked `inout`. The call site must select shared read-only access exactly.",
+        likely_cause: "The callee's parameter was changed to `borrow`, or the call uses no marker or the wrong marker. Add or replace the marker with `borrow`, or change the parameter mode if the callee should take the value by ownership.",
+        examples: [
+            ErrorCodeExample { title: "Omit the borrow call-site marker", source: "fn read(borrow value: i32) -> i32 { value }\nfn main() -> i32 {\n    let value = 42;\n    read(value)\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Mark the shared argument", source: "fn read(borrow value: i32) -> i32 { value }\nfn main() -> i32 {\n    let value = 42;\n    read(borrow value)\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Call argument modes must match exactly", path: "docs/spec/src/04-expressions/10-call-expressions.md", rule: Some("4.10:3") },
+            ErrorCodeReference { title: "Borrow markers at call sites", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:23") },
+        ],
+    };
+    EMPTY_STRUCT = 433 => {
+        explanation: "An anonymous struct declaration contains neither fields nor methods. Such a declaration has no observable structure or behavior and is rejected; this rule does not apply to named zero-sized structs or anonymous structs that declare methods.",
+        likely_cause: "A comptime type producer returned a bare `struct {}` placeholder. Add a field or method to the anonymous type, or declare a named empty struct when a named zero-sized marker type is intended.",
+        examples: [
+            ErrorCodeExample { title: "Produce an empty anonymous struct", source: "fn Empty() -> type { struct {} }\nfn main() -> i32 {\n    let E = Empty();\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Give the anonymous struct behavior", source: "fn Utility() -> type {\n    struct { fn answer() -> i32 { 42 } }\n}\nfn main() -> i32 {\n    let U = Utility();\n    U.answer()\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Empty anonymous structs", path: "docs/spec/src/04-expressions/14-comptime.md", rule: Some("4.14:9") }],
+    };
     RESERVED_FUNCTION_NAME = 435;
     DUPLICATE_FUNCTION_DEFINITION = 436;
     MOVE_OUT_OF_INOUT = 437;
@@ -3896,6 +3995,44 @@ mod tests {
         assert_eq!(
             retired.to_string().parse::<ErrorCode>(),
             Err(ParseErrorCodeError::Unknown(retired))
+        );
+    }
+
+    #[test]
+    fn active_place_and_borrow_explanation_band_is_complete_and_bounded() {
+        let expected = [
+            ErrorCode::INOUT_NON_LVALUE,
+            ErrorCode::INOUT_EXCLUSIVE_ACCESS,
+            ErrorCode::BORROW_NON_LVALUE,
+            ErrorCode::MUTATE_BORROWED_VALUE,
+            ErrorCode::MOVE_OUT_OF_BORROW,
+            ErrorCode::BORROW_INOUT_CONFLICT,
+            ErrorCode::INOUT_KEYWORD_MISSING,
+            ErrorCode::BORROW_KEYWORD_MISSING,
+            ErrorCode::EMPTY_STRUCT,
+        ];
+        let active = error_code_metadata()
+            .iter()
+            .filter(|metadata| (425..=433).contains(&metadata.code.0))
+            .map(|metadata| {
+                assert_eq!(metadata.source_path, "crates/rue-error/src/lib.rs");
+                metadata.code
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(active, expected);
+        let explained = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (425..=433)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(explained, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
         );
     }
 
