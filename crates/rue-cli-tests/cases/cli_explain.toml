@@ -64,6 +64,20 @@ compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
 [[case]]
+name = "struct_field_code_uses_the_same_compiler_owned_query"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0400"]
+compile_only = true
+compile_stdout_contains = [
+  "E0400: Missing fields",
+  "Omitted struct field:",
+  "Initialize every field:",
+  "docs/spec/src/03-types/06-struct-types.md (spec rule 3.6:5)",
+]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
 name = "parser_budget_summary_is_explained_without_compiling"
 files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
 args = ["explain", "E0103"]
@@ -72,6 +86,20 @@ compile_stdout_contains = [
   "E0103: Parser diagnostics omitted",
   "first 100 diagnostics selected by the parser's diagnostic policy",
   "More than 100 parser errors:",
+]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "linear_code_uses_the_same_compiler_owned_query"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0406"]
+compile_only = true
+compile_stdout_contains = [
+  "E0406: Linear value not consumed",
+  "Unconsumed linear value:",
+  "Pass the value to a consumer:",
+  "docs/spec/src/03-types/08-move-semantics.md (spec rule 3.8:32)",
 ]
 compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
