@@ -70,7 +70,7 @@ jobs:
     steps:
       - name: Run manual stress program
         if: github.event_name == 'workflow_dispatch' && inputs.tier == 'stress'
-        run: ./buck2 test "//:large-example-${{ matrix.program }}-stress"
+        run: ./buck2 test "//examples:large-example-${{ matrix.program }}-stress"
 """
 
 
@@ -205,7 +205,7 @@ class TierCiSelectorTests(unittest.TestCase):
             "      - name: Run manual stress program\n"
             "        if: github.event_name == 'workflow_dispatch'"
             " && inputs.tier == 'stress'\n"
-            '        run: ./buck2 test "//:large-example-${{ matrix.program }}-stress"\n',
+            '        run: ./buck2 test "//examples:large-example-${{ matrix.program }}-stress"\n',
             "",
         )
         self.assertIn("//... toolchains//...", release)

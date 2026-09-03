@@ -58,7 +58,7 @@ command_alias(
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
         "RUE_CLI_CASES": "$(location :cases)/cases",
-        "RUE_EXAMPLES_DIR": "$(location root//:examples)/examples",
+        "RUE_EXAMPLES_DIR": "$(location //examples:examples)",
         "RUE_REPO_DIR": "$(location root//:cli-test-fixtures)",
         "RUE_STD_DIR": "$(location //std:std)",
     },

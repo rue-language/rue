@@ -302,7 +302,7 @@ control (RUE-1405, extended by RUE-1406;
 `scripts/check-rue-program-warm-cache.sh`). It cold-builds the two canary
 `rue_program` targets and the nine staged CLI programs under the same nonce
 mechanism, then from a *relocated* checkout root runs the canaries' four
-consuming scenarios and rebuilds `//:cli-staged-programs`, failing unless every
+consuming scenarios and rebuilds `//examples:cli-staged-programs`, failing unless every
 scan/derive/compile action was a cache hit. Cross-root service is the property
 the derive step's manifest re-anchoring exists to guarantee, and it is what
 lets a `pull_request` run's compile be consumed by the `merge_group` run. Both

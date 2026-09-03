@@ -1,0 +1,257 @@
+# The example programs: runtime inputs of the CLI corpus, and the
+# `rue_program` build actions of ADR-0070 (one compile per checked-in root,
+# consumed by many scenarios). Every `root` below is a PROJECT-relative path,
+# as `rue_program` requires; `srcs` and `data` are package-relative.
+#
+# A root-package `glob()` cannot reach into this package, so anything at the
+# root that needs example files depends on a target declared here.
+
+load("//:rue_rules.bzl", "rue_program", "rue_program_family", "rue_program_staging", "rue_program_test")
+load("//:test_defs.bzl", "rue_test_suite")
+
+# The example programs are runtime inputs to the CLI integration tests: the
+# suite compiles+runs every examples/*.rue through the real driver (RUE-48),
+# so an edit under examples/ MUST re-run the CLI suite (declared here as an
+# input, resolved to an absolute path via RUE_EXAMPLES_DIR in the root
+# package's corpus suites). This package exists so `$(location
+# //examples:examples)` IS the examples root, and so the `rue_program`
+# declarations below sit beside the programs they build.
+filegroup(
+    name = "examples",
+    srcs = glob(["**"]),
+    visibility = ["PUBLIC"],
+)
+
+# Only the Rue sources, for the frontend differential's corpus (//:frontend-
+# diff-corpus mounts this at its `examples/` key so the corpus manifest's
+# paths are unchanged).
+filegroup(
+    name = "rue-sources",
+    srcs = glob(["**/*.rue"]),
+    visibility = ["//:"],
+)
+
+# The committed Caldera capacity corpus is generator output;
+# //:caldera-generator-check declares it through this target because a root
+# glob cannot descend into this package.
+filegroup(
+    name = "caldera-sources",
+    srcs = glob(["caldera/**"]),
+    visibility = ["//:"],
+)
+
+
+# ADR-0070 Phase 2 (RUE-1406): the CLI cases that name a checked-in root stop
+# compiling it inside the harness. Each root is one `rue_program` build action —
+# keyed on its real inputs, uploadable, and shared by every scenario naming it —
+# and the corpus actions below declare the staged executables the way they
+# declare every other input, through `$(location ...)` in their `attrs.arg()`
+# env. The weld this breaks is not a speed problem but a coverage one: the only
+# way to run Meridian's sixth scenario was to compile 36k lines a sixth time,
+# so RUE-1083 disabled all six rather than pay for them.
+#
+# 64 of the 73 cases naming a checked-in root migrate, over 9 roots. Only 8 are
+# new: `examples/meridian/main.rue` is already a Phase 1 large-example program,
+# so one artifact serves both suites — the "many scenarios, one compile"
+# property reaching across two suites.
+#
+# What stays compile-in-harness, all of it deliberate: the 6 cross-target
+# `cli-test-fixtures` cases (each (root, target) tuple has exactly one consumer
+# and compiles in milliseconds), the repo-relative `source_path` fixture case
+# (whose subject IS the TOML resolution mechanism it would be leaving), the one
+# `differential_opt` calculator case (four compiles by design, at opt levels the
+# runner drives), and the one-scenario wordfreq root. The harness decides this
+# structurally rather than from a list — see `case_runs_prebuilt_program`.
+#
+# The RUE-48 automatic example smokes are untouched: `run_example` still
+# compiles each root it discovers through the ordinary driver, so every example
+# still proves it compiles the way a user compiles it.
+#
+# `examples/first/` holds three sibling roots, so `first-stats` names its one
+# file instead of globbing the directory; every other root owns its directory
+# and takes the directory-bounded glob ADR-0070's over-declaration audit
+# documents.
+[
+    rue_program(
+        name = _name,
+        root = "examples/{}.rue".format(_root),
+        srcs = _srcs,
+    )
+    for _name, _root, _srcs in [
+        ("first-stats", "first/stats", ["first/stats.rue"]),
+        ("gazette", "gazette/main", glob(["gazette/**/*.rue"])),
+        ("harbor", "harbor/main", glob(["harbor/**/*.rue"])),
+        ("jsonfmt", "jsonfmt/main", glob(["jsonfmt/**/*.rue"])),
+        ("lattice", "lattice/main", glob(["lattice/**/*.rue"])),
+        ("mosaic", "mosaic/main", glob(["mosaic/**/*.rue"])),
+        ("rill", "rill/main", glob(["rill/**/*.rue"])),
+        ("ruelex", "ruelex/main", glob(["ruelex/**/*.rue"])),
+        ("second-calculator", "second/calculator", glob(["second/**/*.rue"])),
+    ]
+]
+
+# The ten artifacts as one directory keyed by root path, so a corpus action
+# declares a single `$(location ...)` and the harness's lookup key is the
+# case's own `source_path` string. Consumed by //:cli-tests, //:cli-tests-slow
+# and the four shards in the root package.
+#
+# Every consumer declares all ten even though no single corpus target runs
+# cases against all ten — mosaic's section is slow-tier, so the premerge
+# targets carry it for nothing. That is the simplest correct form ADR-0070
+# chose deliberately: it is a mild over-declaration of each action's key (an
+# edit to any root already re-runs every CLI corpus action today, since the
+# roots live inside the declared `:examples` filegroup) and it fails closed,
+# because a case whose program is absent from the staging environment cannot
+# silently run a stale one.
+rue_program_staging(
+    name = "cli-staged-programs",
+    visibility = ["//:"],
+    programs = [
+        ":first-stats",
+        ":gazette",
+        ":harbor",
+        ":jsonfmt",
+        ":lattice",
+        ":meridian",
+        ":mosaic",
+        ":rill",
+        ":ruelex",
+        ":second-calculator",
+    ],
+)
+
+
+# ADR-0070 Phase 1 (RUE-1405): each large maintained application compiles
+# once as a `rue_program` build action — cached, shared across lanes — and
+# every runtime scenario below is its own `rue_program_test` consuming that
+# executable. A test execution never reaches the action cache, so the compile
+# must not live inside one.
+#
+# Each sibling pair shares a directory glob (main does not import canary.rue,
+# or vice versa): the precision trade ADR-0070's over-declaration audit
+# documents. The executor's 600s default (RUE-1156) now bounds only a runtime
+# scenario, which finishes in seconds even at stress scale.
+rue_program_family(
+    name = "large-example-caldera",
+    srcs = glob(["caldera/**/*.rue"]),
+    programs = {
+        "caldera": {"root": "examples/caldera/main.rue"},
+        "caldera-canary": {"root": "examples/caldera/canary.rue"},
+    },
+)
+
+# `:meridian` is the ninth staged CLI program as well as the slow-tier
+# large-example root (ADR-0070 Phase 2): one compile, consumed by the six
+# scheduled scenarios below AND by the six CLI corpus scenarios of
+# cases/examples_meridian.toml.
+rue_program_family(
+    name = "large-example-meridian",
+    srcs = glob(["meridian/**/*.rue"]),
+    programs = {
+        "meridian": {"root": "examples/meridian/main.rue"},
+        "meridian-canary": {"root": "examples/meridian/canary.rue"},
+    },
+)
+
+# The required pre-merge canaries compile a reduced root from each maintained
+# application and execute its core path. They are intentionally honest about
+# their scope: neither claims to compile the complete generated graph. Each
+# canary executable deliberately has two consuming scenarios — the core-path
+# check, and a staged-cwd run — which is the "one compile, many scenarios"
+# shape scripts/check-rue-program-warm-cache.sh asserts is cache-served.
+[
+    rue_program_test(
+        name = "large-example-{}-canary".format(_program),
+        program = ":{}-canary".format(_program),
+    )
+    for _program in ["caldera", "meridian"]
+]
+
+[
+    rue_program_test(
+        name = "large-example-{}-canary-workdir".format(_program),
+        program = ":{}-canary".format(_program),
+        files = [{"path": "data/staged.txt", "source": "staged\n"}],
+    )
+    for _program in ["caldera", "meridian"]
+]
+
+# Scheduled slow coverage: the complete application graphs, one compile each,
+# reused by every scenario. Every marker lands on stdout.
+_LARGE_EXAMPLE_SLOW_SCENARIOS = {
+    "caldera": [
+        ("selftest", [], ["selftest checks=23", "valid=true"], {}),
+        ("demo", ["demo"], ["entities=8", "valid=true"], {}),
+        (
+            "scenario",
+            ["run", "demo.caldera"],
+            ["script_oracle=true", "valid=true"],
+            {"demo.caldera": "caldera/demo.caldera"},
+        ),
+        ("stress1", ["stress1"], ["stress scale=1", "valid=true"], {}),
+        ("benchmark", ["benchmark"], ["benchmark tiers=2", "valid=true"], {}),
+    ],
+    "meridian": [
+        ("help", [], ["usage: meridian"], {}),
+        ("demo", ["demo"], ["database=meridian", "result_valid=true"], {}),
+        (
+            "workload",
+            ["run", "demo.sql"],
+            ["plan_valid=true", "result_valid=true"],
+            {"demo.sql": "meridian/demo.sql"},
+        ),
+        ("selftest", ["selftest"], ["selftest checks=24", "valid=true"], {}),
+        ("stress1", ["stress1"], ["stress scale=1", "valid=true"], {}),
+        (
+            "benchmark",
+            ["benchmark"],
+            ["benchmark=meridian-complete", "valid=true"],
+            {},
+        ),
+    ],
+}
+
+[
+    rue_program_test(
+        name = "large-example-{}-{}".format(_program, _scenario),
+        tier = "slow",
+        labels = ["rue_scheduled_large_example"],
+        program = ":{}".format(_program),
+        program_args = _args,
+        stdout_contains = _markers,
+        data = _data,
+    )
+    for _program, _scenarios in _LARGE_EXAMPLE_SLOW_SCENARIOS.items()
+    for _scenario, _args, _markers, _data in _scenarios
+]
+
+# The release workflow's matrix selects one application per job by these
+# names, exactly as it selected the retired monolithic sh_tests; each suite
+# fans out to the per-scenario tests above, which share one compiled artifact.
+[
+    rue_test_suite(
+        name = "large-example-{}-slow".format(_program),
+        tier = "slow",
+        labels = ["rue_scheduled_large_example"],
+        tests = [
+            ":large-example-{}-{}".format(_program, _scenario)
+            for _scenario, _args, _markers, _data in _scenarios
+        ],
+    )
+    for _program, _scenarios in _LARGE_EXAMPLE_SLOW_SCENARIOS.items()
+]
+
+# The 4x generated workload is an extreme scaling experiment rather than a
+# correctness smoke, so it has explicit stress-tier ownership. It consumes
+# the same compiled artifact as the slow tier.
+[
+    rue_program_test(
+        name = "large-example-{}-stress".format(_program),
+        tier = "stress",
+        labels = ["rue_scheduled_large_example"],
+        program = ":{}".format(_program),
+        program_args = ["stress4"],
+        stdout_contains = ["stress scale=4", "valid=true"],
+    )
+    for _program in ["caldera", "meridian"]
+]

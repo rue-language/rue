@@ -120,14 +120,14 @@ jobs:
         if: steps.select.outputs.run == 'true' && (github.event_name == 'schedule' || inputs.tier == 'slow')
         run: >-
           scripts/ci-timed "${{ matrix.program }} slow" --
-          ./buck2 test "//:large-example-${{ matrix.program }}-slow"
+          ./buck2 test "//examples:large-example-${{ matrix.program }}-slow"
           --target-platforms //platforms:release
 
       - name: Run manual stress program
         if: steps.select.outputs.run == 'true' && github.event_name == 'workflow_dispatch' && inputs.tier == 'stress'
         run: >-
           scripts/ci-timed "${{ matrix.program }} stress" --
-          ./buck2 test "//:large-example-${{ matrix.program }}-stress"
+          ./buck2 test "//examples:large-example-${{ matrix.program }}-stress"
           --target-platforms //platforms:release
 
       # See the release job's rationale. Named per program so a scheduled run

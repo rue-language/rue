@@ -394,10 +394,10 @@ application instead compiles as a `rue_program` build action (ADR-0070 /
 RUE-1405) — a real cached artifact keyed on its declared read closure, served
 by the remote action cache across invocations and lanes — and every runtime
 scenario is its own `rue_program_test` consuming that artifact. The required
-broad pass runs the `//:large-example-{caldera,meridian}-canary` scenarios
+broad pass runs the `//examples:large-example-{caldera,meridian}-canary` scenarios
 over reduced roots that exercise each application's core compiler/runtime
 path without claiming full-program coverage. Nightly
-`//:large-example-{caldera,meridian}-slow` suites fan out to the per-scenario
+`//examples:large-example-{caldera,meridian}-slow` suites fan out to the per-scenario
 tests over the complete real roots, and the `stress4` configurations live
 only in the corresponding `-stress` scenarios, which reuse the same compiled
 artifact instead of recompiling it. The positive warm-cache control
@@ -413,7 +413,7 @@ apply to it.
 
 The CLI cases that name a checked-in root do not compile it. ADR-0070 Phase 2
 (RUE-1406) declares each of the nine such roots as a `rue_program`, collects
-them into `//:cli-staged-programs`, and gives every CLI corpus action that
+them into `//examples:cli-staged-programs`, and gives every CLI corpus action that
 directory as a declared input; the harness runs the prebuilt executable a case
 names. 64 cases work this way. What still compiles inside the harness is
 deliberate and structural — the harness stages a case only when the case says
@@ -583,7 +583,7 @@ coverage remains and that case cannot return as an accidental substring match.
 Cost, measured on a 4-core-class host with the binaries already built: **0.29s
 wall for 73 `--list` invocations**, 1.6s of process time run concurrently. The
 gate materializes only what a listing consults, which deliberately excludes
-`RUE_CLI_STAGED_PROGRAMS`: `//:cli-staged-programs` stages ten `rue_program`
+`RUE_CLI_STAGED_PROGRAMS`: `//examples:cli-staged-programs` stages ten `rue_program`
 compiles that discovery never reads, the premerge lane does not otherwise build
 it, and the shards that do consume it run on other runners. The step is skipped
 on a narrowed pull-request run, where it would have to build unimpacted test

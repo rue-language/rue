@@ -21,7 +21,7 @@ command_alias(
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
         "RUE_SPEC_BINARY": "$(exe_target //crates/rue-spec:rue-spec)",
         "RUE_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
-        "RUE_SPEC_DIR": "$(location root//:spec-docs)/docs/spec/src",
+        "RUE_SPEC_DIR": "$(location //docs:spec-src)",
     },
     visibility = ["PUBLIC"],
 )
@@ -40,6 +40,6 @@ rue_sh_test(
         "RUE_MCP_BINARY": "$(exe_target :rue-mcp)",
         "RUE_SPEC_BINARY": "$(exe_target //crates/rue-spec:rue-spec)",
         "RUE_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
-        "RUE_SPEC_DIR": "$(location root//:spec-docs)/docs/spec/src",
+        "RUE_SPEC_DIR": "$(location //docs:spec-src)",
     },
 )

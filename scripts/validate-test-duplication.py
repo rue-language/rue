@@ -740,7 +740,7 @@ def resolve_inventory(buck: Buck, targets: set[str]) -> Inventory:
 # listing consults.
 #
 # `RUE_CLI_STAGED_PROGRAMS` is the whole reason this exists.
-# `//:cli-staged-programs` stages ten `rue_program` executables, Meridian's
+# `//examples:cli-staged-programs` stages ten `rue_program` executables, Meridian's
 # among them at 80.7s in ADR-0070's own table, and the premerge lane never
 # builds it: that job builds `//crates/...`, and root corpus targets are
 # deliberately excluded (`ci.yml`, "Build all targets"). The CLI shards that do

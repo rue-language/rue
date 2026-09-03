@@ -99,7 +99,7 @@ TIER_SELECTORS: dict[str, tuple[Selector, ...]] = {
             job="large-program",
             evidence=(
                 "inputs.tier == 'stress'",
-                '//:large-example-${{ matrix.program }}-stress',
+                '//examples:large-example-${{ matrix.program }}-stress',
             ),
             why="the manually dispatched 4x large-program stress matrix",
         ),
