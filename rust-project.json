@@ -15,31 +15,31 @@
           "name": "rue_error"
         },
         {
-          "crate": 20,
+          "crate": 21,
           "name": "rue_rir"
         },
         {
-          "crate": 22,
+          "crate": 23,
           "name": "rue_runtime_abi"
         },
         {
-          "crate": 24,
+          "crate": 25,
           "name": "rue_span"
         },
         {
-          "crate": 26,
+          "crate": 27,
           "name": "rue_target"
         },
         {
-          "crate": 37,
+          "crate": 38,
           "name": "ahash"
         },
         {
-          "crate": 68,
+          "crate": 69,
           "name": "lasso"
         },
         {
-          "crate": 119,
+          "crate": 120,
           "name": "tracing"
         }
       ],
@@ -75,39 +75,39 @@
           "name": "rue_lexer"
         },
         {
-          "crate": 17,
+          "crate": 18,
           "name": "rue_parser"
         },
         {
-          "crate": 20,
+          "crate": 21,
           "name": "rue_rir"
         },
         {
-          "crate": 22,
+          "crate": 23,
           "name": "rue_runtime_abi"
         },
         {
-          "crate": 24,
+          "crate": 25,
           "name": "rue_span"
         },
         {
-          "crate": 26,
+          "crate": 27,
           "name": "rue_target"
         },
         {
-          "crate": 37,
+          "crate": 38,
           "name": "ahash"
         },
         {
-          "crate": 68,
+          "crate": 69,
           "name": "lasso"
         },
         {
-          "crate": 98,
+          "crate": 99,
           "name": "rayon"
         },
         {
-          "crate": 119,
+          "crate": 120,
           "name": "tracing"
         }
       ],
@@ -154,35 +154,35 @@
           "name": "rue_compiler"
         },
         {
-          "crate": 18,
+          "crate": 19,
           "name": "rue_perf_schema"
         },
         {
-          "crate": 32,
+          "crate": 33,
           "name": "rue_driver"
         },
         {
-          "crate": 73,
+          "crate": 74,
           "name": "libc"
         },
         {
-          "crate": 104,
+          "crate": 105,
           "name": "serde"
         },
         {
-          "crate": 106,
+          "crate": 107,
           "name": "serde_json"
         },
         {
-          "crate": 108,
+          "crate": 109,
           "name": "sha2"
         },
         {
-          "crate": 112,
+          "crate": 113,
           "name": "tempfile"
         },
         {
-          "crate": 115,
+          "crate": 116,
           "name": "toml"
         }
       ],
@@ -206,7 +206,7 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 22,
+          "crate": 23,
           "name": "rue_runtime_abi"
         }
       ],
@@ -238,11 +238,15 @@
           "name": "rue_error"
         },
         {
-          "crate": 24,
+          "crate": 25,
           "name": "rue_span"
         },
         {
-          "crate": 68,
+          "crate": 38,
+          "name": "ahash"
+        },
+        {
+          "crate": 69,
           "name": "lasso"
         }
       ],
@@ -274,11 +278,15 @@
           "name": "rue_error"
         },
         {
-          "crate": 24,
+          "crate": 25,
           "name": "rue_span"
         },
         {
-          "crate": 68,
+          "crate": 38,
+          "name": "ahash"
+        },
+        {
+          "crate": 69,
           "name": "lasso"
         }
       ],
@@ -306,31 +314,31 @@
           "name": "rue_linker"
         },
         {
-          "crate": 26,
+          "crate": 27,
           "name": "rue_target"
         },
         {
-          "crate": 27,
+          "crate": 28,
           "name": "rue_test_runner"
         },
         {
-          "crate": 77,
+          "crate": 78,
           "name": "libtest2_mimic"
         },
         {
-          "crate": 104,
+          "crate": 105,
           "name": "serde"
         },
         {
-          "crate": 106,
+          "crate": 107,
           "name": "serde_json"
         },
         {
-          "crate": 112,
+          "crate": 113,
           "name": "tempfile"
         },
         {
-          "crate": 115,
+          "crate": 116,
           "name": "toml"
         }
       ],
@@ -366,31 +374,35 @@
           "name": "rue_error"
         },
         {
-          "crate": 22,
+          "crate": 23,
           "name": "rue_runtime_abi"
         },
         {
-          "crate": 24,
+          "crate": 25,
           "name": "rue_span"
         },
         {
-          "crate": 26,
+          "crate": 27,
           "name": "rue_target"
         },
         {
-          "crate": 59,
+          "crate": 38,
+          "name": "ahash"
+        },
+        {
+          "crate": 60,
           "name": "fixedbitset"
         },
         {
-          "crate": 68,
+          "crate": 69,
           "name": "lasso"
         },
         {
-          "crate": 110,
+          "crate": 111,
           "name": "smallvec"
         },
         {
-          "crate": 119,
+          "crate": 120,
           "name": "tracing"
         }
       ],
@@ -442,67 +454,67 @@
           "name": "rue_linker"
         },
         {
-          "crate": 17,
+          "crate": 18,
           "name": "rue_parser"
         },
         {
-          "crate": 19,
+          "crate": 20,
           "name": "rue_query"
         },
         {
-          "crate": 20,
+          "crate": 21,
           "name": "rue_rir"
         },
         {
-          "crate": 22,
+          "crate": 23,
           "name": "rue_runtime_abi"
         },
         {
-          "crate": 24,
+          "crate": 25,
           "name": "rue_span"
         },
         {
-          "crate": 26,
+          "crate": 27,
           "name": "rue_target"
         },
         {
-          "crate": 37,
+          "crate": 38,
           "name": "ahash"
         },
         {
-          "crate": 40,
+          "crate": 41,
           "name": "annotate_snippets"
         },
         {
-          "crate": 66,
+          "crate": 67,
           "name": "itoa"
         },
         {
-          "crate": 68,
+          "crate": 69,
           "name": "lasso"
         },
         {
-          "crate": 73,
+          "crate": 74,
           "name": "libc"
         },
         {
-          "crate": 104,
+          "crate": 105,
           "name": "serde"
         },
         {
-          "crate": 106,
+          "crate": 107,
           "name": "serde_json"
         },
         {
-          "crate": 108,
+          "crate": 109,
           "name": "sha2"
         },
         {
-          "crate": 112,
+          "crate": 113,
           "name": "tempfile"
         },
         {
-          "crate": 119,
+          "crate": 120,
           "name": "tracing"
         }
       ],
@@ -526,11 +538,15 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 24,
+          "crate": 25,
           "name": "rue_span"
         },
         {
-          "crate": 113,
+          "crate": 69,
+          "name": "lasso"
+        },
+        {
+          "crate": 114,
           "name": "thiserror"
         }
       ],
@@ -558,19 +574,19 @@
           "name": "rue_lexer"
         },
         {
-          "crate": 17,
+          "crate": 18,
           "name": "rue_parser"
         },
         {
-          "crate": 27,
+          "crate": 28,
           "name": "rue_test_runner"
         },
         {
-          "crate": 68,
+          "crate": 69,
           "name": "lasso"
         },
         {
-          "crate": 112,
+          "crate": 113,
           "name": "tempfile"
         }
       ],
@@ -627,30 +643,38 @@
         },
         {
           "crate": 17,
+          "name": "rue_oracle"
+        },
+        {
+          "crate": 18,
           "name": "rue_parser"
         },
         {
-          "crate": 20,
+          "crate": 21,
           "name": "rue_rir"
         },
         {
-          "crate": 21,
+          "crate": 22,
           "name": "rue_rir_fuzz_support"
         },
         {
-          "crate": 27,
+          "crate": 28,
           "name": "rue_test_runner"
         },
         {
-          "crate": 43,
+          "crate": 38,
+          "name": "ahash"
+        },
+        {
+          "crate": 44,
           "name": "anyhow"
         },
         {
-          "crate": 73,
+          "crate": 74,
           "name": "libc"
         },
         {
-          "crate": 91,
+          "crate": 92,
           "name": "proptest"
         }
       ],
@@ -678,15 +702,15 @@
           "name": "rue_error"
         },
         {
-          "crate": 24,
+          "crate": 25,
           "name": "rue_span"
         },
         {
-          "crate": 68,
+          "crate": 69,
           "name": "lasso"
         },
         {
-          "crate": 80,
+          "crate": 81,
           "name": "logos"
         }
       ],
@@ -710,11 +734,15 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 26,
+          "crate": 27,
           "name": "rue_target"
         },
         {
-          "crate": 119,
+          "crate": 38,
+          "name": "ahash"
+        },
+        {
+          "crate": 120,
           "name": "tracing"
         }
       ],
@@ -722,6 +750,42 @@
       "source": {
         "include_dirs": [
           "crates/rue-linker/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [
+        "test",
+        "debug_assertions"
+      ],
+      "env": {},
+      "is_proc_macro": false
+    },
+    {
+      "display_name": "rue-mcp",
+      "root_module": "crates/rue-mcp/src/main.rs",
+      "edition": "2024",
+      "deps": [
+        {
+          "crate": 10,
+          "name": "rue_error"
+        },
+        {
+          "crate": 74,
+          "name": "libc"
+        },
+        {
+          "crate": 107,
+          "name": "serde_json"
+        },
+        {
+          "crate": 113,
+          "name": "tempfile"
+        }
+      ],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue-mcp/src"
         ],
         "exclude_dirs": []
       },
@@ -746,23 +810,23 @@
           "name": "rue_error"
         },
         {
-          "crate": 16,
+          "crate": 17,
           "name": "rue_oracle"
         },
         {
-          "crate": 27,
+          "crate": 28,
           "name": "rue_test_runner"
         },
         {
-          "crate": 104,
+          "crate": 105,
           "name": "serde"
         },
         {
-          "crate": 112,
+          "crate": 113,
           "name": "tempfile"
         },
         {
-          "crate": 115,
+          "crate": 116,
           "name": "toml"
         }
       ],
@@ -798,7 +862,11 @@
           "name": "rue_compiler"
         },
         {
-          "crate": 68,
+          "crate": 23,
+          "name": "rue_runtime_abi"
+        },
+        {
+          "crate": 69,
           "name": "lasso"
         }
       ],
@@ -830,19 +898,23 @@
           "name": "rue_lexer"
         },
         {
-          "crate": 24,
+          "crate": 25,
           "name": "rue_span"
         },
         {
-          "crate": 68,
+          "crate": 38,
+          "name": "ahash"
+        },
+        {
+          "crate": 69,
           "name": "lasso"
         },
         {
-          "crate": 110,
+          "crate": 111,
           "name": "smallvec"
         },
         {
-          "crate": 119,
+          "crate": 120,
           "name": "tracing"
         }
       ],
@@ -866,19 +938,19 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 104,
+          "crate": 105,
           "name": "serde"
         },
         {
-          "crate": 106,
+          "crate": 107,
           "name": "serde_json"
         },
         {
-          "crate": 108,
+          "crate": 109,
           "name": "sha2"
         },
         {
-          "crate": 115,
+          "crate": 116,
           "name": "toml"
         }
       ],
@@ -902,15 +974,15 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 37,
+          "crate": 38,
           "name": "ahash"
         },
         {
-          "crate": 110,
+          "crate": 111,
           "name": "smallvec"
         },
         {
-          "crate": 119,
+          "crate": 120,
           "name": "tracing"
         }
       ],
@@ -934,23 +1006,27 @@
       "edition": "2024",
       "deps": [
         {
+          "crate": 10,
+          "name": "rue_error"
+        },
+        {
           "crate": 13,
           "name": "rue_lexer"
         },
         {
-          "crate": 17,
+          "crate": 18,
           "name": "rue_parser"
         },
         {
-          "crate": 24,
+          "crate": 25,
           "name": "rue_span"
         },
         {
-          "crate": 37,
+          "crate": 38,
           "name": "ahash"
         },
         {
-          "crate": 68,
+          "crate": 69,
           "name": "lasso"
         }
       ],
@@ -974,23 +1050,27 @@
       "edition": "2024",
       "deps": [
         {
+          "crate": 10,
+          "name": "rue_error"
+        },
+        {
           "crate": 13,
           "name": "rue_lexer"
         },
         {
-          "crate": 17,
+          "crate": 18,
           "name": "rue_parser"
         },
         {
-          "crate": 24,
+          "crate": 25,
           "name": "rue_span"
         },
         {
-          "crate": 37,
+          "crate": 38,
           "name": "ahash"
         },
         {
-          "crate": 68,
+          "crate": 69,
           "name": "lasso"
         }
       ],
@@ -1037,7 +1117,7 @@
           "name": "rue_allocator"
         },
         {
-          "crate": 22,
+          "crate": 23,
           "name": "rue_runtime_abi"
         }
       ],
@@ -1080,16 +1160,32 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 27,
+          "crate": 10,
+          "name": "rue_error"
+        },
+        {
+          "crate": 28,
           "name": "rue_test_runner"
         },
         {
-          "crate": 77,
+          "crate": 78,
           "name": "libtest2_mimic"
         },
         {
-          "crate": 112,
+          "crate": 105,
+          "name": "serde"
+        },
+        {
+          "crate": 107,
+          "name": "serde_json"
+        },
+        {
+          "crate": 113,
           "name": "tempfile"
+        },
+        {
+          "crate": 116,
+          "name": "toml"
         }
       ],
       "is_workspace_member": true,
@@ -1135,23 +1231,27 @@
           "name": "rue_error"
         },
         {
-          "crate": 26,
+          "crate": 27,
           "name": "rue_target"
         },
         {
-          "crate": 73,
+          "crate": 74,
           "name": "libc"
         },
         {
-          "crate": 104,
+          "crate": 105,
           "name": "serde"
         },
         {
-          "crate": 112,
+          "crate": 107,
+          "name": "serde_json"
+        },
+        {
+          "crate": 113,
           "name": "tempfile"
         },
         {
-          "crate": 115,
+          "crate": 116,
           "name": "toml"
         }
       ],
@@ -1175,11 +1275,11 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 106,
+          "crate": 107,
           "name": "serde_json"
         },
         {
-          "crate": 115,
+          "crate": 116,
           "name": "toml"
         }
       ],
@@ -1203,11 +1303,11 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 27,
+          "crate": 28,
           "name": "rue_test_runner"
         },
         {
-          "crate": 77,
+          "crate": 78,
           "name": "libtest2_mimic"
         }
       ],
@@ -1258,39 +1358,43 @@
           "name": "rue_error"
         },
         {
-          "crate": 18,
+          "crate": 19,
           "name": "rue_perf_schema"
         },
         {
-          "crate": 26,
+          "crate": 27,
           "name": "rue_target"
         },
         {
-          "crate": 32,
+          "crate": 33,
           "name": "rue_driver"
         },
         {
-          "crate": 73,
+          "crate": 38,
+          "name": "ahash"
+        },
+        {
+          "crate": 74,
           "name": "libc"
         },
         {
-          "crate": 104,
+          "crate": 105,
           "name": "serde"
         },
         {
-          "crate": 106,
+          "crate": 107,
           "name": "serde_json"
         },
         {
-          "crate": 108,
+          "crate": 109,
           "name": "sha2"
         },
         {
-          "crate": 119,
+          "crate": 120,
           "name": "tracing"
         },
         {
-          "crate": 123,
+          "crate": 124,
           "name": "tracing_subscriber"
         }
       ],
@@ -1322,35 +1426,39 @@
           "name": "rue_error"
         },
         {
-          "crate": 18,
+          "crate": 19,
           "name": "rue_perf_schema"
         },
         {
-          "crate": 26,
+          "crate": 27,
           "name": "rue_target"
         },
         {
-          "crate": 73,
+          "crate": 38,
+          "name": "ahash"
+        },
+        {
+          "crate": 74,
           "name": "libc"
         },
         {
-          "crate": 104,
+          "crate": 105,
           "name": "serde"
         },
         {
-          "crate": 106,
+          "crate": 107,
           "name": "serde_json"
         },
         {
-          "crate": 108,
+          "crate": 109,
           "name": "sha2"
         },
         {
-          "crate": 119,
+          "crate": 120,
           "name": "tracing"
         },
         {
-          "crate": 123,
+          "crate": 124,
           "name": "tracing_subscriber"
         }
       ],
@@ -1374,7 +1482,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 81,
+          "crate": 82,
           "name": "logos_codegen"
         }
       ],
@@ -1398,15 +1506,15 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 90,
+          "crate": 91,
           "name": "proc_macro2"
         },
         {
-          "crate": 93,
+          "crate": 94,
           "name": "quote"
         },
         {
-          "crate": 111,
+          "crate": 112,
           "name": "syn"
         }
       ],
@@ -1431,15 +1539,15 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 90,
+          "crate": 91,
           "name": "proc_macro2"
         },
         {
-          "crate": 93,
+          "crate": 94,
           "name": "quote"
         },
         {
-          "crate": 111,
+          "crate": 112,
           "name": "syn"
         }
       ],
@@ -1463,15 +1571,15 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 90,
+          "crate": 91,
           "name": "proc_macro2"
         },
         {
-          "crate": 93,
+          "crate": 94,
           "name": "quote"
         },
         {
-          "crate": 111,
+          "crate": 112,
           "name": "syn"
         }
       ],
@@ -1495,19 +1603,19 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 49,
+          "crate": 50,
           "name": "cfg_if"
         },
         {
-          "crate": 62,
+          "crate": 63,
           "name": "getrandom"
         },
         {
-          "crate": 86,
+          "crate": 87,
           "name": "once_cell"
         },
         {
-          "crate": 130,
+          "crate": 131,
           "name": "zerocopy"
         }
       ],
@@ -1523,6 +1631,7 @@
         "debug_assertions",
         "feature=\"default\"",
         "feature=\"getrandom\"",
+        "feature=\"no-rng\"",
         "feature=\"runtime-rng\"",
         "feature=\"std\""
       ],
@@ -1535,7 +1644,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 83,
+          "crate": 84,
           "name": "memchr"
         }
       ],
@@ -1581,11 +1690,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 42,
+          "crate": 43,
           "name": "anstyle"
         },
         {
-          "crate": 127,
+          "crate": 128,
           "name": "unicode_width"
         }
       ],
@@ -1694,7 +1803,7 @@
       "edition": "2015",
       "deps": [
         {
-          "crate": 46,
+          "crate": 47,
           "name": "bit_vec"
         }
       ],
@@ -1762,7 +1871,7 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 61,
+          "crate": 62,
           "name": "generic_array"
         }
       ],
@@ -1824,11 +1933,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 52,
+          "crate": 53,
           "name": "crossbeam_epoch"
         },
         {
-          "crate": 53,
+          "crate": 54,
           "name": "crossbeam_utils"
         }
       ],
@@ -1854,7 +1963,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 53,
+          "crate": 54,
           "name": "crossbeam_utils"
         }
       ],
@@ -1901,11 +2010,11 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 61,
+          "crate": 62,
           "name": "generic_array"
         },
         {
-          "crate": 124,
+          "crate": 125,
           "name": "typenum"
         }
       ],
@@ -1929,27 +2038,27 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 49,
+          "crate": 50,
           "name": "cfg_if"
         },
         {
-          "crate": 53,
+          "crate": 54,
           "name": "crossbeam_utils"
         },
         {
-          "crate": 63,
+          "crate": 64,
           "name": "hashbrown"
         },
         {
-          "crate": 78,
+          "crate": 79,
           "name": "lock_api"
         },
         {
-          "crate": 86,
+          "crate": 87,
           "name": "once_cell"
         },
         {
-          "crate": 87,
+          "crate": 88,
           "name": "parking_lot_core"
         }
       ],
@@ -1974,11 +2083,11 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 48,
+          "crate": 49,
           "name": "block_buffer"
         },
         {
-          "crate": 54,
+          "crate": 55,
           "name": "crypto_common"
         }
       ],
@@ -2085,7 +2194,7 @@
       "edition": "2015",
       "deps": [
         {
-          "crate": 124,
+          "crate": 125,
           "name": "typenum"
         }
       ],
@@ -2130,11 +2239,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 37,
+          "crate": 38,
           "name": "ahash"
         },
         {
-          "crate": 39,
+          "crate": 40,
           "name": "allocator_api2"
         }
       ],
@@ -2182,11 +2291,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 58,
+          "crate": 59,
           "name": "equivalent"
         },
         {
-          "crate": 64,
+          "crate": 65,
           "name": "hashbrown"
         }
       ],
@@ -2253,11 +2362,15 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 55,
+          "crate": 38,
+          "name": "ahash"
+        },
+        {
+          "crate": 56,
           "name": "dashmap"
         },
         {
-          "crate": 63,
+          "crate": 64,
           "name": "hashbrown"
         }
       ],
@@ -2271,6 +2384,8 @@
       "cfg": [
         "test",
         "debug_assertions",
+        "feature=\"ahash\"",
+        "feature=\"ahasher\"",
         "feature=\"dashmap\"",
         "feature=\"default\"",
         "feature=\"multi-threaded\""
@@ -2303,11 +2418,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 71,
+          "crate": 72,
           "name": "lexarg_error"
         },
         {
-          "crate": 72,
+          "crate": 73,
           "name": "lexarg_parser"
         }
       ],
@@ -2332,7 +2447,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 72,
+          "crate": 73,
           "name": "lexarg_parser"
         }
       ],
@@ -2398,7 +2513,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 67,
+          "crate": 68,
           "name": "json_write"
         }
       ],
@@ -2424,11 +2539,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 70,
+          "crate": 71,
           "name": "lexarg"
         },
         {
-          "crate": 71,
+          "crate": 72,
           "name": "lexarg_error"
         }
       ],
@@ -2453,27 +2568,27 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 41,
+          "crate": 42,
           "name": "anstream"
         },
         {
-          "crate": 42,
+          "crate": 43,
           "name": "anstyle"
         },
         {
-          "crate": 71,
+          "crate": 72,
           "name": "lexarg_error"
         },
         {
-          "crate": 72,
+          "crate": 73,
           "name": "lexarg_parser"
         },
         {
-          "crate": 74,
+          "crate": 75,
           "name": "libtest_json"
         },
         {
-          "crate": 75,
+          "crate": 76,
           "name": "libtest_lexarg"
         }
       ],
@@ -2500,11 +2615,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 74,
+          "crate": 75,
           "name": "libtest_json"
         },
         {
-          "crate": 76,
+          "crate": 77,
           "name": "libtest2_harness"
         }
       ],
@@ -2531,7 +2646,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 103,
+          "crate": 104,
           "name": "scopeguard"
         }
       ],
@@ -2577,7 +2692,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 33,
+          "crate": 34,
           "name": "logos_derive"
         }
       ],
@@ -2605,31 +2720,31 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 44,
+          "crate": 45,
           "name": "beef"
         },
         {
-          "crate": 60,
+          "crate": 61,
           "name": "fnv"
         },
         {
-          "crate": 69,
+          "crate": 70,
           "name": "lazy_static"
         },
         {
-          "crate": 90,
+          "crate": 91,
           "name": "proc_macro2"
         },
         {
-          "crate": 93,
+          "crate": 94,
           "name": "quote"
         },
         {
-          "crate": 101,
+          "crate": 102,
           "name": "regex_syntax"
         },
         {
-          "crate": 111,
+          "crate": 112,
           "name": "syn"
         }
       ],
@@ -2653,7 +2768,7 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 100,
+          "crate": 101,
           "name": "regex_automata"
         }
       ],
@@ -2800,7 +2915,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 130,
+          "crate": 131,
           "name": "zerocopy"
         }
       ],
@@ -2826,7 +2941,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 126,
+          "crate": 127,
           "name": "unicode_ident"
         }
       ],
@@ -2852,47 +2967,47 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 45,
+          "crate": 46,
           "name": "bit_set"
         },
         {
-          "crate": 46,
+          "crate": 47,
           "name": "bit_vec"
         },
         {
-          "crate": 47,
+          "crate": 48,
           "name": "bitflags"
         },
         {
-          "crate": 85,
+          "crate": 86,
           "name": "num_traits"
         },
         {
-          "crate": 94,
+          "crate": 95,
           "name": "rand"
         },
         {
-          "crate": 95,
+          "crate": 96,
           "name": "rand_chacha"
         },
         {
-          "crate": 97,
+          "crate": 98,
           "name": "rand_xorshift"
         },
         {
-          "crate": 101,
+          "crate": 102,
           "name": "regex_syntax"
         },
         {
-          "crate": 102,
+          "crate": 103,
           "name": "rusty_fork"
         },
         {
-          "crate": 112,
+          "crate": 113,
           "name": "tempfile"
         },
         {
-          "crate": 125,
+          "crate": 126,
           "name": "unarray"
         }
       ],
@@ -2943,7 +3058,7 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 90,
+          "crate": 91,
           "name": "proc_macro2"
         }
       ],
@@ -2969,7 +3084,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 96,
+          "crate": 97,
           "name": "rand_core"
         }
       ],
@@ -2996,11 +3111,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 89,
+          "crate": 90,
           "name": "ppv_lite86"
         },
         {
-          "crate": 96,
+          "crate": 97,
           "name": "rand_core"
         }
       ],
@@ -3025,7 +3140,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 62,
+          "crate": 63,
           "name": "getrandom"
         }
       ],
@@ -3051,7 +3166,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 96,
+          "crate": 97,
           "name": "rand_core"
         }
       ],
@@ -3075,11 +3190,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 57,
+          "crate": 58,
           "name": "either"
         },
         {
-          "crate": 99,
+          "crate": 100,
           "name": "rayon_core"
         }
       ],
@@ -3103,11 +3218,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 51,
+          "crate": 52,
           "name": "crossbeam_deque"
         },
         {
-          "crate": 53,
+          "crate": 54,
           "name": "crossbeam_utils"
         }
       ],
@@ -3131,15 +3246,15 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 38,
+          "crate": 39,
           "name": "aho_corasick"
         },
         {
-          "crate": 83,
+          "crate": 84,
           "name": "memchr"
         },
         {
-          "crate": 101,
+          "crate": 102,
           "name": "regex_syntax"
         }
       ],
@@ -3216,19 +3331,19 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 60,
+          "crate": 61,
           "name": "fnv"
         },
         {
-          "crate": 92,
+          "crate": 93,
           "name": "quick_error"
         },
         {
-          "crate": 112,
+          "crate": 113,
           "name": "tempfile"
         },
         {
-          "crate": 128,
+          "crate": 129,
           "name": "wait_timeout"
         }
       ],
@@ -3273,11 +3388,11 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 34,
+          "crate": 35,
           "name": "serde_derive"
         },
         {
-          "crate": 105,
+          "crate": 106,
           "name": "serde_core"
         }
       ],
@@ -3326,19 +3441,19 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 66,
+          "crate": 67,
           "name": "itoa"
         },
         {
-          "crate": 83,
+          "crate": 84,
           "name": "memchr"
         },
         {
-          "crate": 105,
+          "crate": 106,
           "name": "serde_core"
         },
         {
-          "crate": 131,
+          "crate": 132,
           "name": "zmij"
         }
       ],
@@ -3364,7 +3479,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 104,
+          "crate": 105,
           "name": "serde"
         }
       ],
@@ -3389,15 +3504,15 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 49,
+          "crate": 50,
           "name": "cfg_if"
         },
         {
-          "crate": 50,
+          "crate": 51,
           "name": "cpufeatures"
         },
         {
-          "crate": 56,
+          "crate": 57,
           "name": "digest"
         }
       ],
@@ -3421,7 +3536,7 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 69,
+          "crate": 70,
           "name": "lazy_static"
         }
       ],
@@ -3464,15 +3579,15 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 90,
+          "crate": 91,
           "name": "proc_macro2"
         },
         {
-          "crate": 93,
+          "crate": 94,
           "name": "quote"
         },
         {
-          "crate": 126,
+          "crate": 127,
           "name": "unicode_ident"
         }
       ],
@@ -3494,6 +3609,7 @@
         "feature=\"parsing\"",
         "feature=\"printing\"",
         "feature=\"proc-macro\"",
+        "feature=\"visit\"",
         "feature=\"visit-mut\""
       ],
       "env": {},
@@ -3526,7 +3642,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 35,
+          "crate": 36,
           "name": "thiserror_impl"
         }
       ],
@@ -3552,7 +3668,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 49,
+          "crate": 50,
           "name": "cfg_if"
         }
       ],
@@ -3576,19 +3692,19 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 104,
+          "crate": 105,
           "name": "serde"
         },
         {
-          "crate": 107,
+          "crate": 108,
           "name": "serde_spanned"
         },
         {
-          "crate": 116,
+          "crate": 117,
           "name": "toml_datetime"
         },
         {
-          "crate": 117,
+          "crate": 118,
           "name": "toml_edit"
         }
       ],
@@ -3615,7 +3731,7 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 104,
+          "crate": 105,
           "name": "serde"
         }
       ],
@@ -3640,27 +3756,27 @@
       "edition": "2021",
       "deps": [
         {
-          "crate": 65,
+          "crate": 66,
           "name": "indexmap"
         },
         {
-          "crate": 104,
+          "crate": 105,
           "name": "serde"
         },
         {
-          "crate": 107,
+          "crate": 108,
           "name": "serde_spanned"
         },
         {
-          "crate": 116,
+          "crate": 117,
           "name": "toml_datetime"
         },
         {
-          "crate": 118,
+          "crate": 119,
           "name": "toml_write"
         },
         {
-          "crate": 129,
+          "crate": 130,
           "name": "winnow"
         }
       ],
@@ -3709,15 +3825,15 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 36,
+          "crate": 37,
           "name": "tracing_attributes"
         },
         {
-          "crate": 88,
+          "crate": 89,
           "name": "pin_project_lite"
         },
         {
-          "crate": 120,
+          "crate": 121,
           "name": "tracing_core"
         }
       ],
@@ -3745,7 +3861,7 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 86,
+          "crate": 87,
           "name": "once_cell"
         }
       ],
@@ -3772,15 +3888,15 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 79,
+          "crate": 80,
           "name": "log"
         },
         {
-          "crate": 86,
+          "crate": 87,
           "name": "once_cell"
         },
         {
-          "crate": 120,
+          "crate": 121,
           "name": "tracing_core"
         }
       ],
@@ -3806,11 +3922,11 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 104,
+          "crate": 105,
           "name": "serde"
         },
         {
-          "crate": 120,
+          "crate": 121,
           "name": "tracing_core"
         }
       ],
@@ -3834,55 +3950,55 @@
       "edition": "2018",
       "deps": [
         {
-          "crate": 82,
+          "crate": 83,
           "name": "matchers"
         },
         {
-          "crate": 84,
+          "crate": 85,
           "name": "nu_ansi_term"
         },
         {
-          "crate": 86,
+          "crate": 87,
           "name": "once_cell"
         },
         {
-          "crate": 100,
+          "crate": 101,
           "name": "regex_automata"
         },
         {
-          "crate": 104,
+          "crate": 105,
           "name": "serde"
         },
         {
-          "crate": 106,
+          "crate": 107,
           "name": "serde_json"
         },
         {
-          "crate": 109,
+          "crate": 110,
           "name": "sharded_slab"
         },
         {
-          "crate": 110,
+          "crate": 111,
           "name": "smallvec"
         },
         {
-          "crate": 114,
+          "crate": 115,
           "name": "thread_local"
         },
         {
-          "crate": 119,
+          "crate": 120,
           "name": "tracing"
         },
         {
-          "crate": 120,
+          "crate": 121,
           "name": "tracing_core"
         },
         {
-          "crate": 121,
+          "crate": 122,
           "name": "tracing_log"
         },
         {
-          "crate": 122,
+          "crate": 123,
           "name": "tracing_serde"
         }
       ],
