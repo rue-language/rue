@@ -84,3 +84,67 @@ compile_fail = true
 json_diagnostics = true
 error_contains = ["\"code\":\"E0413\"", "Wrap(Token)", "no method named 'missing'"]
 compile_stderr_not_contains = ["__anon_"]
+
+[[case]]
+name = "undefined_method_keeps_friendly_anonymous_type"
+description = "The human E0411 message keeps the complete anonymous producer spelling."
+files = [{ path = "main.rue", source = """
+fn Wrap(comptime T: type) -> type { struct { item: T } }
+fn use(value: Wrap(i64)) -> i32 { value.missing(); 0 }
+fn main() -> i32 { use(Wrap(i64) { item: 0 }); 0 }
+""" }]
+compile_fail = true
+compile_stderr_contains = ["error: [E0411]: no method named 'missing' found for type 'Wrap(i64)'"]
+compile_stderr_not_contains = ["__anon_", "$Wrap"]
+
+[[case]]
+name = "undefined_method_json_keeps_friendly_anonymous_type"
+description = "The JSON E0411 message keeps the complete anonymous producer spelling."
+files = [{ path = "main.rue", source = """
+fn Wrap(comptime T: type) -> type { struct { item: T } }
+fn use(value: Wrap(i64)) -> i32 { value.missing(); 0 }
+fn main() -> i32 { use(Wrap(i64) { item: 0 }); 0 }
+""" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E0411 main.rue:2:35"]
+compile_stderr_contains = ["\"message\":\"no method named 'missing' found for type 'Wrap(i64)'\""]
+compile_stderr_not_contains = ["__anon_", "$Wrap", "error: [E0411]"]
+
+[[case]]
+name = "associated_function_called_as_method_keeps_friendly_anonymous_type"
+description = "The human E0415 message and help keep the complete anonymous producer spelling."
+files = [{ path = "main.rue", source = """
+fn Wrap(comptime T: type) -> type {
+    struct {
+        item: T,
+        fn answer() -> i32 { 42 }
+    }
+}
+fn use(value: Wrap(i64)) -> i32 { value.answer() }
+fn main() -> i32 { use(Wrap(i64) { item: 0 }) }
+""" }]
+compile_fail = true
+compile_stderr_contains = ["error: [E0415]: 'answer' is an associated function, not a method; call it on the type, e.g. `Wrap(i64).answer()`"]
+compile_stderr_not_contains = ["__anon_", "$Wrap"]
+
+[[case]]
+name = "associated_function_called_as_method_json_keeps_friendly_anonymous_type"
+description = "The JSON E0415 message and help keep the complete anonymous producer spelling."
+files = [{ path = "main.rue", source = """
+fn Wrap(comptime T: type) -> type {
+    struct {
+        item: T,
+        fn answer() -> i32 { 42 }
+    }
+}
+fn use(value: Wrap(i64)) -> i32 { value.answer() }
+fn main() -> i32 { use(Wrap(i64) { item: 0 }) }
+""" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E0415 main.rue:7:35"]
+compile_stderr_contains = ["\"message\":\"'answer' is an associated function, not a method; call it on the type, e.g. `Wrap(i64).answer()`\""]
+compile_stderr_not_contains = ["__anon_", "$Wrap", "error: [E0415]"]
