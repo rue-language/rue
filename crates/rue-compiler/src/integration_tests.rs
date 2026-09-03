@@ -19,6 +19,73 @@ use ahash::{AHashMap, AHashSet};
 mod integration_tests {
     use super::*;
 
+    const EXPLANATION_FILE_MARKER: &str = "// --- ";
+
+    fn explanation_example_snapshot(source: &str) -> SourceSnapshot {
+        let mut files = Vec::<(String, String)>::new();
+        let mut current_path = None::<String>;
+        let mut current_source = String::new();
+        for line in source.lines() {
+            if let Some(path) = line.strip_prefix(EXPLANATION_FILE_MARKER) {
+                if let Some(previous_path) = current_path.replace(path.to_owned()) {
+                    files.push((previous_path, std::mem::take(&mut current_source)));
+                }
+            } else {
+                assert!(
+                    current_path.is_some(),
+                    "source must start with a file marker"
+                );
+                current_source.push_str(line);
+                current_source.push('\n');
+            }
+        }
+        files.push((
+            current_path.expect("multi-file explanation example has a root marker"),
+            current_source,
+        ));
+
+        let mut physical_paths = AHashMap::new();
+        let mut logical_paths = AHashMap::new();
+        let mut contents = Vec::new();
+        for (index, (path, source)) in files.into_iter().enumerate() {
+            let file_id = FileId::new(index as u32 + 1);
+            physical_paths.insert(file_id, format!("/example/{path}"));
+            logical_paths.insert(file_id, path);
+            contents.push((file_id, std::sync::Arc::new(source)));
+        }
+        let root = FileId::new(1);
+        let metadata = SourceMetadata::new(root, physical_paths, logical_paths).unwrap();
+        SourceSnapshot::new(metadata, contents).unwrap()
+    }
+
+    #[test]
+    fn private_type_constructor_explanation_examples_have_the_declared_outcome() {
+        let code = rue_error::ErrorCode::PRIVATE_UNQUALIFIED_ACCESS;
+        let explanation = rue_error::error_code_explanation(code).expect("E0460 explanation");
+        for example in explanation.examples {
+            let snapshot = explanation_example_snapshot(example.source);
+            let mut session = CompilerSession::new();
+            let published = crate::test_support::publish_test_snapshot(&mut session, &snapshot);
+            let result =
+                published.and_then(|_| session.rooted_cfg(&CompileOptions::default()).map(|_| ()));
+            match example.outcome {
+                rue_error::ErrorCodeExampleOutcome::EmitsThisCode => {
+                    let errors = result.expect_err("failing E0460 example compiled");
+                    let codes = errors
+                        .iter()
+                        .map(|error| error.kind.code())
+                        .collect::<Vec<_>>();
+                    assert_eq!(codes, [code], "example {:?}: {errors:?}", example.title);
+                }
+                rue_error::ErrorCodeExampleOutcome::Compiles => {
+                    result.unwrap_or_else(|errors| {
+                        panic!("example {:?} emitted {errors:?}", example.title)
+                    });
+                }
+            }
+        }
+    }
+
     // ========================================================================
     // Integer Types
     // ========================================================================
