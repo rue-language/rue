@@ -468,8 +468,11 @@ run IDs and acquisition instructions trace the native floor, CLI total, and
 fixed per-lane items back to Actions jobs and `ci-timed`/`what-ran` evidence.
 Refresh the entire cohort and indivisible inventory together as instructed in
 the file; the planner validates that provenance is present, but the inventory
-is explicitly not a graph-derived completeness proof. Phase 6 PR run IDs and
-critical-path walls belong in `phase_6_remeasurement` after the run exists.
+is explicitly not a graph-derived completeness proof. Phase 6's
+`phase_6_remeasurement` records both the pre-change merge-group execution and
+the passing post-change PR execution, including substantive job walls and queue
+delay classification. Different events, unmatched cache state, and runner
+queueing mean those walls validate execution rather than a causal speedup.
 
 ### Correctness hang guards
 

@@ -17,7 +17,7 @@ weights file that drifts undetected, and a count replicated by hand across 23
 files — so the right answer has to be re-derived from scratch every time the
 system moves, as this issue did.
 
-## Phase 6 implementation state and pending remeasurement (RUE-1267)
+## Phase 6 implementation and execution evidence (RUE-1267)
 
 `ci/cli-shard-planning.json` is the versioned machine-readable copy of this
 sample. Its maximum unsharded CLI wall is 1,098s and its slowest measured
@@ -34,11 +34,21 @@ completed Phase 6 before/after measurement. The explicit Phase 6 pre-change
 baseline is [merge-group run 33721329318](https://github.com/rue-language/rue/actions/runs/33721329318)
 at `14fd81608baa8cf18d343b0f77b9468ddbd4ba18`: 281s workflow wall, with
 compiler reproducibility binding at 225s (job 100540996331).
-`phase_6_remeasurement.post_change` remains `pending_pr_ci`, with empty run-ID
-and wall-time arrays. After a PR exists, add its actual Actions run IDs and
-observed critical paths. One PR run shows that the derived topology executed;
-it does not alone establish a causal latency change, so any before/after claim
-needs an appropriately matched cohort.
+The recorded post-change evidence is
+[pull-request run 33727605782](https://github.com/rue-language/rue/actions/runs/33727605782)
+at `7453144d88c5e7210943ef4c9dc868b7274006ed`: the workflow concluded
+success, every executing check passed, the intentionally PR-skipped
+remote-execution job remained skipped, all 11 generated matrix jobs appeared,
+and the workflow wall was 358s. The longest substantive execution was
+`premerge (linux-x64)` at 209s (job 100560392585). The later aggregate
+completion was extended by `rust-project` job 100560235100, which did not start
+until 07:26:16Z and ran for 10s; that runner queue delay is not topology latency.
+
+This is execution validation and evidence that the four-runner topology did not
+change, not a causal speedup result. The before run is a merge group while the
+after run is a pull request, their cache states are unmatched, and the after run
+contains runner queue delay. Accordingly, the 281s and 358s workflow walls are
+recorded but not compared as a performance delta.
 
 The required workflow now consumes the matrix the planner emits from the live
 `rue_cli_shard` target set. The weekly cache-free workflow recomputes the same
