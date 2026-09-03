@@ -70,7 +70,7 @@ fn main() -> i32 {
 compile_fail = true
 
 # =============================================================================
-# Intrinsic behavior and restrictions: @panic / @assert / @cast (4.13:5b-5e, RUE-319)
+# Intrinsic behavior and restrictions: @panic / @assert / @cast (4.13:5c-5e, RUE-319)
 #
 # @panic and @assert abort the process (message to stderr, exit 101), with the
 # same abort discipline as the @intCast overflow trap. @cast is rejected at
@@ -135,6 +135,139 @@ fn main() -> i32 {
 """
 exit_code = 101
 stderr_contains = "panic: one is not two"
+
+# =============================================================================
+# The comparison family: @assert_eq / @assert_ne (4.13:5f, ADR-0083 Phase 2.5)
+#
+# Same abort discipline as @assert, with a message that names which comparison
+# failed. The structured half of the report (expected/actual and the runner's
+# diff) needs a test image, so it is covered by the cli.rue_test_assert cases;
+# what an ordinary program observes is the pinned message and status 101.
+# =============================================================================
+
+[[case]]
+name = "assert_eq_holding_has_no_effect"
+spec = ["4.13:5f"]
+source = """
+fn main() -> i32 {
+    @assert_eq(1 + 1, 2);
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "assert_eq_failing_aborts_with_its_pinned_message"
+spec = ["4.13:5f"]
+source = """
+fn twice(n: i32) -> i32 { n * 2 }
+fn main() -> i32 {
+    @assert_eq(twice(20), 41);
+    0
+}
+"""
+exit_code = 101
+stderr_contains = "panic: assertion failed: left == right"
+
+[[case]]
+name = "assert_ne_holding_has_no_effect"
+spec = ["4.13:5f"]
+source = """
+fn main() -> i32 {
+    @assert_ne(1, 2);
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "assert_ne_failing_names_the_other_comparison"
+spec = ["4.13:5f"]
+source = """
+fn twice(n: i32) -> i32 { n * 2 }
+fn main() -> i32 {
+    @assert_ne(twice(20), 40);
+    0
+}
+"""
+exit_code = 101
+stderr_contains = "panic: assertion failed: left != right"
+
+# Each operand is evaluated exactly once, left before right (4.13:5f). Each
+# side announces itself, so the trace is both the count and the order — and the
+# assertion holds, so nothing after it is skipped.
+[[case]]
+name = "assert_eq_evaluates_each_operand_once_left_to_right"
+spec = ["4.13:5f"]
+source = """
+fn note(id: i32, value: i32) -> i32 {
+    @dbg(id);
+    value
+}
+fn main() -> i32 {
+    @assert_eq(note(1, 7), note(2, 7));
+    0
+}
+"""
+expected_stdout = "1\n2\n"
+exit_code = 0
+
+# The operands are read, not consumed: both are still usable afterwards,
+# exactly as `==` leaves them (4.3:3f).
+[[case]]
+name = "assert_eq_borrows_its_operands"
+spec = ["4.13:5f"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let left = Point { x: 20, y: 22 };
+    let right = Point { x: 20, y: 22 };
+    @assert_eq(left, right);
+    left.x + right.y
+}
+"""
+exit_code = 42
+
+# Both operands must have one type, and that type must be one `==` accepts.
+[[case]]
+name = "assert_eq_rejects_mismatched_operand_types"
+spec = ["4.13:5f"]
+source = """
+fn main() -> i32 {
+    @assert_eq(1, true);
+    0
+}
+"""
+compile_fail = true
+error_contains = "type mismatch"
+
+[[case]]
+name = "assert_eq_rejects_a_type_without_equality"
+spec = ["4.13:5f"]
+source = """
+fn main() -> i32 {
+    let n: i32 = 1;
+    checked {
+        let p = @raw(n);
+        @assert_eq(p, p);
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "integer, float, bool, string, unit, struct, array, or enum"
+
+[[case]]
+name = "assert_eq_requires_exactly_two_operands"
+spec = ["4.13:5f"]
+source = """
+fn main() -> i32 {
+    @assert_eq(1);
+    0
+}
+"""
+compile_fail = true
+error_contains = "assert_eq"
 
 # @panic is `!`-typed (RUE-512): it diverges, so it participates in never
 # coercion (3.4:2) and may appear wherever a value of any type is expected — a

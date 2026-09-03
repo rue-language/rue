@@ -61,6 +61,12 @@ pub(crate) enum FailureKind {
     Incomplete,
     /// A failed `@assert(cond)`.
     Assert,
+    /// A failed `@assert_eq(left, right)` (ADR-0083 Phase 2.5). Its frame is
+    /// the one that carries `expected` and `actual`.
+    AssertEq,
+    /// A failed `@assert_ne(left, right)`, whose frame carries the two values
+    /// the assertion demanded be different.
+    AssertNe,
     /// A runtime trap, named by its class.
     Trap(&'static str),
     /// A `?` in a test body whose failure arm reported through the channel.
@@ -79,6 +85,8 @@ impl FailureKind {
         match kind {
             "unhandled_error" => Self::UnhandledError,
             "assert" => Self::Assert,
+            "assert_eq" => Self::AssertEq,
+            "assert_ne" => Self::AssertNe,
             other => Self::Reported(other.to_owned()),
         }
     }
@@ -89,6 +97,8 @@ impl fmt::Display for FailureKind {
         match self {
             Self::Incomplete => f.write_str("incomplete"),
             Self::Assert => f.write_str("assert"),
+            Self::AssertEq => f.write_str("assert_eq"),
+            Self::AssertNe => f.write_str("assert_ne"),
             Self::Trap(class) => write!(f, "trap:{class}"),
             Self::UnhandledError => f.write_str("unhandled_error"),
             Self::Exit => f.write_str("exit"),
@@ -134,6 +144,16 @@ pub(crate) struct FailureFrame {
     pub(crate) line: u32,
     pub(crate) column: u32,
     pub(crate) payload: String,
+    /// The left operand of a comparison assertion, rendered (ADR-0083 Phase
+    /// 2.5). `None` when the frame carried no `expected` field at all, which is
+    /// what every non-comparison producer writes.
+    ///
+    /// Empty is a value, not an absence: `@assert_eq` over two empty strings
+    /// fails with two empty renderings, and dropping them would leave a
+    /// consumer unable to tell that case from an `@assert`.
+    pub(crate) expected: Option<String>,
+    /// The right operand, rendered. Present exactly when `expected` is.
+    pub(crate) actual: Option<String>,
 }
 
 /// What the channel carried, as the classifier needs it.
@@ -193,6 +213,8 @@ pub(crate) fn parse_channel(bytes: &[u8]) -> ChannelFrames {
                         line: location_number(&value, "line"),
                         column: location_number(&value, "column"),
                         payload: string_field(&value, "payload"),
+                        expected: optional_string_field(&value, "expected"),
+                        actual: optional_string_field(&value, "actual"),
                     });
                 }
             }
@@ -218,6 +240,14 @@ fn string_field(value: &serde_json::Value, key: &str) -> String {
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default()
         .to_owned()
+}
+
+/// A string field that may be absent, keeping absence distinct from empty.
+fn optional_string_field(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
 }
 
 fn location_number(value: &serde_json::Value, key: &str) -> u32 {
@@ -489,6 +519,8 @@ mod tests {
                 line: 7,
                 column: 5,
                 payload: String::new(),
+                expected: None,
+                actual: None,
             }),
             ..ChannelFrames::default()
         };
@@ -583,6 +615,75 @@ mod tests {
         assert_eq!(failure.file, "a.rue");
         assert_eq!(failure.line, 3);
         assert_eq!(failure.column, 9);
+        assert_eq!(failure.expected, None);
+        assert_eq!(failure.actual, None);
+    }
+
+    /// A comparison frame carries `expected` and `actual` and no payload
+    /// (ADR-0083 Phase 2.5), and its kind is one the taxonomy names rather than
+    /// a verbatim one.
+    #[test]
+    fn a_comparison_frame_parses_its_two_operands() {
+        let bytes = concat!(
+            "{\"record\":\"failure\",\"schema\":\"1.0\",\"kind\":\"assert_eq\",",
+            "\"message\":\"assertion failed: left == right\",",
+            "\"location\":{\"file\":\"a.rue\",\"line\":3,\"column\":5},",
+            "\"expected\":\"41\",\"actual\":\"42\"}\n",
+        );
+        let frames = parse_channel(bytes.as_bytes());
+        assert!(frames.malformed.is_none());
+        let failure = frames.failure.expect("a failure frame");
+        assert_eq!(failure.expected.as_deref(), Some("41"));
+        assert_eq!(failure.actual.as_deref(), Some("42"));
+        assert_eq!(failure.payload, "");
+        assert_eq!(
+            FailureKind::reported(&failure.kind),
+            FailureKind::AssertEq,
+            "a built-in producer's kind is normalized, not published verbatim"
+        );
+    }
+
+    /// Empty is a value, not an absence: `@assert_eq` over two empty renderings
+    /// must still publish both sides, or a consumer cannot tell that failure
+    /// from a bare `@assert`.
+    #[test]
+    fn empty_operands_stay_distinct_from_absent_ones() {
+        let bytes = concat!(
+            "{\"record\":\"failure\",\"schema\":\"1.0\",\"kind\":\"assert_ne\",",
+            "\"message\":\"assertion failed: left != right\",",
+            "\"location\":{\"file\":\"a.rue\",\"line\":1,\"column\":1},",
+            "\"expected\":\"\",\"actual\":\"\"}\n",
+        );
+        let failure = parse_channel(bytes.as_bytes())
+            .failure
+            .expect("a failure frame");
+        assert_eq!(failure.expected.as_deref(), Some(""));
+        assert_eq!(failure.actual.as_deref(), Some(""));
+    }
+
+    /// A rendering that is not valid UTF-8 never becomes a frame at all: the
+    /// whole channel line is rejected upstream, and the verdict carries the
+    /// runner's note rather than a re-encoded operand. That is what keeps the
+    /// diff's inputs `str` all the way down, with no second encoding tag.
+    #[test]
+    fn a_non_utf8_channel_line_is_malformed_rather_than_re_encoded() {
+        let mut bytes = b"{\"record\":\"failure\",\"kind\":\"assert_eq\",\"expected\":\"".to_vec();
+        bytes.extend_from_slice(&[0xff, 0xfe]);
+        bytes.extend_from_slice(b"\",\"actual\":\"\"}\n");
+        let frames = parse_channel(&bytes);
+        assert!(frames.failure.is_none());
+        assert_eq!(
+            frames.malformed.as_deref(),
+            Some("a channel line was not valid UTF-8")
+        );
+        let classified = classify(Observation {
+            supervision: Supervision::Exited,
+            status: Ok(101),
+            stderr: b"",
+            frames: &frames,
+        });
+        assert_eq!(classified.verdict, Verdict::Fail(FailureKind::Exit));
+        assert!(classified.runner_note.is_some());
     }
 
     /// A blank channel is the ordinary shape for a test image run with no
@@ -598,6 +699,8 @@ mod tests {
     fn failure_kinds_render_their_published_spelling() {
         assert_eq!(FailureKind::Incomplete.to_string(), "incomplete");
         assert_eq!(FailureKind::Assert.to_string(), "assert");
+        assert_eq!(FailureKind::AssertEq.to_string(), "assert_eq");
+        assert_eq!(FailureKind::AssertNe.to_string(), "assert_ne");
         assert_eq!(FailureKind::Trap("panic").to_string(), "trap:panic");
         assert_eq!(FailureKind::UnhandledError.to_string(), "unhandled_error");
         assert_eq!(FailureKind::Exit.to_string(), "exit");

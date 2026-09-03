@@ -12,7 +12,8 @@
 
 use std::fmt::Write as _;
 
-use super::events::{CandidateSource, Capture, Event, TestFinished};
+use super::diff::{DiffOp, Hunk};
+use super::events::{CandidateSource, Capture, Comparison, Event, TestFinished};
 use super::verdict::Verdict;
 
 /// Render one event for a person, or `None` when a person is owed nothing by
@@ -125,6 +126,9 @@ fn render_failure(finished: &TestFinished) -> String {
                 let _ = write!(out, "\n  payload: {payload}");
             }
         }
+        if let Some(comparison) = &failure.comparison {
+            push_comparison(&mut out, comparison);
+        }
         if let Some(note) = &failure.runner_note {
             let _ = write!(out, "\n  note: {note}");
         }
@@ -136,6 +140,65 @@ fn render_failure(finished: &TestFinished) -> String {
     }
     let _ = write!(out, "\n  repro: {}", shell_command(repro));
     out
+}
+
+/// The two operands of a comparison assertion, and where they differ.
+///
+/// Both values are always printed, because "these two are not equal" is only
+/// half the report; the third element is what the runner computed about them,
+/// and it is drawn from the same `diff` the event stream publishes rather than
+/// recomputed here. A single-line pair gets a caret under the first differing
+/// character, which is the whole answer for the common case of one wrong digit;
+/// a multi-line pair gets the `-`/`+` listing, because a caret into a wall of
+/// text locates nothing.
+fn push_comparison(out: &mut String, comparison: &Comparison) {
+    let multi_line = comparison.expected.contains('\n') || comparison.actual.contains('\n');
+    if !multi_line {
+        let _ = write!(out, "\n  expected: {}", comparison.expected);
+        let _ = write!(out, "\n  actual:   {}", comparison.actual);
+        if let Some(column) = first_difference(&comparison.diff) {
+            let _ = write!(out, "\n  {}^", " ".repeat(LABEL_WIDTH - 2 + column));
+        }
+        return;
+    }
+    push_block(out, "expected", &comparison.expected);
+    push_block(out, "actual", &comparison.actual);
+    out.push_str("\n  diff:");
+    for hunk in &comparison.diff {
+        let marker = match hunk.op {
+            DiffOp::Equal => ' ',
+            DiffOp::Delete => '-',
+            DiffOp::Insert => '+',
+        };
+        for line in hunk.text.lines() {
+            let _ = write!(out, "\n    {marker} {line}");
+        }
+    }
+}
+
+/// Width of the `expected: ` / `actual:   ` labels, including the two-space
+/// indent every line of a failure carries.
+const LABEL_WIDTH: usize = 12;
+
+/// The character offset of the first difference, or `None` when the two values
+/// are identical — which is exactly how an `@assert_ne` failure looks.
+fn first_difference(diff: &[Hunk]) -> Option<usize> {
+    let mut offset = 0;
+    for hunk in diff {
+        if hunk.op != DiffOp::Equal {
+            return Some(offset);
+        }
+        offset += hunk.text.chars().count();
+    }
+    None
+}
+
+/// One labelled multi-line value, its lines indented under the label.
+fn push_block(out: &mut String, label: &str, value: &str) {
+    let _ = write!(out, "\n  {label}:");
+    for line in value.lines() {
+        let _ = write!(out, "\n    {line}");
+    }
 }
 
 /// A captured stream, indented under its failure, or nothing when it is empty.
@@ -180,7 +243,7 @@ fn shell_command(argv: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_mode::events::{FailureRecord, Location, UnimportedFile};
+    use crate::test_mode::events::{Comparison, FailureRecord, Location, UnimportedFile};
     use crate::test_mode::verdict::FailureKind;
 
     fn finished(verdict: Verdict, failure: Option<FailureRecord>) -> Event {
@@ -280,6 +343,77 @@ mod tests {
             rendered.contains("repro: rue test app/main.rue --filter 'app/t.rue::parses a port'"),
             "{rendered}"
         );
+    }
+
+    /// A single-line comparison prints both values aligned, and a caret under
+    /// the first character that differs. The caret's column comes out of the
+    /// same `diff` the event stream publishes, so the two surfaces cannot
+    /// disagree about where the difference is.
+    #[test]
+    fn a_single_line_comparison_prints_both_values_and_a_caret() {
+        let rendered = render(&finished(
+            Verdict::Fail(FailureKind::AssertEq),
+            Some(FailureRecord {
+                kind: "assert_eq".to_owned(),
+                message: "assertion failed: left == right".to_owned(),
+                exit_code: Some(101),
+                comparison: Some(Comparison::new("41".to_owned(), "42".to_owned())),
+                ..FailureRecord::default()
+            }),
+        ))
+        .expect("a failure renders");
+        assert!(
+            rendered.contains("\n  expected: 41\n  actual:   42\n             ^\n"),
+            "{rendered}"
+        );
+    }
+
+    /// An `@assert_ne` failure has two identical values, so there is no first
+    /// difference and no caret is drawn — the two values *are* the report.
+    #[test]
+    fn identical_values_print_no_caret() {
+        let rendered = render(&finished(
+            Verdict::Fail(FailureKind::AssertNe),
+            Some(FailureRecord {
+                kind: "assert_ne".to_owned(),
+                message: "assertion failed: left != right".to_owned(),
+                comparison: Some(Comparison::new("41".to_owned(), "41".to_owned())),
+                ..FailureRecord::default()
+            }),
+        ))
+        .expect("a failure renders");
+        assert!(
+            rendered.contains("\n  expected: 41\n  actual:   41\n  --- stdout"),
+            "{rendered}"
+        );
+    }
+
+    /// A multi-line pair gets the `-`/`+` listing instead: a caret into a wall
+    /// of text locates nothing.
+    #[test]
+    fn a_multi_line_comparison_prints_a_hunk_listing() {
+        let rendered = render(&finished(
+            Verdict::Fail(FailureKind::AssertEq),
+            Some(FailureRecord {
+                kind: "assert_eq".to_owned(),
+                message: "assertion failed: left == right".to_owned(),
+                comparison: Some(Comparison::new(
+                    "alpha\nbeta\ngamma\n".to_owned(),
+                    "alpha\nBETA\ngamma\n".to_owned(),
+                )),
+                ..FailureRecord::default()
+            }),
+        ))
+        .expect("a failure renders");
+        assert!(
+            rendered.contains(
+                "\n  expected:\n    alpha\n    beta\n    gamma\
+                 \n  actual:\n    alpha\n    BETA\n    gamma\
+                 \n  diff:\n      alpha\n    - beta\n    + BETA\n      gamma\n"
+            ),
+            "{rendered}"
+        );
+        assert!(!rendered.contains('^'), "{rendered}");
     }
 
     /// A runner-level note is never dropped from the human surface either: it

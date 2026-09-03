@@ -83,19 +83,37 @@ A malformed selector is the image's own error: it writes
 ### The failure channel
 
 Descriptor 3 carries newline-delimited JSON, drained by the runner under its own
-budget. Two records exist in this version:
+budget. Two record kinds exist in this version, and `failure` has two shapes:
 
 ```json
 {"record":"complete","schema":"1.0"}
 {"record":"failure","schema":"1.0","kind":"...","message":"...","location":{"file":"...","line":0,"column":0},"payload":"..."}
+{"record":"failure","schema":"1.0","kind":"...","message":"...","location":{"file":"...","line":0,"column":0},"expected":"...","actual":"..."}
 ```
 
 The `complete` record is written by the dispatcher's epilogue alone, after the
 selected test body returns normally. `failure` records are written by assertion
 sugar and by the test-body `?` failure arm before aborting; `kind` is an open
 field, so a user assertion library's own kind is published verbatim rather than
-flattened (ADR-0083 §5.1). `payload` is the versioned extension point structured
-assertion payloads arrive through (Phase 2.5).
+flattened (ADR-0083 §5.1).
+
+A `failure` record carries **either** `payload` or the pair
+`expected`/`actual`, never both. `payload` is the open, versioned extension
+point §5.1 reserves for an assertion library with something structured to say
+in one string. `expected`/`actual` is the shape a **comparison** assertion
+writes: `expected` is the left operand and `actual` the right — the order the
+source spelled them, so `@assert_eq(want, got)` reads the way it is written —
+each rendered by the compiler-synthesized structural printer under the same
+rules and the same 4 KiB bound the test-body `?` payload uses. An empty
+rendering is a value and stays present as an empty string; a comparison is
+recognized by the fields' presence, not by parsing `kind`.
+
+`@assert_eq` and `@assert_ne` are the producers in this version, through the
+`__rue_test_fail_comparison` helper ([runtime-abi.md](../runtime-abi.md)). They
+are ordinary intrinsics, usable anywhere `@assert` is, and they lower the same
+way in a test image and in an ordinary executable — the only difference is that
+an ordinary process has no descriptor 3, so the frame write fails with `EBADF`
+as designed and the pinned stderr message is the whole report.
 
 Writes are best-effort by design: an image run by hand has no descriptor 3, and
 `EBADF` there is expected rather than exceptional. The channel is **not a
@@ -187,6 +205,9 @@ consumers already handle instead of adding one.
 | `signal` | integer | The signal that killed it. **Absent** otherwise. |
 | `location` | object | `{"file","line","column"}` — the test declaration's header, unless a failure frame carried its own site. |
 | `payload` | string | The channel's open payload. **Absent** when empty. |
+| `expected` | string | A comparison assertion's left operand, rendered. **Absent** on every other failure. |
+| `actual` | string | Its right operand, rendered. Present exactly when `expected` is. |
+| `diff` | array | The runner's diff from `expected` to `actual`. Present exactly when `expected` is. |
 | `runner_note` | string | The runner's own explanation. **Absent** unless the runner could not trust what it read. |
 
 `line` and `column` are both 1-based, and `column` counts Unicode scalars rather
@@ -199,6 +220,43 @@ operator's operand, so `location` names the failing expression rather than the
 
 `timeout` and `crash` verdicts also carry a failure record, with kind `timeout`
 and `signal` respectively.
+
+##### The comparison diff
+
+`diff` is computed by the runner, not carried on the channel, so the event
+stream and the human rendering are one computation and can never disagree about
+where two values differ. It is an array of hunks in order:
+
+```json
+"diff":[{"op":"equal","text":"4"},{"op":"delete","text":"1"},{"op":"insert","text":"2"}]
+```
+
+`op` is `equal` (present in both), `delete` (present in `expected`, absent from
+`actual`), or `insert` (the reverse). Two invariants make the encoding lossless
+rather than a rendering: concatenating every `equal` and `delete` hunk's `text`
+yields `expected` exactly, and concatenating every `equal` and `insert` hunk's
+yields `actual`. No two adjacent hunks share an `op`, and no hunk is empty, so
+two identical values are one `equal` hunk and two empty values are an empty
+array.
+
+Granularity follows the values: if either contains a newline the diff is
+line-by-line, and each line unit carries its own terminator; otherwise it is
+character-by-character, over Unicode scalar values. A common prefix and suffix
+are removed before any alignment, and a remaining middle large enough to make an
+exact longest-common-subsequence expensive is reported as one wholesale
+`delete` followed by one `insert` rather than refined — the invariants above
+hold either way.
+
+A rendering that is not valid UTF-8 never reaches the diff: `expected` and
+`actual` are JSON string fields, and a channel line that is not valid UTF-8 is
+rejected as malformed before it becomes a frame at all, yielding `fail` with
+kind `exit` and a `runner_note` (see Precedence below). There is no second
+encoding tag on these fields, unlike a capture record's.
+
+Under `--format human` the same values are printed as `expected:` and `actual:`
+lines. A single-line pair gets a caret under the first differing character; a
+multi-line pair gets a `-`/`+` hunk listing instead, because a caret into a wall
+of text locates nothing.
 
 #### Capture records
 
@@ -277,6 +335,8 @@ of stderr, and the frames read from the failure channel.
 | `pass` | — | Exit `0` **and** a `complete` frame was read. |
 | `fail` | `incomplete` | Exit `0` with no `complete` frame. |
 | `fail` | `assert` | The last stderr line is exactly `assertion failed`. |
+| `fail` | `assert_eq` | A `failure` frame from a failed `@assert_eq`, carrying `expected` and `actual`. |
+| `fail` | `assert_ne` | The same, from a failed `@assert_ne`. |
 | `fail` | `trap:<class>` | The last stderr line is another pinned runtime message. |
 | `fail` | `unhandled_error` | A `failure` frame with that kind — the test-body `?` failure arm. |
 | `fail` | *(verbatim)* | A `failure` frame with a kind the runner does not know (ADR-0083 §5.1). |
@@ -432,7 +492,10 @@ event of a run and in each `--list --format json` record.
 
 - **Additive changes are minors.** A new event kind, a new optional field, a new
   reserved value becoming producible, or a richer `payload` inside the failure
-  record. Consumers must ignore unknown fields and unknown event kinds.
+  record. Consumers must ignore unknown fields and unknown event kinds. The
+  failure record's `expected`, `actual`, and `diff` and the `assert_eq` /
+  `assert_ne` kinds arrived this way (ADR-0083 Phase 2.5): the version stays
+  `1.0` because nothing a `1.0` consumer already read changed.
 - **Removing or repurposing a field, renaming an event, or changing a field's
   type is a major.** So is producing a verdict this document reserves *out* of
   the taxonomy.

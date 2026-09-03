@@ -442,25 +442,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         let comparison = make_data(lhs_result.air_ref, rhs_result.air_ref);
-        if matches!(comparison, AirInstData::Eq(..) | AirInstData::Ne(..))
-            && let Some(result) = self.try_prepare_aggregate_equality(
-                air,
-                &comparison,
-                lhs_result,
-                rhs_result,
-                span,
-                ctx,
-            )?
-        {
-            return Ok(result);
-        }
-
-        let air_ref = air.add_inst(AirInst {
-            data: comparison,
-            ty: Type::BOOL,
-            span,
-        });
-        Ok(AnalysisResult::new(air_ref, Type::BOOL))
+        self.build_comparison(air, comparison, lhs_result, rhs_result, span, ctx)
     }
 
     fn is_sentinel_lookup_test(&self, lhs: InstRef, rhs: InstRef) -> bool {

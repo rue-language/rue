@@ -2013,12 +2013,12 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
 // identity even when constructor, caller, and macro token counts do not.
 const CONSTRUCTION_TOKEN_STRUCT_IDENTITY: (usize, u64) = (80, 5_227_448_979_315_228_973);
 const CONSTRUCTION_TOKEN_IMPL_IDENTITY: (usize, u64) = (108, 2_765_439_612_714_245_239);
-const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (10_799, 16_325_515_270_950_367_680);
+const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (10_841, 1_910_863_920_709_222_275);
 const COMPILER_CRATE_ROOT_NAMESPACE_IDENTITY: (usize, u64, usize, u64) = (
-    114,
-    11_273_416_965_168_702_126,
-    229,
-    2_753_161_391_832_661_620,
+    115,
+    16_786_415_244_923_993_326,
+    230,
+    6_981_227_682_883_627_572,
 );
 const COMPILER_SESSION_ROOT_IDENTITY: (usize, u64) = (3_375, 11_197_616_651_825_656_461);
 const COMPILER_SESSION_CONSTRUCTOR_IDENTITY: (usize, u64) = (82, 10_721_269_354_679_246_675);
@@ -4454,7 +4454,7 @@ pub(super) use register_parse_import_parse;"#;
     ));
     let nested_module_owners = module_owner_inventory(&compiler_module_sources);
     let nested_module_fingerprint = source_inventory_fingerprint(&nested_module_owners);
-    let expected_nested_module_identity = (159, 15_474_350_804_192_522_746);
+    let expected_nested_module_identity = (160, 14_291_932_838_853_825_352);
     assert_eq!(
         (nested_module_owners.len(), nested_module_fingerprint),
         expected_nested_module_identity,
@@ -7071,6 +7071,7 @@ fn facade_stays_small_and_session_centered() {
         .map(|(name, _)| *name)
         .chain([
             "api_inventory",
+            "assert_comparison_tests",
             "integration_tests",
             "pipeline_tests",
             "producer_nominal_acceptance_tests",

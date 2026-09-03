@@ -87,6 +87,23 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
         &[],
     ),
+    // A *failing* comparison assertion renders both operands first (spec
+    // 4.13:5f), and the compiler-synthesized structural printer opens by taking
+    // a bounded buffer from the allocation helper. The interpreter stops there;
+    // the holding cases beside these are modeled and agree, because a passing
+    // comparison renders nothing.
+    Entry::new(
+        "expressions.intrinsics",
+        "assert_eq_failing_aborts_with_its_pinned_message",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    Entry::new(
+        "expressions.intrinsics",
+        "assert_ne_failing_names_the_other_comparison",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
     // Source-defined StrBuf methods may still expose an unsupported target or
     // runtime boundary; their ordinary projection, allocation, pointer, and
     // inout representation paths are modeled.

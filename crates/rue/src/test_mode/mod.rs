@@ -17,6 +17,7 @@
 //!   exit 2 with diagnostics and an empty event stream, never a `run_started`
 //!   for a run that never began.
 
+pub(crate) mod diff;
 pub(crate) mod events;
 pub(crate) mod exec;
 pub(crate) mod render;
@@ -35,7 +36,8 @@ use rue_driver::FilesystemCompilerHost;
 use rue_target::Target;
 
 use events::{
-    CandidateSource, Capture, Event, FailureRecord, Location, TestFinished, UnimportedFile,
+    CandidateSource, Capture, Comparison, Event, FailureRecord, Location, TestFinished,
+    UnimportedFile,
 };
 use exec::{DEFAULT_STREAM_BUDGET, Dispatch};
 use selection::Shard;
@@ -608,8 +610,22 @@ fn failure_record(
         payload: frame
             .map(|frame| frame.payload.clone())
             .filter(|payload| !payload.is_empty()),
+        comparison: frame_comparison(frame),
         runner_note: execution.classification.runner_note.clone(),
     }
+}
+
+/// The comparison a failure frame carried, or `None` when it carried none
+/// (ADR-0083 Phase 2.5).
+///
+/// `expected` and `actual` travel together or not at all: a frame with one and
+/// not the other is a producer's mistake, and half a comparison is not a
+/// comparison. The diff between them is computed here, once, so the event
+/// stream and the human rendering read the same one.
+fn frame_comparison(frame: Option<&verdict::FailureFrame>) -> Option<Comparison> {
+    let frame = frame?;
+    let (expected, actual) = frame.expected.clone().zip(frame.actual.clone())?;
+    Some(Comparison::new(expected, actual))
 }
 
 fn failure_message(
@@ -630,7 +646,10 @@ fn failure_message(
             "a captured stream exceeded its {DEFAULT_STREAM_BUDGET}-byte retention budget; \
              the process group was killed"
         ),
-        FailureKind::Assert | FailureKind::Trap(_) => last_message_line(&execution.stderr),
+        FailureKind::Assert
+        | FailureKind::AssertEq
+        | FailureKind::AssertNe
+        | FailureKind::Trap(_) => last_message_line(&execution.stderr),
         FailureKind::Exit => match execution.exit_code {
             Some(code) => format!("the test exited with status {code}"),
             None => "the test did not exit normally".to_owned(),
@@ -787,6 +806,30 @@ mod tests {
                 "500",
             ]
         );
+    }
+
+    /// The comparison fields are one unit: both, or neither. A frame carrying
+    /// only one of them publishes nothing rather than half a report a consumer
+    /// would have to guess at.
+    #[test]
+    fn a_comparison_needs_both_of_its_operands() {
+        let frame = |expected: Option<&str>, actual: Option<&str>| verdict::FailureFrame {
+            kind: "assert_eq".to_owned(),
+            expected: expected.map(str::to_owned),
+            actual: actual.map(str::to_owned),
+            ..verdict::FailureFrame::default()
+        };
+        assert!(frame_comparison(None).is_none());
+        assert!(frame_comparison(Some(&frame(None, None))).is_none());
+        assert!(frame_comparison(Some(&frame(Some("41"), None))).is_none());
+        assert!(frame_comparison(Some(&frame(None, Some("42")))).is_none());
+        let both = frame_comparison(Some(&frame(Some("41"), Some("42")))).expect("a comparison");
+        assert_eq!(both.expected, "41");
+        assert_eq!(both.actual, "42");
+        assert_eq!(both.diff.len(), 3, "{:?}", both.diff);
+        // Two empty renderings are still a comparison: empty is a value.
+        let empty = frame_comparison(Some(&frame(Some(""), Some("")))).expect("a comparison");
+        assert!(empty.diff.is_empty());
     }
 
     #[test]

@@ -96,6 +96,8 @@ mod producer_nominal_acceptance_tests;
 #[cfg(test)]
 mod api_inventory;
 #[cfg(test)]
+mod assert_comparison_tests;
+#[cfg(test)]
 mod integration_tests;
 #[cfg(test)]
 mod scaling_harness;

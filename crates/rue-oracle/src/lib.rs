@@ -1253,13 +1253,18 @@ fn unsupported_runtime_call_kind(kind: RuntimeCallKind) -> Option<UnsupportedRun
         | RuntimeCallKind::ByteCopy
         | RuntimeCallKind::ByteMove
         | RuntimeCallKind::ByteSet
-        // The ADR-0083 test channel. No source construct spells these, and the
-        // oracle models ordinary compiled programs rather than test images, so
-        // a corpus program cannot reach one.
+        // The ADR-0083 test channel. The dispatcher's own helpers belong to a
+        // test image, which the oracle never compiles. The reporting helpers
+        // are reachable in an ordinary program — `@assert_eq` lowers to them —
+        // but only after the rendering that precedes them, and that rendering
+        // opens with the allocation helper below, so the interpreter has
+        // already stopped at a registered gap by the time a channel call is
+        // evaluated.
         | RuntimeCallKind::TestNormalizeProcess
         | RuntimeCallKind::TestComplete
         | RuntimeCallKind::TestFailureSite
         | RuntimeCallKind::TestFail
+        | RuntimeCallKind::TestFailComparison
         | RuntimeCallKind::TestUsageError => None,
     }
 }
@@ -3762,11 +3767,28 @@ impl<'a> Interp<'a> {
                     false
                 };
                 let missing_call_kind = if !is_string_builtin && runtime.is_some() {
+                    let runtime = runtime.expect("checked above");
+                    // A compiler-synthesized body reaches the memory helpers as
+                    // runtime calls rather than through the `@alloc` /
+                    // `@byte_copy` intrinsics that name them: drop glue and the
+                    // ADR-0083 §1 structural printer are written directly in
+                    // semantic-body form, and the printer is what a failing
+                    // `@assert_eq` calls before it reports. The interpreter's
+                    // gap is the same one either way, so it is reported as that
+                    // intrinsic's gap — which a corpus case can register —
+                    // rather than as a missing function body, which is a
+                    // harness failure. It stops here rather than joining the
+                    // output calls below, which are unmodeled *and* executable;
+                    // there is nothing to execute for an unmodeled allocation.
+                    if let Some(operation) = rue_air::IntrinsicOperation::from_runtime_call(runtime)
+                    {
+                        let borrowed = unsupported_intrinsic_kind_for_operation(operation);
+                        if borrowed.model_gap().is_some() {
+                            return Err(unsupported(borrowed, format!("call to '{fname}'")));
+                        }
+                    }
                     let kind = self.classify_unsupported_runtime_call_static(
-                        runtime.expect("checked above"),
-                        &arg_types,
-                        &arg_modes,
-                        ty,
+                        runtime, &arg_types, &arg_modes, ty,
                     );
                     if kind.model_gap().is_none() {
                         return Err(unsupported(kind, format!("call to '{fname}'")));

@@ -1,0 +1,96 @@
+[section]
+id = "diagnostics.assert_comparison"
+name = "Comparison-assertion diagnostics"
+description = """
+`@assert_eq` / `@assert_ne` reject exactly what `==` rejects (spec 4.13:5f,
+ADR-0083 Phase 2.5). Both operands must have one type and that type must be one
+`==` accepts, and the rendered wording is pinned here so the family cannot drift
+into a second, differently worded equality.
+"""
+
+[[case]]
+name = "operands_must_agree_on_a_type"
+description = "Inference constrains the two operands to one type, so a mismatch is reported at the second operand rather than as an intrinsic-shaped error of its own."
+source = """
+fn main() -> i32 {
+    @assert_eq(1, true);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "type mismatch", "found bool"]
+
+[[case]]
+name = "inequality_agrees_on_a_type_too"
+description = "The other member of the family enforces the same rule."
+source = """
+fn main() -> i32 {
+    @assert_ne(true, 1);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+
+[[case]]
+name = "an_operand_type_must_support_equality"
+description = "A raw pointer is not an equality operand, and the family reuses `==`'s own check rather than answering the question a second time — so the wording is the one `p == p` produces."
+source = """
+fn main() -> i32 {
+    let n: i32 = 1;
+    checked {
+        let p = @raw(n);
+        @assert_eq(p, p);
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0206",
+    "expected integer, float, bool, string, unit, struct, array, or enum",
+    "found ptr const i32",
+]
+
+[[case]]
+name = "the_comparison_operator_reports_the_same_wording"
+description = "The companion to the case above: `==` on the same operand produces the same diagnostic, which is what makes 'supports ==' one rule rather than two."
+source = """
+fn main() -> i32 {
+    let n: i32 = 1;
+    checked {
+        let ok = @raw(n) == @raw(n);
+        @assert(ok);
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0206",
+    "expected integer, float, bool, string, unit, struct, array, or enum",
+]
+
+[[case]]
+name = "exactly_two_operands_are_required"
+description = "One operand is the intrinsic's own arity error, not a type error about a missing second value."
+source = """
+fn main() -> i32 {
+    @assert_eq(1);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0701", "intrinsic '@assert_eq' expects 2 arguments, found 1"]
+
+[[case]]
+name = "three_operands_are_rejected_as_well"
+description = "There is no message operand: a comparison failure's report is the two rendered values."
+source = """
+fn main() -> i32 {
+    @assert_ne(1, 2, 3);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0701", "intrinsic '@assert_ne' expects 2 arguments, found 3"]

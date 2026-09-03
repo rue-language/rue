@@ -2312,7 +2312,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // `@panic` diverges: it aborts the process and never returns,
                     // so its expression type is `!` (never), a control-transfer
                     // form that participates in never coercion (spec 3.4:2,
-                    // 4.13:5b; formal core §5.7; RUE-512). Keeping it explicit
+                    // 4.13:5c; formal core §5.7; RUE-512). Keeping it explicit
                     // here — rather than leaning on the generic unit fallback —
                     // stops HM and semantic analysis from drifting apart.
                     for arg_ref in args.iter() {
@@ -2326,11 +2326,30 @@ impl<'a> ConstraintGenerator<'a> {
                     // `@assert` is NOT never-typed: on the success path it returns
                     // and evaluates to `()`. It only aborts when the condition is
                     // false, so its static type is unit on both paths (spec
-                    // 4.13:5b). Keep it explicit so HM and sema stay in lockstep.
+                    // 4.13:5d). Keep it explicit so HM and sema stay in lockstep.
                     for arg_ref in args.iter() {
                         // As with `@panic`, a literal message keeps the stable
                         // `str` default instead of requiring imported StrBuf.
                         generate_intrinsic_arg!(*arg_ref);
+                    }
+                    InferType::Concrete(Type::UNIT)
+                } else if intrinsic_name == "assert_eq" || intrinsic_name == "assert_ne" {
+                    // `@assert_eq(l, r)` / `@assert_ne(l, r)`: the two operands
+                    // share one type and the intrinsic evaluates to `()` on the
+                    // path that continues, exactly like `@assert` (spec
+                    // 4.13:5f). Unifying the operands here is what lets
+                    // `@assert_eq(port, 8080)` give the literal the other
+                    // side's type instead of the bare `i32` default; sema then
+                    // checks that type supports `==`.
+                    let operand_var = self.fresh_var();
+                    let operand_ty = InferType::Var(operand_var);
+                    for arg_ref in args.iter() {
+                        let info = generate_intrinsic_arg!(*arg_ref);
+                        self.add_constraint(Constraint::equal(
+                            info.ty,
+                            operand_ty.clone(),
+                            info.span,
+                        ));
                     }
                     InferType::Concrete(Type::UNIT)
                 } else if intrinsic_name == "read_line" {
@@ -5256,6 +5275,52 @@ mod tests {
                     interner.resolve(&name)
                 );
             }
+        }
+    }
+
+    /// `@assert_eq`/`@assert_ne` are unit-typed like `@assert`, and their two
+    /// operands share one type — which is what lets a bare literal take the
+    /// other side's type instead of the `i32` default (ADR-0083 Phase 2.5,
+    /// spec 4.13:5f).
+    #[test]
+    fn comparison_assertions_are_unit_and_unify_their_operands_in_hm() {
+        for name in ["assert_eq", "assert_ne"] {
+            let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
+            let functions = AHashMap::new();
+            let structs = AHashMap::new();
+            let enums = AHashMap::new();
+            let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
+
+            let left = rir.add_inst(rue_rir::Inst {
+                data: InstData::BoolConst(true),
+                span: Span::new(1, 5),
+            });
+            let right = rir.add_inst(rue_rir::Inst {
+                data: InstData::IntConst(1),
+                span: Span::new(7, 8),
+            });
+            let name = interner.get_or_intern(name);
+            let intrinsic = rir
+                .add_intrinsic(name, &[left, right], Span::new(0, 9))
+                .unwrap();
+
+            let mut cgen = ConstraintGenerator::new(
+                &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+            );
+            let params = AHashMap::new();
+            let mut ctx = ConstraintContext::new(&params, Type::UNIT);
+            let info = cgen.generate(intrinsic, &mut ctx);
+            assert_eq!(
+                info.ty,
+                InferType::Concrete(Type::UNIT),
+                "@{} HM result contract",
+                interner.resolve(&name)
+            );
+            // Both operands are visited, and both are constrained to the same
+            // variable — the mismatch these two literals really are is reported
+            // when that variable is solved, not here.
+            assert!(cgen.expr_types().contains_key(&left));
+            assert!(cgen.expr_types().contains_key(&right));
         }
     }
 

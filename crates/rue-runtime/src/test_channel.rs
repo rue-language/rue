@@ -63,7 +63,21 @@ const LOCATION_FIELD: [u8; 22] = *b"\",\"location\":{\"file\":\"";
 const LINE_FIELD: [u8; 9] = *b"\",\"line\":";
 const COLUMN_FIELD: [u8; 10] = *b",\"column\":";
 const PAYLOAD_FIELD: [u8; 13] = *b"},\"payload\":\"";
+const EXPECTED_FIELD: [u8; 14] = *b"},\"expected\":\"";
+const ACTUAL_FIELD: [u8; 12] = *b"\",\"actual\":\"";
 const FRAME_TAIL: [u8; 3] = *b"\"}\n";
+
+/// The pinned message each comparison kind reports.
+///
+/// The message is chosen by the kind rather than passed, which is what keeps
+/// the comparison call to the six registers every runtime helper is limited to
+/// while still carrying both rendered operands. A kind this does not recognize
+/// gets the bare `assertion failed`, so an unknown kind is still a report.
+const ASSERT_EQ_KIND: [u8; 9] = *b"assert_eq";
+const ASSERT_NE_KIND: [u8; 9] = *b"assert_ne";
+const ASSERT_EQ_MESSAGE: [u8; 31] = *b"assertion failed: left == right";
+const ASSERT_NE_MESSAGE: [u8; 31] = *b"assertion failed: left != right";
+const ASSERT_MESSAGE: [u8; 16] = *b"assertion failed";
 
 /// The pinned malformed-selector diagnostic (ADR-0083 §3).
 const USAGE_MESSAGE: [u8; 50] = *b"rue-test: expected one 16-hex-digit test selector\n";
@@ -176,6 +190,28 @@ fn complete_frame(emit: &mut dyn FnMut(&[u8])) {
     writer.raw(&COMPLETE_FRAME);
 }
 
+/// Write every field both failure shapes share, through the open location
+/// object: the two differ only in what follows the column.
+fn failure_head(
+    writer: &mut FrameWriter<'_>,
+    kind: &[u8],
+    message: &[u8],
+    file: &[u8],
+    line: u32,
+    column: u32,
+) {
+    writer.raw(&FAILURE_HEAD);
+    writer.escaped(kind);
+    writer.raw(&MESSAGE_FIELD);
+    writer.escaped(message);
+    writer.raw(&LOCATION_FIELD);
+    writer.escaped(file);
+    writer.raw(&LINE_FIELD);
+    writer.number(line);
+    writer.raw(&COLUMN_FIELD);
+    writer.number(column);
+}
+
 /// Write one failure frame.
 ///
 /// `kind`, `message`, `file`, and `payload` are borrowed byte views; `payload`
@@ -191,19 +227,62 @@ fn failure_frame(
     payload: &[u8],
 ) {
     let mut writer = FrameWriter::new(emit);
-    writer.raw(&FAILURE_HEAD);
-    writer.escaped(kind);
-    writer.raw(&MESSAGE_FIELD);
-    writer.escaped(message);
-    writer.raw(&LOCATION_FIELD);
-    writer.escaped(file);
-    writer.raw(&LINE_FIELD);
-    writer.number(line);
-    writer.raw(&COLUMN_FIELD);
-    writer.number(column);
+    failure_head(&mut writer, kind, message, file, line, column);
     writer.raw(&PAYLOAD_FIELD);
     writer.escaped(payload);
     writer.raw(&FRAME_TAIL);
+}
+
+/// Write one comparison failure frame (ADR-0083 Phase 2.5).
+///
+/// It carries `expected` and `actual` where [`failure_frame`] carries the open
+/// `payload`, and no `payload` at all: two rendered operands are not one string
+/// a consumer has to split, and the runner computes the diff between them.
+/// `expected` is the left operand and `actual` the right — the order the source
+/// wrote them in, so `@assert_eq(want, got)` reads the way it is spelled.
+///
+/// The message is not a parameter: it is pinned by the kind, which is what
+/// keeps this call to the six registers a runtime helper is limited to while
+/// still carrying both operands.
+fn comparison_frame(
+    emit: &mut dyn FnMut(&[u8]),
+    kind: &[u8],
+    file: &[u8],
+    line: u32,
+    column: u32,
+    left: &[u8],
+    right: &[u8],
+) {
+    let mut writer = FrameWriter::new(emit);
+    failure_head(
+        &mut writer,
+        kind,
+        comparison_message(kind),
+        file,
+        line,
+        column,
+    );
+    writer.raw(&EXPECTED_FIELD);
+    writer.escaped(left);
+    writer.raw(&ACTUAL_FIELD);
+    writer.escaped(right);
+    writer.raw(&FRAME_TAIL);
+}
+
+/// The pinned message one comparison kind reports.
+///
+/// `assert_eq` and `assert_ne` are the only kinds the compiler emits. Another
+/// producer — §5.1 makes the channel an open protocol — gets the bare
+/// `assertion failed`, because a report with an unfamiliar kind is still a
+/// report.
+fn comparison_message(kind: &[u8]) -> &'static [u8] {
+    if kind == ASSERT_EQ_KIND {
+        &ASSERT_EQ_MESSAGE
+    } else if kind == ASSERT_NE_KIND {
+        &ASSERT_NE_MESSAGE
+    } else {
+        &ASSERT_MESSAGE
+    }
 }
 
 /// Best-effort write of already-framed bytes to the inherited channel.
@@ -346,6 +425,75 @@ crate::define_runtime_implementation! {
 }
 
 crate::define_runtime_implementation! {
+    /// Report a structured comparison failure, then abort like any other trap.
+    ///
+    /// The comparison form of [`__rue_test_fail`] (ADR-0083 Phase 2.5). It
+    /// writes a `failure` frame carrying the two rendered operands as
+    /// `expected` and `actual` — and no open `payload` — then takes the
+    /// ordinary panic path with the message its `kind` pins: `panic: assertion
+    /// failed: left == right` on stderr and exit 101.
+    ///
+    /// Both halves matter in different builds. Inside a test image the frame is
+    /// what the runner reads; in an ordinary executable there is no descriptor
+    /// 3, the frame write fails with `EBADF` as designed, and the pinned stderr
+    /// message is the whole report. `@assert_eq` therefore lowers the same way
+    /// wherever it is written.
+    ///
+    /// # ABI
+    ///
+    /// ```text
+    /// extern "C" fn __rue_test_fail_comparison(
+    ///     kind_ptr: *const u8, kind_len: u64,
+    ///     left_ptr: *const u8, left_len: u64,
+    ///     right_ptr: *const u8, right_len: u64,
+    /// ) -> !
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// Each pointer/length pair must describe initialized bytes valid for the
+    /// call, or be null with a zero length.
+    pub unsafe extern "C" fn __rue_test_fail_comparison(
+        kind_ptr: *const u8,
+        kind_len: u64,
+        left_ptr: *const u8,
+        left_len: u64,
+        right_ptr: *const u8,
+        right_len: u64,
+    ) -> ! {
+        // SAFETY: the caller guarantees every pair describes readable bytes.
+        let (kind, left, right) = unsafe {
+            (
+                view(kind_ptr, kind_len),
+                view(left_ptr, left_len),
+                view(right_ptr, right_len),
+            )
+        };
+        let position = SITE_POSITION.load(Ordering::Relaxed);
+        // SAFETY: a staged site's bytes stay readable across the pair, and an
+        // unstaged one is the null-with-zero-length form `view` accepts.
+        let file = unsafe {
+            view(
+                SITE_FILE.load(Ordering::Relaxed) as *const u8,
+                SITE_FILE_LEN.load(Ordering::Relaxed),
+            )
+        };
+        comparison_frame(
+            &mut emit_to_channel,
+            kind,
+            file,
+            (position >> 32) as u32,
+            position as u32,
+            left,
+            right,
+        );
+        let message = comparison_message(kind);
+        // SAFETY: `message` is a `'static` run of this module's own bytes.
+        unsafe { crate::error::__rue_panic(message.as_ptr(), message.len() as u64) }
+    }
+}
+
+crate::define_runtime_implementation! {
     /// Write the pinned malformed-selector diagnostic to stderr and return.
     ///
     /// The dispatcher, not the runtime, owns the exit status for this case, so
@@ -404,6 +552,97 @@ mod tests {
              \"message\":\"assertion failed\",\
              \"location\":{\"file\":\"app/parser_tests.rue\",\"line\":7,\"column\":3},\
              \"payload\":\"\"}\n"
+        );
+    }
+
+    /// The comparison frame's field order, and the two fields that make it a
+    /// different shape rather than a payload convention: `expected` and
+    /// `actual` in place of `payload`, which is absent entirely.
+    #[test]
+    fn comparison_frame_carries_expected_and_actual_instead_of_a_payload() {
+        let bytes = frame_bytes(|emit| {
+            comparison_frame(
+                emit,
+                b"assert_eq",
+                b"app/parser_tests.rue",
+                7,
+                5,
+                b"41",
+                b"42",
+            )
+        });
+        assert_eq!(
+            std::str::from_utf8(&bytes).unwrap(),
+            "{\"record\":\"failure\",\"schema\":\"1.0\",\"kind\":\"assert_eq\",\
+             \"message\":\"assertion failed: left == right\",\
+             \"location\":{\"file\":\"app/parser_tests.rue\",\"line\":7,\"column\":5},\
+             \"expected\":\"41\",\"actual\":\"42\"}\n"
+        );
+    }
+
+    /// The message is pinned by the kind, not passed, which is what keeps the
+    /// comparison call inside the six-register helper budget.
+    #[test]
+    fn each_comparison_kind_pins_its_own_message() {
+        let ne =
+            frame_bytes(|emit| comparison_frame(emit, b"assert_ne", b"a.rue", 1, 1, b"7", b"7"));
+        assert!(
+            std::str::from_utf8(&ne)
+                .unwrap()
+                .contains("\"message\":\"assertion failed: left != right\""),
+            "{}",
+            std::str::from_utf8(&ne).unwrap()
+        );
+        // The channel is an open protocol (§5.1): a kind from somewhere else is
+        // still reported, with the bare assertion message.
+        let other = frame_bytes(|emit| comparison_frame(emit, b"lib_eq", b"a.rue", 1, 1, b"", b""));
+        assert!(
+            std::str::from_utf8(&other)
+                .unwrap()
+                .contains("\"kind\":\"lib_eq\",\"message\":\"assertion failed\""),
+            "{}",
+            std::str::from_utf8(&other).unwrap()
+        );
+    }
+
+    /// Both operands are escaped by the same rule the message is, so a rendered
+    /// value containing a quote, a backslash, or a newline cannot break the
+    /// frame it travels in.
+    #[test]
+    fn comparison_operands_are_escaped_like_every_other_string() {
+        let bytes = frame_bytes(|emit| {
+            comparison_frame(
+                emit,
+                b"assert_eq",
+                b"a.rue",
+                1,
+                1,
+                b"line one\nline two",
+                b"say \"hi\"\\",
+            )
+        });
+        let rendered = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            rendered.contains("\"expected\":\"line one\\u000aline two\""),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("\"actual\":\"say \\\"hi\\\"\\\\\"}"),
+            "{rendered}"
+        );
+    }
+
+    /// An empty rendering is a value, not an absent field: `@assert_eq` on two
+    /// empty strings must still publish both sides.
+    #[test]
+    fn empty_comparison_operands_stay_present_as_empty_strings() {
+        let bytes = frame_bytes(|emit| comparison_frame(emit, b"assert_eq", b"", 0, 0, b"", b""));
+        assert_eq!(
+            std::str::from_utf8(&bytes).unwrap(),
+            "{\"record\":\"failure\",\"schema\":\"1.0\",\"kind\":\"assert_eq\",\
+             \"message\":\"assertion failed: left == right\",\
+             \"location\":{\"file\":\"\",\"line\":0,\"column\":0},\
+             \"expected\":\"\",\"actual\":\"\"}\n"
         );
     }
 

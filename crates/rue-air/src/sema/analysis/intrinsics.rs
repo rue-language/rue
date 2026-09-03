@@ -413,6 +413,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             self.analyze_panic_intrinsic(air, &args, span, ctx)
         } else if name == known.assert {
             self.analyze_assert_intrinsic(air, &args, span, ctx)
+        } else if name == known.assert_eq {
+            self.analyze_assert_comparison_intrinsic(air, "assert_eq", true, &args, span, ctx)
+        } else if name == known.assert_ne {
+            self.analyze_assert_comparison_intrinsic(air, "assert_ne", false, &args, span, ctx)
         } else if name == known.import {
             self.analyze_import_intrinsic(air, &args, span)
         } else if name == known.random_u32 {
@@ -1173,7 +1177,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // lower it to the `__rue_panic_no_msg` abort call instead of a
             // silent no-op. `@panic` has type `!` (never): it diverges and never
             // returns, so it participates in never coercion just like a `-> !`
-            // call, `return`, or `break` (spec 3.4:2, 4.13:5b; RUE-512).
+            // call, `return`, or `break` (spec 3.4:2, 4.13:5c; RUE-512).
             let air_ref = air.add_intrinsic(
                 crate::IntrinsicOperation::PanicNoMessage,
                 self.known_symbols().panic,
@@ -1312,6 +1316,280 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let air_ref =
             self.wrap_value_with_temp_scope(air, intrinsic_ref, Type::UNIT, span, temp_scope)?;
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
+    }
+
+    /// Analyze `@assert_eq(left, right)` and `@assert_ne(left, right)`
+    /// (ADR-0083 Phase 2.5, spec 4.13:5f).
+    ///
+    /// The family is `@assert` with a structured report. Both operands are read
+    /// once — equality borrows its operands (4.3:3f), so neither is consumed —
+    /// and compared through the one comparison lowering `==`/`!=` use, so
+    /// "supports `==`" here means exactly what it means there and a `StrBuf`
+    /// compares by content rather than by header. The failing arm renders each
+    /// operand with the same compiler-synthesized structural printer a test
+    /// body's `?` uses (ADR-0083 §1), stages the intrinsic's own site, and
+    /// calls the terminal comparison helper, which writes one frame carrying
+    /// `expected` and `actual` on the §5.1 channel and then takes the ordinary
+    /// panic path.
+    ///
+    /// The lowering is the same in a test image and in an ordinary executable.
+    /// Only the outcome differs, and only because the channel is a descriptor
+    /// an ordinary process does not have: the frame write fails with `EBADF`
+    /// and the pinned stderr message is the whole report. A build-mode-sensitive
+    /// lowering would make the same source mean two different things.
+    fn analyze_assert_comparison_intrinsic(
+        &mut self,
+        air: &mut Air,
+        intrinsic_name: &str,
+        equality: bool,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        if args.len() != 2 {
+            // Analyze what was supplied anyway, so an error inside an operand is
+            // reported instead of being hidden behind the arity error.
+            for arg in args {
+                let _ = self.analyze_inst(air, arg.value, ctx);
+            }
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: intrinsic_name.to_string(),
+                    expected: 2,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let left_span = self.body_rir_ref().get(args[0].value).span;
+        let right_span = self.body_rir_ref().get(args[1].value).span;
+        let left = self.analyze_inst_for_projection(air, args[0].value, ctx)?;
+        let reachable_edges_after_left = ctx.ownership.loop_break_stack.clone();
+        let divergence_before_right = ctx.divergence_kinds;
+        // A bare literal on the right takes the left operand's text type, the
+        // same way `==` gives it one: without this, `@assert_eq(name, "rue")`
+        // would compare a `StrBuf` against a defaulted `str`.
+        let expected = (self.is_strbuf(left.ty) || self.is_str_like(left.ty)).then_some(left.ty);
+        let right = ctx.with_expected_type(expected, |ctx| {
+            self.analyze_inst_for_projection(air, args[1].value, ctx)
+        })?;
+        if !left.continues {
+            Self::restore_reachable_loop_edges(ctx, &reachable_edges_after_left);
+            ctx.divergence_kinds = divergence_before_right;
+        }
+
+        // The condition the report is guarded by is the *failing* one, so the
+        // report is the then-arm of a branch with no else — the shape that says
+        // "nothing after this point is reachable from the report", which is
+        // what an arm ending in a `-> !` call means.
+        let failed = if equality {
+            AirInstData::Ne(left.air_ref, right.air_ref)
+        } else {
+            AirInstData::Eq(left.air_ref, right.air_ref)
+        };
+
+        // An operand that diverges means the assertion is never reached. Keep
+        // the comparison node so the operands are still lowered, and report the
+        // unreachable edge rather than a type error about a `!` operand.
+        if !left.continues || !right.continues {
+            let air_ref = air.add_inst(AirInst {
+                data: failed,
+                ty: Type::BOOL,
+                span,
+            });
+            return Ok(AnalysisResult::with_continues(air_ref, Type::UNIT, false));
+        }
+        if left.ty.is_never() || left.ty.is_error() || right.ty.is_error() {
+            let air_ref = air.add_inst(AirInst {
+                data: failed,
+                ty: Type::BOOL,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, Type::UNIT));
+        }
+
+        // Both operands must be the same type. Inference constrains them to one
+        // type variable and so ordinarily reports a mismatch first; this is the
+        // guard that makes that a checked fact rather than an assumption,
+        // because one printer instance renders both operands and a printer
+        // built for the left type would read the right one's bytes by the wrong
+        // plan.
+        if !self.types_equivalent(left.ty, right.ty) {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: intrinsic_name.to_string(),
+                    expected: self.format_type_name(left.ty),
+                    found: self.format_type_name(right.ty),
+                })),
+                right_span,
+            ));
+        }
+        // …and that type must support `==` under the ordinary rules. This is
+        // the check `==` itself runs, so the two never disagree about which
+        // types are comparable.
+        self.validate_equality_operand_type(left.ty, left_span)?;
+
+        if let Some(fails) = Self::comptime_comparison(air, &failed) {
+            // Both operands are compile-time constants, so the comparison has
+            // an answer now and the intrinsic is exactly the `@assert` it could
+            // have been written as — no branch, no rendering, and no printer
+            // synthesized for a type nothing will render at run time.
+            let condition = air.add_inst(AirInst {
+                data: AirInstData::BoolConst(!fails),
+                ty: Type::BOOL,
+                span,
+            });
+            let assertion = air.add_intrinsic(
+                crate::IntrinsicOperation::AssertFailed,
+                self.known_symbols().assert,
+                &[condition],
+                Type::UNIT,
+                span,
+            )?;
+            let block =
+                air.add_block(&[left.air_ref, right.air_ref], assertion, Type::UNIT, span)?;
+            return Ok(AnalysisResult::new(block, Type::UNIT));
+        }
+
+        let condition = self.build_comparison(air, failed, left, right, span, ctx)?;
+
+        // The report arm consumes nothing. Both operands were read as
+        // projections above — the borrowing read `==` performs (4.3:3f) — and
+        // the printer call passes that already-read value, so an operand that
+        // is a field of a `borrow` parameter, a non-`Copy` field of a borrowed
+        // local, or a local still needed afterwards is legal here exactly as it
+        // is in `a == b`. What the printer receives by value is the read's
+        // result, not the place it came from; it never frees or drops it, and
+        // the process traps in the next call (ADR-0083 §1).
+        let report = self.build_comparison_report(
+            air,
+            intrinsic_name,
+            left.ty,
+            left.air_ref,
+            right.air_ref,
+            span,
+            ctx,
+        )?;
+
+        let branch = air.add_inst(AirInst {
+            data: AirInstData::Branch {
+                cond: condition.air_ref,
+                then_value: report,
+                else_value: None,
+            },
+            ty: Type::UNIT,
+            span,
+        });
+        Ok(AnalysisResult::new(branch, Type::UNIT))
+    }
+
+    /// The failing arm of a comparison assertion: render, stage the site,
+    /// report, abort.
+    ///
+    /// The two channel calls are a pair by ABI — a failure record is more
+    /// arguments than a register-only helper can take — and the second adopts
+    /// whatever site the first staged, so nothing may run between them. Both
+    /// renderings are therefore materialized as statements *before* the site
+    /// call, exactly as the test-body `?` arm materializes its payload.
+    #[allow(clippy::too_many_arguments)]
+    fn build_comparison_report(
+        &mut self,
+        air: &mut Air,
+        intrinsic_name: &str,
+        operand_ty: Type,
+        left: AirRef,
+        right: AirRef,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AirRef> {
+        let str_ty = self.get_or_create_str_struct(span)?;
+        // One printer per type, named once per body: `@assert_eq` at two sites
+        // on the same type shares the instance a `?` on that type would use.
+        let printer = self.structural_printer_symbol(operand_ty, span, ctx)?;
+        let render = |air: &mut Air, value: AirRef| {
+            air.add_call(
+                None,
+                printer,
+                &[AirCallArg {
+                    value,
+                    mode: AirArgMode::Normal,
+                }],
+                str_ty,
+                span,
+            )
+        };
+        let left_text = render(air, left)?;
+        let right_text = render(air, right)?;
+
+        // A site the host cannot resolve is reported as the empty file at 0:0
+        // rather than as a compile error: the ABI accepts an absent location,
+        // and a report that cannot name its line is still a better failure than
+        // no report.
+        let (path, line, column) = self
+            .body_source_coordinate(span)
+            .unwrap_or_else(|| (std::sync::Arc::from(""), 0, 0));
+        let file = self.synthesized_string(air, ctx, &path, str_ty, span);
+        let line = air.add_inst(AirInst {
+            data: AirInstData::Const(u64::from(line)),
+            ty: Type::U32,
+            span,
+        });
+        let column = air.add_inst(AirInst {
+            data: AirInstData::Const(u64::from(column)),
+            ty: Type::U32,
+            span,
+        });
+        let site = self.runtime_channel_call(
+            air,
+            crate::RuntimeCallKind::TestFailureSite,
+            &[file, line, column],
+            Type::UNIT,
+            span,
+        )?;
+
+        // The message is pinned by the kind inside the runtime helper, which is
+        // what keeps this terminal call to the six registers every runtime
+        // helper is limited to while still carrying both renderings.
+        let kind = self.synthesized_string(air, ctx, intrinsic_name, str_ty, span);
+        let report = self.runtime_channel_call(
+            air,
+            crate::RuntimeCallKind::TestFailComparison,
+            &[kind, left_text, right_text],
+            Type::NEVER,
+            span,
+        )?;
+        Ok(air.add_block(
+            &[left_text, right_text, kind, site],
+            report,
+            Type::NEVER,
+            span,
+        )?)
+    }
+
+    /// Evaluate a comparison whose operands both analyzed to a compile-time
+    /// scalar, or `None` when at least one of them did not.
+    ///
+    /// Only the scalar constants fold. A byte string deliberately does not: two
+    /// identical literals are one interned run and would compare equal, but
+    /// equality on text is a content comparison the run-time lowering performs
+    /// (4.3:3), and answering it from the interning table would make the fold a
+    /// second, subtly different equality.
+    fn comptime_comparison(air: &Air, comparison: &AirInstData) -> Option<bool> {
+        let (left, right, equality) = match comparison {
+            AirInstData::Eq(left, right) => (*left, *right, true),
+            AirInstData::Ne(left, right) => (*left, *right, false),
+            _ => return None,
+        };
+        let equal = match (&air.get(left).data, &air.get(right).data) {
+            // The operands share one type by the time this runs, so equal bit
+            // patterns are equal values for every integer width and signedness.
+            (AirInstData::Const(left), AirInstData::Const(right)) => left == right,
+            (AirInstData::BoolConst(left), AirInstData::BoolConst(right)) => left == right,
+            (AirInstData::UnitConst, AirInstData::UnitConst) => true,
+            _ => return None,
+        };
+        Some(equal == equality)
     }
 
     /// Validate the shared message contract of `@panic` and `@assert`.

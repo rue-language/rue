@@ -1,0 +1,454 @@
+[section]
+id = "cli.rue_test_assert"
+name = "`@assert_eq` / `@assert_ne` through `rue test`"
+description = """
+RUE-1620 (ADR-0083 Phase 2.5, spec 4.13:5f): the comparison family reports both
+operands as structured data. These run the whole path through the real binary —
+compiler, linked test image, dispatched process, `__rue_test_fail_comparison`,
+failure channel, runner — so what is pinned here is what a consumer of the event
+stream actually sees: kind `assert_eq` or `assert_ne`, the intrinsic's own line
+and column, `expected` and `actual` rendered by the synthesized structural
+printer, and the `diff` the runner computes between them.
+
+`-j1` and `--format json` for the same reasons the sibling `cli.rue_test` cases
+give: whole-line interleaving is by design under parallel workers, and the event
+schema is a consumer contract (docs/process/test-events.md). Object keys are
+alphabetical, which is why `"actual"` precedes `"diff"` precedes `"expected"` in
+every expectation below.
+
+The last two cases leave `rue test` behind on purpose. The family lowers the
+same way in an ordinary executable — there is simply no descriptor 3 there — and
+an ordinary build's whole report is the pinned stderr message and status 101.
+"""
+
+# =============================================================================
+# The structured report: kind, site, operands, diff.
+# =============================================================================
+
+[[case]]
+name = "an_integer_comparison_reports_both_operands_and_a_character_diff"
+description = """
+Neither rendering contains a newline, so the diff is character-level and locates
+the single digit that differs. The site is the intrinsic's own position, not the
+test declaration's header: the declaration is on line 5 and the assertion on
+line 6.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+fn parse_port() -> i32 {
+    41
+}
+
+test "parses a port" {
+    @assert_eq(parse_port(), 42);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"kind":"assert_eq"',
+    '"message":"assertion failed: left == right"',
+    '"actual":"42","diff":[{"op":"equal","text":"4"},{"op":"delete","text":"1"},{"op":"insert","text":"2"}],"exit_code":101,"expected":"41"',
+    '"column":5,"file":',
+    '"line":6}',
+    '"verdict":"fail"',
+    '"crash":0,"event":"run_finished","failed":1,"passed":0',
+]
+compile_stdout_not_contains = ['"payload"']
+
+[[case]]
+name = "a_strbuf_comparison_reports_its_bytes"
+description = """
+A `StrBuf` operand renders as its own bytes, and `==` on it is the content
+comparison 4.3:3 specifies — the family reuses that lowering rather than
+comparing two headers.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+test "compares two owned strings" {
+    let left = StrBuf.from_str(borrow "alpha");
+    let right = StrBuf.from_str(borrow "alpine");
+    @assert_eq(left, right);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"kind":"assert_eq"',
+    '"actual":"alpine"',
+    '"expected":"alpha"',
+    '{"op":"equal","text":"alp"}',
+    '"verdict":"fail"',
+]
+
+[[case]]
+name = "a_struct_comparison_renders_one_level_deep"
+description = """
+The rendering rules are the `?` failure arm's, unchanged: a struct renders as
+`{ field: value, … }` one level deep, with integers in decimal and `bool` as
+`true`/`false`.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+struct Point { x: i32, y: bool }
+
+fn origin() -> Point {
+    Point { x: 41, y: true }
+}
+
+test "compares two points" {
+    @assert_eq(origin(), Point { x: 42, y: false });
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"expected":"{ x: 41, y: true }"',
+    '"actual":"{ x: 42, y: false }"',
+    '"kind":"assert_eq"',
+]
+
+[[case]]
+name = "an_enum_comparison_renders_its_variant_and_payload"
+description = "A unit variant renders as its name, a payload variant as its name and its rendered payloads."
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+enum Shape {
+    Dot,
+    Line(i32),
+}
+
+fn drawn() -> Shape {
+    Shape.Line(3)
+}
+
+test "compares two shapes" {
+    @assert_eq(drawn(), Shape.Dot);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"expected":"Line(3)"',
+    '"actual":"Dot"',
+    '"kind":"assert_eq"',
+]
+
+[[case]]
+name = "assert_ne_on_equal_values_reports_the_pair_it_rejected"
+description = """
+An `@assert_ne` failure has two identical renderings, so its diff is one `equal`
+hunk. Both fields stay present: the report is the pair the assertion demanded be
+different.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+fn parse_port() -> i32 {
+    41
+}
+
+test "rejects a duplicate port" {
+    @assert_ne(parse_port(), 41);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"kind":"assert_ne"',
+    '"message":"assertion failed: left != right"',
+    '"actual":"41","diff":[{"op":"equal","text":"41"}],"exit_code":101,"expected":"41"',
+]
+
+[[case]]
+name = "a_holding_comparison_reports_nothing"
+description = "A passing comparison has no effect, and the pass carries no failure record at all."
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+fn parse_port() -> i32 {
+    8080
+}
+
+test "accepts a port" {
+    @assert_eq(parse_port(), 8080);
+    @assert_ne(parse_port(), 80);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 0
+compile_stdout_contains = [
+    '"verdict":"pass"',
+    '"crash":0,"event":"run_finished","failed":0,"passed":1',
+]
+compile_stdout_not_contains = ['"failure"', '"expected"', '"diff"']
+
+# =============================================================================
+# Borrowed operands (spec 4.13:5f, 4.3:3f).
+#
+# The report arm renders each operand with a printer whose parameter is by
+# value, so the shape at risk is a place the body may only borrow: a field of a
+# `borrow` parameter, a non-`Copy` field of a borrowed local, a local still
+# needed afterwards. The comparison reads its operands the way `==` does and the
+# rendering passes that read's result, so none of these is a move — and the
+# failing case below proves the printer really does read through the borrow at
+# run time rather than rendering a corpse.
+# =============================================================================
+
+[[case]]
+name = "a_borrowed_strbuf_field_renders_on_the_failing_path"
+description = """
+The operand is `t.name`, where `t` is a `borrow` parameter and `name` is a
+`StrBuf`. The rendering has to reach the borrowed buffer's bytes, so the frame's
+`expected` is the real content rather than an empty or stale view.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+struct Thing { name: StrBuf, size: i32 }
+
+fn check_name(borrow t: Thing, borrow expected: StrBuf) {
+    @assert_eq(t.name, expected);
+}
+
+test "compares a borrowed field" {
+    let thing = Thing { name: StrBuf.from_str(borrow "alpha"), size: 3 };
+    let expected = StrBuf.from_str(borrow "alpine");
+    check_name(borrow thing, borrow expected);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"kind":"assert_eq"',
+    '"expected":"alpha"',
+    '"actual":"alpine"',
+    '{"op":"equal","text":"alp"}',
+]
+
+[[case]]
+name = "borrowed_operands_hold_and_stay_usable"
+description = """
+The passing half of the same shape, plus the two remaining ones: a `Copy` field
+of a borrowed local, and locals used by value after the comparison. All of it
+must compile and run — the comparison consumes nothing.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+struct Thing { name: StrBuf, size: i32 }
+
+fn check_name(borrow t: Thing, borrow expected: StrBuf) {
+    @assert_eq(t.name, expected);
+}
+
+fn check_size(borrow t: Thing) {
+    @assert_eq(t.size, 3);
+}
+
+fn consume(s: StrBuf) -> u64 { s.len() }
+
+test "borrowed operands are read, not taken" {
+    let thing = Thing { name: StrBuf.from_str(borrow "alpha"), size: 3 };
+    let expected = StrBuf.from_str(borrow "alpha");
+    check_name(borrow thing, borrow expected);
+    check_size(borrow thing);
+    // A non-`Copy` field of a borrowed local, compared in place, then still
+    // read through afterwards.
+    @assert_eq(thing.name, expected);
+    @assert_eq(thing.name.len(), expected.len());
+    // And locals the body consumes by value after comparing them.
+    let v = StrBuf.from_str(borrow "same");
+    let w = StrBuf.from_str(borrow "same");
+    @assert_eq(v, w);
+    @assert_eq(consume(v) + consume(w), 8);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 0
+compile_stdout_contains = [
+    '"verdict":"pass"',
+    '"crash":0,"event":"run_finished","failed":0,"passed":1',
+]
+
+# =============================================================================
+# The human rendering, built from the same values (ADR-0083 §2).
+# =============================================================================
+
+[[case]]
+name = "the_human_rendering_puts_a_caret_under_the_first_difference"
+description = """
+A single-line pair prints both values aligned with a caret under the first
+character that differs. The caret's column comes out of the same `diff` the JSON
+stream publishes, so the two surfaces cannot disagree about where the difference
+is.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+fn parse_port() -> i32 {
+    41
+}
+
+test "parses a port" {
+    @assert_eq(parse_port(), 42);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    "assert_eq: assertion failed: left == right",
+    "  expected: 41\n  actual:   42\n             ^\n",
+]
+
+[[case]]
+name = "the_human_rendering_of_a_multi_line_pair_is_a_hunk_listing"
+description = """
+A multi-line pair gets the `-`/`+` listing instead of a caret, because a caret
+into a wall of text locates nothing.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+fn rendered() -> str {
+    "alpha\\nbeta\\ngamma\\n"
+}
+
+test "compares two documents" {
+    @assert_eq(rendered(), "alpha\\nBETA\\ngamma\\n");
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    "  expected:\n    alpha\n    beta\n    gamma\n",
+    "  actual:\n    alpha\n    BETA\n    gamma\n",
+    "  diff:\n      alpha\n    - beta\n    + BETA\n      gamma\n",
+]
+
+# =============================================================================
+# Outside a test image (spec 4.13:5f).
+# =============================================================================
+
+[[case]]
+name = "an_ordinary_build_traps_with_the_pinned_message"
+description = """
+The same source compiled as an ordinary executable takes the same lowering. The
+frame write finds no descriptor 3 and fails with `EBADF` by design, so what is
+left is the pinned message and status 101 — the whole report an ordinary program
+owes.
+"""
+files = [{ path = "main.rue", source = """
+fn parse_port() -> i32 {
+    41
+}
+
+fn main() -> i32 {
+    @assert_eq(parse_port(), 42);
+    0
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["panic: assertion failed: left == right"]
+
+[[case]]
+name = "an_ordinary_build_names_the_inequality_it_checked"
+description = "`@assert_ne` pins its own message, so a reader can tell which comparison failed without the structured report."
+files = [{ path = "main.rue", source = """
+fn parse_port() -> i32 {
+    41
+}
+
+fn main() -> i32 {
+    @assert_ne(parse_port(), 41);
+    0
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["panic: assertion failed: left != right"]

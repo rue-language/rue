@@ -16,7 +16,7 @@ use core::fmt;
 #[macro_export]
 macro_rules! runtime_abi_version {
     ($callback:ident) => {
-        $callback!(2, __rue_runtime_abi_v2);
+        $callback!(3, __rue_runtime_abi_v3);
     };
 }
 
@@ -901,9 +901,10 @@ macro_rules! for_each_runtime_helper {
             safety: WRITABLE,
             returns: RETURNS
         },
-        // The ADR-0083 test channel (§3, §5.1). These four are runner plumbing
-        // called only from the synthesized test dispatcher and, later, from
-        // assertion sugar; no source-level intrinsic selects them yet.
+        // The ADR-0083 test channel (§3, §5.1). The dispatcher's own three are
+        // runner plumbing no source spelling selects; the reporting pair and
+        // its comparison form are what `@assert_eq`/`@assert_ne` and a test
+        // body's `?` lower to, in a test image and in an ordinary build alike.
         TestNormalizeProcess => safe __rue_test_normalize_process() {
             symbol: "__rue_test_normalize_process",
             parameters: params![],
@@ -952,6 +953,33 @@ macro_rules! for_each_runtime_helper {
             payload_len: u64,
         ) -> ! {
             symbol: "__rue_test_fail",
+            parameters: params![
+                BYTE_VIEW,
+                U64_VALUE,
+                BYTE_VIEW,
+                U64_VALUE,
+                BYTE_VIEW,
+                U64_VALUE,
+            ],
+            result: VOID,
+            safety: READABLE.union(TERMINATES),
+            returns: NEVER
+        },
+        // The comparison form of the same terminal call (ADR-0083 Phase 2.5).
+        // It carries the two rendered operands where `__rue_test_fail` carries
+        // one message and one open payload, so a consumer reads `expected` and
+        // `actual` as separate fields instead of parsing them back out of one
+        // string. The message is pinned by the kind rather than passed, which
+        // is what keeps this to the same six registers.
+        TestFailComparison => unsafe __rue_test_fail_comparison(
+            kind_ptr: *const u8,
+            kind_len: u64,
+            left_ptr: *const u8,
+            left_len: u64,
+            right_ptr: *const u8,
+            right_len: u64,
+        ) -> ! {
+            symbol: "__rue_test_fail_comparison",
             parameters: params![
                 BYTE_VIEW,
                 U64_VALUE,
@@ -1328,10 +1356,11 @@ const fn starts_with(value: &str, prefix: &str) -> bool {
 }
 
 const fn ends_with_decimal_version(symbol: &str, version: u32) -> bool {
-    // Version 2 added the ADR-0083 §5.1 test failure channel. This explicit
-    // check makes an ABI bump update both metadata values rather than silently
-    // retaining a stale symbol.
-    version == 2 && string_eq(symbol, "__rue_runtime_abi_v2")
+    // Version 2 added the ADR-0083 §5.1 test failure channel; version 3 added
+    // its comparison form, `__rue_test_fail_comparison` (Phase 2.5). This
+    // explicit check makes an ABI bump update both metadata values rather than
+    // silently retaining a stale symbol.
+    version == 3 && string_eq(symbol, "__rue_runtime_abi_v3")
 }
 
 /// Validate all table ordering, uniqueness, classification, and layout invariants.
@@ -1417,7 +1446,7 @@ mod tests {
     #[test]
     fn manifest_is_const_valid_and_exhaustive() {
         assert_eq!(validate_manifest(), Ok(()));
-        assert_eq!(RuntimeHelperId::ALL.len(), 51);
+        assert_eq!(RuntimeHelperId::ALL.len(), 52);
         assert_eq!(RuntimeHelperId::ALL.len(), RUNTIME_HELPERS.len());
         for (index, id) in RuntimeHelperId::ALL.iter().copied().enumerate() {
             assert_eq!(id as usize, index);
@@ -1489,6 +1518,7 @@ mod tests {
             "__rue_test_complete",
             "__rue_test_failure_site",
             "__rue_test_fail",
+            "__rue_test_fail_comparison",
             "__rue_test_usage_error",
         ];
         assert_eq!(
@@ -1501,7 +1531,7 @@ mod tests {
     #[test]
     fn every_helper_has_the_exact_accepted_signature_and_contract() {
         fn check(
-            visited: &mut [bool; 51],
+            visited: &mut [bool; 52],
             ids: &[RuntimeHelperId],
             parameters: &[AbiParameter],
             result: AbiResult,
@@ -1522,7 +1552,7 @@ mod tests {
             }
         }
 
-        let mut visited = [false; 51];
+        let mut visited = [false; 52];
         check(
             &mut visited,
             &[RuntimeHelperId::Exit],
@@ -1772,7 +1802,10 @@ mod tests {
         );
         check(
             &mut visited,
-            &[RuntimeHelperId::TestFail],
+            &[
+                RuntimeHelperId::TestFail,
+                RuntimeHelperId::TestFailComparison,
+            ],
             &[
                 BYTE_VIEW, U64_VALUE, BYTE_VIEW, U64_VALUE, BYTE_VIEW, U64_VALUE,
             ],
@@ -1964,7 +1997,7 @@ mod tests {
 
     #[test]
     fn abi_version_metadata_is_a_one_byte_data_export() {
-        assert_eq!(RUNTIME_ABI_VERSION, 2);
+        assert_eq!(RUNTIME_ABI_VERSION, 3);
         assert_eq!(
             RUNTIME_ABI_VERSION_SYMBOL,
             format!("__rue_runtime_abi_v{RUNTIME_ABI_VERSION}")
