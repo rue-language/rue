@@ -438,6 +438,21 @@ pub(crate) struct AnalysisContext<'a> {
     /// early-exit edge walk (RUE-1614) must skip the by-value parameter
     /// obligation exactly as the end-of-body parameter check does.
     pub is_destructor: bool,
+    /// True while analyzing the immediate block of a `test` item.
+    ///
+    /// One rule reads it: `?` has unwrap-and-report semantics in a test body
+    /// (ADR-0083 §1, spec 6.7). The flag is the owner kind rather than a
+    /// property of the enclosing block, which is exactly the scope the rule
+    /// wants — a nested `if`/`while`/`match` arm inside the test body is still
+    /// the test body, while a helper the test calls has its own owner kind and
+    /// therefore keeps ordinary `?`.
+    pub is_test_body: bool,
+    /// Body-local call symbol bound to each error type's structural printer.
+    ///
+    /// Two `?` sites on the same error type share one printer (ADR-0083 §1), so
+    /// they share the symbol that names it here too, and export publishes one
+    /// callee identity for both.
+    pub error_printer_symbols: AHashMap<Type, Spur>,
 }
 
 /// Classification of a non-continuing edge for linear scope checking.
@@ -729,6 +744,8 @@ impl<'a> AnalysisContext<'a> {
             place_aliases: self.place_aliases.clone(),
             try_operand: false,
             is_destructor: self.is_destructor,
+            is_test_body: self.is_test_body,
+            error_printer_symbols: self.error_printer_symbols.clone(),
         }
     }
 
@@ -769,6 +786,27 @@ impl<'a> AnalysisContext<'a> {
         anchor: rue_rir::RirStructuralAnchor,
     ) -> u32 {
         self.add_local_atom(content, crate::LocalAtomKind::ReadOnlyData, anchor)
+    }
+
+    /// Intern one compiler-authored string run in this body's local data.
+    ///
+    /// A source literal is anchored at the syntax that wrote it; text the
+    /// compiler writes for itself — the file name, kind, and message a test
+    /// body's `?` reports (ADR-0083 §1) — has no such syntax. It is anchored
+    /// under a string-literal index no source literal can occupy, so a
+    /// synthesized run can never collide with an anchored one, and identical
+    /// content is interned once however many sites emit it.
+    pub fn add_synthesized_string(&mut self, content: &str) -> u32 {
+        if let Some(id) = self.local_string_table.get(content) {
+            return *id;
+        }
+        let ordinal = u32::try_from(self.local_atoms.len()).unwrap_or(u32::MAX);
+        let anchor = rue_rir::RirStructuralAnchor::new(vec![
+            rue_rir::RirStructuralPathSegment::Body,
+            rue_rir::RirStructuralPathSegment::StringLiteral(u32::MAX),
+            rue_rir::RirStructuralPathSegment::ReadOnlyData(ordinal),
+        ]);
+        self.add_local_read_only_data(content.to_owned(), anchor)
     }
 
     fn add_local_atom(

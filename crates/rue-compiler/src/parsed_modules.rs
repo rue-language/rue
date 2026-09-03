@@ -1042,7 +1042,11 @@ impl ParsedModule {
     pub(crate) fn try_resolve_raw_symbol(&self, symbol: Spur) -> Option<&str> {
         self.payload.resolver.resolver.try_resolve(&symbol)
     }
-    #[cfg(test)]
+    /// The module's source text, shared rather than copied.
+    ///
+    /// The body and module source locators carry this handle so a coordinate
+    /// can be computed where a body is analyzed (ADR-0083 §1's test-body `?`
+    /// site); it is a refcount of this artifact's own string.
     pub(crate) fn shared_source_text(&self) -> Arc<String> {
         self.payload.source_text.clone()
     }

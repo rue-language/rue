@@ -210,6 +210,7 @@ fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
             crate::FunctionInstanceKey::Specialization { base, .. } => function_name(base),
             crate::FunctionInstanceKey::AnonymousMember { .. }
             | crate::FunctionInstanceKey::DropGlue(_)
+            | crate::FunctionInstanceKey::ErrorPrinter(_)
             | crate::FunctionInstanceKey::TestDispatcher => None,
         }
     }
@@ -317,6 +318,7 @@ pub(crate) fn durable_type_diagnostic_name_with_parameters(
                     }
                     crate::FunctionInstanceKey::AnonymousMember { .. }
                     | crate::FunctionInstanceKey::DropGlue(_)
+                    | crate::FunctionInstanceKey::ErrorPrinter(_)
                     | crate::FunctionInstanceKey::TestDispatcher => None,
                 }
             }
@@ -324,6 +326,7 @@ pub(crate) fn durable_type_diagnostic_name_with_parameters(
         }
         crate::FunctionInstanceKey::AnonymousMember { .. }
         | crate::FunctionInstanceKey::DropGlue(_)
+        | crate::FunctionInstanceKey::ErrorPrinter(_)
         | crate::FunctionInstanceKey::TestDispatcher => None,
     };
     let Some(definition) = definition else {

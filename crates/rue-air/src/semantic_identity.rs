@@ -427,6 +427,7 @@ impl<D, M> AnonymousNominalKey<D, M> {
                 FunctionInstanceKey::Definition(_)
                 | FunctionInstanceKey::AnonymousMember { .. }
                 | FunctionInstanceKey::DropGlue(_)
+                | FunctionInstanceKey::ErrorPrinter(_)
                 | FunctionInstanceKey::TestDispatcher => None,
             },
         }
@@ -495,6 +496,13 @@ pub enum FunctionInstanceKey<D, M> {
         member: AnonymousMemberKey,
     },
     DropGlue(Node<TypeInstanceKey<D, M>>),
+    /// The synthesized structural printer for one error type (ADR-0083 §1).
+    ///
+    /// A test body's `?` renders the error it traps on by calling this, and
+    /// the identity is the error type alone — exactly like drop glue — so
+    /// every `?` site on the same error type shares one instance rather than
+    /// inlining a rendering at each site.
+    ErrorPrinter(Node<TypeInstanceKey<D, M>>),
     /// The synthesized `main` of a test image (ADR-0083 §3).
     ///
     /// A test request has exactly one, and it carries no payload: the ordered
@@ -716,6 +724,9 @@ impl<D, M> FunctionInstanceKey<D, M> {
                 member: member.clone(),
             },
             Self::DropGlue(value) => FunctionInstanceKey::DropGlue(Node::new(
+                value.try_map_identities(definition, module)?,
+            )),
+            Self::ErrorPrinter(value) => FunctionInstanceKey::ErrorPrinter(Node::new(
                 value.try_map_identities(definition, module)?,
             )),
             // The dispatcher carries no definition or module identity, so

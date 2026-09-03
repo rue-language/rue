@@ -139,6 +139,7 @@ macro_rules! register_body_body_closures {
                         reached: reachability.reached.clone(),
                         demanded_drop_glue: reachability.demanded_drop_glue.clone(),
                         demanded_drop_glue_plans: reachability.demanded_drop_glue_plans.clone(),
+                        demanded_error_printers: reachability.demanded_error_printers.clone(),
                         bodies: bodies.into(),
                         scheduling_errors: reachability.scheduling_errors.clone(),
                         fatal,

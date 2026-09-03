@@ -3380,6 +3380,7 @@ fn retained_provider_specialization_materializes_with_live_air_parity() {
         file_id: input.source.file_id,
         physical_path: input.source.physical_path.clone(),
         source_length: input.source.source_length,
+        source_text: input.source.source_text.clone(),
     };
     let probe_base = base.clone();
     let probe_arguments = arguments.clone();

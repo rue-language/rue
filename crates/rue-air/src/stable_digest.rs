@@ -82,8 +82,20 @@ pub fn stable_definition_component(
 /// scheduled compiles of the same source, and dependent on nothing but the
 /// name's bytes.
 pub fn stable_test_name_digest_component(name: &str) -> String {
+    stable_content_digest_component(name)
+}
+
+/// The fixed-seed FNV-1a digest of one stable-content string, spelled as 32
+/// lowercase hex digits.
+///
+/// The general form behind [`stable_test_name_digest_component`]: a symbol
+/// scheme that must not embed its subject's spelling — a test's name, or a
+/// whole type identity — names it by this digest instead. Depending on nothing
+/// but the argument's bytes is what makes it identical across warm, fresh, and
+/// differently scheduled compiles of the same source.
+pub fn stable_content_digest_component(content: &str) -> String {
     let mut hasher = StableFnv1a128::new();
-    hasher.write(name.as_bytes());
+    hasher.write(content.as_bytes());
     format!("{:032x}", hasher.digest())
 }
 
@@ -259,6 +271,10 @@ impl DurableEncode for crate::FunctionInstanceKey<String, String> {
                 owner.durable_encode(state);
             }
             Self::TestDispatcher => encode_variant(state, 4),
+            Self::ErrorPrinter(owner) => {
+                encode_variant(state, 5);
+                owner.durable_encode(state);
+            }
         }
     }
 }

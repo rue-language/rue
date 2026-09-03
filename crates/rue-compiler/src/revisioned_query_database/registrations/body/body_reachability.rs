@@ -33,6 +33,7 @@ $runtime
                                     reached: Arc::from([]),
                                     demanded_drop_glue: Arc::from([]),
                                     demanded_drop_glue_plans: Arc::from([]),
+                                    demanded_error_printers: Arc::from([]),
                                     scheduling_errors: Arc::from([]),
                                     fatal: Some(
                                         crate::body_query::BodyClosureFatal::DeclarationFailed {
@@ -77,6 +78,7 @@ $runtime
                     let mut reached_body_keys = Vec::new();
                     let mut demanded_drop_glue = BTreeSet::new();
                     let mut demanded_drop_glue_plans = BTreeMap::new();
+                    let mut demanded_error_printers = BTreeSet::new();
                     let mut pending_drop_glue = BTreeSet::new();
                     let mut visited_drop_glue = BTreeSet::new();
                     let mut scheduling_errors = BTreeMap::new();
@@ -696,6 +698,16 @@ $runtime
                         for reference in references.0.iter() {
                             match reference {
                                 crate::body_query::BodyReference::Callable(callable) => {
+                                    // A structural printer is synthesized, not
+                                    // declared, so the call that names it is
+                                    // also what roots it — the same edge drop
+                                    // glue gets from a destroy site
+                                    // (ADR-0083 §1).
+                                    if let crate::FunctionInstanceKey::ErrorPrinter(owner) =
+                                        callable
+                                    {
+                                        demanded_error_printers.insert(owner.as_ref().clone());
+                                    }
                                     let abi = context.query_registered(
                                         &$call_abis_for_body_reachability,
                                         crate::type_queries::CallAbiQueryKey {
@@ -854,6 +866,10 @@ $runtime
                         reached: reached.into(),
                         demanded_drop_glue: demanded_drop_glue.into_iter().collect::<Vec<_>>().into(),
                         demanded_drop_glue_plans: demanded_drop_glue_plans
+                            .into_iter()
+                            .collect::<Vec<_>>()
+                            .into(),
+                        demanded_error_printers: demanded_error_printers
                             .into_iter()
                             .collect::<Vec<_>>()
                             .into(),

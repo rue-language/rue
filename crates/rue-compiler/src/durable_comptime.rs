@@ -43,6 +43,7 @@ pub(crate) use diagnostics::*;
 pub(crate) use effects::*;
 pub(crate) use host::*;
 pub(crate) use lifecycle::*;
+pub(crate) use projection::durable_type_diagnostic_name;
 pub(crate) use projection::*;
 pub(crate) use services::*;
 pub(crate) use structured::*;

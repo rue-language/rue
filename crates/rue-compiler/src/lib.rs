@@ -54,6 +54,7 @@ mod drop_glue;
 mod durable_cfg;
 mod durable_comptime;
 mod durable_semantics;
+mod error_printer;
 mod import_discovery;
 mod import_graph;
 mod linking;
@@ -100,6 +101,8 @@ mod integration_tests;
 mod scaling_harness;
 #[cfg(test)]
 mod supported_api_inventory;
+#[cfg(test)]
+mod test_body_try_tests;
 #[cfg(test)]
 mod test_image_tests;
 mod warm_fresh_parity;

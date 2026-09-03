@@ -1958,7 +1958,7 @@ fn glob_import_paths(source: &str) -> Vec<String> {
 const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
     (1_608, 9_349_892_297_056_354_958),
     (2_319, 162_635_033_840_982_550),
-    (2_335, 11_401_802_782_486_455_398),
+    (2_405, 11_807_100_933_513_940_988),
     (2_512, 6_814_382_478_423_834_202),
     (2_172, 10_084_900_447_980_393_497),
     (1_922, 13_163_199_842_675_560_730),
@@ -1969,14 +1969,14 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
     (3_763, 1_124_858_669_055_323_594),
     (6_997, 6_265_749_180_761_052_443),
     (18_210, 5_072_850_203_005_355_192),
-    (4_414, 16_575_646_427_208_173_073),
+    (4_522, 5_373_278_958_757_567_170),
     (723, 13_306_205_946_719_141_945),
     (2_722, 5_872_377_445_300_688_460),
     (8_143, 86_253_652_908_143_842),
     (8_573, 4_124_823_810_140_583_654),
     (753, 3_150_885_663_910_159_936),
     (2_598, 10_270_973_964_375_394_836),
-    (11_583, 5_315_119_467_923_005_516),
+    (11653, 15_769_724_788_918_086_723),
     (104_883, 1_964_666_036_826_678_610),
     (3_254, 11_949_940_325_034_004_149),
     (5_552, 14_658_861_127_087_730_967),
@@ -1995,8 +1995,8 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
     (3_611, 15_282_171_189_445_768_455),
     (4_802, 13_585_732_442_571_114_436),
     (2_906, 14_218_343_244_686_701_314),
-    (51_750, 5_765_149_880_362_847_366),
-    (8_756, 6_802_240_310_126_667_165),
+    (52_774, 6_578_628_352_398_612_154),
+    (8_851, 7_734_652_166_175_953_446),
     (14_038, 8_977_560_222_769_304_814),
     (380, 6_623_933_847_739_557_204),
     (1_405, 15_935_800_678_319_035_612),
@@ -2013,12 +2013,12 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
 // identity even when constructor, caller, and macro token counts do not.
 const CONSTRUCTION_TOKEN_STRUCT_IDENTITY: (usize, u64) = (80, 5_227_448_979_315_228_973);
 const CONSTRUCTION_TOKEN_IMPL_IDENTITY: (usize, u64) = (108, 2_765_439_612_714_245_239);
-const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (10742, 6_981_258_935_585_704_258);
+const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (10_799, 16_325_515_270_950_367_680);
 const COMPILER_CRATE_ROOT_NAMESPACE_IDENTITY: (usize, u64, usize, u64) = (
-    112,
-    16_669_975_409_982_800_018,
-    227,
-    14_750_313_343_688_513_712,
+    114,
+    11_273_416_965_168_702_126,
+    229,
+    2_753_161_391_832_661_620,
 );
 const COMPILER_SESSION_ROOT_IDENTITY: (usize, u64) = (3_375, 11_197_616_651_825_656_461);
 const COMPILER_SESSION_CONSTRUCTOR_IDENTITY: (usize, u64) = (82, 10_721_269_354_679_246_675);
@@ -4454,7 +4454,7 @@ pub(super) use register_parse_import_parse;"#;
     ));
     let nested_module_owners = module_owner_inventory(&compiler_module_sources);
     let nested_module_fingerprint = source_inventory_fingerprint(&nested_module_owners);
-    let expected_nested_module_identity = (156, 2_667_001_902_368_665_969);
+    let expected_nested_module_identity = (159, 15_474_350_804_192_522_746);
     assert_eq!(
         (nested_module_owners.len(), nested_module_fingerprint),
         expected_nested_module_identity,
@@ -5451,6 +5451,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("durable_cfg", include_str!("durable_cfg.rs")),
     ("durable_comptime", DURABLE_COMPTIME_SOURCE),
     ("durable_semantics", include_str!("durable_semantics.rs")),
+    ("error_printer", include_str!("error_printer.rs")),
     ("import_discovery", include_str!("import_discovery.rs")),
     ("import_graph", include_str!("import_graph.rs")),
     ("linking", include_str!("linking.rs")),
@@ -7076,6 +7077,7 @@ fn facade_stays_small_and_session_centered() {
             "retained_charge",
             "scaling_harness",
             "supported_api_inventory",
+            "test_body_try_tests",
             "test_image_tests",
             "test_support",
         ])

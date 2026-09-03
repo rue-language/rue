@@ -899,6 +899,16 @@ pub struct DurableBodySourceLocator {
     pub file_id: FileId,
     pub physical_path: Arc<str>,
     pub source_length: u32,
+    /// The module's source text, shared with the parse artifact that owns it.
+    ///
+    /// Held so a body can put a *source coordinate* into the code it generates:
+    /// a test body's `?` reports the line and column of its site (ADR-0083 §1),
+    /// and a line and column are a function of the text, not of a span. The
+    /// handle is a refcount of the parse artifact's own string, so carrying it
+    /// costs a pointer rather than a copy — which is why the coordinate is
+    /// computed here, with the same index diagnostics use, instead of being
+    /// approximated from an offset.
+    pub source_text: Arc<String>,
 }
 
 #[derive(Clone)]
@@ -4265,6 +4275,7 @@ where
                         }
                         crate::FunctionInstanceKey::AnonymousMember { .. }
                         | crate::FunctionInstanceKey::DropGlue(_)
+                        | crate::FunctionInstanceKey::ErrorPrinter(_)
                         | crate::FunctionInstanceKey::TestDispatcher => None,
                     }
                 }
@@ -4272,6 +4283,7 @@ where
             }
             crate::FunctionInstanceKey::AnonymousMember { .. }
             | crate::FunctionInstanceKey::DropGlue(_)
+            | crate::FunctionInstanceKey::ErrorPrinter(_)
             | crate::FunctionInstanceKey::TestDispatcher => return None,
         };
         let name = self.source.definition_name(definition)?;
@@ -5210,6 +5222,25 @@ where
         &mut self.anonymous_enum_ids
     }
 
+    fn register_synthesized_callable(
+        &self,
+        symbol: Spur,
+        identity: super::anon_structs::IssuedFunctionInstanceKey,
+    ) {
+        self.anonymous_function_identities
+            .borrow_mut()
+            .insert(symbol, identity);
+    }
+
+    fn body_source_coordinate(&self, span: Span) -> Option<(Arc<str>, u32, u32)> {
+        let locator = self.source.definition_source(&self.key)?;
+        if locator.file_id != span.file_id {
+            return None;
+        }
+        let (line, column) = rue_span::LineIndex::new(&locator.source_text).line_col(span.start);
+        Some((locator.physical_path.clone(), line, column))
+    }
+
     fn canonical_type_instance(
         &self,
         ty: Type,
@@ -5692,6 +5723,7 @@ where
                         info.span,
                         info.allow_unused_variable,
                         info.allow_unreachable_code,
+                        crate::StableDefinitionKind::Function,
                     )?,
                     body_span,
                 )
@@ -5905,6 +5937,7 @@ where
                         declaration_span,
                         allow_unused_variable,
                         allow_unreachable_code,
+                        crate::StableDefinitionKind::Test,
                     )?,
                     body_span,
                 )
@@ -6175,6 +6208,9 @@ where
         }
         crate::FunctionInstanceKey::DropGlue(_) => {
             Err("drop glue cannot produce an anonymous member body")
+        }
+        crate::FunctionInstanceKey::ErrorPrinter(_) => {
+            Err("an error printer cannot produce an anonymous member body")
         }
         crate::FunctionInstanceKey::TestDispatcher => {
             Err("the test dispatcher cannot produce an anonymous member body")

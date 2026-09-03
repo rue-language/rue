@@ -297,6 +297,7 @@ impl DurableBodyLookupSource<FixtureKey, FixtureModule> for FixtureFactSource {
             file_id,
             physical_path: module.clone(),
             source_length: 0,
+            source_text: std::sync::Arc::new(String::new()),
         })
     }
 

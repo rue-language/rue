@@ -419,7 +419,8 @@ pub(in crate::revisioned_query_database) fn visit_instance_anonymous_nominals<'a
                 arguments(values, seen, visit);
             }
             crate::FunctionInstanceKey::AnonymousMember { owner, .. }
-            | crate::FunctionInstanceKey::DropGlue(owner) => instance_type(owner, seen, visit),
+            | crate::FunctionInstanceKey::DropGlue(owner)
+            | crate::FunctionInstanceKey::ErrorPrinter(owner) => instance_type(owner, seen, visit),
             crate::FunctionInstanceKey::TestDispatcher => {}
         }
     }

@@ -322,6 +322,48 @@ pub const KNOWN_UNCOVERED_NORMATIVE: &[(&str, &str)] = &[
          move-without-destructor rule governs `@raw`/`@raw_mut` pointer escapes under \
          ADR-0028 programmer responsibility, which is not positively testable.",
     ),
+    // The test-body `?` rules (ADR-0083 §1). Every one of them is about a test
+    // body, and 6.7:9 is the reason this corpus cannot reach one: a spec case is
+    // an executable request, and an executable request never analyzes, lowers,
+    // or runs a test body. Observing these rules needs a *test* request and a
+    // dispatched process, which is what the rue-compiler suites below build.
+    (
+        "6.7:13",
+        "`?` legality inside a test body: a spec case is an executable request, \
+         which by 6.7:9 never analyzes a test body, so this corpus cannot observe \
+         acceptance or rejection there at all. Covered by the rue-compiler session \
+         tests in `crates/rue-compiler/src/test_body_try_tests.rs`, which lower the \
+         same programs under `RootSelection::Tests`: `?` on a trusted `Option` and \
+         on a trusted `Result` analyzes, a `()`-returning helper the test calls \
+         still reports E0503/E0505, and a same-shape lookalike still reports \
+         E0504.",
+    ),
+    (
+        "6.7:14",
+        "The failure arm's dynamic semantics: reaching them needs a linked test \
+         image and a dispatched process, which the spec corpus does not build. \
+         Covered end to end by \
+         `crates/rue-compiler/src/test_image_tests.rs::platform_native_a_failing_test_body_question_reports_and_traps` \
+         (exit 101, `panic: unhandled error` on stderr, one `unhandled_error` frame \
+         naming the `?` site) and \
+         `..._a_succeeding_test_body_question_completes_normally`.",
+    ),
+    (
+        "6.7:15",
+        "The rendered payload: the rendering is carried on the run's failure \
+         channel, which only a dispatched test process writes. Covered by \
+         `crates/rue-compiler/src/test_image_tests.rs::platform_native_the_reported_payload_is_the_rendered_error`, \
+         which pins one shape per rule — `None`, a unit variant, a payload variant \
+         carrying a negative integer and a byte string, and a struct — and by the \
+         session test that proves one printer serves every site on an error type.",
+    ),
+    (
+        "6.7:16",
+        "Destructors skipped on the failing path: an absence, observable only by \
+         running a test whose live local has a `drop fn` and seeing its work not \
+         happen. Covered by \
+         `crates/rue-compiler/src/test_image_tests.rs::platform_native_a_failing_question_skips_a_live_local_destructor`.",
+    ),
 ];
 
 fn format_non_normative_case(case: &NonNormativeCase) -> String {

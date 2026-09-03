@@ -638,6 +638,13 @@ impl CompilerSession {
                 .cloned()
                 .map(|owner| crate::FunctionInstanceKey::DropGlue(Node::new(owner))),
         );
+        identities.extend(
+            graph
+                .closure
+                .demanded_error_printers
+                .iter()
+                .map(crate::error_printer::error_printer_identity),
+        );
         // A test image needs an entry point, and only a request that lowers one
         // synthesizes it: `rooted_test_inventory` stops at the body graph, so a
         // listing never builds a dispatcher it would not link (ADR-0083 §2,
@@ -861,6 +868,65 @@ impl CompilerSession {
                 crate::cfg_query::CfgSemanticInput::DropGlue {
                     owner: owner.clone(),
                     facts: Box::new(facts.clone()),
+                    materialization: Arc::new(materialization),
+                    body_span: fallback_span,
+                },
+                fallback_span,
+            ));
+        }
+        for owner in graph.closure.demanded_error_printers.iter() {
+            work.cfg.materialization_fact_selections += 1;
+            // The plan is a pure function of the error type's declared shape,
+            // which the selection index already holds; the printer needs no
+            // query family of its own, because it never descends past one level
+            // and so never has a fixpoint to reach.
+            let facts = crate::error_printer::plan_error_printer(owner, &materialization_index);
+            // Fact selection reads a body's types, strings, and callees — never
+            // its parameter offsets — so it synthesizes against a uniform slot
+            // width and lets CFG evaluation, which has the layout terminals,
+            // build the same body with the real ones.
+            let body = crate::error_printer::synthesize_error_printer(owner, &facts, &|_| Some(1))
+                .map_err(|error| {
+                    CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "error-printer synthesis failed: {error}"
+                        )),
+                        fallback_span,
+                    )
+                })?;
+            let identity = crate::error_printer::error_printer_identity(owner);
+            let materialization =
+                crate::local_semantic_materialization::select_materialization_facts(
+                    &identity,
+                    &body,
+                    &materialization_index,
+                    &callable_symbols,
+                    &mut fact_closures,
+                )
+                .map_err(|error| {
+                    CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "error-printer materialization fact selection failed: {error:?}"
+                        )),
+                        fallback_span,
+                    )
+                })?;
+            work.cfg.materialization_declarations_selected += materialization.declarations.len();
+            work.cfg.materialization_anonymous_nominals_selected +=
+                materialization.anonymous_nominals.len();
+            work.cfg.materialization_callables_selected += materialization.callables.len();
+            work.cfg.materialization_nominal_metadata_selected +=
+                materialization.nominal_metadata.len();
+            work.cfg.materialization_modules_selected += materialization.modules.len();
+            work.cfg.materialization_builtin_nominals_selected +=
+                materialization.builtin_nominals.len();
+            work.cfg.materialization_required_types_selected +=
+                materialization.required_types.len();
+            cfg_inputs.push((
+                identity,
+                crate::cfg_query::CfgSemanticInput::ErrorPrinter {
+                    owner: owner.clone(),
+                    facts: Box::new(facts),
                     materialization: Arc::new(materialization),
                     body_span: fallback_span,
                 },
@@ -2217,7 +2283,9 @@ pub(super) fn stable_function_definition_root(
     match value {
         F::Definition(value) => Some(value),
         F::Specialization { base, .. } => stable_function_definition_root(base),
-        F::AnonymousMember { owner, .. } | F::DropGlue(owner) => stable_type_definition_root(owner),
+        F::AnonymousMember { owner, .. } | F::DropGlue(owner) | F::ErrorPrinter(owner) => {
+            stable_type_definition_root(owner)
+        }
         F::TestDispatcher => None,
     }
 }
@@ -2283,6 +2351,7 @@ fn rooted_unused_function_warnings(
             crate::FunctionInstanceKey::Specialization { base, .. } => source_definition(base),
             crate::FunctionInstanceKey::AnonymousMember { .. }
             | crate::FunctionInstanceKey::DropGlue(_)
+            | crate::FunctionInstanceKey::ErrorPrinter(_)
             | crate::FunctionInstanceKey::TestDispatcher => None,
         }
     }

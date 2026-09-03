@@ -71,8 +71,8 @@ A test declaration's block is analyzed exactly as the body of a parameterless
 function whose result type is `()` (6.1). Every rule that governs such a body
 governs a test body, unchanged — type checking, ownership and borrow checking,
 linearity, and every legality rule of chapters 3 and 4. In particular, the
-block's value **MUST** have type `()`, and the `?` operator is rejected in a
-test body exactly as it is in any other `()`-returning body (E0503, E0505).
+block's value **MUST** have type `()`. The one exception is the `?` operator,
+which a test body gives its own meaning (6.7:13).
 
 {{ rule(id="6.7:8", cat="normative") }}
 
@@ -114,6 +114,74 @@ the feature enabled is the standard preview-gate diagnostic (E1100).
 
 {{ rule(id="6.7:12", cat="informative") }}
 
-This section specifies the declaration only. How tests are selected, executed,
-and reported is defined by ADR-0083 Phase 2 and is not yet part of this
-specification.
+This section specifies the declaration, and the one construct whose meaning a
+test body changes (6.7:13). How tests are selected and executed — and the wire
+shape a failure report takes once a runner collects it — is defined by ADR-0083
+Phase 2 and is not part of this specification; what 6.7:14 pins is the program's
+own behavior, which is observable without a runner.
+
+## `?` in a test body
+
+{{ rule(id="6.7:13", cat="legality-rule") }}
+
+The `?` operator **MAY** be applied, in the block of a test declaration, to an
+operand whose type is an exact specialization of a trusted producer (4.15:3).
+Everything 4.15 says about which operands qualify still holds, so a same-shape
+lookalike is still rejected (E0504); what does not hold is 4.15:4's requirement
+on the enclosing function's return type, because no value is propagated out of a
+test body. Each `?` site is therefore independent: two sites in one test body
+**MAY** apply `?` to standard `Result`s with different error types.
+
+This rule governs the test declaration's own block, including any nested block
+of an `if`, `while`, or `match` inside it. It does not extend to a function the
+test calls: that function has its own body, and `?` in it means what 4.15 says
+it means — so a `()`-returning helper still rejects `?` (E0503, E0505).
+
+{{ rule(id="6.7:14", cat="dynamic-semantics") }}
+
+When `?` is evaluated in a test body and the operand is `Some(v)` or `Ok(v)`,
+the expression evaluates to `v` and execution continues normally, exactly as
+4.15:6 describes.
+
+When the operand is `None` or `Err(e)`, the enclosing function does **not**
+return. The implementation reports a structured failure naming the kind
+`unhandled_error`, the source position of the `?` operator itself, and the
+rendered error value (6.7:15); it then terminates the process the way every
+other trap does — exit status 101, with `panic: unhandled error` on the standard
+error stream (8.5). No further code in the test body is executed.
+
+{{ rule(id="6.7:15", cat="normative") }}
+
+The rendered error value is produced from the operand's failure payload by these
+rules, and is bounded to 4096 bytes; a rendering that would exceed that bound is
+truncated to it and the marker ` …[truncated]` is appended.
+
+- A `None` renders as `None`.
+- A variant of an enum renders as its variant name when the variant has no
+  payload, and as the variant name followed by its rendered payloads in
+  declaration order, parenthesized and comma-separated, when it has one:
+  `Invalid(-7, bad)`.
+- An integer renders in decimal, with a leading `-` when it is negative. A
+  `bool` renders as `true` or `false`.
+- A byte string — a `str`, a fixed `Str(N)`, or a `StrBuf` — renders as its own
+  bytes, verbatim.
+- A struct renders as `{ field: value, … }`: each field's name, then its
+  rendered value, in declaration order.
+- Rendering descends one level. A value reached inside a rendered struct field
+  or enum payload that is itself an aggregate renders as the name of its type,
+  and so does any value these rules cannot otherwise render.
+
+{{ rule(id="6.7:16", cat="normative") }}
+
+The failing path of 6.7:14 is a trap, not a return. It therefore ends the
+process without running the destructors (3.8) of the values live at the `?`
+site, exactly as `@panic` and every other trap does. A `drop fn` whose
+observable work matters — a flush, or the release of something outside the
+process — does not perform it when a `?` in a test body fails.
+
+{{ rule(id="6.7:17", cat="informative") }}
+
+`?` is for the failures a test does not expect. A test that asserts a call
+*does* fail matches on the result in the ordinary way (4.14) and never reaches
+this rule; nothing about `Option` or `Result` handling changes inside a test
+body beyond the meaning of `?` itself.

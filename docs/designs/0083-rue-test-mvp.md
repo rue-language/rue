@@ -634,7 +634,7 @@ companion project "rue test follow-ups" (§6).
       whole in Phase 2, since `analyze_try` has no legality-only step. No
       runner: `--emit`-level verification that test items parse, analyze,
       and are invisible to executable requests.
-- [ ] **Phase 2: `rue test` MVP runner** - RUE-1619. Value-aware subcommand
+- [x] **Phase 2: `rue test` MVP runner** - RUE-1619. Value-aware subcommand
       dispatch; test-request root sets; dispatcher `main` and per-target
       test image through the image-planning path plus the ADR-0061 facade
       work; the loader-visible exec contract with dispatcher normalization
@@ -660,6 +660,10 @@ companion project "rue test follow-ups" (§6).
       memo-database pressure spike (Open Questions). **This phase is the
       minimum usable runner: agent-first, zero capability claims — every
       test simply runs.**
+      Shipped in four slices: RUE-1917 (failure channel, test image, dispatcher
+      `main`), RUE-1918 (declared test-candidate inventory and the orphan
+      warning), RUE-1920 (the `rue test` subcommand, runner, and event stream),
+      RUE-1921 (`?` in test bodies with unwrap-and-report semantics).
 - [ ] **Phase 2.5: structured assertion payloads** - RUE-1620. `@assert_eq`
       (and a minimal comparison family) as intrinsics producing
       expected/actual through the §5.1 channel; machine-computed diffs in

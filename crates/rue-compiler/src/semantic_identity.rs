@@ -729,6 +729,10 @@ fn encode_function(value: &FunctionInstanceKey, output: &mut String) {
             tag(output, 3);
             encode_type(value, output);
         }
+        FunctionInstanceKey::ErrorPrinter(value) => {
+            tag(output, 5);
+            encode_type(value, output);
+        }
         FunctionInstanceKey::TestDispatcher => tag(output, 4),
     }
 }

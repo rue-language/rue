@@ -64,6 +64,17 @@ pub(crate) enum CfgSemanticInput {
         materialization: Arc<crate::local_semantic_materialization::LocalMaterializationFacts>,
         body_span: Span,
     },
+    /// The synthesized structural printer for one error type (ADR-0083 §1).
+    ///
+    /// Keyed exactly like drop glue: the error type plus the plan resolved for
+    /// it, so two requests that render the same error type share one CFG
+    /// terminal and a change to the type's shape invalidates it.
+    ErrorPrinter {
+        owner: crate::TypeInstanceKey,
+        facts: Box<crate::error_printer::ErrorPrinterFacts>,
+        materialization: Arc<crate::local_semantic_materialization::LocalMaterializationFacts>,
+        body_span: Span,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +149,24 @@ impl PartialEq for CfgSemanticInput {
                     ..
                 },
             ) => left_table == right_table && left_materialization == right_materialization,
+            (
+                Self::ErrorPrinter {
+                    owner: left_owner,
+                    facts: left_facts,
+                    materialization: left_materialization,
+                    ..
+                },
+                Self::ErrorPrinter {
+                    owner: right_owner,
+                    facts: right_facts,
+                    materialization: right_materialization,
+                    ..
+                },
+            ) => {
+                left_owner == right_owner
+                    && left_facts == right_facts
+                    && left_materialization == right_materialization
+            }
             _ => false,
         }
     }
@@ -364,9 +393,9 @@ pub(crate) fn accessor_source_name(identity: &crate::FunctionInstanceKey) -> Str
         crate::FunctionInstanceKey::Definition(definition) => definition.name().to_owned(),
         crate::FunctionInstanceKey::Specialization { base, .. } => accessor_source_name(base),
         crate::FunctionInstanceKey::AnonymousMember { member, .. } => member.name.to_string(),
-        crate::FunctionInstanceKey::DropGlue(_) | crate::FunctionInstanceKey::TestDispatcher => {
-            "<accessor>".to_owned()
-        }
+        crate::FunctionInstanceKey::DropGlue(_)
+        | crate::FunctionInstanceKey::ErrorPrinter(_)
+        | crate::FunctionInstanceKey::TestDispatcher => "<accessor>".to_owned(),
     }
 }
 
@@ -390,9 +419,9 @@ pub(crate) fn accessor_cfg_subgraph(
                         _ => None,
                     })
                     .collect(),
-                CfgSemanticInput::DropGlue { .. } | CfgSemanticInput::TestDispatcher { .. } => {
-                    Vec::new()
-                }
+                CfgSemanticInput::DropGlue { .. }
+                | CfgSemanticInput::TestDispatcher { .. }
+                | CfgSemanticInput::ErrorPrinter { .. } => Vec::new(),
             };
             (function.clone(), callees)
         })
@@ -417,7 +446,9 @@ pub(crate) fn accessor_cfg_subgraph(
             CfgSemanticInput::Body {
                 materialization, ..
             } => Some(materialization),
-            CfgSemanticInput::DropGlue { .. } | CfgSemanticInput::TestDispatcher { .. } => None,
+            CfgSemanticInput::DropGlue { .. }
+            | CfgSemanticInput::TestDispatcher { .. }
+            | CfgSemanticInput::ErrorPrinter { .. } => None,
         }
     }
     fn with_facts(
@@ -429,9 +460,9 @@ pub(crate) fn accessor_cfg_subgraph(
                 input: input.clone(),
                 materialization,
             },
-            CfgSemanticInput::DropGlue { .. } | CfgSemanticInput::TestDispatcher { .. } => {
-                key.semantic_input.clone()
-            }
+            CfgSemanticInput::DropGlue { .. }
+            | CfgSemanticInput::TestDispatcher { .. }
+            | CfgSemanticInput::ErrorPrinter { .. } => key.semantic_input.clone(),
         };
         CfgQueryKey::new(
             key.function.clone(),
@@ -854,6 +885,15 @@ impl RetainedCharge for CfgSemanticInput {
             } => table
                 .retained_charge()
                 .saturating_add(materialization.retained_charge()),
+            Self::ErrorPrinter {
+                owner,
+                facts,
+                materialization,
+                ..
+            } => owner
+                .retained_charge()
+                .saturating_add(facts.retained_charge())
+                .saturating_add(materialization.retained_charge()),
         }
     }
 }
@@ -971,7 +1011,8 @@ pub(crate) fn import_accessor_failure(
         .map(|dependency| match &dependency.semantic_input {
             CfgSemanticInput::Body { input, .. } => input.body_span,
             CfgSemanticInput::DropGlue { body_span, .. }
-            | CfgSemanticInput::TestDispatcher { body_span, .. } => *body_span,
+            | CfgSemanticInput::TestDispatcher { body_span, .. }
+            | CfgSemanticInput::ErrorPrinter { body_span, .. } => *body_span,
         })
         .expect("published accessor failure must name a dependency");
     import_errors(errors, origin.body_span, current_accessor_span)
@@ -1307,6 +1348,51 @@ fn materialize_and_build_cfg(
             synthesized = crate::test_dispatcher::synthesize_test_dispatcher(table);
             (&synthesized, *body_span, materialization.as_ref())
         }
+        CfgSemanticInput::ErrorPrinter {
+            owner,
+            facts,
+            materialization,
+            body_span,
+        } => {
+            // A printer reads its error value out of flattened parameter slots,
+            // so it needs the same layout prerequisite drop glue does: the
+            // width of every type in the plan. Probed by type and never
+            // iterated, so a bucket selector rather than an ordered map.
+            let mut slots = ahash::AHashMap::new();
+            let plan_types = crate::error_printer::collect_printer_plan_types(owner, facts)
+                .into_iter()
+                .collect::<Vec<_>>();
+            let terminals = context.query_registered_adaptive_batch(
+                layouts,
+                plan_types
+                    .iter()
+                    .cloned()
+                    .map(|ty| crate::type_queries::TypeQueryKey {
+                        ty,
+                        configuration: key.configuration.clone(),
+                    }),
+            )?;
+            for (ty, terminal) in plan_types.into_iter().zip(terminals) {
+                let QueryOutcome::Success(value) = terminal.outcome() else {
+                    unreachable!("Layout publishes typed values")
+                };
+                let crate::type_queries::LayoutValue::Available(layout) = value else {
+                    return Ok(internal_failure(
+                        format!("error-printer layout unavailable for {ty:?}: {value:?}"),
+                        *body_span,
+                    ));
+                };
+                slots.insert(ty, layout.abi_slots);
+            }
+            synthesized =
+                match crate::error_printer::synthesize_error_printer(owner, facts, &|ty| {
+                    slots.get(ty).copied()
+                }) {
+                    Ok(body) => body,
+                    Err(error) => return Ok(internal_failure(error.as_ref(), *body_span)),
+                };
+            (&synthesized, *body_span, materialization.as_ref())
+        }
     };
     let mut builtin_facts = Vec::with_capacity(facts.builtin_nominals.len());
     let builtin_terminals = context.query_registered_adaptive_batch(
@@ -1342,7 +1428,9 @@ fn materialize_and_build_cfg(
     #[cfg(test)]
     let local_interner_limit = match &key.semantic_input {
         CfgSemanticInput::Body { input, .. } => input.interner_limit,
-        CfgSemanticInput::DropGlue { .. } | CfgSemanticInput::TestDispatcher { .. } => None,
+        CfgSemanticInput::DropGlue { .. }
+        | CfgSemanticInput::TestDispatcher { .. }
+        | CfgSemanticInput::ErrorPrinter { .. } => None,
     };
     // The local semantic epoch owns the actual insertion path. Tests inject
     // their request-local ceiling into that owner so a regression to an
@@ -1371,6 +1459,9 @@ fn materialize_and_build_cfg(
             Node::new(owner.clone()),
         )),
         CfgSemanticInput::TestDispatcher { .. } => Some(crate::FunctionInstanceKey::TestDispatcher),
+        CfgSemanticInput::ErrorPrinter { owner, .. } => {
+            Some(crate::error_printer::error_printer_identity(owner))
+        }
     };
     let materialized = match synthesized_identity {
         None => {
@@ -1812,7 +1903,8 @@ fn semantic_input_body_span(input: &CfgSemanticInput) -> Span {
     match input {
         CfgSemanticInput::Body { input, .. } => input.body_span,
         CfgSemanticInput::DropGlue { body_span, .. }
-        | CfgSemanticInput::TestDispatcher { body_span, .. } => *body_span,
+        | CfgSemanticInput::TestDispatcher { body_span, .. }
+        | CfgSemanticInput::ErrorPrinter { body_span, .. } => *body_span,
     }
 }
 
@@ -3287,6 +3379,7 @@ fn is_true_free_function(function: &crate::FunctionInstanceKey) -> bool {
         }
         crate::FunctionInstanceKey::AnonymousMember { .. }
         | crate::FunctionInstanceKey::DropGlue(_)
+        | crate::FunctionInstanceKey::ErrorPrinter(_)
         | crate::FunctionInstanceKey::TestDispatcher => return false,
     };
     definition.kind() == crate::StableDefinitionKind::Function
