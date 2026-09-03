@@ -17,6 +17,12 @@ The flag is orthogonal to `--log-format` (see [logging.md](logging.md)):
 `--error-format` controls *program diagnostics*. Setting one does not change
 the other.
 
+It is orthogonal to the third machine surface as well.
+[test-events.md](test-events.md) owns the `rue test` event stream, which is
+NDJSON on **stdout**; program diagnostics keep this document's framing on
+stderr in test mode exactly as in a build, so a consumer can read one stream
+for each.
+
 ## Stream and framing
 
 Under `--error-format json`:

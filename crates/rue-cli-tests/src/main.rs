@@ -80,6 +80,8 @@
 //! - `stdin`: piped to the compiled program when it runs
 //! - `compile_fail` + `error_contains`: expect compilation failure
 //! - `compile_only`: don't run the produced binary
+//! - `driver_exit_code`: exact exit status of a driver subcommand invocation
+//!   that produces no program to run, such as `rue test` (ADR-0083)
 //! - `executable_target`: validate the produced executable's bounded ELF or
 //!   Mach-O structure, architecture, load commands, entry point, and resolved
 //!   entry relocation against this Rue target
@@ -1304,6 +1306,20 @@ struct Case {
     /// Incompatible with `compile_fail` and `symbols_contain`.
     #[serde(default)]
     no_symbol_table: bool,
+    /// Exact expected exit status of the DRIVER invocation itself, for a
+    /// subcommand that neither compiles-and-runs nor fails to compile.
+    ///
+    /// `rue test` (ADR-0083) is the case this exists for: its exit status is a
+    /// documented four-way contract (0 passed / 1 failures / 2 runner error /
+    /// 3 empty selection) that agents branch on, and `compile_fail`'s
+    /// "nonzero" cannot tell 1 from 3. Setting it also declares that the
+    /// invocation produces no executable to run, so the case ends after the
+    /// compiler's own stdout, stderr, and status are checked — assert the
+    /// driver's output with `compile_stdout_contains` and
+    /// `compile_stderr_contains`. Incompatible with `compile_fail`, whose
+    /// contract is exactly the weaker one this replaces.
+    #[serde(default)]
+    driver_exit_code: Option<i32>,
 }
 
 /// What running one case produced: the compiled program's exit code and
@@ -2079,6 +2095,9 @@ fn case_runs_prebuilt_program(case: &Case) -> bool {
         executable_target: None,
         compile_fail: false,
         compile_only: false,
+        // A driver subcommand runs no produced program at all, so no staged
+        // executable can answer for it.
+        driver_exit_code: None,
         execute_if_native: false,
         differential_opt: false,
         ffi_answer_archive: false,
@@ -2379,6 +2398,18 @@ fn run_case(
                 forbidden, compile_stdout
             )));
         }
+    }
+
+    // A driver subcommand's own exit status, checked before the
+    // build-and-run expectations that do not apply to it (ADR-0083 §2).
+    if let Some(expected) = case.driver_exit_code {
+        let actual = compile_output.status.code();
+        if actual != Some(expected) {
+            return Err(TestFailure::assertion(format!(
+                "driver exit mismatch: expected {expected}, actual {actual:?}\n--- stdout ---\n{compile_stdout}\n--- stderr ---\n{compile_stderr}"
+            )));
+        }
+        return Ok(RunOutcome::default());
     }
 
     let compile_succeeded = compile_output.status.success();
@@ -3499,11 +3530,20 @@ fn compile_fail_has_exit_code(case: &Case) -> bool {
     case.compile_fail && case.exit_code.is_some()
 }
 
-/// Return produced-program fields that are meaningless when `compile_only`
-/// stops the case before the program runs. Keep this list aligned with the
-/// assertions and inputs consumed exclusively by `run_case_program`.
+/// `driver_exit_code` asserts an exact status; `compile_fail` asserts only
+/// "nonzero". Declaring both means the case's author wanted one of them, and
+/// the harness cannot tell which — so it says so rather than silently
+/// honouring the stricter one.
+fn driver_exit_code_conflicts_with_compile_fail(case: &Case) -> bool {
+    case.driver_exit_code.is_some() && case.compile_fail
+}
+
+/// Return produced-program fields that are meaningless when `compile_only` or
+/// `driver_exit_code` stops the case before a program runs. Keep this list
+/// aligned with the assertions and inputs consumed exclusively by
+/// `run_case_program`.
 fn compile_only_runtime_fields(case: &Case) -> Vec<&'static str> {
-    if !case.compile_only {
+    if !case.compile_only && case.driver_exit_code.is_none() {
         return Vec::new();
     }
     [
@@ -3643,10 +3683,18 @@ fn load_cases(cases_dir: &Path) -> LoadedCorpus {
                 // load time so the doc comment's promise is enforced, not merely
                 // documented (RUE-132).
                 for case in &tf.cases {
+                    if driver_exit_code_conflicts_with_compile_fail(case) {
+                        eprintln!(
+                            "error: {}: case '{}' declares both `driver_exit_code` and `compile_fail` — the first asserts an exact status and the second only a nonzero one; keep one",
+                            path.display(),
+                            case.name,
+                        );
+                        std::process::exit(1);
+                    }
                     let compile_only_fields = compile_only_runtime_fields(case);
                     if !compile_only_fields.is_empty() {
                         eprintln!(
-                            "error: {}: case '{}' is `compile_only` but declares produced-program field(s) {} — remove those fields",
+                            "error: {}: case '{}' runs no program but declares produced-program field(s) {} — remove those fields",
                             path.display(),
                             case.name,
                             compile_only_fields
@@ -5392,7 +5440,7 @@ mod tests {
         // the compiler's environment, or asserts something about a compile the
         // staged path never runs. ADR-0070 keeps every one of these cases
         // compile-in-harness.
-        let overrides: [(&str, fn(&mut Case)); 16] = [
+        let overrides: [(&str, fn(&mut Case)); 17] = [
             // The one differential_opt calculator case: four compiles by
             // design, at opt levels the runner drives.
             ("differential_opt", |case| case.differential_opt = true),
@@ -5411,6 +5459,7 @@ mod tests {
             }),
             ("compile_fail", |case| case.compile_fail = true),
             ("compile_only", |case| case.compile_only = true),
+            ("driver_exit_code", |case| case.driver_exit_code = Some(3)),
             ("execute_if_native", |case| case.execute_if_native = true),
             ("ffi_answer_archive", |case| case.ffi_answer_archive = true),
             ("json_diagnostics", |case| case.json_diagnostics = true),
@@ -5620,6 +5669,56 @@ mod tests {
             ..Default::default()
         };
         assert!(compile_only_runtime_fields(&valid).is_empty());
+    }
+
+    /// `driver_exit_code` stops a case before any program runs, exactly as
+    /// `compile_only` does, so the same produced-program fields are meaningless
+    /// with it (ADR-0083's `rue test` is the subcommand this exists for).
+    #[test]
+    fn driver_exit_code_case_rejects_runtime_fields() {
+        let case = Case {
+            name: "driver".to_string(),
+            driver_exit_code: Some(3),
+            exit_code: Some(0),
+            stdout: Some("out".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            compile_only_runtime_fields(&case),
+            vec!["stdout", "exit_code"]
+        );
+
+        let valid = Case {
+            name: "driver".to_string(),
+            driver_exit_code: Some(1),
+            compile_stdout_contains: vec!["run_finished".to_string()],
+            compile_stderr_contains: vec!["warning".to_string()],
+            ..Default::default()
+        };
+        assert!(compile_only_runtime_fields(&valid).is_empty());
+    }
+
+    /// One asserts an exact status and the other only "nonzero"; a case
+    /// declaring both has not said which it meant.
+    #[test]
+    fn driver_exit_code_and_compile_fail_cannot_be_combined() {
+        assert!(driver_exit_code_conflicts_with_compile_fail(&Case {
+            name: "both".to_string(),
+            driver_exit_code: Some(2),
+            compile_fail: true,
+            ..Default::default()
+        }));
+        assert!(!driver_exit_code_conflicts_with_compile_fail(&Case {
+            name: "one".to_string(),
+            driver_exit_code: Some(2),
+            ..Default::default()
+        }));
+        assert!(!driver_exit_code_conflicts_with_compile_fail(&Case {
+            name: "other".to_string(),
+            compile_fail: true,
+            error_contains: vec!["E0206".to_string()],
+            ..Default::default()
+        }));
     }
 
     #[test]

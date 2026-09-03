@@ -19,6 +19,7 @@ mod compiler_allocator;
 mod emit;
 mod output;
 mod platform_signing;
+mod test_mode;
 mod timing;
 mod watch;
 
@@ -225,6 +226,22 @@ struct Options {
     watch: bool,
     /// Number of parallel jobs (0 = auto-detect, use all cores).
     jobs: usize,
+    /// Which subcommand the command line selected (ADR-0083 §2). Test mode is
+    /// the driver's first subcommand, so it is a mode rather than another
+    /// boolean beside `watch`: the modes are mutually exclusive by
+    /// construction, which is what `validate_mode_combinations` then only has
+    /// to state for the flags.
+    mode: DriverMode,
+    /// The test-mode flags. Parsed in every mode so an unsupported combination
+    /// is reported as such rather than as an unknown option, and rejected
+    /// outside test mode by `validate_mode_combinations`.
+    test: test_mode::TestOptions,
+    /// Whether a test-only flag appeared at all, which is what lets compile
+    /// mode reject one by name instead of ignoring it.
+    test_flags_given: Vec<&'static str>,
+    /// Whether `-o`/`--output` named the output explicitly. Compile mode warns
+    /// when `--emit` ignores it; test mode refuses it outright.
+    explicit_output: bool,
 }
 
 /// Version string for the rue compiler (single-sourced from rue-error so the
@@ -252,6 +269,7 @@ fn usage_text() -> String {
         "\
 Usage: rue [options] <root.rue> [output]
        rue [options] <root.rue> -o <output>
+       rue test [options] <root.rue>
        rue explain <E####>
 
 The compiler takes exactly one root source file and discovers every other
@@ -259,6 +277,25 @@ file through its @import graph; pass build-system inputs with --source-manifest.
 
 Commands:
   explain <E####>      Show the compiler-owned explanation for an error code
+  test <root.rue>      Build the root's test image and run its tests
+
+`rue test` options (see docs/process/test-events.md for the event schema):
+  --list               List the inventory; no codegen, no linking, no execution
+  --filter <pattern>   Run only tests whose stable id contains <pattern>
+                       Can be repeated; repeated filters union
+  --format <fmt>       Report as human text or as the NDJSON event stream
+                       Formats: human, json (default: human)
+  --timeout-ms <N>     Per-test wall-clock budget (default: {default_timeout})
+  --shard <K/N>        Run shard K of N, partitioned by stable-id hash
+  --seed <N>           Seed the run-order shuffle (default: fresh and reported)
+  --test-candidates <path>
+                       Report declared test files nothing imports
+  Test mode reuses --target, -O<n>, --preview, --jobs, --source-manifest,
+  --link-archive, --error-format, and the logging options. It cannot be
+  combined with --emit, --watch, --benchmark-json, --time-passes, or -o.
+  Exit codes: 0 all passed, 1 failures, 2 compilation or runner error,
+  3 empty selection.
+  A root module actually named `test` is spelled `./test`.
 
 Options:
   -o, --output <path>  Set output path
@@ -309,6 +346,7 @@ Options:
         log_levels = LogLevel::all_names(),
         log_formats = LogFormat::all_names(),
         error_formats = ErrorFormat::all_names(),
+        default_timeout = test_mode::DEFAULT_TIMEOUT_MS,
     )
 }
 
@@ -396,12 +434,11 @@ fn refuse_extra_positional_sources(positional: &[String]) {
 /// Options that consume the argument after them.
 ///
 /// Anything scanning the command line without `parse_args_from`'s own state —
-/// a later subcommand scan, argument classification, a shell completion — has
+/// the subcommand scan below, argument classification, a shell completion — has
 /// to skip a value-taking option's value, or `rue --preview x prog.rue` reads
 /// `x` as a word of its own. This is that inventory, kept beside the arms that
 /// consume those values; a unit test holds it, the parser, and the help text in
 /// agreement.
-#[cfg(test)]
 const VALUE_TAKING_OPTIONS: &[&str] = &[
     "--emit",
     "--target",
@@ -417,7 +454,53 @@ const VALUE_TAKING_OPTIONS: &[&str] = &[
     "--source-manifest",
     "--link-archive",
     "--test-candidates",
+    "--filter",
+    "--format",
+    "--timeout-ms",
+    "--shard",
+    "--seed",
 ];
+
+/// The driver's subcommand, decided before anything else is parsed.
+///
+/// ADR-0083 §2's dispatch rule: the driver enters test mode when the first
+/// argument that is neither a flag nor a flag's value is exactly `test`. The
+/// scan has to be value-aware because eleven existing options take a following
+/// value — without that, `rue -o test prog.rue` would stop meaning "output
+/// named `test`", silently turning an ordinary build into a test run. A root
+/// module literally named `test` is spelled `./test`, which is the same
+/// disambiguation every subcommand-bearing CLI uses.
+///
+/// Returns the index of the `test` token so the caller can drop it before the
+/// ordinary parse, which then needs no knowledge of subcommands at all.
+fn test_subcommand_index(args: &[&str]) -> Option<usize> {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index];
+        if VALUE_TAKING_OPTIONS.contains(&arg) {
+            // Skip the option AND its value. A missing value is a parse error
+            // the ordinary loop reports; here it simply ends the scan.
+            index += 2;
+            continue;
+        }
+        if arg.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        return (arg == "test").then_some(index);
+    }
+    None
+}
+
+/// Which driver mode the command line selected.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+enum DriverMode {
+    /// Compile a root module to an executable (or an `--emit` artifact).
+    #[default]
+    Compile,
+    /// `rue test`: build the test image and run its tests (ADR-0083 §2).
+    Test,
+}
 
 /// Parse arguments from a slice of strings (for testing).
 fn parse_args_from(args: &[&str]) -> ParseResult {
@@ -446,6 +529,21 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         return ParseResult::Explain(code);
     }
 
+    // Decide the subcommand first and drop its token, so the option loop below
+    // parses one flat command line in either mode (ADR-0083 §2).
+    let without_subcommand: Vec<&str>;
+    let (mode, args) = match test_subcommand_index(args) {
+        Some(index) => {
+            without_subcommand = args
+                .iter()
+                .enumerate()
+                .filter_map(|(position, arg)| (position != index).then_some(*arg))
+                .collect();
+            (DriverMode::Test, without_subcommand.as_slice())
+        }
+        None => (DriverMode::Compile, args),
+    };
+
     let mut emit_stages = Vec::new();
     let mut target: Option<Target> = None;
     let mut linker: Option<LinkerMode> = None;
@@ -462,6 +560,8 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     let mut test_candidates_path: Option<String> = None;
     let mut output_path: Option<String> = None;
     let mut link_archives: Vec<std::path::PathBuf> = Vec::new();
+    let mut test = test_mode::TestOptions::default();
+    let mut test_flags_given: Vec<&'static str> = Vec::new();
     let mut positional = Vec::new();
     let mut args_iter = args.iter().peekable();
 
@@ -616,6 +716,82 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
                 };
                 link_archives.push(std::path::PathBuf::from(path));
             }
+            "--list" => {
+                test.list = true;
+                test_flags_given.push("--list");
+            }
+            "--filter" => {
+                let Some(pattern) = args_iter.next() else {
+                    eprintln!("Error: --filter requires a pattern");
+                    return ParseResult::Error;
+                };
+                // Repeatable and unioned: narrowing a run to two unrelated
+                // areas is the ordinary case, and a second --filter replacing
+                // the first would make that impossible to spell.
+                test.filters.push((*pattern).to_string());
+                test_flags_given.push("--filter");
+            }
+            "--format" => {
+                let Some(format_str) = args_iter.next() else {
+                    eprintln!("Error: --format requires a value");
+                    eprintln!("Valid formats: human, json");
+                    return ParseResult::Error;
+                };
+                match format_str.parse::<test_mode::OutputFormat>() {
+                    Ok(format) => test.format = format,
+                    Err(error) => {
+                        eprintln!("Error: {error}");
+                        return ParseResult::Error;
+                    }
+                }
+                test_flags_given.push("--format");
+            }
+            "--timeout-ms" => {
+                let Some(value) = args_iter.next() else {
+                    eprintln!("Error: --timeout-ms requires a value");
+                    return ParseResult::Error;
+                };
+                match value.parse::<u64>() {
+                    Ok(0) => {
+                        eprintln!("Error: --timeout-ms must be at least 1");
+                        return ParseResult::Error;
+                    }
+                    Ok(millis) => test.timeout_ms = millis,
+                    Err(_) => {
+                        eprintln!("Error: --timeout-ms value must be a positive integer");
+                        return ParseResult::Error;
+                    }
+                }
+                test_flags_given.push("--timeout-ms");
+            }
+            "--shard" => {
+                let Some(value) = args_iter.next() else {
+                    eprintln!("Error: --shard requires a K/N value");
+                    return ParseResult::Error;
+                };
+                match test_mode::selection::Shard::parse(value) {
+                    Ok(shard) => test.shard = Some(shard),
+                    Err(error) => {
+                        eprintln!("Error: {error}");
+                        return ParseResult::Error;
+                    }
+                }
+                test_flags_given.push("--shard");
+            }
+            "--seed" => {
+                let Some(value) = args_iter.next() else {
+                    eprintln!("Error: --seed requires a value");
+                    return ParseResult::Error;
+                };
+                match value.parse::<u64>() {
+                    Ok(seed) => test.seed = Some(seed),
+                    Err(_) => {
+                        eprintln!("Error: --seed value must be an unsigned 64-bit integer");
+                        return ParseResult::Error;
+                    }
+                }
+                test_flags_given.push("--seed");
+            }
             "--time-passes" => {
                 time_passes = true;
             }
@@ -675,7 +851,18 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     // @import (ADR-0046 / RUE-767). Additional positional .rue arguments are
     // the removed flat-mode input surface and are refused.
     let explicit_output = output_path.is_some();
-    let (source_path, final_output_path) = if let Some(out) = output_path {
+    let (source_path, final_output_path) = if mode == DriverMode::Test {
+        // Test mode publishes no executable at the user's path — the image is
+        // the runner's own artifact — so there is no output positional and
+        // every positional is a source. Exactly one root, as everywhere else.
+        match single_root_source(&positional) {
+            Some(root) => (root, "a.out".to_string()),
+            None => {
+                refuse_extra_positional_sources(&positional);
+                return ParseResult::Error;
+            }
+        }
+    } else if let Some(out) = output_path {
         // -o names the output explicitly, so every positional is a source.
         match single_root_source(&positional) {
             Some(root) => (root, out),
@@ -766,7 +953,98 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         benchmark_json,
         watch,
         jobs: jobs.unwrap_or(0),
+        mode,
+        test,
+        test_flags_given,
+        explicit_output,
     }))
+}
+
+/// Reject the flag combinations the driver's modes cannot honor.
+///
+/// Test mode joins the same validation path `--watch` uses (ADR-0083 §2). Each
+/// refusal is a real conflict over one resource rather than a taste: `--emit`
+/// and `--benchmark-json` own stdout, which is the event stream's; `--watch`
+/// owns the process's lifetime, which the run does; `-o` names an executable
+/// destination a test run never publishes to; and `--time-passes` writes an
+/// unstructured timing report into the same stream.
+///
+/// The reverse direction matters just as much: a test-only flag in compile
+/// mode is refused by name. Silently ignoring `rue --filter x main.rue` would
+/// let a mistyped invocation look like it worked.
+fn validate_mode_combinations(options: &Options) -> Result<(), String> {
+    if options.mode != DriverMode::Test {
+        if let Some(flag) = options.test_flags_given.first() {
+            return Err(format!(
+                "Error: {flag} is only valid with the `rue test` subcommand"
+            ));
+        }
+        return Ok(());
+    }
+    let conflict = if !options.emit_stages.is_empty() {
+        Some("--emit")
+    } else if options.watch {
+        Some("--watch")
+    } else if options.benchmark_json {
+        Some("--benchmark-json")
+    } else if options.time_passes {
+        Some("--time-passes")
+    } else if options.explicit_output {
+        Some("-o/--output")
+    } else {
+        None
+    };
+    match conflict {
+        Some(flag) => Err(format!("Error: `rue test` cannot be combined with {flag}")),
+        None => Ok(()),
+    }
+}
+
+/// Worker count for a test run.
+///
+/// `--jobs` is shared with compilation and keeps its spelling, but its zero
+/// default means something different here: compilation reads it as "use the
+/// shared query budget's own auto-detection", while a test run has to name a
+/// concrete number of concurrent processes. ADR-0083 §3's default is every
+/// test in parallel, so zero resolves to available parallelism.
+fn test_mode_jobs(jobs: usize) -> usize {
+    if jobs > 0 {
+        return jobs;
+    }
+    std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1)
+}
+
+/// The compile-mode flags a repro argv repeats (ADR-0083 §3).
+///
+/// A repro must reconstruct the same image, so the target, optimization level,
+/// preview set, per-test budget, and any build-system inputs travel with it.
+/// The target and opt level are emitted even when they were defaulted: a repro
+/// is run later, possibly elsewhere, and "whatever the host was" is not a
+/// reproduction. `--filter` and `--seed` are added by the runner, which owns
+/// the identity being reproduced.
+fn test_repro_flags(options: &Options) -> Vec<String> {
+    let mut flags = vec![
+        "--target".to_string(),
+        options.target.to_string(),
+        format!("-{}", options.opt_level.name()),
+    ];
+    for feature in options.preview_features.iter() {
+        flags.push("--preview".to_string());
+        flags.push(feature.to_string());
+    }
+    flags.push("--timeout-ms".to_string());
+    flags.push(options.test.timeout_ms.to_string());
+    if let Some(manifest) = &options.source_manifest_path {
+        flags.push("--source-manifest".to_string());
+        flags.push(manifest.clone());
+    }
+    for archive in &options.link_archives {
+        flags.push("--link-archive".to_string());
+        flags.push(archive.display().to_string());
+    }
+    flags
 }
 
 fn parse_args() -> ParseResult {
@@ -2016,6 +2294,17 @@ fn main() {
         eprintln!("{message}");
         std::process::exit(1);
     }
+    // A `rue test` invocation that cannot run reports the runner-error status
+    // rather than the compile-mode argument status, so an agent branching on
+    // the exit code sees "the run did not happen" for every reason it did not
+    // (ADR-0083 §2). Compile mode's own argument errors keep exiting `1`.
+    if let Err(message) = validate_mode_combinations(&options) {
+        eprintln!("{message}");
+        std::process::exit(match options.mode {
+            DriverMode::Test => test_mode::TestExitCode::RunnerError.code(),
+            DriverMode::Compile => 1,
+        });
+    }
 
     // Initialize tracing based on CLI options
     // Returns timing data if --time-passes or --benchmark-json was specified
@@ -2090,9 +2379,14 @@ fn main() {
         opt_level: options.opt_level,
         preview_features: options.preview_features.clone(),
         link_archives: options.link_archives.clone(),
-        // The driver has no test-mode spelling yet; `rue test` arrives with
-        // ADR-0083 Phase 2 (RUE-1619).
-        root_selection: rue_compiler::RootSelection::Executable,
+        // A test request roots every test item in the closure; an executable
+        // request roots none of them (ADR-0083 §1). This is the only place the
+        // two differ, so `rue test` is one root set away from an ordinary
+        // build all the way down.
+        root_selection: match options.mode {
+            DriverMode::Test => rue_compiler::RootSelection::Tests,
+            DriverMode::Compile => rue_compiler::RootSelection::Executable,
+        },
     };
 
     // Acquire any trusted toolchain modules a reached fallible intrinsic requires
@@ -2152,11 +2446,11 @@ fn main() {
     let diagnostics = DiagnosticOutput::new(options.error_format, source_infos);
 
     // Acquire the declared inventory under the host's read policy so a test
-    // request can report against it (ADR-0083 §1). An ordinary build never
-    // reports; `rue test` (RUE-1920) is the consumer, and until it exists the
-    // acquisition is exercised here so a broken candidate path fails loudly
-    // rather than surfacing first inside the runner.
-    let _test_candidate_inventory = match declared_test_candidates.as_deref() {
+    // request can report against it (ADR-0083 §1). `rue test` is the consumer;
+    // an ordinary build validates the input and carries it no further, so a
+    // build rule writing a broken list fails the build it broke rather than
+    // only the test run that would have read it.
+    let test_candidate_inventory = match declared_test_candidates.as_deref() {
         Some(declared) => match compiler_host.acquire_test_candidates(declared) {
             Ok(inventory) => {
                 tracing::debug!(
@@ -2208,7 +2502,41 @@ fn main() {
         diagnostics.print_errors(&with_import_migration_helps(
             compiler_host.discovery_revision().diagnostics(),
         ));
-        std::process::exit(1);
+        // Compile mode's rejected-program status is `1` and stays that way.
+        // For `rue test` a program that will not compile is the same outcome as
+        // a link failure or a runner error — the run could not be performed —
+        // and ADR-0083 §2 gives that one code, so an agent branching on the
+        // exit status never has to also parse stderr to tell them apart.
+        std::process::exit(match options.mode {
+            DriverMode::Test => test_mode::TestExitCode::RunnerError.code(),
+            DriverMode::Compile => 1,
+        });
+    }
+
+    // `rue test` owns the rest of this process: it links the test image, runs
+    // one process per selected test, and publishes the event stream on stdout
+    // (ADR-0083 §2). It is placed after toolchain acquisition and before the
+    // `--emit` and executable paths because it shares every step above and
+    // none below — in particular it publishes no executable to the user's
+    // output path, so the destination preflight below does not apply to it.
+    if options.mode == DriverMode::Test {
+        let exit = {
+            let _compile = compile_span.enter();
+            test_mode::run(test_mode::TestRequest {
+                host: &mut compiler_host,
+                compile_options: compile_options.clone(),
+                options: options.test.clone(),
+                diagnostics: &diagnostics,
+                root: options.source_path.clone(),
+                repro_flags: test_repro_flags(&options),
+                jobs: test_mode_jobs(options.jobs),
+                target: options.target,
+                opt_level: options.opt_level,
+                candidates: test_candidate_inventory,
+            })
+        };
+        let _ = std::io::stdout().flush();
+        std::process::exit(exit.code());
     }
 
     // Closed discovery fixes the complete source identity set. Validate the
@@ -3012,6 +3340,283 @@ mod tests {
     #[test]
     fn parse_no_args_returns_error() {
         assert!(is_error(&parse_args_from(&[])));
+    }
+
+    // ========== `rue test` subcommand dispatch (ADR-0083 §2) ==========
+    //
+    // The dispatch rule is "the first argument that is neither a flag nor a
+    // flag's value is exactly `test`". Every case below is one way that scan
+    // can go wrong, and the value-aware half is what keeps an ordinary build
+    // from silently becoming a test run.
+
+    #[test]
+    fn test_is_the_subcommand_when_it_leads_the_command_line() {
+        assert_eq!(test_subcommand_index(&["test", "main.rue"]), Some(0));
+        let options = unwrap_options(parse_args_from(&["test", "main.rue"]));
+        assert_eq!(options.mode, DriverMode::Test);
+        assert_eq!(options.source_path, "main.rue");
+    }
+
+    /// Flags may precede the subcommand: `rue --preview x test main.rue` is a
+    /// test run, and `x` is the preview's value rather than a word of its own.
+    #[test]
+    fn flags_before_the_subcommand_do_not_hide_it() {
+        assert_eq!(
+            test_subcommand_index(&["--preview", "test_declarations", "test", "main.rue"]),
+            Some(2)
+        );
+        let options = unwrap_options(parse_args_from(&[
+            "--preview",
+            "test_declarations",
+            "-O2",
+            "--jobs",
+            "3",
+            "test",
+            "main.rue",
+        ]));
+        assert_eq!(options.mode, DriverMode::Test);
+        assert_eq!(options.source_path, "main.rue");
+        assert_eq!(options.jobs, 3);
+        assert_eq!(options.opt_level, OptLevel::O2);
+    }
+
+    #[test]
+    fn flags_after_the_subcommand_parse_as_usual() {
+        let options = unwrap_options(parse_args_from(&[
+            "test",
+            "main.rue",
+            "--filter",
+            "parse",
+            "--filter",
+            "lex",
+            "--format",
+            "json",
+            "--seed",
+            "417",
+            "--timeout-ms",
+            "500",
+            "--shard",
+            "1/4",
+            "--list",
+        ]));
+        assert_eq!(options.mode, DriverMode::Test);
+        assert_eq!(options.test.filters, vec!["parse", "lex"]);
+        assert_eq!(options.test.format, test_mode::OutputFormat::Json);
+        assert_eq!(options.test.seed, Some(417));
+        assert_eq!(options.test.timeout_ms, 500);
+        assert_eq!(
+            options.test.shard,
+            Some(test_mode::selection::Shard { index: 1, count: 4 })
+        );
+        assert!(options.test.list);
+    }
+
+    /// The reason the scan has to be value-aware at all: `-o` takes a value,
+    /// so `test` here is an output name and the invocation stays an ordinary
+    /// build.
+    #[test]
+    fn an_output_named_test_is_not_the_subcommand() {
+        assert_eq!(test_subcommand_index(&["-o", "test", "prog.rue"]), None);
+        let options = unwrap_options(parse_args_from(&["-o", "test", "prog.rue"]));
+        assert_eq!(options.mode, DriverMode::Compile);
+        assert_eq!(options.output_path, "test");
+        assert_eq!(options.source_path, "prog.rue");
+    }
+
+    /// The same trap for every other value-taking option, checked
+    /// mechanically so a new one cannot be added without joining the scan.
+    #[test]
+    fn no_value_taking_option_lets_its_value_become_the_subcommand() {
+        for option in VALUE_TAKING_OPTIONS {
+            assert_eq!(
+                test_subcommand_index(&[option, "test", "prog.rue"]),
+                None,
+                "{option}'s value was read as the subcommand"
+            );
+        }
+    }
+
+    /// A root module actually named `test` is spelled `./test`, which the scan
+    /// does not match because it compares the whole argument.
+    #[test]
+    fn a_root_named_test_is_reachable_as_a_relative_path() {
+        assert_eq!(test_subcommand_index(&["./test"]), None);
+        let options = unwrap_options(parse_args_from(&["./test"]));
+        assert_eq!(options.mode, DriverMode::Compile);
+        assert_eq!(options.source_path, "./test");
+
+        assert_eq!(test_subcommand_index(&["test", "./test"]), Some(0));
+        let options = unwrap_options(parse_args_from(&["test", "./test"]));
+        assert_eq!(options.mode, DriverMode::Test);
+        assert_eq!(options.source_path, "./test");
+    }
+
+    /// `test` only dispatches in first position among non-flags: a second
+    /// positional is an extra source, which the one-root rule refuses.
+    #[test]
+    fn test_after_another_positional_is_not_the_subcommand() {
+        assert_eq!(test_subcommand_index(&["main.rue", "test"]), None);
+        assert!(is_error(&parse_args_from(&["main.rue", "test", "extra"])));
+    }
+
+    #[test]
+    fn a_test_run_takes_exactly_one_root_source() {
+        assert!(is_error(&parse_args_from(&["test"])));
+        assert!(is_error(&parse_args_from(&["test", "a.rue", "b.rue"])));
+    }
+
+    #[test]
+    fn test_mode_defaults_match_the_documented_ones() {
+        let options = unwrap_options(parse_args_from(&["test", "main.rue"]));
+        assert!(!options.test.list);
+        assert!(options.test.filters.is_empty());
+        assert_eq!(options.test.format, test_mode::OutputFormat::Human);
+        assert_eq!(options.test.timeout_ms, test_mode::DEFAULT_TIMEOUT_MS);
+        assert_eq!(options.test.shard, None);
+        // No seed until the run derives and reports one.
+        assert_eq!(options.test.seed, None);
+    }
+
+    /// Test mode joins the driver's mode validation rather than growing its
+    /// own; every conflict is over one resource the two modes both want.
+    #[test]
+    fn test_mode_refuses_every_incompatible_flag() {
+        let conflicts: &[(&[&str], &str)] = &[
+            (&["test", "main.rue", "--emit", "ast"], "--emit"),
+            (&["test", "main.rue", "--watch"], "--watch"),
+            (
+                &["test", "main.rue", "--benchmark-json"],
+                "--benchmark-json",
+            ),
+            (&["test", "main.rue", "--time-passes"], "--time-passes"),
+            (&["test", "main.rue", "-o", "prog"], "-o/--output"),
+            (&["test", "main.rue", "--output", "prog"], "-o/--output"),
+        ];
+        for (args, flag) in conflicts {
+            let options = unwrap_options(parse_args_from(args));
+            let error = validate_mode_combinations(&options)
+                .expect_err(&format!("{flag} must conflict with `rue test`"));
+            assert!(error.contains(flag), "{error}");
+        }
+    }
+
+    /// The reverse direction: a test-only flag outside test mode is refused by
+    /// name. Ignoring it would let a mistyped invocation look like it worked.
+    #[test]
+    fn compile_mode_refuses_a_test_only_flag_by_name() {
+        for flag in [
+            vec!["--list"],
+            vec!["--filter", "x"],
+            vec!["--format", "json"],
+            vec!["--timeout-ms", "10"],
+            vec!["--shard", "1/2"],
+            vec!["--seed", "1"],
+        ] {
+            let mut args = vec!["main.rue"];
+            args.extend(flag.iter().copied());
+            let options = unwrap_options(parse_args_from(&args));
+            let error = validate_mode_combinations(&options)
+                .expect_err(&format!("{:?} must be test-only", flag[0]));
+            assert!(error.contains(flag[0]), "{error}");
+            assert!(error.contains("rue test"), "{error}");
+        }
+    }
+
+    /// `--test-candidates` is not test-only: an ordinary build validates the
+    /// list so a broken build rule fails the build it broke (ADR-0083 §1).
+    #[test]
+    fn test_candidates_stays_valid_outside_test_mode() {
+        let options = unwrap_options(parse_args_from(&[
+            "--test-candidates",
+            "c.list",
+            "main.rue",
+        ]));
+        assert!(validate_mode_combinations(&options).is_ok());
+    }
+
+    #[test]
+    fn a_valid_test_invocation_passes_mode_validation() {
+        let options = unwrap_options(parse_args_from(&[
+            "test",
+            "main.rue",
+            "--preview",
+            "test_declarations",
+            "--target",
+            "x86-64-linux",
+            "-O1",
+            "--jobs",
+            "2",
+            "--error-format",
+            "json",
+        ]));
+        assert!(validate_mode_combinations(&options).is_ok());
+    }
+
+    #[test]
+    fn malformed_test_flag_values_are_rejected() {
+        assert!(is_error(&parse_args_from(&[
+            "test", "main.rue", "--format", "ndjson"
+        ])));
+        assert!(is_error(&parse_args_from(&[
+            "test",
+            "main.rue",
+            "--timeout-ms",
+            "0"
+        ])));
+        assert!(is_error(&parse_args_from(&[
+            "test",
+            "main.rue",
+            "--timeout-ms",
+            "soon"
+        ])));
+        assert!(is_error(&parse_args_from(&[
+            "test", "main.rue", "--seed", "-1"
+        ])));
+        assert!(is_error(&parse_args_from(&[
+            "test", "main.rue", "--shard", "3/2"
+        ])));
+    }
+
+    /// A test request roots the closure's test items; an executable request
+    /// roots none of them. This is the only place the two differ.
+    #[test]
+    fn the_repro_flags_reconstruct_the_image_configuration() {
+        let options = unwrap_options(parse_args_from(&[
+            "test",
+            "main.rue",
+            "--target",
+            "x86-64-linux",
+            "-O2",
+            "--preview",
+            "test_declarations",
+            "--timeout-ms",
+            "500",
+            "--source-manifest",
+            "sources.manifest",
+        ]));
+        let flags = test_repro_flags(&options);
+        assert_eq!(
+            flags,
+            vec![
+                "--target",
+                "x86-64-linux",
+                "-O2",
+                "--preview",
+                "test_declarations",
+                "--timeout-ms",
+                "500",
+                "--source-manifest",
+                "sources.manifest",
+            ]
+        );
+    }
+
+    /// `--jobs 0` means "auto" in both modes, but a test run needs a concrete
+    /// process count rather than the query budget's own auto-detection.
+    #[test]
+    fn test_mode_jobs_resolves_auto_to_available_parallelism() {
+        assert_eq!(test_mode_jobs(4), 4);
+        assert!(test_mode_jobs(0) >= 1);
     }
 
     // ========== Positional source acceptance tests ==========

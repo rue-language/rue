@@ -645,9 +645,12 @@ companion project "rue test follow-ups" (§6).
       `--test-candidates` and its bounded candidate-acquisition step (§1);
       `--list`, `--filter` (run-set semantics, as ruled), `--jobs`,
       `--shard`, `--timeout-ms`, `--seed` (shuffle), exit codes; NDJSON
-      event stream v1.0 with schema doc (a new `test-events.md` under
-      `docs/process/`) covering encoding, budgets, payload asymmetry, and
-      the `capability_summary` unavailable state (§2); the test-body `?`
+      event stream v1.0 with schema doc — landed as
+      `docs/process/test-events.md` (RUE-1920), covering the exec contract,
+      encoding, budgets, payload asymmetry, the verdict taxonomy and its
+      reserved values, the `--filter` rule, the shard hash and shuffle
+      PRNG, and the `capability_summary` unavailable state (§2); the
+      test-body `?`
       rule whole — legality and failure-arm lowering together (§1); the
       dispatcher completion record and its `incomplete` failure kind (§3);
       the failure-channel contract with reserved promotion and
@@ -807,19 +810,27 @@ site.
   from the reserved intrinsic bucket (4.13:5b) to normative, and decide
   whether assertion failure keeps exit 101 (recommended; distinguished by
   pinned message) or gets a distinct code.
-- **Exit-code contract** (§2): the 0/1/2/3 proposal, in particular
-  empty-selection-as-error. How a future per-test `compile_error` verdict
-  maps onto exit codes is deferred with that verdict (§6, RUE-1622), but
-  agents will branch on these codes, so they need sign-off before Phase 2
-  ships.
-- **The `skipped` verdict has no producing mechanism**: `@skip` is
-  deferred with directive-grammar work, and filtering removes tests from
-  the selection rather than reporting them. Name a v1 producer (platform
-  scoping is the natural candidate) or reserve `skipped` out of the v1
-  taxonomy — an unproducible verdict in a published enum is a consumer
-  trap.
-- **The `scripts/rue test` homonym**: rename the wrapper subcommand (e.g.
-  `scripts/rue suite`) or accept the distinction and fix docs.
+- **Exit-code contract** (§2): **settled in Phase 2c (RUE-1920)** as the
+  0/1/2/3 proposal, empty-selection-as-error included, and published in
+  `docs/process/test-events.md`. Everything that stops a `rue test` run from
+  happening — a compile failure, a failing image link, an ICE, a bad flag
+  combination — is `2`, so an agent branching on the status never has to
+  also parse stderr to tell those apart. How a future per-test
+  `compile_error` verdict maps onto exit codes is deferred with that verdict
+  (§6, RUE-1622).
+- **The `skipped` verdict has no producing mechanism**: **settled in Phase 2c
+  (RUE-1920)** by reserving `skipped` **out** of the v1 taxonomy. `@skip` is
+  deferred with directive-grammar work, and filtering removes tests from the
+  selection rather than reporting them, so v1 has no producer — and an
+  unproducible verdict in a published enum is a consumer trap. It is
+  documented as reserved in the schema doc and emitted by nothing; naming a
+  producer (platform scoping is the natural candidate) is an additive minor.
+- **The `scripts/rue test` homonym**: the rename remains open. Phase 2c took
+  the interim half of the choice — the quickstart entry now says the wrapper
+  is the maintainers' compiler-suite runner and points at
+  `docs/process/test-events.md` for the language's own subcommand — so the
+  rename (e.g. `scripts/rue suite`) is a maintainer call that no longer
+  blocks anything.
 - **Naming**: `test_declarations` preview flag; `--test-candidates`; a new
   `test-events.md` under `docs/process/` as the schema doc home.
 

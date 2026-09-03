@@ -3,8 +3,10 @@ use std::path::Path;
 use rue_compiler::unstable::TestCandidateInventory;
 use rue_compiler::unstable::{
     CancellableCompileOutcome, CodegenReady, CompilationCancellation, ObjectsReady,
-    PresentationOutput, PresentationRequest, cancellable_executable_in_compile_scope,
-    codegen_ready, executable_in_compile_scope, objects_ready, runnable_ready,
+    PresentationOutput, PresentationRequest, TestInventory, UnimportedTestFile,
+    cancellable_executable_in_compile_scope, codegen_ready, executable_in_compile_scope,
+    objects_ready, runnable_ready, test_image_in_compile_scope, test_inventory,
+    unimported_test_files,
 };
 use rue_compiler::{
     AcceptedReadManifest, CompileErrors, CompileOptions, CompileOutput, ImportDiscoveryContext,
@@ -177,6 +179,33 @@ impl FilesystemCompilerHost {
         cancellation: CompilationCancellation,
     ) -> CancellableCompileOutcome {
         cancellable_executable_in_compile_scope(&mut self.state.session, options, cancellation)
+    }
+
+    /// Analyze the request's test closure and publish its ordered inventory
+    /// (ADR-0083 §2's `--list`), without codegen or linking.
+    pub fn test_inventory(&mut self, options: &CompileOptions) -> MultiErrorResult<TestInventory> {
+        test_inventory(&mut self.state.session, options)
+    }
+
+    /// Link the test image for the request's closure and publish the inventory
+    /// that assigned its dispatch ordinals (ADR-0083 §3).
+    pub fn test_image_in_compile_scope(
+        &mut self,
+        options: &CompileOptions,
+    ) -> MultiErrorResult<(CompileOutput, TestInventory)> {
+        test_image_in_compile_scope(&mut self.state.session, options)
+    }
+
+    /// Report the declared candidates the compiled closure does not contain
+    /// (ADR-0083 §1).
+    ///
+    /// Takes an inventory this same host acquired, so the report can never be
+    /// made against a closure observed under a different read regime.
+    pub fn unimported_test_files(
+        &mut self,
+        candidates: &TestCandidateInventory,
+    ) -> Result<Vec<UnimportedTestFile>, CompileErrors> {
+        unimported_test_files(&mut self.state.session, candidates)
     }
 
     /// Reach ADR-0068's codegen-ready endpoint without projecting objects.

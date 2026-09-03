@@ -63,6 +63,11 @@ rue_binary(
     crate_root = "src/main.rs",
     deps = _DEPS + _COMPILER_ALLOCATOR_DEPS + [
         ":rue-driver",
+        # `rue test` supervises one process per test with the same bounded
+        # pipe-drain, process-group, and timeout mechanics the harnesses use
+        # (ADR-0083 §3 adopts them as contract). One implementation, in
+        # //crates/rue-test-runner:pipe_drain, rather than a second copy here.
+        "//crates/rue-test-runner:rue-test-runner",
     ],
     test_deps = [
         "//crates/rue-query:rue-query",
@@ -81,6 +86,7 @@ rue_binary(
     crate_root = "src/main.rs",
     deps = _DEPS + [
         ":rue-driver",
+        "//crates/rue-test-runner:rue-test-runner",
     ],
     rustc_flags = [
         "--cfg=rue_benchmark_allocations",
