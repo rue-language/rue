@@ -59,9 +59,43 @@ def utc_timestamp(value: object, where: str) -> datetime:
         raise ValueError(f"{where} must be a UTC Actions timestamp") from error
 
 
+def validate_run_evidence(record: object, where: str) -> None:
+    if not isinstance(record, dict):
+        raise ValueError(f"{where} must be an object")
+    if record.get("event") not in {"pull_request", "merge_group"}:
+        raise ValueError(f"{where}.event is invalid")
+    run_id = positive_int(record.get("run_id"), f"{where}.run_id")
+    if re.fullmatch(r"[0-9a-f]{40}", str(record.get("head_sha"))) is None:
+        raise ValueError(f"{where}.head_sha must be a full SHA")
+    created_at = utc_timestamp(record.get("created_at"), f"{where}.created_at")
+    completed_at = utc_timestamp(
+        record.get("completed_at"), f"{where}.completed_at"
+    )
+    url = nonempty_string(record.get("url"), f"{where}.url")
+    if not url.endswith(f"/actions/runs/{run_id}"):
+        raise ValueError(f"{where}.url does not name run_id")
+    wall_ms = positive_int(record.get("workflow_wall_ms"), f"{where}.workflow_wall_ms")
+    if int((completed_at - created_at).total_seconds() * 1000) != wall_ms:
+        raise ValueError(f"{where}.workflow_wall_ms is inconsistent")
+
+
+def validate_job_evidence(record: object, where: str) -> None:
+    if not isinstance(record, dict):
+        raise ValueError(f"{where} must be an object")
+    nonempty_string(record.get("name"), f"{where}.name")
+    positive_int(record.get("job_id"), f"{where}.job_id")
+    started_at = utc_timestamp(record.get("started_at"), f"{where}.started_at")
+    completed_at = utc_timestamp(
+        record.get("completed_at"), f"{where}.completed_at"
+    )
+    wall_ms = positive_int(record.get("wall_ms"), f"{where}.wall_ms")
+    if int((completed_at - started_at).total_seconds() * 1000) != wall_ms:
+        raise ValueError(f"{where}.wall_ms is inconsistent")
+
+
 def load_measurements(path: Path) -> dict:
     data = json.loads(path.read_text())
-    if data.get("version") != 1:
+    if data.get("version") != 2:
         raise ValueError(f"{path}: unsupported planning-data version")
     if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", str(data.get("measured_at"))) is None:
         raise ValueError(f"{path}: measured_at must be an ISO date")
@@ -150,82 +184,61 @@ def load_measurements(path: Path) -> dict:
     if not isinstance(remeasurement, dict):
         raise ValueError(f"{path}: phase_6_remeasurement must be an object")
     pre_change = remeasurement.get("pre_change")
-    if not isinstance(pre_change, dict):
-        raise ValueError(f"{path}: phase_6_remeasurement.pre_change must be an object")
-    if pre_change.get("event") not in {"pull_request", "merge_group"}:
-        raise ValueError(f"{path}: Phase 6 pre-change event is invalid")
-    positive_int(pre_change.get("run_id"), f"{path}: Phase 6 pre-change run_id")
-    if re.fullmatch(r"[0-9a-f]{40}", str(pre_change.get("head_sha"))) is None:
-        raise ValueError(f"{path}: Phase 6 pre-change head_sha must be a full SHA")
-    created_at = utc_timestamp(
-        pre_change.get("created_at"), f"{path}: Phase 6 pre-change created_at"
+    validate_run_evidence(pre_change, f"{path}: phase_6_remeasurement.pre_change")
+    validate_job_evidence(
+        pre_change.get("binding_job"),
+        f"{path}: phase_6_remeasurement.pre_change.binding_job",
     )
-    completed_at = utc_timestamp(
-        pre_change.get("completed_at"), f"{path}: Phase 6 pre-change completed_at"
-    )
-    url = nonempty_string(
-        pre_change.get("url"), f"{path}: Phase 6 pre-change url"
-    )
-    run_id = pre_change["run_id"]
-    if not url.endswith(f"/actions/runs/{run_id}"):
-        raise ValueError(f"{path}: Phase 6 pre-change URL does not name run_id")
-    workflow_wall_ms = positive_int(
-        pre_change.get("workflow_wall_ms"),
-        f"{path}: Phase 6 pre-change workflow_wall_ms",
-    )
-    if int((completed_at - created_at).total_seconds() * 1000) != workflow_wall_ms:
-        raise ValueError(f"{path}: Phase 6 pre-change workflow wall is inconsistent")
-    binding_job = pre_change.get("binding_job")
-    if not isinstance(binding_job, dict):
-        raise ValueError(f"{path}: Phase 6 pre-change binding_job must be an object")
-    nonempty_string(
-        binding_job.get("name"), f"{path}: Phase 6 pre-change binding job name"
-    )
-    positive_int(
-        binding_job.get("job_id"), f"{path}: Phase 6 pre-change binding job_id"
-    )
-    job_started_at = utc_timestamp(
-        binding_job.get("started_at"), f"{path}: Phase 6 binding job started_at"
-    )
-    job_completed_at = utc_timestamp(
-        binding_job.get("completed_at"), f"{path}: Phase 6 binding job completed_at"
-    )
-    job_wall_ms = positive_int(
-        binding_job.get("wall_ms"), f"{path}: Phase 6 binding job wall_ms"
-    )
-    if int((job_completed_at - job_started_at).total_seconds() * 1000) != job_wall_ms:
-        raise ValueError(f"{path}: Phase 6 binding job wall is inconsistent")
     post_change = remeasurement.get("post_change")
     if not isinstance(post_change, dict):
         raise ValueError(f"{path}: phase_6_remeasurement.post_change must be an object")
     status = post_change.get("status")
     if status not in {"pending_pr_ci", "recorded"}:
         raise ValueError(f"{path}: phase_6_remeasurement.post_change.status is invalid")
-    run_ids = post_change.get("pull_request_run_ids")
-    walls = post_change.get("observed_critical_path_ms")
-    if not isinstance(run_ids, list) or any(
-        type(run_id) is not int or run_id <= 0 for run_id in run_ids
-    ) or len(run_ids) != len(set(run_ids)):
-        raise ValueError(
-            f"{path}: Phase 6 post-change pull_request_run_ids must contain run IDs"
+    if status == "pending_pr_ci":
+        if post_change != {
+            "status": "pending_pr_ci",
+            "pull_request_run_ids": [],
+            "observed_critical_path_ms": [],
+        }:
+            raise ValueError(f"{path}: pending Phase 6 remeasurement must be empty")
+    else:
+        validate_run_evidence(
+            post_change, f"{path}: phase_6_remeasurement.post_change"
         )
-    if not isinstance(walls, list) or any(
-        type(wall) is not int or wall <= 0 for wall in walls
-    ):
-        raise ValueError(
-            f"{path}: Phase 6 post-change observed_critical_path_ms must contain positive walls"
+        if post_change.get("conclusion") != "success":
+            raise ValueError(f"{path}: Phase 6 post-change conclusion is not success")
+        positive_int(
+            post_change.get("generated_matrix_job_count"),
+            f"{path}: Phase 6 generated_matrix_job_count",
         )
-    if len(run_ids) != len(walls):
-        raise ValueError(
-            f"{path}: phase_6_remeasurement run IDs and walls must have equal length"
+        validate_job_evidence(
+            post_change.get("longest_substantive_job"),
+            f"{path}: phase_6_remeasurement.post_change.longest_substantive_job",
         )
-    if status == "pending_pr_ci" and (run_ids or walls):
-        raise ValueError(f"{path}: pending Phase 6 remeasurement must be empty")
-    if status == "recorded" and not run_ids:
-        raise ValueError(f"{path}: recorded Phase 6 remeasurement must name runs")
+        queue_delayed_job = post_change.get("queue_delayed_job")
+        validate_job_evidence(
+            queue_delayed_job,
+            f"{path}: phase_6_remeasurement.post_change.queue_delayed_job",
+        )
+        if queue_delayed_job.get("classification") != (
+            "runner queue delay; excluded from topology latency"
+        ):
+            raise ValueError(f"{path}: Phase 6 queue-delay classification is invalid")
+    comparison = remeasurement.get("comparison")
+    if not isinstance(comparison, dict):
+        raise ValueError(f"{path}: phase_6_remeasurement.comparison must be an object")
+    if comparison.get("classification") != "execution validation; not causal speedup":
+        raise ValueError(f"{path}: Phase 6 comparison classification is invalid")
+    limitations = comparison.get("limitations")
+    if not isinstance(limitations, list) or set(limitations) != {
+        "different event",
+        "cache state unmatched",
+        "runner queue delay",
+    }:
+        raise ValueError(f"{path}: Phase 6 comparison limitations are incomplete")
     nonempty_string(
-        remeasurement.get("comparison"),
-        f"{path}: phase_6_remeasurement.comparison",
+        comparison.get("summary"), f"{path}: phase_6_remeasurement.comparison.summary"
     )
     return data
 

@@ -34,7 +34,7 @@ def fixture(**cli_updates):
     }
     cli.update(cli_updates)
     return {
-        "version": 1,
+        "version": 2,
         "measured_at": "2026-08-08",
         "provenance": {
             "source": "fixture",
@@ -70,7 +70,15 @@ def fixture(**cli_updates):
                 "pull_request_run_ids": [],
                 "observed_critical_path_ms": [],
             },
-            "comparison": "fixture comparison policy",
+            "comparison": {
+                "classification": "execution validation; not causal speedup",
+                "limitations": [
+                    "different event",
+                    "cache state unmatched",
+                    "runner queue delay",
+                ],
+                "summary": "fixture comparison policy",
+            },
         },
     }
 
@@ -204,6 +212,60 @@ class PlannerTests(unittest.TestCase):
         path = Path(__file__).resolve().parents[1] / "ci/cli-shard-planning.json"
         data = MODULE.load_measurements(path)
         self.assertEqual(MODULE.derive_runner_count(data)[0], 4)
+        post_change = data["phase_6_remeasurement"]["post_change"]
+        self.assertEqual(
+            post_change,
+            {
+                "status": "recorded",
+                "event": "pull_request",
+                "run_id": 33727605782,
+                "head_sha": "7453144d88c5e7210943ef4c9dc868b7274006ed",
+                "created_at": "2026-09-03T07:20:35Z",
+                "completed_at": "2026-09-03T07:26:33Z",
+                "workflow_wall_ms": 358000,
+                "url": "https://github.com/rue-language/rue/actions/runs/33727605782",
+                "conclusion": "success",
+                "generated_matrix_job_count": 11,
+                "longest_substantive_job": {
+                    "name": "premerge (linux-x64)",
+                    "job_id": 100560392585,
+                    "started_at": "2026-09-03T07:21:51Z",
+                    "completed_at": "2026-09-03T07:25:20Z",
+                    "wall_ms": 209000,
+                },
+                "queue_delayed_job": {
+                    "name": "rust-project",
+                    "job_id": 100560235100,
+                    "started_at": "2026-09-03T07:26:16Z",
+                    "completed_at": "2026-09-03T07:26:26Z",
+                    "wall_ms": 10000,
+                    "classification": (
+                        "runner queue delay; excluded from topology latency"
+                    ),
+                },
+            },
+        )
+
+    def test_recorded_post_change_walls_must_match_timestamps(self):
+        source = Path(__file__).resolve().parents[1] / "ci/cli-shard-planning.json"
+        mutations = (
+            ("workflow_wall_ms", "post_change.workflow_wall_ms"),
+            ("longest_substantive_job.wall_ms", "longest_substantive_job.wall_ms"),
+            ("queue_delayed_job.wall_ms", "queue_delayed_job.wall_ms"),
+        )
+        for field, error in mutations:
+            with self.subTest(field=field):
+                data = json.loads(source.read_text())
+                record = data["phase_6_remeasurement"]["post_change"]
+                parts = field.split(".")
+                for part in parts[:-1]:
+                    record = record[part]
+                record[parts[-1]] += 1
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "measurements.json"
+                    path.write_text(json.dumps(data))
+                    with self.assertRaisesRegex(ValueError, error):
+                        MODULE.load_measurements(path)
 
 
 if __name__ == "__main__":

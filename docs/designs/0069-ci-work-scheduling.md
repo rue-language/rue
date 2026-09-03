@@ -465,9 +465,8 @@ completely.
 - [ ] **Phase 5: Real input-keyed compile actions** — RUE-1164, milestone
       "Buck-native test actions"; RUE-1222 for the timing-refresh and
       undeclared-input follow-ups.
-- [ ] **Phase 6: Floor-aware packer with the indivisible-item alarm** —
-      RUE-1267 implementation is present locally; retain this unchecked state
-      until its actual PR run IDs and critical-path walls are recorded.
+- [x] **Phase 6: Floor-aware packer with the indivisible-item alarm** —
+      RUE-1267.
       `ci/cli-shard-planning.json` records the measured 407s native
       floor, 1,098s CLI maximum, and 25% count allowance. The deterministic
       planner derives four runners, refuses to name a count if an indivisible
@@ -477,9 +476,10 @@ completely.
       `validate-cli-shard-coverage.py` are gone. The planning file's
       `phase_6_remeasurement` records merge-group run 33721329318 as the
       explicit 281s pre-change baseline (compiler reproducibility binds at
-      225s); its `post_change` remains `pending_pr_ci`. Completion requires
-      replacing that state with real PR run IDs and observed walls, without
-      treating one run as causal before/after proof.
+      225s), and passing PR run 33727605782 as the 358s post-change execution
+      (all 11 matrix jobs present; premerge is the longest substantive job at
+      209s). Event/cache mismatch and runner queueing make this execution and
+      no-topology-delta evidence, not a causal speedup comparison.
 
 Adjacent, not sequenced: RUE-1131 (avoid compiler builds in stubbed jobs) is the
 same fixed-cost problem this ADR names in the compiler-cold regime.
