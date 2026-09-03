@@ -944,6 +944,10 @@ fn every_known_unsupported_intrinsic_has_a_closed_kind() {
         Operation::DebugU64,
         Operation::DebugBool,
         Operation::DebugStr,
+        Operation::IntToFloat,
+        Operation::FloatToInt,
+        Operation::FloatCast,
+        Operation::TotalCmp,
         Operation::BitCast,
     ] {
         assert_eq!(
@@ -953,7 +957,7 @@ fn every_known_unsupported_intrinsic_has_a_closed_kind() {
         );
     }
 
-    assert_eq!(Operation::ALL.len(), 42);
+    assert_eq!(Operation::ALL.len(), 46);
 }
 
 #[test]

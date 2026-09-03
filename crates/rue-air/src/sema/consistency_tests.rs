@@ -20,11 +20,8 @@ mod tests {
     const ALL_INSTDATA_VARIANTS: &[&str] = &[
         // Constants
         "IntConst",
-        // `FloatConst` is handled by both passes as a *rejection* until
-        // ADR-0065 Phase 4 types it: constraint generation reports `!` and AIR
-        // emission reports the preview gate or E1109. Listing it here keeps
-        // that pairing enforced — if Phase 4 gives it a real inference rule and
-        // forgets the emission side (or vice versa), this test fails.
+        // FloatConst is inferred as an exact comptime_float and context-rounded
+        // to f32/f64 during AIR emission (ADR-0065 Phase 4).
         "FloatConst",
         "BoolConst",
         "StringConst",

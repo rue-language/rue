@@ -770,7 +770,11 @@ $runtime
                                                             ResolveSemanticSignatureError::Failure(failure) => Value::Failure(*failure),
                                                         },
                                                         Ok(ty) => {
-                                                            let compatible = typed.ty.as_ref().is_none_or(|found| found == &ty)
+                                                            let compatible = typed.ty.as_ref().is_none_or(|found| {
+                                                                found == &ty
+                                                                    || (matches!(found, crate::durable_semantics::DurableType::ComptimeFloat)
+                                                                        && matches!(ty, crate::durable_semantics::DurableType::F32 | crate::durable_semantics::DurableType::F64))
+                                                            })
                                                                 && match (&ty, &value) {
                                                                 (crate::durable_semantics::DurableType::I8, crate::durable_semantics::DurableConstValue::Integer(value)) => i8::try_from(*value).is_ok(),
                                                                 (crate::durable_semantics::DurableType::I16, crate::durable_semantics::DurableConstValue::Integer(value)) => i16::try_from(*value).is_ok(),
@@ -782,7 +786,10 @@ $runtime
                                                                 (crate::durable_semantics::DurableType::U64, crate::durable_semantics::DurableConstValue::Integer(value)) => u64::try_from(*value).is_ok(),
                                                                 (crate::durable_semantics::DurableType::Bool, crate::durable_semantics::DurableConstValue::Bool(_))
                                                                 | (crate::durable_semantics::DurableType::Unit, crate::durable_semantics::DurableConstValue::Unit)
+                                                                | (crate::durable_semantics::DurableType::ComptimeFloat, crate::durable_semantics::DurableConstValue::Float(_))
                                                                 | (crate::durable_semantics::DurableType::ComptimeType, crate::durable_semantics::DurableConstValue::Type(_) | crate::durable_semantics::DurableConstValue::Function(_)) => true,
+                                                                (crate::durable_semantics::DurableType::F32, crate::durable_semantics::DurableConstValue::Float(value)) => rue_air::finite_float_literal_bits(value, rue_air::Type::F32).is_some(),
+                                                                (crate::durable_semantics::DurableType::F64, crate::durable_semantics::DurableConstValue::Float(value)) => rue_air::finite_float_literal_bits(value, rue_air::Type::F64).is_some(),
                                                                 (crate::durable_semantics::DurableType::BuiltinNominal { name, .. }, crate::durable_semantics::DurableConstValue::String(_)) if name.as_ref() == "str" => true,
                                                                 _ => false,
                                                             };

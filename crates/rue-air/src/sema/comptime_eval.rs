@@ -2617,6 +2617,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeValueAlgebra for OrdinaryBodyEngin
             ConstValue::Bool(value) => Some(ConstValue::Bool(value)),
             ConstValue::Unit => Some(ConstValue::Unit),
             ConstValue::Type(value) => Some(ConstValue::Type(value)),
+            ConstValue::Float(value) => Some(ConstValue::Float(value)),
             _ => None,
         };
         Ok(match value {
@@ -2658,6 +2659,19 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeValueAlgebra for OrdinaryBodyEngin
             site.span(),
         )
         .map_err(Into::into)
+    }
+
+    fn resolve_float_const(
+        &mut self,
+        content: Self::Name,
+        _span: Span,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        let text = self.body_interner().resolve(&content);
+        let Some(canonical) = crate::canonical_decimal_literal(text) else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        let symbol = self.body_interner().get_or_intern(canonical);
+        ComptimeOutcome::Known(ConstValue::Float(rue_rir::SymbolHandle::new(symbol)))
     }
 }
 

@@ -350,6 +350,9 @@ pub(crate) fn endpoint_display(pool: &rue_air::TypeInternPool, ty: rue_air::Type
         TypeKind::Unit => "()".into(),
         TypeKind::Never => "!".into(),
         TypeKind::ComptimeType => "type".into(),
+        TypeKind::F32 => "f32".into(),
+        TypeKind::F64 => "f64".into(),
+        TypeKind::ComptimeFloat => "comptime_float".into(),
         TypeKind::Struct(id) => pool.struct_def(id).name.to_string(),
         TypeKind::Enum(id) => pool.enum_def(id).name.to_string(),
         TypeKind::Array(id) => {

@@ -116,6 +116,14 @@ impl Parser {
             TokenKind::U32 => self.syms.u32,
             TokenKind::U64 => self.syms.u64,
             TokenKind::Bool => self.syms.bool,
+            TokenKind::Ident(symbol)
+                if matches!(
+                    self.interner.resolve(&symbol),
+                    "f32" | "f64" | "comptime_float"
+                ) =>
+            {
+                symbol
+            }
             _ => return None,
         })
     }

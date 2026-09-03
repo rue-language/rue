@@ -1091,6 +1091,18 @@ impl<'a> CfgBuilder<'a> {
         let span = inst.span;
         let ty = inst.ty;
 
+        // ADR-0065 Phase 4 deliberately stops at typed AIR. Until both
+        // backends implement float register classes and operations, reject a
+        // concrete float before it can be represented by the integer-oriented
+        // CFG and silently miscompiled.
+        if ty.is_float() {
+            self.errors
+                .push(CompileError::new(ErrorKind::FloatNotYetImplemented, span));
+            self.cfg
+                .set_terminator(self.current_block, Terminator::Unreachable);
+            return Self::diverged();
+        }
+
         match &inst.data {
             AirInstData::Const(v) => {
                 let value = self.emit(CfgInstData::Const(*v), ty, span);

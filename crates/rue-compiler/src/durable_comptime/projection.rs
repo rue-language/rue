@@ -165,6 +165,9 @@ pub(crate) fn durable_type_from_instance_key(
         T::Unit => D::Unit,
         T::Never => D::Never,
         T::ComptimeType => D::ComptimeType,
+        T::F32 => D::F32,
+        T::F64 => D::F64,
+        T::ComptimeFloat => D::ComptimeFloat,
         T::BuiltinNominal { kind, name } => D::BuiltinNominal {
             name: name.clone(),
             kind: match kind {
@@ -224,6 +227,9 @@ fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
         T::Unit => "()".to_owned(),
         T::Never => "!".to_owned(),
         T::ComptimeType => "type".to_owned(),
+        T::F32 => "f32".to_owned(),
+        T::F64 => "f64".to_owned(),
+        T::ComptimeFloat => "comptime_float".to_owned(),
         T::BuiltinNominal { name, .. } => name.to_string(),
         T::Nominal(key) => key.name().to_owned(),
         T::AnonymousNominal(key) => match &key.producer {
@@ -257,6 +263,7 @@ fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
                             crate::CanonicalArgumentValue::Function(_) => "function".to_owned(),
                             crate::CanonicalArgumentValue::Unit => "()".to_owned(),
                             crate::CanonicalArgumentValue::String(value) => format!("\"{value}\""),
+                            crate::CanonicalArgumentValue::Float(value) => value.to_string(),
                         }),
                 );
                 if arguments.is_empty() {
@@ -351,6 +358,7 @@ pub(crate) fn inferred_durable_const_type_name(value: &DurableConstValue) -> &'s
         DurableConstValue::Bool(_) => "bool",
         DurableConstValue::Unit => "()",
         DurableConstValue::String(_) => "str",
+        DurableConstValue::Float(_) => "comptime_float",
         DurableConstValue::Type(_) | DurableConstValue::Function(_) => "type",
     }
 }
@@ -957,7 +965,8 @@ impl ComptimeValue for EvaluatedSemanticConst {
             | DurableConstValue::Type(_)
             | DurableConstValue::Function(_)
             | DurableConstValue::Unit
-            | DurableConstValue::String(_) => None,
+            | DurableConstValue::String(_)
+            | DurableConstValue::Float(_) => None,
         }
     }
 
@@ -971,7 +980,8 @@ impl ComptimeValue for EvaluatedSemanticConst {
             | DurableConstValue::Type(_)
             | DurableConstValue::Function(_)
             | DurableConstValue::Unit
-            | DurableConstValue::String(_) => None,
+            | DurableConstValue::String(_)
+            | DurableConstValue::Float(_) => None,
         }
     }
 
@@ -985,7 +995,8 @@ impl ComptimeValue for EvaluatedSemanticConst {
             | DurableConstValue::Bool(_)
             | DurableConstValue::Function(_)
             | DurableConstValue::Unit
-            | DurableConstValue::String(_) => None,
+            | DurableConstValue::String(_)
+            | DurableConstValue::Float(_) => None,
         }
     }
 

@@ -2,11 +2,11 @@
 id = "diagnostics.float-literals"
 name = "Float literal diagnostics"
 description = """
-ADR-0065 Phases 2-3 (RUE-1068, RUE-1069). Two families live here: the spelling
+ADR-0065 Phases 2-4 (RUE-1068 through RUE-1070). Two families live here: the spelling
 rules for the literal itself (`.5` / `5.` / `1e`), which are lexical or
 grammatical and fire regardless of the preview flag, and the two-sided
-`floats` preview gate — E1100 without `--preview floats`, E1109 with it,
-because no phase can type the literal yet.
+`floats` preview gate — E1100 without `--preview floats`, and the explicit
+Phase-4 E1109 lowering boundary after typed AIR.
 """
 
 [[case]]
@@ -26,8 +26,8 @@ error_contains = [
 ]
 
 [[case]]
-name = "enabled_but_not_yet_typed"
-description = "With the flag the literal passes the gate and stops at the phase marker instead of an unfinished typing path."
+name = "enabled_reaches_the_typed_lowering_boundary"
+description = "With the flag the literal is typed and stops at the explicit production-inert Phase-4 lowering boundary."
 source = """
 fn main() -> i32 {
     let x = 1.5;
@@ -38,8 +38,8 @@ preview = "floats"
 compile_fail = true
 error_contains = [
     "E1109",
-    "floating-point literals are not yet supported at this compilation phase",
-    "ADR-0065 Phase 4, RUE-714",
+    "floating-point lowering is not yet implemented after typed AIR",
+    "ADR-0065 Phase 4 boundary, RUE-1070",
 ]
 
 [[case]]
@@ -53,11 +53,11 @@ fn main() -> i32 {
 """
 preview = "floats"
 compile_fail = true
-error_contains = ["E1109", "floating-point literals are not yet supported"]
+error_contains = ["E1109", "floating-point lowering is not yet implemented after typed AIR"]
 
 [[case]]
 name = "float_as_a_call_argument"
-description = "The diagnostic anchors on the literal, not the enclosing call."
+description = "A comptime_float does not implicitly convert to an integer parameter."
 source = """
 fn f(a: i32) -> i32 { a }
 
@@ -68,7 +68,136 @@ fn main() -> i32 {
 """
 preview = "floats"
 compile_fail = true
-error_contains = ["E1109"]
+error_contains = ["E0206", "expected comptime_float, found i32"]
+
+[[case]]
+name = "contextual_f32_reaches_typed_boundary"
+source = """
+fn value() -> f32 { 1.5 }
+fn main() -> i32 { @float_to_int(value()) }
+"""
+preview = "floats"
+compile_fail = true
+error_contains = ["E1109", "typed AIR"]
+
+[[case]]
+name = "unconstrained_literal_defaults_to_f64"
+source = """
+fn explicit() -> f64 { 1.0 }
+fn main() -> i32 { @total_cmp(2.0, explicit()) }
+"""
+preview = "floats"
+compile_fail = true
+error_contains = ["E1109", "typed AIR"]
+
+[[case]]
+name = "generic_anonymous_float_identity_is_preserved"
+source = """
+fn Box(comptime T: type) -> type { struct { value: T } }
+fn read(boxed: Box(f64)) -> f64 { boxed.value }
+fn main() -> i32 {
+    let B = Box(f64);
+    @float_to_int(read(B { value: 1.25 }))
+}
+"""
+preview = "floats"
+compile_fail = true
+error_contains = ["E1109", "typed AIR"]
+
+[[case]]
+name = "integer_literal_is_admitted_by_float_context"
+source = """
+fn value() -> f64 { 42 }
+fn main() -> i32 { @float_to_int(value()) }
+"""
+preview = "floats"
+compile_fail = true
+error_contains = ["E1109", "typed AIR"]
+
+[[case]]
+name = "integer_literals_are_admitted_by_each_direct_float_destination"
+source = """
+struct Holder { field: f32 }
+fn take(value: f64) -> f64 { value }
+fn value() -> f64 {
+    let annotated: f32 = 1;
+    let holder = Holder { field: 2 };
+    take(3) + @float_cast(annotated) + @float_cast(holder.field)
+}
+fn main() -> i32 { @float_to_int(value()) }
+"""
+preview = "floats"
+compile_fail = true
+error_contains = ["E1109", "typed AIR"]
+
+[[case]]
+name = "finite_range_overflow_is_rejected_before_lowering"
+source = """
+fn value() -> f32 { 1e999999 }
+fn main() -> i32 { @float_to_int(value()) }
+"""
+preview = "floats"
+compile_fail = true
+error_contains = ["E0206", "finite f32 literal"]
+
+[[case]]
+name = "float_remainder_names_tracking_and_workaround"
+source = """
+fn value() -> f64 { 5.0 % 2.0 }
+fn main() -> i32 { @float_to_int(value()) }
+"""
+preview = "floats"
+compile_fail = true
+error_contains = ["RUE-1070", "std.math.rem"]
+
+[[case]]
+name = "float_intrinsic_is_independently_preview_gated"
+source = """
+fn main() -> i32 { @float_to_int(@int_to_float(1)) }
+"""
+compile_fail = true
+error_contains = ["E1100", "a floating-point intrinsic", "--preview floats"]
+
+[[case]]
+name = "float_intrinsics_accept_their_typed_signatures"
+source = """
+fn source() -> f32 { @int_to_float(1) }
+fn widened() -> f64 { @float_cast(source()) }
+fn narrowed() -> f32 { @float_cast(widened()) }
+fn main() -> i32 { @total_cmp(narrowed(), source()) + @float_to_int(widened()) }
+"""
+preview = "floats"
+compile_fail = true
+error_contains = ["E1109", "typed AIR"]
+
+[[case]]
+name = "float_intrinsic_wrong_count_is_clear"
+source = "fn main() -> i32 { @float_to_int() }"
+preview = "floats"
+compile_fail = true
+error_contains = ["E0701", "float_to_int", "expects 1 argument"]
+
+[[case]]
+name = "total_cmp_requires_matching_float_widths"
+source = """
+fn a() -> f32 { 1.0 }
+fn b() -> f64 { 1.0 }
+fn main() -> i32 { @total_cmp(a(), b()) }
+"""
+preview = "floats"
+compile_fail = true
+error_contains = ["E0206", "expected f32, found f64"]
+
+[[case]]
+name = "imported_float_identity_reaches_the_same_boundary"
+source = """
+const dep = @import("dep.rue");
+fn main() -> i32 { @float_to_int(dep.value()) }
+"""
+aux_files = { "dep.rue" = "pub fn value() -> f64 { 1.25 }\n" }
+preview = "floats"
+compile_fail = true
+error_contains = ["E1109", "typed AIR"]
 
 [[case]]
 name = "leading_dot_names_the_replacement"
@@ -133,3 +262,182 @@ error_contains = [
     "E0011",
     "missing digits in the exponent of floating-point literal `1e`",
 ]
+
+[[case]]
+name = "mixed_integer_and_float_literals_do_not_coerce_through_operators"
+source = """
+fn main() -> i32 {
+    let a = 1 + 2.0;
+    0
+}
+"""
+preview = "floats"
+compile_fail = true
+error_contains = ["E0206", "expected f32 or f64, found i32"]
+
+[[case]]
+name = "mixed_integer_and_float_literals_do_not_subtract"
+source = "fn main() -> i32 { let value = 1 - 2.0; 0 }"
+preview = "floats"
+compile_fail = true
+error_contains = ["E0206", "expected f32 or f64, found i32"]
+
+[[case]]
+name = "mixed_integer_and_float_literals_do_not_multiply"
+source = "fn main() -> i32 { let value = 1 * 2.0; 0 }"
+preview = "floats"
+compile_fail = true
+error_contains = ["E0206", "expected f32 or f64, found i32"]
+
+[[case]]
+name = "mixed_integer_and_float_literals_do_not_divide"
+source = "fn main() -> i32 { let value = 1 / 2.0; 0 }"
+preview = "floats"
+compile_fail = true
+error_contains = ["E0206", "expected f32 or f64, found i32"]
+
+[[case]]
+name = "mixed_integer_and_float_literals_do_not_order"
+source = "fn main() -> i32 { let value = 1 < 2.0; 0 }"
+preview = "floats"
+compile_fail = true
+error_contains = ["E0206", "expected f32 or f64, found i32"]
+
+[[case]]
+name = "mixed_integer_and_float_literals_do_not_compare_for_equality"
+source = "fn main() -> i32 { let value = 1 == 2.0; 0 }"
+preview = "floats"
+compile_fail = true
+error_contains = ["E0206", "expected f32 or f64, found i32"]
+
+[[case]]
+name = "mixed_integer_and_float_literals_do_not_take_remainder"
+source = "fn main() -> i32 { let value = 1 % 2.0; 0 }"
+preview = "floats"
+compile_fail = true
+error_contains = ["E0206", "expected f32 or f64, found i32"]
+
+[[case]]
+name = "named_and_imported_exact_float_constants_contextualize_at_use"
+source = """
+const local: comptime_float = 1.500;
+const rounded: f64 = 1.5;
+const dep = @import("dep.rue");
+fn value() -> f64 { local }
+fn main() -> i32 { @total_cmp(value(), dep.value()) + @total_cmp(rounded, dep.value()) }
+"""
+aux_files = { "dep.rue" = "pub const exact: comptime_float = 15e-1;\npub fn value() -> f64 { exact }\n" }
+preview = "floats"
+compile_fail = true
+error_contains = ["E1109", "typed AIR"]
+
+[[case]]
+name = "comptime_float_specializations_preserve_exact_identity"
+source = """
+fn materialize(comptime value: comptime_float) -> f64 { value }
+fn Box(comptime value: comptime_float) -> type { struct { field: f64 } }
+fn main() -> i32 {
+    let A = Box(1.0);
+    let A2 = Box(01.00e0);
+    let B = Box(1.01);
+    let a: A = A2 { field: materialize(100e-2) };
+    let b: B = B { field: materialize(1.01) };
+    @total_cmp(a.field, b.field)
+}
+"""
+preview = "floats"
+compile_fail = true
+error_contains = ["E1109", "typed AIR"]
+
+[[case]]
+name = "negative_float_literals_and_negative_zero_reach_typed_air"
+source = """
+fn a() -> f32 { -0.0 }
+fn b() -> f64 { -1.5 }
+fn main() -> i32 { @total_cmp(b(), -0.0) + @float_to_int(a()) }
+"""
+preview = "floats"
+compile_fail = true
+error_contains = ["E1109", "typed AIR"]
+
+[[case]]
+name = "diverging_operands_propagate_through_every_float_intrinsic"
+source = """
+fn f32_value() -> f32 { 1.0 }
+fn f64_value() -> f64 { 1.0 }
+fn a() -> f32 { @int_to_float(@panic("x")) }
+fn b() -> i32 { @float_to_int(@panic("x")) }
+fn c() -> f64 { @float_cast(@panic("x")) }
+fn d() -> i32 { @total_cmp(@panic("x"), f32_value()) }
+fn e() -> i32 { @total_cmp(f64_value(), @panic("x")) }
+fn main() -> i32 {
+    let n = @random_u32();
+    if n == 0 { @float_to_int(a()) }
+    else if n == 1 { b() }
+    else if n == 2 { @float_to_int(c()) }
+    else if n == 3 { d() }
+    else { e() }
+}
+"""
+preview = "floats"
+compile_fail = true
+error_contains = ["E1109", "typed AIR"]
+
+[[case]]
+name = "total_cmp_result_is_the_canonical_i32"
+source = """
+fn value() -> f64 { 1.0 }
+fn main() -> i32 {
+    let order: i32 = @total_cmp(value(), value());
+    order
+}
+"""
+preview = "floats"
+compile_fail = true
+error_contains = ["E1109", "typed AIR"]
+
+[[case]]
+name = "unused_float_function_signature_is_preview_gated"
+source = """
+fn unused(value: f32) -> f64 { value }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1100", "floating-point type", "--preview floats"]
+
+[[case]]
+name = "unused_float_generic_signature_is_preview_gated"
+source = """
+fn unused(comptime T: type, value: f32) -> T { @panic("unused") }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1100", "floating-point type", "--preview floats"]
+
+[[case]]
+name = "unused_float_struct_field_is_preview_gated"
+source = """
+struct Holder { field: f32 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1100", "floating-point type", "--preview floats"]
+
+[[case]]
+name = "unused_float_type_alias_is_preview_gated"
+source = """
+const Alias: type = f64;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1100", "floating-point type", "--preview floats"]
+
+[[case]]
+name = "unused_imported_float_signature_is_preview_gated"
+source = """
+const dep = @import("dep.rue");
+fn main() -> i32 { 0 }
+"""
+aux_files = { "dep.rue" = "pub fn unused(value: f32) -> f64 { value }\n" }
+compile_fail = true
+error_contains = ["E1100", "floating-point type", "--preview floats"]

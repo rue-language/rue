@@ -1053,6 +1053,9 @@ where
             TypeKind::Unit => T::Unit,
             TypeKind::Never => T::Never,
             TypeKind::ComptimeType => T::ComptimeType,
+            TypeKind::F32 => T::F32,
+            TypeKind::F64 => T::F64,
+            TypeKind::ComptimeFloat => T::ComptimeFloat,
             TypeKind::Array(id) => {
                 let (element, len) = self.type_pool.array_def(id);
                 T::Array {
@@ -1479,6 +1482,9 @@ where
             T::Unit => builder.push_unit_type().ok(),
             T::Never => builder.push_never_type().ok(),
             T::ComptimeType => named(builder, "type"),
+            T::F32 => named(builder, "f32"),
+            T::F64 => named(builder, "f64"),
+            T::ComptimeFloat => named(builder, "comptime_float"),
             T::BuiltinNominal { name, .. } => named(builder, name),
             T::Nominal(definition) => named(builder, &self.source.definition_name(definition)?),
             T::AnonymousNominal(_) => {
@@ -2484,6 +2490,9 @@ where
             T::Unit => S::Unit,
             T::Never => S::Never,
             T::ComptimeType => S::ComptimeType,
+            T::F32 => S::F32,
+            T::F64 => S::F64,
+            T::ComptimeFloat => S::ComptimeFloat,
             T::BuiltinNominal { kind, name } => S::BuiltinNominal {
                 kind: match kind {
                     crate::AnonymousNominalKind::Struct => crate::SemanticImportNominalKind::Struct,
@@ -2725,6 +2734,9 @@ where
             | T::Unit
             | T::Never
             | T::ComptimeType
+            | T::F32
+            | T::F64
+            | T::ComptimeFloat
             | T::BuiltinNominal { .. }
             | T::Module(_)
             | T::GenericParameter(_) => {}
@@ -2780,6 +2792,9 @@ where
             T::Unit => S::Unit,
             T::Never => S::Never,
             T::ComptimeType => S::ComptimeType,
+            T::F32 => S::F32,
+            T::F64 => S::F64,
+            T::ComptimeFloat => S::ComptimeFloat,
             T::BuiltinNominal { kind, name } | T::Nominal(N::Builtin { kind, name }) => {
                 S::BuiltinNominal {
                     kind: match kind {
@@ -2823,6 +2838,9 @@ where
             TypeKind::Unit => T::Unit,
             TypeKind::Never => T::Never,
             TypeKind::ComptimeType => T::ComptimeType,
+            TypeKind::F32 => T::F32,
+            TypeKind::F64 => T::F64,
+            TypeKind::ComptimeFloat => T::ComptimeFloat,
             TypeKind::Array(id) => {
                 let (element, len) = self.type_pool.array_def(id);
                 T::Array {
@@ -2871,6 +2889,7 @@ where
             ConstValue::String(symbol) => {
                 V::String(Arc::from(self.interner.resolve(&symbol.spur())))
             }
+            ConstValue::Float(symbol) => V::Float(Arc::from(self.interner.resolve(&symbol.spur()))),
         })
     }
 
@@ -2903,6 +2922,7 @@ where
             ),
             V::Unit => ConstValue::Unit,
             V::String(value) => ConstValue::String(self.intern_name(value.as_ref())?.into()),
+            V::Float(value) => ConstValue::Float(self.intern_name(value.as_ref())?.into()),
         })
     }
 
@@ -3404,6 +3424,11 @@ where
             }
             CanonicalArgumentValue::Unit => ConstValue::Unit,
             CanonicalArgumentValue::String(value) => ConstValue::String(
+                self.intern_name(value.as_ref())
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?
+                    .into(),
+            ),
+            CanonicalArgumentValue::Float(value) => ConstValue::Float(
                 self.intern_name(value.as_ref())
                     .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?
                     .into(),
@@ -4187,6 +4212,9 @@ where
             T::Unit => "()".into(),
             T::Never => "!".into(),
             T::ComptimeType => "type".into(),
+            T::F32 => "f32".into(),
+            T::F64 => "f64".into(),
+            T::ComptimeFloat => "comptime_float".into(),
             T::BuiltinNominal { name, .. } => name.to_string(),
             T::Nominal(N::Builtin { name, .. }) => name.to_string(),
             T::Nominal(N::Named(key)) => self.source.definition_name(key)?.to_string(),
@@ -5200,6 +5228,9 @@ where
             TypeKind::Unit => TypeInstanceKey::Unit,
             TypeKind::Never => TypeInstanceKey::Never,
             TypeKind::ComptimeType => TypeInstanceKey::ComptimeType,
+            TypeKind::F32 => TypeInstanceKey::F32,
+            TypeKind::F64 => TypeInstanceKey::F64,
+            TypeKind::ComptimeFloat => TypeInstanceKey::ComptimeFloat,
             TypeKind::Array(id) => {
                 let (element, len) = self.type_pool.array_def(id);
                 TypeInstanceKey::Array {
@@ -5258,6 +5289,9 @@ where
             )),
             ConstValue::String(symbol) => {
                 CanonicalArgumentValue::String(self.interner.resolve(&symbol.spur()).into())
+            }
+            ConstValue::Float(symbol) => {
+                CanonicalArgumentValue::Float(self.interner.resolve(&symbol.spur()).into())
             }
             ConstValue::Unit => CanonicalArgumentValue::Unit,
         })

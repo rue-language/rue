@@ -1538,6 +1538,15 @@ impl ComptimeValueAlgebra for FakeHost {
         ComptimeOutcome::Known(FakeValue::Integer(17))
     }
 
+    fn resolve_float_const(
+        &mut self,
+        _content: Self::Name,
+        _span: Span,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        self.float_evaluations.set(self.float_evaluations.get() + 1);
+        ComptimeOutcome::HostFailure(FAKE_FAILURE)
+    }
+
     fn resolve_comptime_expression_intrinsic(
         &mut self,
         request: ComptimeExpressionIntrinsicRequest<Self::Name>,

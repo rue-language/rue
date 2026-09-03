@@ -882,6 +882,8 @@ pub enum ConstValue {
     /// are not usable as comptime arguments (no `comptime s: str` parameters
     /// exist), so specialization serialization rejects them.
     String(SymbolHandle),
+    /// Exact canonical decimal value, interned as `<significand>e<exponent>`.
+    Float(SymbolHandle),
     /// Unit value - the value of `()`.
     Unit,
 }
@@ -951,6 +953,7 @@ impl ConstValue {
             // engine treats them as non-evaluable), so this arm only has to
             // avoid colliding with a real comptime parameter type.
             ConstValue::String(_) => Type::ERROR,
+            ConstValue::Float(_) => Type::COMPTIME_FLOAT,
             ConstValue::Unit => Type::UNIT,
         }
     }

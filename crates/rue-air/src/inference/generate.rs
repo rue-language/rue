@@ -380,6 +380,9 @@ pub struct ConstraintGenerator<'a> {
     /// Type variables allocated for integer literals.
     /// These start as unbound and need to be defaulted to i32 if unconstrained.
     int_literal_vars: Vec<TypeVarId>,
+    /// Variables rooted at a `comptime_float` literal. They accept only f32/f64
+    /// context and default to f64 after whole-body unification.
+    float_literal_vars: Vec<TypeVarId>,
     /// Type variables allocated for string literals. Unlike integer literals,
     /// these default to the canonical core `str` type. Context may still bind
     /// a literal to the trusted standard-library `StrBuf` language item.
@@ -665,6 +668,7 @@ impl<'a> ConstraintGenerator<'a> {
             methods: Some(methods),
             lazy: None,
             int_literal_vars: Vec::new(),
+            float_literal_vars: Vec::new(),
             string_literal_vars: Vec::new(),
             string_literal_default,
             fixed_string_types: Vec::new(),
@@ -727,6 +731,7 @@ impl<'a> ConstraintGenerator<'a> {
             methods: None,
             lazy: Some(lazy),
             int_literal_vars: Vec::new(),
+            float_literal_vars: Vec::new(),
             string_literal_vars: Vec::new(),
             string_literal_default,
             fixed_string_types: Vec::new(),
@@ -1446,11 +1451,12 @@ impl<'a> ConstraintGenerator<'a> {
             }
         }
         match constraint {
-            Constraint::Equal(lhs, rhs, _) => {
+            Constraint::Equal(lhs, rhs, _) | Constraint::ContextualEqual(lhs, rhs, _) => {
                 record_type(&mut self.fixed_string_types, self.type_pool, lhs);
                 record_type(&mut self.fixed_string_types, self.type_pool, rhs);
             }
             Constraint::IsInteger(ty, _)
+            | Constraint::IsNumeric(ty, _)
             | Constraint::IsSigned(ty, _)
             | Constraint::IsUnsigned(ty, _) => {
                 record_type(&mut self.fixed_string_types, self.type_pool, ty)
@@ -1490,6 +1496,7 @@ impl<'a> ConstraintGenerator<'a> {
         Vec<Constraint>,
         Vec<TypeVarId>,
         Vec<TypeVarId>,
+        Vec<TypeVarId>,
         Type,
         ahash::AHashMap<InstRef, InferType>,
         AHashMap<InstRef, bool>,
@@ -1500,6 +1507,7 @@ impl<'a> ConstraintGenerator<'a> {
         (
             self.constraints,
             self.int_literal_vars,
+            self.float_literal_vars,
             self.string_literal_vars,
             self.string_literal_default,
             expr_types,
@@ -1590,16 +1598,11 @@ impl<'a> ConstraintGenerator<'a> {
                 InferType::Var(var)
             }
 
-            // Float literals have no inference rule yet (ADR-0065 Phase 4,
-            // RUE-1069): there is no `f32`/`f64` tag in the packed `Type` and
-            // no `comptime_float` for the unifier to bind. Reporting `!` keeps
-            // the solver quiet — `!` coerces to anything, so a float operand
-            // neither constrains its neighbours nor leaves an unsolved
-            // variable behind — and lets the AIR-emission pass be the single
-            // place that reports the literal (as the preview gate, or as
-            // E1109). Replace this with the real `comptime_float` rule in
-            // Phase 4.
-            InstData::FloatConst { .. } => InferType::Concrete(Type::NEVER),
+            InstData::FloatConst { .. } => {
+                let var = self.fresh_var();
+                self.float_literal_vars.push(var);
+                InferType::Var(var)
+            }
 
             InstData::BoolConst(_) => InferType::Concrete(Type::BOOL),
 
@@ -1632,7 +1635,11 @@ impl<'a> ConstraintGenerator<'a> {
             | InstData::BitOr { lhs, rhs }
             | InstData::BitXor { lhs, rhs }
             | InstData::Shl { lhs, rhs }
-            | InstData::Shr { lhs, rhs } => self.generate_binary_arith(inst_ref, *lhs, *rhs, ctx),
+            | InstData::Shr { lhs, rhs } => {
+                let ty = self.generate_binary_arith(inst_ref, *lhs, *rhs, ctx);
+                self.add_constraint(Constraint::is_integer(ty.clone(), span));
+                ty
+            }
 
             // Comparison operators: operands must match, result is bool
             InstData::Eq { lhs, rhs }
@@ -1818,7 +1825,7 @@ impl<'a> ConstraintGenerator<'a> {
                         // let sema materialize the value (mirrors the call-arg
                         // slice/`str` coercion below).
                         if !self.is_slice_struct_type(annotated_ty.clone()) {
-                            self.add_constraint(Constraint::equal(
+                            self.add_constraint(Constraint::contextual(
                                 init_info.ty,
                                 annotated_ty.clone(),
                                 span,
@@ -1915,7 +1922,7 @@ impl<'a> ConstraintGenerator<'a> {
                         && !Self::is_never_concrete(&value_info.ty)
                     {
                         // Assignment stores the value with its semantic type.
-                        self.add_constraint(Constraint::equal(value_info.ty, target_ty, span));
+                        self.add_constraint(Constraint::contextual(value_info.ty, target_ty, span));
                     }
                 }
                 // Assignment produces unit
@@ -1950,7 +1957,7 @@ impl<'a> ConstraintGenerator<'a> {
                     if value_info.continues
                         && !self.is_slice_struct_type(InferType::Concrete(ctx.return_type))
                     {
-                        self.add_constraint(Constraint::equal(
+                        self.add_constraint(Constraint::contextual(
                             value_info.ty,
                             InferType::Concrete(ctx.return_type),
                             span,
@@ -1977,7 +1984,7 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::Yield(value) => {
                 let value_info = self.generate(*value, ctx);
                 continues &= value_info.continues;
-                self.add_constraint(Constraint::equal(
+                self.add_constraint(Constraint::contextual(
                     value_info.ty,
                     InferType::Concrete(ctx.return_type),
                     span,
@@ -2206,7 +2213,7 @@ impl<'a> ConstraintGenerator<'a> {
                             if self.is_slice_struct_type(param_ty.clone()) {
                                 continue;
                             }
-                            self.add_constraint(Constraint::equal(
+                            self.add_constraint(Constraint::contextual(
                                 arg_info.ty,
                                 param_ty.clone(),
                                 arg_info.span,
@@ -2277,6 +2284,29 @@ impl<'a> ConstraintGenerator<'a> {
                     // Return type is inferred from context - create a fresh type variable
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
+                } else if intrinsic_name == "int_to_float" || intrinsic_name == "float_cast" {
+                    for arg_ref in args.iter() {
+                        let _ = generate_intrinsic_arg!(*arg_ref);
+                    }
+                    let result = self.fresh_var();
+                    self.float_literal_vars.push(result);
+                    InferType::Var(result)
+                } else if intrinsic_name == "float_to_int" {
+                    for arg_ref in args.iter() {
+                        let _ = generate_intrinsic_arg!(*arg_ref);
+                    }
+                    let result = self.fresh_var();
+                    self.int_literal_vars.push(result);
+                    InferType::Var(result)
+                } else if intrinsic_name == "total_cmp" {
+                    let common = self.fresh_var();
+                    self.float_literal_vars.push(common);
+                    let common = InferType::Var(common);
+                    for arg_ref in args.iter() {
+                        let info = generate_intrinsic_arg!(*arg_ref);
+                        self.add_constraint(Constraint::equal(info.ty, common.clone(), info.span));
+                    }
+                    InferType::Concrete(Type::I32)
                 } else if intrinsic_name == "panic" {
                     continues = false;
                     // `@panic` diverges: it aborts the process and never returns,
@@ -2358,7 +2388,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // (RUE-935).
                     for arg_ref in args.iter() {
                         let info = generate_intrinsic_arg!(*arg_ref);
-                        self.add_constraint(Constraint::equal(
+                        self.add_constraint(Constraint::contextual(
                             info.ty,
                             InferType::Concrete(Type::U64),
                             info.span,
@@ -2467,7 +2497,7 @@ impl<'a> ConstraintGenerator<'a> {
                                 if let Some(pointee) = pointee
                                     && !self.is_slice_struct_type(InferType::Concrete(pointee))
                                 {
-                                    self.add_constraint(Constraint::equal(
+                                    self.add_constraint(Constraint::contextual(
                                         info.ty,
                                         InferType::Concrete(pointee),
                                         info.span,
@@ -3286,7 +3316,7 @@ impl<'a> ConstraintGenerator<'a> {
                             // string literal (HM type `String`) by coercion; skip
                             // strict equality and let sema materialize the `str`.
                             if !self.is_slice_struct_type(expected.clone()) {
-                                self.add_constraint(Constraint::equal(
+                                self.add_constraint(Constraint::contextual(
                                     value_info.ty,
                                     expected,
                                     value_info.span,
@@ -3458,7 +3488,7 @@ impl<'a> ConstraintGenerator<'a> {
                 if let Some(field_ty) = self.known_field_type(&base_info.ty, *field) {
                     let expected = self.type_to_infer(field_ty);
                     if value_info.continues {
-                        self.add_constraint(Constraint::equal(
+                        self.add_constraint(Constraint::contextual(
                             value_info.ty,
                             expected,
                             value_info.span,
@@ -3823,7 +3853,7 @@ impl<'a> ConstraintGenerator<'a> {
                                     if self.is_slice_struct_type(param_ty.clone()) {
                                         continue;
                                     }
-                                    self.add_constraint(Constraint::equal(
+                                    self.add_constraint(Constraint::contextual(
                                         arg_info.ty,
                                         param_ty.clone(),
                                         arg_info.span,
@@ -4050,7 +4080,7 @@ impl<'a> ConstraintGenerator<'a> {
                                         break;
                                     }
                                     if !defer_equality {
-                                        self.add_constraint(Constraint::equal(
+                                        self.add_constraint(Constraint::contextual(
                                             arg_info.ty,
                                             param_type.clone(),
                                             arg_info.span,
@@ -4249,7 +4279,7 @@ impl<'a> ConstraintGenerator<'a> {
         ));
 
         // Result must be an integer type (catches errors like `true + 1` early)
-        self.add_constraint(Constraint::is_integer(result_ty.clone(), lhs_info.span));
+        self.add_constraint(Constraint::is_numeric(result_ty.clone(), lhs_info.span));
 
         result_ty
     }
@@ -4335,7 +4365,7 @@ impl<'a> ConstraintGenerator<'a> {
             result_ty.clone(),
             rhs_info.span,
         ));
-        self.add_constraint(Constraint::is_integer(result_ty.clone(), lhs_info.span));
+        self.add_constraint(Constraint::is_numeric(result_ty.clone(), lhs_info.span));
         result_ty
     }
 
@@ -4478,7 +4508,11 @@ impl<'a> ConstraintGenerator<'a> {
                     // and propagates the expected element type into its literal
                     // elements — exactly as struct-field init does (RUE-260).
                     let expected = self.type_to_infer(pty);
-                    self.add_constraint(Constraint::equal(arg_info.ty, expected, arg_info.span));
+                    self.add_constraint(Constraint::contextual(
+                        arg_info.ty,
+                        expected,
+                        arg_info.span,
+                    ));
                 }
             }
             return Some(InferType::Concrete(ty));
@@ -4495,7 +4529,7 @@ impl<'a> ConstraintGenerator<'a> {
                 break;
             }
             if !defer_equality {
-                self.add_constraint(Constraint::equal(
+                self.add_constraint(Constraint::contextual(
                     arg_info.ty,
                     param_type.clone(),
                     arg_info.span,
@@ -5257,12 +5291,12 @@ mod tests {
 
         // Result should be a type variable
         assert!(info.ty.is_var());
-        // Should generate 3 constraints: lhs = result, rhs = result, IsInteger(result)
+        // Should generate 3 constraints: lhs = result, rhs = result, IsNumeric(result)
         assert_eq!(cgen.constraints().len(), 3);
-        // Verify the third constraint is IsInteger
+        // Verify the third constraint admits integer or float arithmetic.
         match &cgen.constraints()[2] {
-            Constraint::IsInteger(_, _) => {}
-            _ => panic!("Expected IsInteger constraint for arithmetic result"),
+            Constraint::IsNumeric(_, _) => {}
+            _ => panic!("Expected IsNumeric constraint for arithmetic result"),
         }
     }
 

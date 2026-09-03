@@ -1443,12 +1443,15 @@ impl TypeInternPoolInner {
             | TypeKind::U32
             | TypeKind::U64
             | TypeKind::Bool
+            | TypeKind::F32
+            | TypeKind::F64
             | TypeKind::Error
             | TypeKind::PtrConst(_)
             | TypeKind::PtrMut(_) => 1,
             TypeKind::Unit
             | TypeKind::Never
             | TypeKind::ComptimeType
+            | TypeKind::ComptimeFloat
             | TypeKind::Module(_)
             | TypeKind::Struct(_)
             | TypeKind::Enum(_)
@@ -1857,6 +1860,9 @@ impl TypeInternPoolInner {
             | TypeKind::Unit
             | TypeKind::Never
             | TypeKind::ComptimeType
+            | TypeKind::F32
+            | TypeKind::F64
+            | TypeKind::ComptimeFloat
             | TypeKind::Module(_) => return Ok(()),
             TypeKind::Error => return Err(TypeValidationError::RecoveryType),
             TypeKind::Struct(id) => (id.pool_index(), PoolEntryKind::Struct),
@@ -1901,6 +1907,8 @@ impl TypeInternPoolInner {
             | TypeKind::U32
             | TypeKind::U64
             | TypeKind::Bool
+            | TypeKind::F32
+            | TypeKind::F64
             | TypeKind::Unit
             | TypeKind::Never => return Ok(()),
             TypeKind::Error => {
@@ -1910,7 +1918,7 @@ impl TypeInternPoolInner {
                     Ok(())
                 };
             }
-            TypeKind::ComptimeType => {
+            TypeKind::ComptimeType | TypeKind::ComptimeFloat => {
                 return if mode.is_structural_child() {
                     Err(TypeValidationError::ComptimeStructuralChild)
                 } else {
@@ -2001,10 +2009,16 @@ impl TypeInternPoolInner {
             | TypeKind::U32
             | TypeKind::U64
             | TypeKind::Bool
+            | TypeKind::F32
+            | TypeKind::F64
             | TypeKind::Error
             | TypeKind::PtrConst(_)
             | TypeKind::PtrMut(_) => 1,
-            TypeKind::Unit | TypeKind::Never | TypeKind::ComptimeType | TypeKind::Module(_) => 0,
+            TypeKind::Unit
+            | TypeKind::Never
+            | TypeKind::ComptimeType
+            | TypeKind::ComptimeFloat
+            | TypeKind::Module(_) => 0,
             TypeKind::Struct(id) => self.struct_def(id).fields.iter().fold(0, |total, field| {
                 total.saturating_add(self.compute_abi_slot_count(field.ty))
             }),
@@ -2126,12 +2140,14 @@ impl TypeInternPoolInner {
         let (size, alignment) = match ty.kind() {
             TypeKind::I8 | TypeKind::U8 | TypeKind::Bool => (1, 1),
             TypeKind::I16 | TypeKind::U16 => (2, 2),
-            TypeKind::I32 | TypeKind::U32 => (4, 4),
-            TypeKind::I64 | TypeKind::U64 => (8, 8),
+            TypeKind::I32 | TypeKind::U32 | TypeKind::F32 => (4, 4),
+            TypeKind::I64 | TypeKind::U64 | TypeKind::F64 => (8, 8),
             TypeKind::PtrConst(_) | TypeKind::PtrMut(_) | TypeKind::Error => (8, 8),
-            TypeKind::Unit | TypeKind::Never | TypeKind::ComptimeType | TypeKind::Module(_) => {
-                (0, 1)
-            }
+            TypeKind::Unit
+            | TypeKind::Never
+            | TypeKind::ComptimeType
+            | TypeKind::ComptimeFloat
+            | TypeKind::Module(_) => (0, 1),
             TypeKind::Struct(id) => {
                 let layout = self.compact_struct_layout(id);
                 (layout.size, layout.alignment)
@@ -4565,7 +4581,7 @@ mod tests {
             Err(TypeValidationError::ModuleStructuralChild)
         );
         assert_eq!(
-            pool.try_intern_ptr_mut(Type::from_u32(13)),
+            pool.try_intern_ptr_mut(Type::from_u32(16)),
             Err(TypeValidationError::InvalidEncoding)
         );
         assert_eq!(

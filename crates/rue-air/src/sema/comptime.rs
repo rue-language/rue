@@ -440,6 +440,15 @@ pub trait ComptimeValueAlgebra: ComptimeDomain {
     ) -> ComptimeOutcome<Self::Value, Self::Failure> {
         ComptimeOutcome::RuntimeDependent
     }
+    /// Preserve a float literal's exact decimal identity without selecting a
+    /// runtime width.
+    fn resolve_float_const(
+        &mut self,
+        _content: Self::Name,
+        _span: Span,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        ComptimeOutcome::RuntimeDependent
+    }
     /// Resolve a classified expression intrinsic after AIR has decoded its
     /// exact argument shape. No child argument is evaluated for this finite
     /// family; durable hosts can perform the keyed semantic operation directly.
@@ -1971,22 +1980,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 ComptimeOutcome::Known(H::Value::integer_typed(v, ty))
             }
 
-            // Float literals stop here for the same reason they stop in
-            // `analyze_inst_dispatch` (ADR-0065, RUE-1069): there is no
-            // `comptime_float` value in the host's value domain yet. Naming the real
-            // reason matters more here than elsewhere — falling through to
-            // the generic "not knowable at compile time" would be actively
-            // wrong about a literal, which is the most compile-time-knowable
-            // thing there is. Delete this arm when Phase 4 lands.
-            InstData::FloatConst { .. } => {
+            InstData::FloatConst { text } => {
                 host_value!(self.host.require_preview(
                     rue_error::PreviewFeature::Floats,
                     "a floating-point literal",
                     &self.diagnostic_site(span),
                 ));
-                ComptimeOutcome::HostFailure(
-                    self.host.float_not_implemented(&self.diagnostic_site(span)),
-                )
+                self.host
+                    .resolve_float_const(self.name_from_rir((*text).into()), span)
             }
 
             // String constants are intentionally routed through the host:

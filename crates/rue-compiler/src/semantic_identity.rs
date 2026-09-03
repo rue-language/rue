@@ -322,6 +322,9 @@ pub(crate) fn type_instance_from_semantic(
         T::Unit => TypeInstanceKey::Unit,
         T::Never => TypeInstanceKey::Never,
         T::ComptimeType => TypeInstanceKey::ComptimeType,
+        T::F32 => TypeInstanceKey::F32,
+        T::F64 => TypeInstanceKey::F64,
+        T::ComptimeFloat => TypeInstanceKey::ComptimeFloat,
         T::BuiltinNominal { name, kind } => TypeInstanceKey::BuiltinNominal {
             kind: match kind {
                 rue_air::SemanticImportNominalKind::Struct => AnonymousNominalKind::Struct,
@@ -367,6 +370,7 @@ pub(crate) fn argument_value_from_semantic(
         )),
         V::Unit => CanonicalArgumentValue::Unit,
         V::String(value) => CanonicalArgumentValue::String(value.clone()),
+        V::Float(value) => CanonicalArgumentValue::Float(value.clone()),
     })
 }
 
@@ -609,6 +613,10 @@ fn encode_argument_value(value: &CanonicalArgumentValue, output: &mut String) {
             tag(output, 5);
             bytes(output, value);
         }
+        CanonicalArgumentValue::Float(value) => {
+            tag(output, 6);
+            bytes(output, value);
+        }
     }
 }
 
@@ -639,6 +647,9 @@ fn encode_type(value: &TypeInstanceKey, output: &mut String) {
         TypeInstanceKey::Unit => tag(output, 9),
         TypeInstanceKey::Never => tag(output, 10),
         TypeInstanceKey::ComptimeType => tag(output, 11),
+        TypeInstanceKey::F32 => tag(output, 22),
+        TypeInstanceKey::F64 => tag(output, 23),
+        TypeInstanceKey::ComptimeFloat => tag(output, 24),
         TypeInstanceKey::BuiltinNominal { kind, name } => {
             tag(output, 12);
             encode_nominal_kind(*kind, output);

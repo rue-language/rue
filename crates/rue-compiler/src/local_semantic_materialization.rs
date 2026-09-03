@@ -817,6 +817,9 @@ fn drop_glue_type_name(ty: &crate::TypeInstanceKey) -> Option<String> {
         TypeInstanceKey::Unit => "unit".to_owned(),
         TypeInstanceKey::Never => "never".to_owned(),
         TypeInstanceKey::ComptimeType => "comptime_type".to_owned(),
+        TypeInstanceKey::F32 => "f32".to_owned(),
+        TypeInstanceKey::F64 => "f64".to_owned(),
+        TypeInstanceKey::ComptimeFloat => "comptime_float".to_owned(),
         TypeInstanceKey::BuiltinNominal { name, .. }
         | TypeInstanceKey::Nominal(NominalInstanceKey::Builtin { name, .. }) => name.to_string(),
         TypeInstanceKey::Nominal(NominalInstanceKey::Named(definition)) => {
@@ -855,6 +858,9 @@ fn mangle_canonical_type(ty: &crate::TypeInstanceKey) -> String {
         TypeInstanceKey::Unit => "()".to_owned(),
         TypeInstanceKey::Never => "!".to_owned(),
         TypeInstanceKey::ComptimeType => "type".to_owned(),
+        TypeInstanceKey::F32 => "f32".to_owned(),
+        TypeInstanceKey::F64 => "f64".to_owned(),
+        TypeInstanceKey::ComptimeFloat => "comptime_float".to_owned(),
         TypeInstanceKey::BuiltinNominal { kind, name }
         | TypeInstanceKey::Nominal(NominalInstanceKey::Builtin { kind, name }) => {
             format!("builtin{kind:?}{}", rue_air::mangle_symbol_component(name))
@@ -913,6 +919,9 @@ fn mangle_canonical_value(value: &crate::CanonicalArgumentValue) -> String {
         CanonicalArgumentValue::Unit => "vunit".to_owned(),
         CanonicalArgumentValue::String(value) => {
             format!("vstr{}", rue_air::mangle_symbol_component(value))
+        }
+        CanonicalArgumentValue::Float(value) => {
+            format!("vfloat{}", rue_air::mangle_symbol_component(value))
         }
     }
 }
@@ -1474,6 +1483,9 @@ pub(crate) fn select_materialization_facts(
                 | T::Unit
                 | T::Never
                 | T::ComptimeType
+                | T::F32
+                | T::F64
+                | T::ComptimeFloat
                 | T::GenericParameter(_) => {}
                 T::Nominal(crate::NominalInstanceKey::Builtin { kind, name }) => {
                     self.builtin(*kind, name);
@@ -1521,7 +1533,8 @@ pub(crate) fn select_materialization_facts(
                     crate::CanonicalArgumentValue::Integer(_)
                     | crate::CanonicalArgumentValue::Bool(_)
                     | crate::CanonicalArgumentValue::Unit
-                    | crate::CanonicalArgumentValue::String(_) => {}
+                    | crate::CanonicalArgumentValue::String(_)
+                    | crate::CanonicalArgumentValue::Float(_) => {}
                 }
             }
         }

@@ -2,12 +2,12 @@
 id = "cli.float_literals"
 name = "Float literal grammar and the floats preview gate"
 description = """
-ADR-0065 Phases 2-3 (RUE-1068, RUE-1069): the lexer produces a float literal
-token, the parser and RIR carry it untyped, and the whole feature sits behind
-`--preview floats`. Nothing types the literal yet (that is Phase 4), so both
-directions of the gate are diagnostics: E1100 without the flag, E1109 with it.
-These cases pin BOTH directions and the spelling rules, because a gate that
-only ever fails one way is half a gate.
+ADR-0065 Phases 2-4 (RUE-1068 through RUE-1070): the lexer produces a float
+literal token, the parser and RIR carry it untyped, and AIR gives it an exact
+comptime value plus contextual f32/f64 typing. The whole feature sits behind
+`--preview floats`; E1100 fires without the flag, while E1109 is the explicit
+fail-closed boundary before the Phase 5/6 backends. These cases pin both
+directions and the spelling rules.
 """
 
 # ---------------------------------------------------------------------------
@@ -34,7 +34,7 @@ error_contains = [
 
 [[case]]
 name = "float_literal_with_preview_reaches_the_phase_marker"
-description = "With the flag the gate passes and the literal stops at the not-yet-implemented marker (E1109), not an ICE."
+description = "With the flag the literal is typed and stops at the explicit pre-backend marker (E1109), not an ICE."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let x = 1.5;
@@ -45,14 +45,14 @@ args = ["--preview", "floats", "main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = [
     "E1109",
-    "floating-point literals are not yet supported at this compilation phase",
-    "ADR-0065 Phase 4",
+    "floating-point lowering is not yet implemented after typed AIR",
+    "ADR-0065 Phase 4 boundary, RUE-1070",
 ]
 compile_stderr_not_contains = ["internal compiler error", "E1100"]
 
 [[case]]
 name = "float_in_an_operand_position_is_gated_not_ignored"
-description = "A float literal inside a larger expression is diagnosed at the literal, and only once."
+description = "Mixed integer/float operands are rejected without an implicit conversion."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let n: i32 = 3;
@@ -62,12 +62,12 @@ fn main() -> i32 {
 """ }]
 args = ["--preview", "floats", "main.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E1109"]
+error_contains = ["E0206", "expected comptime_float, found i32"]
 compile_stderr_not_contains = ["internal compiler error"]
 
 [[case]]
 name = "float_diagnostic_is_one_clean_json_diagnostic"
-description = "The gated literal is a single, well-formed diagnostic at the literal's own span — not a cascade."
+description = "The typed literal produces one well-formed lowering-boundary diagnostic, not a cascade."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let x = 6.022e23;
@@ -78,7 +78,7 @@ args = ["--error-format", "json", "--preview", "floats", "main.rue", "-o", "prog
 compile_fail = true
 error_contains = ["E1109"]
 json_diagnostics = true
-json_diagnostic_order = ["error E1109 main.rue:2:13"]
+json_diagnostic_order = ["error E1109 main.rue:2:5"]
 
 # ---------------------------------------------------------------------------
 # The literal reaches RIR untyped (Phase 3's actual deliverable).

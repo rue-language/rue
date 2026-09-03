@@ -1439,8 +1439,19 @@ fn every_source_intrinsic_operation_survives_semantic_export_import_and_cfg_buil
             }
         }
     }
-    assert_eq!(rue_air::IntrinsicOperation::ALL.len(), 42);
+    assert_eq!(rue_air::IntrinsicOperation::ALL.len(), 46);
     for operation in rue_air::IntrinsicOperation::ALL {
+        if matches!(
+            operation,
+            rue_air::IntrinsicOperation::IntToFloat
+                | rue_air::IntrinsicOperation::FloatToInt
+                | rue_air::IntrinsicOperation::FloatCast
+                | rue_air::IntrinsicOperation::TotalCmp
+        ) {
+            // ADR-0065 Phase 4 deliberately stops typed float operations before
+            // CFG publication; the UI boundary test owns that fail-closed path.
+            continue;
+        }
         assert!(
             operations.contains(&operation),
             "source-to-CFG pipeline lost {operation:?}"

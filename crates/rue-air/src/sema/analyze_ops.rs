@@ -55,7 +55,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
     /// Analyze a literal constant instruction.
     ///
-    /// Handles: IntConst, BoolConst, StringConst, UnitConst
+    /// Handles primitive literals, including context-rounded float literals.
     pub(crate) fn analyze_literal(
         &mut self,
         air: &mut Air,
@@ -71,6 +71,48 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
 
         match &inst.data {
+            InstData::FloatConst { text } => {
+                self.require_preview(
+                    rue_error::PreviewFeature::Floats,
+                    "a floating-point literal",
+                    inst.span,
+                )?;
+                let ty =
+                    Self::get_resolved_type(ctx, inst_ref, inst.span, "floating-point literal")?;
+                let spelling = self.body_interner().resolve(text);
+                if ty == Type::COMPTIME_FLOAT {
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::Const(0),
+                        ty,
+                        span: inst.span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, ty));
+                }
+                if !ty.is_float() {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: "f32 or f64".to_string(),
+                            found: self.format_type_name(ty),
+                        },
+                        inst.span,
+                    ));
+                }
+                let bits = crate::finite_float_literal_bits(spelling, ty).ok_or_else(|| {
+                    CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: format!("finite {} literal", self.format_type_name(ty)),
+                            found: spelling.to_string(),
+                        },
+                        inst.span,
+                    )
+                })?;
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Const(bits),
+                    ty,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(air_ref, ty))
+            }
             InstData::IntConst(value) => {
                 // Constructor-head recovery can make a call operand reachable
                 // to sema even though the unsuccessful head reduction kept it
@@ -80,6 +122,28 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // "head is not a type" error into an unresolved-type ICE.
                 // Normal inferred literals still take the resolved-map path.
                 let ty = Self::resolved_integer_type(ctx, inst_ref, inst.span, "integer literal")?;
+
+                // Integer literals are admitted directly in a float context
+                // (ADR-0065 §3); this is literal contextualization, not a
+                // runtime implicit integer/float conversion.
+                if ty.is_float() {
+                    self.require_preview(
+                        rue_error::PreviewFeature::Floats,
+                        "an integer literal in floating-point context",
+                        inst.span,
+                    )?;
+                    let bits = if ty == Type::F32 {
+                        u64::from((*value as f32).to_bits())
+                    } else {
+                        (*value as f64).to_bits()
+                    };
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::Const(bits),
+                        ty,
+                        span: inst.span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, ty));
+                }
 
                 // Check if the literal value fits in the target type's range
                 if !ty.literal_fits(*value) {
@@ -211,11 +275,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // isize). Reject unsigned integers (no negative range), bool, and
                 // every other non-signed type. `<error>`/`never` pass through so a
                 // prior error isn't masked by a spurious second diagnostic.
-                if !ty.is_signed() && !ty.is_error() && !ty.is_never() {
+                if !ty.is_signed() && !ty.is_float() && !ty.is_error() && !ty.is_never() {
                     let note = if ty.is_unsigned() {
                         "unsigned values cannot be negated"
                     } else {
-                        "unary `-` requires a signed integer operand (i8, i16, i32, i64, isize)"
+                        "unary `-` requires a signed integer or floating-point operand"
                     };
                     return Err(CompileError::new(
                         ErrorKind::CannotNegate(self.format_type_name(ty)),
@@ -226,6 +290,35 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
                 // Special case: negating a literal that equals |MIN| for signed types.
                 let operand_inst = self.body_rir_ref().get(*operand);
+                if let InstData::FloatConst { text } = &operand_inst.data
+                    && ty.is_float()
+                {
+                    self.require_preview(
+                        rue_error::PreviewFeature::Floats,
+                        "a floating-point literal",
+                        inst.span,
+                    )?;
+                    let spelling = self.body_interner().resolve(text);
+                    let bits = crate::finite_float_literal_bits_with_sign(spelling, ty, true)
+                        .ok_or_else(|| {
+                            CompileError::new(
+                                ErrorKind::TypeMismatch {
+                                    expected: format!(
+                                        "finite {} literal",
+                                        self.format_type_name(ty)
+                                    ),
+                                    found: format!("-{spelling}"),
+                                },
+                                inst.span,
+                            )
+                        })?;
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::Const(bits),
+                        ty,
+                        span: inst.span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, ty));
+                }
                 if let InstData::IntConst(value) = &operand_inst.data {
                     // Check if this value, when negated, fits in the target signed type
                     if ty.negated_literal_fits(*value) && !ty.literal_fits(*value) {

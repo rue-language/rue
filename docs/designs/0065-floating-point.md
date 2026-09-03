@@ -279,12 +279,12 @@ register-class pre-work (Phase 1) is a hard prerequisite for Phases 5–6.
 
 - [ ] **Phase 1: Register classes (GP/FP) in codegen** — no-op refactor of
   `VReg`/liveness/regalloc/scheduling. RUE-NNN
-- [ ] **Phase 2: Lexer** — `comptime_float` literal token (`1.5`, `1e9`). RUE-NNN
-- [ ] **Phase 3: Parser + RIR** — float literal node through untyped IR. RUE-NNN
-- [ ] **Phase 4: AIR types + inference** — `f32`/`f64` tags in the packed `Type`,
+- [x] **Phase 2: Lexer** — `comptime_float` literal token (`1.5`, `1e9`). RUE-1068
+- [x] **Phase 3: Parser + RIR** — float literal node through untyped IR. RUE-1069
+- [x] **Phase 4: AIR types + inference** — `f32`/`f64` tags in the packed `Type`,
   `comptime_float`, context coercion, `@int_to_float`/`@float_to_int`/`@float_cast`;
   plus `@total_cmp` typing (§8) and rejecting `%` on float operands with a
-  diagnostic naming the tracking issue and the `std.math.rem` path (§9). RUE-NNN
+  diagnostic naming the tracking issue and the `std.math.rem` path (§9). RUE-1070
 - [ ] **Phase 5: x86-64 backend** — SSE2 scalar ops, XMM regs, SysV FP ABI. RUE-NNN
 - [ ] **Phase 6: aarch64 backend** — FP/NEON scalar ops, V-regs, AAPCS64 FP ABI. RUE-NNN
 - [ ] **Phase 7: Runtime dtoa** — wire `zmij` as `__rue_to_string_float`. RUE-NNN

@@ -400,7 +400,13 @@ pub fn is_slot_identical_layout<P: crate::FfiTypePool + ?Sized>(type_pool: &P, t
         | TypeKind::PtrMut(_)
         | TypeKind::Error => true,
         // Zero-sized and compile-time-only types have identical (zero) extent.
-        TypeKind::Unit | TypeKind::Never | TypeKind::ComptimeType | TypeKind::Module(_) => true,
+        TypeKind::Unit
+        | TypeKind::Never
+        | TypeKind::ComptimeType
+        | TypeKind::ComptimeFloat
+        | TypeKind::Module(_) => true,
+        // Phase 4 deliberately has no float ABI lowering yet.
+        TypeKind::F32 | TypeKind::F64 => false,
         // Narrow scalars: one/two/four bytes under the compact layout.
         TypeKind::I8
         | TypeKind::U8

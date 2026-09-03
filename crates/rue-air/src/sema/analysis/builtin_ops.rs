@@ -317,10 +317,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         // Verify the type is integer (HM should have enforced this, but check anyway)
-        if !lhs_result.ty.is_integer() && !lhs_result.ty.is_error() && !lhs_result.ty.is_never() {
+        if !lhs_result.ty.is_integer()
+            && !lhs_result.ty.is_float()
+            && !lhs_result.ty.is_error()
+            && !lhs_result.ty.is_never()
+        {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
-                    expected: "integer type".to_string(),
+                    expected: "numeric type".to_string(),
                     found: self.format_type_name(lhs_result.ty),
                 },
                 span,
@@ -418,10 +422,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Validate the type is appropriate for this comparison
         if allow_bool {
             self.validate_equality_operand_type(lhs_type, self.body_rir_ref().get(lhs).span)?;
-        } else if !lhs_type.is_integer() {
+        } else if !lhs_type.is_integer() && !lhs_type.is_float() {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
-                    expected: "integer".to_string(),
+                    expected: "integer or floating-point type".to_string(),
                     found: self.format_type_name(lhs_type),
                 },
                 self.body_rir_ref().get(lhs).span,

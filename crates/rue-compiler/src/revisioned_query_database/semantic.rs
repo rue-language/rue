@@ -603,13 +603,14 @@ pub(super) fn evaluate_type_shape(
         | T::Bool
         | T::Unit
         | T::Never => TypeShapeValue::Available(TypeShape::Scalar),
+        T::F32 | T::F64 => TypeShapeValue::Available(TypeShape::Scalar),
         T::PtrConst(_) | T::PtrMut(_) => TypeShapeValue::Available(TypeShape::Pointer),
         T::Slice { .. } => TypeShapeValue::Available(TypeShape::Slice),
         T::Array { element, len } => TypeShapeValue::Available(TypeShape::Array {
             element: element.as_ref().clone(),
             len: *len,
         }),
-        T::ComptimeType | T::Module(_) | T::GenericParameter(_) => {
+        T::ComptimeType | T::ComptimeFloat | T::Module(_) | T::GenericParameter(_) => {
             TypeShapeValue::Available(TypeShape::Opaque)
         }
         T::BuiltinNominal { kind, name } | T::Nominal(N::Builtin { kind, name })
@@ -818,6 +819,7 @@ pub(super) fn evaluate_type_facts(
         | T::Bool
         | T::Unit
         | T::Never => direct(true),
+        T::F32 | T::F64 | T::ComptimeFloat => direct(true),
         T::PtrConst(_) | T::PtrMut(_) => direct(true),
         T::Slice { .. } => direct(true),
         T::ComptimeType | T::Module(_) | T::GenericParameter(_) => direct(true),

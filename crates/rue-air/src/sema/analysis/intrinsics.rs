@@ -348,6 +348,46 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             self.analyze_intcast_intrinsic(air, inst_ref, &args, span, ctx)
         } else if name == known.bit_cast {
             self.analyze_bitcast_intrinsic(air, name, inst_ref, &args, span, ctx)
+        } else if name == known.int_to_float {
+            self.analyze_float_conversion_intrinsic(
+                air,
+                name,
+                inst_ref,
+                &args,
+                span,
+                ctx,
+                crate::IntrinsicOperation::IntToFloat,
+            )
+        } else if name == known.float_to_int {
+            self.analyze_float_conversion_intrinsic(
+                air,
+                name,
+                inst_ref,
+                &args,
+                span,
+                ctx,
+                crate::IntrinsicOperation::FloatToInt,
+            )
+        } else if name == known.float_cast {
+            self.analyze_float_conversion_intrinsic(
+                air,
+                name,
+                inst_ref,
+                &args,
+                span,
+                ctx,
+                crate::IntrinsicOperation::FloatCast,
+            )
+        } else if name == known.total_cmp {
+            self.analyze_float_conversion_intrinsic(
+                air,
+                name,
+                inst_ref,
+                &args,
+                span,
+                ctx,
+                crate::IntrinsicOperation::TotalCmp,
+            )
         } else if name == known.test_preview_gate {
             self.analyze_test_preview_gate_intrinsic(air, &args, span)
         } else if name == known.read_line {
@@ -1298,6 +1338,103 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         Ok(())
+    }
+
+    /// Analyze @intCast intrinsic.
+    pub(super) fn analyze_float_conversion_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        inst_ref: InstRef,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+        operation: crate::IntrinsicOperation,
+    ) -> CompileResult<AnalysisResult> {
+        self.require_preview(PreviewFeature::Floats, "a floating-point intrinsic", span)?;
+        let intrinsic_name = operation.expected_spelling();
+        let expected_count = if operation == crate::IntrinsicOperation::TotalCmp {
+            2
+        } else {
+            1
+        };
+        if args.len() != expected_count {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: intrinsic_name.to_string(),
+                    expected: expected_count,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+        let mut values = Vec::with_capacity(args.len());
+        let mut types = Vec::with_capacity(args.len());
+        let mut continues = true;
+        for arg in args {
+            let result = self.analyze_inst(air, arg.value, ctx)?;
+            values.push(result.air_ref);
+            types.push(result.ty);
+            continues &= result.continues;
+        }
+        let result_ty = if operation == crate::IntrinsicOperation::TotalCmp {
+            Type::I32
+        } else {
+            ctx.resolved_type_of(inst_ref).ok_or_else(|| {
+                CompileError::new(
+                    ErrorKind::CannotInferCastTarget(intrinsic_name.to_string()),
+                    span,
+                )
+            })?
+        };
+        let valid = match operation {
+            crate::IntrinsicOperation::IntToFloat => {
+                (types[0].is_integer() || types[0].is_never()) && result_ty.is_float()
+            }
+            crate::IntrinsicOperation::FloatToInt => {
+                (types[0].is_float() || types[0].is_never()) && result_ty.is_integer()
+            }
+            crate::IntrinsicOperation::FloatCast => {
+                (types[0].is_never() && result_ty.is_float())
+                    || (types[0].is_float() && result_ty.is_float() && types[0] != result_ty)
+            }
+            crate::IntrinsicOperation::TotalCmp => {
+                (types[0].is_float() && (types[1] == types[0] || types[1].is_never()))
+                    || (types[0].is_never() && (types[1].is_float() || types[1].is_never()))
+            }
+            _ => unreachable!(),
+        };
+        if !valid {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: intrinsic_name.to_string(),
+                    expected: match operation {
+                        crate::IntrinsicOperation::IntToFloat => {
+                            "integer argument and f32/f64 result"
+                        }
+                        crate::IntrinsicOperation::FloatToInt => {
+                            "f32/f64 argument and integer result"
+                        }
+                        crate::IntrinsicOperation::FloatCast => "f32 to f64 or f64 to f32",
+                        crate::IntrinsicOperation::TotalCmp => {
+                            "two operands of the same f32/f64 type"
+                        }
+                        _ => unreachable!(),
+                    }
+                    .to_string(),
+                    found: types
+                        .iter()
+                        .map(|ty| self.format_type_name(*ty))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                })),
+                span,
+            ));
+        }
+        let air_ref = air.add_intrinsic(operation, name, &values, result_ty, span)?;
+        Ok(AnalysisResult::with_continues(
+            air_ref, result_ty, continues,
+        ))
     }
 
     /// Analyze @intCast intrinsic.

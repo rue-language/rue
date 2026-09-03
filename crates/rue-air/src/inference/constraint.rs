@@ -24,6 +24,11 @@ pub enum Constraint {
     /// - Return statements (returned type must match declared return type)
     Equal(InferType, InferType, Span),
 
+    /// An expression is flowing directly into an explicitly typed destination.
+    /// Unlike ordinary equality, this admits an integer *literal* in an f32/f64
+    /// destination without making mixed integer/float operators coercive.
+    ContextualEqual(InferType, InferType, Span),
+
     /// Type must be a signed integer: τ ∈ {i8, i16, i32, i64}.
     ///
     /// Generated for unary negation which requires signed types.
@@ -34,6 +39,9 @@ pub enum Constraint {
     ///
     /// Generated for bitwise NOT which works on any integer type.
     IsInteger(InferType, Span),
+
+    /// Type must support ordinary arithmetic: an integer or concrete float.
+    IsNumeric(InferType, Span),
 
     /// Type must be an unsigned integer: τ ∈ {u8, u16, u32, u64}.
     ///
@@ -47,6 +55,10 @@ impl Constraint {
         Constraint::Equal(lhs, rhs, span)
     }
 
+    pub fn contextual(lhs: InferType, rhs: InferType, span: Span) -> Self {
+        Constraint::ContextualEqual(lhs, rhs, span)
+    }
+
     /// Create a "must be signed" constraint.
     pub fn is_signed(ty: InferType, span: Span) -> Self {
         Constraint::IsSigned(ty, span)
@@ -55,6 +67,10 @@ impl Constraint {
     /// Create a "must be integer" constraint.
     pub fn is_integer(ty: InferType, span: Span) -> Self {
         Constraint::IsInteger(ty, span)
+    }
+
+    pub fn is_numeric(ty: InferType, span: Span) -> Self {
+        Constraint::IsNumeric(ty, span)
     }
 
     /// Create a "must be unsigned" constraint.
@@ -66,8 +82,10 @@ impl Constraint {
     pub fn span(&self) -> Span {
         match self {
             Constraint::Equal(_, _, span)
+            | Constraint::ContextualEqual(_, _, span)
             | Constraint::IsSigned(_, span)
             | Constraint::IsInteger(_, span)
+            | Constraint::IsNumeric(_, span)
             | Constraint::IsUnsigned(_, span) => *span,
         }
     }

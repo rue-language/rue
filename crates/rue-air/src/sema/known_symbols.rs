@@ -49,6 +49,10 @@ pub struct KnownSymbols {
     /// reinterpretation between integer types (RUE-952, spec 4.13:118). Unlike
     /// `intCast` it preserves the bits rather than the value, and never traps.
     pub bit_cast: Spur,
+    pub int_to_float: Spur,
+    pub float_to_int: Spur,
+    pub float_cast: Spur,
+    pub total_cmp: Spur,
     /// The `cast` intrinsic symbol.
     pub cast: Spur,
     /// The `panic` intrinsic symbol.
@@ -212,6 +216,10 @@ impl KnownSymbols {
             drop: intern("drop")?,
             int_cast: intern("intCast")?,
             bit_cast: intern("bitCast")?,
+            int_to_float: intern("int_to_float")?,
+            float_to_int: intern("float_to_int")?,
+            float_cast: intern("float_cast")?,
+            total_cmp: intern("total_cmp")?,
             cast: intern("cast")?,
             panic: intern("panic")?,
             assert: intern("assert")?,

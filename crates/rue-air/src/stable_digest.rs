@@ -209,6 +209,10 @@ impl DurableEncode for crate::CanonicalArgumentValue<String, String> {
                 encode_variant(state, 5);
                 value.hash(state);
             }
+            Self::Float(value) => {
+                encode_variant(state, 6);
+                value.hash(state);
+            }
         }
     }
 }
@@ -274,6 +278,9 @@ impl DurableEncode for crate::TypeInstanceKey<String, String> {
             Self::Unit => encode_variant(state, 9),
             Self::Never => encode_variant(state, 10),
             Self::ComptimeType => encode_variant(state, 11),
+            Self::F32 => encode_variant(state, 21),
+            Self::F64 => encode_variant(state, 22),
+            Self::ComptimeFloat => encode_variant(state, 23),
             Self::BuiltinNominal { kind, name } => {
                 encode_variant(state, 12);
                 kind.hash(state);
@@ -639,6 +646,37 @@ mod tests {
         assert_eq!(
             stable_anonymous_identity_digest(&identity),
             0x5dd4_5727_95c5_0a51_5c8b_1728_5bde_4c55
+        );
+    }
+
+    #[test]
+    fn exact_float_specialization_values_participate_in_stable_identity() {
+        let identity = |value: &'static str| AnonymousNominalKey {
+            kind: AnonymousNominalKind::Struct,
+            producer: StableProducerId::Function(Node::new(
+                crate::FunctionInstanceKey::Specialization {
+                    base: Node::new(crate::FunctionInstanceKey::Definition(
+                        "root::float_box".to_string(),
+                    )),
+                    arguments: CanonicalArguments {
+                        types: Arc::new([]),
+                        values: Arc::new([CanonicalArgumentValue::Float(Arc::from(value))]),
+                    },
+                },
+            )),
+            anchor: RirStructuralAnchor::new(vec![
+                RirStructuralPathSegment::Body,
+                RirStructuralPathSegment::AnonymousType(0),
+            ]),
+        };
+
+        assert_eq!(
+            stable_anonymous_identity_digest(&identity("1e0")),
+            stable_anonymous_identity_digest(&identity("1e0")),
+        );
+        assert_ne!(
+            stable_anonymous_identity_digest(&identity("1e0")),
+            stable_anonymous_identity_digest(&identity("101e-2")),
         );
     }
 
