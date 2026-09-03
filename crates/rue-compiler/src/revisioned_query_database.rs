@@ -122,6 +122,7 @@ pub(crate) const REVISIONED_DATABASE_SOURCE: &str = concat!(
     include_str!("revisioned_query_database/registrations/body/body_closures.rs"),
     include_str!("revisioned_query_database/registrations/body/body_closure_publications.rs"),
     include_str!("revisioned_query_database/registrations/parse_import/parse.rs"),
+    include_str!("revisioned_query_database/registrations/parse_import/test_candidate_scans.rs"),
     include_str!("revisioned_query_database/registrations/provider_probe.rs"),
     "\n#[cfg(test)]\npub(crate) mod test_support {\n",
     include_str!("revisioned_query_database/test_support.rs"),

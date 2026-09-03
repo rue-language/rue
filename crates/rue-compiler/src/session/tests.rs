@@ -6079,3 +6079,229 @@ fn cfg_transformation_oracle_fault_tolerates_a_test_request_without_main() {
     // acceptable as long as the request survives the missing `main`.
     let _ = session.rooted_cfg(&options);
 }
+
+// ---------------------------------------------------------------------------
+// Declared test candidates (ADR-0083 §1)
+// ---------------------------------------------------------------------------
+
+/// A committed two-module closure: `main.rue` imports `helper.rue`, and the
+/// helper is where the in-closure test declaration lives.
+fn committed_test_closure() -> CompilerSession {
+    let source = snapshot(
+        &[
+            (
+                1,
+                "/rue-fixture/main.rue",
+                "main.rue",
+                "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.value() }\n",
+            ),
+            (
+                2,
+                "/rue-fixture/helper.rue",
+                "helper.rue",
+                "pub fn value() -> i32 { 7 }\ntest \"helper answers\" { }\n",
+            ),
+        ],
+        1,
+    );
+    let mut session = CompilerSession::new();
+    publish_with_test_imports(&mut session, &source);
+    session
+}
+
+fn committed_candidate_inventory(session: &CompilerSession) -> crate::TestCandidateInventory {
+    let context = session
+        .committed_import_discovery_artifact()
+        .expect("the fixture commits a closed-valid discovery revision")
+        .context()
+        .clone();
+    crate::TestCandidateInventory::new(&context)
+}
+
+fn present(source: &str) -> crate::TestCandidateOutcome {
+    crate::TestCandidateOutcome::Present(Arc::from(source))
+}
+
+/// The whole point of the inventory: a declared file the closure never reached
+/// is reported when it declares tests, and a file the closure DID reach is not
+/// — its tests are already rooted by a test request.
+#[test]
+fn unimported_test_files_reports_only_declared_candidates_outside_the_closure() {
+    let mut session = committed_test_closure();
+    let mut candidates = committed_candidate_inventory(&session);
+    // In the closure, with a test: already discovered, so silent.
+    candidates
+        .declare(
+            "helper.rue",
+            present("pub fn value() -> i32 { 7 }\ntest \"helper answers\" { }\n"),
+        )
+        .unwrap();
+    // Outside the closure, with tests: the orphan the warning exists for.
+    candidates
+        .declare(
+            "orphan_tests.rue",
+            present("test \"a\" { }\ntest \"b\" { }\ntest \"c\" { }\n"),
+        )
+        .unwrap();
+    // Outside the closure, no tests: a plain unimported module is not this
+    // warning's business.
+    candidates
+        .declare("plain.rue", present("fn unused() -> i32 { 0 }\n"))
+        .unwrap();
+    // Declared but absent: a sibling target's glob entry, silent by design.
+    candidates
+        .declare("gone.rue", crate::TestCandidateOutcome::Absent)
+        .unwrap();
+
+    let reported = session.unimported_test_files(&candidates).unwrap();
+    assert_eq!(
+        reported,
+        vec![crate::UnimportedTestFile {
+            path: "orphan_tests.rue".to_owned(),
+            tests: 3,
+            parse_failed: false,
+        }]
+    );
+}
+
+/// A candidate that could not be read or parsed is reported with the count
+/// marked unknown rather than silently counted as zero.
+#[test]
+fn unreadable_and_unparsable_candidates_are_reported_and_ordered_by_path() {
+    let mut session = committed_test_closure();
+    let mut candidates = committed_candidate_inventory(&session);
+    candidates
+        .declare("z_orphan.rue", present("test \"z\" { }\n"))
+        .unwrap();
+    candidates
+        .declare("a_broken.rue", present("fn main( -> {\n"))
+        .unwrap();
+    candidates
+        .declare(
+            "m_denied.rue",
+            crate::TestCandidateOutcome::Unreadable(Arc::from("permission denied")),
+        )
+        .unwrap();
+
+    let reported = session.unimported_test_files(&candidates).unwrap();
+    assert_eq!(
+        reported,
+        vec![
+            crate::UnimportedTestFile {
+                path: "a_broken.rue".to_owned(),
+                tests: 0,
+                parse_failed: true,
+            },
+            crate::UnimportedTestFile {
+                path: "m_denied.rue".to_owned(),
+                tests: 0,
+                parse_failed: true,
+            },
+            crate::UnimportedTestFile {
+                path: "z_orphan.rue".to_owned(),
+                tests: 1,
+                parse_failed: false,
+            },
+        ]
+    );
+}
+
+/// An inventory acquired under a different read regime cannot describe this
+/// closure: the same spelling names a different file.
+#[test]
+fn candidates_declared_under_another_read_policy_are_refused() {
+    let mut session = committed_test_closure();
+    let foreign =
+        crate::ImportDiscoveryContext::new(1, "/rue-fixture", None, "a-different-source-manifest")
+            .unwrap();
+    let mut candidates = crate::TestCandidateInventory::new(&foreign);
+    candidates
+        .declare("orphan_tests.rue", present("test \"a\" { }\n"))
+        .unwrap();
+    let errors = session.unimported_test_files(&candidates).unwrap_err();
+    assert!(
+        errors.to_string().contains("different read policy"),
+        "{errors}"
+    );
+}
+
+/// The scan is revision-keyed: republishing an inventory in which exactly one
+/// candidate's bytes changed recomputes that candidate and reuses the rest.
+#[test]
+fn editing_one_candidate_rescans_only_that_candidate() {
+    let mut session = committed_test_closure();
+    let build = |session: &CompilerSession, edited: &str| {
+        let mut candidates = committed_candidate_inventory(session);
+        candidates.declare("edited.rue", present(edited)).unwrap();
+        candidates
+            .declare("stable.rue", present("test \"stable\" { }\n"))
+            .unwrap();
+        candidates
+    };
+
+    let first = build(&session, "test \"one\" { }\n");
+    let revision = session
+        .queries
+        .revisioned
+        .publish_test_candidate_inputs(&first)
+        .unwrap();
+    for candidate in first.candidates() {
+        assert_eq!(
+            session
+                .queries
+                .revisioned
+                .test_candidate_scan(revision, candidate.identity().clone())
+                .execution(),
+            rue_query::RequestExecution::Computed,
+            "the first inventory computes every scan"
+        );
+    }
+
+    let second = build(&session, "test \"one\" { }\ntest \"two\" { }\n");
+    let successor = session
+        .queries
+        .revisioned
+        .publish_test_candidate_inputs(&second)
+        .unwrap();
+    let executions = second
+        .candidates()
+        .iter()
+        .map(|candidate| {
+            (
+                candidate.path().to_owned(),
+                session
+                    .queries
+                    .revisioned
+                    .test_candidate_scan(successor, candidate.identity().clone())
+                    .execution(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        executions,
+        vec![
+            (
+                "edited.rue".to_owned(),
+                rue_query::RequestExecution::Computed
+            ),
+            ("stable.rue".to_owned(), rue_query::RequestExecution::Reused),
+        ],
+        "only the edited candidate is rescanned"
+    );
+
+    assert_eq!(
+        session.unimported_test_files(&second).unwrap(),
+        vec![
+            crate::UnimportedTestFile {
+                path: "edited.rue".to_owned(),
+                tests: 2,
+                parse_failed: false,
+            },
+            crate::UnimportedTestFile {
+                path: "stable.rue".to_owned(),
+                tests: 1,
+                parse_failed: false,
+            },
+        ]
+    );
+}

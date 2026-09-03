@@ -73,6 +73,7 @@ mod source_identity;
 mod source_metadata;
 mod source_snapshot;
 mod syntax;
+mod test_candidates;
 mod test_dispatcher;
 mod test_inventory;
 mod toolchain_module_demand;
@@ -154,6 +155,11 @@ pub use source_identity::{
 };
 pub use source_metadata::SourceMetadata;
 pub use source_snapshot::{MAX_SOURCE_BYTES, MAX_SOURCE_FILES, SourceSnapshot};
+// The declared test-candidate inventory is a host protocol record, published
+// through `unstable` while `rue test` is still being built (ADR-0083 Phase 2).
+pub(crate) use test_candidates::{
+    TestCandidateInventory, TestCandidateOutcome, UnimportedTestFile,
+};
 pub use toolchain_module_demand::{
     OPTION_MODULE_LOGICAL_PATH, ParkedToolchainModules, STRBUF_MODULE_LOGICAL_PATH,
     TrustedToolchainModuleDemand,

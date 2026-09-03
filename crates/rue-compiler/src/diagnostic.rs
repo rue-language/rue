@@ -1331,6 +1331,47 @@ mod tests {
         assert_eq!(json_warnings.matches("test.rue").count(), 3);
     }
 
+    /// The unimported-test-file warning has no source site: the file is outside
+    /// the closure, so the compiler holds no span inside it. Both the text and
+    /// JSON renderings must therefore carry the whole message and no location.
+    #[test]
+    fn unimported_test_file_warnings_render_without_a_source_site() {
+        let text = MultiFileFormatter::with_color_choice([], ColorChoice::Never);
+        let json = MultiFileJsonFormatter::new([]);
+
+        let counted = CompileWarning::without_span(WarningKind::UnimportedTestFile {
+            path: "app/parser_tests.rue".to_string(),
+            tests: 2,
+        });
+        let rendered = text.format_warning(&counted);
+        assert!(rendered.contains("app/parser_tests.rue"), "{rendered}");
+        assert!(rendered.contains("declares 2 tests"), "{rendered}");
+        assert!(
+            rendered.contains("no module in the compiled closure imports it"),
+            "{rendered}"
+        );
+        assert!(json.format_warning(&counted).spans.is_empty());
+
+        // One test is one test, not "1 tests".
+        let single = CompileWarning::without_span(WarningKind::UnimportedTestFile {
+            path: "app/one_test.rue".to_string(),
+            tests: 1,
+        });
+        assert!(
+            text.format_warning(&single).contains("declares 1 test but"),
+            "{}",
+            text.format_warning(&single)
+        );
+
+        let unparsable = CompileWarning::without_span(WarningKind::UnimportedTestFileUnparsable {
+            path: "app/broken.rue".to_string(),
+        });
+        let rendered = text.format_warning(&unparsable);
+        assert!(rendered.contains("app/broken.rue"), "{rendered}");
+        assert!(rendered.contains("could not be parsed"), "{rendered}");
+        assert!(json.format_warning(&unparsable).spans.is_empty());
+    }
+
     #[test]
     fn duplicate_file_ids_use_the_last_source_after_text_cache_deduplication() {
         let file_id = FileId::new(7);

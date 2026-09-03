@@ -1,12 +1,13 @@
 use std::path::Path;
 
+use rue_compiler::unstable::TestCandidateInventory;
 use rue_compiler::unstable::{
     CancellableCompileOutcome, CodegenReady, CompilationCancellation, ObjectsReady,
     PresentationOutput, PresentationRequest, cancellable_executable_in_compile_scope,
     codegen_ready, executable_in_compile_scope, objects_ready, runnable_ready,
 };
 use rue_compiler::{
-    AcceptedReadManifest, CompileOptions, CompileOutput, ImportDiscoveryContext,
+    AcceptedReadManifest, CompileErrors, CompileOptions, CompileOutput, ImportDiscoveryContext,
     ImportDiscoveryStatus, ImportDiscoveryView, MultiErrorResult, RirView, SourceSnapshot,
 };
 
@@ -107,6 +108,40 @@ impl FilesystemCompilerHost {
 
     pub fn discovery_context(&self) -> &ImportDiscoveryContext {
         &self.state.resolution.context
+    }
+
+    /// Acquire the declared test-candidate inventory (ADR-0083 §1) under this
+    /// host's read policy.
+    ///
+    /// `declared` is the build system's `srcs` list as `--test-candidates`
+    /// spelled it: project-root-relative paths. Each is resolved against the
+    /// project root and observed the way an import candidate is observed —
+    /// with a `--source-manifest`, an undeclared spelling or a disallowed
+    /// canonical file is `Unreadable` rather than a filesystem read; a missing
+    /// file is `Absent`; an I/O or UTF-8 failure is `Unreadable` with its
+    /// reason. The inventory is built from this host's own discovery context,
+    /// so it can never be reported against a closure acquired under another
+    /// read regime.
+    ///
+    /// Candidate reads are deliberately not added to the accepted-read
+    /// manifest: they are not inputs of the program being built and must not
+    /// appear in `--emit deps` or the watch closure. The compiler publishes them
+    /// as their own revisioned input leaves when a request reports against the
+    /// inventory (`rue_compiler::unstable::unimported_test_files`).
+    pub fn acquire_test_candidates(
+        &self,
+        declared: &[String],
+    ) -> Result<TestCandidateInventory, CompileErrors> {
+        let context = self.discovery_context();
+        let project_root = Path::new(context.project_root());
+        let mut inventory = TestCandidateInventory::new(context);
+        for path in declared {
+            let outcome = self.state.read_test_candidate(&project_root.join(path));
+            inventory
+                .declare(path, outcome)
+                .map_err(CompileErrors::from)?;
+        }
+        Ok(inventory)
     }
 
     /// Return owned unstable instrumentation without exposing the retained
@@ -372,5 +407,141 @@ mod tests {
             host.cancellable_executable_in_compile_scope(&CompileOptions::default(), cancellation,),
             CancellableCompileOutcome::Canceled
         ));
+    }
+}
+
+#[cfg(test)]
+mod test_candidate_acquisition_tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use rue_compiler::unstable::TestCandidateOutcome;
+
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("rue-{name}-{}-{unique}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Acquisition observes each declared candidate under the host's read
+    /// policy, and the compiler reports exactly the unwired ones (ADR-0083 §1).
+    ///
+    /// Under a `--source-manifest` the policy order is the import loader's: a
+    /// spelling the manifest does not declare is denied before the filesystem
+    /// is probed, so an undeclared candidate is `Unreadable` whether or not a
+    /// file exists there — and, being unreadable, it is reported. Without a
+    /// manifest a missing file is observed `Absent` and stays silent. The root
+    /// itself is in the closure and is never reported.
+    #[test]
+    fn acquires_declared_candidates_under_the_read_policy_and_reports_orphans() {
+        let dir = scratch("test-candidate-acquisition");
+        let write = |name: &str, text: &str| {
+            fs::write(dir.join(name), text).unwrap();
+        };
+        write("main.rue", "fn main() -> i32 { 0 }\n");
+        write("orphan_tests.rue", "test \"nothing imports this\" { }\n");
+        write(
+            "excluded_tests.rue",
+            "test \"the manifest omits this\" { }\n",
+        );
+        write("sources.manifest", "main.rue\norphan_tests.rue\n");
+        let root = dir.join("main.rue");
+        let declared = [
+            "main.rue".to_owned(),
+            "orphan_tests.rue".to_owned(),
+            "excluded_tests.rue".to_owned(),
+            "absent_tests.rue".to_owned(),
+        ];
+        let outcome_of = |inventory: &TestCandidateInventory, path: &str| {
+            inventory
+                .candidates()
+                .iter()
+                .find(|candidate| candidate.path() == path)
+                .map(|candidate| candidate.outcome().clone())
+        };
+        let rows_of = |report: &[rue_compiler::unstable::UnimportedTestFile]| {
+            report
+                .iter()
+                .map(|row| (row.path.clone(), row.tests, row.parse_failed))
+                .collect::<Vec<_>>()
+        };
+
+        // With a manifest: declared files read, undeclared ones denied unprobed.
+        let manifest = dir.join("sources.manifest");
+        let mut host = FilesystemCompilerHost::open(HostOpenRequest {
+            root_source: root.to_str().unwrap(),
+            source_manifest_path: Some(manifest.to_str().unwrap()),
+            std_root: None,
+        })
+        .unwrap();
+        let inventory = host.acquire_test_candidates(&declared).unwrap();
+        assert!(matches!(
+            outcome_of(&inventory, "main.rue"),
+            Some(TestCandidateOutcome::Present(_))
+        ));
+        assert!(matches!(
+            outcome_of(&inventory, "orphan_tests.rue"),
+            Some(TestCandidateOutcome::Present(_))
+        ));
+        for denied in ["excluded_tests.rue", "absent_tests.rue"] {
+            assert!(
+                matches!(
+                    outcome_of(&inventory, denied),
+                    Some(TestCandidateOutcome::Unreadable(ref reason)) if reason.contains("source manifest")
+                ),
+                "{denied}: a candidate the manifest omits is denied, not probed: {:?}",
+                outcome_of(&inventory, denied)
+            );
+        }
+        // Candidate reads never join the accepted-read manifest.
+        assert!(
+            !host
+                .accepted_reads()
+                .iter()
+                .any(|entry| entry.requested_path().ends_with("orphan_tests.rue")),
+            "candidate acquisition must not record an accepted source read"
+        );
+        let report =
+            rue_compiler::unstable::unimported_test_files(&mut host.state.session, &inventory)
+                .unwrap();
+        assert_eq!(
+            rows_of(&report),
+            vec![
+                ("absent_tests.rue".to_owned(), 0, true),
+                ("excluded_tests.rue".to_owned(), 0, true),
+                ("orphan_tests.rue".to_owned(), 1, false),
+            ]
+        );
+
+        // Without a manifest: a missing file is observed absent and stays silent.
+        let mut host = FilesystemCompilerHost::open(HostOpenRequest {
+            root_source: root.to_str().unwrap(),
+            source_manifest_path: None,
+            std_root: None,
+        })
+        .unwrap();
+        let inventory = host
+            .acquire_test_candidates(&[
+                "orphan_tests.rue".to_owned(),
+                "absent_tests.rue".to_owned(),
+            ])
+            .unwrap();
+        assert!(matches!(
+            outcome_of(&inventory, "absent_tests.rue"),
+            Some(TestCandidateOutcome::Absent)
+        ));
+        let report =
+            rue_compiler::unstable::unimported_test_files(&mut host.state.session, &inventory)
+                .unwrap();
+        assert_eq!(
+            rows_of(&report),
+            vec![("orphan_tests.rue".to_owned(), 1, false)]
+        );
     }
 }

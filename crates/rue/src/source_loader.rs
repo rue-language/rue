@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use ahash::{AHashMap, AHashSet};
+use rue_compiler::unstable::TestCandidateOutcome;
 use rue_compiler::unstable::{
     AcceptedImportSource, DiscoverySourceAssembler, ImportDemandFrontier, ImportDemandMode,
     ImportDiscoveryPlan, ImportDiscoveryRequest, ImportDiscoveryWave, ImportInputRevision,
@@ -280,7 +281,7 @@ impl SourceManifest {
         self.allowed.contains(canonical)
     }
 
-    fn declares_path_without_probe(&self, path: &Path) -> bool {
+    pub(crate) fn declares_path_without_probe(&self, path: &Path) -> bool {
         self.declared_paths.contains(&normalize_lexical_path(path))
     }
 
@@ -951,6 +952,46 @@ pub(crate) struct SourceResolutionInputs {
 }
 
 impl ImportDiscoveryResult {
+    /// Observe one declared test candidate (ADR-0083 §1) under exactly the
+    /// read policy an import read obeys, without recording it as an accepted
+    /// read.
+    ///
+    /// The decision order mirrors `execute_import_request_uncancelled`: a
+    /// `--source-manifest` that does not declare the spelling denies the read
+    /// before the filesystem is touched; a missing file is `Absent`; a
+    /// canonical file the manifest does not allow, a non-file, an I/O failure,
+    /// or invalid UTF-8 is `Unreadable` with the reason. Nothing here joins the
+    /// accepted-read manifest or the watch closure: a candidate is not an input
+    /// of the program being built, so it must not appear in `--emit deps`, and
+    /// the compiler publishes it as its own revisioned input leaf instead.
+    pub(crate) fn read_test_candidate(&self, requested: &Path) -> TestCandidateOutcome {
+        let manifest = self.source_manifest.as_ref();
+        if manifest.is_some_and(|manifest| !manifest.declares_path_without_probe(requested)) {
+            return TestCandidateOutcome::Unreadable(Arc::from("outside the source manifest"));
+        }
+        match fs::canonicalize(requested) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                TestCandidateOutcome::Absent
+            }
+            Err(error) => TestCandidateOutcome::Unreadable(Arc::from(error.to_string())),
+            Ok(canonical)
+                if manifest.is_some_and(|manifest| !manifest.allows_canonical(&canonical)) =>
+            {
+                TestCandidateOutcome::Unreadable(Arc::from("outside the source manifest"))
+            }
+            Ok(canonical) if !canonical.is_file() => {
+                TestCandidateOutcome::Unreadable(Arc::from("not a regular file"))
+            }
+            Ok(canonical) => match fs::read(&canonical) {
+                Err(error) => TestCandidateOutcome::Unreadable(Arc::from(error.to_string())),
+                Ok(bytes) => match String::from_utf8(bytes) {
+                    Ok(text) => TestCandidateOutcome::Present(Arc::from(text)),
+                    Err(error) => TestCandidateOutcome::Unreadable(Arc::from(error.to_string())),
+                },
+            },
+        }
+    }
+
     pub(crate) fn watch_inputs(&self) -> Vec<WatchInput> {
         let mut paths =
             Vec::with_capacity(self.read_manifest.len() + self.observed_absent_paths.len() + 1);

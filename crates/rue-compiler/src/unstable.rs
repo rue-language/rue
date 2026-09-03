@@ -19,6 +19,9 @@ pub use crate::import_discovery::{
     ImportDemandRoots, ImportDiscoveryPlan, ImportDiscoveryRequest, ImportDiscoveryWave,
     ImportInputRevision, ImportObservation, ImportObservationLedger, ImportObservationStatus,
 };
+pub use crate::test_candidates::{
+    TestCandidate, TestCandidateInventory, TestCandidateOutcome, UnimportedTestFile,
+};
 pub use crate::warm_fresh_parity::ParityObservation;
 /// A diagnostic's source location, as the diagnostic types already hand it out.
 ///
@@ -664,6 +667,33 @@ pub fn oracle_executable(
     options: &crate::CompileOptions,
 ) -> crate::MultiErrorResult<crate::CompileOutput> {
     session.oracle_executable(snapshot, options)
+}
+
+/// Report the declared test candidates the compiled closure does not contain
+/// (ADR-0083 §1).
+///
+/// The build system declares which files a target owns; the compiler discovers
+/// which of them the root actually imports. A candidate outside that closure
+/// that declares tests is a file whose tests nothing will ever run, and the
+/// only way to notice is to look. Candidates whose bytes could not be read or
+/// parsed are reported the same way, with `parse_failed` set: the honest answer
+/// is that the count is unknown.
+///
+/// A candidate the host observed absent is silent — sibling build targets share
+/// `srcs` globs, so an unread declared file is routinely another root's tree.
+///
+/// This is a report, not a diagnostic: `rue test` renders it as the
+/// unimported-test-file warning, and an ordinary build ignores it.
+///
+/// Membership in the closure is by normalized logical path, so a file the
+/// program reaches under a different spelling than the build declared (a
+/// symlink, for instance) is reported as unimported; see the session method
+/// for the trade-off.
+pub fn unimported_test_files(
+    session: &mut crate::CompilerSession,
+    candidates: &crate::TestCandidateInventory,
+) -> Result<Vec<crate::UnimportedTestFile>, crate::CompileErrors> {
+    session.unimported_test_files(candidates)
 }
 
 /// Produce an executable inside a compile span owned by the filesystem

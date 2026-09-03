@@ -2834,3 +2834,181 @@ impl RevisionedQueryDatabase {
         Ok(shells)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Declared test candidates (ADR-0083 §1)
+//
+// A candidate is a file the build system declared but the compiler may never
+// have read: an orphaned `parser_tests.rue` is exactly the case the inventory
+// exists to find. Its bytes therefore cannot arrive through the module input
+// store — minting a module leaf for a candidate would put it in the closure
+// this scan is trying to prove it is OUTSIDE of.
+//
+// So candidates get their own input leaves, in their own revision namespace,
+// published by the same host that performs import reads and under the same
+// read policy. Two properties follow, and both are the point:
+//
+//   * the scan is revision-keyed, so editing one candidate re-scans exactly
+//     that candidate; and
+//   * publishing candidates cannot perturb the import namespace's certificate
+//     lineage, because candidate acquisition is an addition to the request
+//     rather than a new observation of the program's sources.
+// ---------------------------------------------------------------------------
+
+/// The key of one parse-only candidate scan: the candidate's identity under the
+/// read regime that acquired it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct TestCandidateScanKey(pub(super) crate::test_candidates::TestCandidateIdentity);
+
+impl QueryKey for TestCandidateScanKey {
+    fn stable_identity(&self) -> String {
+        self.0.runtime_input_key().to_string()
+    }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.0.hash(hasher);
+    }
+}
+
+/// The scan's published answer. Deliberately tiny: this query parses and counts,
+/// and anything richer would be a second semantic path into candidate files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TestCandidateScanValue(pub(crate) crate::test_candidates::TestCandidateScan);
+
+impl RetainedCharge for TestCandidateScanValue {
+    fn retained_charge(&self) -> u64 {
+        // Two scalars, published by value: the scan's whole answer is
+        // `{ tests, parse_failed }`.
+        (std::mem::size_of::<Self>() as u64).saturating_add(1)
+    }
+}
+
+pub(super) fn test_candidate_scan_value_equal(
+    left: &TestCandidateScanValue,
+    right: &TestCandidateScanValue,
+) -> bool {
+    left == right
+}
+
+/// One candidate's acquired bytes or typed non-read outcome, as an input leaf.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct TestCandidateLeaf {
+    pub(super) identity: crate::test_candidates::TestCandidateIdentity,
+    pub(super) outcome: crate::TestCandidateOutcome,
+}
+
+#[derive(Debug)]
+pub(super) struct TestCandidateInputView {
+    pub(super) revision: Revision,
+    pub(super) leaves: AHashMap<Arc<str>, TestCandidateLeaf>,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct TestCandidateInputStore {
+    pub(super) revisions: VecDeque<Arc<TestCandidateInputView>>,
+    pub(super) next_stamp: u64,
+    pub(super) stamps: AHashMap<TestCandidateLeaf, u64>,
+}
+
+/// Retained candidate input views. Candidate acquisition happens once per
+/// reported request, so a short window is enough to keep the previous inventory
+/// available for red/green validation of an unchanged candidate.
+pub(super) const TEST_CANDIDATE_INPUT_REVISION_RETENTION: usize = 4;
+
+pub(super) fn test_candidate_input(
+    identity: &crate::test_candidates::TestCandidateIdentity,
+) -> InputIdentity {
+    InputIdentity::new("test-candidate", identity.runtime_input_key())
+}
+
+pub(super) fn test_candidate_view(
+    store: &Mutex<TestCandidateInputStore>,
+    revision: Revision,
+) -> Result<Arc<TestCandidateInputView>, QueryAbort> {
+    store
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .revisions
+        .iter()
+        .find(|view| view.revision == revision)
+        .cloned()
+        .ok_or(QueryAbort::UnpublishedRevision(revision))
+}
+
+impl RevisionedQueryDatabase {
+    /// Publish one declared candidate inventory as an immutable input revision
+    /// and return the revision its scan queries pin.
+    ///
+    /// The revision lives in the inventory's own regime namespace
+    /// (`TestCandidateInventory::regime_token`), so it neither extends nor
+    /// resets the import namespace's epoch head.
+    pub(crate) fn publish_test_candidate_inputs(
+        &mut self,
+        inventory: &crate::TestCandidateInventory,
+    ) -> CompileResult<Revision> {
+        let revision = Revision::new(self.next_revision, inventory.regime_token());
+        self.next_revision += 1;
+
+        let mut leaves = Vec::with_capacity(inventory.len());
+        let mut published = AHashMap::with_capacity(inventory.len());
+        {
+            let mut store = self
+                .test_candidate_store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for candidate in inventory.candidates() {
+                let leaf = TestCandidateLeaf {
+                    identity: candidate.identity().clone(),
+                    outcome: candidate.outcome().clone(),
+                };
+                let TestCandidateInputStore {
+                    next_stamp, stamps, ..
+                } = &mut *store;
+                let stamp = *stamps.entry(leaf.clone()).or_insert_with(|| {
+                    let stamp = *next_stamp;
+                    *next_stamp += 1;
+                    stamp
+                });
+                leaves.push((test_candidate_input(&leaf.identity), stamp));
+                published.insert(leaf.identity.runtime_input_key(), leaf);
+            }
+        }
+
+        // An empty inventory still publishes: a revision with no leaves is a
+        // valid immutable view, and the caller's report is then trivially empty
+        // rather than a special case.
+        self.runtime
+            .publish_revision(revision, leaves)
+            .map_err(|error| {
+                import_input_error(format!("cannot publish test-candidate revision: {error:?}"))
+            })?;
+
+        let mut store = self
+            .test_candidate_store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        store.revisions.push_back(Arc::new(TestCandidateInputView {
+            revision,
+            leaves: published,
+        }));
+        while store.revisions.len() > TEST_CANDIDATE_INPUT_REVISION_RETENTION {
+            store.revisions.pop_front();
+        }
+        Ok(revision)
+    }
+
+    /// Request one candidate's parse-only scan against a published candidate
+    /// revision.
+    pub(crate) fn test_candidate_scan(
+        &self,
+        revision: Revision,
+        identity: crate::test_candidates::TestCandidateIdentity,
+    ) -> QueryRequestAttempt<TestCandidateScanValue> {
+        self.runtime.request_registered(
+            &self.test_candidate_scans,
+            revision,
+            TestCandidateScanKey(identity),
+            CancellationToken::new(),
+        )
+    }
+}
