@@ -128,7 +128,7 @@ jobs:
   # ADR-0070's positive warm-cache control (RUE-1405, extended by RUE-1406).
   # Cold-builds the two canary rue_programs and the nine staged CLI programs
   # under a fresh nonce, then from a relocated checkout root re-runs the
-  # canaries' four consuming scenarios and rebuilds //:cli-staged-programs,
+  # canaries' four consuming scenarios and rebuilds //examples:cli-staged-programs,
   # failing unless the scan/derive/compile actions were all served by the
   # remote cache. The nonce keys the Rust toolchain, so the cold half also
   # rebuilds the compiler — that is what makes "cold" provable, and it is why

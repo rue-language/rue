@@ -9,7 +9,7 @@
 # Two consumer shapes are covered, because ADR-0070 has two:
 #   * the large-example canaries, each consumed by two `rue_program_test`
 #     scenarios (Phase 1);
-#   * the nine CLI roots in //:cli-staged-programs, consumed by the CLI corpus
+#   * the nine CLI roots in //examples:cli-staged-programs, consumed by the CLI corpus
 #     ACTIONS — //:cli-tests, //:cli-tests-slow and the four shards all declare
 #     that one directory, and the 64 TOML cases naming those roots run the
 #     staged executables instead of compiling them (Phase 2).
@@ -53,12 +53,12 @@ PROGRAMS=(
     ruelex
     second-calculator
 )
-BUILD_TARGETS=(//:caldera-canary //:meridian-canary //:cli-staged-programs)
+BUILD_TARGETS=(//examples:caldera-canary //examples:meridian-canary //examples:cli-staged-programs)
 SCENARIOS=(
-    //:large-example-caldera-canary
-    //:large-example-caldera-canary-workdir
-    //:large-example-meridian-canary
-    //:large-example-meridian-canary-workdir
+    //examples:large-example-caldera-canary
+    //examples:large-example-caldera-canary-workdir
+    //examples:large-example-meridian-canary
+    //examples:large-example-meridian-canary-workdir
 )
 
 if ! grep -Eq '^[[:space:]]*execution_platforms[[:space:]]*=[[:space:]]*root//platforms:remote_cache([[:space:]]|$)' .buckconfig.local 2>/dev/null; then
@@ -112,7 +112,7 @@ fi
 # `buck2 log what-ran` reports the LAST invocation, so the two consumer shapes
 # are driven separately and their logs are collected as each finishes. The two
 # invocations name disjoint programs, so neither hides the other's actions.
-(cd "$reloc" && "${RUE_BUCK2:-./buck2}" build "${NONCE_ARGS[@]}" //:cli-staged-programs >/dev/null 2>&1) || {
+(cd "$reloc" && "${RUE_BUCK2:-./buck2}" build "${NONCE_ARGS[@]}" //examples:cli-staged-programs >/dev/null 2>&1) || {
     echo "FAIL: staging the CLI programs failed in the relocated checkout" >&2
     exit 1
 }
