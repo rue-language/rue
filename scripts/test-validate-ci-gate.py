@@ -76,6 +76,13 @@ class GateValidatorTests(unittest.TestCase):
             [],
         )
 
+    def test_ci_contract_tier_selector_receives_affected_targets(self):
+        changed = SOURCE.read_text().replace(
+            "          --affected-targets scripts/affected-targets\n", "", 1
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("canonical affected-targets input", errors)
+
     def test_valgrind_cannot_return_to_inline_apt(self):
         source = SOURCE.read_text().replace(
             "run: scripts/install-valgrind",

@@ -131,6 +131,33 @@ def selectable_corpus_targets(path: Path) -> tuple[set[str], list[str]]:
     return targets, []
 
 
+def direct_invocation_errors(workflows: dict[str, Path]) -> list[str]:
+    """Require every workflow invocation to pass the complete live-input set."""
+    errors = []
+    command = "scripts/validate-tier-ci-selectors.py"
+    for workflow, path in sorted(workflows.items()):
+        source = path.read_text()
+        offset = 0
+        while True:
+            start = source.find(command, offset)
+            if start < 0:
+                break
+            following = source[start:]
+            next_step = re.search(r"\n\s+- name:", following)
+            invocation = (
+                following[: next_step.start()]
+                if next_step is not None
+                else following
+            )
+            if "--affected-targets" not in invocation:
+                errors.append(
+                    f"{workflow}: direct {command} invocation must pass "
+                    "--affected-targets"
+                )
+            offset = start + len(command)
+    return errors
+
+
 def declared_tiers(defs_path: Path, bxl_path: Path) -> tuple[set[str], list[str]]:
     """Returns the tier vocabulary and any break in its single-sourcing."""
     defs_tiers = set(DEFS_TIER_RE.findall(defs_path.read_text()))
@@ -154,6 +181,7 @@ def validate(
     tiers, errors = declared_tiers(defs_path, bxl_path)
     if errors:
         return errors
+    errors.extend(direct_invocation_errors(workflows))
 
     registered = set(TIER_SELECTORS)
     for tier in sorted(tiers - registered):

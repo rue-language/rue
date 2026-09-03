@@ -1371,6 +1371,7 @@ jobs:
           scripts/validate-tier-ci-selectors.py
           --test-defs test_defs.bzl
           --test-tiers-bxl test_tiers.bxl
+          --affected-targets scripts/affected-targets
           --workflow .github/workflows/ci.yml
           --workflow .github/workflows/release.yml
 
