@@ -84,11 +84,10 @@ scripts/rue cli abi                  # filtered CLI integration tests
 scripts/rue test [pattern]           # broad/full suite
 scripts/rue fmt                      # format changed Rust files
 scripts/rue storage status           # inventory Buck disk use across worktrees
-scripts/rue storage plan             # dry-run host-wide stale cleanup
+scripts/rue storage plan             # dry-run stale cleanup in every registered worktree
 scripts/rue storage clean            # reclaim stale Buck2 artifacts host-wide
-scripts/rue storage reclaim-finished RUE_ROOT [RUE_ROOT ...] # explicit finished-root output reclaim
-scripts/rue cache install            # securely install the shared cache config
-scripts/rue cache apply --all        # provision current Git/Codex worktrees
+scripts/rue storage reset RUE_ROOT   # full Buck reset of one registered worktree
+scripts/rue cache install            # securely install the private cache config
 ```
 
 When corpus-affecting cases change, use this focused check:
@@ -117,25 +116,22 @@ via `//crates/rue-toml2json`, and the floor is a uniform 3.9 again.
 
 A stock Mac now meets the floor: macOS ships `/usr/bin/python3` as 3.9.6, and
 3.9 is chosen precisely so that interpreter is enough — nothing to install.
-The gap CI cannot see runs the other way. Its runners are comfortably above
-the floor — `ubuntu-latest` and `ubuntu-24.04-arm` provide 3.12.3, `macos-15`
-provides 3.14.6 — so a premerge-tier target using a construct newer than 3.9
-stays green in CI and fails on a stock developer machine, which is what
-`//:cli-timeout-policy-validation` did while it needed 3.11 (RUE-1509).
+The runners' own interpreters are comfortably above the floor —
+`ubuntu-latest` and `ubuntu-24.04-arm` provide 3.12.3, `macos-15` provides
+3.14.6 — so a premerge-tier target using a construct newer than 3.9 would stay
+green on them and fail on a stock developer machine, which is what
+`//:cli-timeout-policy-validation` did while it needed 3.11 (RUE-1509). CI
+therefore holds the floor by running the tooling under it: the `fmt`,
+`linux-premerge`, and `ci-contract` jobs install Python 3.9 with
+`actions/setup-python` before any gate runs, so a construct newer than the
+floor fails there the way it fails on a stock Mac (RUE-1936 retired the static
+scanner that approximated this with a curated table of constructs).
 
 This floor governs the interpreter that runs repository tooling. It is not the
 Python number in `docs/process/build-cache.md`, which records what the pinned
 remote worker image ships for the Buck prelude's rustc wrapper — a different
 interpreter running different code. The remote-execution canary builds; it does
 not run these tests.
-
-A construct newer than 3.9 fails the gate; the reviewed exception is a
-`# python-baseline-ok: <reason>` annotation on the offending line.
-`scripts/validate-python-baseline.py` checks what a static scan can: a curated
-table of version-gated imports, stdlib attributes, builtins, keyword arguments
-and grammar, and this section's stated floor against the gate's own constant.
-It is a curated table rather than a proof — its docstring lists what it cannot
-see, including grammar with no distinct AST node and every method call.
 
 Shell has the same shape of floor and a stricter one. macOS ships GNU Bash
 3.2.57 as `/bin/bash` and will not ship a GPLv3 one, so a `#!/usr/bin/env bash`
@@ -260,10 +256,13 @@ build actions; `weight_percentage = 100` keeps two corpus actions from running
 together within one Buck daemon/worktree while still allowing corpus work to
 overlap non-corpus actions such as unit tests and compiles. There is no
 full-suite host lock or cross-worktree test serialization, so sibling worktrees
-may run concurrently. The cross-worktree coordination relevant here is the
-`buck2` wrapper's `scripts/rue-storage` disk-pressure guard. The optional
-BuildBuddy action cache uses one private user config and ignored per-worktree
-symlinks; see `docs/process/build-cache.md`. Never commit or print its
+may run concurrently. There is no cross-worktree coordination: the `buck2`
+wrapper only refuses to start a build below a 4 GiB free-space floor, and a
+finished worktree's `buck-out` is reclaimed by removing the worktree. The
+optional BuildBuddy action cache is one private user config
+(`scripts/rue cache install`) that the wrapper links as `.buckconfig.local` in
+a worktree on the first build there; `RUE_NO_REMOTE_CACHE=1` skips that for
+one command. See `docs/process/build-cache.md`. Never commit or print its
 credential. Full remote execution is supported (RUE-320, Done 2026-07-18): the
 repository wrapper defaults to `--prefer-local`, and `--prefer-remote` is an
 explicit opt-in for cache-population or RE-debugging runs, not the default

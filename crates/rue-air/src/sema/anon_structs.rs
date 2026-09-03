@@ -92,6 +92,8 @@ pub(crate) fn anonymous_producer_root(
             F::Definition(value) => Some(*value),
             F::Specialization { base, .. } => function_root(base),
             F::AnonymousMember { owner, .. } | F::DropGlue(owner) => type_root(owner),
+            // Synthesized by the request, not rooted at any declaration.
+            F::TestDispatcher => None,
         }
     }
     match producer {

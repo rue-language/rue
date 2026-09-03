@@ -16,7 +16,7 @@ use core::fmt;
 #[macro_export]
 macro_rules! runtime_abi_version {
     ($callback:ident) => {
-        $callback!(1, __rue_runtime_abi_v1);
+        $callback!(2, __rue_runtime_abi_v2);
     };
 }
 
@@ -356,6 +356,7 @@ macro_rules! params {
 
 const I32_VALUE: AbiParameter = AbiParameter::value(AbiType::I32);
 const I64_VALUE: AbiParameter = AbiParameter::value(AbiType::I64);
+const U32_VALUE: AbiParameter = AbiParameter::value(AbiType::U32);
 const U64_VALUE: AbiParameter = AbiParameter::value(AbiType::U64);
 const BOOL_WORD_VALUE: AbiParameter = AbiParameter::value(AbiType::BoolWordI64);
 const BYTE_VIEW: AbiParameter = AbiParameter::const_pointer(AbiType::Byte);
@@ -899,6 +900,78 @@ macro_rules! for_each_runtime_helper {
             // which must denote that many writable bytes.
             safety: WRITABLE,
             returns: RETURNS
+        },
+        // The ADR-0083 test channel (§3, §5.1). These four are runner plumbing
+        // called only from the synthesized test dispatcher and, later, from
+        // assertion sugar; no source-level intrinsic selects them yet.
+        TestNormalizeProcess => safe __rue_test_normalize_process() {
+            symbol: "__rue_test_normalize_process",
+            parameters: params![],
+            result: VOID,
+            // Rewrites the runtime's own captured argument count; the caller
+            // supplies nothing and owes nothing.
+            safety: SafetyContract::NONE,
+            returns: RETURNS
+        },
+        TestComplete => safe __rue_test_complete() {
+            symbol: "__rue_test_complete",
+            parameters: params![],
+            result: VOID,
+            // Writes the terminal completion frame to the inherited failure
+            // channel; the write is best-effort and takes no caller pointer.
+            safety: SafetyContract::NONE,
+            returns: RETURNS
+        },
+        // A failure record carries more than a register-only call can take:
+        // three byte views plus a file, a line, and a column is ten arguments,
+        // and every runtime helper is register-only (six on x86-64). The record
+        // is therefore assembled by two calls. This one stages the failing
+        // source location, and the terminal call below emits the record and
+        // aborts. Nothing may run between them.
+        TestFailureSite => unsafe __rue_test_failure_site(
+            file_ptr: *const u8,
+            file_len: u64,
+            line: u32,
+            column: u32,
+        ) {
+            symbol: "__rue_test_failure_site",
+            parameters: params![BYTE_VIEW, U64_VALUE, U32_VALUE, U32_VALUE],
+            result: VOID,
+            // The file bytes are borrowed, not copied: they must stay readable
+            // until the `__rue_test_fail` that consumes this site has written
+            // its record.
+            safety: READABLE,
+            returns: RETURNS
+        },
+        TestFail => unsafe __rue_test_fail(
+            kind_ptr: *const u8,
+            kind_len: u64,
+            message_ptr: *const u8,
+            message_len: u64,
+            payload_ptr: *const u8,
+            payload_len: u64,
+        ) -> ! {
+            symbol: "__rue_test_fail",
+            parameters: params![
+                BYTE_VIEW,
+                U64_VALUE,
+                BYTE_VIEW,
+                U64_VALUE,
+                BYTE_VIEW,
+                U64_VALUE,
+            ],
+            result: VOID,
+            safety: READABLE.union(TERMINATES),
+            returns: NEVER
+        },
+        TestUsageError => safe __rue_test_usage_error() {
+            symbol: "__rue_test_usage_error",
+            parameters: params![],
+            result: VOID,
+            // Writes one pinned diagnostic to stderr and returns so the
+            // dispatcher can choose its own exit status.
+            safety: SafetyContract::NONE,
+            returns: RETURNS
         }
             }
     };
@@ -1255,9 +1328,10 @@ const fn starts_with(value: &str, prefix: &str) -> bool {
 }
 
 const fn ends_with_decimal_version(symbol: &str, version: u32) -> bool {
-    // Version 1 is the initial ABI. This explicit check makes an ABI bump update
-    // both metadata values rather than silently retaining a stale symbol.
-    version == 1 && string_eq(symbol, "__rue_runtime_abi_v1")
+    // Version 2 added the ADR-0083 §5.1 test failure channel. This explicit
+    // check makes an ABI bump update both metadata values rather than silently
+    // retaining a stale symbol.
+    version == 2 && string_eq(symbol, "__rue_runtime_abi_v2")
 }
 
 /// Validate all table ordering, uniqueness, classification, and layout invariants.
@@ -1343,7 +1417,7 @@ mod tests {
     #[test]
     fn manifest_is_const_valid_and_exhaustive() {
         assert_eq!(validate_manifest(), Ok(()));
-        assert_eq!(RuntimeHelperId::ALL.len(), 46);
+        assert_eq!(RuntimeHelperId::ALL.len(), 51);
         assert_eq!(RuntimeHelperId::ALL.len(), RUNTIME_HELPERS.len());
         for (index, id) in RuntimeHelperId::ALL.iter().copied().enumerate() {
             assert_eq!(id as usize, index);
@@ -1411,6 +1485,11 @@ mod tests {
             "__rue_byte_copy",
             "__rue_byte_move",
             "__rue_byte_set",
+            "__rue_test_normalize_process",
+            "__rue_test_complete",
+            "__rue_test_failure_site",
+            "__rue_test_fail",
+            "__rue_test_usage_error",
         ];
         assert_eq!(
             RUNTIME_HELPERS.map(|helper| helper.symbol),
@@ -1422,7 +1501,7 @@ mod tests {
     #[test]
     fn every_helper_has_the_exact_accepted_signature_and_contract() {
         fn check(
-            visited: &mut [bool; 46],
+            visited: &mut [bool; 51],
             ids: &[RuntimeHelperId],
             parameters: &[AbiParameter],
             result: AbiResult,
@@ -1443,7 +1522,7 @@ mod tests {
             }
         }
 
-        let mut visited = [false; 46];
+        let mut visited = [false; 51];
         check(
             &mut visited,
             &[RuntimeHelperId::Exit],
@@ -1671,6 +1750,36 @@ mod tests {
             WRITABLE,
             RETURNS,
         );
+        check(
+            &mut visited,
+            &[
+                RuntimeHelperId::TestNormalizeProcess,
+                RuntimeHelperId::TestComplete,
+                RuntimeHelperId::TestUsageError,
+            ],
+            &[],
+            VOID,
+            SafetyContract::NONE,
+            RETURNS,
+        );
+        check(
+            &mut visited,
+            &[RuntimeHelperId::TestFailureSite],
+            &[BYTE_VIEW, U64_VALUE, U32_VALUE, U32_VALUE],
+            VOID,
+            READABLE,
+            RETURNS,
+        );
+        check(
+            &mut visited,
+            &[RuntimeHelperId::TestFail],
+            &[
+                BYTE_VIEW, U64_VALUE, BYTE_VIEW, U64_VALUE, BYTE_VIEW, U64_VALUE,
+            ],
+            VOID,
+            READABLE.union(TERMINATES),
+            NEVER,
+        );
         assert!(visited.into_iter().all(|was_visited| was_visited));
     }
 
@@ -1855,7 +1964,7 @@ mod tests {
 
     #[test]
     fn abi_version_metadata_is_a_one_byte_data_export() {
-        assert_eq!(RUNTIME_ABI_VERSION, 1);
+        assert_eq!(RUNTIME_ABI_VERSION, 2);
         assert_eq!(
             RUNTIME_ABI_VERSION_SYMBOL,
             format!("__rue_runtime_abi_v{RUNTIME_ABI_VERSION}")

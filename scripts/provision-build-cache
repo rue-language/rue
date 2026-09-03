@@ -1,99 +1,24 @@
 #!/usr/bin/env bash
-# Install one private BuildBuddy Buck config and share it with Rue worktrees.
+# Install one private BuildBuddy Buck config for the current user. The
+# repository ./buck2 wrapper links .buckconfig.local to that file in any
+# worktree on the first execution command there, so installing it is the whole
+# provisioning step.
 set -euo pipefail
 
 config_home="${XDG_CONFIG_HOME:-${HOME:?HOME must be set}/.config}"
 central_config="${RUE_BUILDBUDDY_CONFIG:-$config_home/rue/buildbuddy.buckconfig}"
 
 usage() {
-    cat <<'EOF'
+    cat <<'USAGE'
 usage: scripts/provision-build-cache install
-       scripts/provision-build-cache apply [--all] [RUE_ROOT ...]
-       scripts/provision-build-cache status [RUE_ROOT ...]
 
 install reads BUILDBUDDY_API_KEY, or prompts without echo on a terminal, and
-writes the central config with mode 0600. apply links .buckconfig.local in the
-current checkout (or named roots) to that config. --all also discovers Git and
-Codex worktrees. A private config from before the Rust upload gate was added is
-upgraded in place without replacing or printing its credential.
-EOF
-}
-
-validate_private_config() {
-    if [[ ! -f "$central_config" ]] || [[ ! -r "$central_config" ]]; then
-        echo "error: BuildBuddy config is unavailable; run scripts/provision-build-cache install" >&2
-        return 1
-    fi
-    if [[ ! -O "$central_config" ]]; then
-        echo "error: BuildBuddy config is not owned by the current user" >&2
-        return 1
-    fi
-    local mode
-    # Try GNU stat first. GNU accepts -f with unrelated filesystem-reporting
-    # semantics, so probing the BSD form first can succeed with unusable output.
-    mode="$(stat -c '%a' "$central_config" 2>/dev/null || stat -f '%Lp' "$central_config" 2>/dev/null || true)"
-    if [[ -z "$mode" ]] || (( (8#$mode & 077) != 0 )); then
-        echo "error: BuildBuddy config permissions must deny group and other access (use chmod 600)" >&2
-        return 1
-    fi
-    if grep -q '<YOUR_BUILDBUDDY_API_KEY>' "$central_config" ||
-       ! grep -Eq '^[[:space:]]*http_headers[[:space:]]*=[[:space:]]*x-buildbuddy-api-key:.+' "$central_config"; then
-        echo "error: BuildBuddy config does not contain a configured API key" >&2
-        return 1
-    fi
-}
-
-migrate_config() {
-    validate_private_config || return 1
-    if grep -Eq '^[[:space:]]*default_allow_cache_upload[[:space:]]*=' "$central_config"; then
-        if ! grep -Eq '^[[:space:]]*default_allow_cache_upload[[:space:]]*=[[:space:]]*true([[:space:]]|$)' "$central_config"; then
-            echo "error: BuildBuddy config explicitly disables Rust action uploads" >&2
-            return 1
-        fi
-        return 0
-    fi
-
-    # This is the one recognized legacy shape: a secure, user-owned config
-    # with a configured credential but no upload gate. Preserve every existing
-    # byte (especially the credential) and atomically add only the public knob.
-    umask 077
-    local tmp="${central_config}.tmp.$$"
-    if ! awk '
-        BEGIN { in_buck2 = 0; saw_buck2 = 0; inserted = 0 }
-        /^\[buck2\][[:space:]]*$/ { in_buck2 = 1; saw_buck2 = 1; print; next }
-        /^\[/ && in_buck2 && !inserted {
-            print "default_allow_cache_upload = true"
-            inserted = 1
-            in_buck2 = 0
-        }
-        { print }
-        END {
-            if (saw_buck2 && !inserted) print "default_allow_cache_upload = true"
-            if (!saw_buck2) {
-                print ""
-                print "[buck2]"
-                print "default_allow_cache_upload = true"
-            }
-        }
-    ' "$central_config" >"$tmp"; then
-        rm -f "$tmp"
-        echo "error: could not prepare BuildBuddy config migration" >&2
-        return 1
-    fi
-    if ! chmod 600 "$tmp" || ! mv "$tmp" "$central_config"; then
-        rm -f "$tmp"
-        echo "error: could not install BuildBuddy config migration" >&2
-        return 1
-    fi
-    echo "Upgraded private BuildBuddy config with the Rust upload gate"
-}
-
-validate_config() {
-    migrate_config || return 1
-    if ! grep -Eq '^[[:space:]]*default_allow_cache_upload[[:space:]]*=[[:space:]]*true([[:space:]]|$)' "$central_config"; then
-        echo "error: BuildBuddy config does not enable Rust action uploads" >&2
-        return 1
-    fi
+atomically writes the private config with mode 0600 to
+${XDG_CONFIG_HOME:-~/.config}/rue/buildbuddy.buckconfig (RUE_BUILDBUDDY_CONFIG
+names another path). Re-run it to replace an existing config. The credential
+is never printed. Remove the file to stop using the remote cache, or set
+RUE_NO_REMOTE_CACHE=1 to keep one command cache-free.
+USAGE
 }
 
 install_config() {
@@ -112,15 +37,15 @@ install_config() {
     local tmp="${central_config}.tmp.$$"
     trap 'rm -f "$tmp"' EXIT
     {
-        cat <<'EOF'
+        cat <<'CONFIG'
 [buck2_re_client]
 engine_address = grpc://remote.buildbuddy.io
 action_cache_address = grpc://remote.buildbuddy.io
 cas_address = grpc://remote.buildbuddy.io
 tls = true
-EOF
+CONFIG
         printf 'http_headers = x-buildbuddy-api-key:%s\n' "$key"
-        cat <<'EOF'
+        cat <<'CONFIG'
 
 [buck2]
 digest_algorithms = SHA256
@@ -130,7 +55,7 @@ default_allow_cache_upload = true
 
 [build]
 execution_platforms = root//platforms:remote_cache
-EOF
+CONFIG
     } >"$tmp"
     chmod 600 "$tmp"
     mv "$tmp" "$central_config"
@@ -138,104 +63,13 @@ EOF
     echo "Installed private BuildBuddy config at $central_config"
 }
 
-is_rue_root() {
-    [[ -f "$1/.buckconfig" ]] && [[ -x "$1/buck2" ]] && [[ -f "$1/platforms/remote_cache.bzl" ]]
-}
-
-apply_root() {
-    local root="$1" destination="$1/.buckconfig.local"
-    if ! is_rue_root "$root"; then
-        echo "error: not a Rue checkout: $root" >&2
-        return 1
-    fi
-    if [[ -L "$destination" ]]; then
-        if [[ "$(cd "$(dirname "$destination")" && readlink "$destination")" == "$central_config" ]]; then
-            echo "BuildBuddy cache already configured: $root"
-            return 0
-        fi
-        echo "error: refusing to replace an unrelated symlink: $destination" >&2
-        return 1
-    fi
-    if [[ -e "$destination" ]]; then
-        echo "error: refusing to replace existing config: $destination" >&2
-        return 1
-    fi
-    ln -s "$central_config" "$destination"
-    echo "Configured BuildBuddy cache: $root"
-}
-
-auto_apply() {
-    # Recommended wrappers call this so newly created worktrees adopt an
-    # already-installed central config on first use. Absence is an intentional
-    # cache-off state; an invalid config is ignored with a credential-free
-    # warning so local builds remain usable.
-    # Any existing path, including a broken symlink, belongs to the user. Do
-    # not replace it and do not let an opt-in cache feature break local builds.
-    [[ -e "$PWD/.buckconfig.local" || -L "$PWD/.buckconfig.local" ]] && return 0
-    [[ -f "$central_config" ]] || return 0
-    if ! validate_config; then
-        echo "warning: BuildBuddy cache config is invalid; continuing without remote cache" >&2
-        return 0
-    fi
-    if ! apply_root "$PWD" >/dev/null; then
-        echo "warning: could not provision BuildBuddy cache; continuing without changing local config" >&2
-    fi
-    return 0
-}
-
-collect_all_roots() {
-    printf '%s\n' "$PWD"
-    if command -v git >/dev/null 2>&1; then
-        git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' || true
-    fi
-    local codex_home="${CODEX_HOME:-${HOME:-}/.codex}" root
-    for root in "$codex_home"/worktrees/*/rue; do
-        [[ -d "$root" ]] && printf '%s\n' "$root"
-    done
-}
-
-command="${1:-}"
-shift || true
-case "$command" in
+case "${1:-}" in
     install)
-        [[ $# -eq 0 ]] || { usage >&2; exit 2; }
+        [[ $# -eq 1 ]] || { usage >&2; exit 2; }
         install_config
         ;;
-    apply)
-        validate_config
-        all=0
-        if [[ "${1:-}" == "--all" ]]; then all=1; shift; fi
-        roots=("$@")
-        if [[ "$all" -eq 1 ]]; then
-            while IFS= read -r root; do roots+=("$root"); done < <(collect_all_roots)
-        elif [[ ${#roots[@]} -eq 0 ]]; then
-            roots=("$PWD")
-        fi
-        # Sort/unique avoids duplicate output when the current checkout also
-        # appears in Git's worktree inventory.
-        failed=0
-        while IFS= read -r root; do
-            [[ -n "$root" ]] || continue
-            if ! apply_root "$root"; then failed=1; fi
-        done < <(printf '%s\n' "${roots[@]}" | sort -u)
-        [[ "$failed" -eq 0 ]]
-        ;;
-    auto)
-        [[ $# -eq 0 ]] || { usage >&2; exit 2; }
-        auto_apply
-        ;;
-    status)
-        validate_config
-        roots=("$@")
-        [[ ${#roots[@]} -gt 0 ]] || roots=("$PWD")
-        for root in "${roots[@]}"; do
-            if [[ -L "$root/.buckconfig.local" ]] && [[ "$(readlink "$root/.buckconfig.local")" == "$central_config" ]]; then
-                echo "BuildBuddy cache configured: $root"
-            else
-                echo "BuildBuddy cache not configured: $root" >&2
-                exit 1
-            fi
-        done
+    -h|--help|help)
+        usage
         ;;
     *)
         usage >&2

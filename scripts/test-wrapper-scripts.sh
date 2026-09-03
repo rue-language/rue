@@ -475,8 +475,12 @@ BUCKEOF
   cp "$SRC_ROOT/test.sh" "$sb/test.sh"; chmod +x "$sb/test.sh"
 
   local out_file="$sb/signalled.log" rc=0
+  # `exec` so $! is test.sh itself. Bash 5 already execs the last command of
+  # a subshell, but Bash 3.2 (macOS) keeps the subshell as a separate process
+  # with the default TERM disposition: the signal killed the wrapper, test.sh
+  # ran on orphaned, and the INTERRUPTED line never appeared.
   ( cd "$sb/work" && FAKE_COMPILER="$sb/compiler" CLI_LOG="$sb/cli.log" \
-      FAKE_PROBE_DIR="$sb/probe" "$sb/test.sh" ) >"$out_file" 2>&1 &
+      FAKE_PROBE_DIR="$sb/probe" exec "$sb/test.sh" ) >"$out_file" 2>&1 &
   local pid=$!
   sleep 2
   kill -TERM "$pid" 2>/dev/null || true

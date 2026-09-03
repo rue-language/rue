@@ -3600,6 +3600,22 @@ pub enum WarningKind {
     /// A lookup's fallback sentinel is compared with the same sentinel to test absence.
     #[error("integer sentinel used to test lookup absence")]
     SentinelLookup,
+    /// A declared test candidate outside the request's module closure declares
+    /// test items, so nothing roots them (ADR-0083 §1).
+    ///
+    /// This is a request-level warning with no source site: the file is not in
+    /// the closure, so the compiler holds no span inside it. It is never an
+    /// error — sibling build targets legitimately share a `srcs` glob, so an
+    /// unread candidate may belong to another root's tree.
+    #[error(
+        "test file '{path}' declares {tests} test{plural} but no module in the compiled closure imports it",
+        plural = if *tests == 1 { "" } else { "s" }
+    )]
+    UnimportedTestFile { path: String, tests: u32 },
+    /// A declared test candidate outside the request's module closure could not
+    /// be read or parsed, so whether it declares tests is unknown (ADR-0083 §1).
+    #[error("test file '{path}' is outside the compiled closure and could not be parsed")]
+    UnimportedTestFileUnparsable { path: String },
 }
 
 /// A compilation warning with optional source location information.

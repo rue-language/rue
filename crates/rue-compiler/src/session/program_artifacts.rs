@@ -1049,6 +1049,114 @@ impl CompilerSession {
         self.refresh_retention_metrics();
         result
     }
+
+    /// Report the declared test candidates the request's module closure does
+    /// not contain (ADR-0083 §1).
+    ///
+    /// Discovery is the import closure, so a `parser_tests.rue` nothing imports
+    /// does not exist to any request — and forgetting the wiring produces
+    /// silence rather than a diagnostic. The declared candidate inventory is
+    /// what breaks that silence: every candidate outside the closure that
+    /// parses as containing test items, or that could not be parsed at all, is
+    /// reported here.
+    ///
+    /// Three properties are deliberate. Absent candidates are silent, because a
+    /// build target's `srcs` glob legitimately names files another root owns.
+    /// Candidates are never modules: scanning one publishes no module leaf,
+    /// joins no closure, and roots nothing. And the result is a report, not a
+    /// diagnostic — the caller decides whether this request wants the warning
+    /// (`rue test` does; an ordinary build does not).
+    ///
+    /// Closure membership is decided by comparing the candidate's normalized
+    /// logical path with each module's published identity as a string. A
+    /// candidate reached by the program under a different spelling than the
+    /// one the build declared — a symlink, or a path the resolver rewrote — is
+    /// therefore reported as unimported even though its file is in the closure.
+    /// Matching on canonical physical identity instead would need candidate
+    /// acquisition to return the canonical path; that is a small protocol
+    /// addition left for a real report of the false positive.
+    ///
+    /// The returned rows are ordered by path.
+    pub(crate) fn unimported_test_files(
+        &mut self,
+        candidates: &crate::TestCandidateInventory,
+    ) -> Result<Vec<crate::UnimportedTestFile>, CompileErrors> {
+        let committed = self.committed_import_discovery_artifact().ok_or_else(|| {
+            CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                "reporting unimported test files requires a closed-valid import discovery revision"
+                    .into(),
+            )))
+        })?;
+        // An inventory acquired under one read regime cannot describe a closure
+        // discovered under another: the same spelling names a different file.
+        let context = committed.context();
+        if context.project_root() != candidates.project_root()
+            || context.std_root().unwrap_or("") != candidates.std_root().unwrap_or("")
+            || context.read_policy_revision() != candidates.read_policy_revision()
+        {
+            return Err(CompileErrors::from(CompileError::without_span(
+                ErrorKind::InvalidCompilerInput(
+                    "test candidates were declared under a different read policy than the \
+                     compiled closure"
+                        .into(),
+                ),
+            )));
+        }
+
+        let program = self
+            .published_owner()
+            .cloned()
+            .ok_or_else(no_published_program)?;
+        let closure = program
+            .modules()
+            .iter()
+            .map(|module| module.module_id().as_str().to_owned())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        let revision = self
+            .queries
+            .revisioned
+            .publish_test_candidate_inputs(candidates)
+            .map_err(CompileErrors::from)?;
+
+        let mut reported = Vec::new();
+        for candidate in candidates.candidates() {
+            if closure.contains(candidate.path()) {
+                continue;
+            }
+            let attempt = self
+                .queries
+                .revisioned
+                .test_candidate_scan(revision, candidate.identity().clone());
+            let terminal = attempt.terminal().ok_or_else(|| {
+                CompileErrors::from(CompileError::without_span(ErrorKind::InternalError(
+                    format!(
+                        "test-candidate scan for '{}' published no terminal",
+                        candidate.path()
+                    ),
+                )))
+            })?;
+            let rue_query::QueryOutcome::Success(scan) = terminal.outcome() else {
+                return Err(CompileErrors::from(CompileError::without_span(
+                    ErrorKind::InternalError(format!(
+                        "test-candidate scan for '{}' failed",
+                        candidate.path()
+                    )),
+                )));
+            };
+            let scan = scan.0;
+            if scan.tests == 0 && !scan.parse_failed {
+                continue;
+            }
+            reported.push(crate::UnimportedTestFile {
+                path: candidate.path().to_owned(),
+                tests: scan.tests,
+                parse_failed: scan.parse_failed,
+            });
+        }
+        reported.sort();
+        Ok(reported)
+    }
 }
 
 fn programs_are_pointer_equivalent(left: &ParsedProgram, right: &ParsedProgram) -> bool {

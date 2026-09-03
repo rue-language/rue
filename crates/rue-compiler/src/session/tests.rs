@@ -5704,6 +5704,233 @@ fn executable_cfg_closure_excludes_test_units() {
     );
 }
 
+/// Two modules' tests share one inventory, ordered by the whole stable ID.
+///
+/// The ordering is what binds a listing to the image's selectors, so this pins
+/// both the ID spelling and that an ordinal is its index (ADR-0083 §2, §3).
+#[test]
+fn test_inventory_orders_every_module_by_stable_id() {
+    let source = snapshot(
+        &[
+            (
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn main() -> i32 { let h = @import(\"helper.rue\"); 0 }\n\
+                 test \"zulu\" { }\n\
+                 test \"alpha\" { }\n",
+            ),
+            (
+                2,
+                "/p/helper.rue",
+                "helper.rue",
+                "pub fn used() -> i32 { 3 }\n\
+                 test \"beta\" { let x = used(); }\n",
+            ),
+        ],
+        1,
+    );
+    let mut session = CompilerSession::new();
+    publish_with_test_imports(&mut session, &source);
+
+    let inventory = crate::unstable::test_inventory(
+        &mut session,
+        &test_declaration_options(crate::RootSelection::Tests),
+    )
+    .expect("the test closure analyzes");
+
+    let ids = inventory
+        .entries
+        .iter()
+        .map(|entry| entry.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        vec!["helper.rue::beta", "main.rue::alpha", "main.rue::zulu"],
+        "the inventory is byte order over the whole `<module>::<name>` ID"
+    );
+    for (index, entry) in inventory.entries.iter().enumerate() {
+        assert_eq!(entry.ordinal as usize, index, "{entry:?}");
+        assert_eq!(entry.id, format!("{}::{}", entry.module, entry.name));
+        assert!(entry.line > 0 && entry.column > 0, "{entry:?}");
+        assert!(entry.file.ends_with(&entry.module), "{entry:?}");
+    }
+    let alpha = &inventory.entries[1];
+    assert_eq!(alpha.module, "main.rue");
+    assert_eq!(alpha.name, "alpha");
+    // `test "alpha"` is the third line of `main.rue`, at its first column.
+    assert_eq!((alpha.line, alpha.column), (3, 1));
+}
+
+/// A listing analyzes the closure and stops (ADR-0083 §2): no codegen, no
+/// object projection.
+#[test]
+fn test_inventory_performs_no_codegen() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        "fn helper() -> i32 { 7 }\ntest \"lists\" { let x = helper(); }",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+
+    let options = test_declaration_options(crate::RootSelection::Tests);
+    let inventory =
+        crate::unstable::test_inventory(&mut session, &options).expect("the closure analyzes");
+    assert_eq!(inventory.entries.len(), 1);
+    assert_eq!(inventory.entries[0].id, "main.rue::lists");
+    assert!(
+        session.codegen_executions().is_empty(),
+        "a listing must not reach codegen: {:?}",
+        session.codegen_executions()
+    );
+    assert_eq!(session.codegen_collections(), 0);
+    assert!(session.object_projection_executions().is_empty());
+    assert_eq!(session.object_projection_collections(), 0);
+}
+
+/// The facade refuses a request whose roots are not tests: answering an
+/// executable request with an empty inventory would report "no tests" for a
+/// program full of them.
+#[test]
+fn test_requests_require_the_tests_root_selection() {
+    let source =
+        SourceSnapshot::single("main.rue", "fn main() -> i32 { 0 }\ntest \"present\" { }").unwrap();
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+
+    let options = test_declaration_options(crate::RootSelection::Executable);
+    let listing = crate::unstable::test_inventory(&mut session, &options)
+        .err()
+        .expect("a listing refuses an executable root selection");
+    let image = crate::unstable::test_image_in_compile_scope(&mut session, &options)
+        .map(|_| ())
+        .err()
+        .expect("an image refuses an executable root selection");
+    for errors in [listing, image] {
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(error.kind, ErrorKind::InvalidCompilerInput(_))),
+            "unexpected diagnostics: {errors:?}"
+        );
+    }
+}
+
+/// The dispatcher joins a test request's CFG closure under the unmangled
+/// `main`, and an executable request's closure is unchanged (ADR-0083 §3).
+#[test]
+fn the_test_dispatcher_is_the_test_image_entry_point() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        "fn main() -> i32 { 0 }\ntest \"dispatched\" { }",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+
+    let executable = session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Executable))
+        .expect("the executable program compiles");
+    assert!(
+        !executable
+            .functions()
+            .iter()
+            .any(|unit| unit.function == crate::FunctionInstanceKey::TestDispatcher),
+        "an executable request synthesizes no dispatcher"
+    );
+    let executable_symbols = defined_symbols(&executable);
+    assert!(executable_symbols.iter().any(|symbol| symbol == "main"));
+
+    let tests = session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Tests))
+        .expect("the test image compiles");
+    let dispatchers = tests
+        .functions()
+        .iter()
+        .filter(|unit| unit.function == crate::FunctionInstanceKey::TestDispatcher)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        dispatchers.len(),
+        1,
+        "exactly one dispatcher per test image"
+    );
+    assert_eq!(
+        dispatchers[0].record.codegen.defined_symbol.as_ref(),
+        "main",
+        "the loader looks the entry point up by that exact spelling"
+    );
+
+    // The executable graph is identical to what it was before a test request
+    // ran: the two root sets are disjoint (ADR-0083 §1).
+    let executable_again = session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Executable))
+        .expect("the executable program still compiles");
+    assert_eq!(defined_symbols(&executable_again), executable_symbols);
+}
+
+/// `extern "C"` exports are executable-only (ADR-0083 §1). A test image links
+/// no export thunk, because a test request roots no c-export.
+#[test]
+fn a_test_request_roots_no_c_export() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        "pub extern \"C\" fn rue_add(a: i32, b: i32) -> i32 { a + b }\n\
+         fn main() -> i32 { 0 }\n\
+         test \"present\" { }",
+    )
+    .unwrap();
+    let options = |root_selection| CompileOptions {
+        preview_features: PreviewFeatures::from([
+            PreviewFeature::TestDeclarations,
+            PreviewFeature::CFfi,
+        ]),
+        root_selection,
+        ..CompileOptions::default()
+    };
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+
+    let executable = session
+        .rooted_cfg(&options(crate::RootSelection::Executable))
+        .expect("the executable program compiles");
+    let exported = crate::session::collect_rooted_exports(&executable.graph, &executable.cfgs);
+    assert_eq!(
+        exported
+            .iter()
+            .map(|thunk| thunk.exported_symbol.as_str())
+            .collect::<Vec<_>>(),
+        vec!["rue_add"],
+        "an executable request links its c-export thunk"
+    );
+
+    let tests = session
+        .rooted_cfg(&options(crate::RootSelection::Tests))
+        .expect("the test image compiles");
+    assert!(
+        crate::session::collect_rooted_exports(&tests.graph, &tests.cfgs).is_empty(),
+        "a test image exposes only its dispatcher entry point"
+    );
+    assert!(
+        !tests
+            .functions()
+            .iter()
+            .any(|unit| unit.source_name() == "rue_add"),
+        "an unreferenced c-export is not even reached by a test request"
+    );
+}
+
+/// The defined machine symbols of a rooted CFG closure, sorted.
+fn defined_symbols(output: &crate::session::RootedCfgOutput) -> Vec<String> {
+    let mut symbols = output
+        .functions()
+        .iter()
+        .map(|unit| unit.record.codegen.defined_symbol.to_string())
+        .collect::<Vec<_>>();
+    symbols.sort();
+    symbols
+}
+
 /// A test body's calls are whole-program references, so a helper called only
 /// from a test does not warn as unused in an executable build (ADR-0083 §1).
 #[test]
@@ -5851,4 +6078,230 @@ fn cfg_transformation_oracle_fault_tolerates_a_test_request_without_main() {
     // fault deliberately corrupts the published CFG, so either outcome is
     // acceptable as long as the request survives the missing `main`.
     let _ = session.rooted_cfg(&options);
+}
+
+// ---------------------------------------------------------------------------
+// Declared test candidates (ADR-0083 §1)
+// ---------------------------------------------------------------------------
+
+/// A committed two-module closure: `main.rue` imports `helper.rue`, and the
+/// helper is where the in-closure test declaration lives.
+fn committed_test_closure() -> CompilerSession {
+    let source = snapshot(
+        &[
+            (
+                1,
+                "/rue-fixture/main.rue",
+                "main.rue",
+                "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.value() }\n",
+            ),
+            (
+                2,
+                "/rue-fixture/helper.rue",
+                "helper.rue",
+                "pub fn value() -> i32 { 7 }\ntest \"helper answers\" { }\n",
+            ),
+        ],
+        1,
+    );
+    let mut session = CompilerSession::new();
+    publish_with_test_imports(&mut session, &source);
+    session
+}
+
+fn committed_candidate_inventory(session: &CompilerSession) -> crate::TestCandidateInventory {
+    let context = session
+        .committed_import_discovery_artifact()
+        .expect("the fixture commits a closed-valid discovery revision")
+        .context()
+        .clone();
+    crate::TestCandidateInventory::new(&context)
+}
+
+fn present(source: &str) -> crate::TestCandidateOutcome {
+    crate::TestCandidateOutcome::Present(Arc::from(source))
+}
+
+/// The whole point of the inventory: a declared file the closure never reached
+/// is reported when it declares tests, and a file the closure DID reach is not
+/// — its tests are already rooted by a test request.
+#[test]
+fn unimported_test_files_reports_only_declared_candidates_outside_the_closure() {
+    let mut session = committed_test_closure();
+    let mut candidates = committed_candidate_inventory(&session);
+    // In the closure, with a test: already discovered, so silent.
+    candidates
+        .declare(
+            "helper.rue",
+            present("pub fn value() -> i32 { 7 }\ntest \"helper answers\" { }\n"),
+        )
+        .unwrap();
+    // Outside the closure, with tests: the orphan the warning exists for.
+    candidates
+        .declare(
+            "orphan_tests.rue",
+            present("test \"a\" { }\ntest \"b\" { }\ntest \"c\" { }\n"),
+        )
+        .unwrap();
+    // Outside the closure, no tests: a plain unimported module is not this
+    // warning's business.
+    candidates
+        .declare("plain.rue", present("fn unused() -> i32 { 0 }\n"))
+        .unwrap();
+    // Declared but absent: a sibling target's glob entry, silent by design.
+    candidates
+        .declare("gone.rue", crate::TestCandidateOutcome::Absent)
+        .unwrap();
+
+    let reported = session.unimported_test_files(&candidates).unwrap();
+    assert_eq!(
+        reported,
+        vec![crate::UnimportedTestFile {
+            path: "orphan_tests.rue".to_owned(),
+            tests: 3,
+            parse_failed: false,
+        }]
+    );
+}
+
+/// A candidate that could not be read or parsed is reported with the count
+/// marked unknown rather than silently counted as zero.
+#[test]
+fn unreadable_and_unparsable_candidates_are_reported_and_ordered_by_path() {
+    let mut session = committed_test_closure();
+    let mut candidates = committed_candidate_inventory(&session);
+    candidates
+        .declare("z_orphan.rue", present("test \"z\" { }\n"))
+        .unwrap();
+    candidates
+        .declare("a_broken.rue", present("fn main( -> {\n"))
+        .unwrap();
+    candidates
+        .declare(
+            "m_denied.rue",
+            crate::TestCandidateOutcome::Unreadable(Arc::from("permission denied")),
+        )
+        .unwrap();
+
+    let reported = session.unimported_test_files(&candidates).unwrap();
+    assert_eq!(
+        reported,
+        vec![
+            crate::UnimportedTestFile {
+                path: "a_broken.rue".to_owned(),
+                tests: 0,
+                parse_failed: true,
+            },
+            crate::UnimportedTestFile {
+                path: "m_denied.rue".to_owned(),
+                tests: 0,
+                parse_failed: true,
+            },
+            crate::UnimportedTestFile {
+                path: "z_orphan.rue".to_owned(),
+                tests: 1,
+                parse_failed: false,
+            },
+        ]
+    );
+}
+
+/// An inventory acquired under a different read regime cannot describe this
+/// closure: the same spelling names a different file.
+#[test]
+fn candidates_declared_under_another_read_policy_are_refused() {
+    let mut session = committed_test_closure();
+    let foreign =
+        crate::ImportDiscoveryContext::new(1, "/rue-fixture", None, "a-different-source-manifest")
+            .unwrap();
+    let mut candidates = crate::TestCandidateInventory::new(&foreign);
+    candidates
+        .declare("orphan_tests.rue", present("test \"a\" { }\n"))
+        .unwrap();
+    let errors = session.unimported_test_files(&candidates).unwrap_err();
+    assert!(
+        errors.to_string().contains("different read policy"),
+        "{errors}"
+    );
+}
+
+/// The scan is revision-keyed: republishing an inventory in which exactly one
+/// candidate's bytes changed recomputes that candidate and reuses the rest.
+#[test]
+fn editing_one_candidate_rescans_only_that_candidate() {
+    let mut session = committed_test_closure();
+    let build = |session: &CompilerSession, edited: &str| {
+        let mut candidates = committed_candidate_inventory(session);
+        candidates.declare("edited.rue", present(edited)).unwrap();
+        candidates
+            .declare("stable.rue", present("test \"stable\" { }\n"))
+            .unwrap();
+        candidates
+    };
+
+    let first = build(&session, "test \"one\" { }\n");
+    let revision = session
+        .queries
+        .revisioned
+        .publish_test_candidate_inputs(&first)
+        .unwrap();
+    for candidate in first.candidates() {
+        assert_eq!(
+            session
+                .queries
+                .revisioned
+                .test_candidate_scan(revision, candidate.identity().clone())
+                .execution(),
+            rue_query::RequestExecution::Computed,
+            "the first inventory computes every scan"
+        );
+    }
+
+    let second = build(&session, "test \"one\" { }\ntest \"two\" { }\n");
+    let successor = session
+        .queries
+        .revisioned
+        .publish_test_candidate_inputs(&second)
+        .unwrap();
+    let executions = second
+        .candidates()
+        .iter()
+        .map(|candidate| {
+            (
+                candidate.path().to_owned(),
+                session
+                    .queries
+                    .revisioned
+                    .test_candidate_scan(successor, candidate.identity().clone())
+                    .execution(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        executions,
+        vec![
+            (
+                "edited.rue".to_owned(),
+                rue_query::RequestExecution::Computed
+            ),
+            ("stable.rue".to_owned(), rue_query::RequestExecution::Reused),
+        ],
+        "only the edited candidate is rescanned"
+    );
+
+    assert_eq!(
+        session.unimported_test_files(&second).unwrap(),
+        vec![
+            crate::UnimportedTestFile {
+                path: "edited.rue".to_owned(),
+                tests: 2,
+                parse_failed: false,
+            },
+            crate::UnimportedTestFile {
+                path: "stable.rue".to_owned(),
+                tests: 1,
+                parse_failed: false,
+            },
+        ]
+    );
 }

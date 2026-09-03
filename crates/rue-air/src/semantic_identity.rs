@@ -424,7 +424,8 @@ impl<D, M> AnonymousNominalKey<D, M> {
                 FunctionInstanceKey::Specialization { arguments, .. } => Some(arguments),
                 FunctionInstanceKey::Definition(_)
                 | FunctionInstanceKey::AnonymousMember { .. }
-                | FunctionInstanceKey::DropGlue(_) => None,
+                | FunctionInstanceKey::DropGlue(_)
+                | FunctionInstanceKey::TestDispatcher => None,
             },
         }
     }
@@ -489,6 +490,15 @@ pub enum FunctionInstanceKey<D, M> {
         member: AnonymousMemberKey,
     },
     DropGlue(Node<TypeInstanceKey<D, M>>),
+    /// The synthesized `main` of a test image (ADR-0083 §3).
+    ///
+    /// A test request has exactly one, and it carries no payload: the ordered
+    /// test table it dispatches on is a property of the request's closure, not
+    /// of this identity, so the identity stays the same while the closure
+    /// grows. Dispatcher code is runner plumbing — the capability summaries and
+    /// closure fingerprints the deferred ADRs compute exclude it by
+    /// construction.
+    TestDispatcher,
 }
 
 impl<D, M> CanonicalArgumentValue<D, M> {
@@ -699,6 +709,9 @@ impl<D, M> FunctionInstanceKey<D, M> {
             Self::DropGlue(value) => FunctionInstanceKey::DropGlue(Node::new(
                 value.try_map_identities(definition, module)?,
             )),
+            // The dispatcher carries no definition or module identity, so
+            // relocating it into another issuer's vocabulary is the identity.
+            Self::TestDispatcher => FunctionInstanceKey::TestDispatcher,
         })
     }
 }

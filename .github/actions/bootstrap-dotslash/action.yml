@@ -48,7 +48,7 @@ runs:
     # on the wrapper survives a pin bump, reports an exact hit on a store
     # without the new binary, and (because an exact hit suppresses the save)
     # never writes the downloaded one back. RUE-1854 is that bug, and
-    # `//:dotslash-cache-key-validation` is the gate that keeps it fixed.
+    # `//:dotslash-bootstrap-validation` is the gate that keeps it fixed.
     #
     # Both store paths are listed unconditionally: `~/.cache/dotslash` is the
     # Linux location, `~/Library/Caches/dotslash` the macOS one, and

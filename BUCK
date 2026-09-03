@@ -1,7 +1,7 @@
 # Repo-root test-suite targets (RUE-144 / RUE-132).
 #
 # Each suite ties a test-harness binary to the rue compiler and the on-disk
-# inputs it actually reads (cases/, std/, docs/), so Buck owns the binary
+# inputs it actually reads (cases/, std/, examples/, docs/), so Buck owns the binary
 # handoff and keys each suite on its real inputs:
 #
 #   buck2 test //...        # runs unit tests + spec/UI/CLI suites + repo gates
@@ -31,7 +31,6 @@
 # files so that `buck2 test //crates/...` (quick-test.sh, test.sh's filtered
 # path) still means "unit tests only".
 
-load("//:rue_rules.bzl", "rue_program", "rue_program_family", "rue_program_staging", "rue_program_test")
 load("//:test_defs.bzl", "rue_sh_test", "rue_test_suite", "rue_tool_test")
 
 load(":corpus.bzl", "cached_corpus_suite")
@@ -41,15 +40,10 @@ rue_sh_test(
     test = "scripts/check-compiler-allocator-policy.sh",
     env = {
         "RUE_ALLOCATOR_CRATE_ROOT": "$(location //crates/rue:allocator-policy-inputs)",
-        "RUE_ALLOCATOR_POLICY_NOTE": "$(location :compiler-allocator-policy-note)",
+        "RUE_ALLOCATOR_POLICY_NOTE": "$(location //docs:adr-0071-phase-3-note)",
         "RUE_ALLOCATOR_THIRD_PARTY_ROOT": "$(location //third-party:allocator-policy-inputs)",
         "RUE_ALLOCATOR_ZIG_ROOT": "$(location toolchains//zig:policy-inputs)",
     },
-)
-
-export_file(
-    name = "compiler-allocator-policy-note",
-    src = "docs/notes/adr-0071-phase-3-linux-compiler-allocator.md",
 )
 
 # Versioned configuration anchors for the repository's Rust quality gates.
@@ -226,28 +220,21 @@ rue_sh_test(
     labels = ["rue_not_quick"],
 )
 
-# The example programs are runtime inputs to the CLI integration tests: the
-# suite compiles+runs every examples/*.rue through the real driver (RUE-48),
-# so an edit under examples/ MUST re-run the CLI suite (declared here as an
-# input, resolved to an absolute path via RUE_EXAMPLES_DIR below).
-filegroup(
-    name = "examples",
-    srcs = glob(["examples/**"]),
-    visibility = ["PUBLIC"],
-)
-
 # Syntax-valid, checked-in Rue programs compared by the independent stage-1
 # frontend differential. Keeping the selection explicit excludes intentionally
 # malformed UI/spec/CLI fixtures without a filename heuristic.
-# `std/` is its own package, so a root glob cannot reach it; the std tree is
-# mounted at the `std/` key instead, which keeps the corpus manifest's
-# `std/<file>.rue` paths unchanged. The harness follows the directory symlink.
+# `examples/` and `std/` are their own packages, so a root glob cannot reach
+# them; each tree is mounted at its directory key instead, which keeps the
+# corpus manifest's `examples/<...>.rue` and `std/<file>.rue` paths unchanged.
+# The harness follows the directory symlinks.
 filegroup(
     name = "frontend-diff-corpus",
     srcs = dict([(path, path) for path in glob([
-        "examples/**/*.rue",
         "reproducibility/**/*.rue",
-    ])]) | {"std": "//std:std"},
+    ])]) | {
+        "examples": "//examples:rue-sources",
+        "std": "//std:std",
+    },
     visibility = ["PUBLIC"],
 )
 
@@ -285,17 +272,6 @@ filegroup(
         "scripts/check-tutorial-snippets.py",
         "test.sh",
     ],
-)
-
-filegroup(
-    name = "spec-docs",
-    srcs = glob(["docs/spec/src/**"]),
-    visibility = ["PUBLIC"],
-)
-
-filegroup(
-    name = "adr-designs",
-    srcs = glob(["docs/designs/**"]),
 )
 
 # Required pull-request and merge-group CI must not execute a moving container
@@ -355,7 +331,7 @@ rue_sh_test(
     args = ["--traceability"],
     env = {
         "RUE_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
-        "RUE_SPEC_DIR": "$(location :spec-docs)/docs/spec/src",
+        "RUE_SPEC_DIR": "$(location //docs:spec-src)",
     },
 )
 
@@ -365,7 +341,7 @@ rue_sh_test(
     args = ["--check-machine-index"],
     env = {
         "RUE_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
-        "RUE_SPEC_DIR": "$(location :spec-docs)/docs/spec/src",
+        "RUE_SPEC_DIR": "$(location //docs:spec-src)",
     },
 )
 
@@ -393,84 +369,6 @@ cached_corpus_suite(
     ],
 )
 
-# ADR-0070 Phase 2 (RUE-1406): the CLI cases that name a checked-in root stop
-# compiling it inside the harness. Each root is one `rue_program` build action —
-# keyed on its real inputs, uploadable, and shared by every scenario naming it —
-# and the corpus actions below declare the staged executables the way they
-# declare every other input, through `$(location ...)` in their `attrs.arg()`
-# env. The weld this breaks is not a speed problem but a coverage one: the only
-# way to run Meridian's sixth scenario was to compile 36k lines a sixth time,
-# so RUE-1083 disabled all six rather than pay for them.
-#
-# 64 of the 73 cases naming a checked-in root migrate, over 9 roots. Only 8 are
-# new: `examples/meridian/main.rue` is already a Phase 1 large-example program,
-# so one artifact serves both suites — the "many scenarios, one compile"
-# property reaching across two suites.
-#
-# What stays compile-in-harness, all of it deliberate: the 6 cross-target
-# `cli-test-fixtures` cases (each (root, target) tuple has exactly one consumer
-# and compiles in milliseconds), the repo-relative `source_path` fixture case
-# (whose subject IS the TOML resolution mechanism it would be leaving), the one
-# `differential_opt` calculator case (four compiles by design, at opt levels the
-# runner drives), and the one-scenario wordfreq root. The harness decides this
-# structurally rather than from a list — see `case_runs_prebuilt_program`.
-#
-# The RUE-48 automatic example smokes are untouched: `run_example` still
-# compiles each root it discovers through the ordinary driver, so every example
-# still proves it compiles the way a user compiles it.
-#
-# `examples/first/` holds three sibling roots, so `first-stats` names its one
-# file instead of globbing the directory; every other root owns its directory
-# and takes the directory-bounded glob ADR-0070's over-declaration audit
-# documents.
-[
-    rue_program(
-        name = _name,
-        root = "examples/{}.rue".format(_root),
-        srcs = _srcs,
-    )
-    for _name, _root, _srcs in [
-        ("first-stats", "first/stats", ["examples/first/stats.rue"]),
-        ("gazette", "gazette/main", glob(["examples/gazette/**/*.rue"])),
-        ("harbor", "harbor/main", glob(["examples/harbor/**/*.rue"])),
-        ("jsonfmt", "jsonfmt/main", glob(["examples/jsonfmt/**/*.rue"])),
-        ("lattice", "lattice/main", glob(["examples/lattice/**/*.rue"])),
-        ("mosaic", "mosaic/main", glob(["examples/mosaic/**/*.rue"])),
-        ("rill", "rill/main", glob(["examples/rill/**/*.rue"])),
-        ("ruelex", "ruelex/main", glob(["examples/ruelex/**/*.rue"])),
-        ("second-calculator", "second/calculator", glob(["examples/second/**/*.rue"])),
-    ]
-]
-
-# The ten artifacts as one directory keyed by root path, so a corpus action
-# declares a single `$(location ...)` and the harness's lookup key is the
-# case's own `source_path` string. Consumed by //:cli-tests, //:cli-tests-slow
-# and the four shards.
-#
-# Every consumer declares all ten even though no single corpus target runs
-# cases against all ten — mosaic's section is slow-tier, so the premerge
-# targets carry it for nothing. That is the simplest correct form ADR-0070
-# chose deliberately: it is a mild over-declaration of each action's key (an
-# edit to any root already re-runs every CLI corpus action today, since the
-# roots live inside the declared `:examples` filegroup) and it fails closed,
-# because a case whose program is absent from the staging environment cannot
-# silently run a stale one.
-rue_program_staging(
-    name = "cli-staged-programs",
-    programs = [
-        ":first-stats",
-        ":gazette",
-        ":harbor",
-        ":jsonfmt",
-        ":lattice",
-        ":meridian",
-        ":mosaic",
-        ":rill",
-        ":ruelex",
-        ":second-calculator",
-    ],
-)
-
 # Shared verbatim by //:cli-tests and its shards so a slice runs exactly the
 # same cases the monolithic target would. What the two skips exclude is the
 # automatic RUE-48 smoke over each large application's full root, which still
@@ -492,7 +390,7 @@ _CLI_TEST_ARGS = [
 _CLI_TEST_BASE_ENV = {
     "RUE_BINARY": "$(exe_target //crates/rue:rue)",
     "RUE_CLI_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
-    "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
+    "RUE_EXAMPLES_DIR": "$(location //examples:examples)",
     "RUE_REPO_DIR": "$(location :cli-test-fixtures)",
     "RUE_STD_DIR": "$(location //std:std)",
 }
@@ -505,7 +403,7 @@ _CLI_TEST_BASE_ENV = {
 # release-configured program compiles to a deliberately bounded lane (RUE-1129)
 # in exchange for nothing.
 _CLI_STAGED_PROGRAMS_ENV = {
-    "RUE_CLI_STAGED_PROGRAMS": "$(location :cli-staged-programs)",
+    "RUE_CLI_STAGED_PROGRAMS": "$(location //examples:cli-staged-programs)",
 }
 
 _CLI_TEST_ENV = dict(
@@ -663,141 +561,6 @@ CLI_TEST_SHARD_COUNT = 4
     for _shard in range(CLI_TEST_SHARD_COUNT)
 ]
 
-# ADR-0070 Phase 1 (RUE-1405): each large maintained application compiles
-# once as a `rue_program` build action — cached, shared across lanes — and
-# every runtime scenario below is its own `rue_program_test` consuming that
-# executable. A test execution never reaches the action cache, so the compile
-# must not live inside one.
-#
-# Each sibling pair shares a directory glob (main does not import canary.rue,
-# or vice versa): the precision trade ADR-0070's over-declaration audit
-# documents. The executor's 600s default (RUE-1156) now bounds only a runtime
-# scenario, which finishes in seconds even at stress scale.
-rue_program_family(
-    name = "large-example-caldera",
-    srcs = glob(["examples/caldera/**/*.rue"]),
-    programs = {
-        "caldera": {"root": "examples/caldera/main.rue"},
-        "caldera-canary": {"root": "examples/caldera/canary.rue"},
-    },
-)
-
-# `:meridian` is the ninth staged CLI program as well as the slow-tier
-# large-example root (ADR-0070 Phase 2): one compile, consumed by the six
-# scheduled scenarios below AND by the six CLI corpus scenarios of
-# cases/examples_meridian.toml.
-rue_program_family(
-    name = "large-example-meridian",
-    srcs = glob(["examples/meridian/**/*.rue"]),
-    programs = {
-        "meridian": {"root": "examples/meridian/main.rue"},
-        "meridian-canary": {"root": "examples/meridian/canary.rue"},
-    },
-)
-
-# The required pre-merge canaries compile a reduced root from each maintained
-# application and execute its core path. They are intentionally honest about
-# their scope: neither claims to compile the complete generated graph. Each
-# canary executable deliberately has two consuming scenarios — the core-path
-# check, and a staged-cwd run — which is the "one compile, many scenarios"
-# shape scripts/check-rue-program-warm-cache.sh asserts is cache-served.
-[
-    rue_program_test(
-        name = "large-example-{}-canary".format(_program),
-        program = ":{}-canary".format(_program),
-    )
-    for _program in ["caldera", "meridian"]
-]
-
-[
-    rue_program_test(
-        name = "large-example-{}-canary-workdir".format(_program),
-        program = ":{}-canary".format(_program),
-        files = [{"path": "data/staged.txt", "source": "staged\n"}],
-    )
-    for _program in ["caldera", "meridian"]
-]
-
-# Scheduled slow coverage: the complete application graphs, one compile each,
-# reused by every scenario. Every marker lands on stdout.
-_LARGE_EXAMPLE_SLOW_SCENARIOS = {
-    "caldera": [
-        ("selftest", [], ["selftest checks=23", "valid=true"], {}),
-        ("demo", ["demo"], ["entities=8", "valid=true"], {}),
-        (
-            "scenario",
-            ["run", "demo.caldera"],
-            ["script_oracle=true", "valid=true"],
-            {"demo.caldera": "examples/caldera/demo.caldera"},
-        ),
-        ("stress1", ["stress1"], ["stress scale=1", "valid=true"], {}),
-        ("benchmark", ["benchmark"], ["benchmark tiers=2", "valid=true"], {}),
-    ],
-    "meridian": [
-        ("help", [], ["usage: meridian"], {}),
-        ("demo", ["demo"], ["database=meridian", "result_valid=true"], {}),
-        (
-            "workload",
-            ["run", "demo.sql"],
-            ["plan_valid=true", "result_valid=true"],
-            {"demo.sql": "examples/meridian/demo.sql"},
-        ),
-        ("selftest", ["selftest"], ["selftest checks=24", "valid=true"], {}),
-        ("stress1", ["stress1"], ["stress scale=1", "valid=true"], {}),
-        (
-            "benchmark",
-            ["benchmark"],
-            ["benchmark=meridian-complete", "valid=true"],
-            {},
-        ),
-    ],
-}
-
-[
-    rue_program_test(
-        name = "large-example-{}-{}".format(_program, _scenario),
-        tier = "slow",
-        labels = ["rue_scheduled_large_example"],
-        program = ":{}".format(_program),
-        program_args = _args,
-        stdout_contains = _markers,
-        data = _data,
-    )
-    for _program, _scenarios in _LARGE_EXAMPLE_SLOW_SCENARIOS.items()
-    for _scenario, _args, _markers, _data in _scenarios
-]
-
-# The release workflow's matrix selects one application per job by these
-# names, exactly as it selected the retired monolithic sh_tests; each suite
-# fans out to the per-scenario tests above, which share one compiled artifact.
-[
-    rue_test_suite(
-        name = "large-example-{}-slow".format(_program),
-        tier = "slow",
-        labels = ["rue_scheduled_large_example"],
-        tests = [
-            ":large-example-{}-{}".format(_program, _scenario)
-            for _scenario, _args, _markers, _data in _scenarios
-        ],
-    )
-    for _program, _scenarios in _LARGE_EXAMPLE_SLOW_SCENARIOS.items()
-]
-
-# The 4x generated workload is an extreme scaling experiment rather than a
-# correctness smoke, so it has explicit stress-tier ownership. It consumes
-# the same compiled artifact as the slow tier.
-[
-    rue_program_test(
-        name = "large-example-{}-stress".format(_program),
-        tier = "stress",
-        labels = ["rue_scheduled_large_example"],
-        program = ":{}".format(_program),
-        program_args = ["stress4"],
-        stdout_contains = ["stress scale=4", "valid=true"],
-    )
-    for _program in ["caldera", "meridian"]
-]
-
 # RUE-1083: `examples/` is a declared input because this suite now also checks a
 # real maintained program (rill) for byte-stable output, not just the
 # purpose-built fixture. An edit under examples/ must therefore re-run it.
@@ -825,7 +588,7 @@ cached_corpus_suite(
     harness = ":reproducible-programs-harness",
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
-        "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
+        "RUE_EXAMPLES_DIR": "$(location //examples:examples)",
         "RUE_REPRO_FIXTURE": "$(location :reproducibility-fixture)/reproducibility/fixture",
         "RUE_STD_DIR": "$(location //std:std)",
     },
@@ -983,7 +746,7 @@ rue_sh_test(
     test = "scripts/validate-adrs.py",
     args = [
         "--adr-dir",
-        "$(location :adr-designs)/docs/designs",
+        "$(location //docs:designs)",
     ],
 )
 
@@ -996,12 +759,12 @@ rue_tool_test(
 # RUE-1531: the notes index (docs/notes/README.md) must list every note, and
 # every relative link or bare docs/crates/scripts path reference under
 # docs/**/*.md must name a real file. The docs tree is a declared resource so
-# a docs edit re-runs the gate instead of being served a stale pass; docs/
-# holds no nested Buck packages, so the root glob reaches all of it.
+# a docs edit re-runs the gate instead of being served a stale pass; `docs/`
+# is its own package, so the tree arrives through its filegroup.
 rue_sh_test(
     name = "doc-link-validation",
     test = "scripts/validate-doc-links.py",
-    resources = [":gatelib-sources"] + glob(["docs/**"]),
+    resources = [":gatelib-sources", "//docs:all"],
 )
 
 rue_tool_test(
@@ -1038,7 +801,7 @@ rue_tool_test(
 # discovery so a newly added workflow is covered the day it lands.
 #
 # RUE-1825 moved the cache step itself into the composite action, so the
-# sources are the whole `.github` tree and both gates below walk it: the
+# sources are the whole `.github` tree and the gate below walks it: the
 # workflows are where an install may not appear, the action is where the one
 # surviving key lives.
 filegroup(
@@ -1051,23 +814,13 @@ filegroup(
     ]),
 )
 
-rue_sh_test(
-    name = "dotslash-cache-key-validation",
-    test = "scripts/validate-dotslash-cache-keys.py",
-    args = ["$(location :dotslash-github-sources)/.github"],
-)
-
-rue_tool_test(
-    name = "dotslash-cache-key-tool-tests",
-    test = "scripts/test-dotslash-cache-keys.py",
-    resources = ["scripts/validate-dotslash-cache-keys.py"],
-)
-
 # RUE-1825: installing dotslash and caching the binary it downloads is one
 # operation, and copies of it drifted until eight install sites had lost the
 # cache half entirely. `.github/actions/bootstrap-dotslash` owns the pairing;
 # this gate keeps it the only owner, and fails if the action stops doing
-# either half rather than passing vacuously over conforming callers.
+# either half rather than passing vacuously over conforming callers. It also
+# holds the one surviving cache key to the RUE-1854 rule: hash the pinned
+# `buck2-bin` manifest, never the `buck2` wrapper.
 rue_sh_test(
     name = "dotslash-bootstrap-validation",
     test = "scripts/validate-dotslash-bootstrap.py",
@@ -1107,35 +860,10 @@ rue_tool_test(
     resources = ["scripts/validate-shell-pipefail-pipelines.py"],
 )
 
-# Keep the mechanism test's wrapper input explicit: under Buck it must not
-# reach back through the validator's source symlink into the checkout.
-filegroup(
-    name = "shell-bash-baseline-inputs",
-    srcs = {"buck2": "buck2"},
-)
-
 rue_tool_test(
     name = "shell-bash-baseline-tool-tests",
     test = "scripts/test-validate-shell-bash-baseline.py",
     resources = ["scripts/validate-shell-bash-baseline.py"],
-    env = {
-        "RUE_BASH_BASELINE_ROOT": "$(location :shell-bash-baseline-inputs)",
-    },
-)
-
-# The interpreter-floor gate (RUE-1509; floor made a uniform 3.9 by RUE-1524).
-# Unlike the Bash baseline's tests, these need no particular interpreter to be
-# INSTALLED to mean something, so premerge is enough. They are not thereby
-# host-independent, and the fixtures are written to keep the difference small
-# and asserted rather than assumed: every fixture is 3.9 syntax, so the scan
-# itself answers identically everywhere, and the one case that cannot -- what
-# a parse error means -- asserts on both sides of the floor. The scan proper is
-# only as strict as the interpreter running it, which is why the authoritative
-# run is ci.yml's `fmt` step, at or above the floor.
-rue_tool_test(
-    name = "python-baseline-tool-tests",
-    test = "scripts/test-validate-python-baseline.py",
-    resources = ["scripts/validate-python-baseline.py"],
 )
 
 # RUE-1816's historical-defect plants are source patches compiled only inside
@@ -1200,9 +928,7 @@ rue_tool_test(
 rue_tool_test(
     name = "caldera-generator-check",
     test = "scripts/test-caldera-generator.py",
-    resources = ["scripts/generate-caldera.py"] + glob([
-        "examples/caldera/**",
-    ]),
+    resources = ["scripts/generate-caldera.py", "//examples:caldera-sources"],
     gatelib = False,
 )
 
@@ -1316,11 +1042,6 @@ rue_sh_test(
     ],
     resources = [
         "scripts/affected-targets",
-        "scripts/ci-clippy",
-        "scripts/ci-required-results.py",
-        # The gate pins the bounded apt timeout/retry/lock policy as well as
-        # the workflow wiring, so installer-only edits must invalidate it.
-        "scripts/install-valgrind",
         "scripts/run-native-platform-corpus.sh",
         # RUE-1265: NATIVE_CLI_INVOCATIONS is imported from here, so the two gates
         # cannot disagree about which `scripts/rue cli` steps the native lanes
@@ -1378,11 +1099,8 @@ rue_tool_test(
     test = "scripts/test-validate-ci-gate.py",
     resources = [
         "scripts/affected-targets",
-        "scripts/ci-clippy",
-        "scripts/ci-required-results.py",
         "scripts/run-native-platform-corpus.sh",
         "scripts/validate-ci-gate.py",
-        "scripts/install-valgrind",
         "scripts/validate-test-duplication.py",
     ],
     env = {
@@ -1441,7 +1159,7 @@ genrule(
         "RUE_CLI_EMIT_SHARD_LOADS={} ".format(CLI_TEST_SHARD_COUNT) +
         "RUE_CLI_CASE_TIER=premerge " +
         "RUE_CLI_CASES=$(location //crates/rue-cli-tests:cases)/cases " +
-        "RUE_EXAMPLES_DIR=$(location :examples)/examples " +
+        "RUE_EXAMPLES_DIR=$(location //examples:examples) " +
         "RUE_CLI_SHARD_WEIGHTS=$(location //crates/rue-cli-tests:shard-weights) " +
         "$(exe //crates/rue-cli-tests:rue-cli-tests) > $OUT",
 )
@@ -1475,7 +1193,7 @@ rue_sh_test(
     env = {
         "RUE_CLI_HARNESS": "$(exe_target //crates/rue-cli-tests:rue-cli-tests)",
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
-        "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
+        "RUE_EXAMPLES_DIR": "$(location //examples:examples)",
         "RUE_REPO_DIR": "$(location :cli-test-fixtures)",
         "RUE_STD_DIR": "$(location //std:std)",
     },
@@ -1565,14 +1283,19 @@ rue_tool_test(
 # scripts/affected-targets and the fail-open gate in scripts/ci-corpus-selected.
 # The test uses local stubs for the BTD/Buck contract, so it proves a selective
 # decision without requiring a network download or a real Buck graph.
+#
+# `platform = "native"` on this and the other fake-tool shell suites below
+# (RUE-1936): they run in seconds and exercise scripts that developer Macs and
+# the macos-15 runner execute with Bash 3.2, so the native lanes run them on
+# that interpreter instead of leaving Bash 4 constructs to a Linux-only pass
+# (RUE-1506).
 rue_sh_test(
     name = "affected-targets-tool-tests",
     test = "scripts/test-affected-targets.sh",
+    platform = "native",
     resources = [
         "scripts/affected-targets",
-        "scripts/ci-affected-payload.py",
         "scripts/ci-clippy",
-        "scripts/ci-corpus-decision",
         "scripts/ci-corpus-selected",
         "scripts/parse-btd-impacted.py",
         "test.sh",
@@ -1658,12 +1381,15 @@ rue_test_suite(
     tests = ["//crates/rue-rir:rue-rir[doc]"],
 )
 
-# Maintenance scripts with deletion behavior. Their fail-closed contract is
-# pinned by scripts/test-cleanup-scripts.sh (RUE-567, RUE-1225), which runs
+# Maintenance scripts with deletion behavior, plus the ./buck2 wrapper's
+# free-space floor. Their fail-closed contracts are pinned by
+# scripts/test-cleanup-scripts.sh (RUE-567, RUE-1225, RUE-1934), which runs
 # copies against fake tools — no real repo, remote, or Buck output is touched.
 filegroup(
     name = "cleanup-script-inputs",
     srcs = [
+        "buck2",
+        "buck2-bin",
         "scripts/jj-tidy",
         "scripts/rue-storage",
     ],
@@ -1671,6 +1397,7 @@ filegroup(
 
 rue_sh_test(
     name = "cleanup-script-tests",
+    platform = "native",
     test = "scripts/test-cleanup-scripts.sh",
     env = {
         "RUE_CLEANUP_SCRIPTS_ROOT": "$(location :cleanup-script-inputs)",
@@ -1709,6 +1436,7 @@ filegroup(
 
 rue_sh_test(
     name = "wrapper-script-tests",
+    platform = "native",
     test = "scripts/test-wrapper-scripts.sh",
     env = {
         "RUE_WRAPPER_ROOT": "$(location :wrapper-script-inputs)",
@@ -1729,7 +1457,7 @@ rue_sh_test(
         "RUE_UI_CASES": "$(location //crates/rue-ui-tests:cases)/cases",
         "RUE_CLI_HARNESS": "$(exe_target //crates/rue-cli-tests:rue-cli-tests)",
         "RUE_CLI_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
-        "RUE_EXAMPLES_DIR": "$(location root//:examples)/examples",
+        "RUE_EXAMPLES_DIR": "$(location //examples:examples)",
         "RUE_REPO_DIR": "$(location root//:cli-test-fixtures)",
         "RUE_STD_DIR": "$(location //std:std)",
     },
@@ -1749,6 +1477,7 @@ filegroup(
 
 rue_sh_test(
     name = "corpus-action-tests",
+    platform = "native",
     test = "scripts/test-corpus-action.sh",
     env = {
         "RUE_CORPUS_SCRIPTS_ROOT": "$(location :corpus-script-inputs)",
@@ -1777,13 +1506,13 @@ filegroup(
         "buck2-bin",
         "scripts/ci-heavy-suite",
         "scripts/provision-build-cache",
-        "scripts/rue-storage",
         "test.sh",
     ],
 )
 
 rue_sh_test(
     name = "build-sharing-tests",
+    platform = "native",
     test = "scripts/test-build-sharing.sh",
     env = {
         "RUE_BUILD_SHARING_ROOT": "$(location :build-sharing-test-inputs)",

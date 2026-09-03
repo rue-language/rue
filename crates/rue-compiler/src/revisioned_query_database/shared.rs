@@ -505,6 +505,10 @@ pub(crate) struct RevisionedQueryDatabase {
     pub(super) source_stamps: VecDeque<(crate::session::ExactSourceInput, u64)>,
     pub(super) import_store: Arc<Mutex<ImportInputStore>>,
     pub(super) module_store: Arc<Mutex<ModuleInputStore>>,
+    /// Declared test-candidate observations (ADR-0083 §1). Candidates are host
+    /// reads that never become modules, so they own an input store separate
+    /// from the module leaves the closure is built from.
+    pub(super) test_candidate_store: Arc<Mutex<TestCandidateInputStore>>,
     /// RUE-1576: the optimized-CFG and codegen collections' retained child
     /// cones, borrowed as fallback authority by the backend scopes that run
     /// after each within one rooted compile.
@@ -524,6 +528,9 @@ pub(crate) struct RevisionedQueryDatabase {
     pub(super) declaration_body_plan_failure_injection: DeclarationBodyPlanFailureInjection,
     pub(super) parse_modules: QueryFamily<ModuleQueryKey, ParseModuleValue>,
     pub(super) parse_module_batches: QueryFamily<ParseModuleBatchKey, ParseModuleBatchValue>,
+    /// Parse-only scan of one declared test candidate (ADR-0083 §1). It counts
+    /// `test` items and nothing else: no RIR, no semantics, no roots.
+    pub(super) test_candidate_scans: QueryFamily<TestCandidateScanKey, TestCandidateScanValue>,
     pub(super) module_source_bases:
         QueryFamily<ModuleQueryKey, Option<rue_air::DurableBodySourceLocator>>,
     pub(super) module_indexes: QueryFamily<ModuleQueryKey, ModuleIndexValue>,

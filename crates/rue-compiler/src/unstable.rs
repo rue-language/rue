@@ -19,6 +19,9 @@ pub use crate::import_discovery::{
     ImportDemandRoots, ImportDiscoveryPlan, ImportDiscoveryRequest, ImportDiscoveryWave,
     ImportInputRevision, ImportObservation, ImportObservationLedger, ImportObservationStatus,
 };
+pub use crate::test_candidates::{
+    TestCandidate, TestCandidateInventory, TestCandidateOutcome, UnimportedTestFile,
+};
 pub use crate::warm_fresh_parity::ParityObservation;
 /// A diagnostic's source location, as the diagnostic types already hand it out.
 ///
@@ -666,6 +669,33 @@ pub fn oracle_executable(
     session.oracle_executable(snapshot, options)
 }
 
+/// Report the declared test candidates the compiled closure does not contain
+/// (ADR-0083 §1).
+///
+/// The build system declares which files a target owns; the compiler discovers
+/// which of them the root actually imports. A candidate outside that closure
+/// that declares tests is a file whose tests nothing will ever run, and the
+/// only way to notice is to look. Candidates whose bytes could not be read or
+/// parsed are reported the same way, with `parse_failed` set: the honest answer
+/// is that the count is unknown.
+///
+/// A candidate the host observed absent is silent — sibling build targets share
+/// `srcs` globs, so an unread declared file is routinely another root's tree.
+///
+/// This is a report, not a diagnostic: `rue test` renders it as the
+/// unimported-test-file warning, and an ordinary build ignores it.
+///
+/// Membership in the closure is by normalized logical path, so a file the
+/// program reaches under a different spelling than the build declared (a
+/// symlink, for instance) is reported as unimported; see the session method
+/// for the trade-off.
+pub fn unimported_test_files(
+    session: &mut crate::CompilerSession,
+    candidates: &crate::TestCandidateInventory,
+) -> Result<Vec<crate::UnimportedTestFile>, crate::CompileErrors> {
+    session.unimported_test_files(candidates)
+}
+
 /// Produce an executable inside a compile span owned by the filesystem
 /// driver. Stable callers use `compile_snapshot`, which owns its tracing
 /// root.
@@ -674,6 +704,83 @@ pub fn executable_in_compile_scope(
     options: &crate::CompileOptions,
 ) -> crate::MultiErrorResult<crate::CompileOutput> {
     session.executable_in_compile_scope(options)
+}
+
+/// One test declaration in a request's ordered inventory (ADR-0083 §2).
+///
+/// `id` is the stable identity `<module>::<name>` every other surface refers to
+/// a test by — filters, event streams, and repro argv. `ordinal` is its
+/// position in this inventory and, equivalently, the selector the test image
+/// dispatches it on; the two can never disagree because one computation
+/// produces both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestInventoryEntry {
+    pub id: String,
+    pub module: String,
+    pub name: String,
+    pub file: String,
+    /// 1-based line of the `test "name"` header, or `0` when the declaration
+    /// could not be located in its module's syntax tree.
+    pub line: u32,
+    /// 1-based column of that header, on the same terms as `line`.
+    pub column: u32,
+    pub ordinal: u32,
+}
+
+/// Every test in a request's closure, in stable-ID order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TestInventory {
+    pub entries: Vec<TestInventoryEntry>,
+}
+
+/// Analyze a test closure and publish its ordered inventory, without codegen.
+///
+/// This is the discovery half of ADR-0083 §2's `--list`: semantic analysis of
+/// every test body in the closure, and nothing after it. No CFG is built, no
+/// object is produced, and no image is linked — a listing must never pay for
+/// terminal artifacts it does not show.
+///
+/// `options.root_selection` must be [`crate::RootSelection::Tests`]. An
+/// executable request has no test roots at all, so answering it with an empty
+/// inventory would report "no tests" for a program full of them.
+pub fn test_inventory(
+    session: &mut crate::CompilerSession,
+    options: &crate::CompileOptions,
+) -> crate::MultiErrorResult<TestInventory> {
+    require_test_root_selection(options)?;
+    Ok(TestInventory {
+        entries: session.rooted_test_inventory(options)?,
+    })
+}
+
+/// Link the test image for a request's closure and publish its inventory.
+///
+/// The image is an ordinary executable produced through the ordinary image
+/// path: every test in the closure plus the synthesized dispatcher `main`
+/// (ADR-0083 §3), which the runner execs once per test with that test's
+/// ordinal as its selector. The returned inventory is what assigns those
+/// ordinals, so a caller never has to re-derive them.
+///
+/// `options.root_selection` must be [`crate::RootSelection::Tests`].
+pub fn test_image_in_compile_scope(
+    session: &mut crate::CompilerSession,
+    options: &crate::CompileOptions,
+) -> crate::MultiErrorResult<(crate::CompileOutput, TestInventory)> {
+    require_test_root_selection(options)?;
+    let entries = session.rooted_test_inventory(options)?;
+    let image = session.executable_in_compile_scope(options)?;
+    Ok((image, TestInventory { entries }))
+}
+
+fn require_test_root_selection(options: &crate::CompileOptions) -> crate::MultiErrorResult<()> {
+    match options.root_selection {
+        crate::RootSelection::Tests => Ok(()),
+        other => Err(crate::CompileErrors::from(
+            crate::CompileError::without_span(crate::ErrorKind::InvalidCompilerInput(format!(
+                "a test request requires RootSelection::Tests, not {other:?}"
+            ))),
+        )),
+    }
 }
 
 /// Cloneable cancellation authority for one retained-host compile cycle.

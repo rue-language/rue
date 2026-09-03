@@ -21,9 +21,15 @@ What this proves:
 * the tier vocabulary in `test_defs.bzl` and `test_tiers.bxl` agrees;
 * every tier in that vocabulary has at least one declared CI selector, so a new
   tier fails the build until a job is made responsible for it;
-* every declared selector still exists — its workflow, its job, and the literal
-  selection expression it was registered for. Deleting the oracle-diff lane, or
-  renaming its targets, fails here instead of going quiet.
+* every declared selector still exists — its workflow, its job, and the
+  selection evidence it was registered for;
+* for the tier the derived `platform-corpus` matrix owns, that the matrix is
+  still derived from `scripts/affected-targets corpus-targets` and, with
+  `--live-graph`, that the graph-derived inventory really contains a target
+  carrying the tier (RUE-1936). The inventory is a label query, so the one
+  edit that strands the slow tier — dropping `rue_ci_dedicated_lane` from the
+  oracle differentials — is visible only in the graph, which is why the
+  `ci-contract` job runs this live while the Buck sh_test stays structural.
 
 What it does not prove: that every *target* in a tier is selected. Coverage at
 that granularity belongs to each suite's own inventory gate (the RUE-924 audit
@@ -35,13 +41,16 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gatelib import job_blocks
 
+ROOT = Path(__file__).resolve().parent.parent
 DEFS_TIER_RE = re.compile(
     r'^TEST_TIER_[A-Z]+ = "(rue_test_tier_[a-z]+)"$', re.MULTILINE
 )
@@ -52,6 +61,15 @@ DEFS_TIER_RE = re.compile(
 # silently dissolve that guarantee.
 BXL_LOAD_LINE = 'load("//:test_defs.bzl", "RUE_TEST_TIER_LABELS")'
 
+# The two commands that turn the graph into the platform-corpus matrix.
+MATRIX_DERIVATION = (
+    "scripts/affected-targets corpus-targets",
+    "scripts/plan-cli-shards.py",
+)
+# Direct workflow invocations must carry both: the script input, and the
+# live-graph proof only a runner with Buck can give.
+REQUIRED_WORKFLOW_FLAGS = ("--affected-targets", "--live-graph")
+
 
 @dataclass(frozen=True)
 class Selector:
@@ -59,15 +77,14 @@ class Selector:
 
     workflow: str
     job: str
-    # Literal text that must appear inside that job block. This is the
-    # registered *reason* the job selects the tier — a tier env filter, or the
-    # targets it names — so an edit that removes the selection fails here.
+    # Literal text that must appear inside that job block: the registered
+    # *reason* the job selects the tier.
     evidence: tuple[str, ...]
     why: str
-    # When the workflow consumes a generated matrix, these targets must be in
-    # the canonical inventory that feeds the generator. This follows the live
-    # selection chain instead of requiring target spellings in generated YAML.
-    derived_targets: tuple[str, ...] = ()
+    # The job runs the matrix derived from `scripts/affected-targets
+    # corpus-targets`; whether that graph-derived inventory carries a target
+    # of this tier is a live-graph question.
+    derived_from_graph: bool = False
 
 
 TIER_SELECTORS: dict[str, tuple[Selector, ...]] = {
@@ -83,14 +100,9 @@ TIER_SELECTORS: dict[str, tuple[Selector, ...]] = {
         Selector(
             workflow="ci.yml",
             job="platform-corpus",
-            evidence=(
-                "fromJSON(needs.affected-targets.outputs.corpus_matrix)",
-            ),
-            derived_targets=(
-                "//crates/rue-oracle-diff:oracle-diff-test",
-                "//crates/rue-oracle-diff:oracle-diff-spec-test",
-            ),
+            evidence=("fromJSON(needs.affected-targets.outputs.corpus_matrix)",),
             why="the RUE-205/RUE-204 codegen differential, in its own pre-merge lane",
+            derived_from_graph=True,
         ),
     ),
     "rue_test_tier_stress": (
@@ -99,7 +111,7 @@ TIER_SELECTORS: dict[str, tuple[Selector, ...]] = {
             job="large-program",
             evidence=(
                 "inputs.tier == 'stress'",
-                '//:large-example-${{ matrix.program }}-stress',
+                '//examples:large-example-${{ matrix.program }}-stress',
             ),
             why="the manually dispatched 4x large-program stress matrix",
         ),
@@ -107,28 +119,31 @@ TIER_SELECTORS: dict[str, tuple[Selector, ...]] = {
 }
 
 
-CORPUS_TARGETS_RE = re.compile(
-    r"^SELECTABLE_CORPUS=\(\s*(.*?)^\)", re.MULTILINE | re.DOTALL
-)
+class LiveGraph:
+    """The two graph answers a derived selector needs, via the real tools."""
 
+    def __init__(self, buck2: Path, affected_targets: Path) -> None:
+        self.buck2 = buck2
+        self.affected_targets = affected_targets
 
-def selectable_corpus_targets(path: Path) -> tuple[set[str], list[str]]:
-    """Read the canonical corpus inventory consumed by the matrix planner."""
-    try:
-        source = path.read_text()
-    except OSError as error:
-        return set(), [f"{path}: cannot read canonical corpus inventory: {error}"]
-    match = CORPUS_TARGETS_RE.search(source)
-    if match is None:
-        return set(), [f"{path}: SELECTABLE_CORPUS array is missing"]
-    targets = {
-        line.strip()
-        for line in match.group(1).splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    }
-    if not targets or any(not target.startswith("//") for target in targets):
-        return set(), [f"{path}: SELECTABLE_CORPUS is empty or malformed"]
-    return targets, []
+    @staticmethod
+    def _labels(command: list[str]) -> Optional[list[str]]:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            return None
+        return [
+            re.sub(r" \([^()]*\)$", "", line.strip()).replace("root//", "//", 1)
+            for line in result.stdout.splitlines()
+            if line.strip()
+        ]
+
+    def corpus_targets(self) -> Optional[list[str]]:
+        return self._labels(["bash", str(self.affected_targets), "corpus-targets"])
+
+    def tier_targets(self, tier: str) -> Optional[list[str]]:
+        return self._labels(
+            [str(self.buck2), "uquery", f"attrfilter(labels, '{tier}', set(//... toolchains//...))"]
+        )
 
 
 def direct_invocation_errors(workflows: dict[str, Path]) -> list[str]:
@@ -144,16 +159,10 @@ def direct_invocation_errors(workflows: dict[str, Path]) -> list[str]:
                 break
             following = source[start:]
             next_step = re.search(r"\n\s+- name:", following)
-            invocation = (
-                following[: next_step.start()]
-                if next_step is not None
-                else following
-            )
-            if "--affected-targets" not in invocation:
-                errors.append(
-                    f"{workflow}: direct {command} invocation must pass "
-                    "--affected-targets"
-                )
+            invocation = following[: next_step.start()] if next_step else following
+            for flag in REQUIRED_WORKFLOW_FLAGS:
+                if flag not in invocation:
+                    errors.append(f"{workflow}: direct {command} invocation must pass {flag}")
             offset = start + len(command)
     return errors
 
@@ -172,16 +181,42 @@ def declared_tiers(defs_path: Path, bxl_path: Path) -> tuple[set[str], list[str]
     return defs_tiers, errors
 
 
+def derived_tier_errors(tier: str, selector: Selector, live: Optional[LiveGraph]) -> list[str]:
+    """The derived matrix really runs a target of `tier` (live only)."""
+    if live is None:
+        return []
+    corpus = live.corpus_targets()
+    if not corpus:
+        return [
+            f"{tier}: scripts/affected-targets corpus-targets is "
+            + ("unavailable" if corpus is None else "empty")
+            + f"; the derived matrix runs nothing ({selector.why})"
+        ]
+    tiered = live.tier_targets(tier)
+    if tiered is None:
+        return [f"{tier}: the live graph query for the tier failed"]
+    if not set(corpus) & set(tiered):
+        return [
+            f"{tier}: no target carrying it is in scripts/affected-targets "
+            f"corpus-targets, so the derived platform-corpus matrix runs none of "
+            f"it ({selector.why})"
+        ]
+    return []
+
+
 def validate(
     defs_path: Path,
     bxl_path: Path,
     workflows: dict[str, Path],
     affected_targets_path: Path,
+    live: Optional[LiveGraph] = None,
 ) -> list[str]:
     tiers, errors = declared_tiers(defs_path, bxl_path)
     if errors:
         return errors
     errors.extend(direct_invocation_errors(workflows))
+    if not affected_targets_path.is_file():
+        errors.append(f"{affected_targets_path}: canonical corpus inventory script is missing")
 
     registered = set(TIER_SELECTORS)
     for tier in sorted(tiers - registered):
@@ -220,28 +255,16 @@ def validate(
                         f"{tier}: {selector.workflow} job '{selector.job}' no "
                         f"longer selects it via {evidence!r} ({selector.why})"
                     )
-            if selector.derived_targets:
+            if selector.derived_from_graph:
                 affected_block = jobs.get("affected-targets", "")
-                for evidence in (
-                    "scripts/affected-targets corpus-targets",
-                    "scripts/plan-cli-shards.py",
-                ):
+                for evidence in MATRIX_DERIVATION:
                     if evidence not in affected_block:
                         errors.append(
                             f"{tier}: {selector.workflow} job 'affected-targets' "
                             f"no longer derives the corpus matrix via {evidence!r} "
                             f"({selector.why})"
                         )
-                targets, inventory_errors = selectable_corpus_targets(
-                    affected_targets_path
-                )
-                errors.extend(inventory_errors)
-                for target in selector.derived_targets:
-                    if target not in targets:
-                        errors.append(
-                            f"{tier}: canonical corpus inventory no longer selects "
-                            f"{target!r} ({selector.why})"
-                        )
+                errors.extend(derived_tier_errors(tier, selector, live))
     return errors
 
 
@@ -268,11 +291,18 @@ def main() -> int:
         default=[],
         help="path to a workflow file; registered by basename",
     )
+    parser.add_argument(
+        "--live-graph",
+        action="store_true",
+        help="also prove from the live Buck graph that the derived matrix runs its tier",
+    )
+    parser.add_argument("--buck2", type=Path, default=ROOT / "buck2")
     args = parser.parse_args()
 
     workflows, errors = parse_workflow_args(args.workflow)
+    live = LiveGraph(args.buck2, args.affected_targets) if args.live_graph else None
     errors += validate(
-        args.test_defs, args.test_tiers_bxl, workflows, args.affected_targets
+        args.test_defs, args.test_tiers_bxl, workflows, args.affected_targets, live
     )
     if errors:
         for error in errors:
@@ -281,6 +311,7 @@ def main() -> int:
     print(
         f"Rue tier CI selectors valid: {len(TIER_SELECTORS)} tiers, each "
         "deliberately selected by a named CI job"
+        + (" (derived matrix proved from the live graph)" if live else "")
     )
     return 0
 

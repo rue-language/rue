@@ -630,6 +630,7 @@ impl<D: RetainedCharge, M: RetainedCharge> RetainedCharge for rue_air::FunctionI
                 .retained_charge()
                 .saturating_add(member.retained_charge()),
             Self::DropGlue(value) => value.retained_charge(),
+            Self::TestDispatcher => 0,
         }
     }
 }
@@ -1330,6 +1331,9 @@ impl RetainedCharge for rue_error::WarningKind {
             Self::UnusedVariable(value)
             | Self::UnusedFunction(value)
             | Self::UnreachablePattern(value) => value.retained_charge(),
+            Self::UnimportedTestFile { path, .. } | Self::UnimportedTestFileUnparsable { path } => {
+                path.retained_charge()
+            }
             Self::UnreachableCode | Self::SentinelLookup => 0,
         }
     }

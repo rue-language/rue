@@ -1248,7 +1248,15 @@ fn unsupported_runtime_call_kind(kind: RuntimeCallKind) -> Option<UnsupportedRun
         | RuntimeCallKind::EnvLen
         | RuntimeCallKind::ByteCopy
         | RuntimeCallKind::ByteMove
-        | RuntimeCallKind::ByteSet => None,
+        | RuntimeCallKind::ByteSet
+        // The ADR-0083 test channel. No source construct spells these, and the
+        // oracle models ordinary compiled programs rather than test images, so
+        // a corpus program cannot reach one.
+        | RuntimeCallKind::TestNormalizeProcess
+        | RuntimeCallKind::TestComplete
+        | RuntimeCallKind::TestFailureSite
+        | RuntimeCallKind::TestFail
+        | RuntimeCallKind::TestUsageError => None,
     }
 }
 

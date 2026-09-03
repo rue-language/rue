@@ -34,7 +34,7 @@ Each step exists because skipping it once caused a real failure.
    one night, individually-green workers were jointly wrong (double-drops).
 
 5. **A tightening change compiles the example corpus BEFORE the suite.**
-   `./buck2 build //:cli-staged-programs` builds all ten multi-file example
+   `./buck2 build //examples:cli-staged-programs` builds all ten multi-file example
    programs. Any change that makes the compiler reject, trap, or error where it
    previously accepted needs this, and canaries are not enough: a RUE-1786
    over-rejection passed `examples/harbor` *and* its own mutation check, and was
@@ -114,9 +114,12 @@ in the same hot lane go in consecutive cycles, not the same one.
   dangling changes (safe: git protects checked-out branches; only unbookmarked
   non-`@` heads are abandoned). Without it, `jj log` fills with dozens of dead
   heads within a session.
-- For disk pressure, run **`scripts/rue storage clean`** (guard-gated, reclaims
-  stale Buck outputs host-wide; it never deletes worktrees or source files) —
-  never blanket `rm -rf .claude/worktrees`, which races running workers.
+- For disk pressure, remove worktrees whose work is finished (`git worktree
+  remove <path>`) or run **`scripts/rue storage clean`** (Buck's own stale
+  cleanup in every registered worktree; it never deletes worktrees or source
+  files) — never blanket `rm -rf .claude/worktrees`, which races running
+  workers. The `./buck2` wrapper refuses to start a build below 4 GiB free and
+  cleans nothing itself.
 
 ## Worker-prompt invariants this protocol assumes
 

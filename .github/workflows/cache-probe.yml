@@ -61,7 +61,6 @@ jobs:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Cold release build (populates the remote cache)
         run: |
@@ -128,7 +127,7 @@ jobs:
   # ADR-0070's positive warm-cache control (RUE-1405, extended by RUE-1406).
   # Cold-builds the two canary rue_programs and the nine staged CLI programs
   # under a fresh nonce, then from a relocated checkout root re-runs the
-  # canaries' four consuming scenarios and rebuilds //:cli-staged-programs,
+  # canaries' four consuming scenarios and rebuilds //examples:cli-staged-programs,
   # failing unless the scan/derive/compile actions were all served by the
   # remote cache. The nonce keys the Rust toolchain, so the cold half also
   # rebuilds the compiler — that is what makes "cold" provable, and it is why
@@ -161,7 +160,6 @@ jobs:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Check rue_program warm cache across relocated roots
         run: scripts/check-rue-program-warm-cache.sh

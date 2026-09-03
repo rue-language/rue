@@ -203,6 +203,11 @@ struct Options {
     /// Optional build-system-facing manifest of source files the compiler may
     /// read while resolving the root module's import graph.
     source_manifest_path: Option<String>,
+    /// Optional build-system-facing list of files a target declared, used to
+    /// report test files nothing imports (ADR-0083 §1). Declaring a candidate
+    /// grants no read of it as a source: candidates never join the module
+    /// closure, and `--source-manifest` remains the sole source read policy.
+    test_candidates_path: Option<String>,
     output_path: String,
     emit_stages: Vec<EmitStage>,
     target: Target,
@@ -259,6 +264,10 @@ Options:
   -o, --output <path>  Set output path
   --source-manifest <path>
                        Restrict source imports to a line-oriented manifest
+  --test-candidates <path>
+                       Declare the files a build target owns, one project-root-
+                       relative path per line, so test files nothing imports can
+                       be reported (ADR-0083); never a source read policy
   --link-archive <path>
                        Link a static archive (.a) resolving extern \"C\" symbols
                        (ADR-0064 C FFI); can be repeated
@@ -384,6 +393,32 @@ fn refuse_extra_positional_sources(positional: &[String]) {
     );
 }
 
+/// Options that consume the argument after them.
+///
+/// Anything scanning the command line without `parse_args_from`'s own state —
+/// a later subcommand scan, argument classification, a shell completion — has
+/// to skip a value-taking option's value, or `rue --preview x prog.rue` reads
+/// `x` as a word of its own. This is that inventory, kept beside the arms that
+/// consume those values; a unit test holds it, the parser, and the help text in
+/// agreement.
+#[cfg(test)]
+const VALUE_TAKING_OPTIONS: &[&str] = &[
+    "--emit",
+    "--target",
+    "--linker",
+    "--preview",
+    "--log-level",
+    "--log-format",
+    "--error-format",
+    "--jobs",
+    "-j",
+    "-o",
+    "--output",
+    "--source-manifest",
+    "--link-archive",
+    "--test-candidates",
+];
+
 /// Parse arguments from a slice of strings (for testing).
 fn parse_args_from(args: &[&str]) -> ParseResult {
     if args.is_empty() {
@@ -424,6 +459,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     let mut watch = false;
     let mut jobs: Option<usize> = None;
     let mut source_manifest_path: Option<String> = None;
+    let mut test_candidates_path: Option<String> = None;
     let mut output_path: Option<String> = None;
     let mut link_archives: Vec<std::path::PathBuf> = Vec::new();
     let mut positional = Vec::new();
@@ -557,6 +593,21 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
                     return ParseResult::Error;
                 };
                 source_manifest_path = Some(path.to_string());
+            }
+            "--test-candidates" => {
+                let Some(path) = args_iter.next() else {
+                    eprintln!("Error: --test-candidates requires a path");
+                    return ParseResult::Error;
+                };
+                // Unlike the repeatable flags, a second list is refused rather
+                // than silently winning: two declared candidate sets describe
+                // two different build targets, and quietly reporting against
+                // one of them would be worse than saying so.
+                if test_candidates_path.is_some() {
+                    eprintln!("Error: --test-candidates may be given at most once");
+                    return ParseResult::Error;
+                }
+                test_candidates_path = Some(path.to_string());
             }
             "--link-archive" => {
                 let Some(path) = args_iter.next() else {
@@ -700,6 +751,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     ParseResult::Options(Box::new(Options {
         source_path,
         source_manifest_path,
+        test_candidates_path,
         output_path: final_output_path,
         emit_stages,
         target: final_target,
@@ -1974,6 +2026,29 @@ fn main() {
         options.benchmark_json,
     );
 
+    // A declared candidate list is accepted in every mode and read in every
+    // mode, so a build rule that writes a broken list fails the build it broke
+    // rather than only the `rue test` invocation that would have consumed it.
+    // Reporting against the list is `rue test`'s job (ADR-0083 §1); an ordinary
+    // build validates the input and carries it no further.
+    let declared_test_candidates = match options.test_candidates_path.as_deref() {
+        Some(path) => match rue_driver::load_declared_candidates(path) {
+            Ok(candidates) => {
+                tracing::debug!(
+                    path,
+                    declared_candidates = candidates.len(),
+                    "test candidate inventory declared"
+                );
+                Some(candidates)
+            }
+            Err(message) => {
+                eprintln!("{message}");
+                std::process::exit(1);
+            }
+        },
+        None => None,
+    };
+
     // Configure the compiler's shared structured-query budget before
     // dispatching to either the `--emit` path or the normal compile path, so
     // every driver path honors `-j`/`--jobs` (RUE-352).
@@ -2075,6 +2150,28 @@ fn main() {
         .map(|source| (source.file_id, SourceInfo::new(source.source, source.path)))
         .collect();
     let diagnostics = DiagnosticOutput::new(options.error_format, source_infos);
+
+    // Acquire the declared inventory under the host's read policy so a test
+    // request can report against it (ADR-0083 §1). An ordinary build never
+    // reports; `rue test` (RUE-1920) is the consumer, and until it exists the
+    // acquisition is exercised here so a broken candidate path fails loudly
+    // rather than surfacing first inside the runner.
+    let _test_candidate_inventory = match declared_test_candidates.as_deref() {
+        Some(declared) => match compiler_host.acquire_test_candidates(declared) {
+            Ok(inventory) => {
+                tracing::debug!(
+                    acquired_candidates = inventory.len(),
+                    "test candidate inventory acquired"
+                );
+                Some(inventory)
+            }
+            Err(errors) => {
+                diagnostics.print_errors(&errors);
+                std::process::exit(1);
+            }
+        },
+        None => None,
+    };
 
     // Output-mode compatibility (including `--emit` + `--benchmark-json`) was
     // already validated before any I/O by `emit::validate_output_modes` (RUE-798).
@@ -2844,6 +2941,72 @@ mod tests {
             "source.rue",
             "--source-manifest",
         ])));
+    }
+
+    #[test]
+    fn parse_test_candidates() {
+        let opts = unwrap_options(parse_args_from(&[
+            "--test-candidates",
+            "test-candidates.list",
+            "source.rue",
+        ]));
+        assert_eq!(opts.source_path, "source.rue");
+        assert_eq!(
+            opts.test_candidates_path.as_deref(),
+            Some("test-candidates.list")
+        );
+    }
+
+    #[test]
+    fn parse_test_candidates_missing_value() {
+        assert!(is_error(&parse_args_from(&[
+            "source.rue",
+            "--test-candidates"
+        ])));
+    }
+
+    /// Two declared candidate sets describe two build targets. Last-wins would
+    /// silently report against one of them, so a repeat is refused.
+    #[test]
+    fn parse_test_candidates_rejects_a_repeat() {
+        assert!(is_error(&parse_args_from(&[
+            "--test-candidates",
+            "one.list",
+            "--test-candidates",
+            "two.list",
+            "source.rue",
+        ])));
+    }
+
+    /// A candidate list is inert outside test mode: it neither becomes a source
+    /// nor changes the compiled root or output.
+    #[test]
+    fn parse_test_candidates_leaves_the_rest_of_the_request_alone() {
+        let opts = unwrap_options(parse_args_from(&[
+            "--test-candidates",
+            "test-candidates.list",
+            "-o",
+            "prog",
+            "source.rue",
+        ]));
+        assert_eq!(opts.source_path, "source.rue");
+        assert_eq!(opts.output_path, "prog");
+        assert!(opts.emit_stages.is_empty());
+    }
+
+    #[test]
+    fn every_value_taking_option_is_documented_and_demands_a_value() {
+        let help = usage_text();
+        for option in VALUE_TAKING_OPTIONS {
+            assert!(
+                help.contains(option),
+                "value-taking option {option} is missing from the help text"
+            );
+            assert!(
+                is_error(&parse_args_from(&["source.rue", option])),
+                "value-taking option {option} accepted a missing value"
+            );
+        }
     }
 
     #[test]

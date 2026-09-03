@@ -1,0 +1,32 @@
+# Documentation trees as Buck inputs. A root-package `glob()` cannot reach
+# into this package, so the gates and harnesses that read docs depend on the
+# targets here. The dict-form filegroups strip their subdirectory prefix, so
+# `$(location //docs:spec-src)` IS the specification source root and
+# `$(location //docs:designs)` IS the ADR directory, with no path suffix at
+# the consumer.
+
+# The whole tree, for the doc-link gate (RUE-1531): any docs edit re-runs it.
+filegroup(
+    name = "all",
+    srcs = glob(["**"]),
+    visibility = ["//:"],
+)
+
+filegroup(
+    name = "spec-src",
+    srcs = dict([(path[len("spec/src/"):], path) for path in glob(["spec/src/**"])]),
+    visibility = ["PUBLIC"],
+)
+
+filegroup(
+    name = "designs",
+    srcs = dict([(path[len("designs/"):], path) for path in glob(["designs/**"])]),
+    visibility = ["//:"],
+)
+
+# ADR-0071 phase 3: the note //:compiler-allocator-policy-validation reads.
+export_file(
+    name = "adr-0071-phase-3-note",
+    src = "notes/adr-0071-phase-3-linux-compiler-allocator.md",
+    visibility = ["//:"],
+)

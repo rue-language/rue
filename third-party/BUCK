@@ -94,53 +94,6 @@ buildscript_run(
 )
 
 rue_rust_library(
-    name = "aho-corasick-1.1.4",
-    srcs = [
-        "vendor/aho-corasick-1.1.4/src/ahocorasick.rs",
-        "vendor/aho-corasick-1.1.4/src/automaton.rs",
-        "vendor/aho-corasick-1.1.4/src/dfa.rs",
-        "vendor/aho-corasick-1.1.4/src/lib.rs",
-        "vendor/aho-corasick-1.1.4/src/macros.rs",
-        "vendor/aho-corasick-1.1.4/src/nfa/contiguous.rs",
-        "vendor/aho-corasick-1.1.4/src/nfa/mod.rs",
-        "vendor/aho-corasick-1.1.4/src/nfa/noncontiguous.rs",
-        "vendor/aho-corasick-1.1.4/src/packed/api.rs",
-        "vendor/aho-corasick-1.1.4/src/packed/ext.rs",
-        "vendor/aho-corasick-1.1.4/src/packed/mod.rs",
-        "vendor/aho-corasick-1.1.4/src/packed/pattern.rs",
-        "vendor/aho-corasick-1.1.4/src/packed/rabinkarp.rs",
-        "vendor/aho-corasick-1.1.4/src/packed/teddy/builder.rs",
-        "vendor/aho-corasick-1.1.4/src/packed/teddy/generic.rs",
-        "vendor/aho-corasick-1.1.4/src/packed/teddy/mod.rs",
-        "vendor/aho-corasick-1.1.4/src/packed/tests.rs",
-        "vendor/aho-corasick-1.1.4/src/packed/vector.rs",
-        "vendor/aho-corasick-1.1.4/src/tests.rs",
-        "vendor/aho-corasick-1.1.4/src/transducer.rs",
-        "vendor/aho-corasick-1.1.4/src/util/alphabet.rs",
-        "vendor/aho-corasick-1.1.4/src/util/buffer.rs",
-        "vendor/aho-corasick-1.1.4/src/util/byte_frequencies.rs",
-        "vendor/aho-corasick-1.1.4/src/util/debug.rs",
-        "vendor/aho-corasick-1.1.4/src/util/error.rs",
-        "vendor/aho-corasick-1.1.4/src/util/int.rs",
-        "vendor/aho-corasick-1.1.4/src/util/mod.rs",
-        "vendor/aho-corasick-1.1.4/src/util/prefilter.rs",
-        "vendor/aho-corasick-1.1.4/src/util/primitives.rs",
-        "vendor/aho-corasick-1.1.4/src/util/remapper.rs",
-        "vendor/aho-corasick-1.1.4/src/util/search.rs",
-        "vendor/aho-corasick-1.1.4/src/util/special.rs",
-    ],
-    crate = "aho_corasick",
-    crate_root = "vendor/aho-corasick-1.1.4/src/lib.rs",
-    edition = "2021",
-    features = [
-        "perf-literal",
-        "std",
-    ],
-    visibility = [],
-    deps = [":memchr-2.7.6"],
-)
-
-rue_rust_library(
     name = "allocator-api2-0.2.21",
     srcs = [
         "vendor/allocator-api2-0.2.21/src/lib.rs",
@@ -2940,59 +2893,6 @@ rue_rust_library(
     ],
 )
 
-rue_alias(
-    name = "regex",
-    actual = ":regex-1.12.2",
-    visibility = ["PUBLIC"],
-)
-
-rue_rust_library(
-    name = "regex-1.12.2",
-    srcs = [
-        "vendor/regex-1.12.2/src/builders.rs",
-        "vendor/regex-1.12.2/src/bytes.rs",
-        "vendor/regex-1.12.2/src/error.rs",
-        "vendor/regex-1.12.2/src/find_byte.rs",
-        "vendor/regex-1.12.2/src/lib.rs",
-        "vendor/regex-1.12.2/src/pattern.rs",
-        "vendor/regex-1.12.2/src/regex/bytes.rs",
-        "vendor/regex-1.12.2/src/regex/mod.rs",
-        "vendor/regex-1.12.2/src/regex/string.rs",
-        "vendor/regex-1.12.2/src/regexset/bytes.rs",
-        "vendor/regex-1.12.2/src/regexset/mod.rs",
-        "vendor/regex-1.12.2/src/regexset/string.rs",
-    ],
-    crate = "regex",
-    crate_root = "vendor/regex-1.12.2/src/lib.rs",
-    edition = "2021",
-    features = [
-        "default",
-        "perf",
-        "perf-backtrack",
-        "perf-cache",
-        "perf-dfa",
-        "perf-inline",
-        "perf-literal",
-        "perf-onepass",
-        "std",
-        "unicode",
-        "unicode-age",
-        "unicode-bool",
-        "unicode-case",
-        "unicode-gencat",
-        "unicode-perl",
-        "unicode-script",
-        "unicode-segment",
-    ],
-    visibility = [],
-    deps = [
-        ":aho-corasick-1.1.4",
-        ":memchr-2.7.6",
-        ":regex-automata-0.4.13",
-        ":regex-syntax-0.8.8",
-    ],
-)
-
 rue_rust_library(
     name = "regex-automata-0.4.13",
     srcs = [
@@ -3073,35 +2973,13 @@ rue_rust_library(
     features = [
         "alloc",
         "dfa-build",
-        "dfa-onepass",
         "dfa-search",
-        "hybrid",
-        "meta",
-        "nfa-backtrack",
-        "nfa-pikevm",
         "nfa-thompson",
-        "perf-inline",
-        "perf-literal",
-        "perf-literal-multisubstring",
-        "perf-literal-substring",
         "std",
         "syntax",
-        "unicode",
-        "unicode-age",
-        "unicode-bool",
-        "unicode-case",
-        "unicode-gencat",
-        "unicode-perl",
-        "unicode-script",
-        "unicode-segment",
-        "unicode-word-boundary",
     ],
     visibility = [],
-    deps = [
-        ":aho-corasick-1.1.4",
-        ":memchr-2.7.6",
-        ":regex-syntax-0.8.8",
-    ],
+    deps = [":regex-syntax-0.8.8"],
 )
 
 rue_rust_library(
@@ -4176,6 +4054,12 @@ rue_rust_library(
     visibility = [],
 )
 
+rue_alias(
+    name = "syn",
+    actual = ":syn-2.0.111",
+    visibility = ["PUBLIC"],
+)
+
 rue_rust_library(
     name = "syn-2.0.111",
     srcs = [
@@ -4256,12 +4140,6 @@ rue_rust_library(
         ":quote-1.0.42",
         ":unicode-ident-1.0.22",
     ],
-)
-
-rue_alias(
-    name = "syn",
-    actual = ":syn-2.0.111",
-    visibility = ["PUBLIC"],
 )
 
 rue_alias(

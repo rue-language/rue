@@ -2024,7 +2024,7 @@ fn run_phase_with_timeout(
 
 /// Directory of prebuilt `rue_program` executables, keyed by the repo-relative
 /// root each was compiled from (ADR-0070 Phase 2 / RUE-1406). Buck stages it
-/// for the CLI corpus actions through `$(location //:cli-staged-programs)`;
+/// for the CLI corpus actions through `$(location //examples:cli-staged-programs)`;
 /// a developer entry point that runs this harness outside Buck simply leaves
 /// it unset, and every case compiles its own root as before.
 const STAGED_PROGRAMS_ENV: &str = "RUE_CLI_STAGED_PROGRAMS";

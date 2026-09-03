@@ -25,6 +25,17 @@ rm -f \
     "$artifact_dir/reference-readelf.txt" \
     "$artifact_dir/candidate-readelf.txt"
 
+# Both builds must be cache-free. The ./buck2 wrapper links .buckconfig.local
+# to an installed BuildBuddy config on a checkout's first execution command;
+# such a link is moved aside for the duration (restored on exit, after a
+# failure too) and the opt-out keeps the wrapper from recreating it. A
+# hand-written .buckconfig.local is refused: the reference and the relocated
+# candidate would build under different configuration. Toggling the file
+# restarts the Buck daemon, which is expected here.
+central_config="${RUE_BUILDBUDDY_CONFIG:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/rue/buildbuddy.buckconfig}"
+local_config="$repo_root/.buckconfig.local"
+aside_config=""
+
 cleanup() {
     if [ -x "$candidate_root/buck2" ]; then
         (
@@ -32,15 +43,22 @@ cleanup() {
             ./buck2 --isolation-dir compiler-repro kill >/dev/null 2>&1 || true
         )
     fi
+    if [ -n "$aside_config" ] && [ -L "$aside_config" ]; then
+        mv "$aside_config" "$local_config"
+    fi
     rm -rf "$scratch"
 }
 trap cleanup EXIT
 
-if [ -e "$repo_root/.buckconfig.local" ]; then
+if [ -L "$local_config" ] && [ "$(readlink "$local_config")" = "$central_config" ]; then
+    aside_config="$scratch/buckconfig.local.aside"
+    mv "$local_config" "$aside_config"
+elif [ -e "$local_config" ] || [ -L "$local_config" ]; then
     printf 'error: .buckconfig.local would make the reference and archived candidate use different configuration\n' >&2
     printf '       move it aside before running the reproducibility check\n' >&2
     exit 1
 fi
+export RUE_NO_REMOTE_CACHE=1
 
 materialize_source_tree() {
     if git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then

@@ -30,6 +30,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # RUE-1936: the repository tooling floor is Python 3.9 (AGENTS.md), the
+      # interpreter a stock Mac ships, while this runner's own python3 is far
+      # above it — so a construct newer than the floor would stay green here
+      # and fail on a developer machine (RUE-1509). Running every gate in this
+      # job under 3.9 itself is the floor check; it replaced a static scanner
+      # that could only see a curated table of constructs.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
       - name: Bootstrap dotslash
         uses: ./.github/actions/bootstrap-dotslash
 
@@ -119,26 +129,6 @@ jobs:
       - name: Check shell Bash 3.2 baseline
         run: scripts/validate-shell-bash-baseline.py
 
-      # The same failure in the other language: the repository floor is a
-      # uniform 3.9 — exactly what a stock Mac's /usr/bin/python3 provides —
-      # while these runners sit comfortably above it (3.12 here, 3.14 on
-      # macos-15). A construct newer than 3.9 therefore stays green in CI and
-      # dies on a stock developer machine, which is what `tomllib` (stdlib
-      # only from 3.11) did to //:cli-timeout-policy-validation (RUE-1509;
-      # RUE-1524 retired the import — the gate now reads a Buck-materialized
-      # JSON twin — and with it the 3.11 floor). This runner cannot reproduce
-      # a stock host, so the check is static: nothing newer than the floor
-      # without a reviewed `# python-baseline-ok` annotation, and AGENTS.md's
-      # stated floor matching the gate's.
-      #
-      # This step is the AUTHORITATIVE run, not a duplicate of the premerge
-      # target. A static scan is only as strict as the interpreter performing
-      # it: a host below the floor cannot tell syntax above the floor from
-      # syntax the floor allows, so it reports such a file as unscanned. This
-      # runner's 3.12.3 is above the floor, so nothing is left unjudged here.
-      - name: Check Python interpreter baseline
-        run: scripts/validate-python-baseline.py
-
       - name: Validate Buck test-tier ownership
         run: ./buck2 bxl //test_tiers.bxl:validate
 
@@ -149,28 +139,40 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # RUE-1855: clippy is both gated and graph-narrowed. An explicit
-      # selective decision may skip the heavy setup while preserving this
-      # required job/check identity. Missing, malformed, or failed selection
-      # state runs the lane; only the gate's verified exit-1 decision writes
-      # run=false, and the heavy-step conditions require its matching proof and
-      # gate outputs from a successful selection step before they may skip.
+      # RUE-1855: clippy is gated like every other lane and narrowed like the
+      # native units. Fail-open: unless the determinator explicitly says
+      # full=false and omits this lane, the lane runs; a deselected run skips
+      # the heavy steps while the required check still reports success.
       - name: Lane selection
         id: sel
         env:
           RUE_AFFECTED_FULL: ${{ needs.affected-targets.outputs.full }}
           RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
-          RUE_AFFECTED_LANES_COUNT: ${{ needs.affected-targets.outputs.selected_lanes_count }}
-          RUE_AFFECTED_LANES_DIGEST: ${{ needs.affected-targets.outputs.selected_lanes_digest }}
+        run: scripts/ci-corpus-selected clippy
+
+      # RUE-1130: materialize the determinator's impacted-target closure so the
+      # run step below can intersect it with the live clippy inventory.
+      # `narrowed` is the determinator's own flag, so an empty file here always
+      # means "run everything", never "run nothing".
+      - name: Impacted target list
+        id: narrow
+        env:
           RUE_AFFECTED_NARROWED: ${{ needs.affected-targets.outputs.narrowed }}
-          RUE_AFFECTED_NARROWING_STATUS: ${{ needs.affected-targets.outputs.narrowing_status }}
-          RUE_AFFECTED_HEAD_TARGET_COUNT: ${{ needs.affected-targets.outputs.head_target_count }}
-          RUE_AFFECTED_IMPACTED_CLOSURE_COUNT: ${{ needs.affected-targets.outputs.impacted_closure_count }}
-          RUE_AFFECTED_IMPACTED_TARGET_COUNT: ${{ needs.affected-targets.outputs.impacted_target_count }}
-        run: scripts/ci-clippy select
+          RUE_AFFECTED_IMPACTED: ${{ needs.affected-targets.outputs.impacted }}
+        run: |
+          set -euo pipefail
+          file="${RUNNER_TEMP}/impacted-clippy-targets.txt"
+          : >"$file"
+          if [ "${RUE_AFFECTED_NARROWED:-}" = "true" ]; then
+            printf '%s\n' "$RUE_AFFECTED_IMPACTED" | sed '/^$/d' >"$file"
+          fi
+          count="$(wc -l <"$file" | tr -d ' ')"
+          echo "file=$file" >>"$GITHUB_OUTPUT"
+          echo "count=$count" >>"$GITHUB_OUTPUT"
+          echo "impacted targets for this lane: $count"
 
       - name: Bootstrap dotslash
-        if: ${{ always() && (steps.sel.outcome != 'success' || steps.sel.outputs.run != 'false' || steps.sel.outputs.proof_status != 'SELECTIVE' || steps.sel.outputs.gate_status != 'DESELECTED') }}
+        if: steps.sel.outputs.run == 'true'
         uses: ./.github/actions/bootstrap-dotslash
 
       # BuildBuddy remote action cache (RUE-316/RUE-1006). GitHub withholds
@@ -180,7 +182,7 @@ jobs:
       # merge queue serializes on this workflow. The cold fallback is
       # mandatory; this step must never fail because the secret is absent.
       - name: Provision remote build cache
-        if: ${{ always() && (steps.sel.outcome != 'success' || steps.sel.outputs.run != 'false' || steps.sel.outputs.proof_status != 'SELECTIVE' || steps.sel.outputs.gate_status != 'DESELECTED') }}
+        if: steps.sel.outputs.run == 'true'
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
@@ -189,26 +191,9 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
-
-      # Materialize the planner output once. `narrowed=true` is valid only with
-      # a non-empty live impacted closure and verified selection/gate state; an
-      # absent value is degraded state, never permission to run nothing.
-      # `narrow-scope` performs the final syntax and live-scope validation.
-      - name: Impacted target list
-        if: ${{ always() && (steps.sel.outcome != 'success' || steps.sel.outputs.run != 'false' || steps.sel.outputs.proof_status != 'SELECTIVE' || steps.sel.outputs.gate_status != 'DESELECTED') }}
-        id: narrow
-        env:
-          RUE_CLIPPY_PROOF_STATUS: ${{ steps.sel.outputs.proof_status }}
-          RUE_CLIPPY_GATE_STATUS: ${{ steps.sel.outputs.gate_status }}
-          RUE_AFFECTED_NARROWED: ${{ needs.affected-targets.outputs.narrowed }}
-          RUE_AFFECTED_IMPACTED: ${{ needs.affected-targets.outputs.impacted }}
-          RUE_AFFECTED_IMPACTED_TARGET_COUNT: ${{ needs.affected-targets.outputs.impacted_target_count }}
-          RUE_AFFECTED_IMPACTED_TARGETS_DIGEST: ${{ needs.affected-targets.outputs.impacted_targets_digest }}
-        run: scripts/ci-clippy materialize
 
       - name: Run clippy
-        if: ${{ always() && (steps.sel.outcome != 'success' || steps.sel.outputs.run != 'false' || steps.sel.outputs.proof_status != 'SELECTIVE' || steps.sel.outputs.gate_status != 'DESELECTED') }}
+        if: steps.sel.outputs.run == 'true'
         # Every crate emits its own `<name>-clippy` test from the
         # rue_crate/rue_binary macros (RUE-1153). Running them as tests means
         # Buck must materialize each crate's [clippy.txt] before its gate can
@@ -217,10 +202,11 @@ jobs:
         # could satisfy the build without writing the file, and the script
         # then scored what it could not read as clean (RUE-1152). Workspace
         # lint policy (deny warnings + grandfathered allow-list) lives in
-        # toolchains/rust/BUCK.
+        # toolchains/rust/BUCK. The inventory is queried from the live graph
+        # by scripts/ci-clippy, and narrowed to the impacted closure when
+        # there is one; an empty live inventory is a hard error.
         env:
           NARROW_FILE: ${{ steps.narrow.outputs.file }}
-          NARROW_STATUS: ${{ steps.narrow.outputs.status }}
         run: scripts/ci-clippy run
 
   actionlint:
@@ -260,7 +246,6 @@ jobs:
             exit 1
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Build compiler remotely
         env:
@@ -309,12 +294,19 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         # A depth-1 checkout is enough for this lane: nothing it runs reads git
-        # history. Two of its steps do shell out to git — `provision-build-cache`
-        # lists worktrees, and `affected-targets build-scope` prunes them in its
-        # exit trap — but both ask only about the checkout in front of them, and
-        # the pin gate below is decided from file contents. The gate that does
-        # count commits is the `performance-staleness` job, which takes its own
-        # `fetch-depth: 0` checkout for the purpose (RUE-1258, RUE-1504).
+        # history. The gate that does count commits is the
+        # `performance-staleness` job, which takes its own `fetch-depth: 0`
+        # checkout for the purpose (RUE-1258, RUE-1504).
+
+      # RUE-1936: the repository tooling floor is Python 3.9 (AGENTS.md), the
+      # interpreter a stock Mac ships, while this runner's own python3 is far
+      # above it — so a construct newer than the floor would stay green here
+      # and fail on a developer machine (RUE-1509). Running every gate in this
+      # job under 3.9 itself is the floor check; it replaced a static scanner
+      # that could only see a curated table of constructs.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
 
       - name: Bootstrap dotslash
         uses: ./.github/actions/bootstrap-dotslash
@@ -332,7 +324,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       # RUE-1130: materialize the determinator's impacted-target closure so the
       # heavy steps below can run exactly it. `narrowed` is the determinator's
@@ -360,8 +351,6 @@ jobs:
               test_status=DEGRADED
               echo "premerge test scope unavailable; running the full test pattern" >&2
             fi
-          else
-            echo "- \`linux-premerge-tests\`: **DECLINED**; saved share **not applicable** (full scope used)." >>"$GITHUB_STEP_SUMMARY"
           fi
           count="$(wc -l <"$file" | tr -d ' ')"
           {
@@ -380,11 +369,12 @@ jobs:
       # avoid — measured at 286-317s whenever a compiler crate changes.
       #
       # The narrowed list is filtered back to this step's own `//crates/...`
-      # scope by `build-scope`. Handing `buck2 build` the determinator's raw
-      # closure also built the root-level `cached_corpus_suite` actions, and
-      # building one of those RUNS its corpus — so this step re-ran the CLI,
-      # spec, and oracle corpora that the platform-corpus lanes already own,
-      # serially, and premerge went from ~12m to 32-42m. See build_scope().
+      # scope by `narrow-scope linux-premerge-build`. Handing `buck2 build` the
+      # determinator's raw closure also built the root-level
+      # `cached_corpus_suite` actions, and building one of those RUNS its
+      # corpus — so this step re-ran the CLI, spec, and oracle corpora that the
+      # platform-corpus lanes already own, serially, and premerge went from
+      # ~12m to 32-42m. See build_scope() in scripts/affected-targets.
       - name: Build all targets
         env:
           NARROW_COUNT: ${{ steps.narrow.outputs.count }}
@@ -396,15 +386,13 @@ jobs:
             # change impacts more than NARROW_LIMIT targets and so is never
             # narrowed — so it needs the corpus-action subtraction just as much
             # as the narrowed one. `buck2 build` has no kind or label
-            # exclusion, so build-scope expands the pattern and subtracts.
+            # exclusion, so the scope query expands the pattern and subtracts.
             if scope="$(scripts/affected-targets scope-targets linux-premerge-build)"; then
-              echo "- \`linux-premerge-build\`: **DECLINED**; saved share **not applicable** (full scope used)." >>"$GITHUB_STEP_SUMMARY"
               mapfile -t targets <<<"$scope"
               scripts/ci-timed "linux-x64 build" -- ./buck2 build "${targets[@]}"
             else
               # Fail open, as below: over-building costs wall time, never coverage.
               echo "crate build scope unavailable; building the full crate pattern" >&2
-              echo "- \`linux-premerge-build\`: **DEGRADED**; saved share **not applicable** (scope query unavailable; full crate scope used)." >>"$GITHUB_STEP_SUMMARY"
               scripts/ci-timed "linux-x64 build" -- ./buck2 build //crates/...
             fi
           elif ! scope="$(scripts/affected-targets narrow-scope linux-premerge-build "$NARROW_FILE")"; then
@@ -644,7 +632,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Check the performance series is still advancing
         # Is the series *already* stalled? A repository-wide condition, so this
@@ -767,28 +754,6 @@ jobs:
         if: runner.os == 'macOS'
         run: scripts/validate-shell-bash-baseline.py --require-baseline-bash
 
-      # RUE-1506's demonstrations — `mapfile` exiting 127, `"${empty[@]}"`
-      # unbound under `set -u`, `read` assigning nothing when it fails — plus
-      # RUE-1512's `;;&` parse case. All of them skip without a 3.2, so this
-      # leg is the only place they prove anything.
-      #
-      # They used to run below as `./buck2 test //:shell-bash-baseline-tool-
-      # tests`, which forced them under the lane-selection gate, because buck2
-      # is only installed there. That reproduced the very bug RUE-1506 was
-      # about: `lane_targets native-macos-arm64` does not list that target and
-      # FORCE_FULL_REGEX does not cover `scripts/validate-*.py`, so a pull
-      # request changing ONLY the Bash 3.2 policy and its tests deselects this
-      # lane and skips the step — leaving the target to linux-premerge, where
-      # bash is 5.x and every one of these skips. Run directly instead: the
-      # tests need Python and a /bin/bash, not buck2, so they need no gate.
-      # The target keeps its premerge tier and still runs on Linux, where the
-      # host-independent cases do the work.
-      - name: Demonstrate the Bash 3.2 baseline on the stock macOS Bash
-        if: runner.os == 'macOS'
-        run: python3 scripts/test-validate-shell-bash-baseline.py
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
-
       # RUE-1130: consult the determinator before any heavy setup. On a
       # selective pull_request run where nothing this lane executes is affected,
       # the heavy steps are skipped and the check still reports success, so no
@@ -799,7 +764,7 @@ jobs:
         env:
           RUE_AFFECTED_FULL: ${{ needs.affected-targets.outputs.full }}
           RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
-        run: scripts/ci-corpus-decision "native-${{ matrix.name }}"
+        run: scripts/ci-corpus-selected "native-${{ matrix.name }}"
 
       # RUE-1130: materialize the determinator's impacted-target closure so the
       # heavy steps below can run exactly it. `narrowed` is the determinator's
@@ -843,7 +808,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Build native compiler and linker
         if: steps.sel.outputs.run == 'true'
@@ -888,8 +852,6 @@ jobs:
             while IFS= read -r target; do
               targets+=("$target")
             done <<< "$narrowed"
-          else
-            echo "- \`native-platforms-units\`: **DECLINED**; saved share **not applicable** (full scope used)." >>"$GITHUB_STEP_SUMMARY"
           fi
           scripts/ci-timed "$LANE_NAME native units" -- ./buck2 test "${targets[@]}"
 
@@ -943,7 +905,7 @@ jobs:
         env:
           RUE_AFFECTED_FULL: ${{ needs.affected-targets.outputs.full }}
           RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
-        run: scripts/ci-corpus-decision "compiler-reproducibility"
+        run: scripts/ci-corpus-selected "compiler-reproducibility"
 
       - name: Bootstrap dotslash
         if: steps.sel.outputs.run == 'true'
@@ -983,7 +945,7 @@ jobs:
         env:
           RUE_AFFECTED_FULL: ${{ needs.affected-targets.outputs.full }}
           RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
-        run: scripts/ci-corpus-decision "rue-program-digests"
+        run: scripts/ci-corpus-selected "rue-program-digests"
 
       - name: Bootstrap dotslash
         if: steps.sel.outputs.run == 'true'
@@ -999,7 +961,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Check rue_program digest sensitivity
         if: steps.sel.outputs.run == 'true'
@@ -1012,10 +973,11 @@ jobs:
   # the decision is fail-open, so any tool/VCS/graph error, or any change to an
   # out-of-graph input (the ./buck2 pin, test.sh, scripts/ci-*, this workflow,
   # .buckconfig/BUCK/.bzl/toolchains), runs the complete registered work. The
-  # platform corpora and selectable lanes consult its gate; linux-premerge,
-  # native units, and clippy also intersect small verified closures with their
-  # registered live scopes. The scripts stay fail-open by construction, and
-  # scripts/test-affected-targets.sh pins the force-full and gate logic.
+  # platform corpora and gated lanes consult its gate through
+  # scripts/ci-corpus-selected; linux-premerge, native units, and clippy also
+  # intersect a small impacted closure with their live scopes. The scripts stay
+  # fail-open by construction, and scripts/test-affected-targets.sh pins the
+  # force-full, gate, and decision logic.
   affected-targets:
     runs-on: ubuntu-latest
     name: affected targets (linux-x64)
@@ -1025,29 +987,15 @@ jobs:
       # RUE-1130. A referenced-but-undeclared job output silently resolves to
       # the empty string, which for a lane gate means "selected nothing" —
       # every gated lane would deselect on a selective run. validate-ci-gate.py
-      # now fails closed on that, because the failure only appears on the
+      # fails closed on that, because the failure only appears on the
       # peripheral PRs the gating exists for, and never on a CI-touching one.
       selected_lanes: ${{ steps.decide.outputs.selected_lanes }}
-      # Independently transported outputs can be missing or truncated while
-      # another output still arrives. The count and content proof distinguish
-      # that from a deliberately empty selected-lane set.
-      selected_lanes_count: ${{ steps.decide.outputs.selected_lanes_count }}
-      selected_lanes_digest: ${{ steps.decide.outputs.selected_lanes_digest }}
       # The impacted-target closure, and the determinator's own flag for whether
       # narrowing to it is worthwhile. Consumers key on `narrowed`; an absent or
       # empty `impacted` therefore reads as "run everything", never "run
       # nothing".
       narrowed: ${{ steps.decide.outputs.narrowed }}
       impacted: ${{ steps.decide.outputs.impacted }}
-      narrowing_status: ${{ steps.decide.outputs.narrowing_status }}
-      head_target_count: ${{ steps.decide.outputs.head_target_count }}
-      # Raw BTD closure size is separate from the runnable head intersection;
-      # consumers need both to reproduce the planner's narrowing state exactly.
-      impacted_closure_count: ${{ steps.decide.outputs.impacted_closure_count }}
-      impacted_target_count: ${{ steps.decide.outputs.impacted_target_count }}
-      # The clippy materializer accepts a narrowing candidate only when the
-      # complete multiline payload matches both this count and digest.
-      impacted_targets_digest: ${{ steps.decide.outputs.impacted_targets_digest }}
       # RUE-1267: the live Buck shard set and checked-in measurements are the
       # matrix authority. A missing graph shard fails this planning job instead
       # of silently dropping a fraction of the CLI corpus.
@@ -1081,7 +1029,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Decide affected corpus targets
         # Fail-open: the script always exits 0 with a decision (full on any
@@ -1134,7 +1081,7 @@ jobs:
         env:
           RUE_AFFECTED_FULL: ${{ needs.affected-targets.outputs.full }}
           RUE_AFFECTED_TARGETS: ${{ needs.affected-targets.outputs.selected }}
-        run: scripts/ci-corpus-decision "${{ matrix.target }}"
+        run: scripts/ci-corpus-selected "${{ matrix.target }}"
 
       - name: Select Xcode 16.2
         if: runner.os == 'macOS' && steps.sel.outputs.run == 'true'
@@ -1156,7 +1103,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Run ${{ matrix.name }} corpus
         if: steps.sel.outputs.run == 'true'
@@ -1205,7 +1151,7 @@ jobs:
         env:
           RUE_AFFECTED_FULL: ${{ needs.affected-targets.outputs.full }}
           RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
-        run: scripts/ci-corpus-decision "release"
+        run: scripts/ci-corpus-selected "release"
 
       - name: Bootstrap dotslash
         if: steps.sel.outputs.run == 'true'
@@ -1223,7 +1169,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       # Direct RUE-277 guard: inspect Buck's analyzed rustc_cfg actions instead
       # of inferring optimization from complete binary bytes. This performs no
@@ -1260,7 +1205,7 @@ jobs:
         env:
           RUE_AFFECTED_FULL: ${{ needs.affected-targets.outputs.full }}
           RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
-        run: scripts/ci-corpus-decision "valgrind"
+        run: scripts/ci-corpus-selected "valgrind"
 
       - name: Bootstrap dotslash
         if: steps.sel.outputs.run == 'true'
@@ -1276,7 +1221,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Install valgrind
         if: steps.sel.outputs.run == 'true'
@@ -1314,7 +1258,7 @@ jobs:
         env:
           RUE_AFFECTED_FULL: ${{ needs.affected-targets.outputs.full }}
           RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
-        run: scripts/ci-corpus-decision "asan"
+        run: scripts/ci-corpus-selected "asan"
 
       - name: Install pinned nightly Rust
         if: steps.sel.outputs.run == 'true'
@@ -1357,15 +1301,25 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v6
+      # RUE-1936: the repository tooling floor is Python 3.9 (AGENTS.md), the
+      # interpreter a stock Mac ships, while this runner's own python3 is far
+      # above it — so a construct newer than the floor would stay green here
+      # and fail on a developer machine (RUE-1509). Running every gate in this
+      # job under 3.9 itself is the floor check; it replaced a static scanner
+      # that could only see a curated table of constructs.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
       - name: Bootstrap dotslash
         uses: ./.github/actions/bootstrap-dotslash
       - name: Validate aggregate gate and platform responsibilities
         run: scripts/validate-ci-gate.py .github/workflows/ci.yml
 
-      # RUE-1117: `//:tier-ci-selector-validation` also runs this in the premerge
-      # Buck pass. Repeating it here needs no toolchain and keeps the reviewed
-      # answer to "does any job actually run this tier?" next to the rest of
-      # the CI contract, independent of whether the Buck lane got that far.
+      # RUE-1117: `//:tier-ci-selector-validation` also runs the structural
+      # half of this in the premerge Buck pass. This run has the toolchain, so
+      # it also proves from the live graph that the tier the derived
+      # platform-corpus matrix owns really contains a target that matrix runs
+      # (RUE-1936), independent of whether the Buck lane got that far.
       - name: Validate deliberate CI selection of every test tier
         run: >-
           scripts/validate-tier-ci-selectors.py
@@ -1374,6 +1328,7 @@ jobs:
           --affected-targets scripts/affected-targets
           --workflow .github/workflows/ci.yml
           --workflow .github/workflows/release.yml
+          --live-graph
 
       # RUE-1507. A `schedule:` workflow has no audience: no pull request waits
       # on it and its result is a row in a tab nobody opens, which is how

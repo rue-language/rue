@@ -1,0 +1,173 @@
+[section]
+id = "cli.test_candidates"
+name = "Declared test-candidate inventory"
+description = """
+RUE-1918 (ADR-0083 Phase 2b): `--test-candidates` is the one optional build
+integration the test runner takes — the set of files a build target declared,
+which powers the unimported-test-file warning.
+
+Two properties are pinned here. The flag is accepted and INERT in every other
+mode: a candidate list is not a read policy, does not join the module closure,
+and changes no byte of an ordinary build's output, even when it names a test
+file nothing imports. And the list is a build-system input, so an unreadable one
+is an ordinary driver error naming the path, never a silently empty inventory
+that would make the warning it powers quietly never fire.
+
+Reporting against the inventory is `rue test`'s job (RUE-1920); this phase
+validates the input and threads it through.
+"""
+
+[[case]]
+name = "declared_candidates_are_accepted_and_inert"
+description = "RUE-1918: an ordinary build with a candidate list compiles and runs unchanged."
+files = [
+    { path = "test-candidates.list", source = """
+# Declared by the build rule, one project-root-relative path per line.
+main.rue
+
+helper.rue
+orphan_tests.rue
+""" },
+    { path = "main.rue", source = """
+const helper = @import("helper.rue");
+
+fn main() -> i32 {
+    @dbg(helper.answer());
+    0
+}
+""" },
+    { path = "helper.rue", source = """
+pub fn answer() -> i32 {
+    42
+}
+""" },
+    # Declared, never imported, and full of tests: exactly the file the warning
+    # exists for. An ordinary build still says nothing about it.
+    { path = "orphan_tests.rue", source = """
+test "nothing imports this file" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["--test-candidates", "test-candidates.list", "main.rue", "-o", "prog"]
+stdout = "42\n"
+compile_stderr_not_contains = ["orphan_tests.rue", "test file", "warning"]
+
+[[case]]
+name = "declared_candidates_do_not_grant_a_source_read"
+description = """
+RUE-1918: declaring a candidate is not declaring a source. The manifest remains
+the sole read policy, so a file listed only as a candidate stays unreadable as
+an import.
+"""
+files = [
+    { path = "sources.manifest", source = """
+main.rue
+""" },
+    { path = "test-candidates.list", source = """
+main.rue
+helper.rue
+""" },
+    { path = "main.rue", source = """
+const helper = @import("helper.rue");
+
+fn main() -> i32 {
+    helper.answer()
+}
+""" },
+    { path = "helper.rue", source = """
+pub fn answer() -> i32 {
+    42
+}
+""" },
+]
+args = [
+    "--source-manifest",
+    "sources.manifest",
+    "--test-candidates",
+    "test-candidates.list",
+    "main.rue",
+    "-o",
+    "prog",
+]
+compile_fail = true
+error_contains = ["helper.rue"]
+
+[[case]]
+name = "unreadable_candidate_list_names_the_path"
+description = "RUE-1918: a missing candidate list fails the build and names the file."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+""" }]
+args = ["--test-candidates", "absent-candidates.list", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["Error reading test candidates", "absent-candidates.list"]
+
+[[case]]
+name = "the_candidate_list_may_be_given_only_once"
+description = """
+RUE-1918: two declared candidate sets describe two build targets. Last-wins
+would silently report against one of them, so a repeat is refused.
+"""
+files = [
+    { path = "one.list", source = "main.rue\n" },
+    { path = "two.list", source = "main.rue\n" },
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+""" },
+]
+args = [
+    "--test-candidates",
+    "one.list",
+    "--test-candidates",
+    "two.list",
+    "main.rue",
+    "-o",
+    "prog",
+]
+compile_fail = true
+error_contains = ["--test-candidates may be given at most once"]
+
+[[case]]
+name = "manifest_excluded_candidates_are_denied_not_read"
+description = """
+RUE-1918: acquisition obeys the source manifest. A declared candidate the
+manifest does not list is observed as unreadable rather than read from disk,
+and an ordinary build with such a candidate still succeeds and says nothing
+about it.
+"""
+files = [
+    { path = "sources.manifest", source = """
+main.rue
+""" },
+    { path = "test-candidates.list", source = """
+main.rue
+excluded_tests.rue
+""" },
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+""" },
+    # Exists on disk, declared as a candidate, absent from the manifest.
+    { path = "excluded_tests.rue", source = """
+test "the manifest omits this file" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = [
+    "--source-manifest",
+    "sources.manifest",
+    "--test-candidates",
+    "test-candidates.list",
+    "main.rue",
+    "-o",
+    "prog",
+]
+exit_code = 0
+compile_stderr_not_contains = ["excluded_tests.rue", "warning"]

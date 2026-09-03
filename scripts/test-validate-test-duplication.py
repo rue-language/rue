@@ -9,6 +9,7 @@ is proven to fail on it rather than asserted to.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -558,15 +559,33 @@ class LaneModelTests(unittest.TestCase):
         self.assertNotIn("//crates/rue-lexer:rue-lexer-clippy", lanes["linux-premerge"])
 
     def test_the_determinator_exposes_the_inventories_this_gate_reads(self):
-        for subcommand in ("corpus-targets", "lanes"):
-            result = subprocess.run(
-                ["bash", str(GATE.AFFECTED_TARGETS), subcommand],
-                capture_output=True,
-                text=True,
-                check=False,
+        # `corpus-targets` derives its answer from the live graph (RUE-1936),
+        # and this suite runs inside a Buck test where a nested `buck2 uquery`
+        # cannot run, so the script's RUE_AFFECTED_BUCK2 hook points at a fake
+        # that answers its two queries: the corpus actions, then the owned
+        # heavy suites. What this proves is the contract, not the inventory:
+        # both subcommands exist and print a non-empty list.
+        with tempfile.TemporaryDirectory() as directory:
+            fake = Path(directory) / "buck2"
+            fake.write_text(
+                "#!/usr/bin/env bash\n"
+                "case \"$*\" in\n"
+                "  *_corpus_action*) echo root//:spec-tests-action ;;\n"
+                "  *) echo root//:spec-tests ;;\n"
+                "esac\n"
             )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertTrue(result.stdout.split(), subcommand)
+            fake.chmod(0o755)
+            env = dict(os.environ, RUE_AFFECTED_BUCK2=str(fake))
+            for subcommand in ("corpus-targets", "lanes"):
+                result = subprocess.run(
+                    ["bash", str(GATE.AFFECTED_TARGETS), subcommand],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    env=env,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(result.stdout.split(), subcommand)
 
 
 if __name__ == "__main__":

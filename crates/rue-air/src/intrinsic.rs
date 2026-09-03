@@ -509,7 +509,15 @@ impl IntrinsicOperation {
             | RuntimeCallKind::StrPrintAggregate
             | RuntimeCallKind::StrPrintProjected
             | RuntimeCallKind::StrPrintlnAggregate
-            | RuntimeCallKind::StrPrintlnProjected => return None,
+            | RuntimeCallKind::StrPrintlnProjected
+            // The ADR-0083 test channel is dispatcher and runner plumbing. No
+            // source spelling selects it, so it has no intrinsic identity —
+            // `@assert_eq` (Phase 2.5) is what will give `TestFail` one.
+            | RuntimeCallKind::TestNormalizeProcess
+            | RuntimeCallKind::TestComplete
+            | RuntimeCallKind::TestFailureSite
+            | RuntimeCallKind::TestFail
+            | RuntimeCallKind::TestUsageError => return None,
         })
     }
 
@@ -834,7 +842,11 @@ mod tests {
         (IntrinsicOperation::EnvLen, RuntimeCallKind::EnvLen),
     ];
 
-    const ORDINARY_CALL_ONLY: [RuntimeCallKind; 11] = [
+    // Every runtime call with no intrinsic spelling: the string and formatting
+    // family, which sema selects from ordinary method calls, and the ADR-0083
+    // test channel, which only the synthesized dispatcher and the runner's own
+    // sugar reach.
+    const ORDINARY_CALL_ONLY: [RuntimeCallKind; 16] = [
         RuntimeCallKind::StrByteAt,
         RuntimeCallKind::StrCharScalar,
         RuntimeCallKind::StrCharNext,
@@ -846,6 +858,11 @@ mod tests {
         RuntimeCallKind::StrPrintProjected,
         RuntimeCallKind::StrPrintlnAggregate,
         RuntimeCallKind::StrPrintlnProjected,
+        RuntimeCallKind::TestNormalizeProcess,
+        RuntimeCallKind::TestComplete,
+        RuntimeCallKind::TestFailureSite,
+        RuntimeCallKind::TestFail,
+        RuntimeCallKind::TestUsageError,
     ];
 
     #[test]
@@ -950,7 +967,7 @@ mod tests {
             EXACT_RUNTIME_MAPPINGS.map(|(_, runtime)| runtime),
             "the exact intrinsic-to-runtime map drifted"
         );
-        assert_eq!(RuntimeCallKind::ALL.len(), 41);
+        assert_eq!(RuntimeCallKind::ALL.len(), 46);
         for kind in RuntimeCallKind::ALL {
             assert_eq!(
                 IntrinsicOperation::from_runtime_call(kind).is_some(),

@@ -1,82 +1,30 @@
 #!/usr/bin/env bash
-# Decide whether one platform-corpus CI job should run its heavy suite, given
-# the affected-targets determinator's outputs (RUE-1119).
+# Decide whether one gated CI job runs its heavy steps (RUE-1119, RUE-1130).
 #
-# The `platform-corpus` matrix jobs consult this before running their corpus.
-# It selects WITHIN the job rather than skipping the job: the check still runs
-# and reports success, so no branch-protection change is required, and a
-# deselected corpus costs only the runner spin-up instead of the full suite.
-#
-# FAIL-OPEN. The heavy suite runs unless the determinator explicitly said this
-# is a selective run (`RUE_AFFECTED_FULL == "false"`) AND this target is absent
-# from the selected set. An empty/unset `RUE_AFFECTED_FULL`, an unknown target,
-# or anything unexpected runs the suite.
-#
-# Exit 0  -> run the corpus.
-# Exit 1  -> corpus intentionally deselected (records the RUE-924 accounting).
-# Exit 2+ -> malformed selection state; callers must run the corpus.
+# Writes `run=true|false` to $GITHUB_OUTPUT. `run=false` only when the
+# determinator explicitly decided a selective run (`RUE_AFFECTED_FULL=false`)
+# and this unit is absent from its selected list: corpus targets (`//...`) read
+# `RUE_AFFECTED_TARGETS`, workflow lanes read `RUE_AFFECTED_LANES`. Anything
+# else — unset, malformed, or a full decision — runs, so a lost job output can
+# only ever cost wall time (RUE-924).
 set -uo pipefail
 
-if [[ $# -ne 1 ]]; then
-    echo "usage: scripts/ci-corpus-selected //:TARGET" >&2
-    exit 2
-fi
-target="$1"
+[[ $# -eq 1 ]] || { echo "usage: scripts/ci-corpus-selected //:TARGET|LANE" >&2; exit 2; }
+unit="$1"
+case "$unit" in
+    //*) selected="${RUE_AFFECTED_TARGETS:-}" ;;
+    *) selected="${RUE_AFFECTED_LANES:-}" ;;
+esac
 
-if [[ -n "${RUE_AFFECTED_SCRIPTS_ROOT:-}" ]]; then
-    repo_root="$RUE_AFFECTED_SCRIPTS_ROOT"
+run=true
+if [[ "${RUE_AFFECTED_FULL:-}" == "false" && " $selected " != *" $unit "* ]]; then
+    run=false
+    note="$unit intentionally deselected by scripts/affected-targets: this diff does not reach it, and the merge-queue run executes everything."
+    echo "$note"
+    [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] && printf '%s\n' "$note" >>"$GITHUB_STEP_SUMMARY"
+fi
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    printf 'run=%s\n' "$run" >>"$GITHUB_OUTPUT"
 else
-    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    printf 'run=%s\n' "$run"
 fi
-affected=(bash "$repo_root/scripts/affected-targets")
-
-full="${RUE_AFFECTED_FULL:-}"
-selected="${RUE_AFFECTED_TARGETS:-}"
-
-# Anything other than an explicit selective decision runs the suite.
-if [[ "$full" != "false" ]]; then
-    exit 0
-fi
-
-# RUE-1130: the same gate now answers for a named workflow lane as well as a
-# corpus target. Lanes consult `selected_lanes`; corpus targets consult
-# `selected`. Both fail open on anything unrecognized.
-kind="corpus"
-if "${affected[@]}" is-selectable-lane "$target"; then
-    kind="lane"
-    selected="${RUE_AFFECTED_LANES:-}"
-fi
-
-# The target list belongs to affected-targets, not this gate. A matrix entry
-# that was added without becoming selectable must run, never be silently
-# deselected. Corrupt selection output is similarly an unexpected failure.
-if [[ "$kind" == "corpus" ]] && ! "${affected[@]}" is-selectable "$target"; then
-    echo "ci-corpus-selected: unknown corpus target '${target}'; running it" >&2
-    exit 0
-fi
-
-for selected_target in $selected; do
-    if [[ "$kind" == "lane" ]]; then
-        if ! "${affected[@]}" is-selectable-lane "$selected_target"; then
-            echo "ci-corpus-selected: invalid selected lane '${selected_target}'" >&2
-            exit 2
-        fi
-    elif ! "${affected[@]}" is-selectable "$selected_target"; then
-        echo "ci-corpus-selected: invalid selected target '${selected_target}'" >&2
-        exit 2
-    fi
-done
-
-# Selective run: run only if this exact target is in the selected set.
-if [[ " ${selected} " == *" ${target} "* ]]; then
-    exit 0
-fi
-
-# Intentional deselection — record it so it is never mistaken for a silent
-# corpus drop (RUE-924).
-note="${kind} ${target} intentionally deselected by the affected-targets determinator (RUE-1119/RUE-1130); it is not affected by this PR's diff and runs in the merge-queue full suite."
-echo "$note"
-if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-    printf '%s\n' "$note" >>"$GITHUB_STEP_SUMMARY"
-fi
-exit 1

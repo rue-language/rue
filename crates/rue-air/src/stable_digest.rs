@@ -254,6 +254,7 @@ impl DurableEncode for crate::FunctionInstanceKey<String, String> {
                 encode_variant(state, 3);
                 owner.durable_encode(state);
             }
+            Self::TestDispatcher => encode_variant(state, 4),
         }
     }
 }

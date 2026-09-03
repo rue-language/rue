@@ -9,6 +9,7 @@ include!("parse_import/parse.rs");
 include!("parse_import/parse_module_batches.rs");
 include!("parse_import/parse_modules.rs");
 include!("parse_import/resolve_imports.rs");
+include!("parse_import/test_candidate_scans.rs");
 
 pub(super) use register_parse_import_declaration_imports;
 pub(super) use register_parse_import_declaration_occurrence_indexes;
@@ -21,3 +22,4 @@ pub(super) use register_parse_import_parse;
 pub(super) use register_parse_import_parse_module_batches;
 pub(super) use register_parse_import_parse_modules;
 pub(super) use register_parse_import_resolve_imports;
+pub(super) use register_parse_import_test_candidate_scans;

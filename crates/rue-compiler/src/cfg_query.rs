@@ -52,6 +52,18 @@ pub(crate) enum CfgSemanticInput {
         materialization: Arc<crate::local_semantic_materialization::LocalMaterializationFacts>,
         body_span: Span,
     },
+    /// The synthesized `main` of a test image (ADR-0083 §3).
+    ///
+    /// The table is the request's tests in inventory order, so the ordinal a
+    /// selector names is an index into it. It is the whole semantic input:
+    /// the body is a pure function of the ordered table, so two requests with
+    /// the same tests in the same order share one CFG terminal, and adding or
+    /// renaming a test invalidates it exactly as it should.
+    TestDispatcher {
+        table: Arc<[crate::FunctionInstanceKey]>,
+        materialization: Arc<crate::local_semantic_materialization::LocalMaterializationFacts>,
+        body_span: Span,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +126,18 @@ impl PartialEq for CfgSemanticInput {
                     && left_facts == right_facts
                     && left_materialization == right_materialization
             }
+            (
+                Self::TestDispatcher {
+                    table: left_table,
+                    materialization: left_materialization,
+                    ..
+                },
+                Self::TestDispatcher {
+                    table: right_table,
+                    materialization: right_materialization,
+                    ..
+                },
+            ) => left_table == right_table && left_materialization == right_materialization,
             _ => false,
         }
     }
@@ -340,7 +364,9 @@ pub(crate) fn accessor_source_name(identity: &crate::FunctionInstanceKey) -> Str
         crate::FunctionInstanceKey::Definition(definition) => definition.name().to_owned(),
         crate::FunctionInstanceKey::Specialization { base, .. } => accessor_source_name(base),
         crate::FunctionInstanceKey::AnonymousMember { member, .. } => member.name.to_string(),
-        crate::FunctionInstanceKey::DropGlue(_) => "<accessor>".to_owned(),
+        crate::FunctionInstanceKey::DropGlue(_) | crate::FunctionInstanceKey::TestDispatcher => {
+            "<accessor>".to_owned()
+        }
     }
 }
 
@@ -364,7 +390,9 @@ pub(crate) fn accessor_cfg_subgraph(
                         _ => None,
                     })
                     .collect(),
-                CfgSemanticInput::DropGlue { .. } => Vec::new(),
+                CfgSemanticInput::DropGlue { .. } | CfgSemanticInput::TestDispatcher { .. } => {
+                    Vec::new()
+                }
             };
             (function.clone(), callees)
         })
@@ -389,7 +417,7 @@ pub(crate) fn accessor_cfg_subgraph(
             CfgSemanticInput::Body {
                 materialization, ..
             } => Some(materialization),
-            CfgSemanticInput::DropGlue { .. } => None,
+            CfgSemanticInput::DropGlue { .. } | CfgSemanticInput::TestDispatcher { .. } => None,
         }
     }
     fn with_facts(
@@ -401,7 +429,9 @@ pub(crate) fn accessor_cfg_subgraph(
                 input: input.clone(),
                 materialization,
             },
-            CfgSemanticInput::DropGlue { .. } => key.semantic_input.clone(),
+            CfgSemanticInput::DropGlue { .. } | CfgSemanticInput::TestDispatcher { .. } => {
+                key.semantic_input.clone()
+            }
         };
         CfgQueryKey::new(
             key.function.clone(),
@@ -817,6 +847,13 @@ impl RetainedCharge for CfgSemanticInput {
                 .retained_charge()
                 .saturating_add(facts.retained_charge())
                 .saturating_add(materialization.retained_charge()),
+            Self::TestDispatcher {
+                table,
+                materialization,
+                ..
+            } => table
+                .retained_charge()
+                .saturating_add(materialization.retained_charge()),
         }
     }
 }
@@ -933,7 +970,8 @@ pub(crate) fn import_accessor_failure(
         .find(|dependency| dependency.function == origin.accessor)
         .map(|dependency| match &dependency.semantic_input {
             CfgSemanticInput::Body { input, .. } => input.body_span,
-            CfgSemanticInput::DropGlue { body_span, .. } => *body_span,
+            CfgSemanticInput::DropGlue { body_span, .. }
+            | CfgSemanticInput::TestDispatcher { body_span, .. } => *body_span,
         })
         .expect("published accessor failure must name a dependency");
     import_errors(errors, origin.body_span, current_accessor_span)
@@ -1251,6 +1289,18 @@ fn materialize_and_build_cfg(
                 };
             (&synthesized, *body_span, materialization.as_ref())
         }
+        CfgSemanticInput::TestDispatcher {
+            table,
+            materialization,
+            body_span,
+        } => {
+            // Unlike drop glue, the dispatcher needs no layout prerequisite:
+            // its body is a pure function of the ordered table, so it can be
+            // synthesized directly. Fact selection built the same body from the
+            // same table when it chose this key's materialization facts.
+            synthesized = crate::test_dispatcher::synthesize_test_dispatcher(table);
+            (&synthesized, *body_span, materialization.as_ref())
+        }
     };
     let mut builtin_facts = Vec::with_capacity(facts.builtin_nominals.len());
     let builtin_terminals = context.query_registered_adaptive_batch(
@@ -1286,7 +1336,7 @@ fn materialize_and_build_cfg(
     #[cfg(test)]
     let local_interner_limit = match &key.semantic_input {
         CfgSemanticInput::Body { input, .. } => input.interner_limit,
-        CfgSemanticInput::DropGlue { .. } => None,
+        CfgSemanticInput::DropGlue { .. } | CfgSemanticInput::TestDispatcher { .. } => None,
     };
     // The local semantic epoch owns the actual insertion path. Tests inject
     // their request-local ceiling into that owner so a regression to an
@@ -1303,11 +1353,24 @@ fn materialize_and_build_cfg(
             rue_rir::SharedSymbolSpace::private()
         }
     };
-    // Both CFG inputs use the exact fact-side indexes prepared during
-    // selection, keeping canonical-body and drop-glue materialization on one
-    // indexed path.
-    let materialized = match &key.semantic_input {
-        CfgSemanticInput::Body { input, .. } => {
+    // Every CFG input uses the exact fact-side indexes prepared during
+    // selection, keeping canonical-body and synthesized-body materialization on
+    // one indexed path each. A synthesized input's identity is the only thing
+    // that distinguishes drop glue from the test dispatcher here: both bodies
+    // were already built above, and the local epoch just needs to know whose
+    // they are.
+    let synthesized_identity = match &key.semantic_input {
+        CfgSemanticInput::Body { .. } => None,
+        CfgSemanticInput::DropGlue { owner, .. } => Some(crate::FunctionInstanceKey::DropGlue(
+            Node::new(owner.clone()),
+        )),
+        CfgSemanticInput::TestDispatcher { .. } => Some(crate::FunctionInstanceKey::TestDispatcher),
+    };
+    let materialized = match synthesized_identity {
+        None => {
+            let CfgSemanticInput::Body { input, .. } = &key.semantic_input else {
+                unreachable!("only a canonical source body has no synthesized identity")
+            };
             crate::local_semantic_materialization::materialize_canonical_body_with_indexes_in_space(
                 &input.canonical,
                 body_span,
@@ -1322,9 +1385,9 @@ fn materialize_and_build_cfg(
                 materialization_symbol_space,
             )
         }
-        CfgSemanticInput::DropGlue { owner, .. } => {
+        Some(identity) => {
             crate::local_semantic_materialization::materialize_semantic_body_with_indexes_in_space(
-                crate::FunctionInstanceKey::DropGlue(Node::new(owner.clone())),
+                identity,
                 body,
                 body_span,
                 &facts.declarations,
@@ -1742,7 +1805,8 @@ fn build_cfg(
 fn semantic_input_body_span(input: &CfgSemanticInput) -> Span {
     match input {
         CfgSemanticInput::Body { input, .. } => input.body_span,
-        CfgSemanticInput::DropGlue { body_span, .. } => *body_span,
+        CfgSemanticInput::DropGlue { body_span, .. }
+        | CfgSemanticInput::TestDispatcher { body_span, .. } => *body_span,
     }
 }
 
@@ -3216,7 +3280,8 @@ fn is_true_free_function(function: &crate::FunctionInstanceKey) -> bool {
             definition
         }
         crate::FunctionInstanceKey::AnonymousMember { .. }
-        | crate::FunctionInstanceKey::DropGlue(_) => return false,
+        | crate::FunctionInstanceKey::DropGlue(_)
+        | crate::FunctionInstanceKey::TestDispatcher => return false,
     };
     definition.kind() == crate::StableDefinitionKind::Function
 }
