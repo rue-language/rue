@@ -958,6 +958,19 @@ rue_sh_test(
     },
 )
 
+# RUE-621: unit coverage for the opt-in graph-scoped compiler metadata
+# diagnostic. The diagnostic itself cannot be a Buck test because it starts two
+# isolated nested Buck daemons; this target tests its inventory and comparison
+# policy without turning the diagnostic into a required final-artifact gate.
+rue_sh_test(
+    name = "reproducible-build-metadata-tool-tests",
+    test = "scripts/test-check-reproducible-build-metadata.py",
+    resources = ["scripts/check-reproducible-build-metadata.py"],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
 # RUE-1163: the lightweight repository gates a filtered `./test.sh <pattern>`
 # run executes after the corpora. This used to be a bash array of four target
 # names; as a test_suite the membership is a Buck fact, and adding a gate here
