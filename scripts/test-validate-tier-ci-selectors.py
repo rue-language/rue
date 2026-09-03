@@ -46,14 +46,7 @@ jobs:
           --test-tiers-bxl test_tiers.bxl
           --affected-targets scripts/affected-targets
           --workflow .github/workflows/ci.yml
-"""
-
-AFFECTED_TARGETS = """#!/usr/bin/env bash
-SELECTABLE_CORPUS=(
-    //:cli-tests-shard-0
-    //crates/rue-oracle-diff:oracle-diff-test
-    //crates/rue-oracle-diff:oracle-diff-spec-test
-)
+          --live-graph
 """
 
 RELEASE_WORKFLOW = """name: Release
@@ -73,6 +66,9 @@ jobs:
         run: ./buck2 test "//examples:large-example-${{ matrix.program }}-stress"
 """
 
+CORPUS = ("//:cli-tests-shard-0", "//crates/rue-oracle-diff:oracle-diff-test")
+SLOW = ("//:cli-tests-slow", "//crates/rue-oracle-diff:oracle-diff-test")
+
 
 def defs_source(tiers: tuple[str, ...]) -> str:
     return "".join(
@@ -88,6 +84,12 @@ def bxl_source(tiers: tuple[str, ...] = ()) -> str:
     )
 
 
+def fake_tool(path: Path, body: str) -> Path:
+    path.write_text("#!/usr/bin/env bash\n" + body)
+    path.chmod(0o755)
+    return path
+
+
 class TierCiSelectorTests(unittest.TestCase):
     def validate(
         self,
@@ -96,8 +98,11 @@ class TierCiSelectorTests(unittest.TestCase):
         bxl: str | None = None,
         ci: str | None = None,
         release: str | None = None,
-        affected_targets: str | None = None,
         omit_release: bool = False,
+        corpus: tuple[str, ...] | None = None,
+        slow: tuple[str, ...] | None = None,
+        buck_fails: bool = False,
+        live: bool = False,
     ) -> list[str]:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -105,32 +110,39 @@ class TierCiSelectorTests(unittest.TestCase):
             bxl_path = root / "test_tiers.bxl"
             ci_path = root / "ci.yml"
             release_path = root / "release.yml"
-            affected_targets_path = root / "affected-targets"
             defs_path.write_text(defs if defs is not None else defs_source(TIERS))
             bxl_path.write_text(bxl if bxl is not None else bxl_source(TIERS))
             ci_path.write_text(ci if ci is not None else CI_WORKFLOW)
             release_path.write_text(
                 release if release is not None else RELEASE_WORKFLOW
             )
-            affected_targets_path.write_text(
-                affected_targets
-                if affected_targets is not None
-                else AFFECTED_TARGETS
+            corpus_lines = " ".join(corpus if corpus is not None else CORPUS)
+            affected = fake_tool(
+                root / "affected-targets",
+                f'[ "$1" = corpus-targets ] || exit 2\n'
+                f'for t in {corpus_lines}; do echo "$t"; done\n',
+            )
+            slow_lines = " ".join(f"root{t}" for t in (slow if slow is not None else SLOW))
+            buck2 = fake_tool(
+                root / "buck2",
+                ("exit 1\n" if buck_fails else "")
+                + f'case "$2" in *rue_test_tier_slow*) for t in {slow_lines}; do echo "$t"; done ;; *) exit 1 ;; esac\n',
             )
             workflows = {"ci.yml": ci_path}
             if not omit_release:
                 workflows["release.yml"] = release_path
-            return selectors.validate(
-                defs_path, bxl_path, workflows, affected_targets_path
-            )
+            graph = selectors.LiveGraph(buck2, affected) if live else None
+            return selectors.validate(defs_path, bxl_path, workflows, affected, graph)
 
     def test_registered_selectors_pass(self) -> None:
         self.assertEqual(self.validate(), [])
+        self.assertEqual(self.validate(live=True), [])
 
     def test_repository_state_is_valid(self) -> None:
         # The gate must pass against the real files it ships to guard, not only
         # against fixtures. Under Buck the declared input filegroup provides
-        # them at their repository-relative paths.
+        # them at their repository-relative paths; the live half needs Buck
+        # and is exercised by the ci-contract job.
         root = Path(
             os.environ.get(
                 "RUE_TIER_VALIDATION_ROOT", Path(__file__).resolve().parent.parent
@@ -147,19 +159,20 @@ class TierCiSelectorTests(unittest.TestCase):
         )
         self.assertEqual(errors, [])
 
-    def test_deleted_oracle_lane_fails(self) -> None:
-        # The RUE-1117 regression itself: the differential leaves required CI
-        # while its `tier = "slow"` ownership stays perfectly valid.
-        stripped = "\n".join(
-            line
-            for line in AFFECTED_TARGETS.splitlines()
-            if "oracle-diff" not in line
-        ) + "\n"
-        errors = self.validate(affected_targets=stripped)
-        self.assertEqual(len(errors), 2, errors)
-        for error in errors:
-            self.assertIn("rue_test_tier_slow", error)
-            self.assertIn("canonical corpus inventory", error)
+    def test_slow_tier_absent_from_the_derived_inventory_fails_live(self) -> None:
+        # The RUE-1117 regression in its graph-derived form: the differential
+        # keeps `tier = "slow"` but loses the CI-owner label, so the derived
+        # matrix stops running it while every structural check stays green.
+        errors = self.validate(live=True, corpus=("//:cli-tests-shard-0", "//:spec-tests"))
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("rue_test_tier_slow", errors[0])
+        self.assertIn("derived platform-corpus matrix runs none of it", errors[0])
+
+    def test_unavailable_or_empty_inventory_fails_live(self) -> None:
+        errors = "\n".join(self.validate(live=True, corpus=()))
+        self.assertIn("corpus-targets is empty", errors)
+        errors = "\n".join(self.validate(live=True, buck_fails=True))
+        self.assertIn("live graph query for the tier failed", errors)
 
     def test_bypassing_canonical_matrix_planner_fails(self) -> None:
         errors = self.validate(
@@ -170,24 +183,18 @@ class TierCiSelectorTests(unittest.TestCase):
             errors,
         )
 
-    def test_direct_workflow_invocation_requires_affected_targets(self) -> None:
-        errors = self.validate(
-            ci=CI_WORKFLOW.replace(
-                "          --affected-targets scripts/affected-targets\n", "", 1
+    def test_direct_workflow_invocation_requires_both_flags(self) -> None:
+        for flag in ("--affected-targets scripts/affected-targets", "--live-graph"):
+            errors = self.validate(ci=CI_WORKFLOW.replace(f"          {flag}\n", "", 1))
+            self.assertTrue(
+                any(f"must pass {flag.split()[0]}" in error for error in errors),
+                errors,
             )
-        )
-        self.assertTrue(
-            any("direct scripts/validate-tier-ci-selectors.py" in error for error in errors),
-            errors,
-        )
 
     def test_renamed_job_fails(self) -> None:
         errors = self.validate(ci=CI_WORKFLOW.replace("platform-corpus:", "corpus:"))
         self.assertTrue(
-            any(
-                "no longer defines job 'platform-corpus'" in error
-                for error in errors
-            ),
+            any("no longer defines job 'platform-corpus'" in error for error in errors),
             errors,
         )
 

@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Fail-closed evaluation for the stable required CI aggregate."""
+"""Fail-closed evaluation for the stable required CI aggregate.
+
+`ci-success` passes `toJSON(needs)`, which is exactly its own `needs:` list;
+`scripts/validate-ci-gate.py` proves that list names every job in the
+workflow. So the aggregate has nothing to enumerate on its own: every listed
+result must be `success`, with one exception — the merge-group-only
+`remote-execution` canary is `skipped` on every other event (RUE-320).
+"""
 
 from __future__ import annotations
 
@@ -7,54 +14,30 @@ import argparse
 import json
 from collections.abc import Mapping
 
-EXPECTED_REQUIRED_JOBS = (
-    "fmt",
-    "clippy",
-    "actionlint",
-    "remote-execution",
-    "rust-project",
-    "linux-premerge",
-    # RUE-1504: the performance-staleness gate runs beside the premerge lane
-    # rather than inside it. It is required exactly as it was when it was a
-    # step, so moving it cost no coverage.
-    "performance-staleness",
-    "native-platforms",
-    "compiler-reproducibility",
-    "rue-program-digests",
-    "affected-targets",
-    "platform-corpus",
-    "release",
-    "valgrind",
-    "asan",
-    "ci-contract",
-)
+SUPPORTED_EVENTS = ("pull_request", "merge_group", "workflow_dispatch")
+MERGE_GROUP_ONLY = "remote-execution"
 
 
 def validate_required_results(event: str, needs: Mapping[str, object]) -> list[str]:
     errors: list[str] = []
-    expected = set(EXPECTED_REQUIRED_JOBS)
-    actual = set(needs)
-    if missing := sorted(expected - actual):
-        errors.append(f"aggregate is missing expected job result(s): {', '.join(missing)}")
-    if extra := sorted(actual - expected):
-        errors.append(f"aggregate received unexpected job result(s): {', '.join(extra)}")
-
-    if event not in {"pull_request", "merge_group", "workflow_dispatch"}:
+    if event not in SUPPORTED_EVENTS:
         errors.append(f"unsupported CI event {event!r}")
-
-    for job in EXPECTED_REQUIRED_JOBS:
-        record = needs.get(job)
+    if not needs:
+        errors.append("aggregate received no job results; ci-success has no needs")
+    if MERGE_GROUP_ONLY not in needs:
+        errors.append(f"aggregate is missing the {MERGE_GROUP_ONLY} canary")
+    for job in sorted(needs):
+        record = needs[job]
         if not isinstance(record, Mapping):
-            if job in needs:
-                errors.append(f"{job}: malformed result record")
+            errors.append(f"{job}: malformed result record")
             continue
         result = record.get("result")
-        if job == "remote-execution":
-            expected_result = "success" if event == "merge_group" else "skipped"
+        if job == MERGE_GROUP_ONLY and event != "merge_group":
+            expected = "skipped"
         else:
-            expected_result = "success"
-        if result != expected_result:
-            errors.append(f"{job}: expected {expected_result}, got {result!r}")
+            expected = "success"
+        if result != expected:
+            errors.append(f"{job}: expected {expected}, got {result!r}")
     return errors
 
 
@@ -76,7 +59,7 @@ def main() -> int:
         for error in errors:
             print(f"::error::{error}")
         return 1
-    print(f"CI success: all {len(EXPECTED_REQUIRED_JOBS)} expected dependencies satisfied")
+    print(f"CI success: all {len(needs)} required dependencies satisfied")
     return 0
 
 

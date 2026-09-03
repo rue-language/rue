@@ -85,7 +85,7 @@ rue_sh_test(
 cached_corpus_suite(
     name = "oracle-diff-test",
     tier = "slow",
-    labels = ["rue_not_quick", "rue_heavy_suite"],
+    labels = ["rue_not_quick", "rue_heavy_suite", "rue_ci_dedicated_lane"],
     harness = ":rue-oracle-diff",
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
@@ -101,7 +101,7 @@ cached_corpus_suite(
 cached_corpus_suite(
     name = "oracle-diff-test-o2",
     tier = "slow",
-    labels = ["rue_not_quick", "rue_heavy_suite"],
+    labels = ["rue_not_quick", "rue_heavy_suite", "rue_ci_dedicated_lane"],
     harness = ":rue-oracle-diff",
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
@@ -117,7 +117,7 @@ cached_corpus_suite(
 cached_corpus_suite(
     name = "oracle-diff-test-o3",
     tier = "slow",
-    labels = ["rue_not_quick", "rue_heavy_suite"],
+    labels = ["rue_not_quick", "rue_heavy_suite", "rue_ci_dedicated_lane"],
     harness = ":rue-oracle-diff",
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
@@ -139,7 +139,7 @@ cached_corpus_suite(
 cached_corpus_suite(
     name = "oracle-diff-spec-test",
     tier = "slow",
-    labels = ["rue_not_quick", "rue_heavy_suite"],
+    labels = ["rue_not_quick", "rue_heavy_suite", "rue_ci_dedicated_lane"],
     harness = ":rue-oracle-diff",
     args = ["spec"],
     env = {
@@ -155,7 +155,7 @@ cached_corpus_suite(
 cached_corpus_suite(
     name = "oracle-diff-spec-test-o2",
     tier = "slow",
-    labels = ["rue_not_quick", "rue_heavy_suite"],
+    labels = ["rue_not_quick", "rue_heavy_suite", "rue_ci_dedicated_lane"],
     harness = ":rue-oracle-diff",
     args = ["spec"],
     env = {
@@ -171,7 +171,7 @@ cached_corpus_suite(
 cached_corpus_suite(
     name = "oracle-diff-spec-test-o3",
     tier = "slow",
-    labels = ["rue_not_quick", "rue_heavy_suite"],
+    labels = ["rue_not_quick", "rue_heavy_suite", "rue_ci_dedicated_lane"],
     harness = ":rue-oracle-diff",
     args = ["spec"],
     env = {

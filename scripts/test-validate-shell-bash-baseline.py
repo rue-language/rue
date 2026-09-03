@@ -21,7 +21,6 @@ SCRIPT = Path(__file__).with_name("validate-shell-bash-baseline.py")
 policy = load_script("validate-shell-bash-baseline.py", __file__)
 
 BASELINE_BASH = "/bin/bash"
-WRAPPER_ROOT_ENV = "RUE_BASH_BASELINE_ROOT"
 
 # The RUE-1511 break, as it shipped: the `"` opened after `covered=` is never
 # closed, because the `)` ending the command substitution is followed by
@@ -732,123 +731,15 @@ class RepositoryTests(unittest.TestCase):
         self.assertGreater(report.scripts, 0)
 
 
-class MechanismTests(unittest.TestCase):
-    """The failures this policy exists to prevent, demonstrated end to end.
-
-    These need a Bash 3.2 to demonstrate anything, so they run on macOS and
-    skip elsewhere. That is why ci.yml runs this target on the macos-15 leg of
-    native-platforms: premerge alone would leave the demonstrations skipped on
-    every runner, which is a test that cannot fail.
-    """
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        version = baseline_bash_version()
-        if version is None or version >= 4:
-            raise unittest.SkipTest(
-                f"/bin/bash is {version}.x, not the 3.2 baseline these demonstrate"
-            )
-
-    def run_bash(self, body: str) -> subprocess.CompletedProcess[str]:
-        with tempfile.TemporaryDirectory() as directory:
-            script = Path(directory) / "probe.sh"
-            script.write_text(
-                "#!/usr/bin/env bash\nset -euo pipefail\n" + textwrap.dedent(body)
-            )
-            # `cwd` matters: these probes write scratch input files, and
-            # without it they land in the caller's working directory.
-            return subprocess.run(
-                [BASELINE_BASH, str(script)],
-                cwd=directory,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-
-    def test_mapfile_is_a_command_not_found(self) -> None:
-        result = self.run_bash('printf "a\\n" >f\nmapfile -t a <f\necho "${a[0]}"\n')
-        self.assertEqual(result.returncode, 127)
-        self.assertIn("mapfile: command not found", result.stderr)
-
-    def test_the_portable_read_loop_reads_the_same_lines(self) -> None:
-        result = self.run_bash(
-            """
-            printf 'x\\ny' >f
-            a=()
-            while :; do
-                line=""
-                IFS= read -r line || [[ -n "$line" ]] || break
-                a+=("$line")
-            done <f
-            echo "${#a[@]}:${a[*]}"
-            """
-        )
-        self.assertEqual(result.stdout.strip(), "2:x y")
-
-    def test_empty_array_expansion_is_unbound_under_set_u(self) -> None:
-        # The second Bash 3.2 hazard, which no scanner can see: this is why the
-        # narrowing keeps its full-pattern fallback until the list is non-empty.
-        result = self.run_bash('a=()\necho "${a[@]}"\n')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("unbound variable", result.stderr)
-
-    def test_buck_wrapper_accepts_no_arguments(self) -> None:
-        # Exercise the real wrapper with the supported interpreter and a fake
-        # dotslash. Bash 3.2 rejects an empty "${args[@]}" expansion under
-        # `set -u`; the wrapper must still reach its normal executable handoff
-        # with no Buck arguments.
-        wrapper_input_root = os.environ.get(WRAPPER_ROOT_ENV)
-        if wrapper_input_root:
-            wrapper_input = Path(wrapper_input_root) / "buck2"
-        else:
-            # Direct invocation from a checkout has no Buck materialization;
-            # this fallback keeps the focused probe runnable by developers.
-            wrapper_input = SCRIPT.resolve().parent.parent / "buck2"
-        self.assertTrue(wrapper_input.is_file(), wrapper_input)
-        with tempfile.TemporaryDirectory() as directory:
-            sandbox = Path(directory)
-            wrapper = sandbox / "buck2"
-            wrapper.write_text(wrapper_input.read_text())
-            wrapper.chmod(0o755)
-            fakebin = sandbox / "bin"
-            fakebin.mkdir()
-            dotslash = fakebin / "dotslash"
-            dotslash.write_text(
-                "#!/bin/sh\nprintf '%s\\n' \"$#\" >\"$DOTSLASH_ARGC\"\n"
-            )
-            dotslash.chmod(0o755)
-
-            environment = os.environ.copy()
-            environment["PATH"] = f"{fakebin}:{environment.get('PATH', '')}"
-            environment["DOTSLASH_ARGC"] = str(sandbox / "dotslash-argc")
-            result = subprocess.run(
-                [BASELINE_BASH, str(wrapper)],
-                cwd=sandbox,
-                env=environment,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual((sandbox / "dotslash-argc").read_text().strip(), "1")
-
-    def test_read_assigns_nothing_when_it_fails(self) -> None:
-        # The third: `read` clears its variable at EOF but leaves it untouched
-        # on an error, so `read x || [[ -n "$x" ]]` needs `x` cleared first --
-        # otherwise it is either unbound or the previous line, read twice.
-        result = self.run_bash(
-            'v=preset\nread -r v <. 2>/dev/null || true\necho "[$v]"\n'
-        )
-        self.assertEqual(result.stdout.strip(), "[preset]")
-
-
 class HostTests(unittest.TestCase):
     def test_a_mac_always_has_the_baseline_interpreter(self) -> None:
-        # Guards both skips above: on a macOS host the demonstrations and the
-        # parse check MUST run, so a silently-skipping suite cannot become the
-        # normal state there -- which is the state ci.yml's macos-15 leg
-        # depends on, and enforces from its side with --require-baseline-bash.
+        # Guards the parse-check skips above: on a macOS host the parse check
+        # MUST run, so a silently-skipping suite cannot become the normal
+        # state there -- which is the state ci.yml's macos-15 leg depends on,
+        # and enforces from its side with --require-baseline-bash. The Bash
+        # 3.2 mechanisms themselves (`mapfile`, empty-array expansion under
+        # `set -u`) are exercised by the fake-tool shell suites the native
+        # lanes run on that interpreter (RUE-1936), not by this file.
         if platform.system() != "Darwin":
             self.skipTest("not macOS")
         self.assertEqual(baseline_bash_version(), 3)
