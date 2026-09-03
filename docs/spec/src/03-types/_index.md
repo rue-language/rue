@@ -31,3 +31,14 @@ The following types are zero-sized:
 {{ rule(id="3.0:4", cat="normative") }}
 
 Zero-sized types have an alignment of 1 byte.
+
+## Recursive Value Types
+
+{{ rule(id="3.0:5", cat="legality-rule") }}
+
+A struct or enum **MUST NOT** contain itself by value, either directly or
+through a cycle of struct fields, enum payloads, or array elements. A non-zero
+by-value cycle has no finite size. A raw-pointer edge does not contain its
+pointee by value and therefore breaks the cycle. For uniform structural
+well-formedness, array edges remain recursive-type edges even when their length
+is zero. A recursive by-value cycle is a compile-time error (E0483).

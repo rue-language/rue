@@ -1229,37 +1229,118 @@ define_error_codes! {
         references: [ErrorCodeReference { title: "Constant initializers must be acyclic", path: "docs/spec/src/06-items/05-constants.md", rule: Some("6.5:8") }],
     };
     // 462-473 are reserved by in-flight work.
-    LINEAR_FIELD_DROPPED_BY_DESTRUCTURE = 474;
-    CONST_MISSING_TYPE_ANNOTATION = 475;
+    LINEAR_FIELD_DROPPED_BY_DESTRUCTURE = 474 => {
+        explanation: "A field access on a struct declared `linear` consumes and destructures the smallest enclosing declared-linear place. Rue rejects that access when the residue contains another linear value, because destroying the residue would silently discard its must-consume obligation. A struct that is only linear by infection instead uses ordinary partial-move rules.",
+        likely_cause: "Code projects one field from a declared-linear struct while a sibling field, nested field, or residual array element also carries a linear value. Consume the whole declared-linear value, or restructure the operation so every linear component is explicitly consumed.",
+        examples: [
+            ErrorCodeExample { title: "Destructure a declared-linear value with linear residue", source: "linear struct Token { value: i32 }\nlinear struct Holder { token: Token, tag: i32 }\nfn main() -> i32 {\n    let holder = Holder { token: Token { value: 1 }, tag: 41 };\n    holder.tag\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Consume the declared-linear value explicitly", source: "linear struct Token { value: i32 }\nlinear struct Holder { token: Token, tag: i32 }\nfn main() -> i32 {\n    let holder = Holder { token: Token { value: 1 }, tag: 41 };\n    @drop(holder);\n    0\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Declared-linear destructuring cannot drop linear residue", path: "docs/spec/src/03-types/08-move-semantics.md", rule: Some("3.8:60") }],
+    };
+    CONST_MISSING_TYPE_ANNOTATION = 475 => {
+        explanation: "A value constant must declare its type explicitly. Rue does not infer a type for value constants; module bindings and callable function aliases are different constant forms and remain unannotated because no source-level type names those values.",
+        likely_cause: "A declaration such as `const LIMIT = 42;` supplies a runtime value but omits the `: Type` annotation. Add the intended type after the constant name; do not add an annotation to an `@import` module binding or callable alias.",
+        examples: [
+            ErrorCodeExample { title: "Omit a value constant's type", source: "const LIMIT = 42;\nfn main() -> i32 { LIMIT }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Annotate the value constant", source: "const LIMIT: i32 = 42;\nfn main() -> i32 { LIMIT }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Value constants require type annotations", path: "docs/spec/src/06-items/05-constants.md", rule: Some("6.5:4") }],
+    };
     // 476-477 are reserved by in-flight work.
-    LINEAR_VALUE_DISCARDED = 478;
+    LINEAR_VALUE_DISCARDED = 478 => {
+        explanation: "A discarded expression result is dropped rather than transferred to a consumer. Rue rejects discarding a value whose type carries a linear obligation, including with a bare expression statement or `let _ = value;`, because an implicit drop is not consumption. `@drop(value)` is the explicit-discard operation and consumes its operand.",
+        likely_cause: "A function call or other expression produces a linear value but its result is ignored, or a wildcard `let` was used in an attempt to consume it. Pass or return the value, bind and consume it, or use `@drop` when intentional destruction is the desired consumption.",
+        examples: [
+            ErrorCodeExample { title: "Discard a linear value with a wildcard binding", source: "linear struct Token { value: i32 }\nfn make() -> Token { Token { value: 42 } }\nfn main() -> i32 {\n    let _ = make();\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Explicitly drop the linear value", source: "linear struct Token { value: i32 }\nfn make() -> Token { Token { value: 42 } }\nfn main() -> i32 {\n    let token = make();\n    @drop(token);\n    0\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Wildcard bindings discard rather than consume", path: "docs/spec/src/05-statements/01-let-statements.md", rule: Some("5.1:16") },
+            ErrorCodeReference { title: "Explicit drop consumes its operand", path: "docs/spec/src/03-types/09-destructors.md", rule: Some("3.9:37") },
+        ],
+    };
     // 479 is reserved by in-flight work.
-    ASSIGN_TO_PARTIALLY_MOVED_ARRAY = 480;
+    ASSIGN_TO_PARTIALLY_MOVED_ARRAY = 480 => {
+        explanation: "After a non-Copy array element is moved out, Rue tracks the array as partially moved. Assigning to an element, or through an element to one of its fields, cannot re-establish per-element ownership and is rejected even when the assignment targets the same constant index. Whole-array reinitialization restores ownership for an affine array; when the element type carries a linear value, it is legal only after every element has first been consumed.",
+        likely_cause: "Code moves an element from an array and later writes an element or nested field of that array. For an affine array, replace the whole array value instead. For an array carrying linear values, explicitly consume every remaining live element before whole-array reinitialization, or restructure the code so no element is moved before the write.",
+        examples: [
+            ErrorCodeExample { title: "Write the element that was moved out", source: "struct Item { value: i32 }\nfn take(item: Item) -> i32 { item.value }\nfn main() -> i32 {\n    let mut items = [Item { value: 1 }, Item { value: 2 }];\n    let first = take(items[0]);\n    items[0] = Item { value: 9 };\n    first\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Reinitialize the whole array", source: "struct Item { value: i32 }\nfn take(item: Item) -> i32 { item.value }\nfn main() -> i32 {\n    let mut items = [Item { value: 1 }, Item { value: 2 }];\n    let first = take(items[0]);\n    items = [Item { value: 9 }, Item { value: 10 }];\n    first + items[0].value\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Partially moved arrays reject element writes", path: "docs/spec/src/03-types/08-move-semantics.md", rule: Some("3.8:72") },
+            ErrorCodeReference { title: "Linear array reinitialization requires every element to be consumed", path: "docs/spec/src/03-types/08-move-semantics.md", rule: Some("3.8:77") },
+        ],
+    };
     /// An array length `[T; N]` where `N` is not a usable compile-time constant
     /// (a runtime variable, a negative/non-integer value, or an undefined
     /// name). Named lengths must resolve via the const evaluator (RUE-16).
-    INVALID_ARRAY_LENGTH = 481;
+    INVALID_ARRAY_LENGTH = 481 => {
+        explanation: "An array length must be a non-negative integer value known at compile time. Integer literals, annotated integer constants, comptime parameters, and comptime-evaluable function calls may provide the length; runtime variables, undefined names, non-integer values, and negative results cannot.",
+        likely_cause: "The expression after the semicolon in `[T; N]` depends on runtime state, resolves to a value other than a non-negative integer, or names a missing or unannotated constant. Replace it with a valid compile-time integer expression and annotate any value constant it uses.",
+        examples: [
+            ErrorCodeExample { title: "Use a negative array length", source: "const LENGTH: i32 = -1;\nfn main() -> i32 {\n    let values: [i32; LENGTH] = [];\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use an annotated non-negative constant", source: "const LENGTH: i32 = 2;\nfn main() -> i32 {\n    let values: [i32; LENGTH] = [20, 22];\n    values[0] + values[1]\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Array lengths are non-negative compile-time integers", path: "docs/spec/src/03-types/05-array-types.md", rule: Some("3.5:2") }],
+    };
     /// Source nests deeper than the compiler's fixed recursion limit
     /// (`MAX_NESTING_DEPTH`). A parser/AstGen guard reports this instead of
     /// overflowing the stack on pathologically nested input (RUE-42). It is a
     /// resource-limit diagnostic rather than a struct/enum error, but the
     /// reserved code lives in this block.
-    NESTING_LIMIT_EXCEEDED = 482;
+    NESTING_LIMIT_EXCEEDED = 482 => {
+        explanation: "The source exceeds Rue's fixed syntactic nesting limit of 256 levels. The parser and syntax-to-IR lowering enforce this resource bound and emit E0482 instead of allowing deeply recursive syntax processing to overflow the compiler stack.",
+        likely_cause: "Generated or hand-written code contains more than 256 nested parentheses, blocks, types, field or method chains, operators, or `else if` branches. Flatten the expression, introduce intermediate bindings or helper functions, or correct a generator that produced pathological nesting.",
+        examples: [ErrorCodeExample { title: "Exceed the syntactic nesting limit", source: "fn main() -> i32 { ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((7)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))) }", outcome: ErrorCodeExampleOutcome::EmitsThisCode }],
+        references: [
+            ErrorCodeReference { title: "Syntactic nesting depth limit", path: "docs/spec/src/appendices/C-implementation-limits.md", rule: Some("C.6:3") },
+            ErrorCodeReference { title: "Implementation limits fail diagnostically", path: "docs/spec/src/appendices/C-implementation-limits.md", rule: Some("C.1:2") },
+        ],
+    };
     /// A struct or enum (transitively) contains itself by value with no
-    /// pointer indirection, so it has no finite size/layout (RUE-264).
+    /// pointer indirection, violating recursive-type well-formedness (RUE-264).
     /// Analogous to Rust's E0072 and a sibling of [`Self::CONST_INITIALIZER_CYCLE`]
     /// (E0461) for the type-definition graph.
-    RECURSIVE_TYPE_INFINITE_SIZE = 483;
+    RECURSIVE_TYPE_INFINITE_SIZE = 483 => {
+        explanation: "A struct or enum contains itself by value, directly or through other inline fields, payloads, or array elements. A non-zero by-value cycle has no finite size or layout. For uniform structural well-formedness, Rue also treats zero-length array edges as recursive-type edges. A raw pointer has a fixed size independent of its pointee, so pointer indirection can break the inline containment cycle.",
+        likely_cause: "A recursive data structure stores its next node directly, or two aggregate types contain one another without indirection. Change at least one edge of every by-value cycle to a pointer or redesign the representation so recursive values are stored out of line.",
+        examples: [
+            ErrorCodeExample { title: "Contain a type directly inside itself", source: "struct Node { next: Node, value: i32 }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Break recursion with pointer indirection", source: "struct Node { next: ptr const Node, value: i32 }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Recursive value types require indirection", path: "docs/spec/src/03-types/_index.md", rule: Some("3.0:5") }],
+    };
     /// A pattern binds the same identifier more than once (e.g. an enum
     /// payload pattern `Rect(w, w)`). Every binding in a pattern must be a
     /// fresh name (spec 4.7:30); reusing one silently shadows the earlier
     /// binding and discards its value (RUE-269, analogous to Rust E0416).
-    DUPLICATE_PATTERN_BINDING = 484;
+    DUPLICATE_PATTERN_BINDING = 484 => {
+        explanation: "Each named payload position in one match pattern introduces a fresh binding. Reusing an identifier in the same pattern would shadow an earlier payload and lose access to that value, so Rue rejects the pattern. The wildcard `_` introduces no binding and may repeat.",
+        likely_cause: "Two fields of an enum payload pattern were given the same variable name, often when their roles or types are similar. Give every value that must remain accessible a distinct name, or use `_` for a payload that may legally be discarded.",
+        examples: [
+            ErrorCodeExample { title: "Bind two payloads to one name", source: "enum Shape { Rect(i32, i32) }\nfn main() -> i32 {\n    match Shape.Rect(20, 22) {\n        Shape.Rect(side, side) => side,\n    }\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Bind both payloads distinctly", source: "enum Shape { Rect(i32, i32) }\nfn main() -> i32 {\n    match Shape.Rect(20, 22) {\n        Shape.Rect(width, height) => width + height,\n    }\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Payload patterns bind fresh names", path: "docs/spec/src/04-expressions/07-match-expressions.md", rule: Some("4.7:30") }],
+    };
     /// `@raw`/`@raw_mut` applied to a non-place operand (literal, arithmetic,
     /// call result). A raw pointer must address an addressable place (spec
     /// 9.1:12, ADR-0028); taking the "address" of a temporary value would
     /// reinterpret the value's bits as a pointer (RUE-274).
-    RAW_REQUIRES_PLACE = 485;
+    RAW_REQUIRES_PLACE = 485 => {
+        explanation: "`@raw` and `@raw_mut` form pointers to existing storage, so their operand must be an addressable place such as a local variable, field, or array element. Literals, arithmetic expressions, and call results are temporary values rather than places and cannot supply a stable address. Raw-pointer operations must also appear in a `checked` block.",
+        likely_cause: "Code applies `@raw` or `@raw_mut` directly to a computed value. Store the value in a local first and take that place's address inside `checked`, or point at an existing field or array element whose lifetime covers the pointer use.",
+        examples: [
+            ErrorCodeExample { title: "Take the address of a temporary value", source: "fn main() -> i32 {\n    let pointer: ptr const i32 = checked { @raw(40 + 2) };\n    checked { @ptr_read(pointer) }\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Take the address of a local place", source: "fn main() -> i32 {\n    let value: i32 = 42;\n    let pointer: ptr const i32 = checked { @raw(value) };\n    checked { @ptr_read(pointer) }\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Raw pointer constructors address places", path: "docs/spec/src/09-unchecked-code/02-intrinsics.md", rule: Some("9.2:6a") },
+            ErrorCodeReference { title: "Raw pointer operations require checked", path: "docs/spec/src/09-unchecked-code/01-syntax.md", rule: Some("9.1:12") },
+        ],
+    };
     /// A match-arm payload position that binds nothing — an explicit `_`
     /// discard, or a position covered by the all-wildcard bare variant
     /// pattern `E.A` — names a payload field whose type carries a linear
@@ -4236,6 +4317,63 @@ mod tests {
                 error_code_metadata()
                     .iter()
                     .all(|metadata| metadata.code != reserved)
+            );
+            assert_eq!(error_code_explanation(reserved), None);
+            assert_eq!(
+                reserved.to_string().parse::<ErrorCode>(),
+                Err(ParseErrorCodeError::Unknown(reserved))
+            );
+        }
+    }
+
+    #[test]
+    fn active_ownership_array_resource_type_and_pointer_explanation_band_is_complete_and_bounded() {
+        let expected = [
+            ErrorCode::LINEAR_FIELD_DROPPED_BY_DESTRUCTURE,
+            ErrorCode::CONST_MISSING_TYPE_ANNOTATION,
+            ErrorCode::LINEAR_VALUE_DISCARDED,
+            ErrorCode::ASSIGN_TO_PARTIALLY_MOVED_ARRAY,
+            ErrorCode::INVALID_ARRAY_LENGTH,
+            ErrorCode::NESTING_LIMIT_EXCEEDED,
+            ErrorCode::RECURSIVE_TYPE_INFINITE_SIZE,
+            ErrorCode::DUPLICATE_PATTERN_BINDING,
+            ErrorCode::RAW_REQUIRES_PLACE,
+        ];
+        let active = error_code_metadata()
+            .iter()
+            .filter(|metadata| (474..=485).contains(&metadata.code.0))
+            .map(|metadata| {
+                assert_eq!(metadata.source_path, "crates/rue-error/src/lib.rs");
+                metadata.code
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(active, expected);
+        let explained = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (474..=485)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(explained, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
+        );
+
+        for reserved in [ErrorCode(476), ErrorCode(477), ErrorCode(479)] {
+            assert!(!RETIRED_ERROR_CODES.contains(&reserved));
+            assert!(
+                error_code_metadata()
+                    .iter()
+                    .all(|metadata| metadata.code != reserved)
+            );
+            assert!(
+                ERROR_CODE_EXPLANATION_DECLARATIONS
+                    .iter()
+                    .all(|declaration| declaration.code != reserved)
             );
             assert_eq!(error_code_explanation(reserved), None);
             assert_eq!(
