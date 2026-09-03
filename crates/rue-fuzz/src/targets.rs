@@ -1869,6 +1869,75 @@ mod tests {
     }
 
     #[test]
+    fn sema_string_len_wrong_return_is_an_ordinary_diagnostic() {
+        // Saved sema-fuzzer finding for RUE-1513. The intrinsic-looking text
+        // belongs to the string literal; reassignment is valid, and `len()`
+        // has its ordinary u64 result type. Returning it from `main` must stop
+        // at E0206 rather than reaching CFG verification with an i32/u64 slot
+        // disagreement.
+        let saved = r#"fn main() -> i32 {
+    let mut s: str = "hello";
+    s = "hi @intCast   ";
+(s.len())
+}"#;
+        let errors = query_semantics(saved).expect_err("u64 return rejects");
+        assert_eq!(errors.len(), 1, "diagnostic order changed: {errors:?}");
+        assert!(
+            matches!(
+                errors.iter().next().map(|error| &error.kind),
+                Some(rue_error::ErrorKind::TypeMismatch { expected, found })
+                    if expected == "i32" && found == "u64"
+            ),
+            "unexpected saved-input diagnostic: {errors:?}"
+        );
+        SemaTarget.fuzz(saved.as_bytes());
+
+        // Moving the intrinsic outside the closing quote is a parser error,
+        // not a second semantic path for the saved input.
+        let malformed = r#"fn main() -> i32 {
+    let mut s: str = "hello";
+    s = "hi" @intCast;
+(s.len())
+}"#;
+        let errors = query_semantics(malformed).expect_err("adjacent token rejects");
+        assert_eq!(errors.len(), 1, "diagnostic order changed: {errors:?}");
+        assert!(
+            matches!(
+                errors.iter().next().map(|error| &error.kind),
+                Some(rue_error::ErrorKind::UnexpectedToken { expected, found })
+                    if expected == "';'" && found == "'@'"
+            ),
+            "unexpected adjacent-token diagnostic: {errors:?}"
+        );
+        SemaTarget.fuzz(malformed.as_bytes());
+
+        // Nearby controls keep reassignment, len typing, and the explicit
+        // narrowing route live in the production target.
+        let valid = r#"fn main() -> i32 {
+    let mut s: str = "hello";
+    s = "hi @intCast   ";
+    let n: u64 = s.len();
+    @intCast(n)
+}"#;
+        query_semantics(valid).expect("valid assignment, len, and cast reach CFG");
+        SemaTarget.fuzz(valid.as_bytes());
+
+        let ordinary_wrong_return = "fn main() -> i32 { let n: u64 = 2; n }";
+        let errors =
+            query_semantics(ordinary_wrong_return).expect_err("ordinary u64 return rejects");
+        assert_eq!(errors.len(), 1, "diagnostic order changed: {errors:?}");
+        assert!(
+            matches!(
+                errors.iter().next().map(|error| &error.kind),
+                Some(rue_error::ErrorKind::TypeMismatch { expected, found })
+                    if expected == "i32" && found == "u64"
+            ),
+            "unexpected wrong-return diagnostic: {errors:?}"
+        );
+        SemaTarget.fuzz(ordinary_wrong_return.as_bytes());
+    }
+
+    #[test]
     fn sema_rejects_runtime_call_struct_heads_without_an_ice() {
         // Saved sema-fuzzer finding for RUE-1570. The parser legitimately
         // represents `test(3) { x }` as an inline constructor head; semantic

@@ -591,3 +591,64 @@ args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0411", "no method named 'len' found for type 'str'"]
 compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification"]
+
+# --- Saved sema-fuzzer return mismatch (RUE-1513) ---------------------------
+
+[[case]]
+name = "saved_string_len_wrong_return_is_e0206"
+description = "The exact saved sema-fuzzer input keeps intrinsic-looking text inside the reassigned string and reports one ordinary u64-to-i32 return mismatch."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut s: str = "hello";
+    s = "hi @intCast   ";
+(s.len())
+}
+""" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E0206 main.rue:1:18"]
+error_contains = ['"message":"type mismatch: expected i32, found u64"']
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification"]
+
+[[case]]
+name = "string_assignment_intrinsic_token_adjacency_is_parse_error"
+description = "Control: moving `@intCast` immediately outside the closing quote is one parser diagnostic, so token adjacency cannot be confused with the saved literal contents."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut s: str = "hello";
+    s = "hi" @intCast;
+(s.len())
+}
+""" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E0100 main.rue:3:14"]
+error_contains = ["\"message\":\"expected ';', found '@'\""]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification"]
+
+[[case]]
+name = "string_reassignment_len_u64_and_intcast_succeed"
+description = "Control: the saved assignment shape is valid, `len()` remains u64, and an explicit integer cast returns the reassigned string's byte length."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut s: str = "hello";
+    s = "hi @intCast   ";
+    let n: u64 = s.len();
+    @intCast(n)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 14
+
+[[case]]
+name = "ordinary_u64_wrong_return_is_e0206"
+description = "Control: the same return mismatch without strings remains the ordinary E0206 baseline."
+files = [{ path = "main.rue", source = "fn main() -> i32 { let n: u64 = 2; n }" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E0206 main.rue:1:18"]
+error_contains = ['"message":"type mismatch: expected i32, found u64"']
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification"]
