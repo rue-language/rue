@@ -1,5 +1,7 @@
 #[allow(unused_imports)]
 use super::*;
+use crate::{DiscoverySourceAssembler, SourceMetadata};
+use rue_span::FileId;
 
 /// The production durable declaration set for a snapshot, produced by the
 /// semantic-nucleus batch projection — the same terminal the production
@@ -584,4 +586,353 @@ impl RevisionedQueryDatabase {
             .digests
             .insert(identity.with_canonical_producer().into_owned(), digest);
     }
+}
+
+pub(super) fn lookup_history_key(name: impl Into<Arc<str>>) -> LookupObservationKey {
+    LookupObservationKey::Name(LookupNameKey {
+        module: ModuleId::from_logical_path("history.rue").unwrap(),
+        namespace: DefinitionNamespace::ModuleItem,
+        name: name.into(),
+    })
+}
+
+pub(super) fn source_snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
+    let physical = entries
+        .iter()
+        .map(|(id, path, _, _)| (FileId::new(*id), (*path).to_owned()))
+        .collect::<AHashMap<_, _>>();
+    let logical = entries
+        .iter()
+        .map(|(id, _, logical, _)| (FileId::new(*id), (*logical).to_owned()))
+        .collect::<AHashMap<_, _>>();
+    let metadata = SourceMetadata::new(FileId::new(root), physical, logical).unwrap();
+    SourceSnapshot::new(
+        metadata,
+        entries
+            .iter()
+            .map(|(id, _, _, text)| (FileId::new(*id), Arc::new((*text).to_owned())))
+            .collect(),
+    )
+    .unwrap()
+}
+
+pub(super) fn semantic_configuration() -> crate::semantic_query_nucleus::SemanticQueryConfiguration
+{
+    crate::semantic_query_nucleus::SemanticQueryConfiguration {
+        target: rue_target::Target::X86_64Linux,
+        preview_features: crate::StablePreviewFeatures::new(&crate::PreviewFeatures::default()),
+    }
+}
+
+pub(super) fn free_function_instance(module: &ModuleId, name: &str) -> crate::FunctionInstanceKey {
+    crate::FunctionInstanceKey::Definition(crate::StableDefinitionKey::from_stable_parts(
+        module.clone(),
+        crate::StableDefinitionNamespace::Value,
+        crate::StableDefinitionKind::Function,
+        Arc::from(name),
+        None,
+    ))
+}
+
+pub(super) fn declaration_candidate(
+    database: &RevisionedQueryDatabase,
+    revision: Revision,
+    module: &ModuleId,
+    category: crate::declaration_candidate::DeclarationCandidateCategory,
+    name: &str,
+) -> crate::declaration_candidate::DeclarationCandidateKey {
+    let attempt = database.runtime.request_registered(
+        &database.declaration_occurrence_indexes,
+        revision,
+        ModuleQueryKey(module.clone()),
+        CancellationToken::new(),
+    );
+    let rue_query::QueryOutcome::Success(value) = attempt.terminal().unwrap().outcome() else {
+        unreachable!()
+    };
+    let DeclarationOccurrenceIndexValue::Available(index) = value else {
+        panic!("declaration occurrence index unavailable")
+    };
+    index
+        .capabilities
+        .keys()
+        .find(|candidate| candidate.category == category && candidate.name.as_ref() == name)
+        .cloned()
+        .unwrap_or_else(|| panic!("missing {category:?} candidate `{name}`"))
+}
+
+pub(super) fn revision_for(
+    database: &mut RevisionedQueryDatabase,
+    snapshot: &SourceSnapshot,
+) -> Revision {
+    database.source_revision(
+        &super::super::session::ExactSourceInput::new(snapshot),
+        snapshot,
+    )
+}
+
+pub(super) fn request_lookup_name(
+    database: &RevisionedQueryDatabase,
+    revision: Revision,
+    module: &ModuleId,
+    namespace: DefinitionNamespace,
+    name: &str,
+) -> QueryRequestAttempt<LookupNameValue> {
+    database.runtime.request_registered(
+        &database.lookup_names,
+        revision,
+        LookupNameKey {
+            module: module.clone(),
+            namespace,
+            name: Arc::from(name),
+        },
+        CancellationToken::new(),
+    )
+}
+
+pub(super) fn canonical_of(
+    attempt: &QueryRequestAttempt<LookupNameValue>,
+) -> CanonicalNameResolution {
+    let terminal = attempt.terminal().unwrap();
+    let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+        unreachable!("LookupName publishes typed values")
+    };
+    CanonicalNameResolution::classify(value)
+}
+
+pub(super) fn request_lookup_import(
+    database: &RevisionedQueryDatabase,
+    revision: Revision,
+    module: &ModuleId,
+    specifier: &str,
+) -> QueryRequestAttempt<LookupImportValue> {
+    database.runtime.request_registered(
+        &database.lookup_imports,
+        revision,
+        LookupImportKey {
+            module: module.clone(),
+            specifier: Arc::from(specifier),
+        },
+        CancellationToken::new(),
+    )
+}
+
+pub(super) fn import_binding(
+    attempt: &QueryRequestAttempt<LookupImportValue>,
+) -> LookupImportValue {
+    let terminal = attempt.terminal().unwrap();
+    let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+        unreachable!("LookupImport publishes typed values")
+    };
+    value.clone()
+}
+
+pub(super) fn anonymous_identity_for_digest_test(
+    name: &str,
+    kind: rue_air::AnonymousNominalKind,
+) -> crate::AnonymousNominalKey {
+    let module = ModuleId::from_logical_path("digest-test.rue").unwrap();
+    let definition = crate::StableDefinitionKey::from_stable_parts(
+        module,
+        crate::StableDefinitionNamespace::Value,
+        crate::StableDefinitionKind::Function,
+        Arc::from(name),
+        None,
+    );
+    crate::AnonymousNominalKey {
+        kind,
+        producer: crate::StableProducerId::Function(Node::new(
+            crate::FunctionInstanceKey::Definition(definition),
+        )),
+        anchor: rue_rir::RirStructuralAnchor::new(vec![
+            rue_rir::RirStructuralPathSegment::Body,
+            rue_rir::RirStructuralPathSegment::AnonymousType(0),
+        ]),
+    }
+}
+
+pub(super) fn trusted_option_body_snapshot(
+    root_source: &str,
+    option_source: &str,
+) -> SourceSnapshot {
+    let option = FileId::new(2);
+    trusted_body_snapshot(root_source, Some((option, option_source)), None)
+}
+
+pub(super) fn trusted_body_snapshot(
+    root_source: &str,
+    option_source: Option<(FileId, &str)>,
+    strbuf_source: Option<(FileId, &str)>,
+) -> SourceSnapshot {
+    let root = FileId::new(1);
+    let mut physical = AHashMap::from([(root, "/project/main.rue".to_owned())]);
+    let mut logical = AHashMap::from([(root, "main.rue".to_owned())]);
+    let mut trusted = AHashSet::new();
+    let mut sources = vec![(root, Arc::new(root_source.to_owned()))];
+    if let Some((option, source)) = option_source {
+        physical.insert(option, "/sdk/option.rue".to_owned());
+        logical.insert(option, crate::OPTION_MODULE_LOGICAL_PATH.to_owned());
+        trusted.insert(option);
+        sources.push((option, Arc::new(source.to_owned())));
+    }
+    if let Some((strbuf, source)) = strbuf_source {
+        physical.insert(strbuf, "/sdk/strbuf.rue".to_owned());
+        logical.insert(strbuf, crate::STRBUF_MODULE_LOGICAL_PATH.to_owned());
+        trusted.insert(strbuf);
+        sources.push((strbuf, Arc::new(source.to_owned())));
+    }
+    let metadata =
+        SourceMetadata::new_with_trusted_standard_library(root, physical, logical, trusted)
+            .expect("trusted Option metadata is valid");
+    SourceSnapshot::new(metadata, sources).expect("trusted body snapshot is valid")
+}
+
+pub(super) fn begin_database_plan(
+    database: &mut RevisionedQueryDatabase,
+    assembler: &mut DiscoverySourceAssembler,
+    context: ImportDiscoveryContext,
+) -> (
+    SourceSnapshot,
+    AcceptedReadManifest,
+    ImportInputRevision,
+    ImportDiscoveryPlan,
+) {
+    let snapshot = assembler.snapshot().unwrap();
+    let reads = assembler.accepted_read_manifest();
+    let revision = database
+        .begin_import_inputs(&snapshot, context.clone(), reads.clone())
+        .unwrap();
+    let runtime_revision = Revision::new(revision.revision_id, revision.compatibility_token);
+    let root = ModuleId::from_logical_path("main.rue").unwrap();
+    let modules = snapshot
+        .source_revision()
+        .modules()
+        .iter()
+        .map(|module| module.module.clone())
+        .collect::<Vec<_>>();
+    let (program, _) = database.parse_program(runtime_revision, &root, modules);
+    let plan = ImportDiscoveryPlan::new(&program.unwrap(), context).unwrap();
+    (snapshot, reads, revision, plan)
+}
+
+pub(super) fn publish_manifest_observations(
+    database: &mut RevisionedQueryDatabase,
+    snapshot: &SourceSnapshot,
+    reads: AcceptedReadManifest,
+    plan: &ImportDiscoveryPlan,
+    mut revision: ImportInputRevision,
+) -> ImportInputRevision {
+    let roots = ImportDemandRoots::whole_plan(plan);
+    loop {
+        let frontier = database
+            .import_frontier(revision, plan, ImportDemandMode::Rooted, &roots)
+            .unwrap();
+        if frontier.requests().is_empty() {
+            return revision;
+        }
+        let observations = frontier
+            .requests()
+            .iter()
+            .cloned()
+            .map(|request| {
+                let Some(entry) = reads
+                    .iter()
+                    .find(|entry| entry.requested_path() == request.requested_path())
+                else {
+                    return ImportObservation::absent(request);
+                };
+                let file_id = snapshot
+                    .files()
+                    .find(|source| snapshot.module_id(source.file_id) == Some(entry.module()))
+                    .unwrap()
+                    .file_id;
+                let accepted = crate::AcceptedImportSource::new(
+                    entry.requested_path(),
+                    entry.canonical_path(),
+                    entry.metadata_identity(),
+                    entry.metadata_fingerprint(),
+                    snapshot.shared_source_text(file_id).unwrap(),
+                )
+                .unwrap();
+                ImportObservation::accepted(request, accepted).unwrap()
+            })
+            .collect();
+        revision = database
+            .publish_import_batch(&frontier, snapshot, reads.clone(), observations)
+            .unwrap();
+    }
+}
+
+pub(super) fn declaration_import_key(
+    module: &ModuleId,
+    category: crate::declaration_candidate::DeclarationCandidateCategory,
+    name: impl Into<Arc<str>>,
+    owner: Option<crate::declaration_candidate::DeclarationCandidateOwner>,
+    occurrence: u32,
+    specifier: &str,
+) -> DeclarationImportQueryKey {
+    DeclarationImportQueryKey(crate::declaration_candidate::DeclarationImportSiteKey {
+        declaration: crate::declaration_candidate::DeclarationCandidateKey {
+            module: module.clone(),
+            category,
+            name: name.into(),
+            owner,
+            duplicate_discriminator: 0,
+        },
+        occurrence,
+        specifier: Arc::from(specifier),
+    })
+}
+
+pub(super) fn request_semantic_nucleus(
+    database: &RevisionedQueryDatabase,
+    revision: Revision,
+    key: crate::semantic_query_nucleus::SemanticNucleusKey,
+) -> crate::semantic_query_nucleus::SemanticNucleusValue {
+    request_semantic_nucleus_observed(database, revision, key).0
+}
+
+pub(super) fn request_semantic_nucleus_observed(
+    database: &RevisionedQueryDatabase,
+    revision: Revision,
+    key: crate::semantic_query_nucleus::SemanticNucleusKey,
+) -> (
+    crate::semantic_query_nucleus::SemanticNucleusValue,
+    QueryRequestAttempt<crate::semantic_query_nucleus::SemanticNucleusValue>,
+) {
+    let attempt = database.runtime.request_registered(
+        &database.semantic_nucleus,
+        revision,
+        key,
+        CancellationToken::new(),
+    );
+    let terminal = attempt
+        .terminal()
+        .unwrap_or_else(|| panic!("semantic nucleus aborted: {:?}", attempt.abort()));
+    let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+        unreachable!()
+    };
+    (value.clone(), attempt)
+}
+
+/// The current node incarnation of one module-item lookup terminal. Reading a
+/// warm key returns its retained incarnation; an evicted key would rebuild a
+/// fresh incarnation, which is exactly what a birth-eviction window would
+/// leave behind.
+pub(super) fn lookup_incarnation(
+    database: &RevisionedQueryDatabase,
+    revision: Revision,
+    module: &ModuleId,
+    name: &str,
+) -> u64 {
+    request_lookup_name(
+        database,
+        revision,
+        module,
+        DefinitionNamespace::ModuleItem,
+        name,
+    )
+    .terminal()
+    .unwrap()
+    .node_incarnation()
 }
