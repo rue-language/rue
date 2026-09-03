@@ -622,7 +622,8 @@ Determinator (BTD, `facebookincubator/buck2-change-detector`) rather than a besp
 `owner()`/`rdeps()` query: the `affected-targets` job dumps the Buck graph with
 `buck2 targets` at the merge-base and at the head and feeds both dumps plus the
 changed-file list to `btd`, whose impacted-target closure is intersected with
-the selectable corpus set. `btd` is a checked-in DotSlash manifest for the
+the platform-corpus set and each gated lane's targets. `btd` is a checked-in
+DotSlash manifest for the
 immutable 2026-07-20 release; its archive size, BLAKE3 digest, platform mapping,
 and extraction path are reviewed in-tree before CI downloads it.
 
@@ -637,14 +638,41 @@ the workflow files, or
 parsing error.
 Because the determinator job always exits with a decision (full on error), it
 never blocks the merge queue, and a core-compiler change fans out through BTD's
-reverse-dependency closure to the whole corpus exactly as before. The
-deterministic force-full and gate logic is pinned by
-`scripts/test-affected-targets.sh`.
+reverse-dependency closure to the whole corpus exactly as before. The merge
+queue is the only path to trunk and `merge_group` always runs full, so
+under-selection on a pull request costs one queue ejection, never a merged
+regression (RUE-1935); that is why the determinator is a thin wrapper around
+BTD rather than a proof system. It publishes five outputs — `full`,
+`selected` (corpus targets), `selected_lanes`, `narrowed`, and the multiline
+`impacted` closure — plus the `corpus_matrix` the shard planner derives. The
+one documented transport hazard is an *undeclared* job output, which GitHub
+resolves to the empty string; `scripts/validate-ci-gate.py` fails closed on
+any `needs.<job>.outputs.<name>` reference without a declaration (RUE-1130).
+The deterministic force-full, gate, scope, and decision logic is pinned by
+`scripts/test-affected-targets.sh` with fake git, BTD, and `buck2 targets`.
 
 Selection is applied **within** each gated job, not by skipping the job:
-`scripts/ci-corpus-selected` decides at job start, and a deselected unit skips
+`scripts/ci-corpus-selected` decides at job start and writes `run=true|false`;
+`run=false` only when the decision was explicitly selective and the unit is
+absent from its list (corpus targets read `selected`, lanes read
+`selected_lanes`), so anything unset or malformed runs. A deselected unit skips
 the heavy steps (paying only the runner spin-up) while the check still reports
-success, so no branch-protection change is required.
+success, so no branch-protection change is required. The validator also
+requires every `ci-corpus-selected` step to name a lane the determinator can
+select and to read the output that carries that kind of selection; a lane
+name it never emits would otherwise be deselected on every selective run.
+
+The platform-corpus set is derived from the graph (RUE-1936):
+`scripts/affected-targets corpus-targets` is every cached corpus
+(`_corpus_action`) that `scripts/ci-heavy-suite` runs (`rue_heavy_suite`) and
+that required CI owns in a dedicated job — `rue_ci_dedicated_lane`, or a
+`rue_cli_shard` slice — with a corpus whose shards carry the label represented
+by its shards. The same output feeds `scripts/plan-cli-shards.py`, which
+refuses an empty or non-exhaustive inventory, so a graph query failure fails
+the planning job closed rather than shrinking the matrix. Dropping the label
+from a corpus therefore removes it from the matrix, which is exactly the edit
+the `ci-contract` job's live tier validator (`--live-graph`) and
+`validate-ci-gate.py`'s dedicated-lane ownership check exist to catch.
 
 The gate covers eight named lanes: `clippy`, `native (linux-arm64)`, `native
 (macos-arm64)`, `release (linux-x64)`, `valgrind (linux-x64)`, `asan
@@ -657,42 +685,20 @@ compiler change, because the lanes that dominate a run were not consulting the
 determinator. On four measured peripheral runs the RUE-1130 extension freed
 905–1034s of runner time each.
 
-Clippy is also a registered graph-narrowing consumer. Its one canonical live
-inventory is every `sh_test` under `root//crates/...` whose label ends exactly
-in `-clippy`; that same computation supplies both its lane-selection proxies
-and its runnable allowlist. Every member also carries `rue_ci_clippy_lane`, and
-the live CI validator requires the label-owned set to equal that canonical
-inventory exactly before Linux premerge may subtract it. A verified selective
-deselection skips DotSlash, cache, and provisioning work while the existing
-`clippy` job/check still finishes successfully. Each heavy step requires the
-selection step itself to have succeeded and all three outputs to agree on that
-deselection (`run=false`, `proof_status=SELECTIVE`, and
-`gate_status=DESELECTED`); any partial output or failed step runs instead.
-
-The planner publishes a canonical item count and SHA-256 content proof beside
-both independently transported payloads: the space-separated selected-lane
-list and the newline-separated live impacted closure. Clippy accepts a
-selective deselection only when the complete lane payload, canonical positive
-head count, raw BTD closure count, live impacted count, and narrowing status all
-verify. The state must reproduce the planner exactly: `CANDIDATE/true` if and
-only if the raw closure is nonempty, no larger than the canonical limit, and
-has a nonempty live intersection; every other coherent state is
-`DECLINED/false`. The live count may exceed neither the raw closure nor the head
-graph. When the lane is selected, the adapter also carries the successful
-lane-gate verdict into the materializer. It materializes a small closure only
-when both verdicts remain verified and that payload exactly matches its count
-and digest, then runs
-`impacted ∩ clippy`; a proved empty intersection logs an intentional no-op and
-succeeds, while a nonempty intersection runs only those live clippy gates.
-Candidate verification reads the planner's `narrow-limit` authority directly,
-so the default 600-target threshold and any supported override cannot drift at
-the consumer boundary. The limit applies to the raw BTD closure, including
-base-only labels, rather than only its smaller runnable head intersection.
-Missing, truncated, reordered, malformed, or inconsistent payloads and
-metadata fail open to the full inventory, as does any selection or gate
-failure. A successful canonical live query with zero clippy targets remains a
-hard error—including on the first narrowed query—because it means the query or
-crate macros are broken, not that a particular diff has no clippy work.
+Clippy is gated like every other lane and narrowed like the native units. Its
+one canonical live inventory is every `sh_test` under `root//crates/...` whose
+label ends exactly in `-clippy`; that same computation supplies both its
+lane-selection proxies and its runnable scope. Every member also carries
+`rue_ci_clippy_lane`, and the live CI validator requires the label-owned set to
+equal that canonical inventory exactly before Linux premerge may subtract it.
+`scripts/ci-clippy run` runs `impacted ∩ clippy` when the determinator
+published a closure, and the full inventory otherwise; a verified empty
+intersection is an intentional no-op, a failed live query falls open to
+`//crates/...`, and a successful live query with zero clippy targets is a hard
+error, because it means the query or the crate macros are broken. The count
+and content-proof layer that once guarded these outputs was removed by
+RUE-1935: it defended against a corruption GitHub does not produce, and only
+this lane ever consulted it.
 
 `linux-premerge` is handled differently, because skipping it wholesale on a
 representative subset is exactly the RUE-924 failure mode. It is **narrowed**
@@ -703,7 +709,14 @@ from the live graph, so a target added since any list was written is still
 discovered — it is simply not built or run when the diff cannot reach it. That
 is where the build cost goes: the lane spends 286–317s building every crate
 whenever a compiler crate changes, and an unimpacted crate's test binary has
-nothing to prove.
+nothing to prove. Each narrowing consumer names its scope to
+`scripts/affected-targets narrow-scope LANE FILE` — `linux-premerge-build`,
+`linux-premerge-tests`, `native-platforms-units`, or `clippy` — and receives
+exactly `scope ∩ impacted`. The build scope is `//crates/...` minus the
+reverse-dependency closure of every corpus action a required lane owns, in
+both its narrowed and unnarrowed spellings: building a `_corpus_action` runs
+the corpus, and the unnarrowed premerge build once ran the oracle
+differentials in full beside the lanes that own them (RUE-1511).
 
 Narrowing is declined, and the ordinary scope used, whenever nothing is
 impacted or so much is that the pattern is the better expression of it
@@ -723,16 +736,13 @@ to be inferred from a silent green.
 
 The ASan harness is a standalone Cargo project outside the Buck graph, so BTD
 cannot see it; `crates/rue-runtime-asan/` therefore forces a full run rather
-than being represented by a proxy target. The
-`affected-targets` job writes a selection manifest to the job summary accounting
-for every corpus as `RUN` or `DESELECTED (intentional)`, and each deselected job
-logs its own intentional-deselection line — so a legitimate selective skip is
-never confused with a silently dropped suite (RUE-924). The selectable set in
-`scripts/affected-targets` is the matrix gate's source of truth; an unknown
-target fails safe toward running. Because branch protection now consumes only
-`CI success`, later matrix reshaping or coarser job-level gating can proceed
-without changing the protected context. Caching the base graph dump keyed by
-trunk commit remains a possible follow-up.
+than being represented by a proxy target. The `affected-targets` job writes
+its two-line decision to the job summary, and each deselected job logs its
+own intentional-deselection line — so a legitimate selective skip is never
+confused with a silently dropped suite (RUE-924). Because branch protection
+consumes only `CI success`, later matrix reshaping or coarser job-level gating
+can proceed without changing the protected context. Caching the base graph
+dump keyed by trunk commit remains a possible follow-up.
 
 Major Buck commands run through `scripts/ci-timed`, which preserves output and
 the exact command exit status while appending wall time and aggregate

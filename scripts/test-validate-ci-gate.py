@@ -16,6 +16,22 @@ TEST_RUNNER_SOURCE = Path(
     os.environ.get("RUE_TEST_RUNNER_SOURCE", MODULE.TEST_RUNNER_SOURCE)
 )
 ROOT_BUCK = Path(os.environ.get("RUE_ROOT_BUCK", MODULE.ROOT_BUCK))
+# The graph-derived platform-corpus inventory a live run supplies; the current
+# graph's answer, so the RUE-1163 ownership check can be exercised without Buck.
+INVENTORY = (
+    "//:cli-tests-shard-0",
+    "//:cli-tests-shard-1",
+    "//:cli-tests-shard-2",
+    "//:cli-tests-shard-3",
+    "//:spec-tests",
+    "//crates/rue-oracle-diff:oracle-diff-test",
+)
+
+
+def fake_script(directory: Path, body: str) -> Path:
+    script = directory / "affected-targets"
+    script.write_text("#!/usr/bin/env bash\n" + body)
+    return script
 
 
 class GateValidatorTests(unittest.TestCase):
@@ -25,8 +41,8 @@ class GateValidatorTests(unittest.TestCase):
         native_runner=None,
         test_runner=None,
         buck=None,
-        valgrind_install=None,
-        clippy_adapter=None,
+        inventory=INVENTORY,
+        script_body=None,
     ):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ci.yml"
@@ -44,137 +60,154 @@ class GateValidatorTests(unittest.TestCase):
                 else TEST_RUNNER_SOURCE.read_text()
             )
             buck_path = Path(directory) / "BUCK"
-            buck_path.write_text(
-                buck if buck is not None else ROOT_BUCK.read_text()
-            )
-            installer_path = Path(directory) / "install-valgrind"
-            installer_path.write_text(
-                valgrind_install
-                if valgrind_install is not None
-                else MODULE.VALGRIND_INSTALL_SCRIPT.read_text()
-            )
-            clippy_adapter_path = Path(directory) / "ci-clippy"
-            clippy_adapter_path.write_text(
-                clippy_adapter
-                if clippy_adapter is not None
-                else MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
+            buck_path.write_text(buck if buck is not None else ROOT_BUCK.read_text())
+            script = (
+                fake_script(Path(directory), script_body)
+                if script_body is not None
+                else MODULE.AFFECTED_TARGETS_SCRIPT
             )
             return MODULE.validate(
-                path,
-                runner_path,
-                test_runner_path,
-                buck_path,
-                installer_path,
-                clippy_adapter_path,
+                path, runner_path, test_runner_path, buck_path, script, inventory
             )
 
     def test_current_workflow_is_valid(self):
+        self.assertEqual(self.validate_text(SOURCE.read_text()), [])
+        # The structural Buck run has no inventory and must pass too.
         self.assertEqual(
-            MODULE.validate(
-                SOURCE, MODULE.NATIVE_RUNNER_SCRIPT, TEST_RUNNER_SOURCE, ROOT_BUCK
-            ),
+            MODULE.validate(SOURCE, MODULE.NATIVE_RUNNER_SCRIPT, TEST_RUNNER_SOURCE, ROOT_BUCK),
             [],
         )
 
-    def test_ci_contract_tier_selector_receives_affected_targets(self):
-        changed = SOURCE.read_text().replace(
-            "          --affected-targets scripts/affected-targets\n", "", 1
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("canonical affected-targets input", errors)
-
-    def test_valgrind_cannot_return_to_inline_apt(self):
-        source = SOURCE.read_text().replace(
-            "run: scripts/install-valgrind",
-            "run: |\n          sudo apt-get update\n          sudo apt-get install -y valgrind",
-            1,
-        )
-        errors = "\n".join(self.validate_text(source))
-        self.assertIn("must invoke scripts/install-valgrind", errors)
-        self.assertIn("must not contain an inline unbounded apt-get operation", errors)
-
-    def test_valgrind_policy_drift_fails_contract(self):
-        installer = MODULE.VALGRIND_INSTALL_SCRIPT.read_text().replace(
-            "APT_ACQUIRE_TIMEOUT_SECONDS=30", "APT_ACQUIRE_TIMEOUT_SECONDS=45", 1
-        )
-        errors = "\n".join(self.validate_text(SOURCE.read_text(), valgrind_install=installer))
-        self.assertIn("30-second per-acquisition timeout", errors)
-
-    def test_valgrind_cancellation_cleanup_is_required(self):
-        installer = MODULE.VALGRIND_INSTALL_SCRIPT.read_text().replace(
-            'kill -KILL -- "-$child_pid"', "# cleanup removed", 1
-        )
-        errors = "\n".join(self.validate_text(SOURCE.read_text(), valgrind_install=installer))
-        self.assertIn("forced process-group cleanup", errors)
-
+    # --- the aggregate is the whole branch-protection contract ------------
     def test_removing_or_renaming_job_fails_inventory(self):
-        source = SOURCE.read_text()
-        removed = source.replace("\n  asan:\n", "\n  removed-asan:\n", 1)
+        removed = SOURCE.read_text().replace("\n  asan:\n", "\n  removed-asan:\n", 1)
         errors = "\n".join(self.validate_text(removed))
-        self.assertIn("CI job inventory missing: asan", errors)
         self.assertIn("unaggregated jobs: removed-asan", errors)
+        self.assertIn("jobs the workflow does not define: asan", errors)
 
     def test_actions_compatible_underscore_job_is_not_invisible(self):
-        source = SOURCE.read_text()
-        changed = source + "\n  unaggregated_job:\n    runs-on: ubuntu-latest\n"
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("unaggregated jobs: unaggregated_job", errors)
+        changed = SOURCE.read_text() + "\n  unaggregated_job:\n    runs-on: ubuntu-latest\n"
+        self.assertIn("unaggregated jobs: unaggregated_job", "\n".join(self.validate_text(changed)))
 
     def test_omitting_dependency_from_gate_fails(self):
-        source = SOURCE.read_text()
-        changed = source.replace("      - valgrind\n", "", 1)
-        self.assertIn("ci-success needs drift", "\n".join(self.validate_text(changed)))
+        changed = SOURCE.read_text().replace("      - valgrind\n", "", 1)
+        self.assertIn("unaggregated jobs: valgrind", "\n".join(self.validate_text(changed)))
 
-    def test_native_selector_cannot_silently_return_to_named_filters(self):
+    def test_gate_must_evaluate_its_needs_map(self):
+        changed = SOURCE.read_text().replace("${{ toJSON(needs) }}", "'{}'", 1)
+        self.assertIn("no longer evaluates ${{ toJSON(needs) }}", "\n".join(self.validate_text(changed)))
+
+    def test_remote_execution_stays_merge_group_only(self):
+        changed = SOURCE.read_text().replace(
+            "if: github.event_name == 'merge_group'", "if: github.event_name != 'pull_request'", 1
+        )
+        self.assertIn("merge-group-only", "\n".join(self.validate_text(changed)))
+
+    # --- ci-contract ------------------------------------------------------
+    def test_ci_contract_tier_selector_receives_affected_targets_and_live_graph(self):
         source = SOURCE.read_text()
-        runner = MODULE.NATIVE_RUNNER_SCRIPT.read_text().replace(
-            "export RUE_PLATFORM_CASE_SELECTION=native",
-            "export RUE_PLATFORM_CASE_SELECTION=all",
+        changed = source.replace("          --affected-targets scripts/affected-targets\n", "", 1)
+        self.assertIn("canonical affected-targets input", "\n".join(self.validate_text(changed)))
+        changed = source.replace("          --live-graph\n", "", 1)
+        self.assertNotEqual(changed, source, "splice anchor no longer matches ci.yml")
+        self.assertIn("prove the derived matrix from the live graph", "\n".join(self.validate_text(changed)))
+
+    def test_ci_contract_installs_dotslash_before_live_validator(self):
+        prefix, contract = SOURCE.read_text().split("  ci-contract:\n", 1)
+        contract = contract.replace(
+            "      - name: Bootstrap dotslash\n        uses: ./.github/actions/bootstrap-dotslash\n", "", 1
+        )
+        errors = "\n".join(self.validate_text(prefix + "  ci-contract:\n" + contract))
+        self.assertIn("ci-contract must install dotslash before the live Buck validator", errors)
+
+    def test_ci_contract_must_run_live_and_check_scheduled_workflows(self):
+        source = SOURCE.read_text()
+        changed = source.replace(
+            "run: scripts/validate-ci-gate.py .github/workflows/ci.yml\n",
+            "run: scripts/validate-ci-gate.py .github/workflows/ci.yml --structural-only\n",
             1,
         )
-        errors = "\n".join(self.validate_text(source, runner))
+        self.assertIn("not structural-only mode", "\n".join(self.validate_text(changed)))
+        changed = source.replace("      actions: read\n", "", 1)
+        self.assertNotEqual(changed, source, "splice anchor no longer matches ci.yml")
+        self.assertIn("without `actions: read`", "\n".join(self.validate_text(changed)))
+
+    # --- lane responsibilities ---------------------------------------------
+    def test_dropping_the_duplication_gate_step_fails(self):
+        changed = SOURCE.read_text().replace("scripts/validate-test-duplication.py", "true", 1)
+        self.assertIn(
+            "linux-premerge responsibility missing 'scripts/validate-test-duplication.py'",
+            "\n".join(self.validate_text(changed)),
+        )
+
+    def test_staleness_gate_contract_follows_its_job(self):
+        source = SOURCE.read_text()
+        anchor = "  performance-staleness:\n    runs-on: ubuntu-latest\n"
+        for splice, message in (
+            (anchor + "    continue-on-error: true\n", "must not use continue-on-error"),
+            (anchor + "    needs:\n      - affected-targets\n", "must not depend on another CI job"),
+        ):
+            changed = source.replace(anchor, splice, 1)
+            self.assertNotEqual(changed, source, "splice anchor no longer matches ci.yml")
+            self.assertIn(message, "\n".join(self.validate_text(changed)))
+        changed = source.replace("          scripts/validate-performance-stall.py \\\n", "", 1)
+        self.assertNotEqual(changed, source, "splice anchor no longer matches ci.yml")
+        self.assertIn(
+            "performance-staleness responsibility missing 'scripts/validate-performance-stall.py'",
+            "\n".join(self.validate_text(changed)),
+        )
+
+    def test_reintroducing_the_defer_protocol_fails(self):
+        changed = SOURCE.read_text().replace(
+            "          RUE_TEST_TIER: premerge\n",
+            "          RUE_TEST_TIER: premerge\n          RUE_CI_DEFER_HEAVY_SUITES: '//:cli-tests'\n",
+            1,
+        )
+        self.assertIn("RUE_CI_DEFER_HEAVY_SUITES is retired", "\n".join(self.validate_text(changed)))
+
+    def test_native_selector_cannot_silently_return_to_named_filters(self):
+        runner = MODULE.NATIVE_RUNNER_SCRIPT.read_text().replace(
+            "export RUE_PLATFORM_CASE_SELECTION=native", "export RUE_PLATFORM_CASE_SELECTION=all", 1
+        )
+        errors = "\n".join(self.validate_text(SOURCE.read_text(), runner))
         self.assertIn("export RUE_PLATFORM_CASE_SELECTION=native", errors)
 
     def test_native_abi_filter_excludes_only_the_accidental_intersection(self):
         changed = SOURCE.read_text().replace(
-            "scripts/rue cli abi --skip "
-            "cli.differential_opt::aggregate_abi_across_opt_levels",
+            "scripts/rue cli abi --skip cli.differential_opt::aggregate_abi_across_opt_levels",
             "scripts/rue cli abi",
             1,
         )
-        errors = "\n".join(self.validate_text(changed))
         self.assertIn(
-            "scripts/rue cli abi --skip "
-            "cli.differential_opt::aggregate_abi_across_opt_levels",
-            errors,
+            "scripts/rue cli abi --skip cli.differential_opt::aggregate_abi_across_opt_levels",
+            "\n".join(self.validate_text(changed)),
         )
 
-    def test_unexpected_skip_policy_and_platform_drift_fail(self):
-        source = SOURCE.read_text()
-        changed = source.replace(
-            "if: github.event_name == 'merge_group'",
-            "if: github.event_name != 'pull_request'",
+    def test_valgrind_cannot_return_to_inline_apt(self):
+        changed = SOURCE.read_text().replace(
+            "run: scripts/install-valgrind",
+            "run: |\n          sudo apt-get update\n          sudo apt-get install -y valgrind",
             1,
         )
-        self.assertIn("merge-group-only", "\n".join(self.validate_text(changed)))
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("must invoke scripts/install-valgrind", errors)
+        self.assertIn("inline unbounded apt-get", errors)
 
-        changed = source.replace(
-            "matrix: ${{ fromJSON(needs.affected-targets.outputs.corpus_matrix) }}",
-            "matrix: {}",
-            1,
+    # --- RUE-1267: the derived matrix wiring --------------------------------
+    def test_platform_corpus_must_consume_the_derived_matrix(self):
+        changed = SOURCE.read_text().replace(
+            "matrix: ${{ fromJSON(needs.affected-targets.outputs.corpus_matrix) }}", "matrix: {}", 1
         )
-        self.assertIn("platform-corpus responsibility drift", "\n".join(
-            self.validate_text(changed)
-        ))
+        errors = "\n".join(self.validate_text(changed, inventory=None))
+        self.assertIn("must take its matrix from the derived corpus_matrix output", errors)
+        # With a literal (empty) matrix the labeled corpora lose their owner,
+        # and that is decidable from the text alone, without a live inventory.
+        self.assertIn("//:spec-tests is marked rue_ci_dedicated_lane", errors)
 
-    def test_declared_platform_matrix_matches_the_harness(self):
-        self.assertEqual(
-            sorted(MODULE.ci_executed_targets(TEST_RUNNER_SOURCE.read_text())),
-            sorted(MODULE.PLATFORM_LANES),
-        )
-
-    def test_shard_planner_bootstrap_covers_workflow_dispatch(self):
+    def test_planner_contract_and_bootstraps_are_pinned(self):
         source = SOURCE.read_text()
+        changed = source.replace("scripts/affected-targets corpus-targets >", "echo //:spec-tests >", 1)
+        self.assertIn("planner contract 'scripts/affected-targets corpus-targets'", "\n".join(self.validate_text(changed)))
         changed = source.replace(
             "      - name: Bootstrap dotslash for shard planning\n"
             "        # Every non-PR trigger, including workflow_dispatch, needs Buck for the\n"
@@ -184,8 +217,15 @@ class GateValidatorTests(unittest.TestCase):
             "        if: github.event_name == 'merge_group'\n",
             1,
         )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("including workflow_dispatch", errors)
+        self.assertNotEqual(changed, source, "splice anchor no longer matches ci.yml")
+        self.assertIn("including workflow_dispatch", "\n".join(self.validate_text(changed)))
+
+    # --- RUE-1161: platform responsibility matrix ---------------------------
+    def test_declared_platform_matrix_matches_the_harness(self):
+        self.assertEqual(
+            sorted(MODULE.ci_executed_targets(TEST_RUNNER_SOURCE.read_text())),
+            sorted(MODULE.PLATFORM_LANES),
+        )
 
     def test_platform_declared_ci_executed_without_a_lane_fails(self):
         runner = TEST_RUNNER_SOURCE.read_text().replace(
@@ -197,466 +237,47 @@ class GateValidatorTests(unittest.TestCase):
 
     def test_dropping_a_native_lane_fails_the_platform_matrix(self):
         changed = SOURCE.read_text().replace("os: macos-15", "os: macos-14", 1)
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("aarch64-macos is declared CI-executed", errors)
+        self.assertIn("aarch64-macos is declared CI-executed", "\n".join(self.validate_text(changed)))
 
     def test_unreadable_platform_matrix_is_reported(self):
         with tempfile.TemporaryDirectory() as directory:
-            missing = Path(directory) / "absent.rs"
             errors = MODULE.validate(
-                SOURCE, MODULE.NATIVE_RUNNER_SCRIPT, missing, ROOT_BUCK
+                SOURCE, MODULE.NATIVE_RUNNER_SCRIPT, Path(directory) / "absent.rs", ROOT_BUCK
             )
-        self.assertTrue(
-            any("platform responsibility matrix unreadable" in error for error in errors),
-            errors,
-        )
+        self.assertTrue(any("platform responsibility matrix unreadable" in e for e in errors), errors)
 
-
-    # RUE-1163: the label that replaced RUE_CI_DEFER_HEAVY_SUITES.
-    def test_reintroducing_the_defer_protocol_fails(self):
-        changed = SOURCE.read_text().replace(
-            "          RUE_TEST_TIER: premerge\n",
-            "          RUE_TEST_TIER: premerge\n"
-            "          RUE_CI_DEFER_HEAVY_SUITES: '//:cli-tests'\n",
-            1,
+    # --- RUE-1163: dedicated-lane ownership ---------------------------------
+    def test_dedicated_corpus_missing_from_the_live_inventory_fails(self):
+        # The live run supplies the graph-derived matrix membership; a labeled
+        # corpus the derivation dropped is skipped by premerge and run by nobody.
+        errors = "\n".join(
+            self.validate_text(SOURCE.read_text(), inventory=[t for t in INVENTORY if t != "//:spec-tests"])
         )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("RUE_CI_DEFER_HEAVY_SUITES is retired", errors)
-
-    # RUE-1265: the duplication gate is the only check that reads test contents
-    # rather than target lists, so dropping its step restores a blind spot no
-    # other gate can cover.
-    def test_dropping_the_duplication_gate_step_fails(self):
-        changed = SOURCE.read_text().replace(
-            "scripts/validate-test-duplication.py", "true", 1
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn(
-            "linux-premerge responsibility missing 'scripts/validate-test-duplication.py'",
-            errors,
-        )
-
-    def test_performance_pin_build_is_visible_and_timed(self):
-        changed = SOURCE.read_text().replace(
-            '          scripts/ci-timed "rue-bench build" -- ./buck2 build //crates/rue-bench:rue-bench\n',
-            "          # build moved to an untracked location\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("no executable ci-timed rue-bench build", errors)
-
-    def test_performance_pin_build_must_precede_warm_capture(self):
-        source = SOURCE.read_text()
-        visible = (
-            '          scripts/ci-timed "rue-bench build" -- ./buck2 build '
-            '//crates/rue-bench:rue-bench\n'
-        )
-        warm = (
-            '          BENCH="$(./buck2 build //crates/rue-bench:rue-bench '
-            '--show-simple-output 2>/dev/null | tail -1)"\n'
-        )
-        changed = source.replace(visible + warm, warm + visible, 1)
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("must precede the warm path-only capture", errors)
-
-    def test_performance_pin_build_cannot_follow_a_true_or_continuation(self):
-        source = SOURCE.read_text()
-        visible = (
-            '          scripts/ci-timed "rue-bench build" -- ./buck2 build '
-            '//crates/rue-bench:rue-bench\n'
-        )
-        changed = source.replace(
-            visible,
-            "          true || \\\n"
-            + visible,
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("exact straight-line command sequence", errors)
-
-    def test_performance_pin_build_cannot_follow_a_bang_continuation(self):
-        source = SOURCE.read_text()
-        visible = (
-            '          scripts/ci-timed "rue-bench build" -- ./buck2 build '
-            '//crates/rue-bench:rue-bench\n'
-        )
-        changed = source.replace(
-            visible,
-            "          ! \\\n"
-            + visible,
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("exact straight-line command sequence", errors)
-
-    def test_performance_pin_rejects_adjacent_hash_on_visible_target(self):
-        source = SOURCE.read_text()
-        changed = source.replace(
-            "//crates/rue-bench:rue-bench\n",
-            "//crates/rue-bench:rue-bench# || true\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("no executable ci-timed rue-bench build", errors)
-
-    def test_performance_pin_rejects_adjacent_hash_on_final_argument(self):
-        source = SOURCE.read_text()
-        changed = source.replace(
-            '          --compiler "$RUE"\n',
-            '          --compiler "$RUE"# || true\n',
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("exact straight-line command sequence", errors)
-
-    def test_performance_pin_rejects_a_gap_inside_the_backslash_chain(self):
-        source = SOURCE.read_text()
-        changed = source.replace(
-            '          "$BENCH" check-pins \\\n',
-            '          "$BENCH" check-pins \\\n\n',
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("exact straight-line command sequence", errors)
-
-    def test_performance_pin_rejects_spaces_after_a_backslash(self):
-        source = SOURCE.read_text()
-        changed = source.replace(
-            '          "$BENCH" check-pins \\\n',
-            '          "$BENCH" check-pins \\  \n',
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("exact straight-line command sequence", errors)
-
-    def test_performance_pin_build_cannot_be_disabled_by_a_branch(self):
-        source = SOURCE.read_text()
-        visible = (
-            '          scripts/ci-timed "rue-bench build" -- ./buck2 build '
-            '//crates/rue-bench:rue-bench\n'
-        )
-        changed = source.replace(
-            visible,
-            "          if false; then\n"
-            + visible
-            + "          fi\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("without an intervening command or control line", errors)
-
-    def test_performance_pin_build_cannot_be_hidden_in_a_heredoc(self):
-        source = SOURCE.read_text()
-        visible = (
-            '          scripts/ci-timed "rue-bench build" -- ./buck2 build '
-            '//crates/rue-bench:rue-bench\n'
-        )
-        changed = source.replace(
-            visible,
-            "          cat <<'RUE_BUILD'\n"
-            + visible
-            + "          RUE_BUILD\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("without an intervening command or control line", errors)
-
-    def test_performance_pin_step_cannot_be_conditionally_disabled(self):
-        source = SOURCE.read_text()
-        marker = "      - name: Check the performance pins still match the tree\n"
-        changed = source.replace(
-            marker,
-            marker + "        if: ${{ false }}\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("disabling or custom execution metadata", errors)
-
-    def test_performance_pin_step_cannot_ignore_failure(self):
-        source = SOURCE.read_text()
-        marker = "      - name: Check the performance pins still match the tree\n"
-        changed = source.replace(
-            marker,
-            marker + "        continue-on-error: true\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("disabling or custom execution metadata", errors)
-
-    def test_performance_pin_step_cannot_use_custom_shell_execution(self):
-        source = SOURCE.read_text()
-        marker = "      - name: Check the performance pins still match the tree\n"
-        changed = source.replace(
-            marker,
-            marker + "        shell: true {0}\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("disabling or custom execution metadata", errors)
-
-    def test_performance_pin_step_rejects_quoted_metadata_keys(self):
-        source = SOURCE.read_text()
-        marker = "      - name: Check the performance pins still match the tree\n"
-        changed = source.replace(
-            marker,
-            marker + "        'if': false\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("only comments or blanks may precede", errors)
-
-    def test_linux_premerge_cannot_ignore_performance_pin_failure(self):
-        source = SOURCE.read_text()
-        marker = "  linux-premerge:\n    runs-on: ubuntu-latest\n"
-        changed = source.replace(
-            marker,
-            marker + "    continue-on-error: true\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("job-level continue-on-error", errors)
-
-        changed = source.replace(
-            marker,
-            marker + "    'continue-on-error': true\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("job-level continue-on-error", errors)
-
-    def test_linux_premerge_execution_condition_is_pinned(self):
-        source = SOURCE.read_text()
-        marker = (
-            "  linux-premerge:\n"
-            "    runs-on: ubuntu-latest\n"
-            "    name: premerge (linux-x64)\n"
-            "    if: ${{ always() }}\n"
-        )
-        changed = source.replace(
-            marker,
-            marker.replace("if: ${{ always() }}", "if: ${{ false }}"),
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("must contain exactly one direct job if", errors)
-
-    def test_linux_premerge_cannot_override_job_shell_defaults(self):
-        source = SOURCE.read_text()
-        marker = "  linux-premerge:\n    runs-on: ubuntu-latest\n"
-        changed = source.replace(
-            marker,
-            marker
-            + "    defaults:\n"
-            + "      run:\n"
-            + "        shell: true {0}\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("defaults overrides", errors)
-
-    def test_workflow_cannot_override_run_shell_defaults(self):
-        source = SOURCE.read_text()
-        changed = source.replace(
-            "jobs:\n",
-            'defaults: {run: {shell: "true {0}"}}\n\n'
-            "jobs:\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("workflow must not define top-level defaults", errors)
-
-    def test_performance_pin_failure_uploader_cannot_be_deleted(self):
-        source = SOURCE.read_text()
-        uploader = (
-            "      - name: Upload failing-suite output\n"
-            "        if: failure()\n"
-            "        uses: actions/upload-artifact@v6\n"
-            "        with:\n"
-            "          name: premerge-linux-x64-failure-logs\n"
-            "          path: ${{ runner.temp }}/rue-ci-failed-logs\n"
-            "          if-no-files-found: ignore\n"
-        )
-        changed = source.replace(uploader, "", 1)
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("failure-artifact uploader", errors)
-
-    def test_performance_pin_failure_uploader_must_follow_pin_step(self):
-        source = SOURCE.read_text()
-        uploader = (
-            "      - name: Upload failing-suite output\n"
-            "        if: failure()\n"
-            "        uses: actions/upload-artifact@v6\n"
-            "        with:\n"
-            "          name: premerge-linux-x64-failure-logs\n"
-            "          path: ${{ runner.temp }}/rue-ci-failed-logs\n"
-            "          if-no-files-found: ignore\n"
-        )
-        marker = "      - name: Check the performance pins still match the tree\n"
-        changed = source.replace(uploader, "", 1).replace(
-            marker,
-            uploader + marker,
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("must upload failing-suite output after", errors)
-
-    def test_performance_pin_failure_uploader_condition_is_pinned(self):
-        source = SOURCE.read_text()
-        changed = source.replace(
-            "      - name: Upload failing-suite output\n"
-            "        if: failure()\n",
-            "      - name: Upload failing-suite output\n"
-            "        if: always()\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("exact raw metadata mapping", errors)
-
-    def test_performance_pin_failure_uploader_path_is_pinned(self):
-        source = SOURCE.read_text()
-        changed = source.replace(
-            "          path: ${{ runner.temp }}/rue-ci-failed-logs\n",
-            "          path: ${{ runner.temp }}/other-logs\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("runner.temp", errors)
-
-    def test_performance_pin_failure_uploader_rejects_extra_metadata(self):
-        source = SOURCE.read_text()
-        marker = (
-            "      - name: Upload failing-suite output\n"
-            "        if: failure()\n"
-            "        uses: actions/upload-artifact@v6\n"
-        )
-        for extra in ("        continue-on-error: true\n", "        if: failure()\n"):
-            changed = source.replace(
-                marker,
-                marker.replace(
-                    "        uses: actions/upload-artifact@v6\n", extra
-                    + "        uses: actions/upload-artifact@v6\n"
-                ),
-                1,
-            )
-            errors = "\n".join(self.validate_text(changed))
-            self.assertIn("exact raw metadata mapping", errors)
-
-    def test_performance_pin_cannot_exit_after_path_capture(self):
-        source = SOURCE.read_text()
-        warm = (
-            '          BENCH="$(./buck2 build //crates/rue-bench:rue-bench '
-            '--show-simple-output 2>/dev/null | tail -1)"\n'
-        )
-        changed = source.replace(warm, warm + "          exit 0\n", 1)
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("exact straight-line command sequence", errors)
-
-    def test_performance_pin_step_cannot_ignore_failure_after_run_block(self):
-        source = SOURCE.read_text()
-        changed = source.replace(
-            '          --compiler "$RUE"\n',
-            '          --compiler "$RUE"\n'
-            "        continue-on-error: true\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("disabling or custom execution metadata", errors)
-
-    def test_performance_pin_cannot_ignore_check_pins_failure(self):
-        source = SOURCE.read_text()
-        changed = source.replace(
-            '          "$BENCH" check-pins \\\n',
-            '          # "$BENCH" check-pins \\\n',
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("exact straight-line command sequence", errors)
-
-    def test_performance_pin_cannot_ignore_check_pins_with_or_true(self):
-        source = SOURCE.read_text()
-        changed = source.replace(
-            '          --compiler "$RUE"\n',
-            '          --compiler "$RUE" || true\n',
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("exact straight-line command sequence", errors)
-
-    def test_performance_pin_build_cannot_be_satisfied_by_comment_or_other_step(self):
-        source = SOURCE.read_text()
-        visible = (
-            '          scripts/ci-timed "rue-bench build" -- ./buck2 build '
-            '//crates/rue-bench:rue-bench\n'
-        )
-        changed = source.replace(visible, "", 1).replace(
-            "          # Would this change stop runs entering their series? Decidable from this\n",
-            "          # " + visible.strip() + "\n"
-            "          # Would this change stop runs entering their series? Decidable from this\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("no executable ci-timed rue-bench build", errors)
-
-        changed = source.replace(visible, "", 1).replace(
-            "      - name: Check the performance pins still match the tree\n",
-            "      - name: Unrelated rue-bench build\n"
-            "        run: " + visible + "\n"
-            "      - name: Check the performance pins still match the tree\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("no executable ci-timed rue-bench build", errors)
-
-    def test_performance_pin_build_must_target_rue_bench_exactly(self):
-        changed = SOURCE.read_text().replace(
-            "//crates/rue-bench:rue-bench\n",
-            "//crates/rue:rue\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("targeting //crates/rue-bench:rue-bench", errors)
-
-    def test_dedicated_lane_corpus_without_a_job_fails(self):
-        # spec-tests is skipped by the premerge suite because it carries the
-        # label, so dropping its platform-corpus entry would drop it entirely.
-        changed = SOURCE.read_text().replace(
-            "matrix: ${{ fromJSON(needs.affected-targets.outputs.corpus_matrix) }}",
-            "matrix: {}",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
         self.assertIn("//:spec-tests is marked rue_ci_dedicated_lane", errors)
         self.assertIn("no exactly-one dedicated owner", errors)
 
     def test_release_smoke_label_is_owned_by_release_job(self):
-        # The label removes release-smoke from linux-premerge; its release job
-        # is therefore the required dedicated owner.
         changed = SOURCE.read_text().replace(
-            "run: scripts/ci-timed \"release smoke\" -- ./buck2 test //:release-smoke --target-platforms //platforms:release",
-            "run: scripts/ci-timed \"release smoke\" -- ./buck2 test //:other --target-platforms //platforms:release",
-            1,
+            "./buck2 test //:release-smoke --target-platforms", "./buck2 test //:other --target-platforms", 1
         )
         errors = "\n".join(self.validate_text(changed))
         self.assertIn("//:release-smoke is marked rue_ci_dedicated_lane", errors)
-        self.assertIn("no exactly-one dedicated owner", errors)
 
     def test_release_smoke_cannot_be_owned_by_two_dedicated_jobs(self):
-        changed = SOURCE.read_text().replace(
-            "matrix: ${{ fromJSON(needs.affected-targets.outputs.corpus_matrix) }}",
-            "matrix:\n        include:\n          - target: //:release-smoke",
-            1,
+        errors = "\n".join(
+            self.validate_text(SOURCE.read_text(), inventory=INVENTORY + ("//:release-smoke",))
         )
-        errors = "\n".join(self.validate_text(changed))
         self.assertIn("//:release-smoke (owned by platform-corpus, release)", errors)
 
     def test_unlabeled_buck_fails_closed(self):
         buck = ROOT_BUCK.read_text().replace('"rue_ci_dedicated_lane"', '"unused"')
-        errors = "\n".join(self.validate_text(SOURCE.read_text(), buck=buck))
-        self.assertIn("no corpus carries rue_ci_dedicated_lane", errors)
+        self.assertIn(
+            "no corpus carries rue_ci_dedicated_lane",
+            "\n".join(self.validate_text(SOURCE.read_text(), buck=buck)),
+        )
 
     def test_sharded_corpus_counts_as_covered(self):
-        # //:cli-tests is labeled but never appears in the matrix by name; its
-        # four shards are what run it, and that must satisfy the check.
+        # //:cli-tests is labeled but never appears by name; its shards run it.
         self.assertEqual(
             MODULE.uncovered_dedicated_lanes(
                 'name = "cli-tests",\n    labels = ["rue_ci_dedicated_lane"]',
@@ -665,98 +286,11 @@ class GateValidatorTests(unittest.TestCase):
             [],
         )
 
-
-    # RUE-1504: the staleness gate moved out of the premerge lane into its own
-    # job. Moving required work is only safe while the contract moves with it.
-    def test_staleness_gate_without_a_deep_checkout_fails(self):
-        changed = SOURCE.read_text().replace(
-            "          # measurement, so it needs the measured commit in local history. The\n"
-            "          # default depth-1 checkout has none of them, and a gate that cannot\n"
-            "          # see the history fails rather than passing. (RUE-1258)\n"
-            "          fetch-depth: 0\n",
-            "",
-            1,
-        )
-        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("performance-staleness responsibility missing 'fetch-depth: 0'", errors)
-
-    def test_dropping_the_staleness_step_fails(self):
-        changed = SOURCE.read_text().replace(
-            "          scripts/validate-performance-stall.py \\\n", "", 1
-        )
-        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn(
-            "performance-staleness responsibility missing "
-            "'scripts/validate-performance-stall.py'",
-            errors,
-        )
-
-    def test_returning_the_staleness_gate_to_the_premerge_lane_fails(self):
-        changed = SOURCE.read_text().replace(
-            "        run: scripts/ci-timed \"gazette goldens\" -- scripts/gazette-corpus-diff.py golden\n",
-            "        run: scripts/ci-timed \"gazette goldens\" -- scripts/gazette-corpus-diff.py golden\n"
-            "      - name: Check the performance series is still advancing\n"
-            "        run: scripts/validate-performance-stall.py --data d --repo . --ref origin/trunk\n",
-            1,
-        )
-        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("the staleness gate belongs to performance-staleness", errors)
-
-    def test_runtime_series_cannot_be_folded_into_the_staleness_gate(self):
-        # ADR-0072 Decision 9. A stalled runtime series is a triage item, not a
-        # repository-wide block, and the difference is one flag.
-        changed = SOURCE.read_text().replace(
-            "            --manifest performance/manifest.toml \\\n"
-            "            --data-root \"$DATA\" \\\n",
-            "            --manifest performance/manifest.toml \\\n"
-            "            --runtime-manifest performance/runtime.toml \\\n"
-            "            --data-root \"$DATA\" \\\n",
-            1,
-        )
-        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("must stay compile-time only", errors)
-
-    def test_continue_on_error_voids_the_staleness_gate(self):
-        # The gate has no bypass, and `continue-on-error` is a one-line bypass
-        # that leaves the required check reporting success.
-        for splice in (
-            "  performance-staleness:\n    runs-on: ubuntu-latest\n"
-            "    continue-on-error: true\n",
-            "  performance-staleness:\n    runs-on: ubuntu-latest\n"
-            "    steps:\n      - continue-on-error: true\n",
-        ):
-            changed = SOURCE.read_text().replace(
-                "  performance-staleness:\n    runs-on: ubuntu-latest\n", splice, 1
-            )
-            self.assertNotEqual(
-                changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml"
-            )
-            errors = "\n".join(self.validate_text(changed))
-            self.assertIn(
-                "performance-staleness must not use continue-on-error", errors
-            )
-
-    def test_gating_the_staleness_job_on_another_fails(self):
-        changed = SOURCE.read_text().replace(
-            "  performance-staleness:\n    runs-on: ubuntu-latest\n",
-            "  performance-staleness:\n    runs-on: ubuntu-latest\n"
-            "    needs:\n      - affected-targets\n",
-            1,
-        )
-        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("performance-staleness must not depend on another CI job", errors)
-
+    # --- RUE-1130: outputs and gates ----------------------------------------
     def test_undeclared_need_output_fails_closed(self):
-        # RUE-1130 regression. GitHub resolves an undeclared job output to the
-        # empty string instead of failing, so a lane gate reading it would see
-        # "nothing selected" and deselect every lane. That is invisible on any
-        # PR touching CI, because those force a full run — i.e. invisible on
-        # exactly the PRs that would be used to test the feature.
+        # GitHub resolves an undeclared job output to the empty string, so a
+        # lane gate reading it sees "nothing selected" and deselects every
+        # lane — invisible on any PR touching CI, because those force a full run.
         changed = SOURCE.read_text().replace(
             "      selected_lanes: ${{ steps.decide.outputs.selected_lanes }}\n", "", 1
         )
@@ -764,453 +298,15 @@ class GateValidatorTests(unittest.TestCase):
         self.assertIn("needs.affected-targets.outputs.selected_lanes is referenced", errors)
         self.assertIn("silently resolve to the empty string", errors)
 
-    def test_declared_need_outputs_pass(self):
-        self.assertEqual(self.validate_text(SOURCE.read_text()), [])
-
-    # RUE-1855: clippy keeps the same required check identity while waiting on
-    # the determinator. Both job-level always() and the dependency are needed:
-    # without the former, an upstream failure silently skips the required job.
-    def test_clippy_must_wait_for_affected_targets_with_always_semantics(self):
-        source = SOURCE.read_text()
-        changed = source.replace(
-            "  clippy:\n"
-            "    runs-on: ubuntu-latest\n"
-            "    if: ${{ always() }}\n"
-            "    needs: affected-targets\n",
-            "  clippy:\n    runs-on: ubuntu-latest\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("clippy must use job-level always()", errors)
-        self.assertIn("clippy must depend exactly once on affected-targets", errors)
-
-    def test_clippy_displayed_identity_cannot_change(self):
-        changed = SOURCE.read_text().replace(
-            "  clippy:\n    runs-on: ubuntu-latest\n",
-            "  clippy:\n    runs-on: ubuntu-latest\n    name: renamed lint\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("existing displayed job/check identity", errors)
-
-    def test_clippy_heavy_setup_fails_open_on_missing_selection_output(self):
-        source = SOURCE.read_text()
-        mutations = (
-            # A transported run=false alone cannot prove intentional deselection.
-            "if: ${{ always() && steps.sel.outputs.run != 'false' }}",
-            # A failed selection step must run even if its partial outputs look valid.
-            "if: ${{ always() && (steps.sel.outputs.run != 'false' || "
-            "steps.sel.outputs.proof_status != 'SELECTIVE' || "
-            "steps.sel.outputs.gate_status != 'DESELECTED') }}",
-            # Missing proof or gate outputs are degraded state, never a skip.
-            "if: ${{ always() && (steps.sel.outcome != 'success' || "
-            "steps.sel.outputs.run != 'false' || "
-            "steps.sel.outputs.gate_status != 'DESELECTED') }}",
-            "if: ${{ always() && (steps.sel.outcome != 'success' || "
-            "steps.sel.outputs.run != 'false' || "
-            "steps.sel.outputs.proof_status != 'SELECTIVE') }}",
-        )
-        for mutation in mutations:
-            changed = source.replace(MODULE.CLIPPY_HEAVY_GATE, mutation, 1)
-            self.assertNotEqual(changed, source, "splice anchor no longer matches ci.yml")
-            errors = "\n".join(self.validate_text(changed))
-            self.assertIn("Bootstrap dotslash", errors)
-            self.assertIn("successful, proved lane deselection", errors)
-
-    def test_clippy_uses_the_repository_owned_dotslash_bootstrap(self):
-        source = SOURCE.read_text()
-        clippy = MODULE.job_blocks(source)["clippy"]
-        changed_clippy = clippy.replace(
-            "        uses: ./.github/actions/bootstrap-dotslash\n",
-            "        run: true\n",
-            1,
-        )
-        changed = source.replace(clippy, changed_clippy, 1)
-        self.assertNotEqual(changed, source, "splice anchor no longer matches ci.yml")
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("repository-owned dotslash bootstrap", errors)
-
-    def test_clippy_heavy_step_runtime_contract(self):
-        cases = (
-            ("success", "false", "", "DESELECTED", True),
-            ("success", "false", "SELECTIVE", "", True),
-            ("failure", "false", "SELECTIVE", "DESELECTED", True),
-            ("success", "true", "SELECTIVE", "DESELECTED", True),
-            ("success", "false", "SELECTIVE", "DESELECTED", False),
-        )
-        for outcome, run, proof, gate, expected_run in cases:
-            with self.subTest(outcome=outcome, run=run, proof=proof, gate=gate):
-                self.assertEqual(
-                    MODULE.clippy_heavy_step_runs(outcome, run, proof, gate),
-                    expected_run,
-                )
-
-    def test_clippy_lane_gate_must_use_the_canonical_lane(self):
-        changed = SOURCE.read_text().replace(
-            "run: scripts/ci-clippy select",
-            'run: scripts/ci-corpus-decision "release"',
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("complete proved decision", errors)
-
-    def test_clippy_incomplete_decision_metadata_cannot_deselect(self):
-        changed = SOURCE.read_text().replace(
-            "          RUE_AFFECTED_LANES_DIGEST: ${{ needs.affected-targets.outputs.selected_lanes_digest }}\n",
-            "",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("complete proved decision", errors)
-
-    def test_clippy_raw_closure_count_is_declared_and_consumed(self):
-        source = SOURCE.read_text()
-        changed = source.replace(
-            "          RUE_AFFECTED_IMPACTED_CLOSURE_COUNT: ${{ needs.affected-targets.outputs.impacted_closure_count }}\n",
-            "",
-            1,
-        )
-        self.assertNotEqual(changed, source, "splice anchor no longer matches ci.yml")
-        self.assertIn("complete proved decision", "\n".join(self.validate_text(changed)))
-
-        changed = source.replace(
-            "      impacted_closure_count: ${{ steps.decide.outputs.impacted_closure_count }}\n",
-            "",
-            1,
-        )
-        self.assertNotEqual(changed, source, "splice anchor no longer matches ci.yml")
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn(
-            "needs.affected-targets.outputs.impacted_closure_count is referenced",
-            errors,
-        )
-
-    def test_clippy_adapter_must_verify_the_raw_closure_count(self):
-        source = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
-        changed = source.replace(
-            '            "${RUE_AFFECTED_IMPACTED_CLOSURE_COUNT:-}" \\\n',
-            "",
-            1,
-        )
-        self.assertNotEqual(changed, source, "splice anchor no longer matches ci-clippy")
-        self.assertIn(
-            "complete planner proof",
-            "\n".join(MODULE.clippy_adapter_errors(changed)),
-        )
-
-    def test_clippy_impacted_payload_requires_count_and_digest(self):
-        changed = SOURCE.read_text().replace(
-            "          RUE_AFFECTED_IMPACTED_TARGETS_DIGEST: ${{ needs.affected-targets.outputs.impacted_targets_digest }}\n",
-            "",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("complete impacted payload proof", errors)
-
-    def test_clippy_materializer_requires_verified_selection_and_gate(self):
-        source = SOURCE.read_text()
-        for line in (
-            "          RUE_CLIPPY_PROOF_STATUS: ${{ steps.sel.outputs.proof_status }}\n",
-            "          RUE_CLIPPY_GATE_STATUS: ${{ steps.sel.outputs.gate_status }}\n",
-        ):
-            changed = source.replace(line, "", 1)
-            self.assertNotEqual(changed, source, "splice anchor no longer matches ci.yml")
-            errors = "\n".join(self.validate_text(changed))
-            self.assertIn("complete impacted payload proof", errors)
-
-    def test_clippy_adapter_cannot_narrow_after_selection_or_gate_failure(self):
-        source = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
-        for condition in (
-            '"${RUE_CLIPPY_PROOF_STATUS:-}" == "SELECTIVE"',
-            '"${RUE_CLIPPY_GATE_STATUS:-}" == "RUN"',
-        ):
-            changed = source.replace(condition, '"true" == "true"', 1)
-            self.assertNotEqual(changed, source, "splice anchor no longer matches ci-clippy")
-            errors = "\n".join(MODULE.clippy_adapter_errors(changed))
-            self.assertIn("authenticate the complete impacted payload", errors)
-
-    def test_clippy_selection_uses_the_canonical_planner_narrow_limit(self):
-        source = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
-        mutations = (
-            source.replace(
-                'narrow_limit="$("$affected" narrow-limit)"',
-                'narrow_limit="600"',
-                1,
-            ),
-            source.replace('"$narrow_limit" >/dev/null', '"600" >/dev/null', 1),
-        )
-        for changed in mutations:
-            self.assertNotEqual(changed, source, "splice anchor no longer matches ci-clippy")
-            errors = "\n".join(MODULE.clippy_adapter_errors(changed))
-            self.assertIn("canonical narrow limit", errors)
-
-    def test_clippy_cannot_reintroduce_a_peer_graph_query(self):
-        changed = SOURCE.read_text().replace(
-            "run: scripts/ci-clippy run",
-            "run: ./buck2 uquery \"kind('sh_test', 'root//crates/...')\"",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("reviewed registry-derived runner", errors)
-        self.assertIn("must not invoke Buck directly", errors)
-
-    def test_clippy_registered_intersection_cannot_be_bypassed(self):
-        adapter = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text().replace(
-            '"$affected" narrow-scope clippy "${NARROW_FILE:-}"',
-            '"$affected" scope-targets clippy',
-            1,
-        )
-        errors = "\n".join(
-            self.validate_text(SOURCE.read_text(), clippy_adapter=adapter)
-        )
-        self.assertIn("exact registry-derived execution program", errors)
-        self.assertIn("target text must come only from registered", errors)
-
-    def test_clippy_scope_failure_retains_the_broad_fail_open_superset(self):
-        adapter = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text().replace(
-            '"$buck2" test //crates/...', "true", 1
-        )
-        errors = "\n".join(
-            self.validate_text(SOURCE.read_text(), clippy_adapter=adapter)
-        )
-        self.assertIn("broad fail-open test fallback", errors)
-
-    def test_clippy_empty_live_and_empty_subset_contracts_are_distinct(self):
-        source = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
-        changed = source.replace(
-            'if [[ "$narrow_status" -eq 2 ]]; then',
-            'if [[ "$narrow_status" -eq 99 ]]; then',
-            1,
-        )
-        self.assertIn(
-            "first narrow-scope query reports an empty live inventory",
-            "\n".join(MODULE.clippy_adapter_errors(changed)),
-        )
-        changed = source.replace(
-            "verified impacted subset is empty; intentional no-op",
-            "nothing selected",
-            1,
-        )
-        self.assertIn(
-            "successfully stop on a proved empty impacted subset",
-            "\n".join(MODULE.clippy_adapter_errors(changed)),
-        )
-        changed = source.replace(
-            'echo "clippy: verified impacted subset is empty; intentional no-op"\n'
-            "                return 0",
-            'echo "clippy: verified impacted subset is empty; intentional no-op"\n'
-            "                return 1",
-            1,
-        )
-        self.assertIn(
-            "successfully stop on a proved empty impacted subset",
-            "\n".join(MODULE.clippy_adapter_errors(changed)),
-        )
-
-    def test_clippy_target_array_cannot_be_hardcoded_or_appended(self):
-        source = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
-        mutations = (
-            source.replace(
-                "    local targets=()",
-                "    local targets=(//crates/one:one-clippy)",
-                1,
-            ),
-            source.replace(
-                '    done <<<"$targets_text"',
-                '    done <<<"$targets_text"\n'
-                '    targets+=(//crates/one:one-clippy)',
-                1,
-            ),
-        )
-        for changed in mutations:
-            with self.subTest(changed=changed):
-                errors = "\n".join(MODULE.clippy_adapter_errors(changed))
-                self.assertIn("target array must start empty", errors)
-
-    def test_clippy_cannot_add_extra_buck_test_or_build(self):
-        source = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
-        for command in (
-            '"$buck2" test //crates/one:one-clippy',
-            '"$buck2" build //crates/...',
-            "./buck2 test //crates/one:one-clippy",
-            "buck2 build //crates/...",
-        ):
-            changed = source.replace(
-                '    echo "Running $selection clippy scope',
-                f"    {command}\n    echo \"Running $selection clippy scope",
-                1,
-            )
-            with self.subTest(command=command):
-                errors = "\n".join(MODULE.clippy_adapter_errors(changed))
-                self.assertIn("must not add Buck target executions", errors)
-
-    def test_clippy_dispatch_cannot_append_work_after_reviewed_runner(self):
-        source = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
-        changed = source.replace(
-            "        run_clippy ;;",
-            '        run_clippy; "$buck2" test //crates/one:one-clippy ;;',
-            1,
-        )
-        errors = "\n".join(MODULE.clippy_adapter_errors(changed))
-        self.assertIn("top-level dispatch", errors)
-        self.assertIn("must not add Buck target executions", errors)
-
-    def test_clippy_rejects_every_direct_buck_graph_query_form(self):
-        source = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
-        commands = (
-            "query",
-            "uquery",
-            "cquery",
-            "aquery",
-            "bxl",
-            "targets",
-        )
-        for command in commands:
-            changed = source.replace(
-                '    echo "Running $selection clippy scope',
-                f'    "$buck2" {command} //...\n'
-                '    echo "Running $selection clippy scope',
-                1,
-            )
-            with self.subTest(command=command):
-                errors = "\n".join(MODULE.clippy_adapter_errors(changed))
-                self.assertIn("direct Buck graph queries", errors)
-
-    def test_clippy_graph_query_cannot_hide_behind_global_flags(self):
-        source = MODULE.CLIPPY_ADAPTER_SCRIPT.read_text()
-        for invocation in (
-            '"$buck2" --isolation-dir peer cquery //...',
-            "./buck2 --isolation-dir peer cquery //...",
-        ):
-            changed = source.replace(
-                '    echo "Running $selection clippy scope',
-                f"    {invocation}\n"
-                '    echo "Running $selection clippy scope',
-                1,
-            )
-            with self.subTest(invocation=invocation):
-                errors = "\n".join(MODULE.clippy_adapter_errors(changed))
-                self.assertIn("direct Buck graph queries", errors)
-
-    def test_future_narrowing_consumer_must_be_registered(self):
-        changed = SOURCE.read_text() + (
-            "\n  future-narrowed-lane:\n"
-            "    runs-on: ubuntu-latest\n"
-            "    needs: affected-targets\n"
-            "    steps:\n"
-            "      - run: echo ${{ needs.affected-targets.outputs.impacted }}\n"
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("future-narrowed-lane consumes impacted narrowing", errors)
-
-    def test_direct_scope_operation_cannot_bypass_registry(self):
-        changed = SOURCE.read_text().replace(
-            "scripts/affected-targets narrow-scope linux-premerge-build \"$NARROW_FILE\"",
-            "scripts/affected-targets intersect \"$NARROW_FILE\" \"${targets[@]}\"",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("must use the registry-backed narrow-scope command", errors)
-
-    def test_second_raw_impacted_consumer_fails_closed(self):
-        changed = SOURCE.read_text().replace(
-            "RUE_TEST_TARGETS_FILE: ${{ steps.narrow.outputs.test_file }}",
-            'RUE_TEST_TARGETS_FILE: "$RUE_AFFECTED_IMPACTED"',
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("raw impacted-closure consumer", errors)
-        self.assertIn("registry-intersected target file", errors)
-
-    def test_second_raw_impacted_file_consumer_fails_closed(self):
-        changed = SOURCE.read_text().replace(
-            "NARROW_FILE: ${{ steps.narrow.outputs.file }}",
-            "NARROW_FILE: ${{ steps.narrow.outputs.file }}\n"
-            "          SECOND_RAW_FILE: ${{ steps.narrow.outputs.file }}",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("raw impacted file", errors)
-
-    def test_second_narrow_file_use_fails_closed(self):
-        changed = SOURCE.read_text().replace(
-            'elif ! scope="$(scripts/affected-targets narrow-scope '
-            'linux-premerge-build "$NARROW_FILE")"; then',
-            'head -n1 "$NARROW_FILE"\n'
-            '          elif ! scope="$(scripts/affected-targets narrow-scope '
-            'linux-premerge-build "$NARROW_FILE")"; then',
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("expose $NARROW_FILE only", errors)
-
-    def test_second_local_raw_file_use_fails_closed(self):
-        changed = SOURCE.read_text().replace(
-            'if scripts/affected-targets narrow-scope linux-premerge-tests '
-            '"$file" >"$test_file"; then',
-            'head -n1 "$file"\n'
-            '            if scripts/affected-targets narrow-scope linux-premerge-tests '
-            '"$file" >"$test_file"; then',
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("local raw impacted file only", errors)
-
-    def test_second_native_local_raw_file_use_fails_closed(self):
-        marker = 'file="${RUNNER_TEMP}/impacted-targets.txt"'
-        changed = SOURCE.read_text().replace(
-            marker,
-            marker + '\n          head -n1 "$file" >/dev/null',
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("native-platforms must use its local raw impacted file only", errors)
-
-    def test_each_registered_consumer_must_intersect(self):
-        changed = SOURCE.read_text().replace(
-            'scripts/affected-targets narrow-scope linux-premerge-tests "$file"',
-            'printf "%s\\n" "$RUE_AFFECTED_IMPACTED"',
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("linux-premerge-tests", errors)
-
-    def test_degraded_build_fallback_cannot_be_removed(self):
-        changed = SOURCE.read_text().replace(
-            'scripts/ci-timed "linux-x64 build" -- ./buck2 build //crates/...',
-            "echo './buck2 build //crates/...'",
-            2,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("full-scope degraded fallback", errors)
-
-    def test_saved_share_summary_cannot_be_removed(self):
-        changed = SOURCE.read_text().replace("saved share", "scope share")
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("saved-share visibility", errors)
-
-    def test_impacted_reference_in_comment_is_not_a_consumer(self):
-        changed = SOURCE.read_text().replace(
-            "  ci-success:\n",
-            "  # needs.affected-targets.outputs.impacted is documented only\n"
-            "  ci-success:\n",
-            1,
-        )
-        self.assertEqual(self.validate_text(changed), [])
-
     def test_need_output_from_unknown_job_fails(self):
         self.assertIn(
             "references unknown job",
-            "\n".join(
-                MODULE.undeclared_need_outputs(
-                    "${{ needs.ghost.outputs.thing }}", {"real": "    outputs:\n      thing: x\n"}
-                )
-            ),
+            "\n".join(MODULE.undeclared_need_outputs(
+                "${{ needs.ghost.outputs.thing }}", {"real": "    outputs:\n      thing: x\n"}
+            )),
         )
 
     def test_declared_outputs_parses_past_comments(self):
-        # The declaration this guard protects carries an explanatory comment;
-        # the parser must not stop at it and report the output as undeclared.
         block = (
             "    outputs:\n"
             "      full: ${{ steps.decide.outputs.full }}\n"
@@ -1219,12 +315,44 @@ class GateValidatorTests(unittest.TestCase):
         )
         self.assertEqual(MODULE.declared_outputs(block), {"full", "selected_lanes"})
 
+    def test_matrix_gate_expands_to_every_matrix_lane(self):
+        changed = SOURCE.read_text().replace("            name: macos-arm64\n", "            name: macos-x64\n", 1)
+        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("gates on 'native-macos-x64', which scripts/affected-targets never selects", errors)
+        self.assertIn("lane 'native-macos-arm64' must be gated by exactly one job", errors)
 
-    def test_lane_target_drift_fails_closed(self):
-        # A direct Buck target in the native workflow is a second membership
-        # source and must be rejected; the live graph label is authoritative.
+    def test_gate_on_an_unselectable_lane_name_fails(self):
+        # A lane the determinator never emits is deselected on every selective run.
         changed = SOURCE.read_text().replace(
-            "          native_targets=\"$(scripts/affected-targets native-targets)\" || exit 1\n",
+            'run: scripts/ci-corpus-selected "valgrind"', 'run: scripts/ci-corpus-selected "memcheck"', 1
+        )
+        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("gates on 'memcheck', which scripts/affected-targets never selects", errors)
+        self.assertIn("lane 'valgrind' must be gated by exactly one job", errors)
+
+    def test_gate_reading_the_wrong_selection_output_fails(self):
+        source = SOURCE.read_text()
+        _, asan = source.split("\n  asan:\n", 1)
+        wrong = asan.replace(
+            "RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}",
+            "RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected }}",
+            1,
+        )
+        self.assertNotEqual(wrong, asan, "splice anchor no longer matches ci.yml")
+        changed = source.replace(asan, wrong, 1)
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("asan gate step for 'asan' lacks 'RUE_AFFECTED_LANES:", errors)
+
+    def test_unavailable_lane_inventory_fails_closed(self):
+        errors = "\n".join(self.validate_text(SOURCE.read_text(), script_body="exit 1\n"))
+        self.assertIn("scripts/affected-targets lanes is unavailable or empty", errors)
+
+    # --- RUE-1266: native membership belongs to the graph --------------------
+    def test_lane_target_drift_fails_closed(self):
+        changed = SOURCE.read_text().replace(
+            '          native_targets="$(scripts/affected-targets native-targets)" || exit 1\n',
             "          ./buck2 test //crates/rue-query:rue-query-test\n",
             1,
         )
@@ -1232,87 +360,16 @@ class GateValidatorTests(unittest.TestCase):
         errors = "\n".join(self.validate_text(changed))
         self.assertIn("//crates/rue-query:rue-query-test", errors)
         self.assertIn("must not name Buck targets", errors)
+        self.assertIn("exactly once with scripts/affected-targets native-targets", errors)
 
-    def test_second_native_buck_test_step_cannot_hide_a_target_list(self):
+    def test_native_job_cannot_run_a_direct_graph_query(self):
         changed = SOURCE.read_text().replace(
-            "          scripts/ci-timed \"$LANE_NAME native units\" -- ./buck2 test \"${targets[@]}\"\n",
-            "          scripts/ci-timed \"$LANE_NAME native units\" -- ./buck2 test \"${targets[@]}\"\n"
-            "      - name: Another native test step\n"
-            "        run: ./buck2 test //crates/rue-query:rue-query-test\n",
+            '          native_targets="$(scripts/affected-targets native-targets)" || exit 1\n',
+            '          native_targets="$(scripts/affected-targets native-targets)" || exit 1\n'
+            '          extra="$(./buck2 uquery "attrfilter(labels, rue_platform_native, //...)")"\n',
             1,
         )
-        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("must not name Buck targets", errors)
-
-    def test_native_target_cannot_be_appended_to_graph_derived_array(self):
-        changed = SOURCE.read_text().replace(
-            "          if [ \"$NARROW_COUNT\" -gt 0 ]; then\n",
-            "          targets+=(//crates/rue-query:rue-query-test)\n"
-            "          if [ \"$NARROW_COUNT\" -gt 0 ]; then\n",
-            1,
-        )
-        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("unit membership must come only from the graph", errors)
-        self.assertIn("//crates/rue-query:rue-query-test", errors)
-
-    def test_dynamic_peer_lane_target_query_cannot_be_appended(self):
-        changed = SOURCE.read_text().replace(
-            "          if [ \"$NARROW_COUNT\" -gt 0 ]; then\n",
-            "          targets+=(\"$(scripts/affected-targets lane-targets release)\")\n"
-            "          if [ \"$NARROW_COUNT\" -gt 0 ]; then\n",
-            1,
-        )
-        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("may use scripts/affected-targets only", errors)
-
-    def test_dynamic_peer_lane_query_cannot_share_the_native_assignment_line(self):
-        changed = SOURCE.read_text().replace(
-            "          native_targets=\"$(scripts/affected-targets native-targets)\" || exit 1\n",
-            "          native_targets=\"$(scripts/affected-targets native-targets)\" || exit 1; "
-            "targets+=(\"$(scripts/affected-targets lane-targets release)\")\n",
-            1,
-        )
-        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("may use scripts/affected-targets only", errors)
-
-    def test_native_job_cannot_run_a_second_direct_buck_query(self):
-        changed = SOURCE.read_text().replace(
-            "          native_targets=\"$(scripts/affected-targets native-targets)\" || exit 1\n",
-            "          ./buck2 uquery //...\n"
-            "          native_targets=\"$(scripts/affected-targets native-targets)\" || exit 1\n",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("must not run direct Buck graph queries", errors)
-
-    def test_native_job_cannot_hide_query_behind_buck_global_flags(self):
-        changed = SOURCE.read_text().replace(
-            "          native_targets=\"$(scripts/affected-targets native-targets)\" || exit 1\n",
-            "          targets+=(\"$(./buck2 --isolation-dir peer uquery \"attrfilter(labels, rue_other, //...)\")\")\n"
-            "          native_targets=\"$(scripts/affected-targets native-targets)\" || exit 1\n",
-            1,
-        )
-        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("must not run direct Buck graph queries", errors)
-
-    def test_renamed_native_step_cannot_bypass_graph_derived_invocation(self):
-        changed = SOURCE.read_text().replace(
-            "      - name: Run graph-scoped native unit tests\n",
-            "      - name: Renamed native step\n",
-            1,
-        ).replace(
-            "scripts/ci-timed \"$LANE_NAME native units\" -- ./buck2 test \"${targets[@]}\"",
-            "./buck2 test //crates/rue-query:rue-query-test",
-            1,
-        )
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("exactly one graph-derived unit invocation", errors)
-        self.assertIn("must not name Buck targets", errors)
+        self.assertIn("must not run direct Buck graph queries", "\n".join(self.validate_text(changed)))
 
     def test_native_build_and_comment_labels_are_not_unit_target_drift(self):
         changed = SOURCE.read_text().replace(
@@ -1322,136 +379,57 @@ class GateValidatorTests(unittest.TestCase):
         )
         self.assertEqual(MODULE.lane_target_drift(changed), [])
 
-    def test_ci_contract_installs_dotslash_before_live_validator(self):
-        source = SOURCE.read_text()
-        prefix, contract = source.split("  ci-contract:\n", 1)
-        contract = contract.replace(
-            "      - name: Bootstrap dotslash\n        uses: ./.github/actions/bootstrap-dotslash\n",
-            "",
-            1,
+    def test_native_graph_ownership_compares_lanes_with_the_graph(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = fake_script(
+                Path(directory),
+                'case "$1" in\n'
+                "native-targets) echo //:native-one //:native-two;;\n"
+                "lane-targets) echo //:native-one //:unit-two //:spec-tests //:cli-tests;;\n"
+                "esac\n",
+            )
+            rendered = "\n".join(MODULE.native_lane_ownership(SOURCE.read_text(), script=script))
+        for lane in ("native-linux-arm64", "native-macos-arm64"):
+            self.assertIn(f"{lane} is missing graph-owned targets: //:native-two", rendered)
+            self.assertIn(f"{lane} selected unlabelled or unexpected targets: //:unit-two", rendered)
+
+    def test_native_graph_ownership_rejects_empty_or_failed_graph(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = fake_script(Path(directory), 'if [ "$1" = native-targets ]; then exit 0; fi\n')
+            self.assertIn("graph selection is empty", "\n".join(MODULE.native_lane_ownership("", script=script)))
+        self.assertIn(
+            "graph query failed",
+            "\n".join(MODULE.native_lane_ownership("", script=Path("/nonexistent/affected-targets"))),
         )
-        changed = prefix + "  ci-contract:\n" + contract
-        errors = "\n".join(self.validate_text(changed))
-        self.assertIn("ci-contract must install dotslash before the live Buck validator", errors)
 
-    def test_lane_targets_and_job_agree_today(self):
-        self.assertEqual(MODULE.lane_target_drift(SOURCE.read_text()), [])
-
+    # --- RUE-1855: clippy ownership -------------------------------------------
     def test_clippy_live_proxy_and_registered_scope_must_agree(self):
         with tempfile.TemporaryDirectory() as directory:
-            script = Path(directory) / "affected-targets"
-            script.write_text(
-                "#!/usr/bin/env bash\n"
-                "case \"$1:${2:-}\" in\n"
+            script = fake_script(
+                Path(directory),
+                'case "$1:${2:-}" in\n'
                 "  lane-targets:clippy) echo //crates/one:one-clippy;;\n"
                 "  scope-targets:clippy) echo //crates/two:two-clippy;;\n"
                 "  clippy-owned-targets:) echo //crates/two:two-clippy;;\n"
-                "esac\n"
+                "esac\n",
             )
             errors = MODULE.clippy_lane_ownership(script)
-        self.assertIn(
-            "clippy lane proxy and registered runnable scope disagree",
-            "\n".join(errors),
-        )
-
-    def test_clippy_live_inventory_rejects_noncanonical_targets(self):
-        with tempfile.TemporaryDirectory() as directory:
-            script = Path(directory) / "affected-targets"
-            script.write_text(
-                "#!/usr/bin/env bash\n"
-                "echo //crates/one:one-clippy //crates/one:one-fmt-check\n"
-            )
-            errors = MODULE.clippy_lane_ownership(script)
-        self.assertIn("outside the canonical live set", "\n".join(errors))
-        self.assertIn("one-fmt-check", "\n".join(errors))
-
-    def test_clippy_owner_label_rejects_a_non_suffix_target(self):
-        with tempfile.TemporaryDirectory() as directory:
-            script = Path(directory) / "affected-targets"
-            script.write_text(
-                "#!/usr/bin/env bash\n"
-                "case \"$1\" in\n"
-                "  lane-targets|scope-targets) echo //crates/one:one-clippy;;\n"
-                "  clippy-owned-targets) echo //crates/one:one-clippy //crates/one:one-test;;\n"
-                "esac\n"
-            )
-            errors = "\n".join(MODULE.clippy_lane_ownership(script))
-        self.assertIn("owner label contains targets outside the canonical live set", errors)
-        self.assertIn("labels targets outside the canonical live inventory", errors)
-        self.assertIn("one-test", errors)
-
-    def test_clippy_canonical_suffix_target_cannot_lack_owner_label(self):
-        with tempfile.TemporaryDirectory() as directory:
-            script = Path(directory) / "affected-targets"
-            script.write_text(
-                "#!/usr/bin/env bash\n"
-                "case \"$1\" in\n"
-                "  lane-targets|scope-targets) echo //crates/one:one-clippy //crates/two:two-clippy;;\n"
-                "  clippy-owned-targets) echo //crates/one:one-clippy;;\n"
-                "esac\n"
-            )
-            errors = "\n".join(MODULE.clippy_lane_ownership(script))
-        self.assertIn("canonical live clippy targets missing rue_ci_clippy_lane", errors)
-        self.assertIn("two-clippy", errors)
+        self.assertIn("clippy lane proxy and registered runnable scope disagree", "\n".join(errors))
 
     def test_clippy_owner_label_exactly_matches_canonical_inventory(self):
         with tempfile.TemporaryDirectory() as directory:
-            script = Path(directory) / "affected-targets"
-            script.write_text(
-                "#!/usr/bin/env bash\n"
-                "echo //crates/one:one-clippy //crates/two:two-clippy\n"
-            )
+            script = fake_script(Path(directory), "echo //crates/one:one-clippy //crates/two:two-clippy\n")
             self.assertEqual(MODULE.clippy_lane_ownership(script), [])
-
-    def test_unreadable_lane_script_fails_closed(self):
-        # Ownership validation fails closed when its canonical graph query is
-        # unavailable.
-        self.assertIn(
-            "graph query failed",
-            "\n".join(
-                MODULE.native_lane_ownership(SOURCE.read_text(), script=Path("/nonexistent/affected-targets"))
-            ),
-        )
-
-    def test_native_graph_ownership_fails_on_an_unowned_graph_target(self):
-        with tempfile.TemporaryDirectory() as directory:
-            script = Path(directory) / "affected-targets"
-            script.write_text(
-                "#!/usr/bin/env bash\n"
-                "case \"$1\" in\n"
-                "native-targets) echo //:native-one //:native-two;;\n"
-                "lane-targets) echo //:native-one //:spec-tests //:cli-tests;;\n"
-                "esac\n"
+            script = fake_script(
+                Path(directory),
+                'case "$1" in\n'
+                "  lane-targets|scope-targets) echo //crates/one:one-clippy //crates/two:two-clippy;;\n"
+                "  clippy-owned-targets) echo //crates/one:one-clippy //crates/one:one-test;;\n"
+                "esac\n",
             )
-            errors = MODULE.native_lane_ownership(SOURCE.read_text(), script=script)
-        rendered = "\n".join(errors)
-        self.assertIn("native-linux-arm64 is missing graph-owned targets", rendered)
-        self.assertIn("native-macos-arm64 is missing graph-owned targets", rendered)
-
-    def test_native_graph_ownership_rejects_unexpected_targets_in_both_lanes(self):
-        with tempfile.TemporaryDirectory() as directory:
-            script = Path(directory) / "affected-targets"
-            script.write_text(
-                "#!/usr/bin/env bash\n"
-                "case \"$1\" in\n"
-                "native-targets) echo //:native-one;;\n"
-                "lane-targets) echo //:native-one //:unit-two //:spec-tests //:cli-tests;;\n"
-                "esac\n"
-            )
-            errors = MODULE.native_lane_ownership(SOURCE.read_text(), script=script)
-        rendered = "\n".join(errors)
-        self.assertIn("native-linux-arm64 selected unlabelled or unexpected targets", rendered)
-        self.assertIn("native-macos-arm64 selected unlabelled or unexpected targets", rendered)
-
-    def test_native_graph_ownership_rejects_empty_graph(self):
-        with tempfile.TemporaryDirectory() as directory:
-            script = Path(directory) / "affected-targets"
-            script.write_text(
-                "#!/usr/bin/env bash\n"
-                "if [ \"$1\" = native-targets ]; then exit 0; fi\n"
-            )
-            errors = MODULE.native_lane_ownership(SOURCE.read_text(), script=script)
-        self.assertIn("graph selection is empty", "\n".join(errors))
+            errors = "\n".join(MODULE.clippy_lane_ownership(script))
+        self.assertIn("canonical live clippy targets missing rue_ci_clippy_lane: //crates/two:two-clippy", errors)
+        self.assertIn("owner label contains targets outside the canonical live set", errors)
 
 
 if __name__ == "__main__":

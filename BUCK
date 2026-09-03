@@ -801,7 +801,7 @@ rue_tool_test(
 # discovery so a newly added workflow is covered the day it lands.
 #
 # RUE-1825 moved the cache step itself into the composite action, so the
-# sources are the whole `.github` tree and both gates below walk it: the
+# sources are the whole `.github` tree and the gate below walks it: the
 # workflows are where an install may not appear, the action is where the one
 # surviving key lives.
 filegroup(
@@ -814,23 +814,13 @@ filegroup(
     ]),
 )
 
-rue_sh_test(
-    name = "dotslash-cache-key-validation",
-    test = "scripts/validate-dotslash-cache-keys.py",
-    args = ["$(location :dotslash-github-sources)/.github"],
-)
-
-rue_tool_test(
-    name = "dotslash-cache-key-tool-tests",
-    test = "scripts/test-dotslash-cache-keys.py",
-    resources = ["scripts/validate-dotslash-cache-keys.py"],
-)
-
 # RUE-1825: installing dotslash and caching the binary it downloads is one
 # operation, and copies of it drifted until eight install sites had lost the
 # cache half entirely. `.github/actions/bootstrap-dotslash` owns the pairing;
 # this gate keeps it the only owner, and fails if the action stops doing
-# either half rather than passing vacuously over conforming callers.
+# either half rather than passing vacuously over conforming callers. It also
+# holds the one surviving cache key to the RUE-1854 rule: hash the pinned
+# `buck2-bin` manifest, never the `buck2` wrapper.
 rue_sh_test(
     name = "dotslash-bootstrap-validation",
     test = "scripts/validate-dotslash-bootstrap.py",
@@ -870,35 +860,10 @@ rue_tool_test(
     resources = ["scripts/validate-shell-pipefail-pipelines.py"],
 )
 
-# Keep the mechanism test's wrapper input explicit: under Buck it must not
-# reach back through the validator's source symlink into the checkout.
-filegroup(
-    name = "shell-bash-baseline-inputs",
-    srcs = {"buck2": "buck2"},
-)
-
 rue_tool_test(
     name = "shell-bash-baseline-tool-tests",
     test = "scripts/test-validate-shell-bash-baseline.py",
     resources = ["scripts/validate-shell-bash-baseline.py"],
-    env = {
-        "RUE_BASH_BASELINE_ROOT": "$(location :shell-bash-baseline-inputs)",
-    },
-)
-
-# The interpreter-floor gate (RUE-1509; floor made a uniform 3.9 by RUE-1524).
-# Unlike the Bash baseline's tests, these need no particular interpreter to be
-# INSTALLED to mean something, so premerge is enough. They are not thereby
-# host-independent, and the fixtures are written to keep the difference small
-# and asserted rather than assumed: every fixture is 3.9 syntax, so the scan
-# itself answers identically everywhere, and the one case that cannot -- what
-# a parse error means -- asserts on both sides of the floor. The scan proper is
-# only as strict as the interpreter running it, which is why the authoritative
-# run is ci.yml's `fmt` step, at or above the floor.
-rue_tool_test(
-    name = "python-baseline-tool-tests",
-    test = "scripts/test-validate-python-baseline.py",
-    resources = ["scripts/validate-python-baseline.py"],
 )
 
 # RUE-1816's historical-defect plants are source patches compiled only inside
@@ -1077,11 +1042,6 @@ rue_sh_test(
     ],
     resources = [
         "scripts/affected-targets",
-        "scripts/ci-clippy",
-        "scripts/ci-required-results.py",
-        # The gate pins the bounded apt timeout/retry/lock policy as well as
-        # the workflow wiring, so installer-only edits must invalidate it.
-        "scripts/install-valgrind",
         "scripts/run-native-platform-corpus.sh",
         # RUE-1265: NATIVE_CLI_INVOCATIONS is imported from here, so the two gates
         # cannot disagree about which `scripts/rue cli` steps the native lanes
@@ -1139,11 +1099,8 @@ rue_tool_test(
     test = "scripts/test-validate-ci-gate.py",
     resources = [
         "scripts/affected-targets",
-        "scripts/ci-clippy",
-        "scripts/ci-required-results.py",
         "scripts/run-native-platform-corpus.sh",
         "scripts/validate-ci-gate.py",
-        "scripts/install-valgrind",
         "scripts/validate-test-duplication.py",
     ],
     env = {
@@ -1326,14 +1283,19 @@ rue_tool_test(
 # scripts/affected-targets and the fail-open gate in scripts/ci-corpus-selected.
 # The test uses local stubs for the BTD/Buck contract, so it proves a selective
 # decision without requiring a network download or a real Buck graph.
+#
+# `platform = "native"` on this and the other fake-tool shell suites below
+# (RUE-1936): they run in seconds and exercise scripts that developer Macs and
+# the macos-15 runner execute with Bash 3.2, so the native lanes run them on
+# that interpreter instead of leaving Bash 4 constructs to a Linux-only pass
+# (RUE-1506).
 rue_sh_test(
     name = "affected-targets-tool-tests",
     test = "scripts/test-affected-targets.sh",
+    platform = "native",
     resources = [
         "scripts/affected-targets",
-        "scripts/ci-affected-payload.py",
         "scripts/ci-clippy",
-        "scripts/ci-corpus-decision",
         "scripts/ci-corpus-selected",
         "scripts/parse-btd-impacted.py",
         "test.sh",
@@ -1435,6 +1397,7 @@ filegroup(
 
 rue_sh_test(
     name = "cleanup-script-tests",
+    platform = "native",
     test = "scripts/test-cleanup-scripts.sh",
     env = {
         "RUE_CLEANUP_SCRIPTS_ROOT": "$(location :cleanup-script-inputs)",
@@ -1473,6 +1436,7 @@ filegroup(
 
 rue_sh_test(
     name = "wrapper-script-tests",
+    platform = "native",
     test = "scripts/test-wrapper-scripts.sh",
     env = {
         "RUE_WRAPPER_ROOT": "$(location :wrapper-script-inputs)",
@@ -1513,6 +1477,7 @@ filegroup(
 
 rue_sh_test(
     name = "corpus-action-tests",
+    platform = "native",
     test = "scripts/test-corpus-action.sh",
     env = {
         "RUE_CORPUS_SCRIPTS_ROOT": "$(location :corpus-script-inputs)",
@@ -1547,6 +1512,7 @@ filegroup(
 
 rue_sh_test(
     name = "build-sharing-tests",
+    platform = "native",
     test = "scripts/test-build-sharing.sh",
     env = {
         "RUE_BUILD_SHARING_ROOT": "$(location :build-sharing-test-inputs)",

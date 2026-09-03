@@ -1,149 +1,54 @@
 #!/usr/bin/env bash
-# Fail-open clippy lane adapter for affected-target selection (RUE-1855).
+# Run the clippy lane (RUE-1855): the live `-clippy` inventory from
+# scripts/affected-targets, narrowed to the determinator's impacted closure
+# when NARROW_FILE names a non-empty one.
+#
+# A successful live query with zero clippy targets means the query or the
+# crate macros are broken and stays a hard error; a query that FAILS falls
+# open to `//crates/...`, the broad superset.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-proof="$repo_root/scripts/ci-affected-payload.py"
-decision="$repo_root/scripts/ci-corpus-decision"
 affected="$repo_root/scripts/affected-targets"
 buck2="$repo_root/buck2"
 
-select_lane() {
-    local proof_status="DEGRADED" narrow_limit=""
-    if [[ "${RUE_AFFECTED_FULL:-}" == "false" ]]; then
-        if ! narrow_limit="$("$affected" narrow-limit)"; then
-            echo "clippy canonical narrow limit is unavailable or malformed; running the full live inventory" >&2
-            RUE_AFFECTED_FULL=""
-            export RUE_AFFECTED_FULL
-        elif ! printf '%s' "${RUE_AFFECTED_LANES:-}" | "$proof" verify-decision \
-            "${RUE_AFFECTED_LANES_COUNT:-}" \
-            "${RUE_AFFECTED_LANES_DIGEST:-}" \
-            "${RUE_AFFECTED_NARROWED:-}" \
-            "${RUE_AFFECTED_NARROWING_STATUS:-}" \
-            "${RUE_AFFECTED_HEAD_TARGET_COUNT:-}" \
-            "${RUE_AFFECTED_IMPACTED_CLOSURE_COUNT:-}" \
-            "${RUE_AFFECTED_IMPACTED_TARGET_COUNT:-}" \
-            "$narrow_limit" >/dev/null; then
-            echo "clippy selection payload or metadata is incomplete or inconsistent; running the full live inventory" >&2
-            RUE_AFFECTED_FULL=""
-            export RUE_AFFECTED_FULL
-        else
-            proof_status="SELECTIVE"
-        fi
-    elif [[ "${RUE_AFFECTED_FULL:-}" == "true" ]]; then
-        proof_status="FULL"
-    fi
-    "$decision" clippy
-    local decision_status=$?
-    if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-        printf 'proof_status=%s\n' "$proof_status" >>"$GITHUB_OUTPUT"
-    fi
-    return "$decision_status"
+[[ $# -eq 1 && "$1" == run ]] || { echo "usage: scripts/ci-clippy run" >&2; exit 2; }
+
+hard_error() {
+    echo "clippy: no live -clippy targets found; the query or crate macros are broken" >&2
+    exit 1
 }
 
-append_scope_summary() {
-    [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] || return 0
-    printf '%s\n' "$1" >>"$GITHUB_STEP_SUMMARY"
-}
-
-materialize_impacted() {
-    if [[ -z "${RUNNER_TEMP:-}" || -z "${GITHUB_OUTPUT:-}" ]]; then
-        echo "ci-clippy: RUNNER_TEMP and GITHUB_OUTPUT are required" >&2
-        return 2
-    fi
-    local file="$RUNNER_TEMP/impacted-clippy-targets.txt"
-    local status="DECLINED"
-    : >"$file"
-    if [[ "${RUE_CLIPPY_PROOF_STATUS:-}" == "SELECTIVE" \
-        && "${RUE_CLIPPY_GATE_STATUS:-}" == "RUN" \
-        && "${RUE_AFFECTED_NARROWED:-}" == "true" ]]; then
-        if printf '%s' "${RUE_AFFECTED_IMPACTED:-}" | "$proof" verify targets \
-            "${RUE_AFFECTED_IMPACTED_TARGET_COUNT:-}" \
-            "${RUE_AFFECTED_IMPACTED_TARGETS_DIGEST:-}" \
-            --require-nonempty >"$file"; then
-            status="CANDIDATE"
-        else
-            status="DEGRADED"
-            echo "clippy impacted payload proof failed; running the full live inventory" >&2
-            append_scope_summary '- `clippy`: **DEGRADED**; saved share **not applicable** (impacted output unavailable or corrupt; full scope used).'
+selection=full
+targets_text=""
+if [[ -n "${NARROW_FILE:-}" && -s "$NARROW_FILE" ]]; then
+    if targets_text="$("$affected" narrow-scope clippy "$NARROW_FILE")"; then
+        if [[ -z "$targets_text" ]]; then
+            echo "clippy: verified impacted subset is empty; intentional no-op"
+            exit 0
         fi
-    elif [[ "${RUE_CLIPPY_PROOF_STATUS:-}" == "FULL" \
-        && "${RUE_CLIPPY_GATE_STATUS:-}" == "RUN" ]]; then
-        append_scope_summary '- `clippy`: **DECLINED**; saved share **not applicable** (full scope used).'
-    elif [[ "${RUE_CLIPPY_PROOF_STATUS:-}" == "SELECTIVE" \
-        && "${RUE_CLIPPY_GATE_STATUS:-}" == "RUN" \
-        && "${RUE_AFFECTED_NARROWED:-}" == "false" ]]; then
-        append_scope_summary '- `clippy`: **DECLINED**; saved share **not applicable** (full scope used).'
+        selection=narrowed
     else
-        status="DEGRADED"
-        echo "clippy selection, gate, or narrowing decision is unavailable; running the full live inventory" >&2
-        append_scope_summary '- `clippy`: **DEGRADED**; saved share **not applicable** (selection, gate, or narrowing decision unavailable; full scope used).'
+        status=$?
+        [[ "$status" -eq 2 ]] && hard_error
+        echo "clippy: narrowing unavailable; running the full live inventory" >&2
     fi
-    {
-        printf 'file=%s\n' "$file"
-        printf 'status=%s\n' "$status"
-    } >>"$GITHUB_OUTPUT"
-}
+fi
+if [[ "$selection" == full ]]; then
+    if targets_text="$("$affected" scope-targets clippy)"; then
+        :
+    else
+        status=$?
+        [[ "$status" -eq 2 ]] && hard_error
+        echo "clippy: live scope unavailable; running all crate tests as the fail-open superset" >&2
+        exec "$buck2" test //crates/...
+    fi
+fi
 
-run_clippy() {
-    local selection="full"
-    local targets_text=""
-    local narrow_status scope_status target
-    if [[ "${NARROW_STATUS:-}" == "CANDIDATE" ]]; then
-        if targets_text="$("$affected" narrow-scope clippy "${NARROW_FILE:-}")"; then
-            if [[ -z "$targets_text" ]]; then
-                echo "clippy: verified impacted subset is empty; intentional no-op"
-                return 0
-            fi
-            selection="narrowed"
-        else
-            narrow_status=$?
-            if [[ "$narrow_status" -eq 2 ]]; then
-                echo "clippy: no live -clippy targets found; the query or crate macros are broken" >&2
-                return 1
-            fi
-            echo "clippy: scope resolution or intersection failed; running the full live inventory" >&2
-        fi
-    fi
-    if [[ "$selection" == "full" ]]; then
-        if targets_text="$("$affected" scope-targets clippy)"; then
-            :
-        else
-            scope_status=$?
-            if [[ "$scope_status" -eq 2 ]]; then
-                echo "clippy: no live -clippy targets found; the query or crate macros are broken" >&2
-                return 1
-            fi
-            # This broad pattern is the fail-open superset when the canonical
-            # live inventory cannot be resolved; it is not a peer graph query.
-            echo "clippy: live scope unavailable; running all crate tests as the fail-open superset" >&2
-            "$buck2" test //crates/...
-            return $?
-        fi
-    fi
-    local targets=()
-    while IFS= read -r target; do
-        [[ -n "$target" ]] && targets+=("$target")
-    done <<<"$targets_text"
-    if [[ "${#targets[@]}" -eq 0 ]]; then
-        echo "clippy: resolved live inventory is unexpectedly empty" >&2
-        return 1
-    fi
-    echo "Running $selection clippy scope across ${#targets[@]} crates..."
-    "$buck2" test "${targets[@]}"
-}
-
-case "${1:-}" in
-    select)
-        [[ $# -eq 1 ]] || { echo "usage: scripts/ci-clippy select" >&2; exit 2; }
-        select_lane ;;
-    materialize)
-        [[ $# -eq 1 ]] || { echo "usage: scripts/ci-clippy materialize" >&2; exit 2; }
-        materialize_impacted ;;
-    run)
-        [[ $# -eq 1 ]] || { echo "usage: scripts/ci-clippy run" >&2; exit 2; }
-        run_clippy ;;
-    *)
-        echo "usage: scripts/ci-clippy {select|materialize|run}" >&2
-        exit 2 ;;
-esac
+targets=()
+while IFS= read -r target; do
+    [[ -n "$target" ]] && targets+=("$target")
+done <<<"$targets_text"
+[[ "${#targets[@]}" -gt 0 ]] || hard_error
+echo "Running $selection clippy scope across ${#targets[@]} crates..."
+exec "$buck2" test "${targets[@]}"

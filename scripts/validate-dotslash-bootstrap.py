@@ -19,6 +19,15 @@ The gate also checks the action still does both jobs. Without that, deleting
 the install or the cache step inside it -- or renaming the action out from
 under the callers -- would leave every workflow trivially conforming and this
 gate passing over nothing (the vacuous-pass failure mode of RUE-1152).
+
+And it holds the surviving key to the RUE-1854 rule. `buck2` is a bash
+wrapper; the pinned release digests live in the `buck2-bin` DotSlash
+manifest. A key hashing the wrapper does not change when the pin is bumped,
+so `actions/cache` reports an exact hit on a store that lacks the new binary
+and never saves the freshly downloaded one back -- every job re-downloads tens
+of megabytes, indefinitely and silently, because dotslash succeeds either
+way. So every `dotslash-` key in the action must hash `buck2-bin` and must
+not hash `buck2`.
 """
 
 from __future__ import annotations
@@ -38,6 +47,10 @@ ACTION_REFERENCE = f"./.github/actions/{ACTION_DIRECTORY}"
 UPSTREAM_INSTALLER = "facebook/install-dotslash"
 DOTSLASH_KEY = re.compile(r"^\s*key:\s*.*dotslash-")
 CACHE_STEP = re.compile(r"uses:\s*actions/cache(?:/[a-z]+)?@")
+HASH_FILES = re.compile(r"hashFiles\((?P<arguments>[^)]*)\)")
+QUOTED = re.compile(r"""['"](?P<name>[^'"]*)['"]""")
+PINNED_MANIFEST = "buck2-bin"
+WRAPPER = "buck2"
 
 
 def workflows_in(directory: Path) -> list[Path]:
@@ -86,11 +99,30 @@ def check_action(action: Path) -> list[str]:
             f"{action}: no longer installs dotslash, so the workflows that "
             "call it get no toolchain and this gate checks nothing"
         )
-    if not (CACHE_STEP.search(text) and any(map(DOTSLASH_KEY.match, text.splitlines()))):
+    keys = [line for line in text.splitlines() if DOTSLASH_KEY.match(line)]
+    if not (CACHE_STEP.search(text) and keys):
         errors.append(
             f"{action}: no longer declares a dotslash cache, which is the half "
             "the copies kept losing"
         )
+    for key in keys:
+        hashed = [
+            name
+            for arguments in HASH_FILES.finditer(key)
+            for name in QUOTED.findall(arguments.group("arguments"))
+        ]
+        if WRAPPER in hashed:
+            errors.append(
+                f"{action}: a dotslash cache key hashes the {WRAPPER!r} wrapper; the "
+                f"pinned digests live in {PINNED_MANIFEST!r}, so a pin bump would leave "
+                "this key unchanged and the cached store permanently stale (RUE-1854)"
+            )
+        if PINNED_MANIFEST not in hashed:
+            errors.append(
+                f"{action}: a dotslash cache key does not hash {PINNED_MANIFEST!r}; a "
+                "bumped pin would restore a store without the new binary and never "
+                "save it back (RUE-1854)"
+            )
     return errors
 
 

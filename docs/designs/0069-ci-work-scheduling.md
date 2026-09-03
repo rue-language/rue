@@ -18,7 +18,8 @@ relates: ["RUE-1250", "RUE-1262", "RUE-1265", "RUE-1164", "RUE-1130", "RUE-1131"
 
 Accepted. Phases 1-4 are implemented: determination on every lane (RUE-1130),
 duplicate-target removal (RUE-1262), the duplication gate (RUE-1265), and
-graph-owned platform scope (RUE-1266). Phases 5-6 remain unstarted.
+graph-owned platform scope (RUE-1266). Phase 6 landed with RUE-1267 and its
+graph derivation was completed by RUE-1935/RUE-1936; Phase 5 remains unstarted.
 
 **Amendment 1 (2026-08-14)** records the remote-execution evaluation this ADR's
 open questions invite and declines RE as a scheduling lever: it is accepted as
@@ -396,10 +397,10 @@ from the graph later, or gated so that drift fails closed rather than silently:
 | Hand-maintained today | What goes wrong when the repo grows | Status |
 | --- | --- | --- |
 | `CLI_TEST_SHARD_COUNT` + the `platform-corpus` matrix | count and matrix drift | gated (`//:cli-shard-coverage-validation`); derive in phase 6 |
-| `SELECTABLE_CORPUS` | a new corpus job is ungated, so it always runs | fails open (runs); not yet gated |
-| `SELECTABLE_LANES` / `lane_targets` | a lane's job runs a target selection cannot see | **gated** (`lane_target_drift`) |
+| ~~`SELECTABLE_CORPUS`~~ | a new corpus job is ungated, so it always runs | **deleted** (RUE-1936): `corpus-targets` is derived from `_corpus_action` ∩ `rue_heavy_suite` ∩ (`rue_ci_dedicated_lane` ∪ `rue_cli_shard`); the `ci-contract` live tier check fails if the slow tier leaves it |
+| `SELECTABLE_LANES` / `lane_targets` | a lane's job runs a target selection cannot see | **gated** (`gated_lane_errors`, `native_lane_ownership`, `clippy_lane_ownership`): every gate step names a lane the determinator emits, and the native and clippy proxies equal the live graph |
 | the native lanes' platform unit list | new platform-sensitive tests are not enrolled | graph-owned `rue_platform_native` query (RUE-1266) |
-| narrowed-lane scope registry and subset check | a narrowed lane silently widens beyond its unnarrowed work, or a new consumer bypasses the contract | **gated** (`narrowing_contract_errors`); every distinct build/test consumer is registered, its runnable list is an exact live-set intersection, and `VERIFIED`, `DECLINED`, or `DEGRADED` is reported only after the scope query |
+| narrowed-lane scopes (`scope_targets`) | a narrowed lane silently widens beyond its unnarrowed work | by construction (RUE-1935): `narrow-scope` is only ever `scope ∩ impacted` over the consumer's live scope; the registry, the shell-text pins, and the content proofs that duplicated this were deleted |
 | `RUE_AFFECTED_NARROW_LIMIT` (600) | a threshold nobody revisits | unmeasured; should follow measurement |
 | the platform responsibility matrix | a responsibility silently moves | gated (`validate-ci-gate.py`) |
 | `shard-weights.json` refresh | weights go stale, shards skew | manual (RUE-1222); guard is vacuous (§6) |
@@ -480,6 +481,20 @@ completely.
       (all 11 matrix jobs present; premerge is the longest substantive job at
       209s). Event/cache mismatch and runner queueing make this execution and
       no-topology-delta evidence, not a causal speedup comparison.
+      **Phase 6 follow-up (RUE-1935/RUE-1936).** The planner's
+      `--corpus-targets` input was still the hand-maintained `SELECTABLE_CORPUS`
+      array; it is now the graph query above, with the six oracle
+      differentials given the `rue_ci_dedicated_lane` label they always
+      deserved. The determinator itself shrank to BTD plus a thin wrapper:
+      the count/content proof layer, the scope registry, the manifest tables,
+      the `ci-corpus-decision` adapter, and the clippy select/materialize
+      phases were deleted, because the merge queue always runs full and so a
+      pull-request under-selection costs one queue ejection, never a merged
+      regression. The validators that synced hand copies went with them
+      (`narrowing_contract_errors`, the clippy adapter text pins, the
+      performance-pin and Valgrind-installer text pins, the static Python
+      floor scanner, the separate dotslash cache-key gate); what survives
+      compares graph facts, workflow wiring, and the aggregate.
 
 Adjacent, not sequenced: RUE-1131 (avoid compiler builds in stubbed jobs) is the
 same fixed-cost problem this ADR names in the compiler-cold regime.

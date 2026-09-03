@@ -1,117 +1,56 @@
 #!/usr/bin/env bash
-# Affected-target selection for pull-request CI (RUE-1119, extended by RUE-1130).
+# Affected-target selection for pull-request CI (RUE-1119, RUE-1130, RUE-1935).
 #
-# On a pull_request run, only the registered heavy work a change actually
-# affects needs to run; the merge queue (merge_group) remains the authoritative
-# full `//...` run. This script decides, for one PR, which selectable corpus
-# targets and lanes are affected, using Meta's off-the-shelf Buck Target
-# Determinator (BTD, facebookincubator/buck2-change-detector) rather than a
-# hand-rolled `owner()`/`rdeps()` query.
+# On a pull_request run only the heavy work a change can reach needs to run;
+# the merge queue (merge_group) is the only path to trunk and always runs the
+# full graph, so under-selection here costs one queue ejection, never a merged
+# regression. The decision comes from Meta's Buck Target Determinator (BTD,
+# facebookincubator/buck2-change-detector): `buck2 targets` dumps at the
+# merge-base and at the head, plus the changed-file list, give an impacted
+# closure that this script intersects with what each gated lane executes.
 #
-# SAFETY MODEL (this is the whole point). Under-selection silently drops
-# coverage — a suite that never runs cannot fail (RUE-924). So every decision
-# path here is CONSERVATIVE and FAIL-OPEN: any change that could affect the
-# graph globally, any tool/VCS/Buck error, any parse failure, anything
-# unexpected forces a full run. Over-selection costs wall time; under-selection
-# merges a regression. We always choose wall time.
+# FAIL-OPEN. Every tooling, VCS, Buck, BTD, or parse failure decides `full`, and
+# a short out-of-graph list (FORCE_FULL_REGEX) forces a full run for inputs the
+# graph cannot see: the dotslash pins, test.sh, the scripts/ci-* runners, this
+# script, and the workflow files (RUE-1119).
 #
-# BTD's two-dump design (compare `buck2 targets` at the merge-base and at the
-# head) already handles most graph-global changes — `.bzl`/macro edits, added
-# or removed targets, changed `glob()` results all surface as target-hash
-# differences. This script adds a short OUT-OF-GRAPH force-full list for things
-# Buck's graph cannot see: the `./buck2` dotslash pin itself, `test.sh`, the
-# `scripts/ci-*` runners, this selection engine, and the workflow files. It also
-# force-runs on `.buckconfig`/`BUCK`/`.bzl`/toolchain/platform/prelude changes
-# as belt-and-suspenders — cheap to over-select, and it keeps correctness from
-# depending on BTD internals we cannot exercise locally.
+# Subcommands used by ci.yml and the validators:
+#   decide                Write the decision to $GITHUB_OUTPUT: `full`,
+#                         `selected` (corpus targets), `selected_lanes`,
+#                         `narrowed`, and the multiline `impacted` closure.
+#   force-full-match      Exit 0 and print the first stdin path forcing a full run.
+#   corpus-targets        Corpora owned by a dedicated platform-corpus lane (graph).
+#   lanes                 The gated workflow lanes.
+#   lane-targets LANE     The targets a gated lane executes.
+#   native-targets        Live rue_platform_native targets.
+#   clippy-owned-targets  Live rue_ci_clippy_lane targets.
+#   scope-targets LANE    A narrowing consumer's unnarrowed live scope.
+#   narrow-scope LANE FILE  That scope intersected with an impacted list.
 #
-# Subcommands:
-#   decide             Emit the selection decision for the current PR. Writes
-#                      `full` and `selected` to $GITHUB_OUTPUT when set and a
-#                      human-readable manifest to $GITHUB_STEP_SUMMARY.
-#   force-full-match   Read candidate paths on stdin; exit 0 (and print the
-#                      first matching reason) if any forces a full run, else
-#                      exit 1. Used by the unit tests and reusable locally.
-#   is-selectable      Exit 0 only for a target represented by the CI corpus
-#                      matrix. The matrix gate uses this as its one source of
-#                      truth, so an added matrix target fails open until it is
-#                      deliberately added here.
-#   is-selectable-lane Exit 0 only for a gated workflow lane (RUE-1130).
-#   lane-targets       Print the Buck targets a gated lane executes.
-#   clippy-owned-targets
-#                      Print live targets carrying clippy's CI-owner label.
-#   native-targets     Print every live-graph target carrying native scope.
-#   corpus-targets     Print the corpus targets the platform-corpus matrix runs.
-#   lanes              Print the gated workflow lane names.
-#   intersect          Print a lane's targets that appear in an impacted list.
-#   build-scope        Print the targets a `//crates/...` lane may build, with
-#                      or without an impacted list. Narrowing must stay inside
-#                      the lane's own scope, and neither spelling of that scope
-#                      may name a corpus action (RUE-1511).
-#   scope-registry     Print the auditable narrowed-lane scope contract.
-#   narrow-limit       Print the canonical maximum impacted closure size.
-#   scope-targets      Print a lane's unnarrowed scope from that contract.
-#   narrow-scope       Intersect an impacted closure with a registered scope.
-#
-# Deliberately NOT `set -e`: a full run is the safe fallback, so failures are
-# handled explicitly and converted into "full", never into a hard error that
-# could be misread as "nothing to run".
+# Deliberately not `set -e`: failures are converted into "full" explicitly.
 set -uo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 repo_root="$PWD"
 
-# Temp paths to reclaim on exit. decide_full/decide_select exit the process
-# directly, so cleanup must hang off EXIT rather than a function RETURN.
 _af_cleanup=()
 _af_worktrees=()
 af_cleanup() {
     local wt path
     for wt in "${_af_worktrees[@]:-}"; do
-        [[ -n "$wt" ]] || continue
-        git worktree remove --force "$wt" >/dev/null 2>&1 || true
+        [[ -n "$wt" ]] && git worktree remove --force "$wt" >/dev/null 2>&1
     done
-    git worktree prune >/dev/null 2>&1 || true
+    [[ "${#_af_worktrees[@]}" -gt 0 ]] && git worktree prune >/dev/null 2>&1
     for path in "${_af_cleanup[@]:-}"; do
         [[ -n "$path" ]] && rm -rf "$path"
     done
+    return 0
 }
 trap af_cleanup EXIT
 
-# The corpus targets whose per-platform CI jobs are gated by this selection
-# (the `platform-corpus` matrix in .github/workflows/ci.yml). Keep this in sync
-# with that matrix; an unknown target is always treated as "run" downstream, so
-# drift fails safe toward over-selection.
-SELECTABLE_CORPUS=(
-    //:cli-tests-shard-0
-    //:cli-tests-shard-1
-    //:cli-tests-shard-2
-    //:cli-tests-shard-3
-    //:spec-tests
-    //crates/rue-oracle-diff:oracle-diff-test
-    //crates/rue-oracle-diff:oracle-diff-test-o2
-    //crates/rue-oracle-diff:oracle-diff-test-o3
-    //crates/rue-oracle-diff:oracle-diff-spec-test
-    //crates/rue-oracle-diff:oracle-diff-spec-test-o2
-    //crates/rue-oracle-diff:oracle-diff-spec-test-o3
-)
-
-# RUE-1130. The corpus jobs above were the only gated lanes, and measurement
-# showed that gating them alone saves nothing: a documentation change costs 444s
-# against 465s for a compiler change, because the lanes that dominate a run were
-# not consulting this determinator at all. These are the remaining gateable
-# lanes, each named for its workflow job and represented by the Buck targets it
-# actually executes. A lane runs when any of its targets is in BTD's impacted
-# closure — the same rule the corpus targets already use, applied to a job whose
-# work is a set of targets rather than one.
-#
-# `linux-premerge` is absent from this list for a different reason than the
-# others are present. It is the broad-discovery lane and the RUE-924 backstop,
-# so it must never be skipped wholesale on a representative subset. Instead it
-# is NARROWED: the determinator publishes the impacted closure, and the lane
-# runs `impacted ∩ tier` rather than `//... ∩ tier`. Membership still comes from
-# the live graph, so a target added since this file was written is still
-# discovered — it simply is not built or run when the diff cannot reach it.
+# The gated workflow jobs (RUE-1130). `linux-premerge` is absent on purpose: it
+# is the broad-discovery lane and the RUE-924 backstop, so it is narrowed to
+# the impacted closure rather than skipped wholesale.
 SELECTABLE_LANES=(
     clippy
     native-linux-arm64
@@ -123,924 +62,332 @@ SELECTABLE_LANES=(
     rue-program-digests
 )
 
-# Narrowing consumers are deliberately registered here rather than in the
-# workflow.  The registry is the contract: a consumer must name its
-# unnarrowed scope here, and `narrow-scope` can only produce an intersection
-# with that scope.  Keep the output machine-readable so validate-ci-gate.py
-# can reject a workflow that grows a second, unreviewed narrowing path.
-scope_registry() {
-    printf '%s\n' \
-        'clippy|graph|crates_sh_test_ending_-clippy' \
-        'linux-premerge-build|pattern|//crates/...' \
-        'linux-premerge-tests|graph|rue_test_tier_premerge-minus-dedicated-and-clippy' \
-        'native-platforms-units|graph|rue_platform_native'
+# Out-of-graph (and belt-and-suspenders in-graph) paths that force a full run.
+FORCE_FULL_REGEX='^crates/rue-runtime-asan/|(^|/)BUCK$|\.bzl$|^\.buckconfig|^\.buckroot$|^\.github/workflows/|^toolchains/|^platforms/|^constraints/|^third-party/|^prelude/|^rust-toolchain\.toml$|^buck2$|^buck2-bin$|^reindeer$|^btd$|^test\.sh$|^scripts/ci-|^scripts/affected-targets$|^scripts/install-valgrind$|^scripts/provision-build-cache$|^scripts/with-full-suite-lock$|^scripts/rue$|^scripts/rue-bin$'
+
+# Beyond this many impacted targets a compiler change has reached most of the
+# graph, and the `//...` pattern is the better expression of it.
+NARROW_LIMIT="${RUE_AFFECTED_NARROW_LIMIT:-600}"
+
+buck2_bin() { printf '%s\n' "${RUE_AFFECTED_BUCK2:-$repo_root/buck2}"; }
+
+# `root//:foo` and `root//:foo (cfg)` are the same target as `//:foo`.
+normalize_cell() { sed -E 's|^root//|//|; s| \([^()]*\)$||' | grep . || true; }
+
+# Normalized labels for one uquery; non-zero only when Buck cannot answer.
+query_labels() {
+    local raw
+    raw="$("$(buck2_bin)" uquery "$1")" || return 1
+    normalize_cell <<<"$raw"
 }
 
-is_scope_consumer() {
+force_full_match() {
+    local match
+    match="$(grep -E "$FORCE_FULL_REGEX" || true)"
+    [[ -n "$match" ]] || return 1
+    head -n1 <<<"$match"
+}
+
+# `git diff --name-status --no-renames` records to bare paths. A/M/D cover
+# every change once renames are disabled; anything else fails open.
+status_paths() {
+    awk -F '\t' '/^[AMD]\t[^\t]+$/ { print $2; next } { exit 1 }'
+}
+
+# The identical command for both dumps, so unconfigured target hashes compare.
+buck_targets_dump() {
+    "$1" targets root//... --streaming --keep-going --no-cache --json-lines \
+        --show-unconfigured-target-hash --imports \
+        --output-attribute '^buck\.|^name$|^labels$|^ci_srcs$|^ci_srcs_must_match$|^ci_deps$|^remote_execution$|^tests$' \
+        --output "$2"
+}
+
+# The one clippy inventory: every crate macro emits a sh_test ending in
+# `-clippy`. Returns 2 (distinct from a query failure) when the live query
+# succeeds but is empty: that is a broken macro, and stays a hard error.
+clippy_targets() {
+    local queried
+    queried="$(query_labels "kind('sh_test', 'root//crates/...')")" || return 1
+    queried="$(grep -- '-clippy$' <<<"$queried" || true)"
+    if [[ -z "$queried" ]]; then
+        echo "affected-targets: live clippy graph selection is empty" >&2
+        return 2
+    fi
+    printf '%s\n' "$queried"
+}
+
+# Compared against clippy_targets by validate-ci-gate.py (RUE-1855).
+clippy_owned_targets() {
+    local targets
+    targets="$(query_labels "attrfilter(labels, 'rue_ci_clippy_lane', //crates/...)")" || return 1
+    [[ -n "$targets" ]] || { echo "affected-targets: rue_ci_clippy_lane graph selection is empty" >&2; return 1; }
+    printf '%s\n' "$targets"
+}
+
+# Native unit membership is graph-owned; an empty answer is an error (RUE-1266).
+native_platform_targets() {
+    local targets
+    targets="$(query_labels "attrfilter(labels, 'rue_platform_native', set(//... toolchains//...))")" || return 1
+    [[ -n "$targets" ]] || { echo "affected-targets: rue_platform_native graph selection is empty" >&2; return 1; }
+    printf '%s\n' "$targets"
+}
+
+# The platform-corpus inventory, from the graph (RUE-1936): every cached corpus
+# (`_corpus_action`) that scripts/ci-heavy-suite runs (`rue_heavy_suite`) and
+# that required CI owns in a dedicated job (`rue_ci_dedicated_lane`, or a
+# `rue_cli_shard` slice). A corpus whose shards carry the label is represented
+# by them, not by itself. Prints nothing and fails when Buck cannot answer;
+# `decide` then runs everything and the shard planner refuses an empty set.
+corpus_targets() {
+    local actions owned suite
+    actions="$(query_labels "kind('_corpus_action', //...)")" || return 1
+    owned="$(query_labels "attrfilter(labels, 'rue_heavy_suite', //...) intersect (attrfilter(labels, 'rue_ci_dedicated_lane', //...) + attrfilter(labels, 'rue_cli_shard', //...))")" || return 1
+    while IFS= read -r suite; do
+        [[ -n "$suite" ]] || continue
+        case $'\n'"$actions"$'\n' in *$'\n'"${suite}-action"$'\n'*) ;; *) continue ;; esac
+        case $'\n'"$owned" in *$'\n'"${suite}-shard-"*) continue ;; esac
+        printf '%s\n' "$suite"
+    done <<<"$owned"
+}
+
+# The targets each gated lane executes, mirroring ci.yml. A lane runs when any
+# of them is impacted; an unknown lane is an error, which `decide` turns into a
+# full run.
+lane_targets() {
     case "$1" in
-        clippy|linux-premerge-build|linux-premerge-tests|native-platforms-units) return 0 ;;
+        clippy) clippy_targets ;;
+        native-linux-arm64|native-macos-arm64)
+            # The corpora stand in for the host-evaluated `only_on` cases the
+            # native corpus runner executes.
+            native_platform_targets || return 1
+            printf '%s\n' //:spec-tests //:cli-tests ;;
+        release) echo //:release-smoke ;;
+        valgrind) echo //crates/rue:rue //:cli-tests ;;
+        asan)
+            # Its Cargo sources are outside the graph and force a full run.
+            echo //crates/rue-runtime:rue-runtime //crates/rue-allocator:rue-allocator ;;
+        compiler-reproducibility) echo //crates/rue:rue ;;
+        rue-program-digests) echo //fixtures/rue-program:hello ;;
         *) return 1 ;;
     esac
 }
 
-# Representative targets per lane, mirroring what each job executes in ci.yml.
-# An unknown lane prints nothing, and the gate treats that as "run".
-lane_targets() {
+# The premerge test selection test.sh runs under CI: the premerge tier minus
+# the sets whose required jobs own them.
+premerge_test_targets() {
+    local base="set(//... toolchains//...)" targets
+    targets="$(query_labels "attrfilter(labels, rue_test_tier_premerge, $base) except (attrfilter(labels, rue_ci_dedicated_lane, $base) + attrfilter(labels, rue_cli_shard, $base) + attrfilter(labels, rue_ci_clippy_lane, $base))")" || return 1
+    [[ -n "$targets" ]] || { echo "affected-targets: the premerge test scope came back empty" >&2; return 1; }
+    printf '%s\n' "$targets"
+}
+
+# The `//crates/...` targets a premerge build must not name (RUE-1511).
+#
+# `cached_corpus_suite` splits a corpus into a `_corpus_action` that RUNS the
+# harness and a thin sh_test asserting its stamp, so `buck2 build` of the
+# action executes the corpus. `//crates/rue-oracle-diff:*-action` ran in full
+# inside `Build all targets` concurrently with the dedicated lanes that own it.
+# The invariant is two graph operations: `_corpus_action` nodes in
+# `deps(required selection)` are the owned actions, and `rdeps(//crates/...,
+# owned)` is the exact exclusion set, wrappers and carriers included. An action
+# no required lane owns stays in the build: a corpus nothing runs is the
+# RUE-924 false green. Fails when Buck cannot answer, and the caller builds
+# the whole pattern.
+deferred_corpus_targets() {
+    local covered corpus joined
+    covered="$(query_labels "attrfilter(labels, rue_test_tier_premerge, //crates/...) except (attrfilter(labels, rue_ci_dedicated_lane, //crates/...) + attrfilter(labels, rue_cli_shard, //crates/...) + attrfilter(labels, rue_ci_clippy_lane, //crates/...))")" || return 1
+    corpus="$(corpus_targets)" || return 1
+    covered="$(printf '%s\n%s\n' "$covered" "$corpus" | grep . || true)"
+    [[ -n "$covered" ]] || return 0
+    joined="${covered//$'\n'/ }"
+    # Configured: the rdeps closure is a property of the built configuration.
+    covered="$("$(buck2_bin)" cquery "rdeps(//crates/..., kind('_corpus_action', deps(set($joined))))")" || return 1
+    normalize_cell <<<"$covered"
+}
+
+# The unnarrowed premerge build scope: `//crates/...` expanded and minus the
+# deferred closure. `buck2 build` has no kind or label exclusion, so the
+# subtraction happens before the pattern reaches it.
+build_scope() {
+    local deferred joined expr="//crates/..." scope
+    deferred="$(deferred_corpus_targets)" || return 1
+    # Joined in its own statement: Bash 3.2 mis-parses this expansion inside
+    # a double-quoted string (macOS runs this script with /bin/bash).
+    joined="${deferred//$'\n'/ }"
+    [[ -n "$deferred" ]] && expr="//crates/... except set($joined)"
+    scope="$(query_labels "$expr")" || return 1
+    [[ -n "$scope" ]] || { echo "affected-targets: the crate build scope came back empty" >&2; return 1; }
+    printf '%s\n' "$scope"
+}
+
+# The one place a narrowing consumer obtains its unnarrowed scope.
+scope_targets() {
     case "$1" in
-        clippy)
-            # The lane proxy and the runnable scope are one live inventory.
-            # Keeping both consumers on this function prevents a newly added
-            # crate from being selectable but not runnable, or vice versa.
-            clippy_targets ;;
-        native-linux-arm64|native-macos-arm64)
-            # Unit membership is graph-owned. The two corpus targets remain
-            # selection proxies because their host-evaluated only_on cases are
-            # executed by the native corpus runner below.
-            native_platform_targets || return 1
-            printf '%s\n' //:spec-tests //:cli-tests ;;
-        release)
-            echo //:release-smoke ;;
-        valgrind)
-            # Builds the compiler and runs generated programs under memcheck.
-            echo //crates/rue:rue //:cli-tests ;;
-        asan)
-            # A standalone Cargo harness over the arena allocator. Its own
-            # sources are outside the Buck graph, so they force a full run via
-            # FORCE_FULL_REGEX rather than being represented here.
-            echo //crates/rue-runtime:rue-runtime //crates/rue-allocator:rue-allocator ;;
-        compiler-reproducibility)
-            echo //crates/rue:rue ;;
-        rue-program-digests)
-            # ADR-0070 control 3: the digest-sensitivity script drives builds
-            # of the hello fixture, so it is affected exactly when the fixture
-            # (or, transitively, the compiler and the rue_program tool chain)
-            # is.
-            echo //fixtures/rue-program:hello ;;
-        *)
-            return 1 ;;
+        clippy) clippy_targets ;;
+        linux-premerge-build) build_scope ;;
+        linux-premerge-tests) premerge_test_targets ;;
+        native-platforms-units) native_platform_targets ;;
+        *) echo "affected-targets: unknown narrowing consumer '$1'" >&2; return 1 ;;
     esac
 }
 
-# The one canonical clippy inventory. Every Rue crate macro emits a sh_test
-# whose label ends exactly in `-clippy`; querying the live graph keeps new and
-# renamed crates self-enrolling. The same function supplies lane selection and
-# registered narrowing, so there is no transcribed target list or peer query.
-#
-# Return 2, distinct from a query failure, when the live query succeeds but the
-# inventory is empty. That is a broken macro/query invariant and must remain a
-# hard error; it is not the same thing as a verified impacted intersection that
-# happens to contain no clippy targets.
-clippy_targets() {
-    local buck2 queried target targets=""
-    buck2="$(buck2_bin)"
-    if ! queried="$("$buck2" uquery "kind('sh_test', 'root//crates/...')")"; then
-        echo "affected-targets: could not query live clippy targets" >&2
-        return 1
-    fi
-    if ! queried="$(normalize_cell <<<"$queried")"; then
-        echo "affected-targets: could not normalize live clippy targets" >&2
-        return 1
-    fi
+# An impacted list is emitted only when at least one live target is impacted,
+# so an empty or malformed file is lost output, not "nothing impacted".
+valid_impacted_file() {
+    [[ -f "$1" && -r "$1" && -s "$1" ]] || return 1
+    awk 'NF != 1 || $0 !~ /^\/\/[^[:space:]]*:[^[:space:]]+$/ { bad = 1 } END { exit (NR > 0 && !bad) ? 0 : 1 }' "$1"
+}
+
+# `scope ∩ impacted`, in scope order. A scope failure keeps its status (clippy's
+# empty inventory is 2) so the caller can keep that a hard error; anything
+# else non-zero means "use the full scope".
+narrow_scope() {
+    local consumer="$1" file="$2" scope status target total=0 kept=0
+    valid_impacted_file "$file" || { echo "affected-targets: impacted list for $consumer is unavailable or malformed" >&2; return 1; }
+    scope="$(scope_targets "$consumer")" || return $?
     while IFS= read -r target; do
-        if [[ "$target" == *-clippy ]]; then
-            targets+="${targets:+$'\n'}$target"
-        fi
-    done <<<"$queried"
-    if [[ -z "$targets" ]]; then
-        echo "affected-targets: live clippy graph selection is empty" >&2
-        return 2
-    fi
-    printf '%s\n' "$targets"
-}
-
-# The owner-label set is deliberately not a runnable inventory. CI executes
-# only clippy_targets() above; the live validator compares this independently
-# queried ownership set with that canonical suffix-derived set so neither a
-# missing label nor a label on an unrelated target can remove coverage.
-clippy_owned_targets() {
-    local buck2 targets
-    buck2="$(buck2_bin)"
-    if ! targets="$("$buck2" uquery "attrfilter(labels, 'rue_ci_clippy_lane', //crates/...)")"; then
-        echo "affected-targets: could not query rue_ci_clippy_lane targets" >&2
-        return 1
-    fi
-    targets="$(normalize_cell <<<"$targets" | grep . || true)"
-    if [[ -z "$targets" ]]; then
-        echo "affected-targets: rue_ci_clippy_lane graph selection is empty" >&2
-        return 1
-    fi
-    printf '%s\n' "$targets"
-}
-
-# The one canonical native unit selection. Keep this query here so the
-# affected-target planner and the workflow's unit step consume identical live
-# graph membership. An empty or failed query is a coverage error, not an empty
-# lane (RUE-1266).
-native_platform_targets() {
-    local buck2 targets
-    buck2="$(buck2_bin)"
-    if ! targets="$("$buck2" uquery "attrfilter(labels, 'rue_platform_native', set(//... toolchains//...))")"; then
-        echo "affected-targets: could not query rue_platform_native targets" >&2
-        return 1
-    fi
-    targets="$(normalize_cell <<<"$targets" | grep . || true)"
-    if [[ -z "$targets" ]]; then
-        echo "affected-targets: rue_platform_native graph selection is empty" >&2
-        return 1
-    fi
-    printf '%s\n' "$targets"
-}
-
-is_selectable_lane() {
-    local wanted="$1" lane
-    for lane in "${SELECTABLE_LANES[@]}"; do
-        [[ "$lane" == "$wanted" ]] && return 0
-    done
-    return 1
-}
-
-# Out-of-graph (and belt-and-suspenders in-graph) paths that force a full run.
-# Anchored, repo-root-relative, extended-regex alternation.
-FORCE_FULL_REGEX='^crates/rue-runtime-asan/|(^|/)BUCK$|\.bzl$|^\.buckconfig|^\.buckroot$|^\.github/workflows/|^toolchains/|^platforms/|^constraints/|^third-party/|^prelude/|^rust-toolchain\.toml$|^buck2$|^buck2-bin$|^reindeer$|^btd$|^test\.sh$|^scripts/ci-|^scripts/affected-targets$|^scripts/install-valgrind$|^scripts/provision-build-cache$|^scripts/with-full-suite-lock$|^scripts/rue$|^scripts/rue-bin$'
-
-# buck2 targets invocation BTD's own `targets` wrapper uses (td_util buck::run
-# targets_arguments). Both dumps use the identical command so their unconfigured
-# target hashes are directly comparable; any per-environment config difference
-# cancels out because it is present in both.
-buck_targets_dump() {
-    local buck="$1" outfile="$2"
-    "$buck" targets root//... \
-        --streaming \
-        --keep-going \
-        --no-cache \
-        --json-lines \
-        --show-unconfigured-target-hash \
-        --imports \
-        --output-attribute '^buck\.|^name$|^labels$|^ci_srcs$|^ci_srcs_must_match$|^ci_deps$|^remote_execution$|^tests$' \
-        --output "$outfile"
-}
-
-# Print the first force-full reason found on stdin; exit 0 if forced, 1 if not.
-force_full_match() {
-    local match
-    match="$(grep -E "$FORCE_FULL_REGEX" || true)"
-    if [[ -n "$match" ]]; then
-        printf '%s\n' "$(head -n1 <<<"$match")"
-        return 0
-    fi
-    return 1
-}
-
-# Convert the Git `--name-status --no-renames` contract BTD consumes into a
-# path-only stream for the independent force-full policy. With renames disabled
-# Git emits them as a delete plus an add, so A/M/D cover every normal change.
-# An unfamiliar status line is a tooling mismatch and must fail open.
-status_paths() {
-    awk -F '\t' '
-        /^[AMD]\t[^\t]+$/ { print $2; next }
-        { exit 1 }
-    '
-}
-
-is_selectable() {
-    local wanted="$1" target
-    for target in "${SELECTABLE_CORPUS[@]}"; do
-        [[ "$target" == "$wanted" ]] && return 0
-    done
-    return 1
-}
-
-# RUE-1265: the duplication gate needs the same two inventories the gating logic
-# above consults — which corpora own a `platform-corpus` job, and which lanes
-# exist at all — and reading them from here rather than transcribing them keeps
-# ADR-0069's ledger from gaining a row. `lanes` deliberately omits
-# `linux-premerge`, which is narrowed rather than gated and so is not in
-# SELECTABLE_LANES; consumers that care about it add it explicitly.
-corpus_targets() {
-    printf '%s\n' "${SELECTABLE_CORPUS[@]}"
-}
-
-lanes() {
-    printf '%s\n' "${SELECTABLE_LANES[@]}"
-}
-
-# Emit `key=value` to $GITHUB_OUTPUT when running under Actions; harmless
-# otherwise.
-emit_output() {
-    [[ -n "${GITHUB_OUTPUT:-}" ]] || return 0
-    printf '%s=%s\n' "$1" "$2" >>"$GITHUB_OUTPUT"
-}
-
-# Emit a multi-line value using the heredoc form GitHub requires.
-emit_output_multiline() {
-    [[ -n "${GITHUB_OUTPUT:-}" ]] || return 0
-    local key="$1" file="$2" delim="RUE_EOF_$$"
-    {
-        printf '%s<<%s\n' "$key" "$delim"
-        [[ -n "$file" && -s "$file" ]] && cat "$file"
-        printf '%s\n' "$delim"
-    } >>"$GITHUB_OUTPUT"
-}
-
-payload_proof() {
-    python3 "$repo_root/scripts/ci-affected-payload.py" proof "$1"
-}
-
-# RUE-1130. Beyond this many impacted targets, narrowing a lane to an explicit
-# list saves nothing — a compiler change reaches most of the graph, so the list
-# is the graph — and the `//...` pattern is cheaper to express and to read.
-# Emitting nothing means "do not narrow", which every consumer treats as full.
-NARROW_LIMIT="${RUE_AFFECTED_NARROW_LIMIT:-600}"
-
-narrow_limit() {
-    if ! [[ "$NARROW_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
-        echo "affected-targets: narrow limit must be a canonical positive decimal" >&2
-        return 1
-    fi
-    printf '%s\n' "$NARROW_LIMIT"
-}
-
-# Intersect a newline-separated impacted list (file) with the targets given as
-# arguments, preserving argument order. Used by lanes whose contents are a fixed
-# list in the workflow rather than a pattern.
-intersect_impacted() {
-    local file="$1"; shift
-    [[ -r "$file" && ! -d "$file" ]] || return 1
-    local target status
-    for target in "$@"; do
+        [[ -n "$target" ]] || continue
+        total=$((total + 1))
         if grep -Fxq -- "$target" "$file"; then
+            kept=$((kept + 1))
             printf '%s\n' "$target"
         else
             status=$?
-            # grep 1 means the target is absent; anything else means the
-            # intersection could not be proved and must fail open upstream.
             [[ "$status" -eq 1 ]] || return "$status"
         fi
-    done
-    return 0
-}
-
-buck2_bin() {
-    printf '%s\n' "${RUE_AFFECTED_BUCK2:-$repo_root/buck2}"
-}
-
-# `buck2` prints the cell (`root//:foo`); configured queries may also append a
-# configuration (`root//:foo (cfg)`). parse-btd-impacted.py has already stripped
-# the cell from impacted lists. Normalize all three spellings so set membership
-# below is exact rather than a match across graph-query output formats.
-normalize_cell() {
-    sed -E 's|^root//|//|; s| \([^()]*\)$||'
-}
-
-# The crate-scoped targets a build-verification step must not name when their
-# dependency closure reaches a corpus action owned by a required lane.
-#
-# `cached_corpus_suite` splits a corpus in two (see corpus.bzl): a
-# `_corpus_action` genrule that RUNS the harness, and a thin `sh_test` that
-# asserts its stamp. Building the action therefore *executes* the corpus, which
-# is why `buck2 build` must never reach one — and why `--exclude
-# rue_ci_dedicated_lane` cannot help, since that is a `buck2 test` label filter
-# and the action deliberately carries no labels at all.
-#
-# RUE-1130 wrote that exclusion as `grep '^//crates/'`. That is a PATH PREFIX
-# standing in for a property of the target, and it held only for the root-level
-# corpora it was written against. Every corpus declared inside a crate passed
-# it: `//crates/rue-oracle-diff:oracle-diff-{test,spec-test}-action` ran in full
-# inside `Build all targets`, at a 140.9s and 87.1s median — 78.9% of a step
-# whose own median is 304s — concurrently with the two dedicated
-# `test (linux-x64-oracle-diff*)` lanes that exist to own them, on a second
-# runner, at the same execution configuration (RUE-1511).
-#
-# The invariant is two graph operations: `_corpus_action` nodes in
-# `deps(required selection)` establish the owned actions, then
-# `rdeps(//crates/..., owned actions)` establishes the exact crate exclusion
-# set. Any corpus added anywhere is covered, including one added after this was
-# written; no `NAME-action` convention is involved.
-#
-# WHAT THIS GIVES UP, stated plainly. The lanes deferred to are themselves
-# gated by this determinator, while the unnarrowed premerge build was not: it
-# ran `//crates/...` on every PR, which is exactly how it came to be executing
-# these corpora. So on a run where BTD deselects
-# `//crates/rue-oracle-diff:oracle-diff-test`, the corpus previously still ran
-# — accidentally, inside premerge's build — and now runs nowhere. That is a
-# deliberate reduction, not an oversight: `buck2 build //crates/...` never
-# reached the root-level `//:cli-tests-*`/`//:spec-tests` actions either, so
-# those corpora have had no premerge backstop since RUE-1119, and this makes
-# oracle-diff consistent with them rather than uniquely privileged. The same
-# reverse-dependency exclusion set applies to both scope spellings: it removes
-# every impacted wrapper, carrier, and action that reaches an owned action.
-#
-# `SELECTABLE_CORPUS` now has a second consumer with the opposite failure
-# direction from its first. For selection, an unknown entry fails safe toward
-# over-running; here, an entry naming a corpus no matrix job runs would defer
-# its action with nothing executing it. `validate-ci-gate.py` pins the two
-# oracle `check_name`s into existence, which contains it — but it pins the
-# check name, not the `target:` beneath it.
-#
-# FAIL-CLOSED ON COVERAGE, like every other decision in this file. Today the
-# premerge build step is accidentally the thing that *executes* these corpora,
-# so dropping them is only safe where the required selection demonstrably owns
-# the action. The configured dependency query derives that ownership from
-# `deps(required selection)`; anything outside it stays safely in the build.
-# Over-building costs wall time, and a corpus nothing runs is the RUE-924 false
-# green.
-#
-# Fails non-zero when Buck cannot answer, and the caller then builds the corpus
-# actions exactly as it did before.
-deferred_corpus_targets() {
-    local buck2 covered query covered_expr joined
-    buck2="$(buck2_bin)"
-
-    # Build the required-lane ownership expression from the same live graph
-    # inventories used by selection. A covered test's transitive deps include
-    # its cached `_corpus_action`; cquery then computes every //crates target
-    # reverse-dependent on those actions. This catches wrappers and transitive
-    # carriers even when their names do not end in `-action` or match the test.
-    query="attrfilter(labels, rue_test_tier_premerge, //crates/...)"
-    query="$query except (attrfilter(labels, rue_ci_dedicated_lane, //crates/...)"
-    query="$query + attrfilter(labels, rue_cli_shard, //crates/...)"
-    query="$query + attrfilter(labels, rue_ci_clippy_lane, //crates/...))"
-    if ! covered="$("$buck2" uquery "$query")"; then
-        echo "affected-targets: could not query the premerge-tier test selection" >&2
-        return 1
-    fi
-
-    covered="$(printf '%s\n%s\n' "$(normalize_cell <<<"$covered")" \
-        "$(printf '%s\n' "${SELECTABLE_CORPUS[@]}")" | grep . || true)"
-    [[ -n "$covered" ]] || return 0
-
-    # cquery takes a set expression, not newline-delimited shell input. Keep
-    # the construction separate from command substitution for Bash 3.2, which
-    # is the system shell on macOS.
-    joined="${covered//$'\n'/ }"
-    covered_expr="set($joined)"
-    query="rdeps(//crates/..., kind('_corpus_action', deps($covered_expr)))"
-    if ! covered="$("$buck2" cquery "$query")"; then
-        # Buck's own error reaches stderr rather than being discarded. The
-        # caller turns this non-zero result into the prior unfiltered scope;
-        # over-building costs wall time, never coverage.
-        echo "affected-targets: could not query deferred corpus dependency closure" >&2
-        return 1
-    fi
-    covered="$(normalize_cell <<<"$covered" | grep . || true)"
-    [[ -n "$covered" ]] && printf '%s\n' "$covered"
-    return 0
-}
-
-# The targets a *pattern* lane may build, for lanes whose scope is
-# `//crates/...` rather than a fixed list. With an impacted list it is the
-# narrowed subset; without one it is the whole pattern. Both are the same scope
-# minus the same deferred targets, because both lose independently: fixing only
-# the narrowed spelling leaves the common case — a compiler change, which
-# impacts more than NARROW_LIMIT targets and so is never narrowed — building
-# the corpora exactly as before.
-#
-# RUE-1130 handed the raw impacted closure to `buck2 build` in linux-premerge.
-# That closure spans the whole graph, so narrowing WIDENED the step: it re-ran
-# the CLI, spec, and oracle corpora inside the single job whose dedicated lanes
-# exist to keep them out, taking premerge from ~12m to 32-42m. Restoring the
-# crate scope is what keeps narrowing a subset of what the lane built before. A
-# lane that builds a pattern must narrow within that pattern, never to whatever
-# the determinator happens to name.
-build_scope() {
-    local file="${1:-}"
-    local strict="${2:-compat}"
-    local deferred buck2 expr scope target
-    if [[ -n "$file" ]]; then
-        if [[ ! -r "$file" || -d "$file" ]]; then
-            echo "affected-targets: impacted list '$file' is unreadable" >&2
-            return 1
-        fi
-        if ! scope="$(build_scope "" "$strict")"; then
-            return 1
-        fi
-        if [[ "$scope" == "//crates/..." ]]; then
-            printf '%s\n' "$scope"
-            return 0
-        fi
-        local targets=()
-        while IFS= read -r target; do
-            [[ -n "$target" ]] && targets+=("$target")
-        done <<<"$scope"
-        intersect_impacted "$file" "${targets[@]}"
-        return $?
-    fi
-
-    # An unavailable ownership/closure query must not turn a narrowed request
-    # into a smaller guessed list.  Returning non-zero lets the workflow fall
-    # back to the complete historical `//crates/...` scope.
-    if ! deferred="$(deferred_corpus_targets)"; then
-        if [[ "$strict" != "strict" ]]; then
-            # Preserve the historical standalone helper contract for callers
-            # that cannot inspect a status: an unavailable ownership query
-            # returns the complete pattern, never a guessed subset. The
-            # workflow uses narrow_scope(..., strict) so it can report the
-            # degraded state and select its own fallback explicitly.
-            printf '%s\n' '//crates/...'
-            return 0
-        fi
-        return 1
-    fi
-
-    if [[ -z "$file" ]]; then
-        # The unnarrowed scope. `buck2 build` accepts patterns and target
-        # lists but has no kind or label exclusion, so the subtraction has to
-        # happen before the pattern reaches it — which means expanding it.
-        # There are 167 targets under `//crates/...` and nothing in that tree
-        # is `compatible_with`-restricted, so the explicit list configures
-        # exactly as the pattern does — verified by `uquery` and `cquery`
-        # returning the same 167.
-        #
-        # The two spellings differ on FAILURE, not on today's result: `buck2
-        # build //crates/...` SKIPS an incompatible target, while naming one
-        # explicitly is an error. The first `target_compatible_with` added
-        # under `//crates/` therefore breaks this step outright rather than
-        # degrading, and the fix then is to subtract via a query the pattern
-        # keeps rather than to expand it.
-        # Build the `set(...)` argument in its own step. Bash 3.2 — what macOS
-        # ships as /bin/bash — cannot parse a command substitution containing a
-        # here-string inside a double-quoted assignment, and this script runs on
-        # developer machines as well as CI (RUE-1506, RUE-1509).
-        expr="//crates/..."
-        if [[ -n "$deferred" ]]; then
-            local joined
-            # Quoted: unquoted expansion would word-split and glob-expand a
-            # target label, which happens to be safe today only because labels
-            # carry no IFS or pattern characters.
-            joined="${deferred//$'\n'/ }"
-            expr="//crates/... except set($joined)"
-        fi
-        buck2="$(buck2_bin)"
-        if ! scope="$("$buck2" uquery "$expr")"; then
-            echo "affected-targets: could not expand the crate build scope" >&2
-            return 1
-        fi
-        scope="$(normalize_cell <<<"$scope" | grep . || true)"
-        if [[ -z "$scope" ]]; then
-            echo "affected-targets: the crate build scope came back empty" >&2
-            return 1
-        fi
-        printf '%s\n' "$scope"
-        return 0
-    fi
-
-    return 1
-}
-
-workflow_test_targets() {
-    local buck2 targets base query
-    buck2="$(buck2_bin)"
-    base="set(//... toolchains//...)"
-    query="attrfilter(labels, rue_test_tier_premerge, $base)"
-    query="$query except (attrfilter(labels, rue_ci_dedicated_lane, $base)"
-    query="$query + attrfilter(labels, rue_cli_shard, $base)"
-    query="$query + attrfilter(labels, rue_ci_clippy_lane, $base))"
-    if ! targets="$("$buck2" uquery "$query")"; then
-        echo "affected-targets: could not expand the premerge test scope" >&2
-        return 1
-    fi
-    targets="$(normalize_cell <<<"$targets" | grep . || true)"
-    if [[ -z "$targets" ]]; then
-        echo "affected-targets: the premerge test scope came back empty" >&2
-        return 1
-    fi
-    printf '%s\n' "$targets"
-}
-
-# Resolve the registered unnarrowed scope.  This is the only place a narrowing
-# consumer obtains its scope, so adding a lane requires an explicit registry
-# row and corresponding validator coverage.
-scope_targets() {
-    local consumer="$1"
-    is_scope_consumer "$consumer" || return 1
-    case "$consumer" in
-        clippy) clippy_targets ;;
-        linux-premerge-build) build_scope "" strict ;;
-        linux-premerge-tests) workflow_test_targets ;;
-        native-platforms-units) native_platform_targets ;;
-    esac
-}
-
-emit_scope_summary() {
-    local consumer="$1" status="$2" selected_count="${3:-}" total_count="${4:-}" detail="${5:-}"
-    [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] || return 0
-    if [[ "$status" == "VERIFIED" && -n "$selected_count" && -n "$total_count" && "$total_count" -gt 0 ]]; then
-        local saved_count=$((total_count - selected_count))
-        local saved_share=$((saved_count * 10000 / total_count))
-        printf -- '- `%s`: **VERIFIED** subset; selected **%s/%s** targets; unweighted saved share **%s.%02d%%** (not runner-time savings).\n' \
-            "$consumer" "$selected_count" "$total_count" "$((saved_share / 100))" "$((saved_share % 100))" >>"$GITHUB_STEP_SUMMARY"
-    else
-        printf -- '- `%s`: **%s**; saved share **not applicable**%s.\n' \
-            "$consumer" "$status" "${detail:+ (${detail})}" >>"$GITHUB_STEP_SUMMARY"
-    fi
-}
-
-# A narrowing candidate is emitted only when the planner found at least one
-# live impacted target. An empty or syntactically malformed file therefore
-# means the job output was lost or corrupted, not "nothing is impacted". Keep
-# stale but well-formed labels valid: exact intersection with the current live
-# scope safely drops a target removed since the determinator dump.
-valid_impacted_file() {
-    local file="$1"
-    [[ -r "$file" && -f "$file" && -s "$file" ]] || return 1
-    awk '
-        NF != 1 || $0 !~ /^\/\/[^[:space:]]*:[^[:space:]]+$/ { bad = 1 }
-        END { exit (NR > 0 && !bad) ? 0 : 1 }
-    ' "$file"
-}
-
-# Produce a narrowed scope by construction. Pattern lanes use their own
-# scope-aware query; graph lanes first obtain their live allowlist and then
-# intersect it. A query failure is non-zero so callers retain the full
-# unnarrowed scope rather than claiming a verified subset. Preserve a scope
-# resolver's distinct status (notably clippy's successful-but-empty status 2)
-# so the workflow can keep that invariant a hard error.
-narrow_scope() {
-    local consumer="$1" file="$2" scope narrowed target total_count selected_count scope_status
-    is_scope_consumer "$consumer" || return 1
-    if ! valid_impacted_file "$file"; then
-        emit_scope_summary "$consumer" DEGRADED "" "" "impacted list unavailable or malformed; full scope used"
-        return 1
-    fi
-    if scope="$(scope_targets "$consumer")"; then
-        :
-    else
-        scope_status=$?
-        if [[ "$scope_status" -eq 2 ]]; then
-            emit_scope_summary "$consumer" FAILED "" "" "live scope inventory rejected; hard failure"
-        else
-            emit_scope_summary "$consumer" DEGRADED "" "" "scope query unavailable; full scope used"
-        fi
-        return "$scope_status"
-    fi
-    local targets=()
-    while IFS= read -r target; do
-        [[ -n "$target" ]] && targets+=("$target")
     done <<<"$scope"
-    total_count="${#targets[@]}"
-    if ! narrowed="$(intersect_impacted "$file" "${targets[@]}")"; then
-        emit_scope_summary "$consumer" DEGRADED "" "$total_count" "intersection unavailable; full scope used"
-        return 1
-    fi
-    selected_count=0
-    [[ -n "$narrowed" ]] && selected_count="$(grep -c . <<<"$narrowed" || echo 0)"
-    emit_scope_summary "$consumer" VERIFIED "$selected_count" "$total_count"
-    [[ -n "$narrowed" ]] && printf '%s\n' "$narrowed"
+    echo "affected-targets: $consumer narrowed to $kept of $total targets" >&2
+}
+
+emit_output() {
+    [[ -n "${GITHUB_OUTPUT:-}" ]] && printf '%s=%s\n' "$1" "$2" >>"$GITHUB_OUTPUT"
     return 0
 }
 
-# Write the RUE-924 selection manifest: every selectable corpus is accounted for
-# as either RUN or DESELECTED, so an intentional deselection is never confused
-# with a silent drop.
-emit_manifest() {
-    local mode="$1" reason="$2" selected="$3" lanes="${4:-}"
-    local narrowing_status="${5:-DECLINED}" head_count="${6:-}" impacted_count="${7:-}"
-    [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] || return 0
-    local selected_corpus_count=0 selected_lane_count=0
-    local target lane
-    for target in "${SELECTABLE_CORPUS[@]}"; do
-        if [[ "$mode" == "full" || " ${selected} " == *" ${target} "* ]]; then
-            selected_corpus_count=$((selected_corpus_count + 1))
-        fi
-    done
-    for lane in "${SELECTABLE_LANES[@]}"; do
-        if [[ "$mode" == "full" || " ${lanes} " == *" ${lane} "* ]]; then
-            selected_lane_count=$((selected_lane_count + 1))
-        fi
-    done
-    {
-        echo "### Affected-target selection (RUE-1119)"
-        echo
-        echo "- Decision: **${mode}**"
-        echo "- Reason: ${reason}"
-        echo "- Narrowing planner status: **${narrowing_status}**"
-        echo
-        echo "### Work-selection visibility"
-        echo
-        if [[ "$narrowing_status" == "CANDIDATE" && -n "$head_count" && -n "$impacted_count" && "$head_count" -gt 0 ]]; then
-            printf -- '- Head graph target denominator: **%s**\n' "$head_count"
-            printf -- '- Live impacted closure: **%s** targets (**%s.%02d%%** of denominator)\n' \
-                "$impacted_count" "$((impacted_count * 100 / head_count))" "$(((impacted_count * 10000 / head_count) % 100))"
-            echo '- This is planner reach only; exact saved share is reported after each registered lane scope is queried.'
-        else
-            echo '- Planner reach: **not applicable** (full run or narrowing declined)'
-        fi
-        printf -- '- Corpus lanes selected: **%s/%s**; deselected: **%s**\n' \
-            "$selected_corpus_count" "${#SELECTABLE_CORPUS[@]}" "$(( ${#SELECTABLE_CORPUS[@]} - selected_corpus_count ))"
-        printf -- '- Gated lanes selected: **%s/%s**; deselected: **%s**\n' \
-            "$selected_lane_count" "${#SELECTABLE_LANES[@]}" "$(( ${#SELECTABLE_LANES[@]} - selected_lane_count ))"
-        echo
-        echo "| Corpus target | Selection |"
-        echo "| --- | --- |"
-        local target state
-        for target in "${SELECTABLE_CORPUS[@]}"; do
-            if [[ "$mode" == "full" ]] || [[ " ${selected} " == *" ${target} "* ]]; then
-                state="RUN"
-            else
-                state="DESELECTED (intentional)"
-            fi
-            echo "| ${target} | ${state} |"
-        done
-        echo
-        echo "| Gated lane (RUE-1130/RUE-1855) | Selection |"
-        echo "| --- | --- |"
-        local lane
-        for lane in "${SELECTABLE_LANES[@]}"; do
-            if [[ "$mode" == "full" ]] || [[ " ${lanes} " == *" ${lane} "* ]]; then
-                state="RUN"
-            else
-                state="DESELECTED (intentional)"
-            fi
-            echo "| ${lane} | ${state} |"
-        done
-        echo
-        echo "linux-premerge always runs: it is the broad-discovery lane and the RUE-924 backstop."
-        echo
-    } >>"$GITHUB_STEP_SUMMARY"
+emit_output_multiline() {
+    [[ -n "${GITHUB_OUTPUT:-}" ]] || return 0
+    { printf '%s<<RUE_EOF_%s\n' "$1" "$$"; [[ -s "${2:-}" ]] && cat "$2"; printf 'RUE_EOF_%s\n' "$$"; } >>"$GITHUB_OUTPUT"
+}
+
+emit_summary() {
+    [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] && printf '%s\n' "$@" >>"$GITHUB_STEP_SUMMARY"
+    return 0
 }
 
 decide_full() {
-    local reason="$1" status="${2:-DEGRADED}"
-    echo "affected-targets: FULL run — ${reason}"
-    emit_output full "true"
+    echo "affected-targets: FULL run — $1"
+    emit_output full true
     emit_output selected ""
     emit_output selected_lanes ""
-    emit_output selected_lanes_count ""
-    emit_output selected_lanes_digest ""
+    emit_output narrowed false
     emit_output_multiline impacted ""
-    emit_output impacted_targets_digest ""
-    emit_output narrowed "false"
-    emit_output narrowing_status "$status"
-    emit_output head_target_count ""
-    emit_output impacted_closure_count ""
-    emit_output impacted_target_count ""
-    emit_manifest "full" "$reason" "" "" "$status"
+    emit_summary "Affected-target selection: **full** — $1" ""
     exit 0
 }
 
 decide_select() {
-    local selected="$1" reason="$2" lanes="${3:-}" impacted_file="${4:-}" head_count="${5:-}" closure_count="${6:-}" live_count="${7:-0}"
-    local lane_proof lane_count lane_digest impacted_proof proved_live_count impacted_digest limit
-    if ! limit="$(narrow_limit)"; then
-        decide_full "narrow limit is unavailable or malformed"
-    fi
-    if ! lane_proof="$(printf '%s' "$lanes" | payload_proof lanes)"; then
-        decide_full "could not prove the selected-lane payload"
-    fi
-    lane_count="${lane_proof%% *}"
-    lane_digest="${lane_proof#* }"
-    if ! impacted_proof="$(payload_proof targets <"$impacted_file")"; then
-        decide_full "could not prove the live impacted-target payload"
-    fi
-    proved_live_count="${impacted_proof%% *}"
-    impacted_digest="${impacted_proof#* }"
-    if [[ "$proved_live_count" != "$live_count" ]]; then
-        decide_full "live impacted-target count disagrees with its payload"
-    fi
-    echo "affected-targets: SELECTIVE run — ${reason}"
-    echo "affected-targets: selected corpus targets: ${selected:-<none>}"
-    echo "affected-targets: selected lanes: ${lanes:-<none>}"
-    emit_output full "false"
+    local selected="$1" lanes="$2" impacted_file="$3" closure_count="$4" live_count="$5" narrowed=false
+    [[ "$NARROW_LIMIT" =~ ^[1-9][0-9]*$ ]] || decide_full "narrow limit '$NARROW_LIMIT' is malformed"
+    echo "affected-targets: SELECTIVE run — corpus targets: ${selected:-<none>}; lanes: ${lanes:-<none>}"
+    emit_output full false
     emit_output selected "$selected"
     emit_output selected_lanes "$lanes"
-    emit_output selected_lanes_count "$lane_count"
-    emit_output selected_lanes_digest "$lane_digest"
-    # Narrowing is an optimization layered on the selective decision, and it is
-    # declined independently: too many impacted targets, or none at all, both
-    # mean the lane keeps its ordinary pattern. `narrowed` is the single flag
-    # consumers check, so an absent or oversized list can never be mistaken for
-    # "narrow to nothing".
-    local impacted_count="${closure_count:-0}"
-    local narrowing_status="DECLINED"
-    if [[ "$impacted_count" -gt 0 && "$impacted_count" -le "$limit" && "$live_count" -gt 0 ]]; then
-        narrowing_status="CANDIDATE"
-        echo "affected-targets: ${live_count} live impacted targets are eligible for registered scope verification"
-        emit_output_multiline impacted "$impacted_file"
-        emit_output narrowed "true"
+    if [[ "$closure_count" -gt 0 && "$closure_count" -le "$NARROW_LIMIT" && "$live_count" -gt 0 ]]; then
+        narrowed=true
+        echo "affected-targets: narrowing to $live_count live impacted targets ($closure_count in the closure)"
     else
-        echo "affected-targets: not narrowing (${impacted_count} impacted targets; limit ${limit})"
-        emit_output_multiline impacted ""
-        emit_output narrowed "false"
+        echo "affected-targets: not narrowing ($closure_count impacted targets; limit $NARROW_LIMIT)"
     fi
-    emit_output narrowing_status "$narrowing_status"
-    emit_output head_target_count "$head_count"
-    emit_output impacted_closure_count "$impacted_count"
-    emit_output impacted_target_count "$proved_live_count"
-    emit_output impacted_targets_digest "$impacted_digest"
-    emit_manifest "select" "$reason" "$selected" "$lanes" "$narrowing_status" "$head_count" "$live_count"
+    emit_output narrowed "$narrowed"
+    if [[ "$narrowed" == true ]]; then emit_output_multiline impacted "$impacted_file"; else emit_output_multiline impacted ""; fi
+    emit_summary "Affected-target selection: **selective** — corpus targets: ${selected:-none}; lanes: ${lanes:-none}" \
+        "Narrowed: **$narrowed** ($live_count live impacted targets of $closure_count in the closure; limit $NARROW_LIMIT)"
     exit 0
 }
 
 cmd_decide() {
     local event="${RUE_AFFECTED_EVENT:-pull_request}"
-    if [[ "$event" != "pull_request" ]]; then
-        decide_full "authoritative full run for event '${event}'" "DECLINED"
-    fi
+    [[ "$event" == pull_request ]] || decide_full "authoritative full run for event '$event'"
 
-    # Resolve base and head. In Actions these come from the pull_request event;
-    # locally they default to the merge-base against origin/trunk.
-    local base_ref head_ref
-    base_ref="${RUE_AFFECTED_BASE_SHA:-}"
-    head_ref="${RUE_AFFECTED_HEAD_SHA:-HEAD}"
-    if [[ -z "$base_ref" ]]; then
-        base_ref="$(git merge-base origin/trunk HEAD 2>/dev/null)" || base_ref=""
-    fi
-    if [[ -z "$base_ref" ]]; then
-        decide_full "could not resolve a base ref for the diff"
-    fi
+    local base_ref="${RUE_AFFECTED_BASE_SHA:-}" head_ref="${RUE_AFFECTED_HEAD_SHA:-HEAD}"
+    [[ -n "$base_ref" ]] || base_ref="$(git merge-base origin/trunk HEAD 2>/dev/null)" || base_ref=""
+    [[ -n "$base_ref" ]] || decide_full "could not resolve a base ref for the diff"
 
-    # Merge-base diff (three-dot) so unrelated changes on the base branch do not
-    # inflate the changed-file set.
-    local changes_file paths_file
-    changes_file="$(mktemp)"
-    paths_file="$(mktemp)"
-    _af_cleanup+=("$changes_file" "$paths_file")
-    # BTD's Git parser requires status records, not a path-only diff. Disable
-    # rename detection so a move is conservatively represented as D+A.
-    if ! git diff --name-status --no-renames "${base_ref}...${head_ref}" >"$changes_file" 2>/dev/null; then
-        decide_full "git diff against base '${base_ref}' failed"
-    fi
-    if [[ ! -s "$changes_file" ]]; then
-        decide_full "empty changed-file set (unexpected on a PR)"
-    fi
-
-    if ! status_paths <"$changes_file" >"$paths_file" || [[ ! -s "$paths_file" ]]; then
-        decide_full "could not derive changed paths from git status records"
-    fi
-
-    local reason
-    if reason="$(force_full_match <"$paths_file")"; then
-        decide_full "changed path forces a full run: ${reason}" "DECLINED"
-    fi
-
-    # From here on, a full run is still the fallback for any tooling failure.
     local work
     work="$(mktemp -d)"
     _af_cleanup+=("$work")
+    # Three-dot: unrelated base-branch changes must not inflate the diff. BTD
+    # wants status records; renames off so a move is a conservative D+A.
+    git diff --name-status --no-renames "${base_ref}...${head_ref}" >"$work/changes" 2>/dev/null \
+        || decide_full "git diff against base '$base_ref' failed"
+    [[ -s "$work/changes" ]] || decide_full "empty changed-file set (unexpected on a PR)"
+    status_paths <"$work/changes" >"$work/paths" && [[ -s "$work/paths" ]] \
+        || decide_full "could not derive changed paths from git status records"
+    local reason
+    reason="$(force_full_match <"$work/paths")" && decide_full "changed path forces a full run: $reason"
 
-    # `btd` is a checked-in DotSlash manifest. Test harnesses may substitute a
-    # stub via RUE_AFFECTED_BTD, but CI always exercises the pinned manifest.
-    local btd="${RUE_AFFECTED_BTD:-$repo_root/btd}"
-    if [[ ! -x "$btd" ]]; then
-        decide_full "pinned btd executable is unavailable"
-    fi
-    local buck2="${RUE_AFFECTED_BUCK2:-$repo_root/buck2}"
+    local btd="${RUE_AFFECTED_BTD:-$repo_root/btd}" buck2
+    buck2="$(buck2_bin)"
+    [[ -x "$btd" ]] || decide_full "pinned btd executable is unavailable"
+    buck_targets_dump "$buck2" "$work/head.jsonl" >&2 || decide_full "buck2 targets dump at head failed"
+    # The base dump comes from a detached worktree that shares the committed
+    # prelude and toolchains, so buck2 can parse it standalone.
+    git worktree add --detach "$work/base-tree" "$base_ref" >&2 || decide_full "could not create a base worktree at '$base_ref'"
+    _af_worktrees+=("$work/base-tree")
+    ( cd "$work/base-tree" && buck_targets_dump "${RUE_AFFECTED_BUCK2:-$work/base-tree/buck2}" "$work/base.jsonl" ) >&2 \
+        || decide_full "buck2 targets dump at base failed"
+    "$btd" --changes "$work/changes" --base "$work/base.jsonl" --diff "$work/head.jsonl" \
+        --universe root//... --vcs git --buck "$buck2" --json-lines >"$work/impacted.jsonl" 2>"$work/btd.err" \
+        || { cat "$work/btd.err" >&2; decide_full "btd returned non-zero"; }
 
-    # Head dump from the current checkout (the tree CI will test).
-    if ! buck_targets_dump "$buck2" "$work/head.jsonl" >&2; then
-        decide_full "buck2 targets dump at head failed"
-    fi
+    # Two different JSON shapes, and the parser refuses the wrong one: reading
+    # the head dump in BTD mode once fell every pull request open to FULL.
+    local impacted
+    impacted="$(python3 "$repo_root/scripts/parse-btd-impacted.py" <"$work/impacted.jsonl")" || decide_full "could not parse btd output"
+    python3 "$repo_root/scripts/parse-btd-impacted.py" --targets-dump <"$work/head.jsonl" >"$work/head-targets" \
+        || decide_full "could not parse the head graph"
+    [[ -s "$work/head-targets" ]] || decide_full "head graph came back empty"
 
-    # Base dump from a detached worktree at the base ref. A separate worktree
-    # shares the committed prelude/toolchains, so buck2 can parse it standalone.
-    local base_tree="$work/base-tree"
-    if ! git worktree add --detach "$base_tree" "$base_ref" 1>&2; then
-        decide_full "could not create a base worktree at '${base_ref}'"
-    fi
-    _af_worktrees+=("$base_tree")
-    local base_ok=1
-    local base_buck2="${RUE_AFFECTED_BUCK2:-$base_tree/buck2}"
-    if ! ( cd "$base_tree" && buck_targets_dump "$base_buck2" "$work/base.jsonl" ) >&2; then
-        base_ok=0
-    fi
-    if [[ "$base_ok" -ne 1 ]]; then
-        decide_full "buck2 targets dump at base failed"
-    fi
-
-    # Run BTD over the two dumps and the changed-file list.
-    local btd_out="$work/impacted.jsonl"
-    if ! "$btd" \
-        --changes "$changes_file" \
-        --base "$work/base.jsonl" \
-        --diff "$work/head.jsonl" \
-        --universe root//... \
-        --vcs git \
-        --buck "$buck2" \
-        --json-lines >"$btd_out" 2>"$work/btd.err"; then
-        echo "affected-targets: btd failed:" >&2
-        cat "$work/btd.err" >&2 || true
-        decide_full "btd returned non-zero"
-    fi
-
-    # Extract impacted target labels and intersect with the selectable corpus.
-    # `root//:foo` and `//:foo` are the same target; normalize the `root` cell.
-    local impacted head_count
-    if ! impacted="$(python3 "$repo_root/scripts/parse-btd-impacted.py" <"$btd_out")"; then
-        decide_full "could not parse btd output"
-    fi
-    # The head dump is `buck2 targets` output — "buck.package" + "name" per
-    # record — not BTD output, and the parser refuses the wrong shape. Reading
-    # it with the BTD mode made every record fail, which fell open to FULL on
-    # every pull request from 2026-08-27 until noticed in the job logs.
-    local head_targets_file="$work/head-targets.txt"
-    if ! python3 "$repo_root/scripts/parse-btd-impacted.py" --targets-dump <"$work/head.jsonl" >"$head_targets_file"; then
-        decide_full "could not parse the head graph"
-    fi
-    if [[ ! -s "$head_targets_file" ]]; then
-        decide_full "head graph came back empty"
-    fi
-    head_count="$(grep -c . "$head_targets_file" || echo 0)"
-
-    local selected="" target
-    for target in "${SELECTABLE_CORPUS[@]}"; do
-        if grep -Fxq "$target" <<<"$impacted"; then
-            selected+="${selected:+ }$target"
-        fi
-    done
-
-    # RUE-1130: a lane runs when any target it executes is impacted.
-    local lanes="" lane lane_inventory target
+    local corpus selected="" lanes="" lane inventory target
+    corpus="$(corpus_targets)" || decide_full "could not query the platform-corpus inventory"
+    while IFS= read -r target; do
+        [[ -n "$target" ]] && grep -Fxq -- "$target" <<<"$impacted" && selected+="${selected:+ }$target"
+    done <<<"$corpus"
     for lane in "${SELECTABLE_LANES[@]}"; do
-        if ! lane_inventory="$(lane_targets "$lane")"; then
-            decide_full "could not query ${lane} live target membership"
-        fi
+        inventory="$(lane_targets "$lane")" || decide_full "could not query $lane live target membership"
         while IFS= read -r target; do
-            [[ -n "$target" ]] || continue
-            if grep -Fxq "$target" <<<"$impacted"; then
-                lanes+="${lanes:+ }$lane"
-                break
-            fi
-        done <<<"$lane_inventory"
+            [[ -n "$target" ]] && grep -Fxq -- "$target" <<<"$impacted" && { lanes+="${lanes:+ }$lane"; break; }
+        done <<<"$inventory"
     done
 
-    # BTD compares base and head dumps, so its closure may name a target that
-    # existed only at the base. Such a label is evidence for lane selection but
-    # is not runnable at the head. Publish only the exact intersection with the
-    # live head graph to narrowing consumers; their own registered scope then
-    # applies a second exact intersection before any command executes.
-    local impacted_file="$work/impacted-head-targets.txt"
-    grep -Fxf "$head_targets_file" <<<"$impacted" >"$impacted_file"
-    local intersection_status=$?
-    if [[ "$intersection_status" -ne 0 ]]; then
-        if [[ "$intersection_status" -ne 1 ]]; then
-            decide_full "could not intersect the impacted closure with the head graph"
-        fi
-        : >"$impacted_file"
-    fi
-
-    local impacted_count=0 live_count=0
-    [[ -n "$impacted" ]] && impacted_count="$(grep -c . <<<"$impacted" || echo 0)"
-    [[ -s "$impacted_file" ]] && live_count="$(grep -c . "$impacted_file" || echo 0)"
-    decide_select "$selected" "btd affected-target closure over the PR diff" "$lanes" "$impacted_file" "$head_count" "$impacted_count" "$live_count"
+    # BTD's closure may name a target that existed only at the base; publish
+    # only the exact intersection with the live head graph to consumers.
+    grep -Fxf "$work/head-targets" <<<"$impacted" >"$work/impacted-live"
+    local status=$?
+    [[ "$status" -le 1 ]] || decide_full "could not intersect the impacted closure with the head graph"
+    local closure_count=0 live_count=0
+    [[ -n "$impacted" ]] && closure_count="$(grep -c . <<<"$impacted")"
+    [[ -s "$work/impacted-live" ]] && live_count="$(grep -c . "$work/impacted-live")"
+    decide_select "$selected" "$lanes" "$work/impacted-live" "$closure_count" "$live_count"
 }
 
-main() {
-    local sub="${1:-decide}"
-    case "$sub" in
-        decide)
-            cmd_decide ;;
-        force-full-match)
-            if reason="$(force_full_match)"; then
-                printf 'FULL: %s\n' "$reason"
-                exit 0
-            fi
-            exit 1 ;;
-        status-paths)
-            status_paths ;;
-        is-selectable)
-            [[ $# -eq 2 ]] || { echo "usage: scripts/affected-targets is-selectable //:TARGET" >&2; exit 2; }
-            is_selectable "$2" ;;
-        is-selectable-lane)
-            [[ $# -eq 2 ]] || { echo "usage: scripts/affected-targets is-selectable-lane LANE" >&2; exit 2; }
-            is_selectable_lane "$2" ;;
-        intersect)
-            [[ $# -ge 2 ]] || { echo "usage: scripts/affected-targets intersect FILE //:TARGET..." >&2; exit 2; }
-            shift; intersect_impacted "$@" ;;
-        build-scope)
-            # FILE is optional: with it, the narrowed subset; without it, the
-            # whole `//crates/...` pattern. Both spellings must drop the corpus
-            # actions, so both reach the same function (RUE-1511).
-            [[ $# -le 2 ]] || { echo "usage: scripts/affected-targets build-scope [FILE]" >&2; exit 2; }
-            build_scope "${2:-}" ;;
-        scope-registry)
-            [[ $# -eq 1 ]] || { echo "usage: scripts/affected-targets scope-registry" >&2; exit 2; }
-            scope_registry ;;
-        narrow-limit)
-            [[ $# -eq 1 ]] || { echo "usage: scripts/affected-targets narrow-limit" >&2; exit 2; }
-            narrow_limit ;;
-        scope-targets)
-            [[ $# -eq 2 ]] || { echo "usage: scripts/affected-targets scope-targets LANE" >&2; exit 2; }
-            scope_targets "$2" ;;
-        narrow-scope)
-            [[ $# -eq 3 ]] || { echo "usage: scripts/affected-targets narrow-scope LANE FILE" >&2; exit 2; }
-            narrow_scope "$2" "$3" ;;
-        lane-targets)
-            [[ $# -eq 2 ]] || { echo "usage: scripts/affected-targets lane-targets LANE" >&2; exit 2; }
-            lane_targets "$2" ;;
-        clippy-owned-targets)
-            [[ $# -eq 1 ]] || { echo "usage: scripts/affected-targets clippy-owned-targets" >&2; exit 2; }
-            clippy_owned_targets ;;
-        native-targets)
-            [[ $# -eq 1 ]] || { echo "usage: scripts/affected-targets native-targets" >&2; exit 2; }
-            native_platform_targets ;;
-        corpus-targets)
-            corpus_targets ;;
-        lanes)
-            lanes ;;
-        *)
-            echo "usage: scripts/affected-targets [decide|force-full-match|status-paths|is-selectable|is-selectable-lane|lane-targets|clippy-owned-targets|native-targets|corpus-targets|lanes|intersect|build-scope|scope-registry|narrow-limit|scope-targets|narrow-scope]" >&2
-            exit 2 ;;
-    esac
+usage() {
+    echo "usage: scripts/affected-targets [decide|force-full-match|corpus-targets|lanes|lane-targets LANE|native-targets|clippy-owned-targets|scope-targets LANE|narrow-scope LANE FILE]" >&2
+    exit 2
 }
 
-main "$@"
+case "${1:-decide}" in
+    decide) [[ $# -le 1 ]] || usage; cmd_decide ;;
+    force-full-match)
+        [[ $# -eq 1 ]] || usage
+        if reason="$(force_full_match)"; then printf 'FULL: %s\n' "$reason"; exit 0; fi
+        exit 1 ;;
+    corpus-targets) [[ $# -eq 1 ]] || usage; corpus_targets ;;
+    lanes) [[ $# -eq 1 ]] || usage; printf '%s\n' "${SELECTABLE_LANES[@]}" ;;
+    lane-targets) [[ $# -eq 2 ]] || usage; lane_targets "$2" ;;
+    native-targets) [[ $# -eq 1 ]] || usage; native_platform_targets ;;
+    clippy-owned-targets) [[ $# -eq 1 ]] || usage; clippy_owned_targets ;;
+    scope-targets) [[ $# -eq 2 ]] || usage; scope_targets "$2" ;;
+    narrow-scope) [[ $# -eq 3 ]] || usage; narrow_scope "$2" "$3" ;;
+    *) usage ;;
+esac

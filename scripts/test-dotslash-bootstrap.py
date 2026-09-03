@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Focused tests for the dotslash bootstrap-centralization gate (RUE-1825)."""
+"""Focused tests for the dotslash bootstrap-centralization gate (RUE-1825)
+and the cache-key rule it holds the action to (RUE-1854)."""
 
 from __future__ import annotations
 
@@ -105,6 +106,23 @@ class DotslashBootstrapTests(unittest.TestCase):
         )
         self.assertEqual(len(errors), 1)
         self.assertIn("no longer declares a dotslash cache", errors[0])
+
+    def test_rejects_a_key_hashing_the_wrapper_instead_of_the_manifest(self) -> None:
+        # RUE-1854: the wrapper does not change on a pin bump, so a key on it
+        # stays put and the stale store is never replaced. Both halves are
+        # reported: the wrong file hashed, and the right one missing.
+        errors = self.validate(action=ACTION.replace("hashFiles('buck2-bin')", "hashFiles('buck2')"))
+        self.assertEqual(len(errors), 2, errors)
+        self.assertIn("hashes the 'buck2' wrapper", errors[0])
+        self.assertIn("does not hash 'buck2-bin'", errors[1])
+
+    def test_accepts_additional_tool_manifests_in_the_key(self) -> None:
+        # The affected-targets job shares the store with btd, so that variant
+        # of the key legitimately hashes both manifests.
+        errors = self.validate(
+            action=ACTION.replace("hashFiles('buck2-bin')", "hashFiles('buck2-bin', 'btd')")
+        )
+        self.assertEqual(errors, [])
 
     def test_rejects_a_tree_where_nothing_calls_the_action(self) -> None:
         # A renamed bootstrap leaves every workflow trivially conforming; the

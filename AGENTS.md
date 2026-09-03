@@ -116,25 +116,22 @@ via `//crates/rue-toml2json`, and the floor is a uniform 3.9 again.
 
 A stock Mac now meets the floor: macOS ships `/usr/bin/python3` as 3.9.6, and
 3.9 is chosen precisely so that interpreter is enough — nothing to install.
-The gap CI cannot see runs the other way. Its runners are comfortably above
-the floor — `ubuntu-latest` and `ubuntu-24.04-arm` provide 3.12.3, `macos-15`
-provides 3.14.6 — so a premerge-tier target using a construct newer than 3.9
-stays green in CI and fails on a stock developer machine, which is what
-`//:cli-timeout-policy-validation` did while it needed 3.11 (RUE-1509).
+The runners' own interpreters are comfortably above the floor —
+`ubuntu-latest` and `ubuntu-24.04-arm` provide 3.12.3, `macos-15` provides
+3.14.6 — so a premerge-tier target using a construct newer than 3.9 would stay
+green on them and fail on a stock developer machine, which is what
+`//:cli-timeout-policy-validation` did while it needed 3.11 (RUE-1509). CI
+therefore holds the floor by running the tooling under it: the `fmt`,
+`linux-premerge`, and `ci-contract` jobs install Python 3.9 with
+`actions/setup-python` before any gate runs, so a construct newer than the
+floor fails there the way it fails on a stock Mac (RUE-1936 retired the static
+scanner that approximated this with a curated table of constructs).
 
 This floor governs the interpreter that runs repository tooling. It is not the
 Python number in `docs/process/build-cache.md`, which records what the pinned
 remote worker image ships for the Buck prelude's rustc wrapper — a different
 interpreter running different code. The remote-execution canary builds; it does
 not run these tests.
-
-A construct newer than 3.9 fails the gate; the reviewed exception is a
-`# python-baseline-ok: <reason>` annotation on the offending line.
-`scripts/validate-python-baseline.py` checks what a static scan can: a curated
-table of version-gated imports, stdlib attributes, builtins, keyword arguments
-and grammar, and this section's stated floor against the gate's own constant.
-It is a curated table rather than a proof — its docstring lists what it cannot
-see, including grammar with no distinct AST node and every method call.
 
 Shell has the same shape of floor and a stricter one. macOS ships GNU Bash
 3.2.57 as `/bin/bash` and will not ship a GPLv3 one, so a `#!/usr/bin/env bash`
