@@ -987,6 +987,53 @@ fn matching_token_delimiter(tokens: &[String], open: usize, left: &str, right: &
     panic!("token delimiter {left:?} has no matching {right:?}")
 }
 
+/// Return every function carrying an exact built-in `#[test]` attribute.
+/// Comments, layout, additional attributes, and restricted visibility are
+/// tokenized away or skipped so source inventories cannot lose a test through
+/// a valid spelling change.
+pub(super) fn test_function_declarations(source: &str) -> Vec<String> {
+    let tokens = rust_code_tokens(source);
+    let mut declarations = Vec::new();
+    let mut index = 0usize;
+    while index + 3 < tokens.len() {
+        if tokens[index] != "#" || tokens[index + 1] != "[" {
+            index += 1;
+            continue;
+        }
+        let close = matching_token_delimiter(&tokens, index + 1, "[", "]");
+        if tokens[index + 2..close] != ["test"] {
+            index = close + 1;
+            continue;
+        }
+
+        let mut cursor = close + 1;
+        while tokens.get(cursor).is_some_and(|token| token == "#")
+            && tokens.get(cursor + 1).is_some_and(|token| token == "[")
+        {
+            cursor = matching_token_delimiter(&tokens, cursor + 1, "[", "]") + 1;
+        }
+        if tokens.get(cursor).is_some_and(|token| token == "pub") {
+            cursor += 1;
+            if tokens.get(cursor).is_some_and(|token| token == "(") {
+                cursor = matching_token_delimiter(&tokens, cursor, "(", ")") + 1;
+            }
+        }
+        while tokens
+            .get(cursor)
+            .is_some_and(|token| matches!(token.as_str(), "const" | "async" | "unsafe" | "extern"))
+        {
+            cursor += 1;
+        }
+        if tokens.get(cursor).is_some_and(|token| token == "fn")
+            && let Some(name) = tokens.get(cursor + 1)
+        {
+            declarations.push(name.clone());
+        }
+        index = close + 1;
+    }
+    declarations
+}
+
 /// Return source-level authorities that can initialize, replace, or mutably
 /// expose the revisioned database runtime field. This guards safe Rust source;
 /// arbitrary unsafe pointer arithmetic or proc-macro-generated code remains a
@@ -1442,7 +1489,7 @@ fn include_macro_paths(source: &str) -> Vec<String> {
     paths
 }
 
-fn module_declarations(source: &str) -> Vec<String> {
+pub(super) fn module_declarations(source: &str) -> Vec<String> {
     let code = rust_code_only(source);
     code_identifiers(&code)
         .windows(2)
@@ -4192,8 +4239,28 @@ pub(super) use register_parse_import_parse;"#;
             include_str!("revisioned_query_database/test_support.rs"),
         ),
         (
-            "revisioned_database::tests".to_owned(),
-            include_str!("revisioned_query_database/tests.rs"),
+            "revisioned_database::tests::backend".to_owned(),
+            include_str!("revisioned_query_database/tests/backend.rs"),
+        ),
+        (
+            "revisioned_database::tests::body_provider::body".to_owned(),
+            include_str!("revisioned_query_database/tests/body_provider/body.rs"),
+        ),
+        (
+            "revisioned_database::tests::body_provider::provider".to_owned(),
+            include_str!("revisioned_query_database/tests/body_provider/provider.rs"),
+        ),
+        (
+            "revisioned_database::tests::parse_import".to_owned(),
+            include_str!("revisioned_query_database/tests/parse_import.rs"),
+        ),
+        (
+            "revisioned_database::tests::retention_cancellation".to_owned(),
+            include_str!("revisioned_query_database/tests/retention_cancellation.rs"),
+        ),
+        (
+            "revisioned_database::tests::semantic_declaration".to_owned(),
+            include_str!("revisioned_query_database/tests/semantic_declaration.rs"),
         ),
     ];
     assert_eq!(
@@ -4205,9 +4272,29 @@ pub(super) use register_parse_import_parse;"#;
                 1,
             ),
             (
-                "revisioned_database::tests".to_owned(),
+                "revisioned_database::tests::backend".to_owned(),
                 "RevisionedQueryDatabase:call".to_owned(),
-                180,
+                15
+            ),
+            (
+                "revisioned_database::tests::body_provider::body".to_owned(),
+                "RevisionedQueryDatabase:call".to_owned(),
+                54
+            ),
+            (
+                "revisioned_database::tests::body_provider::provider".to_owned(),
+                "RevisionedQueryDatabase:call".to_owned(),
+                32
+            ),
+            (
+                "revisioned_database::tests::parse_import".to_owned(),
+                "RevisionedQueryDatabase:call".to_owned(),
+                30
+            ),
+            (
+                "revisioned_database::tests::semantic_declaration".to_owned(),
+                "RevisionedQueryDatabase:call".to_owned(),
+                49
             ),
         ],
         "independent test databases have a separate exact construction inventory",
@@ -4366,7 +4453,7 @@ pub(super) use register_parse_import_parse;"#;
     ));
     let nested_module_owners = module_owner_inventory(&compiler_module_sources);
     let nested_module_fingerprint = source_inventory_fingerprint(&nested_module_owners);
-    let expected_nested_module_identity = (144, 5_193_339_148_943_817_537);
+    let expected_nested_module_identity = (151, 14_424_826_081_772_489_333);
     assert_eq!(
         (nested_module_owners.len(), nested_module_fingerprint),
         expected_nested_module_identity,
