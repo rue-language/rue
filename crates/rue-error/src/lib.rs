@@ -292,25 +292,117 @@ define_error_codes! {
     // ========================================================================
     // Lexer errors (E0001-E0099)
     // ========================================================================
-    UNEXPECTED_CHARACTER = 1;
-    INVALID_INTEGER = 2;
-    INVALID_STRING_ESCAPE = 3;
-    UNTERMINATED_STRING = 4;
+    UNEXPECTED_CHARACTER = 1 => {
+        explanation: "Rue found a source character that cannot begin any token in its current position.",
+        likely_cause: "The source contains an unsupported punctuation character, a non-ASCII character outside a comment or string, or an invisible character such as a byte-order mark away from the start of the file.",
+        examples: [
+            ErrorCodeExample { title: "Unsupported punctuation", source: "fn main() {\n    $\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Keep non-ASCII text inside a string", source: "fn main() {\n    let greeting = \"héllo\";\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "ASCII source positions", path: "docs/spec/src/02-lexical-structure/_index.md", rule: Some("2.0:6") },
+            ErrorCodeReference { title: "Byte-order marks", path: "docs/spec/src/02-lexical-structure/_index.md", rule: Some("2.0:8") },
+        ],
+    };
+    INVALID_INTEGER = 2 => {
+        explanation: "Rue could not represent the value of an integer literal while tokenizing it.",
+        likely_cause: "The literal's value is greater than the largest unsigned 64-bit integer, 18446744073709551615. Digit separators do not change that value.",
+        examples: [
+            ErrorCodeExample { title: "Literal above the tokenization limit", source: "fn main() {\n    let too_large = 18446744073709551616;\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Largest accepted literal value", source: "fn main() {\n    let largest: u64 = 18446744073709551615;\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Integer literal syntax", path: "docs/spec/src/02-lexical-structure/01-tokens.md", rule: Some("2.1:3") },
+            ErrorCodeReference { title: "Integer tokenization limit", path: "docs/spec/src/appendices/C-implementation-limits.md", rule: Some("C.2:1") },
+        ],
+    };
+    INVALID_STRING_ESCAPE = 3 => {
+        explanation: "A string literal contains a backslash escape that Rue does not recognize.",
+        likely_cause: "A backslash requests an escape other than backslash, double quote, newline, tab, carriage return, or the null byte.",
+        examples: [
+            ErrorCodeExample { title: "Unknown string escape", source: "fn main() {\n    let text = \"bad\\q\";\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use a supported escape", source: "fn main() {\n    let text = \"line one\\nline two\";\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "String escape sequences", path: "docs/spec/src/02-lexical-structure/01-tokens.md", rule: Some("2.1:7") },
+            ErrorCodeReference { title: "Invalid string escapes", path: "docs/spec/src/02-lexical-structure/01-tokens.md", rule: Some("2.1:8") },
+        ],
+    };
+    UNTERMINATED_STRING = 4 => {
+        explanation: "A string literal reached the end of its line or the end of the source file without a closing double quote.",
+        likely_cause: "The closing `\"` is missing, or a physical newline was placed inside the literal instead of being written with the `\\n` escape.",
+        examples: [
+            ErrorCodeExample { title: "Missing closing quote", source: "fn main() {\n    let text = \"unfinished\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Close the string on the same line", source: "fn main() {\n    let text = \"finished\";\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "String literal syntax", path: "docs/spec/src/02-lexical-structure/01-tokens.md", rule: Some("2.1:6") },
+            ErrorCodeReference { title: "Unterminated strings", path: "docs/spec/src/02-lexical-structure/01-tokens.md", rule: Some("2.1:9") },
+        ],
+    };
     // E0005 (UNSUPPORTED_INTEGER_BASE) is retired: 0x/0o/0b literals are now
     // valid Rue syntax (RUE-177). Do not reuse the code.
-    UPPERCASE_BASE_PREFIX = 6;
-    EMPTY_BASED_LITERAL = 7;
-    INVALID_DIGIT_FOR_BASE = 8;
-    MALFORMED_BYTE_LITERAL = 9;
+    UPPERCASE_BASE_PREFIX = 6 => {
+        explanation: "An integer literal uses an uppercase base prefix. Rue requires the prefix itself to be lowercase, although hexadecimal digits after `0x` may be uppercase.",
+        likely_cause: "The literal begins with `0X`, `0O`, or `0B`, perhaps copied from a language that accepts uppercase prefixes. Write `0x`, `0o`, or `0b` instead.",
+        examples: [
+            ErrorCodeExample { title: "Uppercase hexadecimal prefix", source: "fn main() {\n    let value = 0XFF;\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Lowercase prefix with uppercase digits", source: "fn main() -> i32 {\n    0xFF\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Lowercase base prefixes", path: "docs/spec/src/02-lexical-structure/01-tokens.md", rule: Some("2.1:22") }],
+    };
+    EMPTY_BASED_LITERAL = 7 => {
+        explanation: "A binary, octal, or hexadecimal integer literal has no digits after its base prefix.",
+        likely_cause: "The source contains only `0b`, `0o`, or `0x`, possibly followed by separators. At least one digit valid for that base is required.",
+        examples: [
+            ErrorCodeExample { title: "Hexadecimal prefix without digits", source: "fn main() {\n    let value = 0x;\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Supply a hexadecimal digit", source: "fn main() -> i32 {\n    0x0\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Based literals require digits", path: "docs/spec/src/02-lexical-structure/01-tokens.md", rule: Some("2.1:20") }],
+    };
+    INVALID_DIGIT_FOR_BASE = 8 => {
+        explanation: "A based integer literal contains a digit or letter that is not valid for its declared base.",
+        likely_cause: "A binary literal contains a digit other than `0` or `1`, an octal literal contains `8`, `9`, or a letter, or a hexadecimal literal contains a letter beyond `A` through `F`.",
+        examples: [
+            ErrorCodeExample { title: "Invalid binary digit", source: "fn main() {\n    let value = 0b102;\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use digits from the declared base", source: "fn main() -> i32 {\n    0b101\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Digits valid for each base", path: "docs/spec/src/02-lexical-structure/01-tokens.md", rule: Some("2.1:21") }],
+    };
+    MALFORMED_BYTE_LITERAL = 9 => {
+        explanation: "A byte literal does not contain exactly one ASCII byte or one supported escape sequence between its single quotes.",
+        likely_cause: "The literal is empty, contains multiple or non-ASCII characters, uses an unknown escape, or reaches a line ending or end-of-file before its closing single quote.",
+        examples: [
+            ErrorCodeExample { title: "More than one byte", source: "fn main() {\n    let value = b'ab';\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Write one byte", source: "fn main() -> i32 {\n    b'a'\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Byte literal syntax", path: "docs/spec/src/02-lexical-structure/01-tokens.md", rule: Some("2.1:26") },
+            ErrorCodeReference { title: "Malformed byte literals", path: "docs/spec/src/02-lexical-structure/01-tokens.md", rule: Some("2.1:27") },
+        ],
+    };
     /// The per-file lexer diagnostic budget was exceeded. The detailed
     /// diagnostics before this summary remain available.
-    LEXER_DIAGNOSTICS_OMITTED = 10;
+    LEXER_DIAGNOSTICS_OMITTED = 10 => {
+        explanation: "Rue stopped lexing one source file after retaining its first 100 lexical diagnostics. The earlier diagnostics remain available, and other source files are still processed.",
+        likely_cause: "The file contains many characters or malformed literals that cannot be tokenized, often because generated input is corrupt or the file is not Rue source. Fix the first reported errors before compiling again.",
+        examples: [ErrorCodeExample { title: "More than 100 lexical errors", source: "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$", outcome: ErrorCodeExampleOutcome::EmitsThisCode }],
+        references: [ErrorCodeReference { title: "Source decomposition into tokens", path: "docs/spec/src/02-lexical-structure/_index.md", rule: Some("2.0:1") }],
+    };
     /// A floating-point literal written with a leading dot (`.5`) or a
     /// trailing dot (`5.`); ADR-0065 §3 requires `0.5` / `5.0`. Sits in the
     /// lexical band even though the trailing-dot form is diagnosed by the
     /// parser — see [`ErrorKind::MalformedFloatLiteral`] for why that half
     /// cannot be decided from the lexeme alone. (RUE-1068)
-    MALFORMED_FLOAT_LITERAL = 11;
+    MALFORMED_FLOAT_LITERAL = 11 => {
+        explanation: "A floating-point literal has a forbidden spelling: it begins with a decimal point, ends with one, or has an exponent marker without exponent digits.",
+        likely_cause: "The literal was written as `.5`, `5.`, `1e`, or `1e+`. Put a digit on both sides of a decimal point and provide at least one exponent digit, for example `0.5`, `5.0`, or `1e9`.",
+        examples: [
+            ErrorCodeExample { title: "Leading dot diagnosed by the lexer", source: "fn main() {\n    let value = .5;\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Trailing dot diagnosed by the parser", source: "fn main() {\n    let value = 5.;\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+        ],
+        references: [ErrorCodeReference { title: "Maximal-munch tokenization", path: "docs/spec/src/02-lexical-structure/_index.md", rule: Some("2.0:2") }],
+    };
 
     // ========================================================================
     // Parser errors (E0100-E0199)
@@ -3389,6 +3481,42 @@ mod tests {
                 .into_iter()
                 .all(|code| error_code_explanation(code).is_some())
         );
+    }
+
+    #[test]
+    fn active_lexer_explanation_band_is_complete_and_bounded() {
+        let expected = [
+            ErrorCode::UNEXPECTED_CHARACTER,
+            ErrorCode::INVALID_INTEGER,
+            ErrorCode::INVALID_STRING_ESCAPE,
+            ErrorCode::UNTERMINATED_STRING,
+            ErrorCode::UPPERCASE_BASE_PREFIX,
+            ErrorCode::EMPTY_BASED_LITERAL,
+            ErrorCode::INVALID_DIGIT_FOR_BASE,
+            ErrorCode::MALFORMED_BYTE_LITERAL,
+            ErrorCode::LEXER_DIAGNOSTICS_OMITTED,
+            ErrorCode::MALFORMED_FLOAT_LITERAL,
+        ];
+        let active = error_code_metadata()
+            .iter()
+            .filter_map(|metadata| (1..=11).contains(&metadata.code.0).then_some(metadata.code))
+            .collect::<Vec<_>>();
+        assert_eq!(active, expected);
+        let explained = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (1..=11)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(explained, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
+        );
+        assert_eq!(error_code_explanation(ErrorCode(5)), None);
     }
 
     /// `ErrorKind::code()` must cover the compiler-declared ErrorCode constants without
