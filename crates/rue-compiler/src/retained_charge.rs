@@ -633,7 +633,7 @@ impl<D: RetainedCharge, M: RetainedCharge> RetainedCharge for rue_air::FunctionI
             Self::AnonymousMember { owner, member } => owner
                 .retained_charge()
                 .saturating_add(member.retained_charge()),
-            Self::DropGlue(value) => value.retained_charge(),
+            Self::DropGlue(value) | Self::ErrorPrinter(value) => value.retained_charge(),
             Self::TestDispatcher => 0,
         }
     }
@@ -729,6 +729,9 @@ impl RetainedCharge for rue_air::PaddingRange {
 
 impl RetainedCharge for rue_air::DurableBodySourceLocator {
     fn retained_charge(&self) -> u64 {
+        // `source_text` is a refcount of the parse artifact's own string, which
+        // charges it there. Charging it again here would count one allocation
+        // against two owners.
         self.physical_path.retained_charge()
     }
 }

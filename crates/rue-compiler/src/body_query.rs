@@ -16,6 +16,9 @@ pub(crate) struct BodySourceLocator {
     pub(crate) file_id: rue_span::FileId,
     pub(crate) physical_path: Arc<str>,
     pub(crate) source_length: u32,
+    /// The module's source text, shared with the parse artifact that owns it
+    /// (see [`rue_air::DurableBodySourceLocator::source_text`]).
+    pub(crate) source_text: Arc<String>,
     pub(crate) declaration_start: u32,
     pub(crate) declaration_end: u32,
     pub(crate) body_start: u32,
@@ -878,6 +881,9 @@ pub(crate) struct BodyReachabilityOutput {
     pub(crate) demanded_drop_glue: Arc<[crate::TypeInstanceKey]>,
     pub(crate) demanded_drop_glue_plans:
         Arc<[(crate::TypeInstanceKey, crate::type_queries::DropGlueFacts)]>,
+    /// Error types a reached body's test-body `?` renders (ADR-0083 §1). Like
+    /// drop glue, these root a synthesized callable that no source declares.
+    pub(crate) demanded_error_printers: Arc<[crate::TypeInstanceKey]>,
     pub(crate) scheduling_errors: Arc<[(crate::FunctionInstanceKey, crate::CompileErrors)]>,
     pub(crate) fatal: Option<BodyClosureFatal>,
     pub(crate) parked_toolchain: Option<crate::ParkedToolchainModules>,
@@ -890,6 +896,7 @@ pub(crate) fn body_reachability_output_equal(
     left.reached == right.reached
         && left.demanded_drop_glue == right.demanded_drop_glue
         && left.demanded_drop_glue_plans == right.demanded_drop_glue_plans
+        && left.demanded_error_printers == right.demanded_error_printers
         && left.scheduling_errors == right.scheduling_errors
         && left.fatal == right.fatal
         && left.parked_toolchain == right.parked_toolchain
@@ -930,6 +937,7 @@ pub(crate) struct BodyClosureOutput {
     pub(crate) demanded_drop_glue: Arc<[crate::TypeInstanceKey]>,
     pub(crate) demanded_drop_glue_plans:
         Arc<[(crate::TypeInstanceKey, crate::type_queries::DropGlueFacts)]>,
+    pub(crate) demanded_error_printers: Arc<[crate::TypeInstanceKey]>,
     pub(crate) bodies: Arc<[BodyClosureBody]>,
     pub(crate) scheduling_errors: Arc<[(crate::FunctionInstanceKey, crate::CompileErrors)]>,
     pub(crate) fatal: Option<BodyClosureFatal>,
@@ -943,6 +951,7 @@ pub(crate) fn body_closure_output_equal(
     left.reached == right.reached
         && left.demanded_drop_glue == right.demanded_drop_glue
         && left.demanded_drop_glue_plans == right.demanded_drop_glue_plans
+        && left.demanded_error_printers == right.demanded_error_printers
         && left.bodies.len() == right.bodies.len()
         && left
             .bodies
@@ -1204,6 +1213,7 @@ impl RetainedCharge for BodyReachabilityOutput {
             .retained_charge()
             .saturating_add(self.demanded_drop_glue.retained_charge())
             .saturating_add(self.demanded_drop_glue_plans.retained_charge())
+            .saturating_add(self.demanded_error_printers.retained_charge())
             .saturating_add(self.scheduling_errors.retained_charge())
             .saturating_add(self.fatal.retained_charge())
             .saturating_add(self.parked_toolchain.retained_charge())
@@ -1216,6 +1226,7 @@ impl RetainedCharge for BodyClosureOutput {
             .retained_charge()
             .saturating_add(self.demanded_drop_glue.retained_charge())
             .saturating_add(self.demanded_drop_glue_plans.retained_charge())
+            .saturating_add(self.demanded_error_printers.retained_charge())
             .saturating_add(self.bodies.retained_charge())
             .saturating_add(self.scheduling_errors.retained_charge())
             .saturating_add(self.fatal.retained_charge())

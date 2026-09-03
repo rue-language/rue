@@ -189,6 +189,14 @@ consumers already handle instead of adding one.
 | `payload` | string | The channel's open payload. **Absent** when empty. |
 | `runner_note` | string | The runner's own explanation. **Absent** unless the runner could not trust what it read. |
 
+`line` and `column` are both 1-based, and `column` counts Unicode scalars rather
+than bytes — the same coordinate the compiler's own diagnostics print for the
+same position, so a report and a diagnostic never disagree about where something
+is. An `unhandled_error` record is the one that routinely carries a site of its
+own: the failure arm of a test body's `?` stages the position of the `?`
+operator's operand, so `location` names the failing expression rather than the
+`test` line the runner would otherwise fall back to (spec 6.7:14).
+
 `timeout` and `crash` verdicts also carry a failure record, with kind `timeout`
 and `signal` respectively.
 

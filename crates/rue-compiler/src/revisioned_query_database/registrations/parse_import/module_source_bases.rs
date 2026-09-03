@@ -40,6 +40,7 @@ macro_rules! register_parse_import_module_source_bases {
                             physical_path: current.physical_path.clone(),
                             source_length: u32::try_from(parsed.source_text().len())
                                 .map_err(|_| QueryAbort::Canceled)?,
+                            source_text: parsed.shared_source_text(),
                         },
                     )))
                 },

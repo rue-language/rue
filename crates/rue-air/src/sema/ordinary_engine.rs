@@ -353,6 +353,28 @@ pub(crate) trait AnonymousNominalLedger {
         ty: Type,
     ) -> Result<super::anon_structs::IssuedTypeInstanceKey, crate::SemanticBodyExportFailure>;
 
+    /// Bind a body-local call symbol to a synthesized callable identity.
+    ///
+    /// Ordinary calls name a declaration, so body export resolves them by
+    /// looking the symbol's declaration up. A compiler-synthesized callee has no
+    /// declaration to look up: the analysis that emits the call is also the only
+    /// thing that knows what it is calling, so it records the identity here and
+    /// export publishes that instead. The test-body `?` failure arm is the one
+    /// caller (ADR-0083 §1).
+    fn register_synthesized_callable(&self, symbol: Spur, identity: IssuedFunctionInstanceKey);
+
+    /// The source coordinate of a span in this body's own file, as
+    /// `(physical path, 1-based line, 1-based column)`.
+    ///
+    /// Spans travel as byte offsets and become coordinates only when a
+    /// diagnostic is rendered, which is right for every consumer but one: a
+    /// test body's `?` puts its own site into the code it generates
+    /// (ADR-0083 §1), and generated code cannot defer. Resolving it through the
+    /// body's source locator keeps that one coordinate identical to the one a
+    /// diagnostic for the same span would print. `None` when the span belongs
+    /// to another file or the host has no locator.
+    fn body_source_coordinate(&self, span: Span) -> Option<(std::sync::Arc<str>, u32, u32)>;
+
     fn canonical_argument_value(
         &self,
         value: ConstValue,
@@ -652,6 +674,25 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         symbol: Spur,
     ) -> Result<crate::SemanticDefinitionToken, crate::SemanticBodyExportFailure> {
         self.storage.function_identity(symbol)
+    }
+    pub(crate) fn canonical_type_instance(
+        &self,
+        ty: Type,
+    ) -> Result<super::anon_structs::IssuedTypeInstanceKey, crate::SemanticBodyExportFailure> {
+        self.storage.canonical_type_instance(ty)
+    }
+    pub(crate) fn register_synthesized_callable(
+        &self,
+        symbol: Spur,
+        identity: IssuedFunctionInstanceKey,
+    ) {
+        self.storage.register_synthesized_callable(symbol, identity);
+    }
+    pub(crate) fn body_source_coordinate(
+        &self,
+        span: Span,
+    ) -> Option<(std::sync::Arc<str>, u32, u32)> {
+        self.storage.body_source_coordinate(span)
     }
     pub(crate) fn value_const(&self, key: &(FileId, Spur)) -> Option<ConstInfo> {
         DeclarationFacts::value_const(self.storage, key.0, key.1)
@@ -1746,6 +1787,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     /// spelling because a call-site signature may expose a coercion-normalized
     /// type instead of the exact type checked inside the body.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn analyze_single_function_resolved(
         &mut self,
         infer_ctx: &InferenceContext,
@@ -1756,6 +1798,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         span: Span,
         allow_unused_variable: bool,
         allow_unreachable_code: bool,
+        owner_kind: crate::StableDefinitionKind,
     ) -> CompileResult<(
         AnalyzedFunction,
         Vec<CompileWarning>,
@@ -1790,6 +1833,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             &param_info,
             body,
             allow_unused_variable,
+            owner_kind == crate::StableDefinitionKind::Test,
         );
         self.storage
             .replace_active_anonymous_producer(previous_producer);
@@ -1933,6 +1977,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             false,
             self_is_mut,
             is_accessor,
+            false,
         );
         self.storage.replace_active_anonymous_producer(previous);
         let (
@@ -2024,6 +2069,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             false,
             false,
             false,
+            false,
         );
         self.storage.replace_active_anonymous_producer(previous);
         let (
@@ -2066,6 +2112,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
 
     /// Analyze one instruction through the canonical ordinary dispatcher and
     /// its ordinary expression helper families.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn analyze_function(
         &mut self,
         infer_ctx: &InferenceContext,
@@ -2073,6 +2120,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         params: &[(Spur, Type, RirParamMode, bool)],
         body: InstRef,
         allow_unused_variable: bool,
+        is_test_body: bool,
     ) -> CompileResult<(
         Air,
         u32,
@@ -2095,6 +2143,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             allow_unused_variable,
             false,
             false,
+            is_test_body,
         )
     }
 
@@ -2128,6 +2177,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             false,
             false,
             false,
+            false,
         )
     }
 
@@ -2143,6 +2193,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         allow_unused_variable: bool,
         self_is_mut: bool,
         is_accessor: bool,
+        is_test_body: bool,
     ) -> CompileResult<(
         Air,
         u32,
@@ -2362,6 +2413,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             place_aliases: AHashMap::new(),
             try_operand: false,
             is_destructor,
+            is_test_body,
+            error_printer_symbols: AHashMap::new(),
         };
 
         // Accessor body shape (ADR-0062 phase 1): the body block must end in

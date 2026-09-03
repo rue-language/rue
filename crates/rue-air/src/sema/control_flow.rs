@@ -19,13 +19,21 @@ use super::context::{
     AnalysisContext, AnalysisResult, ConstValue, DivergenceKind, DivergenceKinds, LocalVar,
 };
 use super::ownership_state::{LoopEdgeStates, union_move_maps};
+use crate::Node;
 use crate::declaration_validation::{
     AccessorExitForm, AccessorMethodLink, AccessorYieldRootForm, accessor_method_link_error,
     accessor_yield_root_error,
 };
-use crate::inst::{Air, AirInst, AirInstData, AirPattern, AirPlaceBase, AirRef};
+use crate::inst::{
+    Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirPlaceBase, AirRef,
+};
 use crate::scope::ScopedContext;
 use crate::types::{Type, TypeKind};
+
+/// The failure kind a test body's `?` reports (ADR-0083 §1).
+const TEST_FAILURE_KIND: &str = "unhandled_error";
+/// The failure message a test body's `?` reports.
+const TEST_FAILURE_MESSAGE: &str = "unhandled error";
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Discard edge snapshots collected while analyzing code after a
@@ -1823,9 +1831,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // check runs only for a genuine try (a trusted Option/Result operand;
         // a lookalike reports E0504 instead) whose operand actually reaches
         // this edge.
+        //
+        // In a test body the failure arm is a trap, not a return (ADR-0083 §1,
+        // spec 6.7:9): no scope ends, nothing is dropped, and the process is
+        // gone before any obligation could be observed. That is the same edge
+        // `@panic` produces, so it records the same divergence and is exempt
+        // from the exit-edge check for the same reason.
         if trusted_producer.is_some() && operand_result.continues {
-            self.check_linear_values_at_exit_edge(ctx, 0, true)?;
-            ctx.divergence_kinds.insert(DivergenceKind::Exit);
+            if ctx.is_test_body {
+                ctx.divergence_kinds.insert(DivergenceKind::Panic);
+            } else {
+                self.check_linear_values_at_exit_edge(ctx, 0, true)?;
+                ctx.divergence_kinds.insert(DivergenceKind::Exit);
+            }
         }
 
         match trusted_producer {
@@ -1838,6 +1856,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 else {
                     return Err(non_option(self));
                 };
+                // A test body reports and traps instead of propagating
+                // (ADR-0083 §1), so it never looks at the enclosing return
+                // type: no `None` of an enclosing `Option` is constructed, and
+                // 4.15:4 has nothing to constrain.
+                if ctx.is_test_body {
+                    return self.build_test_try_desugar(
+                        air,
+                        operand_result.air_ref,
+                        operand_enum_id,
+                        some_idx,
+                        none_idx,
+                        payload_ty,
+                        None,
+                        span,
+                        ctx,
+                    );
+                }
                 // The enclosing function must return an exact std `Option`
                 // specialization too; the success payload may differ (4.15:4).
                 let ret_shape = return_type.as_enum().and_then(|rid| {
@@ -1879,6 +1914,22 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 else {
                     return Err(non_option(self));
                 };
+                // As for `Option`: no enclosing `Err` is constructed in a test
+                // body, so the identical-error-type rule of 4.15:4 never
+                // applies and each `?` site may carry its own error type.
+                if ctx.is_test_body {
+                    return self.build_test_try_desugar(
+                        air,
+                        operand_result.air_ref,
+                        operand_enum_id,
+                        ok_idx,
+                        err_idx,
+                        ok_ty,
+                        Some(err_ty),
+                        span,
+                        ctx,
+                    );
+                }
                 // The enclosing function must return an exact std `Result`
                 // specialization; the error type must match exactly (ADR-0038,
                 // no conversion).
@@ -1928,6 +1979,204 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // behavior (4.15:3, E0504).
             None => Err(non_option(self)),
         }
+    }
+
+    /// Build the test-body form of the `?` desugaring (ADR-0083 §1, spec 6.7).
+    ///
+    /// The success arm is the ordinary one. The failure arm reports and traps
+    /// instead of returning: it renders the error, stages the `?` site, and
+    /// calls the terminal failure helper, which writes one `unhandled_error`
+    /// frame on the ADR-0083 §5.1 channel and aborts.
+    ///
+    /// The two channel calls are a pair by ABI — a failure record is ten
+    /// arguments and every runtime helper is register-only — and the second
+    /// adopts whatever site the first staged, so nothing may run between them.
+    /// Everything the record carries is therefore materialized as a statement
+    /// *before* the site call: the rendered payload, the kind, and the message.
+    /// The payload is named twice, once as that statement and once as the
+    /// terminal call's argument, which is what puts the rendering before the
+    /// pair rather than inside it.
+    #[allow(clippy::too_many_arguments)]
+    fn build_test_try_desugar(
+        &mut self,
+        air: &mut Air,
+        scrutinee: AirRef,
+        operand_enum_id: crate::types::EnumId,
+        success_idx: u32,
+        fail_idx: u32,
+        success_payload_ty: Type,
+        fail_err_ty: Option<Type>,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let success_body = air.add_inst(AirInst {
+            data: AirInstData::EnumPayloadGet {
+                base: scrutinee,
+                enum_id: operand_enum_id,
+                variant_index: success_idx,
+                field_index: 0,
+            },
+            ty: success_payload_ty,
+            span,
+        });
+
+        let str_ty = self.get_or_create_str_struct(span)?;
+        let payload = match fail_err_ty {
+            None => {
+                // `Option`'s failure carries nothing, so its whole rendering is
+                // the constant `None` and no printer is synthesized for it.
+                self.synthesized_string(air, ctx, "None", str_ty, span)
+            }
+            Some(err_ty) => {
+                let error = air.add_inst(AirInst {
+                    data: AirInstData::EnumPayloadGet {
+                        base: scrutinee,
+                        enum_id: operand_enum_id,
+                        variant_index: fail_idx,
+                        field_index: 0,
+                    },
+                    ty: err_ty,
+                    span,
+                });
+                let printer = self.error_printer_symbol(err_ty, span, ctx)?;
+                air.add_call(
+                    None,
+                    printer,
+                    &[AirCallArg {
+                        value: error,
+                        mode: AirArgMode::Normal,
+                    }],
+                    str_ty,
+                    span,
+                )?
+            }
+        };
+
+        // A site the host cannot resolve is reported as the empty file at 0:0
+        // rather than as a compile error: the ABI accepts an absent location
+        // (the staging helper's file view may be empty), and a report that
+        // cannot name its line is still a better failure than no report.
+        let (path, line, column) = self
+            .body_source_coordinate(span)
+            .unwrap_or_else(|| (Arc::from(""), 0, 0));
+        let file = self.synthesized_string(air, ctx, &path, str_ty, span);
+        let line = air.add_inst(AirInst {
+            data: AirInstData::Const(u64::from(line)),
+            ty: Type::U32,
+            span,
+        });
+        let column = air.add_inst(AirInst {
+            data: AirInstData::Const(u64::from(column)),
+            ty: Type::U32,
+            span,
+        });
+        let site = self.runtime_channel_call(
+            air,
+            crate::RuntimeCallKind::TestFailureSite,
+            &[file, line, column],
+            Type::UNIT,
+            span,
+        )?;
+
+        let kind = self.synthesized_string(air, ctx, TEST_FAILURE_KIND, str_ty, span);
+        let message = self.synthesized_string(air, ctx, TEST_FAILURE_MESSAGE, str_ty, span);
+        let report = self.runtime_channel_call(
+            air,
+            crate::RuntimeCallKind::TestFail,
+            &[kind, message, payload],
+            Type::NEVER,
+            span,
+        )?;
+        let fail_body =
+            air.add_block(&[payload, kind, message, site], report, Type::NEVER, span)?;
+
+        let air_arms = [
+            (
+                AirPattern::EnumVariant {
+                    enum_id: operand_enum_id,
+                    variant_index: success_idx,
+                },
+                success_body,
+            ),
+            (
+                AirPattern::EnumVariant {
+                    enum_id: operand_enum_id,
+                    variant_index: fail_idx,
+                },
+                fail_body,
+            ),
+        ];
+        let air_ref = air.add_match(scrutinee, &air_arms, success_payload_ty, span)?;
+        Ok(AnalysisResult::new(air_ref, success_payload_ty))
+    }
+
+    /// Emit one ADR-0083 §5.1 failure-channel call by its manifest symbol.
+    fn runtime_channel_call(
+        &mut self,
+        air: &mut Air,
+        runtime: crate::RuntimeCallKind,
+        args: &[AirRef],
+        ty: Type,
+        span: Span,
+    ) -> CompileResult<AirRef> {
+        let name = self.intern_body_symbol(runtime.helper().helper().symbol)?;
+        let args = args
+            .iter()
+            .map(|value| AirCallArg {
+                value: *value,
+                mode: AirArgMode::Normal,
+            })
+            .collect::<Vec<_>>();
+        Ok(air.add_call(Some(runtime), name, &args, ty, span)?)
+    }
+
+    /// Materialize one compiler-authored `str` run in this body.
+    fn synthesized_string(
+        &mut self,
+        air: &mut Air,
+        ctx: &mut AnalysisContext,
+        content: &str,
+        str_ty: Type,
+        span: Span,
+    ) -> AirRef {
+        let id = ctx.add_synthesized_string(content);
+        air.add_inst(AirInst {
+            data: AirInstData::StringConst(id),
+            ty: str_ty,
+            span,
+        })
+    }
+
+    /// The body-local call symbol naming `err_ty`'s structural printer.
+    ///
+    /// The identity is the error type alone, so a second `?` site on the same
+    /// type reuses this symbol and the request synthesizes one printer for both
+    /// (ADR-0083 §1).
+    fn error_printer_symbol(
+        &mut self,
+        err_ty: Type,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<Spur> {
+        if let Some(symbol) = ctx.error_printer_symbols.get(&err_ty) {
+            return Ok(*symbol);
+        }
+        let owner = self.canonical_type_instance(err_ty).map_err(|failure| {
+            CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "test-body `?` could not name its error type: {failure:?}"
+                )),
+                span,
+            )
+        })?;
+        let ordinal = ctx.error_printer_symbols.len();
+        let symbol = self.intern_body_symbol(format!("__rue_error_printer#{ordinal}"))?;
+        self.register_synthesized_callable(
+            symbol,
+            crate::FunctionInstanceKey::ErrorPrinter(Node::new(owner)),
+        );
+        ctx.error_printer_symbols.insert(err_ty, symbol);
+        Ok(symbol)
     }
 
     /// Build the `match`-desugaring shared by the `?` operator's Option and

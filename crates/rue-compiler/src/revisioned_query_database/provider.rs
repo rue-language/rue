@@ -790,6 +790,7 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
                 rue_air::FunctionInstanceKey::Specialization { base, .. } => function_module(base),
                 rue_air::FunctionInstanceKey::AnonymousMember { .. }
                 | rue_air::FunctionInstanceKey::DropGlue(_)
+                | rue_air::FunctionInstanceKey::ErrorPrinter(_)
                 | rue_air::FunctionInstanceKey::TestDispatcher => None,
             }
         }

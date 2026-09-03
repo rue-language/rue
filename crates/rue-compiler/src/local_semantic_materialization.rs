@@ -182,6 +182,93 @@ impl<'facts> LocalFactSelectionIndex<'facts> {
     ) -> Option<&'facts DurableDeclarationSemantic> {
         self.shared.destructor(self.declarations, owner)
     }
+
+    /// The declared shape of a nominal type, named or anonymous.
+    fn nominal_shape(&self, ty: &crate::TypeInstanceKey) -> Option<NominalShape<'facts>> {
+        match ty {
+            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(key)) => {
+                match &self.declaration(key)?.payload {
+                    DurableDeclarationPayload::Struct { fields, .. } => {
+                        Some(NominalShape::Struct(fields.to_vec()))
+                    }
+                    DurableDeclarationPayload::Enum { variants, .. } => Some(NominalShape::Enum(
+                        variants
+                            .iter()
+                            .map(|(name, fields)| (name.clone(), fields.to_vec()))
+                            .collect(),
+                    )),
+                    _ => None,
+                }
+            }
+            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(key)) => {
+                let canonical = key.with_canonical_producer().into_owned();
+                match &self.anonymous.get(&canonical)?.shape {
+                    DurableAnonymousNominalShape::Struct { fields, .. } => {
+                        Some(NominalShape::Struct(fields.to_vec()))
+                    }
+                    DurableAnonymousNominalShape::Enum { variants } => Some(NominalShape::Enum(
+                        variants
+                            .iter()
+                            .map(|(name, fields)| (name.clone(), fields.to_vec()))
+                            .collect(),
+                    )),
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The declared shape of one nominal, in the vocabulary the printer planner
+/// reads. Named and anonymous nominals carry the same information behind two
+/// different fact shapes; this is where the two meet.
+enum NominalShape<'facts> {
+    Struct(Vec<(Arc<str>, crate::durable_semantics::DurableType)>),
+    Enum(Vec<(Arc<str>, Vec<crate::durable_semantics::DurableType>)>),
+    #[allow(dead_code)]
+    Never(std::marker::PhantomData<&'facts ()>),
+}
+
+impl crate::error_printer::ErrorPrinterTypes for LocalFactSelectionIndex<'_> {
+    fn struct_fields(
+        &self,
+        ty: &crate::TypeInstanceKey,
+    ) -> Option<Vec<(Arc<str>, crate::durable_semantics::DurableType)>> {
+        match self.nominal_shape(ty)? {
+            NominalShape::Struct(fields) => Some(fields),
+            _ => None,
+        }
+    }
+
+    fn enum_variants(
+        &self,
+        ty: &crate::TypeInstanceKey,
+    ) -> Option<Vec<(Arc<str>, Vec<crate::durable_semantics::DurableType>)>> {
+        match self.nominal_shape(ty)? {
+            NominalShape::Enum(variants) => Some(variants),
+            _ => None,
+        }
+    }
+
+    fn lang_item(&self, ty: &crate::TypeInstanceKey) -> Option<rue_air::LangItem> {
+        let crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(key)) = ty else {
+            return None;
+        };
+        // The same provenance gate `select_materialization_facts` applies when
+        // it publishes nominal metadata: a language item is a trusted
+        // standard-library nominal, never a same-named user struct.
+        (key.kind() == StableDefinitionKind::Struct && key.module().is_trusted_standard_library())
+            .then(|| {
+                rue_air::LangItem::from_standard_library_nominal(key.module().as_str(), key.name())
+            })
+            .flatten()
+    }
+
+    fn type_name(&self, ty: &crate::TypeInstanceKey) -> Arc<str> {
+        Arc::from(crate::durable_comptime::durable_type_diagnostic_name(
+            &crate::drop_glue::semantic_type_from_instance(ty),
+        ))
+    }
 }
 
 impl RetainedCharge for SharedDeclarationFactIndex {
@@ -767,6 +854,25 @@ fn live_callable_symbol(identity: &FunctionInstanceKey) -> Option<String> {
         FunctionInstanceKey::DropGlue(owner) => {
             Some(format!("__rue_drop_{}", drop_glue_type_name(owner)?))
         }
+        // A structural printer's linker symbol is
+        // `__rue_error_printer__{digest}` (ADR-0083 §1): the 32-hex fixed-seed
+        // FNV-1a digest of the stable symbol encoding of this exact identity.
+        // Unlike drop glue, no raw type spelling is embedded. An error type is
+        // an ordinary user type whose name may collide across modules and whose
+        // specialization arguments would otherwise have to be spelled out, and
+        // the printer is never named by a human — only the linker reads it — so
+        // digesting the identity that already distinguishes two printers is
+        // both shorter and exactly as discriminating. The encoding is the same
+        // request-independent one `fallback_callable_symbol` mangles, so the
+        // digest is a function of the identity's content alone.
+        FunctionInstanceKey::ErrorPrinter(_) => Some(format!(
+            "__rue_error_printer__{}",
+            rue_air::stable_digest::stable_content_digest_component(
+                &crate::StableSymbolEncoder::encode(&crate::StableSymbolId::Callable(
+                    crate::StableCallableId::Function(identity.clone()),
+                ))
+            )
+        )),
         // The test image's entry point. The loader looks up `main` by that
         // exact unmangled spelling (`entry.rs`), so the dispatcher's symbol is
         // not a naming preference — it is the ABI. Spelling it here rather than
@@ -1554,7 +1660,8 @@ pub(crate) fn select_materialization_facts(
                     self.arguments(arguments);
                 }
                 FunctionInstanceKey::AnonymousMember { owner, .. }
-                | FunctionInstanceKey::DropGlue(owner) => self.instance_type(owner),
+                | FunctionInstanceKey::DropGlue(owner)
+                | FunctionInstanceKey::ErrorPrinter(owner) => self.instance_type(owner),
                 // The dispatcher names no declaration and no type, so it
                 // contributes no module or nominal fact of its own; the tests
                 // it calls contribute theirs through the same walk.

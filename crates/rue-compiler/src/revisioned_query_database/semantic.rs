@@ -293,6 +293,7 @@ pub(crate) fn function_definition_key(
         crate::FunctionInstanceKey::Specialization { base, .. } => function_definition_key(base),
         crate::FunctionInstanceKey::AnonymousMember { .. }
         | crate::FunctionInstanceKey::DropGlue(_)
+        | crate::FunctionInstanceKey::ErrorPrinter(_)
         | crate::FunctionInstanceKey::TestDispatcher => None,
     }
 }
@@ -324,9 +325,9 @@ pub(super) fn function_body_source_definition_key(
             };
             producer_body_source_definition_key(&owner.producer)
         }
-        crate::FunctionInstanceKey::DropGlue(_) | crate::FunctionInstanceKey::TestDispatcher => {
-            None
-        }
+        crate::FunctionInstanceKey::DropGlue(_)
+        | crate::FunctionInstanceKey::ErrorPrinter(_)
+        | crate::FunctionInstanceKey::TestDispatcher => None,
     }
 }
 
@@ -352,7 +353,10 @@ pub(super) fn closure_callable_has_body(
     callable: &crate::FunctionInstanceKey,
     configuration: &crate::semantic_query_nucleus::SemanticQueryConfiguration,
 ) -> Result<Result<bool, Arc<str>>, QueryAbort> {
-    if matches!(callable, crate::FunctionInstanceKey::DropGlue(_)) {
+    if matches!(
+        callable,
+        crate::FunctionInstanceKey::DropGlue(_) | crate::FunctionInstanceKey::ErrorPrinter(_)
+    ) {
         return Ok(Ok(false));
     }
     if matches!(callable, crate::FunctionInstanceKey::AnonymousMember { .. }) {
@@ -1555,6 +1559,16 @@ pub(super) fn query_callable_signature(
         crate::FunctionInstanceKey::DropGlue(owner) => Ok(Ok(StableCallableSignature {
             parameters: vec![(DurableParameterMode::Value, owner.as_ref().clone())],
             result: crate::TypeInstanceKey::Unit,
+            target_c: false,
+        })),
+        // A structural printer takes the error value and hands back a borrowed
+        // `{ptr, len}` view of the rendering it wrote (ADR-0083 §1).
+        crate::FunctionInstanceKey::ErrorPrinter(owner) => Ok(Ok(StableCallableSignature {
+            parameters: vec![(DurableParameterMode::Value, owner.as_ref().clone())],
+            result: crate::TypeInstanceKey::BuiltinNominal {
+                kind: crate::AnonymousNominalKind::Struct,
+                name: Arc::from("str"),
+            },
             target_c: false,
         })),
         crate::FunctionInstanceKey::Definition(definition)

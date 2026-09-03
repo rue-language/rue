@@ -134,3 +134,13 @@ fn main() -> i32 {
     }
 }
 ```
+
+{{ rule(id="4.15:11", cat="informative") }}
+
+One body qualifies 4.15:4 rather than satisfying it: the block of a test
+declaration. A test body returns `()`, so this section's rules would reject
+every `?` in it (E0503, E0505) — but a test body gives `?` its own failure arm,
+which reports and traps instead of propagating, and therefore constructs no
+enclosing `None` or `Err` for 4.15:4 to constrain. The complete rule is 6.7:13
+through 6.7:17; 4.15:3's requirement on the *operand* is unchanged there, and no
+other body has this meaning.

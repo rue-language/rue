@@ -61,6 +61,7 @@ macro_rules! register_body_body_source_bases {
                         .source(current.file_id)
                         .and_then(|source| u32::try_from(source.source.len()).ok())
                         .ok_or(QueryAbort::Canceled)?;
+                    let source_text = module.shared_source_text();
                     let physical_path = view
                         .snapshot
                         .metadata()
@@ -71,6 +72,7 @@ macro_rules! register_body_body_source_bases {
                             file_id: current.file_id,
                             physical_path: Arc::from(physical_path),
                             source_length,
+                            source_text,
                             declaration_start: declaration_span.start,
                             declaration_end: declaration_span.end,
                             body_start: body_span.start,

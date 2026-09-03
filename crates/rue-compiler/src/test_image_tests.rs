@@ -307,3 +307,300 @@ fn platform_native_a_test_observes_the_pinned_process_inventory() {
     );
     assert_eq!(run.channel, COMPLETE_FRAME);
 }
+
+// ===========================================================================
+// `?` in a test body (ADR-0083 §1, spec 6.7:13 - 6.7:17).
+//
+// The session tests pin the lowered shape; these pin what the runner sees. One
+// image serves every verdict, for the same reason the dispatch fixture does:
+// another `test` item is cheap, another link is not.
+// ===========================================================================
+
+/// The one image every `?` case below is dispatched from, with its inventory.
+fn try_fixture() -> (Vec<u8>, crate::unstable::TestInventory) {
+    let source = crate::test_body_try_tests::trusted_snapshot(TRY_FIXTURE_SOURCE);
+    let mut session = CompilerSession::new();
+    crate::test_support::TestDiscoveryHost::new(&source)
+        .unwrap()
+        .drive(&mut session)
+        .unwrap();
+    let (image, inventory) = crate::unstable::test_image_in_compile_scope(
+        &mut session,
+        &crate::test_body_try_tests::test_options(),
+    )
+    .expect("the test image links");
+    (image.elf, inventory)
+}
+
+/// The 1-based line of the one occurrence of `needle` in the fixture, so a
+/// location assertion names the `?` site by what is written there rather than
+/// by a number that drifts whenever the fixture gains a line.
+fn fixture_line(needle: &str) -> u32 {
+    let lines: Vec<_> = TRY_FIXTURE_SOURCE
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains(needle))
+        .collect();
+    assert_eq!(lines.len(), 1, "`{needle}` must occur once in the fixture");
+    // `trusted_snapshot` publishes the source verbatim, and the raw literal
+    // opens with a newline, so the literal's line numbering is the module's.
+    u32::try_from(lines[0].0 + 1).expect("a fixture line number fits u32")
+}
+
+const TRY_FIXTURE_SOURCE: &str = r#"
+const opt = @import("std/option.rue");
+const res = @import("std/result.rue");
+const sb = @import("std/strbuf.rue");
+
+pub enum Code {
+    Missing,
+    Invalid(i32, sb.StrBuf),
+}
+
+pub struct Detail {
+    code: i32,
+    retryable: bool,
+}
+
+pub struct Guard {
+    tag: i32,
+}
+
+drop fn Guard(self) {
+    println("guard ran");
+}
+
+fn absent() -> opt.Option(i64) {
+    let O = opt.Option(i64);
+    O.None
+}
+
+fn unit_variant() -> res.Result(i64, Code) {
+    let R = res.Result(i64, Code);
+    R.Err(Code.Missing)
+}
+
+fn payload_variant() -> res.Result(i64, Code) {
+    let R = res.Result(i64, Code);
+    R.Err(Code.Invalid(0 - 7, sb.owned("bad")))
+}
+
+fn detail_error() -> res.Result(i64, Detail) {
+    let R = res.Result(i64, Detail);
+    R.Err(Detail { code: 9, retryable: true })
+}
+
+fn oversized() -> res.Result(i64, sb.StrBuf) {
+    let R = res.Result(i64, sb.StrBuf);
+    R.Err(sb.repeated(120, 5000))
+}
+
+fn ok_value() -> res.Result(i64, Detail) {
+    let R = res.Result(i64, Detail);
+    R.Ok(5)
+}
+
+test "option none" {
+    let v = absent()?;
+    println("not reached");
+}
+
+test "enum unit variant" {
+    let v = unit_variant()?;
+    println("not reached");
+}
+
+test "enum payload variant" {
+    let v = payload_variant()?;
+    println("not reached");
+}
+
+test "struct error" {
+    let v = detail_error()?;
+    println("not reached");
+}
+
+test "oversized payload" {
+    let v = oversized()?;
+    println("not reached");
+}
+
+test "succeeds" {
+    let v = ok_value()?;
+    @assert(v == 5);
+    println("five");
+}
+
+test "skips destructors" {
+    let guard = Guard { tag: 1 };
+    let v = detail_error()?;
+    println("not reached");
+}
+"#;
+
+/// The selector for `name` in the fixture's inventory order.
+fn selector_for(inventory: &crate::unstable::TestInventory, name: &str) -> String {
+    let ordinal = inventory
+        .entries
+        .iter()
+        .position(|entry| entry.id.ends_with(name))
+        .unwrap_or_else(|| panic!("the fixture declares a test named `{name}`"));
+    format!("{ordinal:016x}")
+}
+
+/// The `payload` field of the one `failure` frame on the channel.
+fn failure_payload(channel: &str) -> String {
+    let frame = channel
+        .lines()
+        .find(|line| line.contains("\"record\":\"failure\""))
+        .unwrap_or_else(|| panic!("the channel carries one failure frame: {channel:?}"));
+    let marker = "\"payload\":\"";
+    let start = frame
+        .find(marker)
+        .expect("a failure frame carries a payload")
+        + marker.len();
+    let rest = &frame[start..];
+    let end = rest.find("\"}").expect("the payload field is terminated");
+    rest[..end].to_owned()
+}
+
+/// The `line` and `column` of the one `failure` frame on the channel.
+fn failure_location(channel: &str) -> (String, u32, u32) {
+    let frame = channel
+        .lines()
+        .find(|line| line.contains("\"record\":\"failure\""))
+        .unwrap_or_else(|| panic!("the channel carries one failure frame: {channel:?}"));
+    let field = |name: &str| {
+        let marker = format!("\"{name}\":");
+        let start = frame.find(&marker).expect("the location field is present") + marker.len();
+        frame[start..]
+            .split(|byte: char| byte == ',' || byte == '}')
+            .next()
+            .expect("a field has a value")
+            .trim_matches('"')
+            .to_owned()
+    };
+    (
+        field("file"),
+        field("line").parse().expect("line is a number"),
+        field("column").parse().expect("column is a number"),
+    )
+}
+
+/// A failing `?` traps at its site: exit 101, the pinned stderr message, and one
+/// `unhandled_error` frame naming the site (spec 6.7:14).
+#[test]
+#[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+fn platform_native_a_failing_test_body_question_reports_and_traps() {
+    let (image, inventory) = try_fixture();
+    let run = run_test_image(&image, "try-none", &selector_for(&inventory, "option none"));
+    assert_eq!(run.status, Some(101), "{}", run.stderr);
+    assert_eq!(run.stderr, "panic: unhandled error\n");
+    assert_eq!(run.stdout, "", "the code after a failing `?` does not run");
+    assert!(
+        run.channel.contains("\"kind\":\"unhandled_error\""),
+        "{:?}",
+        run.channel
+    );
+    assert!(
+        run.channel.contains("\"message\":\"unhandled error\""),
+        "{:?}",
+        run.channel
+    );
+    let (file, line, column) = failure_location(&run.channel);
+    assert!(file.ends_with("main.rue"), "unexpected file: {file:?}");
+    assert_eq!(
+        (line, column),
+        (fixture_line("absent()?"), 13),
+        "the frame names the `?` site, not the test or the callee: {:?}",
+        run.channel
+    );
+}
+
+/// The rendered payload, one shape per rule of spec 6.7:15.
+#[test]
+#[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+fn platform_native_the_reported_payload_is_the_rendered_error() {
+    let (image, inventory) = try_fixture();
+    for (name, expected) in [
+        ("option none", "None"),
+        ("enum unit variant", "Missing"),
+        ("enum payload variant", "Invalid(-7, bad)"),
+        ("struct error", "{ code: 9, retryable: true }"),
+    ] {
+        let run = run_test_image(&image, name, &selector_for(&inventory, name));
+        assert_eq!(
+            run.status,
+            Some(101),
+            "{name}: stderr={:?} stdout={:?} channel={:?}",
+            run.stderr,
+            run.stdout,
+            run.channel
+        );
+        assert!(
+            run.channel.contains("\"record\":\"failure\""),
+            "{name}: no failure frame. stderr={:?} stdout={:?} channel={:?}",
+            run.stderr,
+            run.stdout,
+            run.channel
+        );
+        assert_eq!(
+            failure_payload(&run.channel),
+            expected,
+            "{name}: {:?}",
+            run.channel
+        );
+    }
+}
+
+/// The rendering is bounded, and a rendering that hit the bound says so
+/// (spec 6.7:15).
+#[test]
+#[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+fn platform_native_an_oversized_payload_is_truncated_with_its_marker() {
+    let (image, inventory) = try_fixture();
+    let run = run_test_image(
+        &image,
+        "try-truncate",
+        &selector_for(&inventory, "oversized payload"),
+    );
+    assert_eq!(run.status, Some(101), "{}", run.stderr);
+    let payload = failure_payload(&run.channel);
+    let expected = format!("{}{}", "x".repeat(4096), " \u{2026}[truncated]");
+    assert_eq!(
+        payload.len(),
+        expected.len(),
+        "the rendering is cut at the budget, then the marker is appended"
+    );
+    assert_eq!(payload, expected);
+}
+
+/// A succeeding `?` is ordinary: the body runs on and completes (spec 6.7:14).
+#[test]
+#[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+fn platform_native_a_succeeding_test_body_question_completes_normally() {
+    let (image, inventory) = try_fixture();
+    let run = run_test_image(&image, "try-ok", &selector_for(&inventory, "succeeds"));
+    assert_eq!(run.status, Some(0), "{}", run.stderr);
+    assert_eq!(run.stdout, "five\n");
+    assert_eq!(run.channel, COMPLETE_FRAME);
+}
+
+/// The accepted consequence, observed rather than asserted away: the failing
+/// path traps, so a live local's destructor does not run (spec 6.7:16).
+#[test]
+#[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+fn platform_native_a_failing_question_skips_a_live_local_destructor() {
+    let (image, inventory) = try_fixture();
+    let run = run_test_image(
+        &image,
+        "try-drop",
+        &selector_for(&inventory, "skips destructors"),
+    );
+    assert_eq!(run.status, Some(101), "{}", run.stderr);
+    assert_eq!(
+        run.stdout, "",
+        "a `drop fn` whose observable work is a write must not be observed on \
+         the failing path"
+    );
+}

@@ -6022,33 +6022,29 @@ fn duplicate_test_names_are_rejected_and_never_collide_with_functions() {
     );
 }
 
-/// Through ADR-0083 Phase 1, `?` in a test body stays the compile error it is
-/// in any other `()`-returning body. The rule is only observable under a test
-/// request, since an executable request never analyzes the body at all.
+/// `?` in a test body is legal and lowers (ADR-0083 §1, spec 6.7:9). It was the
+/// ordinary `()`-body error through Phase 1; this pins the transition, while the
+/// rule's lowered shape and dynamic semantics are covered by
+/// `test_body_try_tests` and `test_image_tests`. It is observable only under a
+/// test request, since an executable request never analyzes the body at all.
 #[test]
-fn question_operator_in_a_test_body_is_still_the_ordinary_error() {
+fn question_operator_in_a_test_body_is_legal_and_lowers() {
     let source = well_known_option_isolation_snapshot(
         "const opt = @import(\"std/option.rue\");\n\
          fn maybe(flag: bool) -> opt.Option(i32) {\n\
-             if flag { opt.Option(i32).Some(1) } else { opt.Option(i32).None }\n\
+             let o = opt.Option(i32);\n\
+             if flag { o.Some(1) } else { o.None }\n\
          }\n\
-         test \"question mark is not yet allowed here\" {\n\
+         test \"question mark unwraps and reports\" {\n\
              let value = maybe(true)?;\n\
          }\n\
          fn main() -> i32 { 0 }",
     );
     let mut session = CompilerSession::new();
     publish_with_test_imports(&mut session, &source);
-    let errors = session
+    session
         .rooted_cfg(&test_declaration_options(crate::RootSelection::Tests))
-        .expect_err("`?` in a `()`-returning test body is rejected");
-    assert!(
-        errors.iter().any(|error| matches!(
-            error.kind,
-            ErrorKind::QuestionOutsideOptionFn { .. } | ErrorKind::QuestionOutsideResultFn { .. }
-        )),
-        "unexpected diagnostics: {errors:?}"
-    );
+        .expect("`?` in a test body analyzes and lowers");
 }
 
 /// The differential CFG-transformation fault targets `main`, which a

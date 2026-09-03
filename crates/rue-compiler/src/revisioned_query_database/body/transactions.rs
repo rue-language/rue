@@ -648,6 +648,7 @@ impl BodyTransactionEvaluator {
                             file_id: input.source.file_id,
                             physical_path: input.source.physical_path.clone(),
                             source_length: input.source.source_length,
+                            source_text: input.source.source_text.clone(),
                         },
                     )),
                 );
@@ -950,6 +951,7 @@ impl BodyTransactionEvaluator {
                             file_id: input.source.file_id,
                             physical_path: input.source.physical_path.clone(),
                             source_length: input.source.source_length,
+                            source_text: input.source.source_text.clone(),
                         },
                     )),
                 );
@@ -1362,6 +1364,7 @@ impl BodyTransactionEvaluator {
                     file_id: input.source.file_id,
                     physical_path: input.source.physical_path.clone(),
                     source_length: input.source.source_length,
+                    source_text: input.source.source_text.clone(),
                 };
                 let source = CompilerBodyDurableSource::with_anonymous(
                     &provider,

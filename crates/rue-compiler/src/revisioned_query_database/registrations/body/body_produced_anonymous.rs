@@ -19,6 +19,7 @@ $runtime
                         crate::FunctionInstanceKey::Specialization { .. } => false,
                         crate::FunctionInstanceKey::AnonymousMember { .. }
                         | crate::FunctionInstanceKey::DropGlue(_)
+                        | crate::FunctionInstanceKey::ErrorPrinter(_)
                         | crate::FunctionInstanceKey::TestDispatcher => true,
                     };
                     if transaction_only {
