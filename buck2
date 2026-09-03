@@ -5,23 +5,6 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 args=("$@")
 
-# A previously installed private config follows newly created worktrees on
-# their first direct Buck invocation as well as through scripts/rue.
-if [[ -x "$repo_root/scripts/provision-build-cache" ]]; then
-    (cd "$repo_root" && scripts/provision-build-cache auto)
-fi
-
-# The remote-cache execution platform must set remote_enabled for OSS Buck2 to
-# connect to the action cache. Its limited-hybrid default otherwise prefers
-# remote execution, which Rue cannot rely on until RUE-320 fixes remote linking.
-# Force cache lookup followed by local execution unless the caller explicitly
-# selected an execution mode.
-uses_remote_cache=0
-if [[ -r "$repo_root/.buckconfig.local" ]] &&
-   grep -Eq '^[[:space:]]*execution_platforms[[:space:]]*=[[:space:]]*root//platforms:remote_cache([[:space:]]|$)' "$repo_root/.buckconfig.local"; then
-    uses_remote_cache=1
-fi
-
 execution_command=0
 explicit_preference=0
 if [[ "${#args[@]}" -gt 0 ]]; then
@@ -33,17 +16,70 @@ if [[ "${#args[@]}" -gt 0 ]]; then
     done
 fi
 
-# Starting another disk-heavy command while the host is near ENOSPC is unsafe.
-# The guard is normally just one portable `df` read. When free space is both at
-# or below 10% of the device and below the cleanup floor, it asks Buck to
-# reclaim eligible outputs from every registered Rue worktree, preserving
-# materializer state and active artifacts; it refuses the build only below the
-# hard floor, and warns-but-proceeds in between (RUE-1331 — active sibling
-# worktrees legitimately pin the host between the floors). `clean` itself is
-# not an execution command, so the host-wide guard cannot recurse through this
-# wrapper.
-if [[ "$execution_command" -eq 1 ]] && [[ -x "$repo_root/scripts/rue-storage" ]]; then
-    (cd "$repo_root" && scripts/rue-storage guard)
+# Starting another disk-heavy command near ENOSPC is unsafe, but nothing this
+# wrapper could delete on a build's behalf is safe either: the cross-worktree
+# cleanup that used to run here caused RUE-1331 and RUE-1683 and did not
+# prevent RUE-1790. The guard is therefore one portable `df` read and a
+# refusal below an absolute floor. An incremental build fits in 4 GiB; a cold
+# full build may not, and fails loudly with ENOSPC rather than corrupting
+# anything. Reclaiming space is a per-worktree decision made by a person.
+# `clean` is not an execution command, so it stays available below the floor.
+floor_gib=4
+if [[ "$execution_command" -eq 1 ]]; then
+    free_kib="$(df -Pk "$repo_root" 2>/dev/null | awk 'NR == 2 { print $4 }' || true)"
+    if [[ ! "$free_kib" =~ ^[0-9]+$ ]]; then
+        echo "error: cannot measure free space under $repo_root; refusing to start a build that could hit ENOSPC" >&2
+        exit 1
+    fi
+    if [[ "$free_kib" -lt $((floor_gib * 1048576)) ]]; then
+        free_gib="$(awk -v kib="$free_kib" 'BEGIN { printf "%.1f", kib / 1048576 }')"
+        cat >&2 <<NOTICE
+error: ${free_gib} GiB free under $repo_root is below the ${floor_gib} GiB floor; build stopped before risking ENOSPC.
+To reclaim space: remove worktrees whose work is finished
+('git worktree remove <path>'), reset one registered worktree's Buck outputs
+('scripts/rue storage reset <root>'), or remove stale tracked outputs from
+every registered worktree ('scripts/rue storage clean').
+NOTICE
+        exit 1
+    fi
+fi
+
+# The optional BuildBuddy action cache. `scripts/rue cache install` writes one
+# private config per user; the first execution command in a checkout links
+# .buckconfig.local (gitignored) to it, and that is the whole provisioning
+# step. The link, not a per-command --config-file, is the delivery mechanism
+# because [buck2] digest_algorithms and [buck2_re_client] are daemon-startup
+# settings: a --config-file leaves `buck2 status` at digest_algorithms null
+# (SHA1, which BuildBuddy's CAS rejects) and the daemon with no RE engine
+# address, while a changed .buckconfig.local restarts the daemon with both
+# applied. RUE_NO_REMOTE_CACHE=1 skips the link for one command
+# (scripts/check-reproducible-compiler.sh). Any existing .buckconfig.local,
+# symlink or file, belongs to the user and is left alone, and a config another
+# account can read is refused with a warning rather than linked; neither ever
+# blocks a local build.
+central_config="${RUE_BUILDBUDDY_CONFIG:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/rue/buildbuddy.buckconfig}"
+local_config="$repo_root/.buckconfig.local"
+if [[ "$execution_command" -eq 1 ]] && [[ "${RUE_NO_REMOTE_CACHE:-}" != 1 ]] &&
+   [[ -f "$central_config" ]] && [[ ! -e "$local_config" ]] && [[ ! -L "$local_config" ]]; then
+    # GNU stat first, then the BSD spelling.
+    mode="$(stat -c '%a' "$central_config" 2>/dev/null || stat -f '%Lp' "$central_config" 2>/dev/null || true)"
+    if [[ ! "$mode" =~ ^[0-7]+$ ]] || (( (8#$mode & 077) != 0 )); then
+        echo "warning: $central_config is readable by other accounts; chmod 600 it or re-run 'scripts/rue cache install'. Continuing without the remote cache." >&2
+    elif ! ln -s "$central_config" "$local_config" 2>/dev/null; then
+        echo "warning: could not link $local_config to the installed BuildBuddy config; continuing without the remote cache" >&2
+    fi
+fi
+
+# The remote-cache execution platform must set remote_enabled for OSS Buck2 to
+# connect to the action cache. Its limited-hybrid default otherwise prefers
+# remote execution, which Rue cannot rely on until RUE-320 fixes remote linking.
+# Force cache lookup followed by local execution unless the caller explicitly
+# selected an execution mode. This runs after the link step so the first build
+# in a new worktree gets the preference too.
+uses_remote_cache=0
+if [[ -r "$local_config" ]] &&
+   grep -Eq '^[[:space:]]*execution_platforms[[:space:]]*=[[:space:]]*root//platforms:remote_cache([[:space:]]|$)' "$local_config"; then
+    uses_remote_cache=1
 fi
 
 if [[ "$uses_remote_cache" -eq 1 ]] && [[ "$execution_command" -eq 1 ]] && [[ "$explicit_preference" -eq 0 ]]; then

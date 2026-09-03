@@ -71,12 +71,6 @@ if [[ $# -gt 0 && -n "$requested_test_tier" ]]; then
     exit 2
 fi
 
-# Direct full-suite invocations also bootstrap an already-installed private
-# cache config. This is a no-op when the user has not opted in.
-if [[ -x scripts/provision-build-cache ]]; then
-    scripts/provision-build-cache auto
-fi
-
 # Always print the result sentinel, even on an early `set -e` exit, so a piped
 # or captured run is self-describing (RUE-579).
 #

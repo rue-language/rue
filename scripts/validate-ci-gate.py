@@ -528,10 +528,6 @@ def clippy_workflow_errors(workflow: str) -> list[str]:
             "scripts/provision-build-cache install",
             "clippy must preserve remote-cache provisioning",
         ),
-        (
-            "scripts/provision-build-cache apply",
-            "clippy must preserve remote-cache provisioning",
-        ),
     ):
         if required not in executable:
             errors.append(message)

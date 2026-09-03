@@ -43,7 +43,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       # //:cli-tests owns the premerge shards' complete union; //:cli-tests-slow
       # owns declarative slow sections. Exclude the CI-only shards so the
@@ -114,7 +113,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Run scheduled slow program
         if: steps.select.outputs.run == 'true' && (github.event_name == 'schedule' || inputs.tier == 'slow')

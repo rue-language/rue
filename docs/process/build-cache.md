@@ -26,101 +26,75 @@ Tracking: RUE-316 (groundwork), RUE-320 (platform-scoped linker).
 
 ```bash
 scripts/rue cache install       # prompts without echo for the BuildBuddy key
-scripts/rue cache apply --all   # primary checkout + current Git/Codex worktrees
 ```
 
-`install` writes one user-owned configuration at
-`${XDG_CONFIG_HOME:-~/.config}/rue/buildbuddy.buckconfig`, with mode `0600`.
-`apply` places only an ignored `.buckconfig.local` symlink in each checkout, so
-the credential is neither copied between worktrees nor stored in Git. It refuses
-to replace an existing local config and refuses a central config readable by
-another account. Commands never print the key. A secure config installed before
-the Rust upload gate existed is upgraded atomically in place, preserving its
-credential; an explicit `default_allow_cache_upload = false` remains an error
-instead of being silently overridden.
+`install` atomically writes one user-owned configuration at
+`${XDG_CONFIG_HOME:-~/.config}/rue/buildbuddy.buckconfig` with mode `0600`;
+re-run it to replace the file, and it never prints the key. That is the only
+step: the repository `./buck2` wrapper links `.buckconfig.local` (gitignored)
+to that file in any worktree on the first `build`, `test`, `run`, or `install`
+there, so the credential is never copied between worktrees or stored in Git.
+The link, rather than a per-command `--config-file`, is the delivery mechanism
+because `[buck2] digest_algorithms` and `[buck2_re_client]` are daemon-startup
+settings: a `--config-file` leaves the daemon on SHA1 digests (which
+BuildBuddy's CAS rejects) with no RE engine address, while a changed
+`.buckconfig.local` restarts the daemon with both applied.
 
-Once installed, direct `./buck2`, `scripts/rue ...`, and `test.sh` runs
-automatically link a new worktree on first use. If the central config is absent,
-Rue simply uses its ordinary local Buck configuration. If it is malformed or
-insecure, Rue warns and continues without provisioning it. Existing local paths,
-including broken or unrelated symlinks, are left untouched. This keeps cache
-setup opt-in and prevents a credential problem from making local builds unusable.
+If the file is absent, Rue uses its ordinary local Buck configuration. An
+existing `.buckconfig.local`, symlink or file, is never replaced, and a config
+readable by another account is refused with a warning rather than linked;
+neither ever blocks a local build. `RUE_NO_REMOTE_CACHE=1` skips the link for
+one command, which is how the deliberately cache-free
+`scripts/check-reproducible-compiler.sh` declines it (moving an existing
+wrapper link aside for the duration), and `RUE_BUILDBUDDY_CONFIG` names a
+different path for both `install` and the wrapper. A hand-written
+`.buckconfig.local` (see `.buckconfig.local.example`) is left alone and still
+makes the wrapper default to `--prefer-local`.
 
 ## Host-wide disk lifecycle
 
 Every worktree has its own `buck-out`; a large primary checkout and many smaller
 worktrees therefore share one host budget even though Buck daemons cannot share
 their local materializer state. Rue configures Buck's deferred materializer to
-persist that state, defer write actions, and continuously remove outputs that
-have not been used for one week. Cleanup starts twelve hours after daemon startup
-and repeats daily. Buck coordinates those deletions with active builds; Rue does
-not infer that a worktree is disposable from its age or directory name.
+persist that state, defer write actions, and remove outputs that have not been
+used for one week; cleanup starts twelve hours after daemon startup and repeats
+daily, and Buck coordinates the deletions with active builds. That policy is
+what keeps a long-lived checkout bounded. It cannot help a worker worktree: a
+short-lived daemon never reaches the twelve-hour offset, and output from work
+still in flight is in use and must stay.
 
-The background cleaner also watches the host filesystem. At 20% free space or
-lower it adaptively promotes the oldest non-active outputs until Buck projects
-that 20% will be free again. Outputs accessed in the last twelve hours remain
-protected even under pressure. This threshold is host-wide—the worktrees have
-separate materializer databases, but they consume the same filesystem budget.
-
-Use the host-wide storage command from any current Rue checkout:
+Per-worktree output is therefore reclaimed by a person, per worktree: remove a
+worktree whose work is finished (`git worktree remove <path>`), or reset one
+that stays. From any current Rue checkout:
 
 ```bash
 scripts/rue storage status            # sizes, source state, and cache state
 scripts/rue storage plan [AGE]        # Buck dry-run in every registered worktree
-scripts/rue storage clean [AGE]       # stale + adaptive cleanup; default 1w
-scripts/rue storage guard             # run the build preflight explicitly
-scripts/rue storage guard --finished-root /exact/root # name caller-confirmed finished output
+scripts/rue storage clean [AGE]       # Buck's tracked stale cleanup; default 1w
 scripts/rue storage reset /exact/root # full Buck reset of an explicit target
-scripts/rue storage reclaim-finished /exact/root # reclaim a caller-confirmed finished root
 ```
 
-Every `./buck2 build`, `test`, `run`, or `install` invocation runs the same
-portable free-space preflight. Above 10% free it is only a `df` read. At 10% or
-lower it synchronously requests adaptive cleanup from every registered Rue
-worktree before allowing more disk-heavy work. If inventory or cleanup fails,
-the command stops with recovery guidance instead of proceeding toward ENOSPC.
-If tracked cleanup cannot escape the emergency threshold, the guard may fully
-reset the largest legacy `buck-out` trees whose checked-out revisions predate
-deferred materializer state. It uses the coordinator checkout's pinned Buck and
-refuses to reset a root with an active command. Dirty source state is unrelated
-and remains untouched. Between 10% and 20%, Buck's ordinary background policy
-restores headroom without putting every build behind a host-wide scan.
+The inventory comes from `git worktree list` and fails closed: if the
+registered set cannot be read, no cleanup runs. `plan` and `clean` are Buck's
+own `clean --stale AGE --tracked-only` in every registered worktree and nothing
+more. `reset` validates every named path as a registered Rue worktree before it
+resets any of them. Neither command removes source files or worktrees, and
+`scripts/rue gc` remains a compatibility alias for the one-week `clean`.
 
-The inventory comes from `git worktree list` and fails closed: if the registered
-set cannot be read, no cleanup runs. `clean` removes stale or untracked Buck
-outputs and may promote older tracked, non-active outputs when the host is below
-the 20% target. `reset` is the migration escape hatch for an older worktree whose
-artifacts predate persisted materializer state; it validates every named path as
-a registered Rue worktree before it resets any of them. Neither command removes
-source files or worktrees. `reclaim-finished` is the explicit lifecycle handoff
-for a root whose caller knows its work is finished: it accepts only exact
-registered Rue worktree roots, verifies their live Git identity belongs to the
-coordinator's worktree family, refuses the current checkout and ambiguous
-inventory entries, and uses Buck's `clean --exit-when notidle` liveness check
-for every existing isolation. Dirty source is valid and does not influence the
-finishedness decision. A root with no existing Buck isolation entries succeeds
-without invoking destructive cleanup. When pressure remains after ordinary TTL cleanup, `guard` may name
-caller-supplied `--finished-root` values that still have output and pass a
-non-destructive Buck probe, but never reclaims them automatically; run the
-printed command explicitly. If a later named root refuses its destructive
-liveness check, earlier roots may already have been reclaimed; the command
-stops immediately and never continues to later roots.
-Current, active, and zero-output roots are not reported as eligible. Reclaim
-stops on a changed output root or isolation set; residual Buck-owned metadata
-in a cleaned isolation is reported honestly rather than treated as a failed
-cleanup. A new isolation can leave an earlier isolation reclaimed while the
-command stops for review, just as a later named root can stop a multi-root
-command after earlier roots succeeded. Per-isolation liveness rechecks can
-similarly reclaim earlier isolations in the same root before a later isolation
-refuses and stops the command.
-`scripts/rue gc` remains a compatibility alias for the host-wide one-week
-stale cleanup.
+Every `./buck2 build`, `test`, `run`, or `install` invocation reads free space
+once (`df -Pk`) and refuses to start below 4 GiB, naming the remedies above; an
+incremental build fits in that headroom, and a cold full build that does not
+fails loudly with ENOSPC rather than corrupting anything. Above the floor the
+wrapper does nothing, and no build ever cleans another worktree's output on its
+own behalf: the earlier guard's cross-worktree cleanup caused RUE-1331 and
+RUE-1683 and did not prevent RUE-1790 (123 MB free), because an age-based
+policy cannot reclaim output the same cycle is still producing.
 
 The default setup is for the shared **action cache**. Normal commands stay on
 `--prefer-local`; add `--prefer-remote` explicitly when remote execution is the
-intended experiment. The checked-in `.buckconfig.local.example` remains a
-reference for the generated configuration, not the recommended per-worktree
-setup.
+intended experiment. The checked-in `.buckconfig.local.example` documents the
+same knobs for a hand-written per-checkout config; the installed user config
+is the recommended setup.
 
 ## Full-suite host coordination
 
@@ -204,7 +178,7 @@ path.
 
 CI reads the key from the `BUILDBUDDY_API_KEY` repo secret (never from a file).
 The cache is provisioned (RUE-1006/RUE-1019) via
-`scripts/provision-build-cache install && apply`, gated on secret presence, in
+`scripts/provision-build-cache install`, gated on secret presence, in
 every `CI` job whose cost is a build — ten of them as of RUE-1504: `clippy`,
 `linux-premerge`, `native-platforms`, `platform-corpus`, `affected-targets`,
 `rue-program-digests`, `remote-execution`, `performance-staleness`, `release`,
@@ -222,9 +196,11 @@ Availability rules, which the workflow steps must respect:
   already-approved, queued code, which is also why letting them write to the
   shared cache (`allow_cache_uploads`) is acceptable.
 - **The dedicated compiler-reproducibility job is intentionally cache-free.**
-  It runs `scripts/check-reproducible-compiler.sh` (RUE-617), which hard-errors
-  on a `.buckconfig.local`: the reference and relocated candidate builds must be
-  identically configured for the byte comparison to indict path/scheduling/
+  It runs `scripts/check-reproducible-compiler.sh` (RUE-617), which moves a
+  wrapper-created `.buckconfig.local` link aside for the duration, refuses a
+  hand-written one, and exports `RUE_NO_REMOTE_CACHE=1` so the wrapper does not
+  relink: the reference and relocated candidate builds must be identically
+  configured for the byte comparison to indict path/scheduling/
   environment leaks rather than configuration drift. Keeping that proof in an
   independent job lets the ordinary linux-x64 build and tests use the shared
   cache without changing the reproducibility contract.
@@ -238,8 +214,9 @@ and builds `//crates/rue:rue` with `--local-only` and
 `.buckconfig.local`; every Buck wrapper invocation also points
 `RUE_BUILDBUDDY_CONFIG` at a verified-nonexistent root-local path and removes
 `BUILDBUDDY_API_KEY` from its environment. The sentinel is checked before and
-after every build, query, ownership audit, and daemon shutdown. Thus wrapper
-auto-provisioning cannot copy, read, or activate the central cache credential.
+after every build, query, ownership audit, and daemon shutdown. Thus the
+wrapper finds no installed config to link, and would not replace the sentinel
+anyway, so it cannot activate the central cache credential.
 The resulting configured graph is rejected if it selects the remote-cache
 platform. A configured `deps(//crates/rue:rue)` query scopes the
 inventory: Rust library `.rlib`/`.rmeta` outputs, `rust_library` targets whose

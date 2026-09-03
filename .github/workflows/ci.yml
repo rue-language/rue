@@ -189,7 +189,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       # Materialize the planner output once. `narrowed=true` is valid only with
       # a non-empty live impacted closure and verified selection/gate state; an
@@ -260,7 +259,6 @@ jobs:
             exit 1
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Build compiler remotely
         env:
@@ -309,10 +307,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         # A depth-1 checkout is enough for this lane: nothing it runs reads git
-        # history. Two of its steps do shell out to git — `provision-build-cache`
-        # lists worktrees, and `affected-targets build-scope` prunes them in its
-        # exit trap — but both ask only about the checkout in front of them, and
-        # the pin gate below is decided from file contents. The gate that does
+        # history. One of its steps does shell out to git — `affected-targets
+        # build-scope` prunes worktrees in its exit trap — but it asks only
+        # about the checkout in front of it, and the pin gate below is decided
+        # from file contents. The gate that does
         # count commits is the `performance-staleness` job, which takes its own
         # `fetch-depth: 0` checkout for the purpose (RUE-1258, RUE-1504).
 
@@ -332,7 +330,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       # RUE-1130: materialize the determinator's impacted-target closure so the
       # heavy steps below can run exactly it. `narrowed` is the determinator's
@@ -644,7 +641,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Check the performance series is still advancing
         # Is the series *already* stalled? A repository-wide condition, so this
@@ -843,7 +839,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Build native compiler and linker
         if: steps.sel.outputs.run == 'true'
@@ -999,7 +994,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Check rue_program digest sensitivity
         if: steps.sel.outputs.run == 'true'
@@ -1081,7 +1075,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Decide affected corpus targets
         # Fail-open: the script always exits 0 with a decision (full on any
@@ -1156,7 +1149,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Run ${{ matrix.name }} corpus
         if: steps.sel.outputs.run == 'true'
@@ -1223,7 +1215,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       # Direct RUE-277 guard: inspect Buck's analyzed rustc_cfg actions instead
       # of inferring optimization from complete binary bytes. This performs no
@@ -1276,7 +1267,6 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Install valgrind
         if: steps.sel.outputs.run == 'true'

@@ -1658,12 +1658,15 @@ rue_test_suite(
     tests = ["//crates/rue-rir:rue-rir[doc]"],
 )
 
-# Maintenance scripts with deletion behavior. Their fail-closed contract is
-# pinned by scripts/test-cleanup-scripts.sh (RUE-567, RUE-1225), which runs
+# Maintenance scripts with deletion behavior, plus the ./buck2 wrapper's
+# free-space floor. Their fail-closed contracts are pinned by
+# scripts/test-cleanup-scripts.sh (RUE-567, RUE-1225, RUE-1934), which runs
 # copies against fake tools — no real repo, remote, or Buck output is touched.
 filegroup(
     name = "cleanup-script-inputs",
     srcs = [
+        "buck2",
+        "buck2-bin",
         "scripts/jj-tidy",
         "scripts/rue-storage",
     ],
@@ -1777,7 +1780,6 @@ filegroup(
         "buck2-bin",
         "scripts/ci-heavy-suite",
         "scripts/provision-build-cache",
-        "scripts/rue-storage",
         "test.sh",
     ],
 )
