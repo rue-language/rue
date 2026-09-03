@@ -119,6 +119,20 @@ compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
 [[case]]
+name = "enum_pattern_code_uses_the_same_compiler_owned_query"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0421"]
+compile_only = true
+compile_stdout_contains = [
+  "E0421: Unknown enum type",
+  "Unknown enum type in a pattern:",
+  "Use the resolved enum type:",
+  "docs/spec/src/06-items/03-enums.md (spec rule 6.3:4)",
+]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
 name = "malformed_code_is_rejected"
 files = [{ path = "main.rue", source = "fn main() {}\n" }]
 args = ["explain", "E201"]
