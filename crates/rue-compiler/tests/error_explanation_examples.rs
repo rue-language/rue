@@ -4,7 +4,9 @@ use rue_error::{ErrorCodeExampleOutcome, error_code_explanation, error_code_meta
 #[test]
 fn compiler_owned_explanation_examples_have_the_declared_outcome() {
     for metadata in error_code_metadata().iter().filter(|metadata| {
-        (1..=11).contains(&metadata.code.0) || (200..=211).contains(&metadata.code.0)
+        (1..=11).contains(&metadata.code.0)
+            || (100..=103).contains(&metadata.code.0)
+            || (200..=211).contains(&metadata.code.0)
     }) {
         let explanation = error_code_explanation(metadata.code)
             .unwrap_or_else(|| panic!("{} must have an explanation", metadata.code));
@@ -30,6 +32,14 @@ fn compiler_owned_explanation_examples_have_the_declared_outcome() {
                             codes[..100]
                                 .iter()
                                 .all(|code| *code == rue_error::ErrorCode::UNEXPECTED_CHARACTER)
+                        );
+                        assert_eq!(codes[100], metadata.code);
+                    } else if metadata.code == rue_error::ErrorCode::PARSER_DIAGNOSTICS_OMITTED {
+                        assert_eq!(codes.len(), 101);
+                        assert!(
+                            codes[..100]
+                                .iter()
+                                .all(|code| *code == rue_error::ErrorCode::UNEXPECTED_TOKEN)
                         );
                         assert_eq!(codes[100], metadata.code);
                     } else {

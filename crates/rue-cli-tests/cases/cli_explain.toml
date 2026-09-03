@@ -50,6 +50,33 @@ compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
 [[case]]
+name = "parser_unexpected_eof_uses_the_active_unexpected_token_code"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0100"]
+compile_only = true
+compile_stdout_contains = [
+  "E0100: Unexpected token",
+  "End-of-file is treated as a token",
+  "Unexpected end of file:",
+  "docs/spec/src/06-items/01-functions.md (spec rule 6.1:2)",
+]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "parser_budget_summary_is_explained_without_compiling"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0103"]
+compile_only = true
+compile_stdout_contains = [
+  "E0103: Parser diagnostics omitted",
+  "first 100 diagnostics selected by the parser's diagnostic policy",
+  "More than 100 parser errors:",
+]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
 name = "malformed_code_is_rejected"
 files = [{ path = "main.rue", source = "fn main() {}\n" }]
 args = ["explain", "E201"]

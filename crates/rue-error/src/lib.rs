@@ -407,14 +407,35 @@ define_error_codes! {
     // ========================================================================
     // Parser errors (E0100-E0199)
     // ========================================================================
-    UNEXPECTED_TOKEN = 100;
+    UNEXPECTED_TOKEN = 100 => {
+        explanation: "Rue encountered a token that cannot appear at this point in the grammar. End-of-file is treated as a token for this diagnostic, so incomplete input such as a missing closing brace also reports E0100; retired E0101 is not used.",
+        likely_cause: "A delimiter or required syntax element is missing, an extra punctuation mark or keyword appears in the construct, or the source ends before the current construct is complete. The diagnostic names what the parser expected and the token it found; fix the earliest parser error first because later errors may be recovery fallout.",
+        examples: [
+            ErrorCodeExample { title: "Unexpected end of file", source: "fn main() {", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Close the function body", source: "fn main() {}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Function syntax", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:2") }],
+    };
     // E0101 was UNEXPECTED_EOF, deleted as never-produced: the parser reports
     // end-of-file as UnexpectedToken { found: "end of file" }. Keep the
     // number retired rather than reusing it.
-    PARSE_ERROR = 102;
+    PARSE_ERROR = 102 => {
+        explanation: "Rue recognized the surrounding grammar but rejected a more specific syntactic or parser-level rule that is clearer as a targeted message than as an expected-token list.",
+        likely_cause: "Common causes include an unknown or misplaced directive, invalid directive arguments, an empty element in a comma-separated list, or trying to continue a block-like statement with a binary operator. Read the diagnostic's specific message before changing nearby punctuation.",
+        examples: [
+            ErrorCodeExample { title: "Unknown directive", source: "@important\nfn main() {}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Remove the unknown directive", source: "fn main() {}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Unknown builtins are rejected", path: "docs/spec/src/02-lexical-structure/05-builtins.md", rule: Some("2.5:4") }],
+    };
     /// The per-file parser recovery diagnostic budget was exceeded. The
     /// detailed diagnostics before this summary remain available.
-    PARSER_DIAGNOSTICS_OMITTED = 103;
+    PARSER_DIAGNOSTICS_OMITTED = 103 => {
+        explanation: "Rue retained the first 100 diagnostics selected by the parser's diagnostic policy for one source file and omitted additional diagnostics from that file. E0103 is the deterministic summary of that per-file diagnostic budget; the retained errors remain available, and parsing continues for other loaded files.",
+        likely_cause: "The file contains many independent syntax errors or repeats one malformed generated construct enough times to exhaust parser recovery's budget. Fix the first retained errors and compile again; later diagnostics often disappear once the parser can recover from the earliest malformed construct.",
+        examples: [ErrorCodeExample { title: "More than 100 parser errors", source: "fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}fn f(,) {}", outcome: ErrorCodeExampleOutcome::EmitsThisCode }],
+        references: [ErrorCodeReference { title: "Eager syntax processing of loaded files", path: "docs/spec/src/10-modules/05-program-composition.md", rule: Some("10.5:4") }],
+    };
 
     // ========================================================================
     // Semantic errors (E0200-E0399)
@@ -3517,6 +3538,40 @@ mod tests {
                 .all(|code| error_code_explanation(code).is_some())
         );
         assert_eq!(error_code_explanation(ErrorCode(5)), None);
+    }
+
+    #[test]
+    fn active_parser_explanation_band_is_complete_and_bounded() {
+        let expected = [
+            ErrorCode::UNEXPECTED_TOKEN,
+            ErrorCode::PARSE_ERROR,
+            ErrorCode::PARSER_DIAGNOSTICS_OMITTED,
+        ];
+        let active = error_code_metadata()
+            .iter()
+            .filter_map(|metadata| {
+                (100..=103)
+                    .contains(&metadata.code.0)
+                    .then_some(metadata.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(active, expected);
+        let explained = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (100..=103)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(explained, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
+        );
+        assert!(RETIRED_ERROR_CODES.contains(&ErrorCode(101)));
+        assert_eq!(error_code_explanation(ErrorCode(101)), None);
     }
 
     /// `ErrorKind::code()` must cover the compiler-declared ErrorCode constants without
