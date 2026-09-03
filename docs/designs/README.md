@@ -244,6 +244,6 @@ The table is generated from ADR frontmatter. Run
 | [0079](0079-request-scoped-immutable-semantic-universe.md) | Request-scoped immutable semantic universe | Proposal | architecture, compiler, performance, query-engine, type-system |
 | [0080](0080-seam-handoff-authority.md) | Seam handoffs: derived knowledge crosses scope boundaries with its authority attached | Proposal | architecture, compiler, performance, query-engine, principle |
 | [0081](0081-incremental-linking-contract.md) | Symbol-granular incremental linking contract | Proposal | architecture, compiler, incremental, linker, performance |
-| [0081](0081-rue-test-mvp.md) | rue test MVP: test declarations, runner, and event protocol | Proposal | tooling, testing, syntax, semantics, incremental, cli, language-shape |
 | [0082](0082-buck2-build-system.md) | Buck2 as the build system | Accepted | build, tooling, process |
+| [0083](0083-rue-test-mvp.md) | rue test MVP: test declarations, runner, and event protocol | Accepted | tooling, testing, syntax, semantics, incremental, cli, language-shape |
 <!-- ADR-INDEX:END -->
