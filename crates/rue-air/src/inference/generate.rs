@@ -182,7 +182,7 @@ pub struct MethodSig {
 
 /// Demand-population seam for the inference context (RUE-1091 slice r5b).
 ///
-/// Constraint generation consults the thirteen declaration-universe families
+/// Constraint generation consults the fourteen declaration-universe families
 /// purely by key. Rather than eagerly project the whole universe into owned
 /// `AHashMap`s before any body is analyzed (the O(universe)-per-body term
 /// RUE-1083 removes), the production path implements this trait over the frozen
@@ -202,6 +202,7 @@ pub(crate) trait LazyInferenceFacts {
     fn struct_type_by_file(&self, key: (FileId, Spur)) -> Option<Type>;
     fn builtin_enum_type(&self, name: Spur) -> Option<Type>;
     fn enum_type_by_file(&self, key: (FileId, Spur)) -> Option<Type>;
+    fn nominal_type_accessible(&self, accessing_file: FileId, ty: Type) -> bool;
     fn const_type(&self, key: (FileId, Spur)) -> Option<Type>;
     fn const_type_alias(&self, key: (FileId, Spur)) -> Option<Type>;
     fn const_value(&self, key: (FileId, Spur)) -> Option<i128>;
@@ -372,7 +373,7 @@ pub struct ConstraintGenerator<'a> {
     /// lazy provider (see `functions`).
     methods: Option<&'a AHashMap<(StructId, Spur), MethodSig>>,
     /// Demand-population provider (RUE-1091 slice r5b). When present, the
-    /// thirteen declaration-universe families are materialized on first consult
+    /// fourteen declaration-universe families are materialized on first consult
     /// through this seam instead of read from eager maps. `None` in unit tests,
     /// which construct the generator from literal maps.
     lazy: Option<&'a dyn LazyInferenceFacts>,
@@ -696,7 +697,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// Create a generator driven by a demand-population provider (RUE-1091
     /// slice r5b).
     ///
-    /// The eager family maps stay `None`; every keyed consult of the thirteen
+    /// The eager family maps stay `None`; every keyed consult of the fourteen
     /// declaration-universe families routes through `lazy`, which materializes
     /// only the signatures and types the body actually names. This is the
     /// production body-analysis path — the eager `new`/`with_type_subst`
@@ -1305,6 +1306,21 @@ impl<'a> ConstraintGenerator<'a> {
             .and_then(|map| map.get(&key).copied())
     }
 
+    fn nominal_type_accessible(&self, accessing_file: FileId, ty: Type) -> bool {
+        if let Some(lazy) = self.lazy {
+            return lazy.nominal_type_accessible(accessing_file, ty);
+        }
+        if let Some(id) = ty.as_struct() {
+            let def = self.type_pool.struct_def(id);
+            return def.is_pub || def.file_id == accessing_file;
+        }
+        if let Some(id) = ty.as_enum() {
+            let def = self.type_pool.enum_def(id);
+            return def.is_pub || def.file_id == accessing_file;
+        }
+        false
+    }
+
     /// Look up a file-level constant's declared type by (declaring file, name).
     fn const_type(&self, key: (FileId, Spur)) -> Option<Type> {
         if let Some(lazy) = self.lazy {
@@ -1744,6 +1760,18 @@ impl<'a> ConstraintGenerator<'a> {
                     // anchors expressions like `N + 1` and `m.go() + 1` to the
                     // declaration's concrete type (RUE-142).
                     self.type_to_infer(const_ty)
+                } else if self.struct_type_for(name, span.file_id).is_some()
+                    || self.enum_type_for(name, span.file_id).is_some()
+                {
+                    // Named nominal types parse as `VarRef` when they appear
+                    // in value position. Sema materializes them as compile-time
+                    // `TypeConst` values, so inference must publish the same
+                    // type instead of treating the name like an unresolved
+                    // runtime variable. In particular, this keeps a type name
+                    // used as an implicit function result from passing through
+                    // the error-type compatibility escape hatch and reaching
+                    // CFG construction without a runtime return value.
+                    InferType::Concrete(Type::COMPTIME_TYPE)
                 } else {
                     // Unknown variable - will be caught during semantic analysis
                     InferType::Concrete(Type::ERROR)
@@ -3353,6 +3381,26 @@ impl<'a> ConstraintGenerator<'a> {
                 match self.known_field_type(&base_info.ty, *field) {
                     Some(field_ty) => self.type_to_infer(field_ty),
                     None => {
+                        // Sema resolves module members in nominal-before-const
+                        // order. Mirror the nominal part here: `m.S` and `m.E`
+                        // are compile-time type values, not unconstrained
+                        // runtime fields. Visibility remains owned by sema;
+                        // this lookup only supplies the value category needed
+                        // by surrounding inference constraints.
+                        let member_nominal_ty = match &base_info.ty {
+                            InferType::Concrete(ty) if ty.is_module() => ty
+                                .as_module()
+                                .and_then(|module_id| self.module_file_id(module_id))
+                                .and_then(|file_id| {
+                                    self.struct_type_by_file((file_id, *field))
+                                        .or_else(|| self.enum_type_by_file((file_id, *field)))
+                                })
+                                .filter(|member_ty| {
+                                    self.nominal_type_accessible(span.file_id, *member_ty)
+                                })
+                                .map(|_| Type::COMPTIME_TYPE),
+                            _ => None,
+                        };
                         // Module receiver: `m.CONST` resolves to a module
                         // member value-constant; yield its declared type so
                         // uses like `m.CONST + 1` are anchored (RUE-160).
@@ -3384,7 +3432,7 @@ impl<'a> ConstraintGenerator<'a> {
                                 .and_then(|file_id| self.module_binding_type((file_id, *field))),
                             _ => None,
                         };
-                        match member_const_ty.or(member_module_ty) {
+                        match member_nominal_ty.or(member_const_ty).or(member_module_ty) {
                             Some(member_ty) => self.type_to_infer(member_ty),
                             None => InferType::Var(self.fresh_var()),
                         }

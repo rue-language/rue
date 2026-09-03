@@ -1869,6 +1869,114 @@ mod tests {
     }
 
     #[test]
+    fn sema_nominal_type_tail_is_an_ordinary_return_diagnostic() {
+        // Saved sema-fuzzer finding for RUE-1418. A block-like `if` is a
+        // complete statement, so the adjacent `S` is the function body's tail
+        // expression. Named types are compile-time values: inference must
+        // reject that tail against `-> i32` before CFG construction rather
+        // than publishing a return with no runtime value.
+        const PREFIX: &str = r#"struct S { v: [i32; 3] }
+
+fn main() -> i32 {
+    let a = S { v: [1, 2, 3] };
+    let b = S { v: [1, 2, 3] };
+    let c = S { v: [1, 2, 4] };
+"#;
+        // Keep this literal byte-for-byte identical to the saved reproducer,
+        // including the blank line after the declaration and final newline.
+        let saved = r#"struct S { v: [i32; 3] }
+
+fn main() -> i32 {
+    let a = S { v: [1, 2, 3] };
+    let b = S { v: [1, 2, 3] };
+    let c = S { v: [1, 2, 4] };
+    if a == b && a != c { 1 } else { 0 }S
+}
+"#;
+        let errors = query_semantics(saved).expect_err("type-valued tail rejects");
+        assert_eq!(errors.len(), 1, "diagnostic order changed: {errors:?}");
+        assert!(
+            matches!(
+                errors.iter().next().map(|error| &error.kind),
+                Some(rue_error::ErrorKind::TypeMismatch { expected, found })
+                    if expected == "i32" && found == "type"
+            ),
+            "unexpected saved-input diagnostic: {errors:?}"
+        );
+        SemaTarget.fuzz(saved.as_bytes());
+
+        // Whitespace does not change the statement boundary. A semicolon after
+        // the type value instead makes the whole body unit-valued; both shapes
+        // remain ordinary, deterministic return-type diagnostics.
+        let spaced = format!("{PREFIX}    if a == b && a != c {{ 1 }} else {{ 0 }} S\n}}");
+        let errors = query_semantics(&spaced).expect_err("spaced type-valued tail rejects");
+        assert_eq!(errors.len(), 1, "diagnostic order changed: {errors:?}");
+        assert!(
+            matches!(
+                errors.iter().next().map(|error| &error.kind),
+                Some(rue_error::ErrorKind::TypeMismatch { expected, found })
+                    if expected == "i32" && found == "type"
+            ),
+            "unexpected spaced-tail diagnostic: {errors:?}"
+        );
+        SemaTarget.fuzz(spaced.as_bytes());
+
+        let terminated = format!("{PREFIX}    if a == b && a != c {{ 1 }} else {{ 0 }} S;\n}}");
+        let errors = query_semantics(&terminated).expect_err("unit-valued body rejects");
+        assert_eq!(errors.len(), 1, "diagnostic order changed: {errors:?}");
+        assert!(
+            matches!(
+                errors.iter().next().map(|error| &error.kind),
+                Some(rue_error::ErrorKind::TypeMismatch { expected, found })
+                    if expected == "i32" && found == "()"
+            ),
+            "unexpected terminated-tail diagnostic: {errors:?}"
+        );
+        SemaTarget.fuzz(terminated.as_bytes());
+
+        // A branch missing its value is rejected at the branch join before
+        // the enclosing return constraint. This pins the established primary
+        // diagnostic order for the nearby recovery shape.
+        let missing_expression = format!("{PREFIX}    if a == b && a != c {{ 1 }} else {{ }}\n}}");
+        let errors =
+            query_semantics(&missing_expression).expect_err("missing branch expression rejects");
+        assert_eq!(errors.len(), 1, "diagnostic order changed: {errors:?}");
+        assert!(
+            matches!(
+                errors.iter().next().map(|error| &error.kind),
+                Some(rue_error::ErrorKind::TypeMismatch { expected, found })
+                    if expected == "integer type" && found == "()"
+            ),
+            "unexpected missing-expression diagnostic: {errors:?}"
+        );
+        SemaTarget.fuzz(missing_expression.as_bytes());
+
+        // Keep aggregate equality, short-circuiting, branch-result inference,
+        // and both implicit and explicit i32 returns live at this boundary.
+        for valid in [
+            format!("{PREFIX}    if a == b && a != c {{ 1 }} else {{ 0 }}\n}}"),
+            format!("{PREFIX}    return if a == b && a != c {{ 1 }} else {{ 0 }};\n}}"),
+        ] {
+            let session = query_semantics(&valid).expect("valid control reaches semantic CFG");
+            assert_cfg_boundary_agreement(session);
+        }
+
+        let wrong_explicit_return = format!("{PREFIX}    return S;\n}}");
+        let errors =
+            query_semantics(&wrong_explicit_return).expect_err("explicit type return rejects");
+        assert_eq!(errors.len(), 1, "diagnostic order changed: {errors:?}");
+        assert!(
+            matches!(
+                errors.iter().next().map(|error| &error.kind),
+                Some(rue_error::ErrorKind::TypeMismatch { expected, found })
+                    if expected == "i32" && found == "type"
+            ),
+            "unexpected explicit-return diagnostic: {errors:?}"
+        );
+        SemaTarget.fuzz(wrong_explicit_return.as_bytes());
+    }
+
+    #[test]
     fn sema_string_len_wrong_return_is_an_ordinary_diagnostic() {
         // Saved sema-fuzzer finding for RUE-1513. The intrinsic-looking text
         // belongs to the string literal; reassignment is valid, and `len()`

@@ -37,6 +37,7 @@ pub(super) trait InferenceFactSource {
     fn inference_struct_type_by_file(&self, key: (FileId, Spur)) -> Option<Type>;
     fn inference_builtin_enum_type(&self, name: Spur) -> Option<Type>;
     fn inference_enum_type_by_file(&self, key: (FileId, Spur)) -> Option<Type>;
+    fn inference_nominal_type_accessible(&self, accessing_file: FileId, ty: Type) -> bool;
     fn inference_const_type(&self, key: (FileId, Spur)) -> Option<Type>;
     fn inference_const_type_alias(&self, key: (FileId, Spur)) -> Option<Type>;
     fn inference_const_value(&self, key: (FileId, Spur)) -> Option<i128>;
@@ -48,7 +49,7 @@ pub(super) trait InferenceFactSource {
 
 /// Demand-population cache for constraint generation (RUE-1091 slice r5b).
 ///
-/// Constraint generation consults the thirteen declaration-universe families
+/// Constraint generation consults the fourteen declaration-universe families
 /// purely by key. Rather than convert every function/method signature and
 /// project every struct/enum/const into owned `HashMap`s before a single body
 /// is analyzed — the O(universe)-per-body term RUE-1083 removes — this context
@@ -195,6 +196,11 @@ impl<H: BodyAnalysisReadHost> LazyInferenceFacts for HostInferenceFacts<'_, H> {
         self.host
             .inference_enum_type_by_file(key)
             .or_else(|| self.ctx.gen_enum_types_by_file.get(&key).copied())
+    }
+
+    fn nominal_type_accessible(&self, accessing_file: FileId, ty: Type) -> bool {
+        self.host
+            .inference_nominal_type_accessible(accessing_file, ty)
     }
 
     fn const_type(&self, key: (FileId, Spur)) -> Option<Type> {
