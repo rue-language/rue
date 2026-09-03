@@ -23,6 +23,56 @@ name = "ICE regressions"
 description = "Minimal programs that used to crash the compiler; each must now compile-or-cleanly-error with no signal (RUE-51)."
 
 [[case]]
+name = "loop_break_tail_in_never_function_rue1911"
+description = "RUE-1911: a reachable never-returning function whose loop can break must be rejected by semantic analysis before its unit return reaches CFG verification."
+files = [{ path = "main.rue", source = """
+fn stop() -> ! { loop { break } }
+fn main() -> i32 { stop() }
+""" }]
+compile_fail = true
+error_contains = ["E0206", "type mismatch: expected !, found ()"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification failed"]
+
+[[case]]
+name = "unconstrained_intrinsic_tail_in_never_function_rue1911"
+description = "RUE-1911: an unresolved context-driven intrinsic tail is not proof that a declared-never function diverges."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn stop() -> ! { @read_line() }
+fn main() -> i32 { stop() }
+""" }]
+compile_fail = true
+error_contains = ["E0702", "intrinsic '@read_line' expects Option(StrBuf), found !"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "CFG verification failed"]
+
+[[case]]
+name = "comparison_value_left_never_right_remains_valid_rue1911"
+description = "RUE-1911 control: symmetric expression equality still accepts a diverging right operand."
+files = [{ path = "main.rue", source = """
+fn stop() -> ! { loop {} }
+fn compare(flag: bool) -> bool {
+    let value: i32 = 1;
+    if flag { value == stop() } else { false }
+}
+fn main() -> i32 { if compare(false) { 1 } else { 0 } }
+""" }]
+exit_code = 0
+
+[[case]]
+name = "comparison_never_left_value_right_remains_valid_rue1911"
+description = "RUE-1911 control: symmetric expression equality still accepts a diverging left operand."
+files = [{ path = "main.rue", source = """
+fn stop() -> ! { loop {} }
+fn compare(flag: bool) -> bool {
+    let value: i32 = 1;
+    if flag { stop() == value } else { false }
+}
+fn main() -> i32 { if compare(false) { 1 } else { 0 } }
+""" }]
+exit_code = 0
+
+[[case]]
 name = "nominal_type_adjacent_to_if_tail_rue1418"
 description = "RUE-1418: a named type adjacent to a block-like if became the function tail and reached CFG as a non-unit return without a runtime value."
 files = [{ path = "main.rue", source = """
