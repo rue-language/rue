@@ -2,7 +2,9 @@
 #
 # Status: Hermetic Rust and Zig toolchains
 # - Rust toolchain: Downloaded prebuilt binaries (Rust 1.92.0)
-# - C++ toolchain: System (clang/gcc)
+# - C toolchain, Linux: the hermetic Zig distribution's `zig cc` / `zig ar`
+#   (compiler, archiver, and the linker behind every Rust link)
+# - C toolchain, macOS: the prelude's path-discovered clang tools
 #
 # The hermetic Rust toolchain downloads the pinned rustc, rust-std, Clippy, and
 # rustfmt components for each platform, ensuring reproducible builds without
@@ -19,7 +21,7 @@ load("@prelude//toolchains:cxx.bzl", "cxx_tools_info_toolchain")
 load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
 load("@prelude//toolchains:python.bzl", "system_python_bootstrap_toolchain")
 load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
-load(":cxx_tools.bzl", "cxx_tools_with_linker")
+load(":cxx_tools.bzl", "exec_cxx_tools", "zig_cxx_tools")
 load(":rue.bzl", "rue_toolchain")
 load(":remote_test_execution.bzl", "noop_remote_test_execution_toolchain")
 
@@ -29,11 +31,38 @@ export_file(
     visibility = ["root//:rustc-first-party-unused-deps-wrapper-tests"],
 )
 
-cxx_tools_with_linker(
+# Linux C tools: `zig cc`, `zig c++`, and `zig ar` from the SHA-pinned Zig
+# distribution (RUE-1937). The prelude's Rust rules take their linker from the
+# C++ toolchain, so this is the driver behind every Linux Rust link; with it,
+# the linker, lld, compiler_rt, libunwind, and the glibc symbol versions are
+# all inputs of the action rather than properties of the host, and a link is
+# byte-identical on a developer machine, from the remote cache, and on the
+# remote-execution worker. The remote worker therefore no longer needs a
+# `cc` override selected on root//constraints:remote-execution.
+#
+# The glibc floor is `2.17`, the oldest glibc Rust's `*-unknown-linux-gnu`
+# targets support, and the same floor `third-party/reindeer_rules.bzl` uses for
+# the mimalloc archive that these links consume. The linker wrapper applies
+# toolchains//zig:runtime-debug-discard.ld so the runtime objects Zig compiles
+# from source during a link do not record the checkout path in debug sections.
+zig_cxx_tools(
+    name = "zig-cxx-tools",
+    target = select({
+        "prelude//cpu:arm64": "aarch64-linux-gnu.2.17",
+        "prelude//cpu:x86_64": "x86_64-linux-gnu.2.17",
+    }),
+    compatible_with = ["prelude//os:linux"],
+)
+
+# cxx_tools_info_toolchain consumes this target as an exec-dep, so the select
+# below sees the resolved execution platform: the tools are chosen by where
+# the compile and link actions run. macOS keeps the prelude's path clang tools
+# and the `-ld_classic` flag in toolchains/rust/BUCK.
+exec_cxx_tools(
     name = "cxx-tools",
-    linker = select({
-        "DEFAULT": None,
-        "root//constraints:remote-execution": "cc",
+    tools = select({
+        "prelude//os:linux": ":zig-cxx-tools",
+        "prelude//os:macos": "prelude//toolchains/cxx/clang:path_clang_tools",
     }),
 )
 
@@ -92,9 +121,10 @@ toolchain_alias(
     visibility = ["PUBLIC"],
 )
 
-# Zig is a relocatable, SHA-pinned distribution. It is currently used for
-# compiler-host native dependencies and is deliberately separate from Rue's
-# internal program linker.
+# Zig is a relocatable, SHA-pinned distribution. It builds compiler-host
+# native dependencies on every platform and is the C toolchain behind every
+# Rust compile and link on Linux (`:zig-cxx-tools` above). It is deliberately
+# separate from Rue's internal program linker.
 toolchain_alias(
     name = "zig",
     actual = select({

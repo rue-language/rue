@@ -3,8 +3,12 @@
 # prefers remote execution; the repository's ./buck2 wrapper therefore adds
 # --prefer-local for ordinary execution commands. Explicit execution-mode flags
 # still override it. RUE-320's full-remote platform adds an execution constraint
-# that selects the worker's linker driver; the cache-only platform deliberately
-# omits it because cache misses still execute with the native toolchain.
+# marking the worker's configuration; the cache-only platform deliberately
+# omits it because cache misses still execute with the native toolchain. Since
+# RUE-1937 nothing selects on that constraint: Linux compiles and links run
+# through the hermetic Zig tools in every execution configuration, so the
+# worker no longer needs its own linker driver. The marker stays so a future
+# worker-only selection has a place to attach.
 def _remote_cache_platform_impl(ctx):
     base = ctx.attrs.base[ExecutionPlatformRegistrationInfo]
     remote_execution = ctx.attrs.remote_execution[ConstraintValueInfo]
