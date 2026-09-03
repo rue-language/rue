@@ -111,8 +111,9 @@ rue_rust_test(
 # Compiler-owned error explanations carry executable examples. This external
 # consumer verifies the bounded documented lexer, parser, semantic-foundation,
 # struct-foundation, method/item, enum/place, place/borrow, and
-# const/item/ownership tranches through the real one-shot compiler path without
-# copying the examples into a second fixture.
+# const/item/ownership and single-file destructor/const tranches through the
+# real one-shot compiler path without copying the examples into a second
+# fixture. The multi-file E0460 example is validated by the compiler unit test.
 rue_rust_test(
     name = "error-explanation-examples-test",
     srcs = ["tests/error_explanation_examples.rs"],

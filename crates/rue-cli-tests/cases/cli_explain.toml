@@ -161,6 +161,70 @@ compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
 [[case]]
+name = "destructor_field_move_code_uses_the_same_compiler_owned_query"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0456"]
+compile_only = true
+compile_stdout_contains = [
+  "E0456: Move field out of destructor type",
+  "Move a field away from a destructor-bearing value:",
+  "Read Copy data without moving the field:",
+  "docs/spec/src/03-types/09-destructors.md (spec rule 3.9:34)",
+]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "copy_destructor_code_uses_the_same_compiler_owned_query"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0457"]
+compile_only = true
+compile_stdout_contains = [
+  "E0457: Copy struct with destructor",
+  "Give a Copy struct a destructor:",
+  "Keep the destructor on a move-only struct:",
+  "docs/spec/src/03-types/09-destructors.md (spec rule 3.9:31)",
+]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "private_type_constructor_code_uses_the_same_compiler_owned_query"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0460"]
+compile_only = true
+compile_stdout_contains = [
+  "E0460: Private unqualified access",
+  "Apply a private type constructor across directories:",
+  "// --- sub/lib.rue",
+  "Export the type constructor:",
+  "docs/spec/src/10-modules/04-module-bindings.md (spec rule 10.4:16)",
+]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "const_initializer_cycle_code_uses_the_same_compiler_owned_query"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0461"]
+compile_only = true
+compile_stdout_contains = [
+  "E0461: Const initializer cycle",
+  "Create a constant-initializer cycle:",
+  "Give the dependency chain a base value:",
+  "docs/spec/src/06-items/05-constants.md (spec rule 6.5:8)",
+]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "reserved_destructor_band_gap_is_rejected"
+files = [{ path = "main.rue", source = "fn main() {}\n" }]
+args = ["explain", "E0458"]
+compile_fail = true
+error_contains = ["unknown or retired error code E0458"]
+
+[[case]]
 name = "malformed_code_is_rejected"
 files = [{ path = "main.rue", source = "fn main() {}\n" }]
 args = ["explain", "E201"]

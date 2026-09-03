@@ -11,7 +11,7 @@ fn compiler_owned_explanation_examples_have_the_declared_outcome() {
             || (410..=418).contains(&metadata.code.0)
             || (419..=424).contains(&metadata.code.0)
             || (425..=433).contains(&metadata.code.0)
-            || matches!(metadata.code.0, 434..=437 | 442..=443)
+            || matches!(metadata.code.0, 434..=437 | 442..=443 | 456..=457 | 461)
     }) {
         let explanation = error_code_explanation(metadata.code)
             .unwrap_or_else(|| panic!("{} must have an explanation", metadata.code));
@@ -51,7 +51,7 @@ fn compiler_owned_explanation_examples_have_the_declared_outcome() {
                         assert_eq!(
                             codes.as_slice(),
                             [metadata.code],
-                            "{} example {:?} must emit exactly its owning code; emitted {:?}",
+                            "{} example {:?} must emit exactly its owning code; emitted {:?}: {errors:?}",
                             metadata.code,
                             example.title,
                             codes,

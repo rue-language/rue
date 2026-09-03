@@ -187,7 +187,10 @@ fn error_code_category(code: ErrorCode) -> Option<ErrorCodeCategory> {
 /// A runnable example attached to an error-code explanation.
 ///
 /// The fields are deliberately presentation-neutral so command-line and future
-/// machine-readable consumers can project the same compiler-owned record.
+/// machine-readable consumers can project the same compiler-owned record. A
+/// multi-file example uses `// --- path` comment lines to delimit files, with
+/// the root file first. The comments make the source listing readable while
+/// the compiler validation test materializes the named files verbatim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ErrorCodeExample {
     pub title: &'static str,
@@ -1184,12 +1187,47 @@ define_error_codes! {
         ],
         references: [ErrorCodeReference { title: "Linear consumption on every control-flow path", path: "docs/spec/src/03-types/08-move-semantics.md", rule: Some("3.8:50") }],
     };
-    // 444-455 are reserved by in-flight work; next free code is 458.
-    MOVE_FIELD_OUT_OF_DESTRUCTOR_TYPE = 456;
-    COPY_STRUCT_WITH_DESTRUCTOR = 457;
+    // 444-455 are reserved by in-flight work.
+    MOVE_FIELD_OUT_OF_DESTRUCTOR_TYPE = 456 => {
+        explanation: "Rue rejected a move of a field out of a value whose type has a user-defined destructor. The destructor and the automatic field cleanup that follows it must receive the whole value, so moving one field away would let them observe or drop moved-from storage. Moving the whole value is still allowed, as are `borrow` and `inout` access to its fields.",
+        likely_cause: "A field with move semantics was assigned to a new binding, returned, or passed to a by-value parameter while one of its enclosing values has a user-defined destructor. Keep the field in place and borrow it, read only Copy data from it, or move the whole enclosing value to transfer ownership together with its destructor.",
+        examples: [
+            ErrorCodeExample { title: "Move a field away from a destructor-bearing value", source: "struct Payload { value: i32 }\nstruct Resource { payload: Payload }\ndrop fn Resource(self) { @dbg(self.payload.value); }\nfn main() -> i32 {\n    let resource = Resource { payload: Payload { value: 42 } };\n    let payload = resource.payload;\n    payload.value\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Read Copy data without moving the field", source: "struct Payload { value: i32 }\nstruct Resource { payload: Payload }\ndrop fn Resource(self) { @dbg(self.payload.value); }\nfn main() -> i32 {\n    let resource = Resource { payload: Payload { value: 42 } };\n    resource.payload.value\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Fields of destructor-bearing values cannot be moved", path: "docs/spec/src/03-types/09-destructors.md", rule: Some("3.9:34") }],
+    };
+    COPY_STRUCT_WITH_DESTRUCTOR = 457 => {
+        explanation: "A struct declared `@copy` also has a user-defined destructor. Copy values may be duplicated implicitly and those copies are not tracked as ownership transfers, so running the destructor for every copy could clean up the same logical resource more than once.",
+        likely_cause: "A `drop fn` was added for a struct already marked `@copy`, or `@copy` was added to a resource-owning type. Remove `@copy` so each value has one tracked owner, or remove the destructor when the type is genuinely safe to duplicate and requires no user-defined cleanup.",
+        examples: [
+            ErrorCodeExample { title: "Give a Copy struct a destructor", source: "@copy\nstruct Resource { value: i32 }\ndrop fn Resource(self) { @dbg(self.value); }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Keep the destructor on a move-only struct", source: "struct Resource { value: i32 }\ndrop fn Resource(self) { @dbg(self.value); }\nfn main() -> i32 {\n    let resource = Resource { value: 42 };\n    resource.value\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Copy types cannot have user-defined destructors", path: "docs/spec/src/03-types/09-destructors.md", rule: Some("3.9:31") }],
+    };
     // 458-459 are reserved by in-flight work.
-    PRIVATE_UNQUALIFIED_ACCESS = 460;
-    CONST_INITIALIZER_CYCLE = 461;
+    PRIVATE_UNQUALIFIED_ACCESS = 460 => {
+        explanation: "A comptime type constructor reached through a module binding was applied in a type annotation from outside its defining directory, but the constructor is private. Type-position application performs the same visibility check as other cross-module access; the historical metadata name `PRIVATE_UNQUALIFIED_ACCESS` does not make unqualified lookup or ordinary private member access part of E0460.",
+        likely_cause: "A type annotation names a module-qualified function returning `type`, such as `lib.Secret(i32)`, but that function lacks `pub` and the referencing file is in another directory. Mark the constructor `pub` when it is part of the module's interface, or keep the use within the constructor's defining directory.",
+        examples: [
+            ErrorCodeExample { title: "Apply a private type constructor across directories", source: "// --- main.rue\nconst lib = @import(\"sub/lib.rue\");\nfn main() -> i32 {\n    let value: lib.Secret(i32) = lib.make();\n    value.item\n}\n// --- sub/lib.rue\nfn Secret(comptime T: type) -> type { struct { item: T } }\npub fn make() -> Secret(i32) {\n    let S = Secret(i32);\n    S { item: 42 }\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Export the type constructor", source: "// --- main.rue\nconst lib = @import(\"sub/lib.rue\");\nfn main() -> i32 {\n    let value: lib.Secret(i32) = lib.make();\n    value.item\n}\n// --- sub/lib.rue\npub fn Secret(comptime T: type) -> type { struct { item: T } }\npub fn make() -> Secret(i32) {\n    let S = Secret(i32);\n    S { item: 42 }\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Type-constructor visibility exception", path: "docs/spec/src/10-modules/03-visibility.md", rule: Some("10.3:7") },
+            ErrorCodeReference { title: "Module-qualified comptime type constructors", path: "docs/spec/src/10-modules/04-module-bindings.md", rule: Some("10.4:16") },
+        ],
+    };
+    CONST_INITIALIZER_CYCLE = 461 => {
+        explanation: "The dependency graph of constant initializers contains a cycle, so there is no first constant Rue can evaluate. Declaration order does not break the cycle: forward references are allowed, but direct self-reference and indirect cycles are compile-time errors.",
+        likely_cause: "Two or more constants refer to one another through their initializers, or a constant refers to itself. Replace one dependency with a concrete base value or restructure the initializers into an acyclic dependency chain.",
+        examples: [
+            ErrorCodeExample { title: "Create a constant-initializer cycle", source: "const FIRST: i32 = SECOND + 1;\nconst SECOND: i32 = FIRST - 1;\nfn main() -> i32 { FIRST }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Give the dependency chain a base value", source: "const FIRST: i32 = SECOND + 1;\nconst SECOND: i32 = 41;\nfn main() -> i32 { FIRST }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Constant initializers must be acyclic", path: "docs/spec/src/06-items/05-constants.md", rule: Some("6.5:8") }],
+    };
     // 462-473 are reserved by in-flight work.
     LINEAR_FIELD_DROPPED_BY_DESTRUCTURE = 474;
     CONST_MISSING_TYPE_ANNOTATION = 475;
@@ -4146,6 +4184,53 @@ mod tests {
         );
 
         for reserved in [ErrorCode(439), ErrorCode(440), ErrorCode(441)] {
+            assert!(!RETIRED_ERROR_CODES.contains(&reserved));
+            assert!(
+                error_code_metadata()
+                    .iter()
+                    .all(|metadata| metadata.code != reserved)
+            );
+            assert_eq!(error_code_explanation(reserved), None);
+            assert_eq!(
+                reserved.to_string().parse::<ErrorCode>(),
+                Err(ParseErrorCodeError::Unknown(reserved))
+            );
+        }
+    }
+
+    #[test]
+    fn active_destructor_privacy_and_const_explanation_band_is_complete_and_bounded() {
+        let expected = [
+            ErrorCode::MOVE_FIELD_OUT_OF_DESTRUCTOR_TYPE,
+            ErrorCode::COPY_STRUCT_WITH_DESTRUCTOR,
+            ErrorCode::PRIVATE_UNQUALIFIED_ACCESS,
+            ErrorCode::CONST_INITIALIZER_CYCLE,
+        ];
+        let active = error_code_metadata()
+            .iter()
+            .filter(|metadata| (456..=461).contains(&metadata.code.0))
+            .map(|metadata| {
+                assert_eq!(metadata.source_path, "crates/rue-error/src/lib.rs");
+                metadata.code
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(active, expected);
+        let explained = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (456..=461)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(explained, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
+        );
+
+        for reserved in [ErrorCode(458), ErrorCode(459)] {
             assert!(!RETIRED_ERROR_CODES.contains(&reserved));
             assert!(
                 error_code_metadata()
