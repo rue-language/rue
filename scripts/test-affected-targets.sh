@@ -1114,6 +1114,43 @@ check_parser_bad "partially malformed stream fails" '{"target":"root//:spec-test
 check_parser_bad "wholly malformed stream fails" 'not-json\n'
 check_parser_bad "missing target fails" '{}\n'
 check_parser_bad "non-string target fails" '{"target":7}\n'
+# The head-graph dump is `buck2 targets --json-lines` output, keyed by package
+# and name. The two shapes must not be interchangeable: feeding the dump to
+# the BTD mode is exactly the mistake that fell every pull request open to
+# FULL for a week, and it must fail loudly in both directions.
+DUMP_PARSER=("${PARSER[@]}" --targets-dump)
+check_dump_ok() { # check_dump_ok <description> <input> <expected>
+  local desc="$1" input="$2" expected="$3" got
+  TESTS=$((TESTS + 1))
+  if got="$(printf '%b' "$input" | "${DUMP_PARSER[@]}")" && [ "$got" = "$expected" ]; then
+    pass "dump parser: $desc"
+  else
+    fail "dump parser: $desc"
+  fi
+}
+check_dump_bad() { # check_dump_bad <description> <input>
+  local desc="$1" input="$2"
+  TESTS=$((TESTS + 1))
+  if printf '%b' "$input" | "${DUMP_PARSER[@]}" >/dev/null 2>&1; then
+    fail "dump parser: $desc (unexpected success)"
+  else
+    pass "dump parser: $desc"
+  fi
+}
+check_dump_ok "root package joins without a separator" '{"buck.package":"root//","name":"spec-tests","buck.type":"prelude//rules.bzl:sh_test"}\n' "//:spec-tests"
+check_dump_ok "crate package joins with a colon" '{"buck.package":"root//crates/rue","name":"rue"}\n' "//crates/rue:rue"
+check_dump_ok "duplicates collapse in first-seen order" '{"buck.package":"root//","name":"b"}\n{"buck.package":"root//","name":"a"}\n{"buck.package":"root//","name":"b"}\n' $'//:b\n//:a'
+check_dump_ok "package import record from --imports is not a target" '{"buck.package":"root//","buck.file":"root//BUCK","buck.imports":["prelude//prelude.bzl"]}\n{"buck.package":"root//","name":"spec-tests"}\n' "//:spec-tests"
+check_dump_bad "BTD-shaped record is rejected by the dump mode" '{"target":"root//:spec-tests"}\n'
+check_parser_bad "dump-shaped record is rejected by the BTD mode" '{"buck.package":"root//","name":"spec-tests"}\n'
+check_dump_bad "missing name fails" '{"buck.package":"root//"}\n'
+check_dump_bad "a --keep-going package error fails open" '{"buck.package":"root//broken","buck.error":"parse error"}\n'
+TESTS=$((TESTS + 1))
+if "${PARSER[@]}" --no-such-flag </dev/null >/dev/null 2>&1; then
+  fail "parser: unknown flag unexpectedly accepted"
+else
+  pass "parser: unknown flag is a usage error"
+fi
 
 # Git's BTD input is status records, while force-full matches paths alone.
 # These prove the projection preserves all A/M/D records and rejects an unknown
@@ -1162,7 +1199,12 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 [ -n "$output" ]
-printf '%s\n' '{"target":"root//:spec-tests"}' '{"target":"root//:unimpacted"}' >"$output"
+# `buck2 targets --json-lines` records: package + name, never a "target" key.
+# A fake that emitted BTD-shaped records here hid the head-graph parse bug
+# from this suite while CI fell open to FULL on every pull request.
+printf '%s\n' \
+  '{"buck.package":"root//","name":"spec-tests","buck.type":"prelude//rules.bzl:sh_test"}' \
+  '{"buck.package":"root//","name":"unimpacted","buck.type":"prelude//rules.bzl:sh_test"}' >"$output"
 EOF
 cat >"$integration_root/bin/fake-btd" <<'EOF'
 #!/usr/bin/env bash
@@ -1242,7 +1284,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 [ -n "$output" ]
-printf '{"target":"root//:spec-tests"}\n' >"$output"
+printf '{"buck.package":"root//","name":"spec-tests"}\n' >"$output"
 EOF
 chmod +x "$integration_root/bin/failing-buck"
 TESTS=$((TESTS + 1))

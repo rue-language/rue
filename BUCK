@@ -32,7 +32,7 @@
 # path) still means "unit tests only".
 
 load("//:rue_rules.bzl", "rue_program", "rue_program_family", "rue_program_staging", "rue_program_test")
-load("//:test_defs.bzl", "rue_sh_test", "rue_test_suite")
+load("//:test_defs.bzl", "rue_sh_test", "rue_test_suite", "rue_tool_test")
 
 load(":corpus.bzl", "cached_corpus_suite")
 
@@ -214,61 +214,6 @@ rue_sh_test(
     labels = ["rue_not_quick"],
 )
 
-# The std library sources are runtime inputs to CLI integration tests and spec
-# cases that opt into the real std (compiled programs `@import` them via
-# ${REAL_STD}, RUE_STD_DIR, or RUE_REAL_STD_PATH).
-filegroup(
-    name = "std",
-    srcs = glob(["std/**"]),
-    visibility = ["PUBLIC"],
-)
-
-# The CLI harness has a hermetic source-shape regression for std.sort's
-# quicksort invariants. Materialize just the production file so that test
-# compilation does not need to depend on the entire standard-library tree.
-genrule(
-    name = "std-sort-source",
-    out = "std_sort.rue",
-    srcs = ["std/sort.rue"],
-    cmd = "cp $SRCS $OUT",
-    visibility = ["PUBLIC"],
-)
-
-# The CLI harness also pins the source shape of the byte-range bridge and trim
-# implementations. Keep these production inputs separate so that the unit
-# guard remains hermetic and only rebuilds when one of the relevant files does.
-genrule(
-    name = "std-rawbuf-source",
-    out = "std_rawbuf.rue",
-    srcs = ["std/rawbuf.rue"],
-    cmd = "cp $SRCS $OUT",
-    visibility = ["PUBLIC"],
-)
-
-genrule(
-    name = "std-arraybuf-source",
-    out = "std_arraybuf.rue",
-    srcs = ["std/arraybuf.rue"],
-    cmd = "cp $SRCS $OUT",
-    visibility = ["PUBLIC"],
-)
-
-genrule(
-    name = "std-strbuf-source",
-    out = "std_strbuf.rue",
-    srcs = ["std/strbuf.rue"],
-    cmd = "cp $SRCS $OUT",
-    visibility = ["PUBLIC"],
-)
-
-genrule(
-    name = "std-strings-source",
-    out = "std_strings.rue",
-    srcs = ["std/strings.rue"],
-    cmd = "cp $SRCS $OUT",
-    visibility = ["PUBLIC"],
-)
-
 # The example programs are runtime inputs to the CLI integration tests: the
 # suite compiles+runs every examples/*.rue through the real driver (RUE-48),
 # so an edit under examples/ MUST re-run the CLI suite (declared here as an
@@ -282,13 +227,15 @@ filegroup(
 # Syntax-valid, checked-in Rue programs compared by the independent stage-1
 # frontend differential. Keeping the selection explicit excludes intentionally
 # malformed UI/spec/CLI fixtures without a filename heuristic.
+# `std/` is its own package, so a root glob cannot reach it; the std tree is
+# mounted at the `std/` key instead, which keeps the corpus manifest's
+# `std/<file>.rue` paths unchanged. The harness follows the directory symlink.
 filegroup(
     name = "frontend-diff-corpus",
     srcs = dict([(path, path) for path in glob([
         "examples/**/*.rue",
         "reproducibility/**/*.rue",
-        "std/**/*.rue",
-    ])]),
+    ])]) | {"std": "//std:std"},
     visibility = ["PUBLIC"],
 )
 
@@ -363,7 +310,7 @@ cached_corpus_suite(
     args = ["--quiet"],
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
-        "RUE_REAL_STD_PATH": "$(location :std)/std",
+        "RUE_REAL_STD_PATH": "$(location //std:std)",
         "RUE_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
     },
     absolutize = [
@@ -424,7 +371,7 @@ cached_corpus_suite(
     args = ["--quiet"],
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
-        "RUE_REAL_STD_PATH": "$(location :std)/std",
+        "RUE_REAL_STD_PATH": "$(location //std:std)",
         "RUE_UI_CASES": "$(location //crates/rue-ui-tests:cases)/cases",
     },
     absolutize = [
@@ -535,7 +482,7 @@ _CLI_TEST_BASE_ENV = {
     "RUE_CLI_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
     "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
     "RUE_REPO_DIR": "$(location :cli-test-fixtures)",
-    "RUE_STD_DIR": "$(location :std)/std",
+    "RUE_STD_DIR": "$(location //std:std)",
 }
 
 # The staged-program directory, carried by every corpus target whose inventory
@@ -596,11 +543,16 @@ _CLI_TEST_ABSOLUTIZE = _CLI_TEST_BASE_ABSOLUTIZE + ["RUE_CLI_STAGED_PROGRAMS"]
 # deadline to 3805, preserving that same headroom policy.
 #
 # Raised 3900 -> 4000 and the shared shard bound 1200 -> 1300 when RUE-437's
-# CLI command cases pushed their derived deadlines to 3903s and 1201s. Both
-# bounds retain the established ~100s growth margin instead of immediately
-# becoming flush with the current corpus again.
-_CLI_TESTS_TIMEOUT_SECONDS = 4000
-_CLI_SHARD_TIMEOUT_SECONDS = 1300
+# CLI command cases pushed their derived deadlines to 3903s and 1201s.
+#
+# POLICY, after four bumps of ~100s in as many weeks: these bounds exist only
+# to stop a WEDGED harness, so their exact value is not a correctness
+# statement and a small margin buys nothing but churn. Keep each at least 25%
+# above the derived deadline the validator reports, and when it fails, raise
+# the bound to the next round number 25% above the new deadline rather than
+# restoring a fixed 100s. At 3903s and 1201s derived, that is 5000 and 1600.
+_CLI_TESTS_TIMEOUT_SECONDS = 5000
+_CLI_SHARD_TIMEOUT_SECONDS = 1600
 
 # The bounded premerge CLI corpus in one invocation: the canonical target that a
 # local `./test.sh` full run executes and that the RUE-924 corpus-omission audit
@@ -858,7 +810,7 @@ cached_corpus_suite(
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
         "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
         "RUE_REPRO_FIXTURE": "$(location :reproducibility-fixture)/reproducibility/fixture",
-        "RUE_STD_DIR": "$(location :std)/std",
+        "RUE_STD_DIR": "$(location //std:std)",
     },
     absolutize = [
         "RUE_BINARY",
@@ -893,7 +845,7 @@ cached_corpus_suite(
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
         "RUE_FRONTEND_DIFF_CORPUS": "$(location :frontend-diff-corpus)",
-        "RUE_STD_PATH": "$(location :std)/std",
+        "RUE_STD_PATH": "$(location //std:std)",
     },
     absolutize = [
         "RUE_BINARY",
@@ -945,17 +897,17 @@ rue_sh_test(
     ],
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
-        "RUE_STD_PATH": "$(location :std)/std",
+        "RUE_STD_PATH": "$(location //std:std)",
     },
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "tutorial-snippet-tool-tests",
     test = "scripts/test-tutorial-snippets.py",
     env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
         "RUE_TUTORIAL_TEST_ROOT": "$(location :tutorial-snippet-tool-inputs)",
     },
+    gatelib = False,
 )
 
 # RUE-1163: the lightweight repository gates a filtered `./test.sh <pattern>`
@@ -980,18 +932,16 @@ python_bootstrap_binary(
     visibility = ["PUBLIC"],
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "rustc-first-party-unused-deps-wrapper-tests",
     test = "scripts/test-rustc-first-party-unused-deps.py",
     resources = [
         "scripts/rustc-first-party-unused-deps.py",
-        ":gatelib-sources",
         "toolchains//:rust-toolchain-registration-source",
         "toolchains//rust:rust-toolchain-declarations-source",
         "toolchains//rust:rust-toolchain-rule-source",
     ],
     env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
         "RUE_RUST_TOOLCHAIN_DECLARATIONS": "$(location toolchains//rust:rust-toolchain-declarations-source)",
         "RUE_RUST_TOOLCHAIN_REGISTRATION": "$(location toolchains//:rust-toolchain-registration-source)",
         "RUE_RUST_TOOLCHAIN_RULE": "$(location toolchains//rust:rust-toolchain-rule-source)",
@@ -1007,16 +957,10 @@ rue_sh_test(
     ],
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "adr-registry-tool-tests",
     test = "scripts/test-validate-adrs.py",
-    resources = [
-        "scripts/validate-adrs.py",
-        ":gatelib-sources",
-    ],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/validate-adrs.py"],
 )
 
 # RUE-1531: the notes index (docs/notes/README.md) must list every note, and
@@ -1030,16 +974,10 @@ rue_sh_test(
     resources = [":gatelib-sources"] + glob(["docs/**"]),
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "doc-link-tool-tests",
     test = "scripts/test-validate-doc-links.py",
-    resources = [
-        "scripts/validate-doc-links.py",
-        ":gatelib-sources",
-    ],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/validate-doc-links.py"],
 )
 
 rue_sh_test(
@@ -1055,14 +993,10 @@ rue_sh_test(
     ],
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "required-ci-container-pin-tool-tests",
     test = "scripts/test-required-ci-container-pins.py",
-    resources = ["scripts/validate-required-ci-container-pins.py"] +
-        [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/validate-required-ci-container-pins.py"],
 )
 
 # RUE-1854: `buck2` is a wrapper script; the DotSlash manifest carrying the
@@ -1093,14 +1027,10 @@ rue_sh_test(
     args = ["$(location :dotslash-github-sources)/.github"],
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "dotslash-cache-key-tool-tests",
     test = "scripts/test-dotslash-cache-keys.py",
-    resources = ["scripts/validate-dotslash-cache-keys.py"] +
-        [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/validate-dotslash-cache-keys.py"],
 )
 
 # RUE-1825: installing dotslash and caching the binary it downloads is one
@@ -1115,14 +1045,10 @@ rue_sh_test(
     resources = [":gatelib-sources"],
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "dotslash-bootstrap-tool-tests",
     test = "scripts/test-dotslash-bootstrap.py",
-    resources = ["scripts/validate-dotslash-bootstrap.py"] +
-        [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/validate-dotslash-bootstrap.py"],
 )
 
 # The structural complement of the per-crate debug-assertion checks
@@ -1139,24 +1065,16 @@ rue_sh_test(
     resources = ["rust-project.json"] + [":gatelib-sources"],
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "debug-assert-policy-tool-tests",
     test = "scripts/test-debug-assert-policy.py",
-    resources = ["scripts/validate-debug-assert-policy.py"] +
-        [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/validate-debug-assert-policy.py"],
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "shell-pipefail-pipeline-tool-tests",
     test = "scripts/test-validate-shell-pipefail-pipelines.py",
-    resources = ["scripts/validate-shell-pipefail-pipelines.py"] +
-        [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/validate-shell-pipefail-pipelines.py"],
 )
 
 # Keep the mechanism test's wrapper input explicit: under Buck it must not
@@ -1166,14 +1084,12 @@ filegroup(
     srcs = {"buck2": "buck2"},
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "shell-bash-baseline-tool-tests",
     test = "scripts/test-validate-shell-bash-baseline.py",
-    resources = ["scripts/validate-shell-bash-baseline.py"] +
-        [":gatelib-sources"],
+    resources = ["scripts/validate-shell-bash-baseline.py"],
     env = {
         "RUE_BASH_BASELINE_ROOT": "$(location :shell-bash-baseline-inputs)",
-        "PYTHONDONTWRITEBYTECODE": "1",
     },
 )
 
@@ -1186,15 +1102,10 @@ rue_sh_test(
 # a parse error means -- asserts on both sides of the floor. The scan proper is
 # only as strict as the interpreter running it, which is why the authoritative
 # run is ci.yml's `fmt` step, at or above the floor.
-rue_sh_test(
+rue_tool_test(
     name = "python-baseline-tool-tests",
     test = "scripts/test-validate-python-baseline.py",
-    resources = [
-        "scripts/validate-python-baseline.py",
-    ] + [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/validate-python-baseline.py"],
 )
 
 # RUE-1816's historical-defect plants are source patches compiled only inside
@@ -1218,14 +1129,10 @@ rue_sh_test(
     },
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "release-configuration-tool-tests",
     test = "scripts/test-release-configuration.py",
-    resources = ["scripts/validate-release-configuration.py"] +
-        [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/validate-release-configuration.py"],
 )
 
 # RUE-1264: the scaling probes' committed sources are generator output, and
@@ -1234,47 +1141,39 @@ rue_sh_test(
 # rather than silently turning a between-sizes ratio into a comparison of two
 # different programs. The probe sources are declared inputs so a source edit
 # can never be served a cached pass.
-rue_sh_test(
+#
+# They are declared through `//performance:scale-probe-sources`, not a glob
+# here: `performance/` is its own package, and a root glob into it matches
+# nothing (RUE-1152's shape). This gate carried exactly that glob and so had
+# no declared inputs at all until the graph diff for this change showed it.
+rue_tool_test(
     name = "scale-probe-generator-check",
     test = "scripts/test-scale-probe-generators.py",
-    resources = glob([
-        "performance/workloads/scale_modules/**",
-        "performance/workloads/scale_functions/**",
-        "performance/workloads/scale_instantiations/**",
-    ]),
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["//performance:scale-probe-sources"],
+    gatelib = False,
 )
 
 # Shared plumbing for the validate-* gates (RUE-1522): the Rust masker,
 # walker prune policy, workflow job splitter, gate skeleton, and the tool
 # tests' script loader. The masker tests are the single place the
 # lifetime-vs-char-literal contract is pinned.
-rue_sh_test(
+rue_tool_test(
     name = "gatelib-tests",
     test = "scripts/test-gatelib.py",
-    resources = [":gatelib-sources"] + [
-        "scripts/validate-adrs.py",
-    ],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/validate-adrs.py"],
 )
 
 # Same drift contract for the Caldera capacity corpus: the committed
 # examples/caldera is generator output, the generator writes in place, and
 # nothing else compares the two (RUE-1521 found a 782-file divergence that
 # had accrued silently).
-rue_sh_test(
+rue_tool_test(
     name = "caldera-generator-check",
     test = "scripts/test-caldera-generator.py",
     resources = ["scripts/generate-caldera.py"] + glob([
         "examples/caldera/**",
     ]),
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    gatelib = False,
 )
 
 # The root BUCK file, so the CLI-shard coverage gate can read CLI_TEST_SHARD_COUNT
@@ -1299,14 +1198,10 @@ rue_sh_test(
     ],
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "cli-shard-coverage-tool-tests",
     test = "scripts/test-cli-shard-coverage.py",
-    resources = ["scripts/validate-cli-shard-coverage.py"] +
-        [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/validate-cli-shard-coverage.py"],
 )
 
 # RUE-1265 / ADR-0069 §2. The duplication gate itself needs the live Buck graph
@@ -1319,16 +1214,13 @@ rue_sh_test(
 # `scripts/affected-targets` is a declared resource because the gate reads its
 # corpus and lane inventories rather than keeping a second copy — a lane added
 # there must be classified here or the gate refuses to run.
-rue_sh_test(
+rue_tool_test(
     name = "test-duplication-tool-tests",
     test = "scripts/test-validate-test-duplication.py",
     resources = [
         "scripts/affected-targets",
         "scripts/validate-test-duplication.py",
-    ] + [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    ],
 )
 
 # RUE-1117: the declared inputs of the tier CI-selector gate. The tier
@@ -1365,25 +1257,19 @@ rue_sh_test(
     ],
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "tier-ci-selector-tool-tests",
     test = "scripts/test-validate-tier-ci-selectors.py",
-    resources = ["scripts/validate-tier-ci-selectors.py"] +
-        [":gatelib-sources"],
+    resources = ["scripts/validate-tier-ci-selectors.py"],
     env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
         "RUE_TIER_VALIDATION_ROOT": "$(location :tier-ci-selector-inputs)",
     },
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "ci-required-results-tool-tests",
     test = "scripts/test-ci-required-results.py",
-    resources = ["scripts/ci-required-results.py"] +
-        [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/ci-required-results.py"],
 )
 
 rue_sh_test(
@@ -1426,15 +1312,10 @@ rue_sh_test(
 # branch. This gate fails every pull request while the series is stalled and
 # has no bypass, so what "stalled" means — and that an empty dashboard is not
 # stalled — is load-bearing rather than incidental.
-rue_sh_test(
+rue_tool_test(
     name = "performance-stall-validator-tool-tests",
     test = "scripts/test-validate-performance-stall.py",
-    resources = [
-        "scripts/validate-performance-stall.py",
-    ] + [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/validate-performance-stall.py"],
 )
 
 # RUE-1261: the homepage Field Report asserts that this project can be checked
@@ -1442,15 +1323,10 @@ rue_sh_test(
 # placeholder. These tests pin the two properties that failed before: a ratio
 # carries both of its sides, and a figure that cannot be computed is absent
 # rather than defaulted.
-rue_sh_test(
+rue_tool_test(
     name = "site-status-tool-tests",
     test = "scripts/test-generate-site-status.py",
-    resources = [
-        "scripts/generate-site-status.py",
-    ] + [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/generate-site-status.py"],
 )
 
 # RUE-1495: the runtime page publishes excerpts of the template ports the
@@ -1459,15 +1335,10 @@ rue_sh_test(
 # else — a wrong excerpt looks exactly like a right one. The last two cases run
 # against the real ports in the tree, so the shipped declarations are checked
 # here rather than only when the site is built.
-rue_sh_test(
+rue_tool_test(
     name = "source-excerpt-tool-tests",
     test = "scripts/test-extract-source-excerpts.py",
-    resources = [
-        "scripts/extract-source-excerpts.py",
-    ] + [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/extract-source-excerpts.py"],
 )
 
 # RUE-1194: the §11 tooltip needs a commit's subject and its distance from the
@@ -1475,18 +1346,13 @@ rue_sh_test(
 # follows trunk's first parents, so these tests pin the one property that makes
 # subtracting two of them meaningful: a merged topic branch is not a run of
 # skipped trunk commits.
-rue_sh_test(
+rue_tool_test(
     name = "performance-commit-annotation-tool-tests",
     test = "scripts/test-annotate-performance-commits.py",
-    resources = [
-        "scripts/annotate-performance-commits.py",
-    ] + [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/annotate-performance-commits.py"],
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "ci-gate-validator-tool-tests",
     test = "scripts/test-validate-ci-gate.py",
     resources = [
@@ -1497,22 +1363,19 @@ rue_sh_test(
         "scripts/validate-ci-gate.py",
         "scripts/install-valgrind",
         "scripts/validate-test-duplication.py",
-    ] + [":gatelib-sources"],
+    ],
     env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
         "RUE_CI_WORKFLOW": "$(location :required-ci-workflows)/.github/workflows/ci.yml",
         "RUE_TEST_RUNNER_SOURCE": "$(location //crates/rue-test-runner:platform-responsibility-source)/src/lib.rs",
         "RUE_ROOT_BUCK": "$(location :root-buck-file)/BUCK",
     },
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "valgrind-installer-tool-tests",
     test = "scripts/test-install-valgrind.py",
     resources = ["scripts/install-valgrind"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    gatelib = False,
 )
 
 rue_sh_test(
@@ -1525,14 +1388,10 @@ rue_sh_test(
     ],
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "cli-shard-weight-tool-tests",
     test = "scripts/test-cli-shard-weights.py",
-    resources = ["scripts/generate-cli-shard-weights.py"] +
-        [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/generate-cli-shard-weights.py"],
 )
 
 # JSON twin of the TOML-authored policy input, so the Python gate runs on the
@@ -1597,18 +1456,14 @@ rue_sh_test(
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
         "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
         "RUE_REPO_DIR": "$(location :cli-test-fixtures)",
-        "RUE_STD_DIR": "$(location :std)/std",
+        "RUE_STD_DIR": "$(location //std:std)",
     },
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "cli-timeout-policy-tool-tests",
     test = "scripts/test-cli-timeout-policy.py",
-    resources = ["scripts/cli-timeout-policy.py"] +
-        [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/cli-timeout-policy.py"],
 )
 
 rue_sh_test(
@@ -1626,13 +1481,13 @@ filegroup(
     ],
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "timeout-workflow-contract-tests",
     test = "scripts/test-timeout-workflow-contracts.py",
     env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
         "RUE_TIMEOUT_WORKFLOW_ROOT": "$(location :timeout-workflow-test-inputs)",
     },
+    gatelib = False,
 )
 
 # RUE-802: the nightly fuzz workflow files crashes into Linear. The reporting
@@ -1647,18 +1502,16 @@ filegroup(
     srcs = [".github/workflows/fuzz.yml"],
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "fuzz-report-tool-tests",
     test = "scripts/test-fuzz-report-failure.py",
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "RUE_FUZZ_REPORT_ROOT": "$(location :fuzz-report-test-inputs)",
-    },
     resources = [
         "scripts/fuzz-report-failure.py",
         "scripts/validate-fuzz-workflow.py",
-    ] +
-        [":gatelib-sources"],
+    ],
+    env = {
+        "RUE_FUZZ_REPORT_ROOT": "$(location :fuzz-report-test-inputs)",
+    },
 )
 
 # RUE-1507: the health check that notices a scheduled workflow which has never
@@ -1677,15 +1530,13 @@ filegroup(
     srcs = glob([".github/workflows/*.yml", ".github/workflows/*.yaml"]),
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "scheduled-workflow-tool-tests",
     test = "scripts/test-check-scheduled-workflows.py",
+    resources = ["scripts/check-scheduled-workflows.py"],
     env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
         "RUE_SCHEDULED_WORKFLOWS_ROOT": "$(location :scheduled-workflow-test-inputs)",
     },
-    resources = ["scripts/check-scheduled-workflows.py"] +
-        [":gatelib-sources"],
 )
 
 # RUE-1119: pin the deterministic, coverage-deciding logic of the affected-
@@ -1722,14 +1573,10 @@ rue_sh_test(
     ],
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "runtime-abi-inventory-tool-tests",
     test = "scripts/test-runtime-abi-inventory.py",
-    resources = ["scripts/validate-runtime-abi-inventory.py"] +
-        [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/validate-runtime-abi-inventory.py"],
 )
 
 rue_sh_test(
@@ -1745,14 +1592,10 @@ rue_sh_test(
     ],
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "type-architecture-inventory-tool-tests",
     test = "scripts/test-type-architecture.py",
-    resources = ["scripts/validate-type-architecture.py"] +
-        [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/validate-type-architecture.py"],
 )
 
 rue_sh_test(
@@ -1767,14 +1610,10 @@ rue_sh_test(
     ],
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "payload-ownership-inventory-tool-tests",
     test = "scripts/test-payload-ownership.py",
-    resources = ["scripts/validate-payload-ownership.py"] +
-        [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/validate-payload-ownership.py"],
 )
 
 rue_sh_test(
@@ -1787,14 +1626,10 @@ rue_sh_test(
     ],
 )
 
-rue_sh_test(
+rue_tool_test(
     name = "body-analysis-capability-inventory-tool-tests",
     test = "scripts/test-body-analysis-capabilities.py",
-    resources = ["scripts/validate-body-analysis-capabilities.py"] +
-        [":gatelib-sources"],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
+    resources = ["scripts/validate-body-analysis-capabilities.py"],
 )
 
 rue_test_suite(
@@ -1875,7 +1710,7 @@ rue_sh_test(
         "RUE_CLI_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
         "RUE_EXAMPLES_DIR": "$(location root//:examples)/examples",
         "RUE_REPO_DIR": "$(location root//:cli-test-fixtures)",
-        "RUE_STD_DIR": "$(location :std)/std",
+        "RUE_STD_DIR": "$(location //std:std)",
     },
 )
 

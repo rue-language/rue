@@ -928,8 +928,12 @@ cmd_decide() {
     if ! impacted="$(python3 "$repo_root/scripts/parse-btd-impacted.py" <"$btd_out")"; then
         decide_full "could not parse btd output"
     fi
+    # The head dump is `buck2 targets` output — "buck.package" + "name" per
+    # record — not BTD output, and the parser refuses the wrong shape. Reading
+    # it with the BTD mode made every record fail, which fell open to FULL on
+    # every pull request from 2026-08-27 until noticed in the job logs.
     local head_targets_file="$work/head-targets.txt"
-    if ! python3 "$repo_root/scripts/parse-btd-impacted.py" <"$work/head.jsonl" >"$head_targets_file"; then
+    if ! python3 "$repo_root/scripts/parse-btd-impacted.py" --targets-dump <"$work/head.jsonl" >"$head_targets_file"; then
         decide_full "could not parse the head graph"
     fi
     if [[ ! -s "$head_targets_file" ]]; then

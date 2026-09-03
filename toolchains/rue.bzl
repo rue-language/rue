@@ -16,9 +16,9 @@ for the corpus suites today.
 RueToolchainInfo = provider(fields = [
     # RunInfo of the Rue compiler.
     "compiler",
-    # The //:std filegroup's output directory artifact. The std ROOT inside it
-    # is `<artifact>/std` (a filegroup's output directory contains its srcs at
-    # package-relative paths).
+    # The //std:std filegroup's output directory artifact, which IS the std
+    # root (a filegroup's output directory holds its srcs at package-relative
+    # paths, and the std package is the std directory).
     "std",
     # The configured platform's native Rue target ("x86-64-linux",
     # "aarch64-linux", "aarch64-macos"). ADR-0070 open question 1: a

@@ -26,7 +26,7 @@ command_alias(
     exe = ":rue-ui-tests",
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
-        "RUE_REAL_STD_PATH": "$(location root//:std)/std",
+        "RUE_REAL_STD_PATH": "$(location //std:std)",
         "RUE_UI_CASES": "$(location :cases)/cases",
     },
     visibility = ["PUBLIC"],

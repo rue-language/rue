@@ -1,0 +1,37 @@
+# The Rue standard library as Buck inputs.
+#
+# `:std` is the whole tree: the runtime input of every corpus suite and
+# `rue_program` compile (`RueToolchainInfo.std`), declared so that a std edit
+# re-keys everything that reads it instead of being served a stale pass. This
+# package exists so the label is the std root: a filegroup's output directory
+# holds its srcs at package-relative paths, so `$(location //std:std)` IS the
+# directory containing `sort.rue`, where the old root-package filegroup needed
+# a `/std` suffix at every consumer.
+#
+# A root-package `glob()` cannot reach into this package, so anything that
+# needs std files must depend on a target declared here.
+filegroup(
+    name = "std",
+    srcs = glob(["**"]),
+    visibility = ["PUBLIC"],
+)
+
+# Individual production sources the CLI harness pins the SOURCE SHAPE of
+# (std.sort's quicksort invariants, the byte-range bridge, trim, ...). Each is
+# mapped into the harness's src/ by `mapped_srcs`, which also renames it, so
+# a plain export is enough: the consumer depends on one file rather than the
+# whole tree, and only that file's edit rebuilds the harness.
+[
+    export_file(
+        name = "{}-source".format(_name),
+        src = "{}.rue".format(_name),
+        visibility = ["PUBLIC"],
+    )
+    for _name in [
+        "arraybuf",
+        "rawbuf",
+        "sort",
+        "strbuf",
+        "strings",
+    ]
+]

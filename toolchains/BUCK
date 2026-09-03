@@ -43,6 +43,19 @@ cxx_tools_info_toolchain(
     visibility = ["PUBLIC"],
 )
 
+# The prelude's C++ toolchain attribute defaults to
+# `select({"DEFAULT": "toolchains//:cxx", "config//:none": "toolchains//:cxx_no_default_deps"})`
+# (prelude decls, `_cxx_toolchain`). The second arm is never selected, but an
+# unconfigured query walks every arm, so without this target `buck2 uquery
+# deps(...)` and `rdeps(...)` fail on every Rust target with "Unknown target
+# `cxx_no_default_deps`". The prelude's own comment says the toolchains cell
+# is expected to provide it; aliasing the ordinary toolchain is that provision.
+alias(
+    name = "cxx_no_default_deps",
+    actual = ":cxx",
+    visibility = ["PUBLIC"],
+)
+
 system_genrule_toolchain(
     name = "genrule",
     visibility = ["PUBLIC"],
@@ -112,7 +125,7 @@ noop_remote_test_execution_toolchain(
 rue_toolchain(
     name = "rue",
     compiler = "root//crates/rue:rue",
-    std = "root//:std",
+    std = "root//std:std",
     native_target = select({
         "prelude//os:linux": select({
             "prelude//cpu:arm64": "aarch64-linux",
