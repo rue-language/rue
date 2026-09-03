@@ -282,10 +282,25 @@ pub(super) struct RootedBodyGraph {
     /// consumers use instead of re-deriving roots from `main` and
     /// `c_export_roots`.
     pub(super) roots: Arc<[crate::FunctionInstanceKey]>,
+    /// The request's tests in stable-ID order, empty unless this is a
+    /// `RootSelection::Tests` graph (ADR-0083 §2).
+    ///
+    /// Computed once here so the `--list` surface and the test image's
+    /// dispatcher ordinals are the same table rather than two sorts of the
+    /// same declarations.
+    pub(super) test_inventory: Arc<[crate::test_inventory::RootedTest]>,
     pub(super) closure: crate::body_query::BodyClosureOutput,
     pub(super) work: crate::CanonicalSemanticWork,
 }
 
+/// The C-ABI export thunks a request's image must carry.
+///
+/// `extern "C"` exports are executable-only. The nucleus records them for every
+/// request, but only `RootSelection::Executable` roots them (ADR-0083 §1), so a
+/// test request produces no CFG unit for one and this intersection is empty by
+/// construction. A test image is entered through the synthesized dispatcher and
+/// exposes nothing else; if a future selection should link exports alongside
+/// tests, that belongs in the root-set authority, not here.
 pub(super) fn collect_rooted_exports(
     graph: &RootedBodyGraph,
     cfgs: &[RootedCfgUnit],

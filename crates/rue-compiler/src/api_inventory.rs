@@ -1976,7 +1976,7 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 44] = [
     (8_573, 4_124_823_810_140_583_654),
     (753, 3_150_885_663_910_159_936),
     (2_598, 10_270_973_964_375_394_836),
-    (11_514, 1_556_117_829_400_373_530),
+    (11_583, 5_315_119_467_923_005_516),
     (103_771, 11_567_462_448_468_948_481),
     (3_254, 11_949_940_325_034_004_149),
     (5_552, 14_658_861_127_087_730_967),
@@ -2012,13 +2012,9 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 44] = [
 // identity even when constructor, caller, and macro token counts do not.
 const CONSTRUCTION_TOKEN_STRUCT_IDENTITY: (usize, u64) = (80, 5_227_448_979_315_228_973);
 const CONSTRUCTION_TOKEN_IMPL_IDENTITY: (usize, u64) = (108, 2_765_439_612_714_245_239);
-const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (10_380, 4_871_274_390_997_435_514);
-const COMPILER_CRATE_ROOT_NAMESPACE_IDENTITY: (usize, u64, usize, u64) = (
-    107,
-    10_929_233_963_061_401_561,
-    220,
-    6_174_496_129_237_532_836,
-);
+const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (10_456, 13_393_868_787_617_733_612);
+const COMPILER_CRATE_ROOT_NAMESPACE_IDENTITY: (usize, u64, usize, u64) =
+    (110, 255_897_897_515_642_022, 223, 8_513_453_303_818_067_861);
 const COMPILER_SESSION_ROOT_IDENTITY: (usize, u64) = (3_375, 11_197_616_651_825_656_461);
 const COMPILER_SESSION_CONSTRUCTOR_IDENTITY: (usize, u64) = (82, 10_721_269_354_679_246_675);
 const FRONTEND_DATABASE_CONSTRUCTION_IDENTITY: (usize, u64) = (268, 967_740_565_057_515_587);
@@ -4453,7 +4449,7 @@ pub(super) use register_parse_import_parse;"#;
     ));
     let nested_module_owners = module_owner_inventory(&compiler_module_sources);
     let nested_module_fingerprint = source_inventory_fingerprint(&nested_module_owners);
-    let expected_nested_module_identity = (151, 14_424_826_081_772_489_333);
+    let expected_nested_module_identity = (154, 8_453_145_628_824_547_092);
     assert_eq!(
         (nested_module_owners.len(), nested_module_fingerprint),
         expected_nested_module_identity,
@@ -5470,6 +5466,8 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("source_metadata", include_str!("source_metadata.rs")),
     ("source_snapshot", include_str!("source_snapshot.rs")),
     ("syntax", include_str!("syntax.rs")),
+    ("test_dispatcher", include_str!("test_dispatcher.rs")),
+    ("test_inventory", include_str!("test_inventory.rs")),
     (
         "toolchain_module_demand",
         include_str!("toolchain_module_demand.rs"),
@@ -7069,6 +7067,7 @@ fn facade_stays_small_and_session_centered() {
             "retained_charge",
             "scaling_harness",
             "supported_api_inventory",
+            "test_image_tests",
             "test_support",
         ])
         .collect::<Vec<_>>();

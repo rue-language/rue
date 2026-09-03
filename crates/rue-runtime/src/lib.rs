@@ -154,6 +154,7 @@ pub mod parse;
 pub mod process;
 pub mod random;
 pub mod string;
+pub mod test_channel;
 
 macro_rules! call_runtime_helper_implementation {
     (__rue_exit($($argument:expr),*)) => { crate::entry::__rue_exit($($argument),*) };
@@ -202,6 +203,21 @@ macro_rules! call_runtime_helper_implementation {
     (__rue_byte_copy($($argument:expr),*)) => { crate::memory::__rue_byte_copy($($argument),*) };
     (__rue_byte_move($($argument:expr),*)) => { crate::memory::__rue_byte_move($($argument),*) };
     (__rue_byte_set($($argument:expr),*)) => { crate::memory::__rue_byte_set($($argument),*) };
+    (__rue_test_normalize_process($($argument:expr),*)) => {
+        crate::process::__rue_test_normalize_process($($argument),*)
+    };
+    (__rue_test_complete($($argument:expr),*)) => {
+        crate::test_channel::__rue_test_complete($($argument),*)
+    };
+    (__rue_test_failure_site($($argument:expr),*)) => {
+        crate::test_channel::__rue_test_failure_site($($argument),*)
+    };
+    (__rue_test_fail($($argument:expr),*)) => {
+        crate::test_channel::__rue_test_fail($($argument),*)
+    };
+    (__rue_test_usage_error($($argument:expr),*)) => {
+        crate::test_channel::__rue_test_usage_error($($argument),*)
+    };
 }
 
 macro_rules! declare_runtime_helper {

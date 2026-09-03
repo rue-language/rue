@@ -73,6 +73,8 @@ mod source_identity;
 mod source_metadata;
 mod source_snapshot;
 mod syntax;
+mod test_dispatcher;
+mod test_inventory;
 mod toolchain_module_demand;
 mod type_queries;
 mod typed_query_store;
@@ -97,6 +99,8 @@ mod integration_tests;
 mod scaling_harness;
 #[cfg(test)]
 mod supported_api_inventory;
+#[cfg(test)]
+mod test_image_tests;
 mod warm_fresh_parity;
 
 // Supported source, identity, option, session, and diagnostic surface.

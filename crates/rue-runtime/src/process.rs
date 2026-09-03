@@ -151,6 +151,26 @@ pub fn __rue_env_len(index: u64) -> u64 {
     vector_len(&ENV_VECTOR, &ENV_COUNT, index)
 }
 
+/// Present the pinned test-visible process inventory (ADR-0083 §3).
+///
+/// The runner execs a test image as `argv = ["rue-test", "<selector>"]` with
+/// `envp = ["RUE_TEST=1"]`, and the loader lays those strings on the initial
+/// stack before any Rue code runs — so `capture` has already recorded the
+/// selector by the time the dispatcher starts. Dropping the captured argument
+/// count to one is what hides it: `std.env` reads through these accessors, so
+/// after this call a test observes `arg_count() == 1`, `arg(0) == "rue-test"`,
+/// and the single `RUE_TEST=1` environment entry, and never the selector that
+/// varies per test.
+///
+/// Only the count moves. The vector pointers stay exactly as the loader left
+/// them — nothing is copied, nothing is freed — so this is a pure narrowing of
+/// what the accessors will report.
+///
+/// The dispatcher calls this once, before the selected test body runs.
+pub fn __rue_test_normalize_process() {
+    ARG_COUNT.store(1, Ordering::Relaxed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,5 +229,36 @@ mod tests {
         assert_eq!(__rue_env_count(), 0);
         assert!(__rue_env_ptr(0).is_null());
         assert_eq!(__rue_env_len(0), 0);
+
+        // The ADR-0083 §3 test-visible inventory, from the exact vectors the
+        // runner execs with. Normalization hides the selector by narrowing the
+        // count; the surviving `argv[0]` and the environment are untouched.
+        let program = b"rue-test\0";
+        let selector = b"0000000000000003\0";
+        let argv3: [*const u8; 3] = [program.as_ptr(), selector.as_ptr(), core::ptr::null()];
+        let marker = b"RUE_TEST=1\0";
+        let envp3: [*const u8; 2] = [marker.as_ptr(), core::ptr::null()];
+        // SAFETY: argv3/envp3 are valid terminated vectors.
+        unsafe { capture(2, argv3.as_ptr(), envp3.as_ptr()) };
+        assert_eq!(__rue_arg_count(), 2);
+
+        __rue_test_normalize_process();
+        assert_eq!(__rue_arg_count(), 1);
+        assert_eq!(__rue_arg_len(0), 8);
+        // SAFETY: index 0 is in range and addresses 8 readable bytes.
+        unsafe {
+            let ptr = __rue_arg_ptr(0);
+            assert_eq!(core::slice::from_raw_parts(ptr, 8), b"rue-test");
+        }
+        // The selector is out of range once normalized, so no test can read it.
+        assert!(__rue_arg_ptr(1).is_null());
+        assert_eq!(__rue_arg_len(1), 0);
+        assert_eq!(__rue_env_count(), 1);
+        assert_eq!(__rue_env_len(0), 10);
+        // SAFETY: index 0 is in range and addresses 10 readable bytes.
+        unsafe {
+            let ptr = __rue_env_ptr(0);
+            assert_eq!(core::slice::from_raw_parts(ptr, 10), b"RUE_TEST=1");
+        }
     }
 }

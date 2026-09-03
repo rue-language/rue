@@ -2221,6 +2221,8 @@ pub(in crate::sema) fn semantic_import_type_mentions_generic_parameter<K, M>(
             } => function_instance(base) || arguments(args),
             crate::FunctionInstanceKey::AnonymousMember { owner, .. }
             | crate::FunctionInstanceKey::DropGlue(owner) => type_instance(owner),
+            // No type arguments at all, so nothing generic can hide here.
+            crate::FunctionInstanceKey::TestDispatcher => false,
         }
     }
 

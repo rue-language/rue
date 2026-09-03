@@ -112,6 +112,37 @@ The manifest also distinguishes returning helpers from traps and process
 termination. Rue does not unwind across this boundary. Runtime traps report the
 diagnostic and terminate the process with the runtime-error status.
 
+## The test failure channel
+
+Five helpers exist only for `rue test` (ADR-0083 §3, §5.1). They are runner
+plumbing: no source spelling selects them, and the synthesized dispatcher `main`
+of a test image is their only caller in this revision.
+
+- `__rue_test_normalize_process` narrows the captured argument count to one, so
+  a test observes the pinned inventory rather than the selector it was
+  dispatched by.
+- `__rue_test_complete` writes the terminal completion record.
+- `__rue_test_failure_site` and `__rue_test_fail` report one structured failure
+  and abort. They are a pair because a failure record carries three byte views
+  plus a file, a line, and a column — ten arguments, where every runtime helper
+  is register-only and x86-64 affords six. The first stages the location, the
+  second emits the record and takes the ordinary panic path; nothing runs
+  between them, and the staged file bytes must stay readable across both.
+- `__rue_test_usage_error` writes one pinned diagnostic for a malformed
+  selector and *returns*, unlike every other stderr-writing runtime path,
+  because the dispatcher owns that case's exit status.
+
+The completion and failure records go to a dedicated inherited descriptor,
+number 3, one JSON object per line. Writes are best-effort: a test image run by
+hand has no such descriptor, so `EBADF` is expected rather than exceptional.
+The channel is not a security boundary — it prevents accidental collision with
+a test's own stdout, which is all its consumers are promised.
+
+Its capability class is **hermetic-compatible, on the same grounds as stdout**:
+runner-pinned, fully captured, and budgeted. ADR-0083 §5.1 records that
+classification in prose until the machine-checked manifest capability field
+arrives with the deferred capability ADR.
+
 ## Export classes
 
 The reserved `__rue_` namespace contains several deliberately distinct kinds

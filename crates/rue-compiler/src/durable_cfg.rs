@@ -301,7 +301,8 @@ fn foreign_callable_symbol(callable: &crate::FunctionInstanceKey) -> Option<Stri
         crate::FunctionInstanceKey::Definition(definition) => Some(definition.name().to_owned()),
         crate::FunctionInstanceKey::Specialization { base, .. } => foreign_callable_symbol(base),
         crate::FunctionInstanceKey::AnonymousMember { .. }
-        | crate::FunctionInstanceKey::DropGlue(_) => None,
+        | crate::FunctionInstanceKey::DropGlue(_)
+        | crate::FunctionInstanceKey::TestDispatcher => None,
     }
 }
 
