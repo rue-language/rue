@@ -1033,121 +1033,89 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // then reports non-exhaustiveness).
         if let Some(crate::sema::ComptimeSelection::Match { arm: selected_arm }) =
             ctx.comptime_selections.get(&match_inst)
+            && let Some(selected) =
+                crate::sema::comptime::prunable_match_body(self.body_rir_ref(), arms, *selected_arm)
         {
             // These scans only read pattern shapes, so they iterate the
             // borrowed RIR view; nothing here needs the owned patterns the
             // old per-arm materialization allocated (RUE-1661).
             let arm_views = self.body_rir_ref().match_arms(arms);
-            let selected = arm_views.get(*selected_arm).map(|(_, body)| body);
-            let mut prunable = !arm_views.is_empty() && selected.is_some();
-            let mut has_wildcard = false;
-            let mut bool_true_covered = false;
-            let mut bool_false_covered = false;
+            // Pattern *legality* is independent of arm *selection*.
+            // Spec 4.14:19 exempts only the analysis of unselected arm
+            // *bodies* (and reaffirms exhaustiveness) — it does NOT
+            // exempt the per-pattern legality rules of 4.7. So before
+            // pruning we still range-check every integer pattern
+            // against the scrutinee's declared type, exactly as the
+            // normal path below does via check_pattern_int: E0800 for
+            // an out-of-range literal (4.7:23) and E0801 for a negative
+            // pattern on an unsigned scrutinee (4.7:24). The comptime
+            // value substituted for the scrutinee mistypes as i32 at
+            // AIR emission (a known limitation), so we take the
+            // scrutinee's true type from Hindley-Milner inference
+            // (RUE-215).
+            let scrutinee_type = Self::get_resolved_type(ctx, scrutinee, span, "match scrutinee")?;
+            // Validate every scalar pattern before pruning. The selected
+            // body is exempt from analysis, but a malformed later pattern
+            // remains a source error (for example `0 => ..., true => ...`
+            // on an integer scrutinee).
             for (pattern, _) in arm_views.iter() {
-                match pattern {
-                    RirPatternView::Wildcard(_) => has_wildcard = true,
-                    RirPatternView::Bool(b, _) => {
-                        if b {
-                            bool_true_covered = true;
-                        } else {
-                            bool_false_covered = true;
-                        }
+                match &pattern {
+                    RirPatternView::Int {
+                        value: magnitude,
+                        negative,
+                        ..
+                    } if scrutinee_type.is_integer() => {
+                        self.check_pattern_int(
+                            *magnitude,
+                            *negative,
+                            scrutinee_type,
+                            pattern.span(),
+                        )?;
                     }
-                    RirPatternView::Int { .. } => {}
-                    RirPatternView::Path { .. } => {
-                        prunable = false;
-                        break;
+                    RirPatternView::Int { .. } => {
+                        return Err(CompileError::new(
+                            ErrorKind::TypeMismatch {
+                                expected: self.format_type_name(scrutinee_type),
+                                found: "integer".to_string(),
+                            },
+                            pattern.span(),
+                        ));
                     }
+                    RirPatternView::Bool(_, _) if scrutinee_type != Type::BOOL => {
+                        return Err(CompileError::new(
+                            ErrorKind::TypeMismatch {
+                                expected: self.format_type_name(scrutinee_type),
+                                found: "bool".to_string(),
+                            },
+                            pattern.span(),
+                        ));
+                    }
+                    _ => {}
                 }
             }
-            // Exhaustiveness is a property of the pattern set, not of
-            // the arm bodies, so it stays checked even when the match
-            // value is comptime-known (spec 4.7:9): a wildcard, or
-            // both bool values for a bool scrutinee. A non-exhaustive
-            // match falls through to the normal path for the proper
-            // diagnostic (which also covers "no arm matched").
-            let exhaustive = has_wildcard || (bool_true_covered && bool_false_covered);
-            if prunable && exhaustive {
-                // Pattern *legality* is independent of arm *selection*.
-                // Spec 4.14:19 exempts only the analysis of unselected arm
-                // *bodies* (and reaffirms exhaustiveness) — it does NOT
-                // exempt the per-pattern legality rules of 4.7. So before
-                // pruning we still range-check every integer pattern
-                // against the scrutinee's declared type, exactly as the
-                // normal path below does via check_pattern_int: E0800 for
-                // an out-of-range literal (4.7:23) and E0801 for a negative
-                // pattern on an unsigned scrutinee (4.7:24). The comptime
-                // value substituted for the scrutinee mistypes as i32 at
-                // AIR emission (a known limitation), so we take the
-                // scrutinee's true type from Hindley-Milner inference
-                // (RUE-215).
-                let scrutinee_type =
-                    Self::get_resolved_type(ctx, scrutinee, span, "match scrutinee")?;
-                // Validate every scalar pattern before pruning. The selected
-                // body is exempt from analysis, but a malformed later pattern
-                // remains a source error (for example `0 => ..., true => ...`
-                // on an integer scrutinee).
-                for (pattern, _) in arm_views.iter() {
-                    match &pattern {
-                        RirPatternView::Int {
-                            value: magnitude,
-                            negative,
-                            ..
-                        } if scrutinee_type.is_integer() => {
-                            self.check_pattern_int(
-                                *magnitude,
-                                *negative,
-                                scrutinee_type,
-                                pattern.span(),
-                            )?;
-                        }
-                        RirPatternView::Int { .. } => {
-                            return Err(CompileError::new(
-                                ErrorKind::TypeMismatch {
-                                    expected: self.format_type_name(scrutinee_type),
-                                    found: "integer".to_string(),
-                                },
-                                pattern.span(),
-                            ));
-                        }
-                        RirPatternView::Bool(_, _) if scrutinee_type != Type::BOOL => {
-                            return Err(CompileError::new(
-                                ErrorKind::TypeMismatch {
-                                    expected: self.format_type_name(scrutinee_type),
-                                    found: "bool".to_string(),
-                                },
-                                pattern.span(),
-                            ));
-                        }
-                        _ => {}
-                    }
-                }
-                // Unreachable-pattern diagnostics (spec 4.7:20) are a
-                // property of the pattern *set*, not of which arm the
-                // comptime value selects, so they must still fire even
-                // though we prune to a single body below (RUE-555). The
-                // normal per-arm loop that would otherwise emit them is
-                // skipped by the early return, so run them here. Only
-                // pattern shapes are inspected — no arm body is analyzed,
-                // honoring 4.14:19.
-                self.warn_unreachable_pruned_arms(arm_views.iter(), scrutinee_type, ctx);
-                if let Some(body) = selected {
-                    ctx.push_scope();
-                    let boundary = ctx.ownership.enter_full_expression();
-                    let result = self.analyze_inst(air, body, ctx);
-                    let loans = ctx.ownership.nested_expression_loans(&boundary);
-                    ctx.ownership.exit_full_expression(boundary);
-                    let result = result?;
-                    let selected_divergence = ctx.divergence_kinds;
-                    ctx.pop_scope();
-                    ctx.divergence_kinds = prior_divergence.union(selected_divergence);
-                    // The selected arm is this `match`'s value, so loans
-                    // surviving its tail belong to the enclosing full
-                    // expression (RUE-1678).
-                    self.readmit_arm_accessor_loans(ctx, loans, result.continues)?;
-                    return Ok(result);
-                }
-            }
+            // Unreachable-pattern diagnostics (spec 4.7:20) are a
+            // property of the pattern *set*, not of which arm the
+            // comptime value selects, so they must still fire even
+            // though we prune to a single body below (RUE-555). The
+            // normal per-arm loop that would otherwise emit them is
+            // skipped by the early return, so run them here. Only
+            // pattern shapes are inspected — no arm body is analyzed,
+            // honoring 4.14:19.
+            self.warn_unreachable_pruned_arms(arm_views.iter(), scrutinee_type, ctx);
+            ctx.push_scope();
+            let boundary = ctx.ownership.enter_full_expression();
+            let result = self.analyze_inst(air, selected, ctx);
+            let loans = ctx.ownership.nested_expression_loans(&boundary);
+            ctx.ownership.exit_full_expression(boundary);
+            let result = result?;
+            let selected_divergence = ctx.divergence_kinds;
+            ctx.pop_scope();
+            ctx.divergence_kinds = prior_divergence.union(selected_divergence);
+            // The selected arm is this `match`'s value, so loans
+            // surviving its tail belong to the enclosing full
+            // expression (RUE-1678).
+            self.readmit_arm_accessor_loans(ctx, loans, result.continues)?;
+            return Ok(result);
         }
 
         // Derive the expected scrutinee type from the arm patterns, so a

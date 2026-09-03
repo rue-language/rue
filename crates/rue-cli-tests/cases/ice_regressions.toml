@@ -23,6 +23,17 @@ name = "ICE regressions"
 description = "Minimal programs that used to crash the compiler; each must now compile-or-cleanly-error with no signal (RUE-51)."
 
 [[case]]
+name = "nonexhaustive_comptime_match_infers_all_arms_rue1910"
+description = "RUE-1910: a selected but non-exhaustive comptime match takes the ordinary semantic path, so inference must cover every arm that AIR analysis visits."
+files = [{ path = "main.rue", source = """
+fn f(comptime n: i32) -> i32 { match n { 0 => 1, 0 => 1 } }
+fn main() -> i32 { f(0) }
+""" }]
+compile_fail = true
+error_contains = ["E0600", "match is not exhaustive"]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "type inference did not resolve type"]
+
+[[case]]
 name = "loop_break_tail_in_never_function_rue1911"
 description = "RUE-1911: a reachable never-returning function whose loop can break must be rejected by semantic analysis before its unit return reaches CFG verification."
 files = [{ path = "main.rue", source = """

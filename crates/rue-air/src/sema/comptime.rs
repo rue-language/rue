@@ -6,7 +6,8 @@
 
 use ahash::{AHashMap, AHashSet};
 use rue_rir::{
-    InstData, InstRef, RepeatCount, Rir, RirIntrinsicArgsRange, SymbolHandle, ValidatedRir,
+    InstData, InstRef, RepeatCount, Rir, RirIntrinsicArgsRange, RirMatchArmsRange, SymbolHandle,
+    ValidatedRir,
 };
 use rue_span::Span;
 use std::hash::Hash;
@@ -76,6 +77,41 @@ pub(crate) const COMPTIME_SOURCE: &str = concat!(
 /// Maximum propagated comptime call depth. Depth zero is the root call, and
 /// expression recursion does not spend this budget.
 pub const MAX_COMPTIME_CALL_DEPTH: usize = 64;
+
+/// Return the selected body only when a comptime-known match can use the
+/// pruned semantic path.
+///
+/// Inference and AIR analysis must agree on this boundary. In particular,
+/// integer matches without a wildcard are non-exhaustive and therefore take
+/// the ordinary all-arms path so sema can report that error. Recording a
+/// selection for such a match would make inference skip the unselected bodies
+/// even though AIR analysis still visits them.
+pub(crate) fn prunable_match_body(
+    rir: &Rir,
+    arms: &RirMatchArmsRange,
+    selected_arm: usize,
+) -> Option<InstRef> {
+    let arm_views = rir.match_arms(arms);
+    let selected = arm_views.get(selected_arm).map(|(_, body)| body)?;
+    let mut has_wildcard = false;
+    let mut bool_true_covered = false;
+    let mut bool_false_covered = false;
+    for (pattern, _) in arm_views.iter() {
+        match decode_comptime_match_pattern(&pattern, |_| ()) {
+            ComptimeMatchPattern::Wildcard => has_wildcard = true,
+            ComptimeMatchPattern::Bool(value) => {
+                if value {
+                    bool_true_covered = true;
+                } else {
+                    bool_false_covered = true;
+                }
+            }
+            ComptimeMatchPattern::Integer(_) => {}
+            ComptimeMatchPattern::Path { .. } => return None,
+        }
+    }
+    (has_wildcard || (bool_true_covered && bool_false_covered)).then_some(selected)
+}
 
 /// Convert the number of active ancestor calls into the propagated depth of a
 /// child call. Root evaluation is depth zero, so its first child is depth one.

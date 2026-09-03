@@ -1113,7 +1113,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     if can_select {
                         canonical_evaluations = canonical_evaluations.saturating_add(1);
                         scope_materializations = scope_materializations.saturating_add(1);
-                        if let Some(arm) = self
+                        if let Some(selected_arm) = self
                             .select_comptime_match_with_resolved_types_and_membership(
                                 scrutinee,
                                 &arms,
@@ -1122,9 +1122,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                 value_subst,
                                 runtime_binding_membership_view(&bindings),
                             )?
+                            && crate::sema::comptime::prunable_match_body(
+                                self.body_rir_ref(),
+                                &arms,
+                                selected_arm,
+                            )
+                            .is_some()
                         {
-                            selections
-                                .insert(inst_ref, crate::sema::ComptimeSelection::Match { arm });
+                            selections.insert(
+                                inst_ref,
+                                crate::sema::ComptimeSelection::Match { arm: selected_arm },
+                            );
                         }
                     }
                 }
