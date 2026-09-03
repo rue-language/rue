@@ -338,6 +338,11 @@ impl CompilerSession {
             c_export_roots: projection.c_export_roots,
             modules: program.modules().to_vec().into(),
             main,
+            test_inventory: crate::test_inventory::collect_test_inventory(
+                program.modules(),
+                &root_identities,
+            )
+            .into(),
             roots: root_identities,
             closure: closure.clone(),
             work,
@@ -536,6 +541,32 @@ impl CompilerSession {
         }
     }
 
+    /// The request's ordered test inventory, analyzed but not lowered.
+    ///
+    /// This stops at the body graph deliberately (ADR-0083 §2: `--list` does
+    /// semantic analysis of the test closure and no codegen), so it is the one
+    /// entry point that answers a listing without building a CFG.
+    pub(crate) fn rooted_test_inventory(
+        &mut self,
+        options: &CompileOptions,
+    ) -> Result<Vec<crate::unstable::TestInventoryEntry>, CompileErrors> {
+        match self.rooted_body_graph_with_cancellation(options, rue_query::CancellationToken::new())
+        {
+            Ok(graph) => Ok(graph
+                .test_inventory
+                .iter()
+                .map(|test| test.entry.clone())
+                .collect()),
+            Err(SemanticRequestControl::Compile(errors)) => Err(errors),
+            Err(SemanticRequestControl::Abort(abort)) => {
+                Err(pipeline_abort_errors("rooted test inventory", abort))
+            }
+            Err(SemanticRequestControl::Parked(park)) => {
+                Err(unresolved_toolchain_park_errors(&park))
+            }
+        }
+    }
+
     pub(crate) fn rooted_pre_optimization_cfg(
         &mut self,
         options: &CompileOptions,
@@ -607,6 +638,21 @@ impl CompilerSession {
                 .cloned()
                 .map(|owner| crate::FunctionInstanceKey::DropGlue(Node::new(owner))),
         );
+        // A test image needs an entry point, and only a request that lowers one
+        // synthesizes it: `rooted_test_inventory` stops at the body graph, so a
+        // listing never builds a dispatcher it would not link (ADR-0083 §2,
+        // §3). The table is the inventory verbatim, so ordinal `n` here is the
+        // same `n` a listing published.
+        let dispatches_tests = options.root_selection == crate::RootSelection::Tests;
+        let test_dispatcher_table: Arc<[crate::FunctionInstanceKey]> = graph
+            .test_inventory
+            .iter()
+            .map(|test| test.identity.clone())
+            .collect::<Vec<_>>()
+            .into();
+        if dispatches_tests {
+            identities.insert(crate::FunctionInstanceKey::TestDispatcher);
+        }
         // Only an executable request has a `main`, and only its symbol is
         // spelled unmangled (ADR-0083 §1: a test request has no entry point).
         let main_identity = graph
@@ -815,6 +861,49 @@ impl CompilerSession {
                 crate::cfg_query::CfgSemanticInput::DropGlue {
                     owner: owner.clone(),
                     facts: Box::new(facts.clone()),
+                    materialization: Arc::new(materialization),
+                    body_span: fallback_span,
+                },
+                fallback_span,
+            ));
+        }
+        if dispatches_tests {
+            work.cfg.materialization_fact_selections += 1;
+            // Fact selection walks the same body the CFG evaluator will
+            // synthesize, so the callables the dispatcher names are exactly the
+            // tests in the table.
+            let body = crate::test_dispatcher::synthesize_test_dispatcher(&test_dispatcher_table);
+            let materialization =
+                crate::local_semantic_materialization::select_materialization_facts(
+                    &crate::FunctionInstanceKey::TestDispatcher,
+                    &body,
+                    &materialization_index,
+                    &callable_symbols,
+                    &mut fact_closures,
+                )
+                .map_err(|error| {
+                    CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "test-dispatcher materialization fact selection failed: {error:?}"
+                        )),
+                        fallback_span,
+                    )
+                })?;
+            work.cfg.materialization_declarations_selected += materialization.declarations.len();
+            work.cfg.materialization_anonymous_nominals_selected +=
+                materialization.anonymous_nominals.len();
+            work.cfg.materialization_callables_selected += materialization.callables.len();
+            work.cfg.materialization_nominal_metadata_selected +=
+                materialization.nominal_metadata.len();
+            work.cfg.materialization_modules_selected += materialization.modules.len();
+            work.cfg.materialization_builtin_nominals_selected +=
+                materialization.builtin_nominals.len();
+            work.cfg.materialization_required_types_selected +=
+                materialization.required_types.len();
+            cfg_inputs.push((
+                crate::FunctionInstanceKey::TestDispatcher,
+                crate::cfg_query::CfgSemanticInput::TestDispatcher {
+                    table: Arc::clone(&test_dispatcher_table),
                     materialization: Arc::new(materialization),
                     body_span: fallback_span,
                 },
@@ -2129,6 +2218,7 @@ pub(super) fn stable_function_definition_root(
         F::Definition(value) => Some(value),
         F::Specialization { base, .. } => stable_function_definition_root(base),
         F::AnonymousMember { owner, .. } | F::DropGlue(owner) => stable_type_definition_root(owner),
+        F::TestDispatcher => None,
     }
 }
 
@@ -2192,7 +2282,8 @@ fn rooted_unused_function_warnings(
             crate::FunctionInstanceKey::Definition(definition) => Some(definition),
             crate::FunctionInstanceKey::Specialization { base, .. } => source_definition(base),
             crate::FunctionInstanceKey::AnonymousMember { .. }
-            | crate::FunctionInstanceKey::DropGlue(_) => None,
+            | crate::FunctionInstanceKey::DropGlue(_)
+            | crate::FunctionInstanceKey::TestDispatcher => None,
         }
     }
 

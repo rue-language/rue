@@ -18,7 +18,8 @@ $runtime
                         }
                         crate::FunctionInstanceKey::Specialization { .. } => false,
                         crate::FunctionInstanceKey::AnonymousMember { .. }
-                        | crate::FunctionInstanceKey::DropGlue(_) => true,
+                        | crate::FunctionInstanceKey::DropGlue(_)
+                        | crate::FunctionInstanceKey::TestDispatcher => true,
                     };
                     if transaction_only {
                         let transaction = context

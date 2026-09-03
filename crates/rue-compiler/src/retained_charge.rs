@@ -630,6 +630,7 @@ impl<D: RetainedCharge, M: RetainedCharge> RetainedCharge for rue_air::FunctionI
                 .retained_charge()
                 .saturating_add(member.retained_charge()),
             Self::DropGlue(value) => value.retained_charge(),
+            Self::TestDispatcher => 0,
         }
     }
 }

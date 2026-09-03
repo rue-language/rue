@@ -676,6 +676,83 @@ pub fn executable_in_compile_scope(
     session.executable_in_compile_scope(options)
 }
 
+/// One test declaration in a request's ordered inventory (ADR-0083 §2).
+///
+/// `id` is the stable identity `<module>::<name>` every other surface refers to
+/// a test by — filters, event streams, and repro argv. `ordinal` is its
+/// position in this inventory and, equivalently, the selector the test image
+/// dispatches it on; the two can never disagree because one computation
+/// produces both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestInventoryEntry {
+    pub id: String,
+    pub module: String,
+    pub name: String,
+    pub file: String,
+    /// 1-based line of the `test "name"` header, or `0` when the declaration
+    /// could not be located in its module's syntax tree.
+    pub line: u32,
+    /// 1-based column of that header, on the same terms as `line`.
+    pub column: u32,
+    pub ordinal: u32,
+}
+
+/// Every test in a request's closure, in stable-ID order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TestInventory {
+    pub entries: Vec<TestInventoryEntry>,
+}
+
+/// Analyze a test closure and publish its ordered inventory, without codegen.
+///
+/// This is the discovery half of ADR-0083 §2's `--list`: semantic analysis of
+/// every test body in the closure, and nothing after it. No CFG is built, no
+/// object is produced, and no image is linked — a listing must never pay for
+/// terminal artifacts it does not show.
+///
+/// `options.root_selection` must be [`crate::RootSelection::Tests`]. An
+/// executable request has no test roots at all, so answering it with an empty
+/// inventory would report "no tests" for a program full of them.
+pub fn test_inventory(
+    session: &mut crate::CompilerSession,
+    options: &crate::CompileOptions,
+) -> crate::MultiErrorResult<TestInventory> {
+    require_test_root_selection(options)?;
+    Ok(TestInventory {
+        entries: session.rooted_test_inventory(options)?,
+    })
+}
+
+/// Link the test image for a request's closure and publish its inventory.
+///
+/// The image is an ordinary executable produced through the ordinary image
+/// path: every test in the closure plus the synthesized dispatcher `main`
+/// (ADR-0083 §3), which the runner execs once per test with that test's
+/// ordinal as its selector. The returned inventory is what assigns those
+/// ordinals, so a caller never has to re-derive them.
+///
+/// `options.root_selection` must be [`crate::RootSelection::Tests`].
+pub fn test_image_in_compile_scope(
+    session: &mut crate::CompilerSession,
+    options: &crate::CompileOptions,
+) -> crate::MultiErrorResult<(crate::CompileOutput, TestInventory)> {
+    require_test_root_selection(options)?;
+    let entries = session.rooted_test_inventory(options)?;
+    let image = session.executable_in_compile_scope(options)?;
+    Ok((image, TestInventory { entries }))
+}
+
+fn require_test_root_selection(options: &crate::CompileOptions) -> crate::MultiErrorResult<()> {
+    match options.root_selection {
+        crate::RootSelection::Tests => Ok(()),
+        other => Err(crate::CompileErrors::from(
+            crate::CompileError::without_span(crate::ErrorKind::InvalidCompilerInput(format!(
+                "a test request requires RootSelection::Tests, not {other:?}"
+            ))),
+        )),
+    }
+}
+
 /// Cloneable cancellation authority for one retained-host compile cycle.
 ///
 /// This deliberately hides query-runtime identities and keys. Canceling a

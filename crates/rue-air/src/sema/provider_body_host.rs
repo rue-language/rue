@@ -4236,13 +4236,15 @@ where
                             base_definition(base)
                         }
                         crate::FunctionInstanceKey::AnonymousMember { .. }
-                        | crate::FunctionInstanceKey::DropGlue(_) => None,
+                        | crate::FunctionInstanceKey::DropGlue(_)
+                        | crate::FunctionInstanceKey::TestDispatcher => None,
                     }
                 }
                 base_definition(base)?
             }
             crate::FunctionInstanceKey::AnonymousMember { .. }
-            | crate::FunctionInstanceKey::DropGlue(_) => return None,
+            | crate::FunctionInstanceKey::DropGlue(_)
+            | crate::FunctionInstanceKey::TestDispatcher => return None,
         };
         let name = self.source.definition_name(definition)?;
         let signature = self.source.function(definition)?;
@@ -6139,6 +6141,9 @@ where
         }
         crate::FunctionInstanceKey::DropGlue(_) => {
             Err("drop glue cannot produce an anonymous member body")
+        }
+        crate::FunctionInstanceKey::TestDispatcher => {
+            Err("the test dispatcher cannot produce an anonymous member body")
         }
     }
 }

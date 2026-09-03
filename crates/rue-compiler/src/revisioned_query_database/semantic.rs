@@ -292,7 +292,8 @@ pub(crate) fn function_definition_key(
         crate::FunctionInstanceKey::Definition(key) => Some(key),
         crate::FunctionInstanceKey::Specialization { base, .. } => function_definition_key(base),
         crate::FunctionInstanceKey::AnonymousMember { .. }
-        | crate::FunctionInstanceKey::DropGlue(_) => None,
+        | crate::FunctionInstanceKey::DropGlue(_)
+        | crate::FunctionInstanceKey::TestDispatcher => None,
     }
 }
 
@@ -323,7 +324,9 @@ pub(super) fn function_body_source_definition_key(
             };
             producer_body_source_definition_key(&owner.producer)
         }
-        crate::FunctionInstanceKey::DropGlue(_) => None,
+        crate::FunctionInstanceKey::DropGlue(_) | crate::FunctionInstanceKey::TestDispatcher => {
+            None
+        }
     }
 }
 

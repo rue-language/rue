@@ -5704,6 +5704,233 @@ fn executable_cfg_closure_excludes_test_units() {
     );
 }
 
+/// Two modules' tests share one inventory, ordered by the whole stable ID.
+///
+/// The ordering is what binds a listing to the image's selectors, so this pins
+/// both the ID spelling and that an ordinal is its index (ADR-0083 §2, §3).
+#[test]
+fn test_inventory_orders_every_module_by_stable_id() {
+    let source = snapshot(
+        &[
+            (
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn main() -> i32 { let h = @import(\"helper.rue\"); 0 }\n\
+                 test \"zulu\" { }\n\
+                 test \"alpha\" { }\n",
+            ),
+            (
+                2,
+                "/p/helper.rue",
+                "helper.rue",
+                "pub fn used() -> i32 { 3 }\n\
+                 test \"beta\" { let x = used(); }\n",
+            ),
+        ],
+        1,
+    );
+    let mut session = CompilerSession::new();
+    publish_with_test_imports(&mut session, &source);
+
+    let inventory = crate::unstable::test_inventory(
+        &mut session,
+        &test_declaration_options(crate::RootSelection::Tests),
+    )
+    .expect("the test closure analyzes");
+
+    let ids = inventory
+        .entries
+        .iter()
+        .map(|entry| entry.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        vec!["helper.rue::beta", "main.rue::alpha", "main.rue::zulu"],
+        "the inventory is byte order over the whole `<module>::<name>` ID"
+    );
+    for (index, entry) in inventory.entries.iter().enumerate() {
+        assert_eq!(entry.ordinal as usize, index, "{entry:?}");
+        assert_eq!(entry.id, format!("{}::{}", entry.module, entry.name));
+        assert!(entry.line > 0 && entry.column > 0, "{entry:?}");
+        assert!(entry.file.ends_with(&entry.module), "{entry:?}");
+    }
+    let alpha = &inventory.entries[1];
+    assert_eq!(alpha.module, "main.rue");
+    assert_eq!(alpha.name, "alpha");
+    // `test "alpha"` is the third line of `main.rue`, at its first column.
+    assert_eq!((alpha.line, alpha.column), (3, 1));
+}
+
+/// A listing analyzes the closure and stops (ADR-0083 §2): no codegen, no
+/// object projection.
+#[test]
+fn test_inventory_performs_no_codegen() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        "fn helper() -> i32 { 7 }\ntest \"lists\" { let x = helper(); }",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+
+    let options = test_declaration_options(crate::RootSelection::Tests);
+    let inventory =
+        crate::unstable::test_inventory(&mut session, &options).expect("the closure analyzes");
+    assert_eq!(inventory.entries.len(), 1);
+    assert_eq!(inventory.entries[0].id, "main.rue::lists");
+    assert!(
+        session.codegen_executions().is_empty(),
+        "a listing must not reach codegen: {:?}",
+        session.codegen_executions()
+    );
+    assert_eq!(session.codegen_collections(), 0);
+    assert!(session.object_projection_executions().is_empty());
+    assert_eq!(session.object_projection_collections(), 0);
+}
+
+/// The facade refuses a request whose roots are not tests: answering an
+/// executable request with an empty inventory would report "no tests" for a
+/// program full of them.
+#[test]
+fn test_requests_require_the_tests_root_selection() {
+    let source =
+        SourceSnapshot::single("main.rue", "fn main() -> i32 { 0 }\ntest \"present\" { }").unwrap();
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+
+    let options = test_declaration_options(crate::RootSelection::Executable);
+    let listing = crate::unstable::test_inventory(&mut session, &options)
+        .err()
+        .expect("a listing refuses an executable root selection");
+    let image = crate::unstable::test_image_in_compile_scope(&mut session, &options)
+        .map(|_| ())
+        .err()
+        .expect("an image refuses an executable root selection");
+    for errors in [listing, image] {
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(error.kind, ErrorKind::InvalidCompilerInput(_))),
+            "unexpected diagnostics: {errors:?}"
+        );
+    }
+}
+
+/// The dispatcher joins a test request's CFG closure under the unmangled
+/// `main`, and an executable request's closure is unchanged (ADR-0083 §3).
+#[test]
+fn the_test_dispatcher_is_the_test_image_entry_point() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        "fn main() -> i32 { 0 }\ntest \"dispatched\" { }",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+
+    let executable = session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Executable))
+        .expect("the executable program compiles");
+    assert!(
+        !executable
+            .functions()
+            .iter()
+            .any(|unit| unit.function == crate::FunctionInstanceKey::TestDispatcher),
+        "an executable request synthesizes no dispatcher"
+    );
+    let executable_symbols = defined_symbols(&executable);
+    assert!(executable_symbols.iter().any(|symbol| symbol == "main"));
+
+    let tests = session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Tests))
+        .expect("the test image compiles");
+    let dispatchers = tests
+        .functions()
+        .iter()
+        .filter(|unit| unit.function == crate::FunctionInstanceKey::TestDispatcher)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        dispatchers.len(),
+        1,
+        "exactly one dispatcher per test image"
+    );
+    assert_eq!(
+        dispatchers[0].record.codegen.defined_symbol.as_ref(),
+        "main",
+        "the loader looks the entry point up by that exact spelling"
+    );
+
+    // The executable graph is identical to what it was before a test request
+    // ran: the two root sets are disjoint (ADR-0083 §1).
+    let executable_again = session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Executable))
+        .expect("the executable program still compiles");
+    assert_eq!(defined_symbols(&executable_again), executable_symbols);
+}
+
+/// `extern "C"` exports are executable-only (ADR-0083 §1). A test image links
+/// no export thunk, because a test request roots no c-export.
+#[test]
+fn a_test_request_roots_no_c_export() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        "pub extern \"C\" fn rue_add(a: i32, b: i32) -> i32 { a + b }\n\
+         fn main() -> i32 { 0 }\n\
+         test \"present\" { }",
+    )
+    .unwrap();
+    let options = |root_selection| CompileOptions {
+        preview_features: PreviewFeatures::from([
+            PreviewFeature::TestDeclarations,
+            PreviewFeature::CFfi,
+        ]),
+        root_selection,
+        ..CompileOptions::default()
+    };
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+
+    let executable = session
+        .rooted_cfg(&options(crate::RootSelection::Executable))
+        .expect("the executable program compiles");
+    let exported = crate::session::collect_rooted_exports(&executable.graph, &executable.cfgs);
+    assert_eq!(
+        exported
+            .iter()
+            .map(|thunk| thunk.exported_symbol.as_str())
+            .collect::<Vec<_>>(),
+        vec!["rue_add"],
+        "an executable request links its c-export thunk"
+    );
+
+    let tests = session
+        .rooted_cfg(&options(crate::RootSelection::Tests))
+        .expect("the test image compiles");
+    assert!(
+        crate::session::collect_rooted_exports(&tests.graph, &tests.cfgs).is_empty(),
+        "a test image exposes only its dispatcher entry point"
+    );
+    assert!(
+        !tests
+            .functions()
+            .iter()
+            .any(|unit| unit.source_name() == "rue_add"),
+        "an unreferenced c-export is not even reached by a test request"
+    );
+}
+
+/// The defined machine symbols of a rooted CFG closure, sorted.
+fn defined_symbols(output: &crate::session::RootedCfgOutput) -> Vec<String> {
+    let mut symbols = output
+        .functions()
+        .iter()
+        .map(|unit| unit.record.codegen.defined_symbol.to_string())
+        .collect::<Vec<_>>();
+    symbols.sort();
+    symbols
+}
+
 /// A test body's calls are whole-program references, so a helper called only
 /// from a test does not warn as unused in an executable build (ADR-0083 §1).
 #[test]

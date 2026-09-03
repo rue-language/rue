@@ -718,6 +718,7 @@ fn encode_function(value: &FunctionInstanceKey, output: &mut String) {
             tag(output, 3);
             encode_type(value, output);
         }
+        FunctionInstanceKey::TestDispatcher => tag(output, 4),
     }
 }
 

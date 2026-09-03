@@ -149,6 +149,16 @@ pub enum RuntimeCallKind {
     ByteCopy,
     ByteMove,
     ByteSet,
+    /// Present the pinned test-visible process inventory (ADR-0083 §3).
+    TestNormalizeProcess,
+    /// Write the dispatcher's terminal completion frame (ADR-0083 §3).
+    TestComplete,
+    /// Stage the source location the next failure record carries.
+    TestFailureSite,
+    /// Report a structured failure on the §5.1 channel, then abort.
+    TestFail,
+    /// Write the pinned malformed-selector diagnostic and return.
+    TestUsageError,
 }
 
 const STR_BYTE_AT: &[RuntimeOperandOrigin] = &[
@@ -290,8 +300,33 @@ const BYTE_SET: &[RuntimeOperandOrigin] = &[
     },
 ];
 
+// The ADR-0083 §5.1 failure record, in the two calls a register-only helper
+// budget affords: `__rue_test_failure_site(file, line, column)` stages the
+// location, then `__rue_test_fail(kind, message, payload)` emits the record and
+// aborts. `payload` is the open, versioned field an assertion library fills in.
+const TEST_FAILURE_SITE: &[RuntimeOperandOrigin] = &[
+    RuntimeOperandOrigin::TextPointer(0),
+    RuntimeOperandOrigin::TextLength(0),
+    RuntimeOperandOrigin::ValueArgument {
+        index: 1,
+        ty: AbiType::U32,
+    },
+    RuntimeOperandOrigin::ValueArgument {
+        index: 2,
+        ty: AbiType::U32,
+    },
+];
+const TEST_FAIL: &[RuntimeOperandOrigin] = &[
+    RuntimeOperandOrigin::TextPointer(0),
+    RuntimeOperandOrigin::TextLength(0),
+    RuntimeOperandOrigin::TextPointer(1),
+    RuntimeOperandOrigin::TextLength(1),
+    RuntimeOperandOrigin::TextPointer(2),
+    RuntimeOperandOrigin::TextLength(2),
+];
+
 impl RuntimeCallKind {
-    pub const ALL: [Self; 41] = [
+    pub const ALL: [Self; 46] = [
         Self::StrByteAt,
         Self::StrCharScalar,
         Self::StrCharNext,
@@ -333,6 +368,11 @@ impl RuntimeCallKind {
         Self::ByteCopy,
         Self::ByteMove,
         Self::ByteSet,
+        Self::TestNormalizeProcess,
+        Self::TestComplete,
+        Self::TestFailureSite,
+        Self::TestFail,
+        Self::TestUsageError,
     ];
 
     pub const fn helper(self) -> RuntimeHelperId {
@@ -376,6 +416,11 @@ impl RuntimeCallKind {
             Self::ByteCopy => RuntimeHelperId::ByteCopy,
             Self::ByteMove => RuntimeHelperId::ByteMove,
             Self::ByteSet => RuntimeHelperId::ByteSet,
+            Self::TestNormalizeProcess => RuntimeHelperId::TestNormalizeProcess,
+            Self::TestComplete => RuntimeHelperId::TestComplete,
+            Self::TestFailureSite => RuntimeHelperId::TestFailureSite,
+            Self::TestFail => RuntimeHelperId::TestFail,
+            Self::TestUsageError => RuntimeHelperId::TestUsageError,
         }
     }
 
@@ -405,7 +450,10 @@ impl RuntimeCallKind {
             | Self::RandomU32
             | Self::RandomU64
             | Self::ArgCount
-            | Self::EnvCount => NONE,
+            | Self::EnvCount
+            | Self::TestNormalizeProcess
+            | Self::TestComplete
+            | Self::TestUsageError => NONE,
             Self::ArgPtr | Self::ArgLen | Self::EnvPtr | Self::EnvLen => PROCESS_INDEX,
             Self::ReadLine => READ_LINE,
             Self::ParseI32 | Self::ParseI64 | Self::ParseU32 | Self::ParseU64 => PARSE,
@@ -414,6 +462,8 @@ impl RuntimeCallKind {
             Self::Realloc | Self::Resize => RESIZE_LAYOUT,
             Self::ByteCopy | Self::ByteMove => BYTE_COPY,
             Self::ByteSet => BYTE_SET,
+            Self::TestFailureSite => TEST_FAILURE_SITE,
+            Self::TestFail => TEST_FAIL,
         }
     }
 

@@ -1054,8 +1054,8 @@ mod tests {
             target: Target::X86_64Linux,
             object_format: ProgramObjectFormat::Elf,
             entry_point: "_start",
-            runtime_abi_version: 1,
-            runtime_abi_symbol: "__rue_runtime_abi_v1",
+            runtime_abi_version: rue_runtime_abi::RUNTIME_ABI_VERSION,
+            runtime_abi_symbol: rue_runtime_abi::RUNTIME_ABI_VERSION_SYMBOL,
             runtime_archive: RuntimeArchiveIdentity::for_target(Target::X86_64Linux),
             required_runtime_symbols: vec!["_start".to_owned()],
         }

@@ -767,6 +767,12 @@ fn live_callable_symbol(identity: &FunctionInstanceKey) -> Option<String> {
         FunctionInstanceKey::DropGlue(owner) => {
             Some(format!("__rue_drop_{}", drop_glue_type_name(owner)?))
         }
+        // The test image's entry point. The loader looks up `main` by that
+        // exact unmangled spelling (`entry.rs`), so the dispatcher's symbol is
+        // not a naming preference — it is the ABI. Spelling it here rather than
+        // as a second special case beside the executable's `main` keeps one
+        // symbol authority for every rooted callable.
+        FunctionInstanceKey::TestDispatcher => Some("main".to_owned()),
     }
 }
 
@@ -1536,6 +1542,10 @@ pub(crate) fn select_materialization_facts(
                 }
                 FunctionInstanceKey::AnonymousMember { owner, .. }
                 | FunctionInstanceKey::DropGlue(owner) => self.instance_type(owner),
+                // The dispatcher names no declaration and no type, so it
+                // contributes no module or nominal fact of its own; the tests
+                // it calls contribute theirs through the same walk.
+                FunctionInstanceKey::TestDispatcher => {}
             }
         }
 
