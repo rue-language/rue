@@ -333,8 +333,8 @@ An unfiltered `//...` run is deliberately not accepted as a selector. The
 nightly release sweep runs every tier by accident of not filtering, so it keeps
 reporting coverage through the very edit that strands a tier, and it names no
 owner. The gate is tier-granular; per-target coverage stays with each suite's
-own inventory gate (the RUE-924 audit in `test.sh`,
-`//:cli-shard-coverage-validation`).
+own inventory gate (the RUE-924 audit in `test.sh`, plus the shard planner's
+live-graph union assertion).
 
 The exhaustive CLI- and specification-oracle differential harnesses are
 `slow`, and are the slow tier's pre-merge selector: `platform-corpus` runs
@@ -456,11 +456,20 @@ run on Linux. The shards carry both `rue_heavy_suite` (so
 `ci-heavy-suite` runs them and the broad pass skips them) and `rue_cli_shard`
 (so a local `./test.sh` full run executes the monolithic `//:cli-tests` once
 instead of every slice — `test.sh` subtracts the `rue_cli_shard` set from its
-heavy-suite discovery). Nothing else re-runs the slices on required CI, so
-`//:cli-shard-coverage-validation` fails the build if the shard targets in
-`BUCK` and the `platform-corpus` matrix in `ci.yml` ever drift apart. Changing
-`CLI_TEST_SHARD_COUNT` therefore means updating the matrix; the protected
-`CI success` context remains unchanged.
+heavy-suite discovery). Nothing else re-runs the slices on required CI.
+`scripts/plan-cli-shards.py` therefore queries every live `rue_cli_shard`
+target, requires their union to be the contiguous count derived from
+`ci/cli-shard-planning.json`, and emits the `platform-corpus` matrix. A
+graph/count drift fails the planning job rather than dropping a slice; the
+protected `CI success` context remains unchanged.
+
+The planning JSON is a versioned, manually reviewed measurement snapshot. Its
+run IDs and acquisition instructions trace the native floor, CLI total, and
+fixed per-lane items back to Actions jobs and `ci-timed`/`what-ran` evidence.
+Refresh the entire cohort and indivisible inventory together as instructed in
+the file; the planner validates that provenance is present, but the inventory
+is explicitly not a graph-derived completeness proof. Phase 6 PR run IDs and
+critical-path walls belong in `phase_6_remeasurement` after the run exists.
 
 ### Correctness hang guards
 
@@ -477,8 +486,8 @@ This lets a truly stuck compiler fail while leaving loaded CI hosts room to
 finish. Mosaic remains in the slow tier and uses the slow hang profile; stress
 programs remain opt-in or scheduled.
 
-The weekly Correctness repetitions workflow runs every ordinary CLI shard
-multiple independent times. It uploads per-run logs and a summary, continues
+The weekly Correctness repetitions workflow derives and runs every ordinary CLI
+shard multiple independent times. It uploads per-run logs and a summary, continues
 after a failure only to gather flake evidence, and exits failed if *any*
 repetition failed; a later pass never masks an earlier failure. Required
 correctness jobs do not automatically retry failed cases.
@@ -491,7 +500,9 @@ tree's result, and only a real execution against the current tree can tell.
 Alongside the repeated shards, `execute-every-corpus` runs each remaining
 converted corpus once, taking its inventory from `scripts/ci-corpus-inventory`
 so a corpus converted later is swept without editing the workflow. The same runs
-are where `crates/rue-cli-tests/shard-weights.json` gets freshly measured
+drive a 20% observed lane-wall skew guard (on the scheduled refresh path, not a
+contributor's required run) and are where
+`crates/rue-cli-tests/shard-weights.json` gets freshly measured
 per-case timings, which feed both shard balance and the derived correctness
 deadline `//:cli-timeout-policy-validation` gates on.
 
@@ -513,7 +524,7 @@ where it applies. A gate that claimed more than it checks would be the same
 kind of defect it exists to catch.
 
 It exists because every other gate here compares *target lists*.
-`//:cli-shard-coverage-validation` compares BUCK's shards with the matrix,
+the shard planner compares BUCK's live shard union with the derived matrix,
 `scripts/validate-ci-gate.py` compares jobs with the responsibility matrix, and
 `//test_tiers.bxl:validate` compares tier labels with the test graph — so a
 target that becomes a strict superset of another is invisible to all of them.

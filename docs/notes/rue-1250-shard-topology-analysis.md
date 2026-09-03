@@ -17,6 +17,49 @@ weights file that drifts undetected, and a count replicated by hand across 23
 files — so the right answer has to be re-derived from scratch every time the
 system moves, as this issue did.
 
+## Phase 6 implementation state and pending remeasurement (RUE-1267)
+
+`ci/cli-shard-planning.json` is the versioned machine-readable copy of this
+sample. Its maximum unsharded CLI wall is 1,098s and its slowest measured
+unsplittable native lane is 407s. The floor-aware calculation rejects three
+runners because the single exact ceiling gives
+`ceil(1,098 × 1.25 / 3) = 457.5s`, then selects four because the corresponding
+projection is 343.125s. The runner topology therefore does not change in Phase
+6.
+
+For critical-path context, the planning file also carries the prior Phase 1
+before/after: pull-request median 820s → 361s, merge-group median 456s → 185s,
+and whole-sample range 341–873s → 170–393s. Those values are context, not a
+completed Phase 6 before/after measurement. The explicit Phase 6 pre-change
+baseline is [merge-group run 33721329318](https://github.com/rue-language/rue/actions/runs/33721329318)
+at `14fd81608baa8cf18d343b0f77b9468ddbd4ba18`: 281s workflow wall, with
+compiler reproducibility binding at 225s (job 100540996331).
+`phase_6_remeasurement.post_change` remains `pending_pr_ci`, with empty run-ID
+and wall-time arrays. After a PR exists, add its actual Actions run IDs and
+observed critical paths. One PR run shows that the derived topology executed;
+it does not alone establish a causal latency change, so any before/after claim
+needs an appropriately matched cohort.
+
+The required workflow now consumes the matrix the planner emits from the live
+`rue_cli_shard` target set. The weekly cache-free workflow recomputes the same
+count and compares independent observed shard walls, with a 20% alarm threshold
+that fires on the historical 24.9% replay. An overweight indivisible item names
+itself and makes the count undefined; the tool never suggests more runners for
+an item no runner count can split.
+
+The planning input is deliberately a reviewed measurement snapshot, not an
+automatic claim that every indivisible cost has been discovered. Its
+`source_run_ids` point to the Actions runs behind the native floor, executing
+CLI projection, and cold-build maximum. To refresh it, fetch each run's jobs
+with `gh api repos/rue-language/rue/actions/runs/RUN_ID/jobs --paginate`, retain
+the job/step timestamps, replace the cohort and maxima together, then inspect
+the cold CLI lanes' `ci-timed`/`what-ran` evidence for fixed work repeated by
+every lane. Update the scoped `indivisible_items` inventory and re-run the
+planner against the live Buck graph whenever the workflow, action graph, or
+compiler inputs change. The schema labels this inventory
+`manual-reviewed; not graph-derived` so absence is never presented as an
+automatic completeness proof.
+
 The premerge defect is tracked separately as **RUE-1262**; it is the change that
 actually moves required-CI latency, and it costs no extra runners.
 
@@ -148,9 +191,9 @@ Because F4's guard is vacuous, nothing detects staleness — the estimate stays 
 
 `CLI_TEST_SHARD_COUNT = 4` in `BUCK` is mirrored by four hand-written matrix
 entries in `ci.yml` (five fields each), by `correctness-repetitions.yml`, and by
-`docs/process/ci.md`. `scripts/validate-cli-shard-coverage.py` (118 lines) plus
-`scripts/test-cli-shard-coverage.py` exist for the sole purpose of asserting
-that two hand-written lists agree. Changing 4 → 2 or 4 → 6 is a multi-file edit
+`docs/process/ci.md`. The former 118-line shard-coverage validator plus its
+focused tests existed for the sole purpose of asserting that two hand-written
+lists agree. Changing 4 → 2 or 4 → 6 is a multi-file edit
 across BUCK, two workflows, a validator, that validator's tests, and docs.
 
 That gate is real coverage insurance given a hand-written matrix — but the

@@ -1048,6 +1048,10 @@ jobs:
       # The clippy materializer accepts a narrowing candidate only when the
       # complete multiline payload matches both this count and digest.
       impacted_targets_digest: ${{ steps.decide.outputs.impacted_targets_digest }}
+      # RUE-1267: the live Buck shard set and checked-in measurements are the
+      # matrix authority. A missing graph shard fails this planning job instead
+      # of silently dropping a fraction of the CLI corpus.
+      corpus_matrix: ${{ steps.cli-plan.outputs.corpus_matrix }}
     steps:
       - uses: actions/checkout@v6
         # BTD compares the graph at the merge-base and at the head, so the base
@@ -1055,11 +1059,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Bootstrap dotslash
+      - name: Bootstrap dotslash with BTD
         if: github.event_name == 'pull_request'
         uses: ./.github/actions/bootstrap-dotslash
         with:
           with-btd: 'true'
+
+      - name: Bootstrap dotslash for shard planning
+        # Every non-PR trigger, including workflow_dispatch, needs Buck for the
+        # live graph query. PRs use the BTD-aware bootstrap immediately above.
+        if: github.event_name != 'pull_request'
+        uses: ./.github/actions/bootstrap-dotslash
 
       - name: Provision remote build cache
         if: github.event_name == 'pull_request'
@@ -1084,11 +1094,21 @@ jobs:
           RUE_AFFECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: scripts/affected-targets decide
 
+      - name: Derive floor-aware CLI shard plan
+        id: cli-plan
+        run: |
+          ./buck2 uquery "attrfilter(labels, 'rue_cli_shard', //...)" >"$RUNNER_TEMP/cli-shards.txt"
+          scripts/affected-targets corpus-targets >"$RUNNER_TEMP/corpus-targets.txt"
+          scripts/plan-cli-shards.py \
+            --measurements ci/cli-shard-planning.json \
+            --graph-shards "$RUNNER_TEMP/cli-shards.txt" \
+            --corpus-targets "$RUNNER_TEMP/corpus-targets.txt"
+
   # The target-independent CLI and spec corpora run on Linux. RUE-1116/RUE-1158:
   # the ordinary CLI corpus is split into CLI_TEST_SHARD_COUNT (BUCK)
-  # measured-cost shards so its wall time collapses to balanced N-way slices;
-  # //:cli-shard-coverage-validation keeps this matrix and the BUCK shard set
-  # in lockstep.
+  # measured-cost shards so its wall time collapses to balanced N-way slices.
+  # The affected-targets job derives this matrix from measured wall time and
+  # the live rue_cli_shard graph set, and refuses a non-exhaustive union.
   #
   # RUE-1119: each job first consults the affected-targets determinator and,
   # on a pull_request where its corpus is provably unaffected, skips the heavy
@@ -1098,72 +1118,7 @@ jobs:
     if: ${{ always() }}
     needs: affected-targets
     strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            cache_name: linux-x64
-            target: //:cli-tests-shard-0
-            name: cli-shard-0
-            check_name: linux-x64-cli-shard-0
-          - os: ubuntu-latest
-            cache_name: linux-x64
-            target: //:cli-tests-shard-1
-            name: cli-shard-1
-            check_name: linux-x64-cli-shard-1
-          - os: ubuntu-latest
-            cache_name: linux-x64
-            target: //:cli-tests-shard-2
-            name: cli-shard-2
-            check_name: linux-x64-cli-shard-2
-          - os: ubuntu-latest
-            cache_name: linux-x64
-            target: //:cli-tests-shard-3
-            name: cli-shard-3
-            check_name: linux-x64-cli-shard-3
-          - os: ubuntu-latest
-            cache_name: linux-x64
-            target: //:spec-tests
-            name: spec
-            check_name: linux-x64-spec
-          # RUE-1117: the RUE-205/RUE-204 codegen differential — every runnable
-          # CLI and spec case executed through the reference interpreter and
-          # compared against the compiler's own result. It is the check that
-          # catches codegen diverging from the language's semantics, so it
-          # belongs on the pre-merge critical path rather than in the nightly
-          # release sweep, where a divergence surfaces up to a day late,
-          # attributed to a schedule rather than to the PR that caused it, and
-          # only in release configuration. Both corpora are target-independent,
-          # so one linux-x64 lane each is the whole platform requirement.
-          - os: ubuntu-latest
-            cache_name: linux-x64
-            target: //crates/rue-oracle-diff:oracle-diff-test
-            name: oracle-diff
-            check_name: linux-x64-oracle-diff
-          - os: ubuntu-latest
-            cache_name: linux-x64
-            target: //crates/rue-oracle-diff:oracle-diff-test-o2
-            name: oracle-diff-o2
-            check_name: linux-x64-oracle-diff-o2
-          - os: ubuntu-latest
-            cache_name: linux-x64
-            target: //crates/rue-oracle-diff:oracle-diff-test-o3
-            name: oracle-diff-o3
-            check_name: linux-x64-oracle-diff-o3
-          - os: ubuntu-latest
-            cache_name: linux-x64
-            target: //crates/rue-oracle-diff:oracle-diff-spec-test
-            name: oracle-diff-spec
-            check_name: linux-x64-oracle-diff-spec
-          - os: ubuntu-latest
-            cache_name: linux-x64
-            target: //crates/rue-oracle-diff:oracle-diff-spec-test-o2
-            name: oracle-diff-spec-o2
-            check_name: linux-x64-oracle-diff-spec-o2
-          - os: ubuntu-latest
-            cache_name: linux-x64
-            target: //crates/rue-oracle-diff:oracle-diff-spec-test-o3
-            name: oracle-diff-spec-o3
-            check_name: linux-x64-oracle-diff-spec-o3
+      matrix: ${{ fromJSON(needs.affected-targets.outputs.corpus_matrix) }}
     runs-on: ${{ matrix.os }}
     name: test (${{ matrix.check_name }})
     steps:

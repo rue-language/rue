@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "measured_at": "2026-08-08",
+  "evidence": "docs/notes/rue-1250-shard-topology-analysis.md",
+  "provenance": {
+    "source": "GitHub Actions jobs API created_at, started_at, completed_at, and per-step durations for rue-language/rue CI runs",
+    "acquisition": "For every source_run_ids entry, fetch `gh api repos/rue-language/rue/actions/runs/RUN_ID/jobs --paginate`; retain the job and step timestamps used by the evidence note.",
+    "refresh": "Replace the bounded run cohort, source_run_ids, ranges, planning maxima, and indivisible-item review together; then run scripts/plan-cli-shards.py against the live Buck graph. This file is reviewed input, not an automatically complete inventory."
+  },
+  "floor": {
+    "name": "native (linux-arm64)",
+    "observed_wall_range_ms": [341000, 407000],
+    "planning_floor_ms": 407000,
+    "source_run_ids": [31228627966, 31231601304, 31229045120, 31222559451, 31226836874, 31237682485, 31230794223, 31219956012, 31220565989]
+  },
+  "cli": {
+    "unsharded_wall_range_ms": [900000, 1098000],
+    "planning_total_ms": 1098000,
+    "source_run_ids": [31237682485, 31230794223, 31219956012, 31220565989],
+    "runner_count_skew_allowance_basis_points": 2500,
+    "observed_balance_budget_basis_points": 2000,
+    "indivisible_inventory": {
+      "scope": "Fixed work observed inside each cold linux-x64 CLI lane that adding CLI runners cannot subdivide; currently the shared cold compiler build.",
+      "acquisition": "For every cold executing CLI run in source_run_ids, inspect the jobs-API step durations and retained ci-timed/what-ran evidence; record each repeated fixed-cost item and its maximum observed wall. Re-review when the workflow, Buck action graph, or compiler inputs change.",
+      "completeness": "manual-reviewed; not graph-derived"
+    },
+    "indivisible_items": [
+      {
+        "name": "cold compiler build",
+        "observed_wall_ms": 317000,
+        "source_metric": "maximum cold `Build all targets` step wall in the sampled compiler-change runs",
+        "source_run_ids": [31230794223, 31219956012, 31220565989]
+      }
+    ]
+  },
+  "prior_phase_critical_path": {
+    "evidence": "docs/notes/rue-1250-ci-architecture.md",
+    "before_phase_1": {
+      "pull_request_median_ms": 820000,
+      "merge_group_median_ms": 456000,
+      "whole_sample_range_ms": [341000, 873000]
+    },
+    "after_phase_1": {
+      "pull_request_median_ms": 361000,
+      "merge_group_median_ms": 185000,
+      "whole_sample_range_ms": [170000, 393000]
+    }
+  },
+  "phase_6_remeasurement": {
+    "pre_change": {
+      "event": "merge_group",
+      "run_id": 33721329318,
+      "head_sha": "14fd81608baa8cf18d343b0f77b9468ddbd4ba18",
+      "created_at": "2026-09-03T06:01:04Z",
+      "completed_at": "2026-09-03T06:05:45Z",
+      "workflow_wall_ms": 281000,
+      "url": "https://github.com/rue-language/rue/actions/runs/33721329318",
+      "binding_job": {
+        "name": "compiler reproducibility (linux-x64)",
+        "job_id": 100540996331,
+        "started_at": "2026-09-03T06:01:36Z",
+        "completed_at": "2026-09-03T06:05:21Z",
+        "wall_ms": 225000
+      }
+    },
+    "post_change": {
+      "status": "pending_pr_ci",
+      "pull_request_run_ids": [],
+      "observed_critical_path_ms": []
+    },
+    "comparison": "Record the PR CI run IDs and observed critical paths after publication. A single run demonstrates execution of the derived topology but is not by itself causal before/after evidence; compare against an appropriately matched pre-change cohort before claiming a latency change."
+  }
+}

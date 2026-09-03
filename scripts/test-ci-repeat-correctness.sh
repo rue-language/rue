@@ -19,8 +19,8 @@ status=0
     scripts/ci-repeat-correctness //:cli-tests-shard-0 3) >/dev/null 2>&1 || status=$?
 [[ "$status" -ne 0 ]]
 [[ "$(wc -l <"$tmp/calls" | tr -d ' ')" = 3 ]]
-grep -Fq $'1\tFAIL' "$tmp/logs/results.tsv"
-grep -Fq $'2\tPASS' "$tmp/logs/results.tsv"
+grep -Fq $'//:cli-tests-shard-0\t1\tFAIL\t' "$tmp/logs/results.tsv"
+grep -Fq $'//:cli-tests-shard-0\t2\tPASS\t' "$tmp/logs/results.tsv"
 
 : >"$tmp/calls"
 rm -rf "$tmp/logs"
