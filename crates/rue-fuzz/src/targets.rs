@@ -1807,6 +1807,28 @@ mod tests {
     }
 
     #[test]
+    fn compiler_targets_infer_every_arm_of_nonprunable_comptime_matches() {
+        // Saved compiler_aarch64 finding for RUE-1910. Comptime evaluation
+        // selects the first arm, but an integer match without a wildcard is
+        // non-exhaustive and therefore takes sema's ordinary all-arms path.
+        // Both compiler targets must infer the second arm before AIR visits it.
+        let source = "fn f(comptime n: i32) -> i32 { match n { 0 => 1, 0 => 1 } } \
+                      fn main() -> i32 { f(0) }";
+        for errors in [
+            CompilerAarch64Target::compile(source).expect_err("AArch64 compile rejects"),
+            CompilerX86_64O1Target::compile(source).expect_err("x86-64 compile rejects"),
+        ] {
+            assert_no_ice_errors(&errors);
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| matches!(error.kind, rue_error::ErrorKind::NonExhaustiveMatch)),
+                "canonical non-exhaustive diagnostic was lost: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
     fn compiler_x86_64_o1_target_selects_and_applies_basic_optimization() {
         let options = CompilerX86_64O1Target::options();
         assert_eq!(options.target, rue_compiler::Target::X86_64Linux);
