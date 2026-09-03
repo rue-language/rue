@@ -1348,40 +1348,99 @@ define_error_codes! {
     /// binding (formal core §2 elaboration note), so its must-consume
     /// obligation (3.8:52) could never be discharged. Bind the field by name
     /// and consume it — or `@drop` it (E0478's escape hatch, RUE-187).
-    LINEAR_PAYLOAD_DISCARDED = 486;
+    LINEAR_PAYLOAD_DISCARDED = 486 => {
+        explanation: "A wildcard payload position still receives the matched value, but gives the program no name with which to consume it. When that payload carries a linear obligation, either an explicit `_` or the equivalent bare variant pattern would silently discard the value, so Rue rejects the pattern.",
+        likely_cause: "A match arm uses `_` for a linear payload, or uses a bare variant name whose payload includes a linear value. Bind each linear payload by name and consume it in the arm; `_` remains valid for payloads that do not carry linear values.",
+        examples: [
+            ErrorCodeExample { title: "Discard a linear match payload", source: "linear struct Token { value: i32 }\nenum Event { Token(Token), Empty }\nfn main() -> i32 {\n    match Event.Token(Token { value: 42 }) {\n        Event.Token(_) => 1,\n        Event.Empty => 0,\n    }\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Bind and consume the linear payload", source: "linear struct Token { value: i32 }\nenum Event { Token(Token), Empty }\nfn main() -> i32 {\n    match Event.Token(Token { value: 42 }) {\n        Event.Token(token) => { @drop(token); 1 },\n        Event.Empty => 0,\n    }\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Match payload bindings", path: "docs/spec/src/04-expressions/07-match-expressions.md", rule: Some("4.7:30") },
+            ErrorCodeReference { title: "Linear values must be consumed", path: "docs/spec/src/03-types/08-move-semantics.md", rule: Some("3.8:50") },
+        ],
+    };
     /// A slice type `[T]` was written in return position (`fn f(...) -> [T]`).
     /// A slice is a *second-class* fat-pointer view (ADR-0037, ADR-0043,
     /// RUE-322): it is valid only in argument position and may not be
     /// returned, since the view would outlive the borrow it aliases.
-    SLICE_RETURN_NOT_ALLOWED = 487;
+    SLICE_RETURN_NOT_ALLOWED = 487 => {
+        explanation: "A slice `[T]` is a second-class borrowed view, not an owning value. It is valid only as a function parameter and cannot be a return type, because returning it would allow the view to outlive the caller-owned storage that it aliases.",
+        likely_cause: "A function declares `[T]` as its return type, often while trying to return a view into an array parameter. Return an owning array or another first-class value instead, or perform the operation while the slice is available as a parameter.",
+        examples: [
+            ErrorCodeExample { title: "Return a second-class slice", source: "fn view(borrow values: [i32]) -> [i32] { values }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use the slice within the call", source: "fn first(borrow values: [i64]) -> i32 { @intCast(values[0]) }\nfn main() -> i32 {\n    let values: [i64; 2] = [42, 0];\n    first(borrow values)\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Slices cannot be returned", path: "docs/spec/src/07-arrays/02-slices.md", rule: Some("7.2:4") }],
+    };
     /// A slice type `[T]` was written as a struct field type. A slice is
     /// second-class (ADR-0037, ADR-0043, RUE-322) and cannot be stored in an
     /// aggregate — storing it would let the view escape its borrow's scope.
-    SLICE_IN_AGGREGATE_FIELD = 488;
+    SLICE_IN_AGGREGATE_FIELD = 488 => {
+        explanation: "A slice `[T]` is a second-class view whose lifetime is limited to a function call. Storing one in a struct field or enum payload would turn that temporary view into aggregate state and could let it escape the storage it borrows.",
+        likely_cause: "A struct field or enum payload was declared with slice type `[T]`. Store an owning fixed array `[T; N]` or another owning container, and accept a slice only at the function boundary where it is used.",
+        examples: [
+            ErrorCodeExample { title: "Store a slice in a struct", source: "struct View { values: [i32] }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Store an owning fixed array", source: "struct Values { values: [i32; 2] }\nfn main() -> i32 {\n    let values = Values { values: [20, 22] };\n    values.values[0] + values.values[1]\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Slices cannot be aggregate fields", path: "docs/spec/src/07-arrays/02-slices.md", rule: Some("7.2:5") }],
+    };
     /// A slice type `[T]` was written in a binding position other than a
     /// parameter — a `let` local or a `const`. A slice is second-class
     /// (ADR-0037, ADR-0043, RUE-322): it may only name a function parameter,
     /// so it cannot be bound past its argument scope.
-    SLICE_ESCAPES_SCOPE = 489;
+    SLICE_ESCAPES_SCOPE = 489 => {
+        explanation: "A slice `[T]` may name only a function parameter. Giving a local or constant binding slice type would extend a second-class borrowed view beyond the argument scope whose access rules keep the aliased storage valid.",
+        likely_cause: "A `let` or `const` declaration has an explicit `[T]` annotation, commonly to preserve a view received by a function. Keep the view in its parameter binding and use it there, or bind an owning array or container instead.",
+        examples: [
+            ErrorCodeExample { title: "Bind a slice to a local", source: "fn main() -> i32 {\n    let values = [20, 22];\n    let view: [i32] = values;\n    view[0]\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Read a slice parameter directly", source: "fn sum(borrow values: [i64]) -> i32 { @intCast(values[0] + values[1]) }\nfn main() -> i32 {\n    let values: [i64; 2] = [20, 22];\n    sum(borrow values)\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Slices cannot escape argument scope", path: "docs/spec/src/07-arrays/02-slices.md", rule: Some("7.2:6") }],
+    };
     /// `@field_ptr(...)` was applied to something other than a field-access
     /// expression `s.field` (RUE-301). `@field_ptr` is *compiler-mediated
     /// field access*: it forms a raw pointer to the field the compiler placed,
     /// so its operand MUST name a struct field. Use `@raw`/`@raw_mut` for the
     /// address of a whole variable or array element.
-    FIELD_PTR_REQUIRES_FIELD = 490;
+    FIELD_PTR_REQUIRES_FIELD = 490 => {
+        explanation: "`@field_ptr` asks the compiler for the address of a field under its chosen struct layout, so its operand must syntactically be a field-access place such as `value.field`. A whole variable, array element, or computed value does not identify a struct field for this layout-mediated operation.",
+        likely_cause: "Code passed a local or another non-field expression to `@field_ptr`. Select the intended struct field, or use `@raw` or `@raw_mut` when the goal is to address a whole place. Raw-pointer intrinsics must appear in a `checked` block.",
+        examples: [
+            ErrorCodeExample { title: "Request a field pointer for a whole value", source: "struct Pair { value: i32 }\nfn main() -> i32 {\n    let pair = Pair { value: 42 };\n    let pointer = checked { @field_ptr(pair) };\n    checked { @ptr_read(pointer) }\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Request a pointer to a named field", source: "struct Pair { value: i32 }\nfn main() -> i32 {\n    let pair = Pair { value: 42 };\n    let pointer: ptr mut i32 = checked { @field_ptr(pair.value) };\n    checked { @ptr_read(pointer) }\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Field pointer operands", path: "docs/spec/src/09-unchecked-code/02-intrinsics.md", rule: Some("9.2:17") }],
+    };
     /// A function or method parameter list names the same parameter twice
     /// (e.g. `fn f(x: i32, x: i32)`). Every parameter in a single list must
     /// have a distinct name (spec 6.1); a repeated name silently shadows the
     /// earlier binding on a first-wins basis, so the declaration is rejected
     /// (RUE-349, a sibling of [`Self::DUPLICATE_PATTERN_BINDING`] (E0484) and
     /// analogous to Rust's E0415).
-    DUPLICATE_PARAMETER = 491;
+    DUPLICATE_PARAMETER = 491 => {
+        explanation: "Every named parameter in one function or method parameter list must have a distinct name. Repeating a name would make one argument inaccessible by shadowing its binding, so Rue rejects the declaration rather than choosing one occurrence.",
+        likely_cause: "Two parameters were given the same name, often after copying a declaration or when two arguments have the same type. Rename them to express their distinct roles; a method receiver does not conflict with the ordinary parameter-name set.",
+        examples: [
+            ErrorCodeExample { title: "Repeat a function parameter name", source: "fn add(value: i32, value: i32) -> i32 { value }\nfn main() -> i32 { add(20, 22) }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Give parameters distinct names", source: "fn add(left: i32, right: i32) -> i32 { left + right }\nfn main() -> i32 { add(20, 22) }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Parameter names are distinct", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:34") }],
+    };
     /// A string literal assigned to a fixed-capacity string `Str(N)` does not
     /// fit: its UTF-8 byte length exceeds the capacity `N` (ADR-0043 Phase 5,
     /// RUE-326). `Str(N)` is the fixed string rung (`[u8; N]` + UTF-8) with no
     /// heap, so an over-long literal cannot be stored — the fit is checked at
     /// compile time.
-    STR_FIXED_CAPACITY_EXCEEDED = 492;
+    STR_FIXED_CAPACITY_EXCEEDED = 492 => {
+        explanation: "`Str(N)` stores at most `N` UTF-8 bytes in its inline buffer. When a string literal's encoded byte length exceeds that fixed capacity, the value cannot be represented without truncation, so construction is rejected at compile time.",
+        likely_cause: "A literal assigned or passed as `Str(N)` is longer than `N` bytes. Increase the declared capacity, shorten the literal, or use the growable `StrBuf` type when the required capacity is not fixed.",
+        examples: [
+            ErrorCodeExample { title: "Exceed a fixed string capacity", source: "fn main() -> i32 {\n    let value: Str(3) = \"hello\";\n    @intCast(value.len())\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Choose sufficient fixed capacity", source: "fn main() -> i32 {\n    let value: Str(5) = \"hello\";\n    @intCast(value.len())\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Fixed string literal capacity", path: "docs/spec/src/03-types/07-string-type.md", rule: Some("3.7:51") }],
+    };
     /// Assignment to an initialized place that holds a live linear value
     /// (RUE-387). Overwriting the place would implicitly drop (silently
     /// consume) the old linear value, which linearity forbids — a theorem-5
@@ -1390,14 +1449,33 @@ define_error_codes! {
     /// exception is reinitializing a place that was provably moved out on
     /// every path (the spec 3.8:55/56 reinit idiom), which holds nothing to
     /// destroy.
-    LINEAR_VALUE_OVERWRITTEN = 493;
+    LINEAR_VALUE_OVERWRITTEN = 493 => {
+        explanation: "Assigning to a place normally drops its previous live value before storing the replacement. Rue cannot perform that implicit drop when the place carries a linear value, because linear values must be consumed explicitly. Reinitialization is legal only after the destination was provably moved out on every incoming path.",
+        likely_cause: "An assignment replaces an initialized linear local, field, or array element. Consume or move the old value first; if the place is moved out on every path, assigning a replacement then reinitializes empty storage instead of overwriting a live value.",
+        examples: [
+            ErrorCodeExample { title: "Overwrite a live linear local", source: "linear struct Token { value: i32 }\nfn main() -> i32 {\n    let mut token = Token { value: 1 };\n    token = Token { value: 2 };\n    @drop(token);\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Reinitialize after consuming the old value", source: "linear struct Token { value: i32 }\nfn consume(token: Token) { @drop(token); }\nfn main() -> i32 {\n    let mut token = Token { value: 1 };\n    consume(token);\n    token = Token { value: 2 };\n    @drop(token);\n    0\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Linear assignment and reinitialization", path: "docs/spec/src/03-types/08-move-semantics.md", rule: Some("3.8:77") },
+            ErrorCodeReference { title: "Assignment drops overwritten values", path: "docs/spec/src/03-types/09-destructors.md", rule: Some("3.9:18") },
+        ],
+    };
     /// Assignment to an `inout` parameter (or a place rooted at one) whose
     /// type carries a linear value (RUE-387). The parameter names the
     /// caller's storage, which holds a live linear value; reassigning it
     /// would implicitly drop that value in the caller. An `inout` place can
     /// never be proven moved-out (moving out of a by-ref binding is itself
     /// rejected), so a linear `inout` assignment is always ill-formed.
-    LINEAR_VALUE_OVERWRITTEN_THROUGH_INOUT = 494;
+    LINEAR_VALUE_OVERWRITTEN_THROUGH_INOUT = 494 => {
+        explanation: "An `inout` parameter aliases the caller's initialized storage. Assigning a linear value to that parameter or a linear place rooted at it would implicitly drop the caller's live value. Because a by-reference binding cannot be moved out to establish empty storage, this assignment is always rejected.",
+        likely_cause: "A function tries to replace a linear `inout` argument. Pass ownership by value and return a replacement, mutate non-linear fields in place, or otherwise arrange for the caller to consume the old value explicitly rather than overwriting it through the loan.",
+        examples: [
+            ErrorCodeExample { title: "Overwrite a linear inout parameter", source: "linear struct Token { value: i32 }\nfn replace(inout token: Token) { token = Token { value: 42 }; }\nfn main() -> i32 {\n    let mut token = Token { value: 1 };\n    replace(inout token);\n    @drop(token);\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Mutate a non-linear field through inout", source: "linear struct Token { value: i32 }\nfn update(inout token: Token) { token.value = 42; }\nfn main() -> i32 {\n    let mut token = Token { value: 1 };\n    update(inout token);\n    @drop(token);\n    0\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Linear assignment cannot overwrite a live value", path: "docs/spec/src/03-types/08-move-semantics.md", rule: Some("3.8:77") }],
+    };
     /// A string *buffer* — `StrBuf` (growable) or `Str(N)` (fixed) — was used
     /// where a *first-class* `str` value is required: a bare `str` parameter,
     /// a `str` binding, a `str` return, or a `str` struct field (ADR-0043
@@ -1406,21 +1484,45 @@ define_error_codes! {
     /// letting it become a first-class `str` produces a dangling view once the
     /// buffer is dropped (the verified RUE-386 segfault). A buffer coerces only
     /// to a second-class `borrow str` / `inout str` view.
-    BUFFER_NOT_FIRST_CLASS_STR = 495;
+    BUFFER_NOT_FIRST_CLASS_STR = 495 => {
+        explanation: "`StrBuf` and `Str(N)` own mutable string storage, while first-class `str` values are static-backed and may freely escape. Treating a buffer as first-class `str` could leave a copied view pointing at storage after its owner is dropped, so buffers coerce only to second-class `borrow str` or `inout str` views.",
+        likely_cause: "A string buffer is passed to a bare `str` parameter, returned as `str`, or stored in a `str` binding or field. Use `borrow str` for read-only access, `inout str` for exclusive local-buffer access, or keep the owning buffer type across the boundary.",
+        examples: [
+            ErrorCodeExample { title: "Pass a buffer as first-class str", source: "fn length(value: str) -> u64 { value.len() }\nfn main() -> i32 {\n    let value: Str(8) = \"hello\";\n    @intCast(length(value))\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Borrow the buffer for string access", source: "fn length(borrow value: str) -> u64 { value.len() }\nfn main() -> i32 {\n    let value: Str(8) = \"hello\";\n    @intCast(length(borrow value))\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Buffers are not first-class strings", path: "docs/spec/src/03-types/07-string-type.md", rule: Some("3.7:59") }],
+    };
     /// A first-class / static-backed `str` value was supplied as the operand
     /// of an `inout str` parameter (ADR-0043 two-types model, RUE-386). An
     /// exclusive `str` view requires *local* provenance — a `StrBuf`/`Str(N)`
     /// buffer the caller owns — because a static `str` lives in read-only
     /// `.rodata` (exclusive mutation would fault) and, being `Copy`, can have
     /// two roots over one static buffer that per-root exclusivity cannot see.
-    INOUT_STR_REQUIRES_LOCAL_BUFFER = 496;
+    INOUT_STR_REQUIRES_LOCAL_BUFFER = 496 => {
+        explanation: "An `inout str` parameter is an exclusive view into caller-owned mutable string storage, so its operand must have local-buffer provenance from `StrBuf` or `Str(N)`. A first-class `str` is static-backed, immutable, and copyable; granting exclusive access could write read-only memory and cannot establish unique ownership.",
+        likely_cause: "A first-class `str`, usually a string literal or `str` binding, is passed with `inout`. Use `borrow str` when only reading static text, or copy the content into a local `StrBuf` or `Str(N)` before requesting an exclusive view.",
+        examples: [
+            ErrorCodeExample { title: "Request an exclusive view of static str", source: "fn length(inout value: str) -> u64 { value.len() }\nfn main() -> i32 {\n    let mut value: str = \"hello\";\n    @intCast(length(inout value))\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use a local buffer for an exclusive view", source: "fn length(inout value: str) -> u64 { value.len() }\nfn main() -> i32 {\n    let mut value: Str(8) = \"hello\";\n    @intCast(length(inout value))\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Exclusive string views require local provenance", path: "docs/spec/src/03-types/07-string-type.md", rule: Some("3.7:60") }],
+    };
     /// A borrowed `str` *view* — the binding of a `borrow str` / `inout str`
     /// parameter — was used where a first-class `str` value is required
     /// (returned, stored in a struct field, bound to a `str` local, or passed
     /// to a bare `str` parameter) (ADR-0043 two-types model, RUE-386). A view
     /// is second-class: it may only be read (`.len()`, byte indexing) or
     /// re-borrowed, never escape the call as a first-class value.
-    STR_VIEW_NOT_FIRST_CLASS = 497;
+    STR_VIEW_NOT_FIRST_CLASS = 497 => {
+        explanation: "The binding of a `borrow str` or `inout str` parameter is a second-class view valid only for that call. It may be read or re-borrowed, but converting it to a first-class `str` by returning, storing, or rebinding it would let the view escape the lifetime of the borrowed buffer.",
+        likely_cause: "A function returns a borrowed string parameter as `str`, stores it in a `str` field, or passes it to a bare `str` parameter. Keep all use within the borrow, re-borrow for another view parameter, or produce a separate owning value instead.",
+        examples: [
+            ErrorCodeExample { title: "Return a borrowed string view", source: "fn escape(borrow value: str) -> str { value }\nfn main() -> i32 {\n    let value: Str(5) = \"hello\";\n    let escaped = escape(borrow value);\n    @intCast(escaped.len())\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Read the string view within its call", source: "fn length(borrow value: str) -> u64 { value.len() }\nfn main() -> i32 {\n    let value: Str(8) = \"hello\";\n    @intCast(length(borrow value))\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Borrowed string views cannot escape", path: "docs/spec/src/03-types/07-string-type.md", rule: Some("3.7:59") }],
+    };
     // E0498 (CONTAINER_ELEMENT_HAS_DESTRUCTOR) was retired by RUE-646: owning
     // growable containers now run each live element's drop glue before freeing
     // their buffer (Rust's `Vec<T>` discipline), so a destructor-bearing element
@@ -1431,7 +1533,15 @@ define_error_codes! {
     /// container/element multiplicity propagation is designed (RUE-388), such
     /// containers cannot yet track element linearity, so a linear element would
     /// be leaked (never consumed); the instantiation is rejected instead.
-    CONTAINER_ELEMENT_IS_LINEAR = 499;
+    CONTAINER_ELEMENT_IS_LINEAR = 499 => {
+        explanation: "An owning growable container can run ordinary drop glue for each live element, but it cannot yet propagate and enforce a linear element's exactly-once consumption obligation. `@require_droppable(T)` therefore rejects a linear element type at container instantiation rather than allowing elements to leak or be implicitly dropped.",
+        likely_cause: "A generic owning container guarded by `@require_droppable` was instantiated with a linear type. Use a non-linear element type, choose a representation whose API explicitly transfers every element, or wait for container/element multiplicity propagation to be designed.",
+        examples: [
+            ErrorCodeExample { title: "Instantiate a droppable-gated container with a linear element", source: "fn Container(comptime T: type) -> type {\n    @require_droppable(T);\n    struct { value: T }\n}\nlinear struct Token { value: i32 }\nconst Bad = Container(Token);\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use a non-linear container element", source: "fn Container(comptime T: type) -> type {\n    @require_droppable(T);\n    struct { value: T }\n}\nconst Good = Container(i32);\nfn main() -> i32 {\n    let value = Good { value: 42 };\n    value.value\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Owning-container element-type gate intrinsic", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:5a") }],
+    };
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -4375,6 +4485,66 @@ mod tests {
                 Err(ParseErrorCodeError::Unknown(reserved))
             );
         }
+    }
+
+    #[test]
+    fn active_slice_string_and_container_explanation_band_is_complete_and_bounded() {
+        let expected = [
+            ErrorCode::LINEAR_PAYLOAD_DISCARDED,
+            ErrorCode::SLICE_RETURN_NOT_ALLOWED,
+            ErrorCode::SLICE_IN_AGGREGATE_FIELD,
+            ErrorCode::SLICE_ESCAPES_SCOPE,
+            ErrorCode::FIELD_PTR_REQUIRES_FIELD,
+            ErrorCode::DUPLICATE_PARAMETER,
+            ErrorCode::STR_FIXED_CAPACITY_EXCEEDED,
+            ErrorCode::LINEAR_VALUE_OVERWRITTEN,
+            ErrorCode::LINEAR_VALUE_OVERWRITTEN_THROUGH_INOUT,
+            ErrorCode::BUFFER_NOT_FIRST_CLASS_STR,
+            ErrorCode::INOUT_STR_REQUIRES_LOCAL_BUFFER,
+            ErrorCode::STR_VIEW_NOT_FIRST_CLASS,
+            ErrorCode::CONTAINER_ELEMENT_IS_LINEAR,
+        ];
+        let active = error_code_metadata()
+            .iter()
+            .filter(|metadata| (486..=499).contains(&metadata.code.0))
+            .map(|metadata| {
+                assert_eq!(metadata.source_path, "crates/rue-error/src/lib.rs");
+                metadata.code
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(active, expected);
+        let explained = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (486..=499)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(explained, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
+        );
+
+        let retired = ErrorCode(498);
+        assert!(RETIRED_ERROR_CODES.contains(&retired));
+        assert!(
+            error_code_metadata()
+                .iter()
+                .all(|metadata| metadata.code != retired)
+        );
+        assert!(
+            ERROR_CODE_EXPLANATION_DECLARATIONS
+                .iter()
+                .all(|declaration| declaration.code != retired)
+        );
+        assert_eq!(error_code_explanation(retired), None);
+        assert_eq!(
+            retired.to_string().parse::<ErrorCode>(),
+            Err(ParseErrorCodeError::Unknown(retired))
+        );
     }
 
     /// `ErrorKind::code()` must cover the compiler-declared ErrorCode constants without

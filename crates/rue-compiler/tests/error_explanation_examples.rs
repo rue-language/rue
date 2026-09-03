@@ -13,7 +13,14 @@ fn compiler_owned_explanation_examples_have_the_declared_outcome() {
             || (425..=433).contains(&metadata.code.0)
             || matches!(
                 metadata.code.0,
-                434..=437 | 442..=443 | 456..=457 | 461 | 474..=475 | 478 | 480..=485
+                434..=437
+                    | 442..=443
+                    | 456..=457
+                    | 461
+                    | 474..=475
+                    | 478
+                    | 480..=497
+                    | 499
             )
     }) {
         let explanation = error_code_explanation(metadata.code)
