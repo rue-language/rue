@@ -1943,3 +1943,716 @@ fn specialization_breadth_compiles_depth_fails_e1200() {
          \n  PASS  unbounded depth chain fails E1200"
     );
 }
+
+// ---------------------------------------------------------------------------
+// RUE-1919: memo-database pressure under test root sets (ADR-0083 Phase 2)
+// ---------------------------------------------------------------------------
+//
+// ADR-0063 §14's retention calibration is `main`-rooted. ADR-0083 §1 makes a
+// test request root a different, generally larger closure: every test
+// declaration in the request's module closure, and no `main`. These rows
+// measure the §14 gauges under both selections so the soft budgets can be
+// judged against check-all-shaped root sets.
+//
+// The rows are `#[ignore]`d measurement scaffolding, not assertions about a
+// budget: §14's budgets are soft, so a row records pressure rather than
+// failing. Only `rue_1919_test_roots_cover_the_executable_closure` asserts.
+
+/// A multi-module corpus with test declarations spread across its modules.
+///
+/// `modules * FNS_PER_MODULE` public functions are each called exactly once
+/// from `main`, so the `Executable` closure is the whole corpus. Test `g` lives
+/// in module `g % modules` and calls every function of that module, so the
+/// union of test closures covers the whole corpus whenever `tests >= modules`.
+#[derive(Debug, Clone, Copy)]
+struct TestRootCorpus {
+    modules: usize,
+    tests: usize,
+}
+
+/// Functions per module. Fixed so a test body's call count stays bounded while
+/// the corpus grows by module count.
+const FNS_PER_MODULE: usize = 10;
+
+impl TestRootCorpus {
+    /// `reached_bodies` is the `Executable` closure size excluding `main`.
+    fn with_reached_bodies(reached_bodies: usize, tests: usize) -> Self {
+        assert!(
+            reached_bodies % FNS_PER_MODULE == 0,
+            "corpus size must be a multiple of {FNS_PER_MODULE}"
+        );
+        Self {
+            modules: reached_bodies / FNS_PER_MODULE,
+            tests,
+        }
+    }
+
+    fn reached_bodies(&self) -> usize {
+        self.modules * FNS_PER_MODULE
+    }
+
+    fn main_source(&self) -> String {
+        let mut src = String::with_capacity(self.modules * FNS_PER_MODULE * 32);
+        for j in 0..self.modules {
+            src.push_str(&format!("const m{j} = @import(\"m{j}.rue\");\n"));
+        }
+        src.push_str("fn main() -> i32 {\n    let mut acc = 0;\n");
+        for j in 0..self.modules {
+            for i in 0..FNS_PER_MODULE {
+                src.push_str(&format!("    acc = acc + m{j}.f{j}_{i}();\n"));
+            }
+        }
+        src.push_str("    acc\n}\n");
+        src
+    }
+
+    fn module_source(&self, j: usize) -> String {
+        let mut src = String::with_capacity(FNS_PER_MODULE * 40);
+        for i in 0..FNS_PER_MODULE {
+            src.push_str(&format!("pub fn f{j}_{i}() -> i32 {{ {i} }}\n"));
+        }
+        let mut g = j;
+        while g < self.tests {
+            src.push_str(&format!("test \"t{g}\" {{\n    let mut acc = 0;\n"));
+            for i in 0..FNS_PER_MODULE {
+                src.push_str(&format!("    acc = acc + f{j}_{i}();\n"));
+            }
+            src.push_str("    @dbg(acc);\n}\n");
+            g += self.modules;
+        }
+        src
+    }
+
+    /// Assemble the corpus through the production import-discovery assembler.
+    /// `main.rue` imports every module (the aggregator idiom), so the request
+    /// closure is the whole corpus under either root selection.
+    fn sources(&self) -> (SourceSnapshot, ImportDiscoveryContext, AcceptedReadManifest) {
+        let context = ImportDiscoveryContext::new(1, "/p", None, "rue-1919-test-roots").unwrap();
+        let root = Arc::new(self.main_source());
+        let mut assembler = DiscoverySourceAssembler::new(
+            context.clone(),
+            "/p/main.rue",
+            "/p/main.rue",
+            PhysicalFileIdentity::new(1919, 1),
+            FileMetadataFingerprint::new(root.len() as u64, 1, 1),
+            root,
+        )
+        .unwrap();
+        for j in 0..self.modules {
+            let path = format!("/p/m{j}.rue");
+            let module = Arc::new(self.module_source(j));
+            assembler
+                .add_explicit(
+                    &path,
+                    &path,
+                    PhysicalFileIdentity::new(1919, j as u64 + 2),
+                    FileMetadataFingerprint::new(module.len() as u64, 1, 1),
+                    module,
+                )
+                .unwrap();
+        }
+        (
+            assembler.snapshot().unwrap(),
+            context,
+            assembler.accepted_read_manifest(),
+        )
+    }
+}
+
+fn test_root_options(root_selection: RootSelection) -> CompileOptions {
+    CompileOptions {
+        preview_features: PreviewFeatures::from([PreviewFeature::TestDeclarations]),
+        root_selection,
+        ..CompileOptions::default()
+    }
+}
+
+/// One measured request. `observations` mirrors `rue-bench`'s `retained_gauges`:
+/// §14 charges dependency and *input* observation edges against one budget.
+#[derive(Debug, Clone, Copy)]
+struct PressureRow {
+    retained_bytes: usize,
+    retained_byte_budget: usize,
+    peak_retained_bytes: usize,
+    observations: usize,
+    observation_budget: usize,
+    retained_query_records: usize,
+    rooted_units: usize,
+    wall_ms: u128,
+    max_rss_bytes: u64,
+}
+
+impl PressureRow {
+    fn budget_status(&self) -> String {
+        let mut over = Vec::new();
+        if self.retained_bytes > self.retained_byte_budget {
+            over.push("retained-bytes");
+        }
+        if self.observations > self.observation_budget {
+            over.push("observations");
+        }
+        if over.is_empty() {
+            "ok".to_owned()
+        } else {
+            over.join("+")
+        }
+    }
+
+    fn describe(&self, label: &str) -> String {
+        format!(
+            "  {label:<30} retained={:>12} ({:>5.2}%)  obs={:>9} ({:>5.2}%)  \
+             records={:>8}  units={:>6}  wall={:>7}ms  maxrss={:>12}  {}",
+            self.retained_bytes,
+            100.0 * self.retained_bytes as f64 / self.retained_byte_budget as f64,
+            self.observations,
+            100.0 * self.observations as f64 / self.observation_budget as f64,
+            self.retained_query_records,
+            self.rooted_units,
+            self.wall_ms,
+            self.max_rss_bytes,
+            self.budget_status(),
+        )
+    }
+}
+
+/// Process high-water resident set. macOS reports `ru_maxrss` in bytes; Linux
+/// reports kilobytes.
+fn process_max_rss_bytes() -> u64 {
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
+        return 0;
+    }
+    let raw = usage.ru_maxrss as u64;
+    if cfg!(target_os = "macos") {
+        raw
+    } else {
+        raw.saturating_mul(1024)
+    }
+}
+
+fn retention_row(session: &CompilerSession, rooted_units: usize, wall_ms: u128) -> PressureRow {
+    let retention = session.unstable_metrics().retention();
+    let input_observations = retention.retained_module_input_views
+        + retention.retained_module_source_stamps
+        + retention.retained_import_input_views
+        + retention.retained_import_context_stamps
+        + retention.retained_import_topology_stamps
+        + retention.retained_import_provenance_stamps
+        + retention.retained_import_observation_stamps;
+    PressureRow {
+        retained_bytes: retention.retained_bytes,
+        retained_byte_budget: retention.retained_byte_budget,
+        peak_retained_bytes: retention.peak_retained_bytes.max(retention.retained_bytes),
+        observations: retention.dependency_pins.saturating_add(input_observations),
+        observation_budget: retention.dependency_pin_budget,
+        retained_query_records: retention.retained_query_records,
+        rooted_units,
+        wall_ms,
+        max_rss_bytes: process_max_rss_bytes(),
+    }
+}
+
+/// Run one (corpus, selection) cell cold then warm through `rooted_cfg`.
+fn measure_test_root_pressure(
+    corpus: &TestRootCorpus,
+    selection: RootSelection,
+) -> (PressureRow, PressureRow) {
+    let (snapshot, context, reads) = corpus.sources();
+    let options = test_root_options(selection);
+
+    let cold_start = std::time::Instant::now();
+    let mut session = CompilerSession::new();
+    session.update(&snapshot).into_result().unwrap();
+    close_import_source(&mut session, &snapshot, context, reads);
+    let cold_units = session
+        .rooted_cfg(&options)
+        .expect("test-root corpus compiles")
+        .functions()
+        .len();
+    let cold = retention_row(&session, cold_units, cold_start.elapsed().as_millis());
+
+    let warm_start = std::time::Instant::now();
+    let warm_units = session
+        .rooted_cfg(&options)
+        .expect("test-root corpus recompiles warm")
+        .functions()
+        .len();
+    let warm = retention_row(&session, warm_units, warm_start.elapsed().as_millis());
+
+    (cold, warm)
+}
+
+fn selection_label(selection: RootSelection) -> &'static str {
+    match selection {
+        RootSelection::Executable => "executable",
+        RootSelection::Tests => "tests",
+    }
+}
+
+fn env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+/// A single measurement cell in its own process, so `ru_maxrss` is that cell's
+/// peak rather than a shared high-water mark. Driven by `RUE_1919_BODIES`,
+/// `RUE_1919_TESTS`, and `RUE_1919_SELECTION`.
+#[test]
+#[ignore = "RUE-1919 measurement row; run one cell per process with env knobs"]
+fn rue_1919_pressure_row() {
+    let bodies = env_usize("RUE_1919_BODIES", 100);
+    let tests = env_usize("RUE_1919_TESTS", 10);
+    let selection = match std::env::var("RUE_1919_SELECTION").as_deref() {
+        Ok("tests") => RootSelection::Tests,
+        _ => RootSelection::Executable,
+    };
+    let corpus = TestRootCorpus::with_reached_bodies(bodies, tests);
+    let (cold, warm) = measure_test_root_pressure(&corpus, selection);
+    let label = selection_label(selection);
+    for (phase, row) in [("cold", cold), ("warm", warm)] {
+        println!(
+            "RUE1919ROW bodies={} modules={} tests={} selection={} phase={} \
+             retained_bytes={} retained_budget={} peak_retained_bytes={} \
+             observations={} observation_budget={} records={} units={} \
+             wall_ms={} maxrss_bytes={} budget={}",
+            corpus.reached_bodies(),
+            corpus.modules,
+            corpus.tests,
+            label,
+            phase,
+            row.retained_bytes,
+            row.retained_byte_budget,
+            row.peak_retained_bytes,
+            row.observations,
+            row.observation_budget,
+            row.retained_query_records,
+            row.rooted_units,
+            row.wall_ms,
+            row.max_rss_bytes,
+            row.budget_status(),
+        );
+    }
+}
+
+/// The whole grid in one process. Retained/observation/wall figures are exact
+/// per cell; `maxrss` is the process high-water mark and therefore monotone —
+/// use `rue_1919_pressure_row` for per-cell RSS.
+#[test]
+#[ignore = "RUE-1919 measurement matrix; run explicitly"]
+fn rue_1919_pressure_matrix() {
+    let bodies_ladder: Vec<usize> = std::env::var("RUE_1919_BODIES_LADDER")
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .filter_map(|v| v.trim().parse().ok())
+                .collect()
+        })
+        .unwrap_or_else(|| vec![100, 1_000]);
+    let tests_ladder: Vec<usize> = std::env::var("RUE_1919_TESTS_LADDER")
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .filter_map(|v| v.trim().parse().ok())
+                .collect()
+        })
+        .unwrap_or_else(|| vec![10, 100, 1_000]);
+
+    eprintln!("\n== RUE-1919 memo-database pressure under test root sets ==");
+    for bodies in &bodies_ladder {
+        for tests in &tests_ladder {
+            let corpus = TestRootCorpus::with_reached_bodies(*bodies, *tests);
+            for selection in [RootSelection::Executable, RootSelection::Tests] {
+                let (cold, warm) = measure_test_root_pressure(&corpus, selection);
+                let label = format!("B={bodies} K={tests} {}", selection_label(selection));
+                eprintln!("{}", cold.describe(&format!("{label} cold")));
+                eprintln!("{}", warm.describe(&format!("{label} warm")));
+            }
+        }
+    }
+}
+
+/// ADR-0083 §1 sanity: when every function is reached by some test, the `Tests`
+/// closure contains every ordinary function the `Executable` closure reaches.
+/// It is not a literal superset — `main` is rooted only by `Executable` — so
+/// containment is asserted over the non-`main` units.
+#[test]
+#[ignore = "RUE-1919 sanity row; run explicitly"]
+fn rue_1919_test_roots_cover_the_executable_closure() {
+    let bodies = env_usize("RUE_1919_BODIES", 100);
+    let tests = env_usize("RUE_1919_TESTS", 100);
+    let corpus = TestRootCorpus::with_reached_bodies(bodies, tests);
+    assert!(
+        corpus.tests >= corpus.modules,
+        "every module needs at least one test for the covering claim"
+    );
+    let names = |selection: RootSelection| -> BTreeSet<String> {
+        let (snapshot, context, reads) = corpus.sources();
+        let mut session = CompilerSession::new();
+        session.update(&snapshot).into_result().unwrap();
+        close_import_source(&mut session, &snapshot, context, reads);
+        session
+            .rooted_cfg(&test_root_options(selection))
+            .expect("corpus compiles")
+            .functions()
+            .iter()
+            .map(|unit| unit.source_name().to_owned())
+            .collect()
+    };
+
+    let executable = names(RootSelection::Executable);
+    let test_closure = names(RootSelection::Tests);
+
+    let ordinary_executable: BTreeSet<String> = executable
+        .iter()
+        .filter(|name| name.as_str() != "main")
+        .cloned()
+        .collect();
+    let missing: Vec<String> = ordinary_executable
+        .difference(&test_closure)
+        .cloned()
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "test closure is missing executable-reached bodies: {missing:?}"
+    );
+    assert!(
+        !test_closure.contains("main"),
+        "a test request must not root main (ADR-0083 §1)"
+    );
+
+    let extra = test_closure.len() - ordinary_executable.len();
+    eprintln!(
+        "\n== RUE-1919 root-set containment ==\n  \
+         executable units={} (ordinary={})  tests units={}  \
+         tests-only units={}  unit ratio={:.3}",
+        executable.len(),
+        ordinary_executable.len(),
+        test_closure.len(),
+        extra,
+        test_closure.len() as f64 / executable.len() as f64,
+    );
+}
+
+// --- RUE-1919 real-example rows -------------------------------------------
+
+/// Repository root for the real-example rows. `buck2 run` starts the test
+/// binary in the project root; `RUE_1919_REPO_ROOT` overrides.
+fn rue_1919_repo_root() -> std::path::PathBuf {
+    std::env::var_os("RUE_1919_REPO_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().expect("a working directory"))
+}
+
+fn rue_1919_rue_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", dir.display()))
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rue"))
+        .collect();
+    files.sort();
+    files
+}
+
+/// The generated sibling: `tests` test declarations, each calling one
+/// zero-argument public function of the example, round-robin.
+fn rue_1919_selftests_source(tests: usize, entries: &[(&str, &str)]) -> String {
+    let mut src = String::new();
+    let mut modules: Vec<&str> = entries.iter().map(|(module, _)| *module).collect();
+    modules.sort_unstable();
+    modules.dedup();
+    for module in &modules {
+        src.push_str(&format!("const {module} = @import(\"{module}.rue\");\n"));
+    }
+    for index in 0..tests {
+        let (module, function) = entries[index % entries.len()];
+        src.push_str(&format!(
+            "test \"selftest {index}\" {{\n    let value = {module}.{function}();\n}}\n"
+        ));
+    }
+    src
+}
+
+/// Assemble `examples/<example>` plus the real `std/` tree, with a generated
+/// `selftests.rue` sibling imported from `main.rue` by the aggregator idiom.
+fn rue_1919_example_sources(
+    example: &str,
+    selftests: Option<&str>,
+) -> (SourceSnapshot, ImportDiscoveryContext, AcceptedReadManifest) {
+    let repo = rue_1919_repo_root();
+    let project = repo.join("examples").join(example);
+    let std_root = repo.join("std");
+    let context = ImportDiscoveryContext::new(
+        1,
+        project.to_str().unwrap(),
+        Some(std_root.to_str().unwrap()),
+        "rue-1919-example",
+    )
+    .unwrap();
+
+    let main_path = project.join("main.rue");
+    let mut main_source = std::fs::read_to_string(&main_path).expect("the example has a main.rue");
+    if selftests.is_some() {
+        main_source.insert_str(0, "const selftests = @import(\"selftests.rue\");\n");
+    }
+    let main_source = Arc::new(main_source);
+    let mut assembler = DiscoverySourceAssembler::new(
+        context.clone(),
+        main_path.to_str().unwrap(),
+        main_path.to_str().unwrap(),
+        PhysicalFileIdentity::new(1919, 1),
+        FileMetadataFingerprint::new(main_source.len() as u64, 1, 1),
+        main_source,
+    )
+    .unwrap();
+
+    let mut identity = 2u64;
+    // Discovery demands the *requested* spelling resolved against the
+    // importer's directory, while the canonical path is where the bytes live.
+    // For `@import("std")` those differ: the request is `<project>/std/...`
+    // and the file is `<std_root>/...`.
+    let add = |assembler: &mut DiscoverySourceAssembler,
+               requested: &std::path::Path,
+               canonical: &std::path::Path,
+               text: String,
+               identity: &mut u64| {
+        let text = Arc::new(text);
+        assembler
+            .add_explicit(
+                requested.to_str().unwrap(),
+                canonical.to_str().unwrap(),
+                PhysicalFileIdentity::new(1919, *identity),
+                FileMetadataFingerprint::new(text.len() as u64, 1, 1),
+                text,
+            )
+            .unwrap();
+        *identity += 1;
+    };
+
+    for path in rue_1919_rue_files(&project) {
+        if path == main_path {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("an example module is readable");
+        add(&mut assembler, &path, &path, text, &mut identity);
+    }
+    if let Some(source) = selftests {
+        let path = project.join("selftests.rue");
+        add(
+            &mut assembler,
+            &path,
+            &path,
+            source.to_owned(),
+            &mut identity,
+        );
+    }
+    for path in rue_1919_rue_files(&std_root) {
+        let text = std::fs::read_to_string(&path).expect("a std module is readable");
+        add(&mut assembler, &path, &path, text, &mut identity);
+    }
+
+    (
+        assembler.snapshot().unwrap(),
+        context,
+        assembler.accepted_read_manifest(),
+    )
+}
+
+fn rue_1919_measure_example(
+    example: &str,
+    selftests: Option<&str>,
+    selection: RootSelection,
+) -> (PressureRow, PressureRow) {
+    let (snapshot, context, reads) = rue_1919_example_sources(example, selftests);
+    let options = test_root_options(selection);
+
+    let cold_start = std::time::Instant::now();
+    let mut session = CompilerSession::new();
+    session.update(&snapshot).into_result().unwrap();
+    rue_1919_close_imports(&mut session, &snapshot, context, reads);
+    let cold_units = session
+        .rooted_cfg(&options)
+        .unwrap_or_else(|errors| panic!("{example} compiles under {selection:?}: {errors:?}"))
+        .functions()
+        .len();
+    let cold = retention_row(&session, cold_units, cold_start.elapsed().as_millis());
+
+    let warm_start = std::time::Instant::now();
+    let warm_units = session
+        .rooted_cfg(&options)
+        .expect("the example recompiles warm")
+        .functions()
+        .len();
+    let warm = retention_row(&session, warm_units, warm_start.elapsed().as_millis());
+
+    (cold, warm)
+}
+
+/// Zero-argument public entry points of `examples/mosaic`, one per test.
+const MOSAIC_ZERO_ARG_ENTRIES: &[(&str, &str)] = &[
+    ("selftest", "run"),
+    ("architecture", "reference"),
+    ("assets", "stylesheet"),
+    ("language", "help"),
+    ("model", "new_site"),
+    ("model", "empty_page"),
+    ("template_ast", "empty_token"),
+    ("template_ast", "empty_node"),
+];
+
+/// Real-example row: `examples/mosaic` with a generated `selftests.rue`.
+/// `RUE_1919_EXAMPLE_TESTS` sets the test count (default 100).
+#[test]
+#[ignore = "RUE-1919 real-example measurement row; run explicitly"]
+fn rue_1919_example_pressure_row() {
+    let tests = env_usize("RUE_1919_EXAMPLE_TESTS", 100);
+    let example = std::env::var("RUE_1919_EXAMPLE").unwrap_or_else(|_| "mosaic".to_owned());
+    let selftests = rue_1919_selftests_source(tests, MOSAIC_ZERO_ARG_ENTRIES);
+
+    eprintln!("\n== RUE-1919 {example} + {tests} generated tests ==");
+    for (selection, source) in [
+        (RootSelection::Executable, None),
+        (RootSelection::Executable, Some(selftests.as_str())),
+        (RootSelection::Tests, Some(selftests.as_str())),
+    ] {
+        let sibling = if source.is_some() {
+            "+selftests"
+        } else {
+            "bare"
+        };
+        let (cold, warm) = rue_1919_measure_example(&example, source, selection);
+        let label = format!("{} {sibling}", selection_label(selection));
+        eprintln!("{}", cold.describe(&format!("{label} cold")));
+        eprintln!("{}", warm.describe(&format!("{label} warm")));
+        println!(
+            "RUE1919EX example={example} tests={tests} selection={} sibling={sibling} \
+             cold_retained={} cold_obs={} cold_units={} cold_wall_ms={} \
+             warm_retained={} warm_units={} warm_wall_ms={} maxrss={} budget={}",
+            selection_label(selection),
+            cold.retained_bytes,
+            cold.observations,
+            cold.rooted_units,
+            cold.wall_ms,
+            warm.retained_bytes,
+            warm.rooted_units,
+            warm.wall_ms,
+            warm.max_rss_bytes,
+            warm.budget_status(),
+        );
+    }
+}
+
+/// `close_import_source` with a diagnostic panic: the real-example rows demand
+/// paths the fixture must already accept, and a mismatch is otherwise silent.
+fn rue_1919_close_imports(
+    session: &mut CompilerSession,
+    source: &SourceSnapshot,
+    context: ImportDiscoveryContext,
+    accepted_reads: AcceptedReadManifest,
+) {
+    let mut revision =
+        begin_import_input_request(session, source, context.clone(), accepted_reads.clone())
+            .unwrap();
+    loop {
+        let ledger = import_observation_ledger(session, revision).unwrap();
+        let plan = session
+            .stage_import_discovery(
+                source,
+                context.clone(),
+                accepted_reads.shared_slice(),
+                ledger.clone(),
+            )
+            .unwrap();
+        let frontier = import_demand_frontier_for_roots(
+            session,
+            revision,
+            &plan,
+            ImportDemandMode::Rooted,
+            &plan.demand_roots(),
+        )
+        .unwrap();
+        if frontier.requests().is_empty() {
+            session.close_import_discovery(ledger).unwrap();
+            return;
+        }
+        let observations = frontier
+            .requests()
+            .iter()
+            .map(|request| {
+                // ADR-0078 policy v2 probes `{project}/std/_std.rue` before the
+                // captured toolchain root, so a real example needs the
+                // not-found half of the protocol: report the vendored candidate
+                // absent and let discovery fall through to the trusted std.
+                let Some(read) = accepted_reads
+                    .iter()
+                    .find(|read| read.requested_path() == request.requested_path())
+                else {
+                    return ImportObservation::absent(request.clone());
+                };
+                let module = source
+                    .files()
+                    .find(|file| source.module_id(file.file_id) == Some(read.module()))
+                    .expect("the accepted import belongs to the fixture snapshot");
+                ImportObservation::accepted(
+                    request.clone(),
+                    AcceptedImportSource::new(
+                        request.requested_path(),
+                        read.canonical_path(),
+                        read.metadata_identity(),
+                        read.metadata_fingerprint(),
+                        Arc::new(module.source.to_owned()),
+                    )
+                    .unwrap(),
+                )
+                .unwrap()
+            })
+            .collect();
+        revision = publish_import_observation_batch(
+            session,
+            &frontier,
+            source,
+            accepted_reads.clone(),
+            observations,
+        )
+        .unwrap();
+    }
+}
+
+/// The `Executable` codegen/link path, for scale against ADR-0063 §14's own
+/// calibration — which charged a full compile, not a `rooted_cfg` request.
+/// `Tests` has no executable path yet (ADR-0083 §1), so this row is
+/// `Executable`-only by construction.
+#[test]
+#[ignore = "RUE-1919 codegen-path measurement row; run explicitly"]
+fn rue_1919_executable_codegen_pressure_row() {
+    let bodies = env_usize("RUE_1919_BODIES", 1_000);
+    let tests = env_usize("RUE_1919_TESTS", 100);
+    let corpus = TestRootCorpus::with_reached_bodies(bodies, tests);
+    let (snapshot, context, reads) = corpus.sources();
+    let options = test_root_options(RootSelection::Executable);
+
+    let start = std::time::Instant::now();
+    let mut session = CompilerSession::new();
+    session.update(&snapshot).into_result().unwrap();
+    rue_1919_close_imports(&mut session, &snapshot, context, reads);
+    let output =
+        crate::queries::compile_with_session(&mut session, &snapshot, &options).expect("links");
+    let row = retention_row(&session, output.elf.len(), start.elapsed().as_millis());
+    println!(
+        "RUE1919CG bodies={} tests={} phase=cold retained_bytes={} retained_budget={} \
+         observations={} observation_budget={} records={} elf_bytes={} wall_ms={} \
+         maxrss_bytes={} budget={}",
+        corpus.reached_bodies(),
+        corpus.tests,
+        row.retained_bytes,
+        row.retained_byte_budget,
+        row.observations,
+        row.observation_budget,
+        row.retained_query_records,
+        row.rooted_units,
+        row.wall_ms,
+        row.max_rss_bytes,
+        row.budget_status(),
+    );
+}
