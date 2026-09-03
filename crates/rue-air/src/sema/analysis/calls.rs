@@ -1052,21 +1052,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
         };
 
-        // Look up the struct name by its ID (for error messages)
-        let struct_name_str = self.format_type_name(Type::new_struct(struct_id));
-
         // Look up the method using StructId directly
         let method_key = (struct_id, method);
-        let method_info = self
-            .call_facts()
-            .call_method_info(struct_id, method)
-            .ok_or_compile_error(
+        let Some(method_info) = self.call_facts().call_method_info(struct_id, method) else {
+            return Err(CompileError::new(
                 ErrorKind::UndefinedMethod {
-                    type_name: struct_name_str.clone(),
+                    type_name: self.format_type_name(Type::new_struct(struct_id)),
                     method_name: method_name_str.clone(),
                 },
                 span,
-            )?;
+            ));
+        };
         // Track this method as referenced (for lazy analysis). Anonymous
         // struct methods are often registered while reducing a comptime type
         // constructor; without this edge the lazy pipeline can emit a call to
@@ -1078,7 +1074,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if !method_info.has_self {
             return Err(CompileError::new(
                 ErrorKind::AssocFnCalledAsMethod {
-                    type_name: struct_name_str,
+                    type_name: self.format_type_name(Type::new_struct(struct_id)),
                     function_name: method_name_str,
                 },
                 span,
