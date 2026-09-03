@@ -61,8 +61,14 @@ SCENARIOS=(
     //examples:large-example-meridian-canary-workdir
 )
 
-if ! grep -Eq '^[[:space:]]*execution_platforms[[:space:]]*=[[:space:]]*root//platforms:remote_cache([[:space:]]|$)' .buckconfig.local 2>/dev/null; then
-    echo "FAIL: no provisioned remote cache (.buckconfig.local); a warm-cache check without one is vacuous" >&2
+# The ./buck2 wrapper links .buckconfig.local to the installed config on the
+# first execution command in any checkout, including the relocated clone
+# below, unless the opt-out is set; so the config's presence is the whole
+# precondition.
+central_config="${RUE_BUILDBUDDY_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/rue/buildbuddy.buckconfig}"
+if [[ "${RUE_NO_REMOTE_CACHE:-}" == 1 ]] ||
+    ! grep -Eq '^[[:space:]]*execution_platforms[[:space:]]*=[[:space:]]*root//platforms:remote_cache([[:space:]]|$)' "$central_config" 2>/dev/null; then
+    echo "FAIL: no installed remote cache config ($central_config); a warm-cache check without one is vacuous" >&2
     exit 1
 fi
 
@@ -100,15 +106,9 @@ echo "  ok: $(wc -l <<<"$cold_lines") rue_* action(s) executed cold"
 
 echo "warm-cache: (2) relocated checkout stages the CLI programs and runs the canary scenarios"
 git clone --quiet --no-hardlinks . "$reloc"
-# .buckconfig.local is private and untracked, so the clone starts without a
-# remote cache; provision it explicitly rather than relying on the wrapper's
-# auto-follow, and fail here — not at the misleading cache-miss assertion —
-# if the relocated root still has no cache config.
-scripts/provision-build-cache apply "$reloc" >/dev/null
-if ! grep -Eq '^[[:space:]]*execution_platforms[[:space:]]*=[[:space:]]*root//platforms:remote_cache([[:space:]]|$)' "$reloc/.buckconfig.local" 2>/dev/null; then
-    echo "FAIL: relocated checkout has no provisioned remote cache" >&2
-    exit 1
-fi
+# The clone needs no provisioning: its ./buck2 wrapper links the same
+# installed user config checked above on its first build, so a cache miss
+# below is a real one.
 # `buck2 log what-ran` reports the LAST invocation, so the two consumer shapes
 # are driven separately and their logs are collected as each finishes. The two
 # invocations name disjoint programs, so neither hides the other's actions.

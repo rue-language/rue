@@ -1,9 +1,16 @@
 # BuildBuddy remote cache + remote execution — opt-in local config (RUE-316).
 #
-# Copy this file to `.buckconfig.local` (gitignored) and paste your BuildBuddy
-# API key. buck2 reads `.buckconfig.local` automatically and layers it over
-# `.buckconfig`, so the shared config stays cache-agnostic — nobody without a key
-# is affected.
+# The recommended setup is `scripts/rue cache install`: it writes this same
+# configuration once, privately, to ${XDG_CONFIG_HOME:-~/.config}/rue/
+# buildbuddy.buckconfig, and the repository `./buck2` wrapper links
+# `.buckconfig.local` to that file in any worktree on the first
+# build/test/run/install there (see docs/process/build-cache.md).
+#
+# This file documents the knobs, and remains the hand-written alternative for
+# one checkout, which the wrapper never replaces: copy it to `.buckconfig.local`
+# (gitignored) and paste your BuildBuddy API key. buck2 reads `.buckconfig.local`
+# automatically and layers it over `.buckconfig`, so the shared config stays
+# cache-agnostic — nobody without a key is affected.
 #
 #   cp .buckconfig.local.example .buckconfig.local
 #   # then replace <YOUR_BUILDBUDDY_API_KEY> below

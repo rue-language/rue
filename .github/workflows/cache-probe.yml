@@ -61,7 +61,6 @@ jobs:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Cold release build (populates the remote cache)
         run: |
@@ -161,7 +160,6 @@ jobs:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
           scripts/provision-build-cache install
-          scripts/provision-build-cache apply
 
       - name: Check rue_program warm cache across relocated roots
         run: scripts/check-rue-program-warm-cache.sh

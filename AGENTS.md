@@ -84,11 +84,10 @@ scripts/rue cli abi                  # filtered CLI integration tests
 scripts/rue test [pattern]           # broad/full suite
 scripts/rue fmt                      # format changed Rust files
 scripts/rue storage status           # inventory Buck disk use across worktrees
-scripts/rue storage plan             # dry-run host-wide stale cleanup
+scripts/rue storage plan             # dry-run stale cleanup in every registered worktree
 scripts/rue storage clean            # reclaim stale Buck2 artifacts host-wide
-scripts/rue storage reclaim-finished RUE_ROOT [RUE_ROOT ...] # explicit finished-root output reclaim
-scripts/rue cache install            # securely install the shared cache config
-scripts/rue cache apply --all        # provision current Git/Codex worktrees
+scripts/rue storage reset RUE_ROOT   # full Buck reset of one registered worktree
+scripts/rue cache install            # securely install the private cache config
 ```
 
 When corpus-affecting cases change, use this focused check:
@@ -260,10 +259,13 @@ build actions; `weight_percentage = 100` keeps two corpus actions from running
 together within one Buck daemon/worktree while still allowing corpus work to
 overlap non-corpus actions such as unit tests and compiles. There is no
 full-suite host lock or cross-worktree test serialization, so sibling worktrees
-may run concurrently. The cross-worktree coordination relevant here is the
-`buck2` wrapper's `scripts/rue-storage` disk-pressure guard. The optional
-BuildBuddy action cache uses one private user config and ignored per-worktree
-symlinks; see `docs/process/build-cache.md`. Never commit or print its
+may run concurrently. There is no cross-worktree coordination: the `buck2`
+wrapper only refuses to start a build below a 4 GiB free-space floor, and a
+finished worktree's `buck-out` is reclaimed by removing the worktree. The
+optional BuildBuddy action cache is one private user config
+(`scripts/rue cache install`) that the wrapper links as `.buckconfig.local` in
+a worktree on the first build there; `RUE_NO_REMOTE_CACHE=1` skips that for
+one command. See `docs/process/build-cache.md`. Never commit or print its
 credential. Full remote execution is supported (RUE-320, Done 2026-07-18): the
 repository wrapper defaults to `--prefer-local`, and `--prefer-remote` is an
 explicit opt-in for cache-population or RE-debugging runs, not the default

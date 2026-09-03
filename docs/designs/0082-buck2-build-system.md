@@ -9,7 +9,7 @@ accepted: 2026-08-27
 implemented:
 spec-sections: []
 superseded-by:
-relates: ["ADR-0069", "ADR-0070", "RUE-1819", "RUE-1118", "RUE-316", "RUE-320", "RUE-1505", "RUE-1523", "RUE-1790", "RUE-1818"]
+relates: ["ADR-0069", "ADR-0070", "RUE-1819", "RUE-1118", "RUE-316", "RUE-320", "RUE-1505", "RUE-1523", "RUE-1790", "RUE-1818", "RUE-1934"]
 ---
 
 # ADR-0082: Buck2 as the build system
@@ -106,9 +106,12 @@ needed.
   broken twice by the same shape (RUE-1511, RUE-1788). The expressiveness
   that enables the caching also generates this bug class.
 - OSS Buck2 has no persistent cross-daemon cache, so each worktree carries
-  its own `buck-out`; the disk-pressure guard and storage tooling exist to
-  manage that. The current age-based reclaim policy fails under fix-cycle
-  load and is being redesigned (RUE-1790).
+  its own `buck-out`, and that disk is reclaimed by a person removing finished
+  worktrees (or `scripts/rue storage reset`). The `./buck2` wrapper only
+  refuses to start a build below a 4 GiB free-space floor. An age-based
+  cross-worktree reclaim guard was tried first; it caused more incidents than
+  it prevented (RUE-1331, RUE-1683) and could not help under fix-cycle load
+  (RUE-1790), so RUE-1934 removed it.
 - The contributor on-ramp is steeper than a cargo workspace. With the current
   contributor base this cost is small; it grows if the project seeks outside
   contributors, and re-evaluation should weigh it then.
@@ -122,8 +125,9 @@ makes the on-ramp cost primary.
 
 ## Future Work
 
-- RUE-1790: replace age-based storage reclaim with finishedness-based
-  reclaim.
+- RUE-1790 asked for finishedness-based storage reclaim in place of the
+  age-based guard. RUE-1934 settled it the other way: the guard is gone, and
+  a finished worktree's output is reclaimed by removing the worktree.
 - RUE-1818: the interpreter-baseline validator question is deliberately out
   of scope here and tracked as its own decision.
 

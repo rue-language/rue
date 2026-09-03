@@ -48,7 +48,9 @@ platform(
     visibility = ["PUBLIC"],
 )
 
-# Cache-only EXECUTION platform (RUE-316) — opt-in via .buckconfig.local.
+# Cache-only EXECUTION platform (RUE-316) — opt-in via .buckconfig.local, which
+# the ./buck2 wrapper links to the installed cache config (scripts/rue cache
+# install) or the user writes by hand.
 # Unused by default; select with `[build] execution_platforms = root//platforms:remote_cache`.
 remote_cache_platform(
     name = "remote_cache",

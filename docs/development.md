@@ -27,10 +27,10 @@ scripts/rue spec 4.2                 # filtered specification cases
 scripts/rue cli abi                  # filtered CLI integration cases
 scripts/rue fmt                      # format first-party Rust
 scripts/rue storage status           # inventory Buck usage across worktrees
-scripts/rue storage plan             # dry-run host-wide stale cleanup
+scripts/rue storage plan             # dry-run stale cleanup in every registered worktree
 scripts/rue storage clean            # remove stale Buck artifacts host-wide
-scripts/rue storage guard            # run the emergency low-disk preflight now
-scripts/rue storage reclaim-finished /exact/root # reclaim outputs for a finished root
+scripts/rue storage reset /exact/root # full Buck reset of one registered worktree
+scripts/rue cache install            # install the private BuildBuddy cache config
 ```
 
 For direct compiler invocations, resolve the binary through `scripts/rue-bin`:
