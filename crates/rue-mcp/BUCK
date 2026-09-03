@@ -1,0 +1,45 @@
+load("//crates:defs.bzl", "rue_binary")
+load("//:test_defs.bzl", "rue_sh_test")
+
+rue_binary(
+    name = "rue-mcp",
+    deps = [
+        "//crates/rue-error:rue-error",
+        "//third-party:libc",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+    ],
+)
+
+# The runnable surface supplies the two canonical producer binaries. Keeping
+# those paths in Buck avoids PATH discovery and makes every MCP result come
+# from the same source authorities as the ordinary developer commands.
+command_alias(
+    name = "server",
+    exe = ":rue-mcp",
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_SPEC_BINARY": "$(exe_target //crates/rue-spec:rue-spec)",
+        "RUE_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
+        "RUE_SPEC_DIR": "$(location root//:spec-docs)/docs/spec/src",
+    },
+    visibility = ["PUBLIC"],
+)
+
+python_bootstrap_binary(
+    name = "protocol-test-runner",
+    main = "protocol_test.py",
+)
+
+rue_sh_test(
+    name = "protocol-test",
+    labels = ["rue_not_quick"],
+    test = ":protocol-test-runner",
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_MCP_BINARY": "$(exe_target :rue-mcp)",
+        "RUE_SPEC_BINARY": "$(exe_target //crates/rue-spec:rue-spec)",
+        "RUE_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
+        "RUE_SPEC_DIR": "$(location root//:spec-docs)/docs/spec/src",
+    },
+)

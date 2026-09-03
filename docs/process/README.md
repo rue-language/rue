@@ -30,6 +30,7 @@ Each step has a corresponding document in this directory and a Claude Code comma
 | Commit | [committing.md](committing.md) | `/commit` | Create well-formed commits |
 | - | [ci.md](ci.md) | - | Maintain required CI and its pinned tools |
 | - | [diagnostics.md](diagnostics.md) | - | Consume `--error-format json` structured diagnostics |
+| - | [mcp.md](mcp.md) | - | Use the local Rue MCP server from coding agents |
 | - | [profiling.md](profiling.md) | - | Build symbolized executables for native profiling |
 | - | [compiler-scaling.md](compiler-scaling.md) | - | Measure maintained-program compiler scaling |
 | - | [compiler-facade.md](compiler-facade.md) | - | Review compiler API and tooling-view changes |
