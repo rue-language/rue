@@ -244,13 +244,32 @@ mod tests {
 
     fn spec_fixture() -> tempfile::TempDir {
         let directory = tempfile::tempdir().unwrap();
-        let module_dir = directory.path().join("10-modules");
-        fs::create_dir(&module_dir).unwrap();
-        fs::write(
-            module_dir.join("03-visibility.md"),
-            "# Visibility\n\n{{ rule(id=\"10.3:8\", cat=\"legality-rule\") }}\nRule.\n",
-        )
-        .unwrap();
+        let mut rules_by_path = BTreeMap::<&str, BTreeSet<&str>>::new();
+        for metadata in error_code_metadata() {
+            let Some(explanation) = error_code_explanation(metadata.code) else {
+                continue;
+            };
+            for reference in explanation.references {
+                rules_by_path
+                    .entry(reference.path)
+                    .or_default()
+                    .insert(reference.rule.expect("website references require a rule"));
+            }
+        }
+        for (path, rules) in rules_by_path {
+            let relative = path
+                .strip_prefix("docs/spec/src/")
+                .expect("website references must name specification sources");
+            let fixture_path = directory.path().join(relative);
+            fs::create_dir_all(fixture_path.parent().unwrap()).unwrap();
+            let mut source = String::from("# Fixture\n");
+            for rule in rules {
+                source.push_str(&format!(
+                    "\n{{{{ rule(id=\"{rule}\", cat=\"legality-rule\") }}}}\nRule.\n"
+                ));
+            }
+            fs::write(fixture_path, source).unwrap();
+        }
         directory
     }
 
@@ -299,6 +318,18 @@ mod tests {
     fn generated_internal_links_use_existing_routes() {
         let fixture = spec_fixture();
         let pages = generate(fixture.path()).unwrap();
+        let expected_spec_links = error_code_metadata()
+            .iter()
+            .filter_map(|metadata| error_code_explanation(metadata.code))
+            .flat_map(|explanation| explanation.references)
+            .map(|reference| {
+                canonical_spec_path(
+                    reference.path,
+                    reference.rule.expect("website references require a rule"),
+                )
+                .unwrap()
+            })
+            .collect::<BTreeSet<_>>();
         for page in pages {
             let text = String::from_utf8(page.bytes).unwrap();
             for href in text
@@ -316,12 +347,11 @@ mod tests {
                             .any(|entry| entry.code.to_string() == code),
                         "index links only to active generated error routes"
                     );
-                } else if let Some(spec) = href.strip_prefix("/spec/") {
-                    let (route, anchor) = spec
-                        .split_once("/#")
-                        .expect("spec link has page and anchor");
-                    assert_eq!(route, "10-modules/03-visibility");
-                    assert!(anchor.starts_with("r-"));
+                } else if href.starts_with("/spec/") {
+                    assert!(
+                        expected_spec_links.contains(href),
+                        "explanation links only to declared specification references"
+                    );
                 } else {
                     panic!("unsupported generated internal link: {href}");
                 }

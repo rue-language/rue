@@ -3861,7 +3861,7 @@ mod tests {
             &["explain", "0201"][..],
             &["explain", "E9999"][..],
             &["explain", "E0005"][..],
-            &["explain", "E0206"][..],
+            &["explain", "E0250"][..],
         ] {
             assert!(is_error(&parse_args_from(args)), "accepted {args:?}");
         }

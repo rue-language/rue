@@ -47,9 +47,9 @@ error_contains = ["unknown or retired error code E0005"]
 [[case]]
 name = "known_but_uncovered_code_is_rejected"
 files = [{ path = "main.rue", source = "fn main() {}\n" }]
-args = ["explain", "E0206"]
+args = ["explain", "E0250"]
 compile_fail = true
-error_contains = ["no detailed explanation is available yet for E0206"]
+error_contains = ["no detailed explanation is available yet for E0250"]
 
 [[case]]
 name = "extra_argument_is_rejected"

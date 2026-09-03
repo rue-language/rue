@@ -108,6 +108,19 @@ rue_rust_test(
     ],
 )
 
+# Compiler-owned error explanations carry executable examples. This external
+# consumer verifies the bounded documented tranche through the real one-shot
+# compiler path without copying the examples into a second fixture.
+rue_rust_test(
+    name = "error-explanation-examples-test",
+    srcs = ["tests/error_explanation_examples.rs"],
+    crate_root = "tests/error_explanation_examples.rs",
+    deps = [
+        ":rue-compiler",
+        "//crates/rue-error:rue-error",
+    ],
+)
+
 # A bounded, deterministic corpus comparing a long-lived session with
 # step-matched fresh sessions. Keeping this separate gives local and CI callers
 # a focused regression target for incremental correctness.
