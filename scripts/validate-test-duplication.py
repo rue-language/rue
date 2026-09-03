@@ -2,7 +2,7 @@
 """Fail when one test is scheduled more than once in a CI run (ADR-0069 §2).
 
 Every other CI gate in this repository compares *target lists*.
-`//:cli-shard-coverage-validation` compares BUCK's shard targets with the
+The CLI shard planner compares BUCK's live shard targets with the derived
 matrix; `scripts/validate-ci-gate.py` compares the workflow's jobs with the
 platform responsibility matrix; `//test_tiers.bxl:validate` compares tier
 labels with the test graph. None of them compares *test contents*, so a target

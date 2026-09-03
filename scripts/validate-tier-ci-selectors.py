@@ -27,7 +27,7 @@ What this proves:
 
 What it does not prove: that every *target* in a tier is selected. Coverage at
 that granularity belongs to each suite's own inventory gate (the RUE-924 audit
-in `test.sh`, `//:cli-shard-coverage-validation`). `//:cli-tests-slow` is
+in `test.sh`, the shard planner's live-union assertion). `//:cli-tests-slow` is
 deliberately nightly-only, and this gate is not the place to relitigate that.
 """
 
@@ -64,6 +64,10 @@ class Selector:
     # targets it names — so an edit that removes the selection fails here.
     evidence: tuple[str, ...]
     why: str
+    # When the workflow consumes a generated matrix, these targets must be in
+    # the canonical inventory that feeds the generator. This follows the live
+    # selection chain instead of requiring target spellings in generated YAML.
+    derived_targets: tuple[str, ...] = ()
 
 
 TIER_SELECTORS: dict[str, tuple[Selector, ...]] = {
@@ -80,6 +84,9 @@ TIER_SELECTORS: dict[str, tuple[Selector, ...]] = {
             workflow="ci.yml",
             job="platform-corpus",
             evidence=(
+                "fromJSON(needs.affected-targets.outputs.corpus_matrix)",
+            ),
+            derived_targets=(
                 "//crates/rue-oracle-diff:oracle-diff-test",
                 "//crates/rue-oracle-diff:oracle-diff-spec-test",
             ),
@@ -100,6 +107,30 @@ TIER_SELECTORS: dict[str, tuple[Selector, ...]] = {
 }
 
 
+CORPUS_TARGETS_RE = re.compile(
+    r"^SELECTABLE_CORPUS=\(\s*(.*?)^\)", re.MULTILINE | re.DOTALL
+)
+
+
+def selectable_corpus_targets(path: Path) -> tuple[set[str], list[str]]:
+    """Read the canonical corpus inventory consumed by the matrix planner."""
+    try:
+        source = path.read_text()
+    except OSError as error:
+        return set(), [f"{path}: cannot read canonical corpus inventory: {error}"]
+    match = CORPUS_TARGETS_RE.search(source)
+    if match is None:
+        return set(), [f"{path}: SELECTABLE_CORPUS array is missing"]
+    targets = {
+        line.strip()
+        for line in match.group(1).splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    if not targets or any(not target.startswith("//") for target in targets):
+        return set(), [f"{path}: SELECTABLE_CORPUS is empty or malformed"]
+    return targets, []
+
+
 def declared_tiers(defs_path: Path, bxl_path: Path) -> tuple[set[str], list[str]]:
     """Returns the tier vocabulary and any break in its single-sourcing."""
     defs_tiers = set(DEFS_TIER_RE.findall(defs_path.read_text()))
@@ -114,7 +145,12 @@ def declared_tiers(defs_path: Path, bxl_path: Path) -> tuple[set[str], list[str]
     return defs_tiers, errors
 
 
-def validate(defs_path: Path, bxl_path: Path, workflows: dict[str, Path]) -> list[str]:
+def validate(
+    defs_path: Path,
+    bxl_path: Path,
+    workflows: dict[str, Path],
+    affected_targets_path: Path,
+) -> list[str]:
     tiers, errors = declared_tiers(defs_path, bxl_path)
     if errors:
         return errors
@@ -156,6 +192,28 @@ def validate(defs_path: Path, bxl_path: Path, workflows: dict[str, Path]) -> lis
                         f"{tier}: {selector.workflow} job '{selector.job}' no "
                         f"longer selects it via {evidence!r} ({selector.why})"
                     )
+            if selector.derived_targets:
+                affected_block = jobs.get("affected-targets", "")
+                for evidence in (
+                    "scripts/affected-targets corpus-targets",
+                    "scripts/plan-cli-shards.py",
+                ):
+                    if evidence not in affected_block:
+                        errors.append(
+                            f"{tier}: {selector.workflow} job 'affected-targets' "
+                            f"no longer derives the corpus matrix via {evidence!r} "
+                            f"({selector.why})"
+                        )
+                targets, inventory_errors = selectable_corpus_targets(
+                    affected_targets_path
+                )
+                errors.extend(inventory_errors)
+                for target in selector.derived_targets:
+                    if target not in targets:
+                        errors.append(
+                            f"{tier}: canonical corpus inventory no longer selects "
+                            f"{target!r} ({selector.why})"
+                        )
     return errors
 
 
@@ -175,6 +233,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--test-defs", type=Path, required=True)
     parser.add_argument("--test-tiers-bxl", type=Path, required=True)
+    parser.add_argument("--affected-targets", type=Path, required=True)
     parser.add_argument(
         "--workflow",
         action="append",
@@ -184,7 +243,9 @@ def main() -> int:
     args = parser.parse_args()
 
     workflows, errors = parse_workflow_args(args.workflow)
-    errors += validate(args.test_defs, args.test_tiers_bxl, workflows)
+    errors += validate(
+        args.test_defs, args.test_tiers_bxl, workflows, args.affected_targets
+    )
     if errors:
         for error in errors:
             print(f"error: {error}")

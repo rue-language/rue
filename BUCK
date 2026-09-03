@@ -630,9 +630,14 @@ cached_corpus_suite(
 #   * rue_cli_shard — a local `./test.sh` full run runs the premerge
 #     //:cli-tests exactly once instead of re-running every slice (test.sh
 #     subtracts rue_cli_shard from its heavy-suite discovery).
-# The `platform-corpus` matrix in .github/workflows/ci.yml MUST list all
-# CLI_TEST_SHARD_COUNT shards on every platform that runs the CLI corpus;
-# //:cli-shard-coverage-validation fails the build if BUCK and the matrix drift.
+# scripts/plan-cli-shards.py derives the required workflow matrix from these
+# live labels and fails unless their exhaustive union matches the runner count
+# derived from ci/cli-shard-planning.json.
+# The maximum measured unsharded wall (1,098s), conservatively inflated by the
+# 25% observed-skew allowance, needs four lanes to stay under the 407s measured
+# native-linux-arm64 floor: three project to 457.5s; four project to 343.125s.
+# ci/cli-shard-planning.json is the machine-readable evidence and the planner
+# rechecks this constant indirectly by requiring exactly four live shard labels.
 CLI_TEST_SHARD_COUNT = 4
 
 [
@@ -1201,38 +1206,26 @@ rue_tool_test(
     gatelib = False,
 )
 
-# The root BUCK file, so the CLI-shard coverage gate can read CLI_TEST_SHARD_COUNT
-# and the generated shard targets as a declared input.
+# The root BUCK file is a declared input to policy gates that inspect corpus
+# action bounds.
 filegroup(
     name = "root-buck-file",
     srcs = ["BUCK"],
 )
 
-# RUE-1116: fail the build if the CLI shard targets in BUCK and the shards
-# listed in the required CI matrix drift apart. A shard present in BUCK but
-# missing from the matrix would silently drop that fraction of the corpus on CI
-# (the RUE-924 false-green failure mode), since nothing else re-runs the slices.
-rue_sh_test(
-    name = "cli-shard-coverage-validation",
-    test = "scripts/validate-cli-shard-coverage.py",
-    args = [
-        "--buck",
-        "$(location :root-buck-file)/BUCK",
-        "--workflow",
-        "$(location :required-ci-workflows)/.github/workflows/ci.yml",
-    ],
-)
-
 rue_tool_test(
-    name = "cli-shard-coverage-tool-tests",
-    test = "scripts/test-cli-shard-coverage.py",
-    resources = ["scripts/validate-cli-shard-coverage.py"],
+    name = "cli-shard-plan-tool-tests",
+    test = "scripts/test-plan-cli-shards.py",
+    resources = [
+        "ci/cli-shard-planning.json",
+        "scripts/plan-cli-shards.py",
+    ],
 )
 
 # RUE-1265 / ADR-0069 §2. The duplication gate itself needs the live Buck graph
 # and every test binary, so it runs as a step in the premerge lane rather than
 # as a target inside the graph it interrogates. What belongs here is its
-# decision logic, pinned the way //:cli-shard-coverage-tool-tests pins the
+# decision logic, pinned the way //:cli-shard-plan-tool-tests pins the
 # shard gate: the RUE-1262 superset shape is checked in as a fixture, and the
 # gate must fail on it and name both owning targets.
 #
@@ -1256,6 +1249,7 @@ filegroup(
     srcs = [
         ".github/workflows/ci.yml",
         ".github/workflows/release.yml",
+        "scripts/affected-targets",
         "test_defs.bzl",
         "test_tiers.bxl",
     ],
@@ -1275,6 +1269,8 @@ rue_sh_test(
         "$(location :tier-ci-selector-inputs)/test_defs.bzl",
         "--test-tiers-bxl",
         "$(location :tier-ci-selector-inputs)/test_tiers.bxl",
+        "--affected-targets",
+        "$(location :tier-ci-selector-inputs)/scripts/affected-targets",
         "--workflow",
         "$(location :tier-ci-selector-inputs)/.github/workflows/ci.yml",
         "--workflow",

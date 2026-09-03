@@ -38,13 +38,34 @@ permissions:
   contents: read
 
 jobs:
+  plan-cli-shards:
+    name: plan CLI shards from measured floor
+    runs-on: ubuntu-latest
+    outputs:
+      cli_shards: ${{ steps.plan.outputs.cli_shards }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Bootstrap dotslash
+        uses: ./.github/actions/bootstrap-dotslash
+        with:
+          cache-name: repetitions-linux-x64
+      - name: Recompute shard count and prove the live graph union
+        id: plan
+        run: |
+          ./buck2 uquery "attrfilter(labels, 'rue_cli_shard', //...)" >"$RUNNER_TEMP/cli-shards.txt"
+          scripts/plan-cli-shards.py \
+            --measurements ci/cli-shard-planning.json \
+            --graph-shards "$RUNNER_TEMP/cli-shards.txt" \
+            --shards-only
+
   repeat-cli-shards:
     name: repeat (linux-x64 shard ${{ matrix.shard }})
+    needs: plan-cli-shards
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: ${{ fromJSON(needs.plan-cli-shards.outputs.cli_shards) }}
     steps:
       - uses: actions/checkout@v6
       - name: Bootstrap dotslash
@@ -67,6 +88,24 @@ jobs:
           name: correctness-repetitions-linux-x64-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/repetitions
           if-no-files-found: error
+
+  check-cli-shard-balance:
+    name: check observed CLI shard balance
+    needs: [plan-cli-shards, repeat-cli-shards]
+    if: ${{ always() && needs.plan-cli-shards.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download independent-run reports
+        uses: actions/download-artifact@v6
+        with:
+          pattern: correctness-repetitions-linux-x64-shard-*
+          path: ${{ runner.temp }}/repetitions
+      - name: Guard balance from observed lane wall time
+        run: >-
+          scripts/plan-cli-shards.py
+          --measurements ci/cli-shard-planning.json
+          --observations-root "$RUNNER_TEMP/repetitions"
 
   # RUE-1222: the undeclared-input safeguard.
   #

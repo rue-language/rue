@@ -75,6 +75,9 @@ def uncovered_dedicated_lanes(
     so they fail the CI contract.
     """
     matrix_targets = set(re.findall(r"target: (\S+)", corpus_block))
+    derived_matrix = (
+        "fromJSON(needs.affected-targets.outputs.corpus_matrix)" in corpus_block
+    )
     uncovered = []
     for target in dedicated_lane_targets(buck_source):
         sharded = {
@@ -83,7 +86,13 @@ def uncovered_dedicated_lanes(
             if candidate.startswith(f"{target}-shard-")
         }
         owners = []
-        if target in matrix_targets or sharded:
+        if target in matrix_targets or sharded or (
+            derived_matrix
+            and (
+                target in {"//:spec-tests", "//:cli-tests"}
+                or target.startswith("//:cli-tests-shard-")
+            )
+        ):
             owners.append("platform-corpus")
         if owner_blocks:
             owners.extend(
@@ -1535,7 +1544,44 @@ def validate(
         "linux-x64-oracle-diff-spec-o2",
         "linux-x64-oracle-diff-spec-o3",
     }
-    if check_names != expected_checks:
+    derived_matrix_marker = (
+        "matrix: ${{ fromJSON(needs.affected-targets.outputs.corpus_matrix) }}"
+    )
+    if derived_matrix_marker in corpus:
+        affected = jobs.get("affected-targets", "")
+        for required in (
+            "corpus_matrix: ${{ steps.cli-plan.outputs.corpus_matrix }}",
+            "scripts/plan-cli-shards.py",
+            "ci/cli-shard-planning.json",
+            "attrfilter(labels, 'rue_cli_shard', //...)",
+            "scripts/affected-targets corpus-targets",
+        ):
+            if required not in affected:
+                errors.append(
+                    f"derived platform-corpus matrix missing planner contract {required!r}"
+                )
+        if re.search(
+            r"- name: Bootstrap dotslash for shard planning\n"
+            r"(?:\s*#.*\n)*\s*if: github\.event_name != 'pull_request'\n"
+            r"\s*uses: \./\.github/actions/bootstrap-dotslash",
+            affected,
+        ) is None:
+            errors.append(
+                "derived platform-corpus planner lacks Buck bootstrap for every "
+                "non-pull-request event, including workflow_dispatch"
+            )
+        pr_btd_bootstrap = re.search(
+            r"- name: Bootstrap dotslash with BTD\n"
+            r"\s*if: github\.event_name == 'pull_request'\n"
+            r"\s*uses: \./\.github/actions/bootstrap-dotslash\n"
+            r"\s*with:\n\s*with-btd: 'true'",
+            affected,
+        )
+        if pr_btd_bootstrap is None or affected.count("with-btd: 'true'") != 1:
+            errors.append(
+                "affected-targets must have exactly one PR-only BTD bootstrap"
+            )
+    elif check_names != expected_checks:
         errors.append(
             "platform-corpus responsibility drift: expected "
             + ", ".join(sorted(expected_checks))

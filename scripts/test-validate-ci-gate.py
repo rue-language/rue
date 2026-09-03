@@ -151,7 +151,11 @@ class GateValidatorTests(unittest.TestCase):
         )
         self.assertIn("merge-group-only", "\n".join(self.validate_text(changed)))
 
-        changed = source.replace("check_name: linux-x64-spec", "check_name: macos-spec", 1)
+        changed = source.replace(
+            "matrix: ${{ fromJSON(needs.affected-targets.outputs.corpus_matrix) }}",
+            "matrix: {}",
+            1,
+        )
         self.assertIn("platform-corpus responsibility drift", "\n".join(
             self.validate_text(changed)
         ))
@@ -161,6 +165,20 @@ class GateValidatorTests(unittest.TestCase):
             sorted(MODULE.ci_executed_targets(TEST_RUNNER_SOURCE.read_text())),
             sorted(MODULE.PLATFORM_LANES),
         )
+
+    def test_shard_planner_bootstrap_covers_workflow_dispatch(self):
+        source = SOURCE.read_text()
+        changed = source.replace(
+            "      - name: Bootstrap dotslash for shard planning\n"
+            "        # Every non-PR trigger, including workflow_dispatch, needs Buck for the\n"
+            "        # live graph query. PRs use the BTD-aware bootstrap immediately above.\n"
+            "        if: github.event_name != 'pull_request'\n",
+            "      - name: Bootstrap dotslash for shard planning\n"
+            "        if: github.event_name == 'merge_group'\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("including workflow_dispatch", errors)
 
     def test_platform_declared_ci_executed_without_a_lane_fails(self):
         runner = TEST_RUNNER_SOURCE.read_text().replace(
@@ -594,7 +612,11 @@ class GateValidatorTests(unittest.TestCase):
     def test_dedicated_lane_corpus_without_a_job_fails(self):
         # spec-tests is skipped by the premerge suite because it carries the
         # label, so dropping its platform-corpus entry would drop it entirely.
-        changed = SOURCE.read_text().replace("            target: //:spec-tests\n", "", 1)
+        changed = SOURCE.read_text().replace(
+            "matrix: ${{ fromJSON(needs.affected-targets.outputs.corpus_matrix) }}",
+            "matrix: {}",
+            1,
+        )
         errors = "\n".join(self.validate_text(changed))
         self.assertIn("//:spec-tests is marked rue_ci_dedicated_lane", errors)
         self.assertIn("no exactly-one dedicated owner", errors)
@@ -613,8 +635,8 @@ class GateValidatorTests(unittest.TestCase):
 
     def test_release_smoke_cannot_be_owned_by_two_dedicated_jobs(self):
         changed = SOURCE.read_text().replace(
-            "            target: //:spec-tests\n",
-            "            target: //:release-smoke\n            target: //:spec-tests\n",
+            "matrix: ${{ fromJSON(needs.affected-targets.outputs.corpus_matrix) }}",
+            "matrix:\n        include:\n          - target: //:release-smoke",
             1,
         )
         errors = "\n".join(self.validate_text(changed))

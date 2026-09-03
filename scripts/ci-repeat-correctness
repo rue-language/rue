@@ -20,6 +20,7 @@ failures=0
 for ((iteration = 1; iteration <= repetitions; iteration++)); do
     log="$log_dir/repetition-$iteration.log"
     echo "correctness repetition $iteration/$repetitions: $target"
+    started="$(date +%s)"
     # RUE-1222: keep each repetition's per-case timings instead of letting them
     # overwrite one file. These runs are cache-free, so they are the only place
     # the CLI corpus still measures itself against the current tree; required CI
@@ -35,7 +36,9 @@ for ((iteration = 1; iteration <= repetitions; iteration++)); do
         result=FAIL
         failures=$((failures + 1))
     fi
-    printf '%s\t%s\t%s\n' "$iteration" "$result" "$log" >>"$log_dir/results.tsv"
+    finished="$(date +%s)"
+    elapsed=$((finished - started))
+    printf '%s\t%s\t%s\t%s\t%s\n' "$target" "$iteration" "$result" "$elapsed" "$log" >>"$log_dir/results.tsv"
 done
 
 {

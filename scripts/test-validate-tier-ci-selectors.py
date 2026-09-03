@@ -20,6 +20,13 @@ CI_WORKFLOW = """name: CI
 on:
   pull_request:
 jobs:
+  affected-targets:
+    outputs:
+      corpus_matrix: ${{ steps.cli-plan.outputs.corpus_matrix }}
+    steps:
+      - run: scripts/affected-targets corpus-targets
+      - run: scripts/plan-cli-shards.py
+
   linux-premerge:
     steps:
       - name: Run complete target-independent premerge suite
@@ -29,14 +36,15 @@ jobs:
 
   platform-corpus:
     strategy:
-      matrix:
-        include:
-          - target: //:spec-tests
-            check_name: linux-x64-spec
-          - target: //crates/rue-oracle-diff:oracle-diff-test
-            check_name: linux-x64-oracle-diff
-          - target: //crates/rue-oracle-diff:oracle-diff-spec-test
-            check_name: linux-x64-oracle-diff-spec
+      matrix: ${{ fromJSON(needs.affected-targets.outputs.corpus_matrix) }}
+"""
+
+AFFECTED_TARGETS = """#!/usr/bin/env bash
+SELECTABLE_CORPUS=(
+    //:cli-tests-shard-0
+    //crates/rue-oracle-diff:oracle-diff-test
+    //crates/rue-oracle-diff:oracle-diff-spec-test
+)
 """
 
 RELEASE_WORKFLOW = """name: Release
@@ -79,6 +87,7 @@ class TierCiSelectorTests(unittest.TestCase):
         bxl: str | None = None,
         ci: str | None = None,
         release: str | None = None,
+        affected_targets: str | None = None,
         omit_release: bool = False,
     ) -> list[str]:
         with tempfile.TemporaryDirectory() as directory:
@@ -87,16 +96,24 @@ class TierCiSelectorTests(unittest.TestCase):
             bxl_path = root / "test_tiers.bxl"
             ci_path = root / "ci.yml"
             release_path = root / "release.yml"
+            affected_targets_path = root / "affected-targets"
             defs_path.write_text(defs if defs is not None else defs_source(TIERS))
             bxl_path.write_text(bxl if bxl is not None else bxl_source(TIERS))
             ci_path.write_text(ci if ci is not None else CI_WORKFLOW)
             release_path.write_text(
                 release if release is not None else RELEASE_WORKFLOW
             )
+            affected_targets_path.write_text(
+                affected_targets
+                if affected_targets is not None
+                else AFFECTED_TARGETS
+            )
             workflows = {"ci.yml": ci_path}
             if not omit_release:
                 workflows["release.yml"] = release_path
-            return selectors.validate(defs_path, bxl_path, workflows)
+            return selectors.validate(
+                defs_path, bxl_path, workflows, affected_targets_path
+            )
 
     def test_registered_selectors_pass(self) -> None:
         self.assertEqual(self.validate(), [])
@@ -117,6 +134,7 @@ class TierCiSelectorTests(unittest.TestCase):
                 "ci.yml": root / ".github/workflows/ci.yml",
                 "release.yml": root / ".github/workflows/release.yml",
             },
+            root / "scripts/affected-targets",
         )
         self.assertEqual(errors, [])
 
@@ -125,14 +143,23 @@ class TierCiSelectorTests(unittest.TestCase):
         # while its `tier = "slow"` ownership stays perfectly valid.
         stripped = "\n".join(
             line
-            for line in CI_WORKFLOW.splitlines()
+            for line in AFFECTED_TARGETS.splitlines()
             if "oracle-diff" not in line
         ) + "\n"
-        errors = self.validate(ci=stripped)
+        errors = self.validate(affected_targets=stripped)
         self.assertEqual(len(errors), 2, errors)
         for error in errors:
             self.assertIn("rue_test_tier_slow", error)
-            self.assertIn("no longer selects it", error)
+            self.assertIn("canonical corpus inventory", error)
+
+    def test_bypassing_canonical_matrix_planner_fails(self) -> None:
+        errors = self.validate(
+            ci=CI_WORKFLOW.replace("scripts/plan-cli-shards.py", "echo static")
+        )
+        self.assertTrue(
+            any("no longer derives the corpus matrix" in error for error in errors),
+            errors,
+        )
 
     def test_renamed_job_fails(self) -> None:
         errors = self.validate(ci=CI_WORKFLOW.replace("platform-corpus:", "corpus:"))

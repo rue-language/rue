@@ -142,15 +142,13 @@ impl CliShardPlan {
             case_counts[shard] += 1;
         }
 
-        let plan = Self {
+        Ok(Self {
             selector,
             assignments,
             estimated_load_ms,
             case_counts,
             platform: platform.to_string(),
-        };
-        plan.validate_skew()?;
-        Ok(plan)
+        })
     }
 
     pub fn includes(&self, name: &str) -> bool {
@@ -176,26 +174,6 @@ impl CliShardPlan {
     pub fn case_counts(&self) -> &[usize] {
         &self.case_counts
     }
-
-    fn validate_skew(&self) -> Result<(), String> {
-        let total: u128 = self
-            .estimated_load_ms
-            .iter()
-            .map(|&load| u128::from(load))
-            .sum();
-        let Some(&maximum) = self.estimated_load_ms.iter().max() else {
-            return Ok(());
-        };
-        // maximum <= 1.25 * mean, kept in integer arithmetic:
-        // maximum * shard_count * 4 <= total * 5.
-        if u128::from(maximum) * self.estimated_load_ms.len() as u128 * 4 > total * 5 {
-            return Err(format!(
-                "estimated CLI shard loads for {} exceed the 25% skew budget: {:?}",
-                self.platform, self.estimated_load_ms
-            ));
-        }
-        Ok(())
-    }
 }
 
 /// The machine-readable shard-loads report the emit mode prints: for every
@@ -219,10 +197,10 @@ pub struct PlatformShardLoads {
 
 /// Pack `names` into `shard_count` shards once per modeled platform.
 ///
-/// Every platform reuses the exact runtime packing ([`CliShardPlan`]),
-/// including its skew validation, so a weights update that would break a CI
-/// platform's shard balance fails here at build time rather than on that
-/// platform's lane.
+/// Every platform reuses the exact runtime packing ([`CliShardPlan`]). Balance
+/// is validated from independently observed lane wall time by
+/// `scripts/plan-cli-shards.py`; checking these estimated serial weights
+/// against themselves cannot detect stale weights or parallel makespan skew.
 pub fn shard_loads_report(
     shard_count: u64,
     names: &[String],
@@ -329,23 +307,6 @@ mod tests {
         .err()
         .unwrap();
         assert!(error.contains("duplicate"));
-    }
-
-    #[test]
-    fn excessive_skew_is_rejected() {
-        let error = CliShardPlan::from_weighted_names(
-            selector(0, 4),
-            "test",
-            [
-                ("huge".to_string(), 100),
-                ("a".to_string(), 1),
-                ("b".to_string(), 1),
-                ("c".to_string(), 1),
-            ],
-        )
-        .err()
-        .unwrap();
-        assert!(error.contains("25% skew"));
     }
 
     fn weights_from_json(json: &str) -> ShardWeights {
