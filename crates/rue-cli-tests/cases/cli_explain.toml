@@ -133,6 +133,20 @@ compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
 [[case]]
+name = "borrow_exclusivity_code_uses_the_same_compiler_owned_query"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0430"]
+compile_only = true
+compile_stdout_contains = [
+  "E0430: Borrow inout conflict",
+  "Borrow and mutate fields of one root:",
+  "Share the same root read-only:",
+  "docs/spec/src/06-items/01-functions.md (spec rule 6.1:30)",
+]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
 name = "malformed_code_is_rejected"
 files = [{ path = "main.rue", source = "fn main() {}\n" }]
 args = ["explain", "E201"]

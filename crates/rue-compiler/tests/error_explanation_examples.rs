@@ -10,6 +10,7 @@ fn compiler_owned_explanation_examples_have_the_declared_outcome() {
             || (400..=407).contains(&metadata.code.0)
             || (410..=418).contains(&metadata.code.0)
             || (419..=424).contains(&metadata.code.0)
+            || (425..=433).contains(&metadata.code.0)
     }) {
         let explanation = error_code_explanation(metadata.code)
             .unwrap_or_else(|| panic!("{} must have an explanation", metadata.code));
