@@ -1955,7 +1955,7 @@ fn glob_import_paths(source: &str) -> Vec<String> {
 // Manifest order is already pinned to the constructor invocation stream. Each
 // entry adds the exact raw source identity of that leaf, making the reviewed
 // registration operation one-shot rather than merely one syntactic call.
-const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 44] = [
+const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
     (1_608, 9_349_892_297_056_354_958),
     (2_319, 162_635_033_840_982_550),
     (2_335, 11_401_802_782_486_455_398),
@@ -1999,6 +1999,7 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 44] = [
     (8_756, 6_802_240_310_126_667_165),
     (14_038, 8_977_560_222_769_304_814),
     (380, 6_623_933_847_739_557_204),
+    (1_405, 15_935_800_678_319_035_612),
     (421, 8_838_427_880_540_066_171),
 ];
 
@@ -2012,26 +2013,30 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 44] = [
 // identity even when constructor, caller, and macro token counts do not.
 const CONSTRUCTION_TOKEN_STRUCT_IDENTITY: (usize, u64) = (80, 5_227_448_979_315_228_973);
 const CONSTRUCTION_TOKEN_IMPL_IDENTITY: (usize, u64) = (108, 2_765_439_612_714_245_239);
-const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (10_456, 13_393_868_787_617_733_612);
-const COMPILER_CRATE_ROOT_NAMESPACE_IDENTITY: (usize, u64, usize, u64) =
-    (110, 255_897_897_515_642_022, 223, 8_513_453_303_818_067_861);
+const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (10742, 6_981_258_935_585_704_258);
+const COMPILER_CRATE_ROOT_NAMESPACE_IDENTITY: (usize, u64, usize, u64) = (
+    112,
+    16_669_975_409_982_800_018,
+    227,
+    14_750_313_343_688_513_712,
+);
 const COMPILER_SESSION_ROOT_IDENTITY: (usize, u64) = (3_375, 11_197_616_651_825_656_461);
 const COMPILER_SESSION_CONSTRUCTOR_IDENTITY: (usize, u64) = (82, 10_721_269_354_679_246_675);
 const FRONTEND_DATABASE_CONSTRUCTION_IDENTITY: (usize, u64) = (268, 967_740_565_057_515_587);
 const DATABASE_INHERENT_CONSTRUCTOR_IDENTITY: (usize, u64) = (148, 15_840_470_727_822_522_148);
 const DATABASE_CANONICAL_CONSTRUCTOR_IDENTITY: (usize, u64) = (224, 1_314_571_707_455_964_487);
 const TEST_DEFAULT_DATABASE_ADAPTER_IDENTITY: (usize, u64) = (120, 3_163_599_038_660_274_771);
-const REGISTRATION_DATABASE_IMPL_IDENTITY: (usize, u64) = (34_847, 17_578_195_062_279_132_179);
+const REGISTRATION_DATABASE_IMPL_IDENTITY: (usize, u64) = (35_354, 9_236_865_163_121_593_081);
 const SHARED_FAMILY_FORWARDING_IDENTITY: (usize, u64) = (2_609, 9_595_658_320_490_175_466);
-const ORDERED_REGISTRATION_COMPOSER_IDENTITY: (usize, u64) = (33_364, 10_468_265_158_692_030_241);
+const ORDERED_REGISTRATION_COMPOSER_IDENTITY: (usize, u64) = (33_871, 17_019_997_086_940_479_461);
 // Macro imports, definitions, re-exports, and lexical ordering participate in
 // macro resolution. Seal the complete registrations authority and each wrapper
 // aggregate in addition to the executable identities inside them.
-const REGISTRATION_AUTHORITY_MODULE_IDENTITY: (usize, u64) = (44_597, 17_681_835_659_194_060_194);
+const REGISTRATION_AUTHORITY_MODULE_IDENTITY: (usize, u64) = (45_324, 8_202_842_852_626_878_117);
 const REGISTRATION_WRAPPER_MODULE_IDENTITIES: [(usize, u64); 5] = [
     (842, 17_134_465_730_999_135_202),
     (1_146, 9_973_452_843_887_101_603),
-    (1_118, 3_506_955_039_267_909_738),
+    (1_227, 377_303_397_680_888_843),
     (85, 9_154_658_544_330_042_432),
     (1_096, 1_461_060_759_810_744_828),
 ];
@@ -2584,7 +2589,7 @@ impl CompilerSession {
     let families = registered_revisioned_database_families();
     assert_eq!(
         families.len(),
-        44,
+        45,
         "the registered-family manifest is complete"
     );
     let invocations = registration_macro_invocations(registration_composer);
@@ -4309,7 +4314,7 @@ pub(super) use register_parse_import_parse;"#;
         (
             "revisioned_database::registrations".to_owned(),
             "runtime-field-macro-bare-identifier".to_owned(),
-            45,
+            46,
         ),
     ];
     assert_eq!(
@@ -4449,7 +4454,7 @@ pub(super) use register_parse_import_parse;"#;
     ));
     let nested_module_owners = module_owner_inventory(&compiler_module_sources);
     let nested_module_fingerprint = source_inventory_fingerprint(&nested_module_owners);
-    let expected_nested_module_identity = (154, 8_453_145_628_824_547_092);
+    let expected_nested_module_identity = (156, 2_667_001_902_368_665_969);
     assert_eq!(
         (nested_module_owners.len(), nested_module_fingerprint),
         expected_nested_module_identity,
@@ -4531,7 +4536,7 @@ pub(super) use register_parse_import_parse;"#;
             .iter()
             .map(|(_, count)| count)
             .sum::<usize>(),
-        44,
+        45,
         "the identifier inventory must derive from every manifested include leaf",
     );
     assert_eq!(
@@ -4875,7 +4880,7 @@ pub(super) use register_parse_import_parse;"#;
         });
     assert_eq!(
         (declarations.len(), fingerprint),
-        (210, 13_505_876_172_349_810_937),
+        (213, 209_895_908_114_665_903),
         "crate-visible declaration names, signatures, fields, or phase owners changed"
     );
 
@@ -5170,6 +5175,7 @@ struct:TestConstraintGenerationCancellationGuard
 struct:CompatibilityKey
 struct:RevisionedQueryDatabase
 fn:new
+struct:TestCandidateScanValue
 struct:TestCodegenEvaluatorGate
 fn:wait_until_entered
 fn:release
@@ -5308,7 +5314,9 @@ fn:clear_lineage_additions
 fn:exact_import_groups
 fn:publication_cone_retention_failures
 fn:stage_module_parses
+fn:test_candidate_scan
 fn:publish_import_batch
+fn:publish_test_candidate_inputs
 fn:publish_trusted_successor_view
 fn:import_ledger
 fn:current_import_view_state
@@ -5466,6 +5474,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("source_metadata", include_str!("source_metadata.rs")),
     ("source_snapshot", include_str!("source_snapshot.rs")),
     ("syntax", include_str!("syntax.rs")),
+    ("test_candidates", include_str!("test_candidates.rs")),
     ("test_dispatcher", include_str!("test_dispatcher.rs")),
     ("test_inventory", include_str!("test_inventory.rs")),
     (
@@ -7547,6 +7556,7 @@ fn unstable_views_do_not_alias_query_engine_records() {
         [
             "pubusecrate::diagnostic::{ColorChoice,DiagnosticFormatter,JsonDiagnostic,JsonDiagnosticFormatter,JsonSpan,JsonSuggestion,MultiFileFormatter,MultiFileJsonFormatter,SourceInfo,};",
             "pubusecrate::import_discovery::{AcceptedImportSource,DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportDiscoveryPlan,ImportDiscoveryRequest,ImportDiscoveryWave,ImportInputRevision,ImportObservation,ImportObservationLedger,ImportObservationStatus,};",
+            "pubusecrate::test_candidates::{TestCandidate,TestCandidateInventory,TestCandidateOutcome,UnimportedTestFile,};",
             "pubusecrate::warm_fresh_parity::ParityObservation;",
             "pubuserue_span::Span;",
             "pubusecrate::session::{ClosedDiscoveryContinuation,RootedCfgOutput,RootedCfgUnit,RootedParkOutcome,RootedPreOptimizationCfgOutput,RootedPreOptimizationCfgUnit,TrustedSuccessorDelta,};",

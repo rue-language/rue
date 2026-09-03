@@ -65,6 +65,11 @@ RueProgramInternalInfo = provider(fields = [
     "manifest",
     "deps_envelope",
     "srcs",
+    # The declared candidate inventory `rue test` reports against (ADR-0083).
+    # It is a LIST of the target's declared srcs, not a read policy: the
+    # compile action never receives it, so it cannot become a second
+    # undeclared-read route past the derive boundary above.
+    "test_candidates",
 ])
 
 
@@ -212,9 +217,20 @@ def _rue_program_impl(ctx: AnalysisContext) -> list[Provider]:
         identifier = ctx.label.name,
     )
 
+    # The declared candidate inventory (ADR-0083 §1). It is deliberately NOT a
+    # compile input: the compile action's read policy is `sources.manifest`,
+    # derived from what the scan actually read, and handing the compiler a
+    # second file of paths it may read would reopen the out-of-srcs hole the
+    # derive step exists to close. Consumers that want the inventory — the
+    # `rue test` driver mode — take it from the provider and pass it themselves.
+    #
+    # The content shape matches `srcs.list`: project-root-relative paths, one
+    # per line, which is exactly what `--test-candidates` parses.
+    test_candidates = ctx.actions.write("test-candidates.list", ctx.attrs.srcs)
+
     runs_natively = resolved_target == toolchain.native_target
     return [
-        DefaultInfo(default_output = executable, other_outputs = [manifest]),
+        DefaultInfo(default_output = executable, other_outputs = [manifest, test_candidates]),
         RunInfo(args = cmd_args(executable)),
         RueProgramInfo(
             executable = executable,
@@ -227,6 +243,7 @@ def _rue_program_impl(ctx: AnalysisContext) -> list[Provider]:
             manifest = manifest,
             deps_envelope = envelope,
             srcs = ctx.attrs.srcs,
+            test_candidates = test_candidates,
         ),
         ValidationInfo(validations = [ValidationSpec(
             name = "srcs-precision",

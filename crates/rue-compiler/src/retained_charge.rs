@@ -1331,6 +1331,9 @@ impl RetainedCharge for rue_error::WarningKind {
             Self::UnusedVariable(value)
             | Self::UnusedFunction(value)
             | Self::UnreachablePattern(value) => value.retained_charge(),
+            Self::UnimportedTestFile { path, .. } | Self::UnimportedTestFileUnparsable { path } => {
+                path.retained_charge()
+            }
             Self::UnreachableCode | Self::SentinelLookup => 0,
         }
     }

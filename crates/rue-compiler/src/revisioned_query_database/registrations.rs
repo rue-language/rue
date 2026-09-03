@@ -280,6 +280,12 @@ pub(crate) const REGISTRATION_MANIFEST: &[(&str, &str, &str, &str)] = &[
         include_str!("registrations/parse_import/parse.rs"),
     ),
     (
+        "parse_import",
+        concat!("compiler.", "test-candidate-scan"),
+        "register_parse_import_test_candidate_scans",
+        include_str!("registrations/parse_import/test_candidate_scans.rs"),
+    ),
+    (
         "body",
         concat!("compiler.", "body-fact-provider-probe"),
         "register_provider_probe",
@@ -883,6 +889,14 @@ impl RevisionedQueryDatabase {
         );
         let parse = register_parse_import_parse!(runtime);
         let parse_selection = parse.selection();
+        let test_candidate_store: Arc<Mutex<TestCandidateInputStore>> =
+            Arc::new(Mutex::new(TestCandidateInputStore {
+                next_stamp: 1,
+                ..TestCandidateInputStore::default()
+            }));
+        let test_candidate_store_for_scans = test_candidate_store.clone();
+        let test_candidate_scans =
+            register_parse_import_test_candidate_scans!(runtime, test_candidate_store_for_scans);
         Self {
             parse,
             parse_selection,
@@ -892,6 +906,7 @@ impl RevisionedQueryDatabase {
             source_stamps: VecDeque::new(),
             import_store,
             module_store,
+            test_candidate_store,
             cfg_collection_root,
             codegen_collection_root,
             publication_cone_retention_failures,
@@ -902,6 +917,7 @@ impl RevisionedQueryDatabase {
             declaration_body_plan_failure_injection,
             parse_modules,
             parse_module_batches,
+            test_candidate_scans,
             module_source_bases,
             module_indexes,
             declaration_occurrence_indexes,
