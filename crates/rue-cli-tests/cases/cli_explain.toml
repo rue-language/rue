@@ -23,6 +23,33 @@ compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
 [[case]]
+name = "lexer_code_uses_the_same_compiler_owned_query"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0011"]
+compile_only = true
+compile_stdout_contains = [
+  "E0011: Malformed float literal",
+  "Leading dot diagnosed by the lexer:",
+  "Trailing dot diagnosed by the parser:",
+  "docs/spec/src/02-lexical-structure/_index.md (spec rule 2.0:2)",
+]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "lexer_budget_summary_is_explained_without_compiling"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0010"]
+compile_only = true
+compile_stdout_contains = [
+  "E0010: Lexer diagnostics omitted",
+  "after retaining its first 100 lexical diagnostics",
+  "More than 100 lexical errors:",
+]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
 name = "malformed_code_is_rejected"
 files = [{ path = "main.rue", source = "fn main() {}\n" }]
 args = ["explain", "E201"]
