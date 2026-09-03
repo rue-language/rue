@@ -3304,6 +3304,80 @@ mod tests {
     }
 
     #[test]
+    fn declaration_projection_retention_survives_body_failure_and_recovery() {
+        let root = FileId::new(1);
+        let helper = FileId::new(2);
+        let snapshot = |main_source: &str, helper_source: &str| {
+            let sources = [
+                SourceView::new("/p/main.rue", main_source, root),
+                SourceView::new("/p/helper.rue", helper_source, helper),
+            ];
+            let metadata = SourceMetadata::from_sources(
+                &sources,
+                root,
+                AHashMap::from([
+                    (root, "main.rue".to_string()),
+                    (helper, "helper.rue".to_string()),
+                ]),
+            )
+            .unwrap();
+            SourceSnapshot::from_sources(&sources, metadata).unwrap()
+        };
+        let imported_main = "const helper = @import(\"helper.rue\");\n\
+                             fn main() -> i32 { helper.value() }";
+        let initial = snapshot(imported_main, "pub fn value() -> i32 { 2 }");
+        let invalid = snapshot(imported_main, "pub fn value(x: i32) -> i32 { x + 2 }");
+        let recovered = snapshot(imported_main, "pub fn value() -> i32 { 7 }");
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::with_query_concurrency(1);
+
+        let assert_parity = |label, session: &mut CompilerSession, source| {
+            crate::warm_fresh_parity::assert_warm_fresh_parity(label, session, source, &options)
+        };
+
+        let observation = assert_parity("initial", &mut session, &initial);
+        assert!(observation.rooted_success && observation.executable_success);
+        let observation = assert_parity("invalid signature", &mut session, &invalid);
+        assert!(!observation.rooted_success && !observation.executable_success);
+        let observation = assert_parity("recovered body", &mut session, &recovered);
+        assert!(observation.rooted_success && observation.executable_success);
+        let observation = assert_parity("reverted body", &mut session, &initial);
+        assert!(observation.rooted_success && observation.executable_success);
+        let edited = snapshot(imported_main, "pub fn value() -> i32 { 3 }");
+        let observation = assert_parity("body-only edit after recovery", &mut session, &edited);
+        assert!(observation.rooted_success && observation.executable_success);
+
+        let mut plateau = None;
+        for revision in 0..80 {
+            let source = snapshot(
+                imported_main,
+                &format!("pub fn value() -> i32 {{ {} }}", 100 + revision),
+            );
+            let observation = crate::warm_fresh_parity::assert_warm_fresh_parity(
+                "retention plateau",
+                &mut session,
+                &source,
+                &options,
+            );
+            assert!(observation.rooted_success && observation.executable_success);
+            if revision == 63 {
+                plateau = Some(session.unstable_metrics().retention());
+            }
+        }
+        let plateau = plateau.expect("the lifecycle crosses the revision-retention bound");
+        let after = session.unstable_metrics().retention();
+        assert_eq!(after.active_retained_pins, plateau.active_retained_pins);
+        assert!(after.retained_revisions <= 64);
+        assert!(after.dependency_pins <= after.dependency_pin_budget);
+        assert!(after.retained_bytes <= after.retained_byte_budget);
+        assert_eq!(
+            session.publication_cone_retention_failures(),
+            0,
+            "failure recovery must keep every published projection dependency observable"
+        );
+    }
+
+    #[test]
     fn canonical_batch_reports_one_pass_structural_work() {
         let root = FileId::new(7);
         let helper = FileId::new(2);

@@ -22,10 +22,11 @@ $runtime
                         unreachable!("DeclarationSemanticsProjection publishes typed values")
                     };
                     let projection = match declarations {
-                        SemanticNucleusProjectionValue::Available(projection) => projection,
+                        SemanticNucleusProjectionValue::Available { projection, .. } => projection,
                         SemanticNucleusProjectionValue::Failure {
                             declaration,
                             failure,
+                            ..
                         } => {
                             return Ok(QueryOutput::success(
                                 crate::body_query::BodyReachabilityOutput {

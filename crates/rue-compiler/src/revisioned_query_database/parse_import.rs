@@ -599,14 +599,63 @@ impl QueryKey for SemanticNucleusProjectionKey {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(super) enum SemanticNucleusProjectionValue {
-    Available(SemanticNucleusProjection),
+    Available {
+        projection: SemanticNucleusProjection,
+        _retained_dependencies: Arc<rue_query::RetainedPinSet>,
+    },
     Failure {
         declaration: Option<crate::declaration_candidate::DeclarationCandidateKey>,
         failure: Box<crate::semantic_query_nucleus::SemanticNucleusFailure>,
+        _retained_dependencies: Arc<rue_query::RetainedPinSet>,
     },
 }
+
+impl SemanticNucleusProjectionValue {
+    pub(super) fn retained_dependencies(&self) -> &Arc<rue_query::RetainedPinSet> {
+        match self {
+            Self::Available {
+                _retained_dependencies,
+                ..
+            }
+            | Self::Failure {
+                _retained_dependencies,
+                ..
+            } => _retained_dependencies,
+        }
+    }
+}
+
+impl PartialEq for SemanticNucleusProjectionValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Available {
+                    projection: left, ..
+                },
+                Self::Available {
+                    projection: right, ..
+                },
+            ) => left == right,
+            (
+                Self::Failure {
+                    declaration: left_declaration,
+                    failure: left_failure,
+                    ..
+                },
+                Self::Failure {
+                    declaration: right_declaration,
+                    failure: right_failure,
+                    ..
+                },
+            ) => left_declaration == right_declaration && left_failure == right_failure,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for SemanticNucleusProjectionValue {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct ModuleInputLeaf {
@@ -1166,10 +1215,13 @@ impl RetainedCharge for SemanticNucleusProjection {
 impl RetainedCharge for SemanticNucleusProjectionValue {
     fn retained_charge(&self) -> u64 {
         match self {
-            Self::Available(value) => value.retained_charge(),
+            Self::Available {
+                projection: value, ..
+            } => value.retained_charge(),
             Self::Failure {
                 declaration,
                 failure,
+                ..
             } => declaration
                 .retained_charge()
                 .saturating_add(failure.retained_charge()),
