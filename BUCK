@@ -80,6 +80,18 @@ export_file(
     visibility = ["PUBLIC"],
 )
 
+export_file(
+    name = "error-page-template",
+    src = "website/templates/errors/section.html",
+    visibility = ["PUBLIC"],
+)
+
+export_file(
+    name = "website-build-script",
+    src = "website/build.sh",
+    visibility = ["PUBLIC"],
+)
+
 filegroup(
     name = "rustfmt-config",
     srcs = [".rustfmt.toml"],

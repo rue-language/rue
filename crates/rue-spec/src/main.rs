@@ -56,6 +56,7 @@ use rue_test_runner::{
 };
 use std::path::Path;
 
+mod error_pages;
 mod machine_index;
 mod traceability;
 
@@ -294,6 +295,15 @@ fn run_preview_case_wrapper(
 fn main() {
     // Check for traceability flag before parsing libtest args
     let raw_args: Vec<String> = std::env::args().collect();
+
+    if raw_args.iter().any(|argument| argument == "--error-pages") {
+        let spec_dir = find_dir("RUE_SPEC_DIR", SPEC_DIR_PATHS, "docs/spec/src");
+        error_pages::write(&spec_dir).unwrap_or_else(|error| {
+            eprintln!("error: {error}");
+            std::process::exit(1);
+        });
+        return;
+    }
 
     if raw_args
         .iter()
