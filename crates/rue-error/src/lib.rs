@@ -1546,18 +1546,86 @@ define_error_codes! {
     // ========================================================================
     // Control flow errors (E0500-E0599)
     // ========================================================================
-    BREAK_OUTSIDE_LOOP = 500;
-    CONTINUE_OUTSIDE_LOOP = 501;
-    BREAK_WITH_VALUE = 502;
+    BREAK_OUTSIDE_LOOP = 500 => {
+        explanation: "A `break` expression exits the innermost enclosing `loop` or `while` loop. Outside a loop there is no control-flow target to exit, so Rue rejects the expression instead of assigning it a destination.",
+        likely_cause: "A `break` was placed in a function, conditional, or other block that is not nested inside a loop, or it was intended to leave a function. Put the expression inside the loop it should exit; use `return` when the intended target is the enclosing function.",
+        examples: [
+            ErrorCodeExample { title: "Break from a function body", source: "fn main() -> i32 {\n    break;\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Break from an enclosing loop", source: "fn main() -> i32 {\n    loop {\n        break;\n    }\n    0\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Break exits the innermost loop", path: "docs/spec/src/04-expressions/08-loop-expressions.md", rule: Some("4.8:7") },
+            ErrorCodeReference { title: "Break and continue require a loop", path: "docs/spec/src/04-expressions/08-loop-expressions.md", rule: Some("4.8:9") },
+        ],
+    };
+    CONTINUE_OUTSIDE_LOOP = 501 => {
+        explanation: "A `continue` expression skips the rest of the current iteration of the innermost enclosing `loop` or `while` loop. Outside a loop there is no next iteration to begin, so Rue rejects the expression.",
+        likely_cause: "A `continue` was placed in a function, conditional, or other block that is not nested inside a loop. Move it into the loop whose iteration should be skipped, or use another control-flow construct when execution should leave the function or conditional.",
+        examples: [
+            ErrorCodeExample { title: "Continue from a function body", source: "fn main() -> i32 {\n    continue;\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Continue an enclosing loop", source: "fn main() -> i32 {\n    let mut value = 0;\n    while value < 1 {\n        value = value + 1;\n        continue;\n    }\n    value\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Continue advances the innermost loop", path: "docs/spec/src/04-expressions/08-loop-expressions.md", rule: Some("4.8:8") },
+            ErrorCodeReference { title: "Break and continue require a loop", path: "docs/spec/src/04-expressions/08-loop-expressions.md", rule: Some("4.8:9") },
+        ],
+    };
+    BREAK_WITH_VALUE = 502 => {
+        explanation: "Rue loops currently produce only `()` when exited by `break`. A `break` therefore cannot carry a value operand: `break expression` is rejected even when the surrounding `loop` appears in a value position.",
+        likely_cause: "Code used `break value` expecting that value to become the result of a `loop`. Store the value in a mutable binding before a valueless `break`, or restructure the code so the desired value is produced after the loop.",
+        examples: [
+            ErrorCodeExample { title: "Break with a value operand", source: "fn main() -> i32 {\n    loop {\n        break 42;\n    }\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Store the value before breaking", source: "fn main() -> i32 {\n    let mut answer = 0;\n    loop {\n        answer = 42;\n        break;\n    }\n    answer\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Loops exited by break produce unit", path: "docs/spec/src/04-expressions/08-loop-expressions.md", rule: Some("4.8:21") },
+            ErrorCodeReference { title: "Break has no value operand", path: "docs/spec/src/04-expressions/08-loop-expressions.md", rule: Some("4.8:22") },
+        ],
+    };
     /// The `?` operator was used in a function whose return type is not an
     /// `Option` (RUE-6, ADR-0038): `?` early-returns `None`, so the enclosing
     /// function must return an `Option`.
-    QUESTION_OUTSIDE_OPTION_FN = 503;
-    QUESTION_OUTSIDE_RESULT_FN = 505;
-    QUESTION_ERR_TYPE_MISMATCH = 506;
-    /// The `?` operator was applied to a value that is not an `Option`
-    /// (RUE-6, ADR-0038).
-    QUESTION_ON_NON_OPTION = 504;
+    QUESTION_OUTSIDE_OPTION_FN = 503 => {
+        explanation: "The operand of `?` is a trusted standard-library `Option`, but the enclosing function does not return a trusted standard-library `Option`. On `None`, `?` immediately returns `None` from that function, so its declared return type must be `std.option.Option(U)`. The success payload types may differ.",
+        likely_cause: "An Option-producing call was followed by `?` inside a function returning a plain value, `Result`, or a user-defined Option-shaped enum. Change the function to return the standard `Option`, handle `Some` and `None` explicitly with `match`, or remove `?`.",
+        examples: [
+            ErrorCodeExample { title: "Propagate Option from a plain-value function", source: "fn main() -> i32 {\n    let value = @parse_i32(\"42\")?;\n    value\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Return trusted Option before propagating", source: "const option = @import(\"std/option.rue\");\nfn parse() -> option.Option(i32) {\n    let O = option.Option(i32);\n    let value = @parse_i32(\"42\")?;\n    O.Some(value)\n}\nfn main() -> i32 {\n    parse();\n    0\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Try operand and enclosing producer compatibility", path: "docs/spec/src/04-expressions/15-try-expressions.md", rule: Some("4.15:4") },
+            ErrorCodeReference { title: "None returns from the enclosing function", path: "docs/spec/src/04-expressions/15-try-expressions.md", rule: Some("4.15:7") },
+        ],
+    };
+    /// The `?` operator was applied to a value that is neither a trusted
+    /// standard `Option` nor a trusted standard `Result` (RUE-6, ADR-0038).
+    QUESTION_ON_NON_OPTION = 504 => {
+        explanation: "The operand of `?` is neither an exact specialization of the trusted `std.option.Option` producer nor an exact specialization of the trusted `std.result.Result` producer. Only those two standard-library types have Rue's built-in try behavior; an enum with the same variants is still a distinct, ordinary type.",
+        likely_cause: "The operand is a plain value, another type, or a user-defined `Some`/`None` or `Ok`/`Err` lookalike. Apply `?` to a value produced by the standard `Option` or `Result`, or handle the operand's cases explicitly.",
+        examples: [
+            ErrorCodeExample { title: "Apply try to a plain integer", source: "fn main() -> i32 {\n    let value = 42?;\n    value\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Apply try to a trusted Option", source: "const option = @import(\"std/option.rue\");\nfn some_value() -> option.Option(i32) {\n    let O = option.Option(i32);\n    O.Some(42)\n}\nfn propagate() -> option.Option(i32) {\n    let O = option.Option(i32);\n    let value = some_value()?;\n    O.Some(value)\n}\nfn main() -> i32 {\n    propagate();\n    0\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Trusted try operand producers", path: "docs/spec/src/04-expressions/15-try-expressions.md", rule: Some("4.15:3") }],
+    };
+    QUESTION_OUTSIDE_RESULT_FN = 505 => {
+        explanation: "The operand of `?` is a trusted standard-library `Result`, but the enclosing function does not return a trusted standard-library `Result`. On `Err(e)`, `?` immediately returns an `Err(e)` constructed with the enclosing function's Result type, so that return type must be `std.result.Result(U, E)`.",
+        likely_cause: "A Result-producing call was followed by `?` inside a function returning a plain value, `Option`, or a user-defined Result-shaped enum. Change the function to return the standard `Result`, handle `Ok` and `Err` explicitly with `match`, or remove `?`.",
+        examples: [
+            ErrorCodeExample { title: "Propagate Result from a plain-value function", source: "const result = @import(\"std/result.rue\");\nfn fallible() -> result.Result(i32, i32) {\n    let R = result.Result(i32, i32);\n    R.Ok(42)\n}\nfn main() -> i32 {\n    fallible()?\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Return trusted Result before propagating", source: "const result = @import(\"std/result.rue\");\nfn fallible() -> result.Result(i32, i32) {\n    let R = result.Result(i32, i32);\n    R.Ok(42)\n}\nfn run() -> result.Result(i32, i32) {\n    let R = result.Result(i32, i32);\n    let value = fallible()?;\n    R.Ok(value)\n}\nfn main() -> i32 {\n    run();\n    0\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Try operand and enclosing producer compatibility", path: "docs/spec/src/04-expressions/15-try-expressions.md", rule: Some("4.15:4") }],
+    };
+    QUESTION_ERR_TYPE_MISMATCH = 506 => {
+        explanation: "The operand and enclosing function both use the trusted standard-library `Result`, but their error types are different. `?` returns the operand's `Err(e)` payload through the enclosing function's own Result producer, and Rue does not perform error conversion, so the two error types must be identical.",
+        likely_cause: "A called operation returns `Result(T, E1)` while its caller declares `Result(U, E2)` with a different error type. Make the error types match or explicitly map the error with `match` before propagating it; `?` does not invoke a conversion.",
+        examples: [
+            ErrorCodeExample { title: "Propagate a different Result error type", source: "const result = @import(\"std/result.rue\");\nfn fallible() -> result.Result(i32, i32) {\n    let R = result.Result(i32, i32);\n    R.Ok(42)\n}\nfn run() -> result.Result(i32, bool) {\n    let R = result.Result(i32, bool);\n    let value = fallible()?;\n    R.Ok(value)\n}\nfn main() -> i32 {\n    let R = result.Result(i32, bool);\n    match run() { R.Ok(value) => value, R.Err(_) => 0 }\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use the same Result error type", source: "const result = @import(\"std/result.rue\");\nfn fallible() -> result.Result(i32, i32) {\n    let R = result.Result(i32, i32);\n    R.Ok(42)\n}\nfn run() -> result.Result(i32, i32) {\n    let R = result.Result(i32, i32);\n    let value = fallible()?;\n    R.Ok(value)\n}\nfn main() -> i32 {\n    run();\n    0\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Result error types must be identical", path: "docs/spec/src/04-expressions/15-try-expressions.md", rule: Some("4.15:4") }],
+    };
 
     // ========================================================================
     // Match errors (E0600-E0699)
@@ -4087,6 +4155,42 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
+        );
+    }
+
+    #[test]
+    fn active_control_flow_explanation_band_is_complete_and_bounded() {
+        let expected = [
+            ErrorCode::BREAK_OUTSIDE_LOOP,
+            ErrorCode::CONTINUE_OUTSIDE_LOOP,
+            ErrorCode::BREAK_WITH_VALUE,
+            ErrorCode::QUESTION_OUTSIDE_OPTION_FN,
+            ErrorCode::QUESTION_ON_NON_OPTION,
+            ErrorCode::QUESTION_OUTSIDE_RESULT_FN,
+            ErrorCode::QUESTION_ERR_TYPE_MISMATCH,
+        ];
+        let active = error_code_metadata()
+            .iter()
+            .filter_map(|metadata| {
+                (500..=506)
+                    .contains(&metadata.code.0)
+                    .then_some(metadata.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(active, expected);
+        let explained = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (500..=506)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(explained, expected);
         assert!(
             expected
                 .into_iter()

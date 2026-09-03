@@ -18,6 +18,7 @@ use ahash::{AHashMap, AHashSet};
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+    use std::sync::Arc;
 
     const EXPLANATION_FILE_MARKER: &str = "// --- ";
 
@@ -81,6 +82,103 @@ mod integration_tests {
                     result.unwrap_or_else(|errors| {
                         panic!("example {:?} emitted {errors:?}", example.title)
                     });
+                }
+            }
+        }
+    }
+
+    fn trusted_try_explanation_snapshot(root_source: &str) -> SourceSnapshot {
+        let root = FileId::new(1);
+        let option = FileId::new(2);
+        let result = FileId::new(3);
+        let metadata = SourceMetadata::new_with_trusted_standard_library(
+            root,
+            AHashMap::from([
+                (root, "/project/main.rue".to_owned()),
+                (option, "/project/std/option.rue".to_owned()),
+                (result, "/project/std/result.rue".to_owned()),
+            ]),
+            AHashMap::from([
+                (root, "main.rue".to_owned()),
+                (option, "\0rue-std/option.rue".to_owned()),
+                (result, "\0rue-std/result.rue".to_owned()),
+            ]),
+            AHashSet::from([option, result]),
+        )
+        .unwrap();
+        SourceSnapshot::new(
+            metadata,
+            vec![
+                (root, Arc::new(root_source.to_owned())),
+                (
+                    option,
+                    Arc::new(
+                        "pub fn Option(comptime T: type) -> type { enum { Some(T), None } }"
+                            .to_owned(),
+                    ),
+                ),
+                (
+                    result,
+                    Arc::new(
+                        "pub fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }"
+                            .to_owned(),
+                    ),
+                ),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn control_flow_explanation_examples_have_the_declared_outcome() {
+        for metadata in rue_error::error_code_metadata()
+            .iter()
+            .filter(|metadata| (500..=506).contains(&metadata.code.0))
+        {
+            let explanation = rue_error::error_code_explanation(metadata.code)
+                .unwrap_or_else(|| panic!("{} must have an explanation", metadata.code));
+            for example in explanation.examples {
+                let snapshot = if (503..=506).contains(&metadata.code.0) {
+                    trusted_try_explanation_snapshot(example.source)
+                } else {
+                    SourceSnapshot::single("main.rue", example.source).unwrap()
+                };
+                let result = crate::test_compile_snapshot(&snapshot, &CompileOptions::default());
+                match example.outcome {
+                    rue_error::ErrorCodeExampleOutcome::EmitsThisCode => {
+                        let errors = match result {
+                            Ok(_) => panic!(
+                                "{} example {:?} compiled successfully",
+                                metadata.code, example.title
+                            ),
+                            Err(errors) => errors,
+                        };
+                        let codes = errors
+                            .iter()
+                            .map(|error| error.kind.code())
+                            .collect::<Vec<_>>();
+                        assert_eq!(
+                            codes.as_slice(),
+                            [metadata.code],
+                            "{} example {:?} must emit exactly its owning code; emitted {:?}: {errors:?}",
+                            metadata.code,
+                            example.title,
+                            codes,
+                        );
+                    }
+                    rue_error::ErrorCodeExampleOutcome::Compiles => {
+                        result.unwrap_or_else(|errors| {
+                            panic!(
+                                "{} example {:?} unexpectedly emitted {:?}",
+                                metadata.code,
+                                example.title,
+                                errors
+                                    .iter()
+                                    .map(|error| error.kind.code())
+                                    .collect::<Vec<_>>()
+                            )
+                        });
+                    }
                 }
             }
         }
