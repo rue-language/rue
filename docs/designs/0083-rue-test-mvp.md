@@ -1,31 +1,42 @@
 ---
-id: 0081
+id: 0083
 title: "rue test MVP: test declarations, runner, and event protocol"
-status: proposal
+status: accepted
 tags: [tooling, testing, syntax, semantics, incremental, cli, language-shape]
 feature-flag: test_declarations
 created: 2026-08-22
-accepted:
+accepted: 2026-09-02
 implemented:
 spec-sections: []
 superseded-by:
 relates: ["RUE-506", "RUE-505", "RUE-504", "RUE-438", "ADR-0063", "ADR-0061", "ADR-0058", "ADR-0055", "ADR-0064", "ADR-0038", "ADR-0027", "ADR-0025", "ADR-0069", "ADR-0005"]
 ---
 
-# ADR-0081: `rue test` MVP: test declarations, runner, and event protocol
+# ADR-0083: `rue test` MVP: test declarations, runner, and event protocol
 
 ## Status
 
-Proposal. This is the second ADR attempt for the RUE-506 test runner: the
-first (rue-language/rue#2239, closed unmerged) designed the full system —
-capability inference, verdict caching, scheduling, a provider protocol — and
-review concluded it was too much to ratify at once. This document is the MVP
-and stands alone; the deferred layers are summarized in §6 with their
-follow-up issues. Not yet accepted. The acceptance-level questions — the
-declaration surface, file discovery, `--filter` semantics, and the
-failure-channel mechanism — were ruled on review 2026-08-23 and are
-recorded in the body and under Open Questions; the remaining lower-impact
-calls and the one required spike are listed there.
+Accepted 2026-09-02 for the MVP phase. This is the second ADR attempt for
+the RUE-506 test runner: the first (rue-language/rue#2239, closed unmerged)
+designed the full system — capability inference, verdict caching,
+scheduling, a provider protocol — and review concluded it was too much to
+ratify at once. This document is the MVP and stands alone; the deferred
+layers are summarized in §6 with their follow-up issues.
+
+Acceptance ratifies the four acceptance-level calls, ruled on review
+2026-08-23 and recorded at their sites in the body as well as under Open
+Questions: tests are language items, declared as `test "name" { ... }`
+blocks (§1); discovery is the import closure for the MVP, with the
+unimported-test-file warning (§1); `--filter` narrows the run set and never
+the analysis root set (§2); and the structured failure channel is a
+dedicated inherited pipe (§5.1). Phases 1 through 2.5 (RUE-1618, RUE-1619,
+RUE-1620) are authorized to proceed on that basis.
+
+Acceptance does not settle the lower-impact calls that Open Questions marks
+decidable within their phase — exit codes, `@assert` stabilization, the
+`skipped` verdict's producer, the `scripts/rue test` homonym, and naming —
+nor the memo-database-pressure spike Phase 2 requires. The deferred layers
+of §6 remain separate ADRs, ratified on their own.
 
 ## Summary
 
@@ -154,6 +165,11 @@ test "parse_port rejects out-of-range values" {
     @assert(parse_port(StrBuf.from("70000")).is_none());
 }
 ```
+
+The declaration surface is settled: **by ruling (2026-08-23)**, tests are
+language items spelled as `test "name" { ... }` blocks, not a `@test`
+directive on a function. The directive alternative was weighed across the
+design-capture rounds on rue-language/rue#2239 and is not revisited here.
 
 - **Grammar**: `test_item = directives "test" STRING block ;` at item
   position. `test` is a contextual keyword (item-position `test` followed by
