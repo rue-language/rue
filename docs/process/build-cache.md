@@ -229,6 +229,60 @@ Availability rules, which the workflow steps must respect:
   independent job lets the ordinary linux-x64 build and tests use the shared
   cache without changing the reproducibility contract.
 
+`scripts/check-reproducible-build-metadata.py` is a separate, opt-in diagnostic
+for investigating reproducibility below that final binary. It requires a clean
+working tree, records `HEAD`, and archives that same tracked revision into two
+differently named roots, giving each root an isolated Buck daemon/output tree,
+and builds `//crates/rue:rue` with `--local-only` and
+`--no-remote-cache`. Each archived root gets an ordinary empty
+`.buckconfig.local`; every Buck wrapper invocation also points
+`RUE_BUILDBUDDY_CONFIG` at a verified-nonexistent root-local path and removes
+`BUILDBUDDY_API_KEY` from its environment. The sentinel is checked before and
+after every build, query, ownership audit, and daemon shutdown. Thus wrapper
+auto-provisioning cannot copy, read, or activate the central cache credential.
+The resulting configured graph is rejected if it selects the remote-cache
+platform. A configured `deps(//crates/rue:rue)` query scopes the
+inventory: Rust library `.rlib`/`.rmeta` outputs, `rust_library` targets whose
+`proc_macro` attribute is true, `rust_binary` targets whose crate is
+`build_script_build`, the `OUT_DIR` and `rustc_flags` subtargets of reachable
+Cargo build-script rules, and reachable `genrule` default outputs. The provider
+set also describes optional products that the top-level build does not request,
+so the inventory takes its intersection with outputs actually materialized by
+this build. Each selected path must be bound by Buck's provider output to that
+exact configured target, must live in its exact configured-target output
+directory, must not pass through a `depslink` or `depsfull` input tree, and must
+map back to the expected owner through `buck2 audit output`. The diagnostic
+fails if any eligible graph contract or configured variant has no materialized,
+owned output. Buck may execute Rust metadata actions without lazily
+materializing their products, so the diagnostic separately builds the
+`[check]` subtarget of every non-proc-macro Rust library already present in the
+configured dependency graph with `--materializations all`, and fails if the
+resulting inventory contains no `.rmeta`. It does not sweep `buck-out`, and it
+excludes Buck command scaffolding and source trees.
+
+The report directory contains both normalized manifests, raw observation files,
+both queried graphs, and `comparison.json`. Normalized manifests omit raw
+relocation-sensitive hashes, sizes, and filesystem mtimes; the observation
+files retain those digests and numeric observations so the classification is
+auditable, but archive names and payload observations never serialize literal
+relocated roots. Archive members are
+compared in order, including raw name encodings, header fields, alignment
+padding, trailing bytes, and payloads; a whole-archive digest is the fail-closed
+fallback. Filesystem mtimes are informational, while filesystem modes are
+blocking metadata. Archive metadata, embedded relocated source/build paths,
+path-only archive names or payloads, archive-format bytes, and other payload
+changes are reported separately. Source-file mtimes and scheduling differ, but
+both builds use the same `SOURCE_DATE_EPOCH`; paths are canonicalized on macOS
+and both lexical and canonical spellings are normalized. Run it
+directly when investigating build metadata:
+
+```bash
+scripts/check-reproducible-build-metadata.py
+```
+
+This diagnostic is intentionally not part of required CI and does not replace
+`scripts/check-reproducible-compiler.sh`, which remains the final-artifact gate.
+
 The `cache-probe` workflow (`.github/workflows/cache-probe.yml`) remains the
 measurement tool: it writes a transient config from the secret, does a cold
 release build of `//crates/...` then a clean-and-rebuild, and reports buck2's
