@@ -282,7 +282,7 @@ they're recorded here so a future config change doesn't silently regress:
    3.6), by immutable digest rather than by its moving tag. See
    "Updating the remote worker image" below. This number is the worker image's,
    for that wrapper, and is not the repository's Python floor — that is 3.9,
-   in AGENTS.md under "Repository tooling baseline". The two are independent:
+   in `docs/process/tooling-baseline.md`. The two are independent:
    the worker runs Buck actions, and the `remote execution (linux-x64)` job
    builds rather than tests, so repository `scripts/*.py` do not execute there.
    That the image's 3.10 happens to meet the 3.9 floor is incidental, not

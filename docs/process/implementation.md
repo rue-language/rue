@@ -1,6 +1,6 @@
 # Implementing Features
 
-This document describes how to implement planned features. The `/implement` command automates this workflow.
+This document describes how to implement planned features.
 
 ## Prerequisites
 
@@ -132,9 +132,9 @@ For large features, update the ADR checkbox:
 
 ## Step 6: Review and Commit
 
-1. Run code review: `/code-review` (see [code-review.md](code-review.md))
+1. Review the change (see [code-review.md](code-review.md))
 2. Fix any blocking issues
-3. Commit: `/commit` (see [committing.md](committing.md))
+3. Commit (see [committing.md](committing.md))
 
 ## Stabilizing a Large Feature
 

@@ -1,6 +1,6 @@
 # Planning Features
 
-This document describes how to plan new features for Rue. The `/plan` command automates this workflow.
+This document describes how to plan new features for Rue.
 
 ## When to Plan
 
@@ -127,7 +127,7 @@ For large features, the ADR serves as the approval artifact.
 ## Next Steps
 
 Once the plan is approved:
-- For small features: `/implement <RUE-id>`
-- For large features: `/implement <first-sub-issue-id>`
+- For small features: implement the Linear issue
+- For large features: implement the first sub-issue
 
 See [implementation.md](implementation.md) for the implementation process.

@@ -652,7 +652,7 @@ sh_binary(
 # the run is a pure function of its inputs. Caching also stops the fixed
 # two-second per-child budget from being re-rolled on every invocation — a
 # timeout-only flake under parallel load no longer recurs once the tree has
-# passed (AGENTS.md documents that failure mode).
+# passed (docs/process/testing.md documents that failure mode).
 cached_corpus_suite(
     name = "oracle-diff-generated-smoke",
     labels = ["rue_heavy_suite"],

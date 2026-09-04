@@ -30,7 +30,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # RUE-1936: the repository tooling floor is Python 3.9 (AGENTS.md), the
+      # RUE-1936: the repository tooling floor is Python 3.9
+      # (docs/process/tooling-baseline.md), the
       # interpreter a stock Mac ships, while this runner's own python3 is far
       # above it — so a construct newer than the floor would stay green here
       # and fail on a developer machine (RUE-1509). Running every gate in this
@@ -298,7 +299,8 @@ jobs:
         # `performance-staleness` job, which takes its own `fetch-depth: 0`
         # checkout for the purpose (RUE-1258, RUE-1504).
 
-      # RUE-1936: the repository tooling floor is Python 3.9 (AGENTS.md), the
+      # RUE-1936: the repository tooling floor is Python 3.9
+      # (docs/process/tooling-baseline.md), the
       # interpreter a stock Mac ships, while this runner's own python3 is far
       # above it — so a construct newer than the floor would stay green here
       # and fail on a developer machine (RUE-1509). Running every gate in this
@@ -1301,7 +1303,8 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v6
-      # RUE-1936: the repository tooling floor is Python 3.9 (AGENTS.md), the
+      # RUE-1936: the repository tooling floor is Python 3.9
+      # (docs/process/tooling-baseline.md), the
       # interpreter a stock Mac ships, while this runner's own python3 is far
       # above it — so a construct newer than the floor would stay green here
       # and fail on a developer machine (RUE-1509). Running every gate in this
