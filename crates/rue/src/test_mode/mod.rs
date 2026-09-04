@@ -155,13 +155,17 @@ fn fresh_seed() -> u64 {
 /// and routes each event to the surface the invocation asked for.
 struct Reporter {
     format: OutputFormat,
+    /// Presentation policy the human renderer needs and the event schema does
+    /// not carry. See `render::Context`.
+    context: render::Context,
     stdout: Mutex<()>,
 }
 
 impl Reporter {
-    fn new(format: OutputFormat) -> Self {
+    fn new(format: OutputFormat, context: render::Context) -> Self {
         Self {
             format,
+            context,
             stdout: Mutex::new(()),
         }
     }
@@ -177,7 +181,7 @@ impl Reporter {
                 let _ = writeln!(out, "{}", event.to_ndjson());
             }
             OutputFormat::Human => {
-                if let Some(text) = render::render(event) {
+                if let Some(text) = render::render(event, self.context) {
                     let _ = writeln!(out, "{text}");
                 }
             }
@@ -208,9 +212,10 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
     exec::reserve_channel_descriptor();
 
     let seed = options.seed.unwrap_or_else(fresh_seed);
-    let reporter = Reporter::new(options.format);
 
     if options.list {
+        // A listing emits no `run_finished`, so it is owed no closure context.
+        let reporter = Reporter::new(options.format, render::Context::default());
         return list(host, &compile_options, &options, diagnostics, &reporter);
     }
 
@@ -223,6 +228,15 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
             return TestExitCode::RunnerError;
         }
     };
+    // Built here rather than above because the closure is only published once
+    // the image is: nothing before this point could answer how many modules the
+    // program has.
+    let reporter = Reporter::new(
+        options.format,
+        render::Context {
+            multi_module_closure: host.published_user_module_count() > 1,
+        },
+    );
     diagnostics.print_warnings(&image.warnings);
 
     let total = inventory.entries.len();

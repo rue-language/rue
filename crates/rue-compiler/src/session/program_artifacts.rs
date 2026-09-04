@@ -1077,6 +1077,24 @@ impl CompilerSession {
     /// addition left for a real report of the false positive.
     ///
     /// The returned rows are ordered by path.
+    /// How many caller-authored modules the published closure holds.
+    ///
+    /// Standard-library modules are excluded because they can never be the
+    /// subject of an unimported-test-file report: a candidate inventory names
+    /// project files, and closure membership above is decided against those
+    /// same logical paths. A single-file program therefore answers 1 here even
+    /// though its closure carries whatever of `std` it reached.
+    ///
+    /// Zero means nothing is published yet, which is not a closure of one.
+    pub(crate) fn published_user_module_count(&self) -> usize {
+        self.published_owner().map_or(0, |program| {
+            program
+                .modules_iter()
+                .filter(|module| !module.module_id().is_trusted_standard_library())
+                .count()
+        })
+    }
+
     pub(crate) fn unimported_test_files(
         &mut self,
         candidates: &crate::TestCandidateInventory,
