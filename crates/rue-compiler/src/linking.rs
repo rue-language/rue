@@ -78,15 +78,7 @@ fn map_linker_control(err: rue_linker::LinkError) -> crate::session::PipelineReq
 }
 
 fn uncancellable<T>(result: CancellableLinkResult<T>, context: &str) -> MultiErrorResult<T> {
-    result.map_err(|control| match control {
-        crate::session::PipelineRequestControl::Compile(errors) => errors,
-        crate::session::PipelineRequestControl::Abort(abort) => {
-            crate::session::pipeline_abort_errors(context, abort)
-        }
-        crate::session::PipelineRequestControl::Parked(park) => {
-            crate::session::unresolved_toolchain_park_errors(&park)
-        }
-    })
+    result.map_err(|control| crate::session::pipeline_control_errors(context, control))
 }
 
 fn clone_warnings_with_cancellation(
@@ -1289,7 +1281,13 @@ fn validate_parsed_runtime_archive(
     Ok(archive)
 }
 
-#[allow(dead_code)] // retained for byte-container linker callers and focused tests
+/// Link an already-materialized set of object byte containers.
+///
+/// Production linking runs from retained codegen units through
+/// `link_internal_structured_units_with_warnings_and_cancellation`; this entry
+/// exists for the focused image test that asserts a byte-container link and a
+/// structured link agree, so it is compiled only for tests.
+#[cfg(test)]
 pub(crate) fn link_internal_with_warnings(
     options: &CompileOptions,
     object_files: &[Vec<u8>],
@@ -1316,6 +1314,7 @@ pub(crate) fn link_internal_with_warnings(
     finish_internal_link(linker, options, object_files.len(), warnings)
 }
 
+#[cfg(test)]
 fn finish_internal_link(
     linker: Linker,
     options: &CompileOptions,

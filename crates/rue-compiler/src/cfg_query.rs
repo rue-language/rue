@@ -389,11 +389,11 @@ fn accessor_postorder<K: Clone + Ord>(
 }
 
 pub(crate) fn accessor_source_name(identity: &crate::FunctionInstanceKey) -> String {
-    match identity {
+    match crate::semantic_identity::function_specialization_base(identity) {
         crate::FunctionInstanceKey::Definition(definition) => definition.name().to_owned(),
-        crate::FunctionInstanceKey::Specialization { base, .. } => accessor_source_name(base),
         crate::FunctionInstanceKey::AnonymousMember { member, .. } => member.name.to_string(),
-        crate::FunctionInstanceKey::DropGlue(_)
+        crate::FunctionInstanceKey::Specialization { .. }
+        | crate::FunctionInstanceKey::DropGlue(_)
         | crate::FunctionInstanceKey::ErrorPrinter(_)
         | crate::FunctionInstanceKey::TestDispatcher => "<accessor>".to_owned(),
     }
@@ -3395,20 +3395,8 @@ fn phase3_size_eligible(value_count: usize) -> bool {
 }
 
 fn is_true_free_function(function: &crate::FunctionInstanceKey) -> bool {
-    let definition = match function {
-        crate::FunctionInstanceKey::Definition(definition) => definition,
-        crate::FunctionInstanceKey::Specialization { base, .. } => {
-            let crate::FunctionInstanceKey::Definition(definition) = base.as_ref() else {
-                return false;
-            };
-            definition
-        }
-        crate::FunctionInstanceKey::AnonymousMember { .. }
-        | crate::FunctionInstanceKey::DropGlue(_)
-        | crate::FunctionInstanceKey::ErrorPrinter(_)
-        | crate::FunctionInstanceKey::TestDispatcher => return false,
-    };
-    definition.kind() == crate::StableDefinitionKind::Function
+    crate::semantic_identity::function_base_definition(function)
+        .is_some_and(|definition| definition.kind() == crate::StableDefinitionKind::Function)
 }
 
 /// Return every node in a cyclic strongly-connected component. Duplicate

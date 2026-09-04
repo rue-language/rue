@@ -315,14 +315,7 @@ pub(super) fn semantic_nucleus_cycle_names(nodes: &[rue_query::NodeIdentity]) ->
 pub(crate) fn function_definition_key(
     function: &crate::FunctionInstanceKey,
 ) -> Option<&StableDefinitionKey> {
-    match function {
-        crate::FunctionInstanceKey::Definition(key) => Some(key),
-        crate::FunctionInstanceKey::Specialization { base, .. } => function_definition_key(base),
-        crate::FunctionInstanceKey::AnonymousMember { .. }
-        | crate::FunctionInstanceKey::DropGlue(_)
-        | crate::FunctionInstanceKey::ErrorPrinter(_)
-        | crate::FunctionInstanceKey::TestDispatcher => None,
-    }
+    crate::semantic_identity::function_base_definition(function)
 }
 
 pub(super) fn producer_body_source_definition_key(
@@ -339,11 +332,8 @@ pub(super) fn producer_body_source_definition_key(
 pub(super) fn function_body_source_definition_key(
     function: &crate::FunctionInstanceKey,
 ) -> Option<&StableDefinitionKey> {
-    match function {
+    match crate::semantic_identity::function_specialization_base(function) {
         crate::FunctionInstanceKey::Definition(key) => Some(key),
-        crate::FunctionInstanceKey::Specialization { base, .. } => {
-            function_body_source_definition_key(base)
-        }
         crate::FunctionInstanceKey::AnonymousMember { owner, .. } => {
             let crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(owner)) =
                 owner.as_ref()
@@ -352,7 +342,8 @@ pub(super) fn function_body_source_definition_key(
             };
             producer_body_source_definition_key(&owner.producer)
         }
-        crate::FunctionInstanceKey::DropGlue(_)
+        crate::FunctionInstanceKey::Specialization { .. }
+        | crate::FunctionInstanceKey::DropGlue(_)
         | crate::FunctionInstanceKey::ErrorPrinter(_)
         | crate::FunctionInstanceKey::TestDispatcher => None,
     }

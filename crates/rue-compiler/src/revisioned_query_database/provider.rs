@@ -780,23 +780,12 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
         &self,
         identity: &rue_air::AnonymousNominalKey<crate::StableDefinitionKey, ModuleId>,
     ) -> Option<ModuleId> {
-        fn function_module(
-            function: &rue_air::FunctionInstanceKey<crate::StableDefinitionKey, ModuleId>,
-        ) -> Option<ModuleId> {
-            match function {
-                rue_air::FunctionInstanceKey::Definition(definition) => {
-                    Some(definition.module().clone())
-                }
-                rue_air::FunctionInstanceKey::Specialization { base, .. } => function_module(base),
-                rue_air::FunctionInstanceKey::AnonymousMember { .. }
-                | rue_air::FunctionInstanceKey::DropGlue(_)
-                | rue_air::FunctionInstanceKey::ErrorPrinter(_)
-                | rue_air::FunctionInstanceKey::TestDispatcher => None,
-            }
-        }
         match &identity.producer {
             rue_air::StableProducerId::Definition(definition) => Some(definition.module().clone()),
-            rue_air::StableProducerId::Function(function) => function_module(function),
+            rue_air::StableProducerId::Function(function) => {
+                crate::semantic_identity::function_base_definition(function)
+                    .map(|definition| definition.module().clone())
+            }
         }
     }
 

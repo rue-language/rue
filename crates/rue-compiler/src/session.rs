@@ -356,6 +356,24 @@ impl From<CompileError> for PipelineRequestControl {
     }
 }
 
+/// Render one pipeline control answer on the uncancellable error surface.
+///
+/// Every entry point that cannot be canceled still runs the cancellable
+/// pipeline underneath and has to answer in `CompileErrors` alone. `context`
+/// names the stage the control came from and reaches the reader only through
+/// an internal-error diagnostic; a park and a compile failure carry their own
+/// diagnostics already.
+pub(crate) fn pipeline_control_errors(
+    context: &str,
+    control: PipelineRequestControl,
+) -> CompileErrors {
+    match control {
+        PipelineRequestControl::Compile(errors) => errors,
+        PipelineRequestControl::Abort(abort) => pipeline_abort_errors(context, abort),
+        PipelineRequestControl::Parked(park) => unresolved_toolchain_park_errors(&park),
+    }
+}
+
 pub(crate) fn pipeline_abort_errors(context: &str, abort: rue_query::QueryAbort) -> CompileErrors {
     CompileError::without_span(ErrorKind::InternalError(abort_internal_message(
         context, &abort,

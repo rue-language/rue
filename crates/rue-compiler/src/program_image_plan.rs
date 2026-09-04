@@ -103,15 +103,7 @@ fn cancellable_sort_by<T>(
 
 #[cfg_attr(not(test), allow(dead_code))]
 fn uncancellable<T>(result: CancellableImageResult<T>, context: &str) -> MultiErrorResult<T> {
-    result.map_err(|control| match control {
-        crate::session::PipelineRequestControl::Compile(errors) => errors,
-        crate::session::PipelineRequestControl::Abort(abort) => {
-            crate::session::pipeline_abort_errors(context, abort)
-        }
-        crate::session::PipelineRequestControl::Parked(park) => {
-            crate::session::unresolved_toolchain_park_errors(&park)
-        }
-    })
+    result.map_err(|control| crate::session::pipeline_control_errors(context, control))
 }
 
 /// Stable, link-relevant identity for one reached codegen terminal.
