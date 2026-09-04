@@ -484,3 +484,184 @@ params = [
   { variant = "different_variant", a = "Circle(5)", b = "Square(5)", op = "==", exit_code = 0 },
   { variant = "inequality", a = "Circle(5)", b = "Square(5)", op = "!=", exit_code = 1 },
 ]
+
+# =============================================================================
+# Aggregates carrying a string (RUE-1992)
+#
+# A `StrBuf` is a synthetic struct, so a naive structural walk reaches its `ptr`
+# field and 4.3:3e answers with an address compare. A `StrBuf` is a string, so
+# the recursion stops there instead and 4.3:3 compares its bytes — wherever the
+# walk reaches one: a struct field, an array element, an enum payload field, at
+# any depth. The other leaves keep their own rules, so a raw pointer beside a
+# string still compares by address.
+# =============================================================================
+
+[[case]]
+name = "struct_strbuf_field_equality_{variant}"
+spec = ["4.3:2", "4.3:3", "4.3:3b"]
+real_std = true
+description = "A StrBuf field compares by byte content, not by its header."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+struct Pair { name: StrBuf }
+
+fn mk(s: str) -> StrBuf { StrBuf.from_str(borrow s) }
+
+fn main() -> i32 {
+    let a = Pair { name: mk("{left}") };
+    let b = Pair { name: mk("{right}") };
+    if a {op} b { 1 } else { 0 }
+}
+"""
+params = [
+  { variant = "equal_bytes", left = "abc", right = "abc", op = "==", exit_code = 1 },
+  { variant = "different_bytes", left = "abc", right = "abd", op = "==", exit_code = 0 },
+  { variant = "different_lengths", left = "abc", right = "abcd", op = "==", exit_code = 0 },
+  { variant = "inequality", left = "abc", right = "abd", op = "!=", exit_code = 1 },
+]
+
+[[case]]
+name = "array_of_strbuf_equality_is_element_content"
+spec = ["4.3:2", "4.3:3", "4.3:3c"]
+real_std = true
+description = "Array elements that are strings compare index-by-index on content."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn mk(s: str) -> StrBuf { StrBuf.from_str(borrow s) }
+
+fn main() -> i32 {
+    let a = [mk("ab"), mk("cd")];
+    let b = [mk("ab"), mk("cd")];
+    let c = [mk("ab"), mk("ce")];
+    if a == b && a != c { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "enum_strbuf_payload_equality_is_content"
+spec = ["4.3:2", "4.3:3", "4.3:3d"]
+real_std = true
+description = "A string payload field compares on content; a different variant is never equal."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+enum Tagged { Empty, Named(StrBuf) }
+
+fn mk(s: str) -> StrBuf { StrBuf.from_str(borrow s) }
+
+fn main() -> i32 {
+    let a = Tagged.Named(mk("hi"));
+    let b = Tagged.Named(mk("hi"));
+    let c = Tagged.Named(mk("ho"));
+    let d = Tagged.Empty;
+    if a == b && a != c && a != d { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "nested_struct_strbuf_equality_reaches_every_depth"
+spec = ["4.3:2", "4.3:3", "4.3:3b"]
+real_std = true
+description = "A string two aggregates deep still compares on content, beside a scalar leaf."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+struct Inner { name: StrBuf }
+struct Outer { inner: Inner, n: i32 }
+
+fn mk(s: str) -> StrBuf { StrBuf.from_str(borrow s) }
+
+fn main() -> i32 {
+    let a = Outer { inner: Inner { name: mk("zz") }, n: 7 };
+    let b = Outer { inner: Inner { name: mk("zz") }, n: 7 };
+    let c = Outer { inner: Inner { name: mk("zz") }, n: 8 };
+    let d = Outer { inner: Inner { name: mk("zy") }, n: 7 };
+    if a == b && a != c && a != d { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "struct_strbuf_and_raw_pointer_fields_keep_their_own_rules"
+spec = ["4.3:2", "4.3:3", "4.3:3b", "4.3:3e"]
+real_std = true
+description = "Beside a string field, a raw-pointer leaf still compares by address."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+struct Marked { name: StrBuf, at: ptr const i32 }
+
+fn mk(s: str) -> StrBuf { StrBuf.from_str(borrow s) }
+
+fn main() -> i32 {
+    let x: i32 = 42;
+    let y: i32 = 42;
+    let a = checked { Marked { name: mk("q"), at: @raw(x) } };
+    let b = checked { Marked { name: mk("q"), at: @raw(x) } };
+    let c = checked { Marked { name: mk("q"), at: @raw(y) } };
+    let d = checked { Marked { name: mk("r"), at: @raw(x) } };
+    if a == b && a != c && a != d { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# A string *view* is a string too. These cases put the two literals in
+# different modules on purpose: identical spellings compiled into one module
+# can share a single run, so a same-file test cannot tell a content comparison
+# from an address comparison, while separate runs make the difference visible.
+
+[[case]]
+name = "struct_str_view_field_equality_is_content"
+spec = ["4.3:2", "4.3:3", "4.3:3b"]
+description = "A `str` field compares by byte content, not by the run its view points at."
+source = """
+const view = @import("view.rue");
+
+fn main() -> i32 {
+    let mine = view.W { s: "hello" };
+    let theirs = view.make();
+    let mut r: i32 = 0;
+    if mine.s == theirs.s { r = r + 1; }
+    if mine == theirs { r = r + 2; }
+    if mine != theirs { r = r + 4; }
+    r
+}
+"""
+aux_files = { "view.rue" = """
+pub struct W { s: str }
+pub fn make() -> W { W { s: "hello" } }
+""" }
+exit_code = 3
+
+[[case]]
+name = "struct_str_fixed_field_equality_is_content"
+spec = ["4.3:2", "4.3:3", "4.3:3b"]
+description = "A `Str(N)` field compares by byte content on the same terms as a `str` one."
+source = """
+const fixed = @import("fixed.rue");
+
+fn main() -> i32 {
+    let mine = fixed.F { s: "hello" };
+    let theirs = fixed.make();
+    let other = fixed.F { s: "world" };
+    let mut r: i32 = 0;
+    if mine == theirs { r = r + 1; }
+    if mine == other { r = r + 2; }
+    if mine != other { r = r + 4; }
+    r
+}
+"""
+aux_files = { "fixed.rue" = """
+pub struct F { s: Str(8) }
+pub fn make() -> F { F { s: "hello" } }
+""" }
+exit_code = 5

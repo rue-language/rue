@@ -19,7 +19,9 @@ use super::aggregate_resolution::{
 };
 use super::analysis::FirstClassStrSite;
 use super::context::{AnalysisContext, AnalysisResult, ConstValue};
-use crate::inst::{Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirRef};
+use crate::inst::{
+    Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirProjection, AirRef,
+};
 use crate::types::{Type, TypeKind};
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
@@ -214,8 +216,25 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(AnalysisResult::new(air_ref, Type::BOOL))
     }
 
-    /// Prepare source-defined aggregate equality when the aggregate provides
-    /// the canonical borrowed equality method.
+    /// Prepare structural equality for an operand type that carries a string.
+    ///
+    /// Equality on an aggregate is structural, its components "determined
+    /// recursively by this rule down to scalar leaves" (4.3:3b, with 4.3:3c for
+    /// arrays and 4.3:3d for enum payloads). Naive recursion through a string
+    /// does not stop at a scalar leaf: every string type is a synthetic struct,
+    /// so the walk reaches the `ptr` field of a `StrBuf`, or the `{ptr, len}`
+    /// header of a `str`/`Str(N)` view, and 4.3:3e turns the comparison into an
+    /// address compare. A string *is* a leaf, so the recursion stops at one and
+    /// compares content under 4.3:3 wherever it is reached — an owned `StrBuf`
+    /// through the same borrowed `equals_borrowed` a top-level
+    /// `StrBuf == StrBuf` already uses, a view through the same single `Eq`
+    /// node a top-level `str == str` already uses (RUE-1992).
+    ///
+    /// A top-level view operand is left to that node: code generation already
+    /// answers it by content, and routing it through here would only wrap it.
+    /// Everything with no string inside likewise keeps the single `Eq` node
+    /// that CFG and code generation compare slot-wise, so this adds no second
+    /// lowering for the comparisons that were already right.
     pub(super) fn try_prepare_aggregate_equality(
         &mut self,
         air: &mut Air,
@@ -225,39 +244,37 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<Option<AnalysisResult>> {
-        let Some(struct_id) = lhs.ty.as_struct().filter(|struct_id| {
-            self.body_type_pool().struct_lang_item(*struct_id) == Some(crate::LangItem::StrBuf)
-        }) else {
-            return Ok(None);
+        let component_wise = if self.is_strbuf(lhs.ty) {
+            true
+        } else if self.is_string_equality_leaf(lhs.ty) {
+            false
+        } else {
+            self.type_carries_string(lhs.ty)
         };
-        let method = self.intern_body_symbol("equals_borrowed")?;
-        if self.method_info((struct_id, method)).is_none() {
+        if !component_wise {
             return Ok(None);
         }
-        ctx.referenced_methods.insert((struct_id, method));
+        // Only an owned-string leaf calls `equals_borrowed`; a comparison whose
+        // strings are all views never needs it, and its program may not link
+        // `StrBuf` at all.
+        if self.type_carries_owned_string(lhs.ty) && !self.strbuf_equality_is_available()? {
+            return Ok(None);
+        }
+        // Both operands are read as borrowed places: equality borrows (4.3:3f),
+        // so an operand that already names storage is projected in place and an
+        // owning temporary gets the same home a borrow argument gets.
         let (lhs_arg, mut temp_scope) =
             self.materialize_borrow_argument(air, lhs.air_ref, lhs.ty, span, ctx)?;
         let (rhs_arg, rhs_scope) =
             self.materialize_borrow_argument(air, rhs.air_ref, rhs.ty, span, ctx)?;
         temp_scope.extend(rhs_scope);
-        let call_name =
-            self.intern_body_symbol(&self.method_symbol(struct_id, "equals_borrowed", false))?;
-        let equal = air.add_call(
-            None,
-            call_name,
-            &[
-                AirCallArg {
-                    value: lhs_arg,
-                    mode: AirArgMode::Borrow,
-                },
-                AirCallArg {
-                    value: rhs_arg,
-                    mode: AirArgMode::Borrow,
-                },
-            ],
-            Type::BOOL,
-            span,
-        )?;
+        let (lhs_arg, lhs_root_scope) =
+            self.root_comparison_operand(air, lhs_arg, lhs.ty, span, ctx)?;
+        let (rhs_arg, rhs_root_scope) =
+            self.root_comparison_operand(air, rhs_arg, rhs.ty, span, ctx)?;
+        temp_scope.extend(lhs_root_scope);
+        temp_scope.extend(rhs_root_scope);
+        let equal = self.build_structural_equality(air, lhs_arg, rhs_arg, lhs.ty, span, ctx)?;
         let equal = self.wrap_value_with_temp_scope(air, equal, Type::BOOL, span, temp_scope)?;
         let value = if matches!(comparison, AirInstData::Ne(..)) {
             air.add_inst(AirInst {
@@ -269,6 +286,604 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             equal
         };
         Ok(Some(AnalysisResult::new(value, Type::BOOL)))
+    }
+
+    /// Whether the trusted `StrBuf` this program links against still provides
+    /// the canonical borrowed equality method the owned-string leaves call.
+    ///
+    /// Without it there is no content comparison to lower to, so the whole
+    /// route declines and the ordinary `Eq` node stands.
+    fn strbuf_equality_is_available(&mut self) -> CompileResult<bool> {
+        let Some(struct_id) = self
+            .body_type_pool()
+            .lang_item_type(crate::LangItem::StrBuf)
+            .and_then(|ty| ty.as_struct())
+        else {
+            return Ok(false);
+        };
+        let method = self.intern_body_symbol("equals_borrowed")?;
+        Ok(self.method_info((struct_id, method)).is_some())
+    }
+
+    /// Whether `ty` is a string as far as equality is concerned: an owned
+    /// `StrBuf` or a `str`/`Str(N)` view.
+    ///
+    /// This is the semantic side of one notion, mirrored by code generation's
+    /// `is_string_like_for_equality`; both spell the view names through
+    /// [`crate::types::is_string_view_struct_name`]. The two must agree, or a
+    /// component would compare by content on one walk and by header on the
+    /// other, which is exactly the disagreement 4.3:3 forbids.
+    pub(super) fn is_string_equality_leaf(&self, ty: Type) -> bool {
+        self.is_strbuf(ty) || self.is_str_like(ty)
+    }
+
+    /// Whether `ty` transitively holds a string by value — including when it
+    /// *is* one.
+    ///
+    /// This is the predicate that decides whether a comparison needs the
+    /// component-wise lowering at all. The by-value containment graph is
+    /// acyclic (a type cannot hold itself by value), but the walk carries a
+    /// visited set so a malformed pool cannot turn a containment cycle into
+    /// unbounded recursion.
+    pub(super) fn type_carries_string(&self, ty: Type) -> bool {
+        self.type_carries_string_leaf(ty, false)
+    }
+
+    /// Whether `ty` transitively holds an *owned* string. Only those leaves
+    /// lower to `equals_borrowed`, so only they need it to exist; a program
+    /// whose strings are all views never mentions `StrBuf` at all.
+    fn type_carries_owned_string(&self, ty: Type) -> bool {
+        self.type_carries_string_leaf(ty, true)
+    }
+
+    fn type_carries_string_leaf(&self, ty: Type, owned_only: bool) -> bool {
+        let mut visited = AHashSet::new();
+        self.type_carries_string_within(ty, owned_only, &mut visited)
+    }
+
+    fn type_carries_string_within(
+        &self,
+        ty: Type,
+        owned_only: bool,
+        visited: &mut AHashSet<Type>,
+    ) -> bool {
+        if if owned_only {
+            self.is_strbuf(ty)
+        } else {
+            self.is_string_equality_leaf(ty)
+        } {
+            return true;
+        }
+        if !visited.insert(ty) {
+            return false;
+        }
+        match ty.kind() {
+            TypeKind::Struct(struct_id) => {
+                let def = self.body_type_pool().struct_def(struct_id);
+                def.fields
+                    .iter()
+                    .any(|field| self.type_carries_string_within(field.ty, owned_only, visited))
+            }
+            TypeKind::Array(array_id) => {
+                let (element, length) = self.body_type_pool().array_def(array_id);
+                length > 0 && self.type_carries_string_within(element, owned_only, visited)
+            }
+            TypeKind::Enum(enum_id) => {
+                let def = self.body_type_pool().enum_def(enum_id);
+                (0..def.variant_count()).any(|variant| {
+                    def.variant_payload(variant).iter().any(|payload| {
+                        self.type_carries_string_within(*payload, owned_only, visited)
+                    })
+                })
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether a component of this type is read through a borrow or projected
+    /// further, and so needs an addressable home of its own.
+    ///
+    /// A component compared by the single `Eq` node — a scalar, a view, a
+    /// string-free aggregate — is used as a value and needs none.
+    fn equality_component_needs_home(&self, ty: Type) -> bool {
+        self.is_strbuf(ty) || (!self.is_string_equality_leaf(ty) && self.type_carries_string(ty))
+    }
+
+    /// Build the 4.3:3b conjunction comparing two operands of type `ty`.
+    ///
+    /// Both operands must already name storage; every component is reached by
+    /// extending their place paths, so nothing is copied and nothing is
+    /// dropped. The recursion has three stopping points: an owned string
+    /// compares its bytes through `equals_borrowed`, a string view compares
+    /// its bytes through the single `Eq` node code generation already routes
+    /// to the runtime text helper (both are 4.3:3), and any component with no
+    /// string inside compares with that same `Eq` node, slot-wise.
+    fn build_structural_equality(
+        &mut self,
+        air: &mut Air,
+        lhs: AirRef,
+        rhs: AirRef,
+        ty: Type,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AirRef> {
+        if self.is_strbuf(ty) {
+            return self.build_strbuf_content_equality(air, lhs, rhs, ty, span, ctx);
+        }
+        if self.is_string_equality_leaf(ty) || !self.type_carries_string(ty) {
+            return Ok(air.add_inst(AirInst {
+                data: AirInstData::Eq(lhs, rhs),
+                ty: Type::BOOL,
+                span,
+            }));
+        }
+        match ty.kind() {
+            TypeKind::Struct(struct_id) => {
+                let fields = self
+                    .body_type_pool()
+                    .struct_def(struct_id)
+                    .fields
+                    .iter()
+                    .map(|field| field.ty)
+                    .collect::<Vec<_>>();
+                let mut components = Vec::with_capacity(fields.len());
+                for (index, field_ty) in fields.into_iter().enumerate() {
+                    let projection = AirProjection::Field {
+                        struct_id,
+                        field_index: index as u32,
+                    };
+                    let lhs_field = self
+                        .project_addressable_component(air, lhs, ty, projection, field_ty, span)?;
+                    let rhs_field = self
+                        .project_addressable_component(air, rhs, ty, projection, field_ty, span)?;
+                    components.push(self.build_structural_equality(
+                        air, lhs_field, rhs_field, field_ty, span, ctx,
+                    )?);
+                }
+                Ok(Self::conjoin_equality(air, components, span))
+            }
+            TypeKind::Array(array_id) => {
+                self.build_array_structural_equality(air, lhs, rhs, ty, array_id, span, ctx)
+            }
+            TypeKind::Enum(enum_id) => {
+                self.build_enum_structural_equality(air, lhs, rhs, enum_id, span, ctx)
+            }
+            _ => Err(CompileError::new(
+                ErrorKind::InternalError(
+                    "a string-carrying comparison operand is not an aggregate".to_string(),
+                ),
+                span,
+            )),
+        }
+    }
+
+    /// Compare two `StrBuf` components by content, through the source-defined
+    /// borrowed equality method (4.3:3).
+    fn build_strbuf_content_equality(
+        &mut self,
+        air: &mut Air,
+        lhs: AirRef,
+        rhs: AirRef,
+        ty: Type,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AirRef> {
+        let struct_id = ty.as_struct().expect("StrBuf is a struct");
+        let method = self.intern_body_symbol("equals_borrowed")?;
+        ctx.referenced_methods.insert((struct_id, method));
+        let call_name =
+            self.intern_body_symbol(&self.method_symbol(struct_id, "equals_borrowed", false))?;
+        Ok(air.add_call(
+            None,
+            call_name,
+            &[
+                AirCallArg {
+                    value: lhs,
+                    mode: AirArgMode::Borrow,
+                },
+                AirCallArg {
+                    value: rhs,
+                    mode: AirArgMode::Borrow,
+                },
+            ],
+            Type::BOOL,
+            span,
+        )?)
+    }
+
+    /// Compare two arrays element by element (4.3:3c), as a counted loop.
+    ///
+    /// Unrolling the elements would make the emitted program grow with the
+    /// array's length — and, because a conjunction is lowered by recursive
+    /// descent, would make the *compiler's* stack grow with it too. One loop
+    /// body keeps both bounded: the comparison advances while the index is in
+    /// range and the elements so far are equal, so it stops at the first
+    /// difference exactly as a conjunction would, and the answer is whether
+    /// the index reached the end.
+    #[allow(clippy::too_many_arguments)]
+    fn build_array_structural_equality(
+        &mut self,
+        air: &mut Air,
+        lhs: AirRef,
+        rhs: AirRef,
+        array_ty: Type,
+        array_id: crate::types::ArrayTypeId,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AirRef> {
+        let (element_ty, length) = self.body_type_pool().array_def(array_id);
+        if length == 0 {
+            return Ok(Self::equality_constant(air, true, span));
+        }
+        let (index_slot, mut statements) = self.open_counter_slot(air, span, ctx)?;
+        let length_constant = |air: &mut Air| {
+            air.add_inst(AirInst {
+                data: AirInstData::Const(length),
+                ty: Type::U64,
+                span,
+            })
+        };
+        let index_read = |air: &mut Air| {
+            air.add_inst(AirInst {
+                data: AirInstData::Load { slot: index_slot },
+                ty: Type::U64,
+                span,
+            })
+        };
+
+        // Condition: still in range, and this element is equal. `And` is
+        // short-circuiting, so the element read never runs at the end index.
+        let in_range = {
+            let index = index_read(air);
+            let length = length_constant(air);
+            air.add_inst(AirInst {
+                data: AirInstData::Lt(index, length),
+                ty: Type::BOOL,
+                span,
+            })
+        };
+        let lhs_element = {
+            let index = index_read(air);
+            self.project_addressable_component(
+                air,
+                lhs,
+                array_ty,
+                AirProjection::Index {
+                    array_type: array_ty,
+                    index,
+                },
+                element_ty,
+                span,
+            )?
+        };
+        let rhs_element = {
+            let index = index_read(air);
+            self.project_addressable_component(
+                air,
+                rhs,
+                array_ty,
+                AirProjection::Index {
+                    array_type: array_ty,
+                    index,
+                },
+                element_ty,
+                span,
+            )?
+        };
+        let element_equal =
+            self.build_structural_equality(air, lhs_element, rhs_element, element_ty, span, ctx)?;
+        let condition = air.add_inst(AirInst {
+            data: AirInstData::And(in_range, element_equal),
+            ty: Type::BOOL,
+            span,
+        });
+
+        // Body: advance the index.
+        let advance = {
+            let index = index_read(air);
+            let one = air.add_inst(AirInst {
+                data: AirInstData::Const(1),
+                ty: Type::U64,
+                span,
+            });
+            let next = air.add_inst(AirInst {
+                data: AirInstData::Add(index, one),
+                ty: Type::U64,
+                span,
+            });
+            air.add_inst(AirInst {
+                data: AirInstData::Store {
+                    slot: index_slot,
+                    value: next,
+                },
+                ty: Type::UNIT,
+                span,
+            })
+        };
+        let unit = air.add_inst(AirInst {
+            data: AirInstData::UnitConst,
+            ty: Type::UNIT,
+            span,
+        });
+        let body = air.add_block(&[advance], unit, Type::UNIT, span)?;
+        let counted_loop = air.add_inst(AirInst {
+            data: AirInstData::Loop {
+                cond: condition,
+                body,
+            },
+            ty: Type::UNIT,
+            span,
+        });
+        statements.push(counted_loop);
+
+        // The loop stops either at the end or at the first unequal element.
+        let equal = {
+            let index = index_read(air);
+            let length = length_constant(air);
+            air.add_inst(AirInst {
+                data: AirInstData::Eq(index, length),
+                ty: Type::BOOL,
+                span,
+            })
+        };
+        Ok(air.add_block(&statements, equal, Type::BOOL, span)?)
+    }
+
+    /// Compare two enum operands by tag and then, for the shared variant,
+    /// payload field by payload field (4.3:3d).
+    ///
+    /// The tags are compared first, as ordinary scalars. That is what keeps
+    /// the emitted program linear in the variant count: once the tags are
+    /// known equal, the payload dispatch reads the *rhs* payload of the lhs's
+    /// own variant, so a variant needs one payload comparison rather than one
+    /// per pair of variants. Variants whose payload types match share that
+    /// comparison — their payload fields sit at the same offsets — so a
+    /// uniform enum emits one payload comparison in total, and a chain of
+    /// nested enums costs the sum of their variant counts rather than the
+    /// product.
+    fn build_enum_structural_equality(
+        &mut self,
+        air: &mut Air,
+        lhs: AirRef,
+        rhs: AirRef,
+        enum_id: crate::types::EnumId,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AirRef> {
+        let def = self.body_type_pool().enum_def(enum_id);
+        let payloads = (0..def.variant_count())
+            .map(|variant| def.variant_payload(variant).to_vec())
+            .collect::<Vec<_>>();
+        drop(def);
+        if payloads.is_empty() {
+            // An uninhabited enum has no value to compare; the point is
+            // unreachable, and `true` keeps the conjunction well-typed.
+            return Ok(Self::equality_constant(air, true, span));
+        }
+        let enum_ty = Type::new_enum(enum_id);
+
+        // Group the variants by payload signature, keeping one representative
+        // of each. Two variants carrying the same types lay their payload
+        // fields out identically, so the representative's field indices read
+        // the same storage for every variant in its group.
+        let mut groups: Vec<(Vec<Type>, u32)> = Vec::new();
+        let mut group_of = Vec::with_capacity(payloads.len());
+        for (variant, payload) in payloads.iter().enumerate() {
+            let index = match groups.iter().position(|(types, _)| types == payload) {
+                Some(index) => index,
+                None => {
+                    groups.push((payload.clone(), variant as u32));
+                    groups.len() - 1
+                }
+            };
+            group_of.push(index as i64);
+        }
+
+        let variant_tags = (0..payloads.len() as i64).collect::<Vec<_>>();
+        let lhs_tag = self.build_enum_selector(air, lhs, enum_id, enum_ty, &variant_tags, span)?;
+        let rhs_tag = self.build_enum_selector(air, rhs, enum_id, enum_ty, &variant_tags, span)?;
+        let tags_equal = air.add_inst(AirInst {
+            data: AirInstData::Eq(lhs_tag, rhs_tag),
+            ty: Type::BOOL,
+            span,
+        });
+
+        let payload_equal = if groups.len() == 1 {
+            let (payload, representative) = &groups[0];
+            self.build_enum_payload_equality(
+                air,
+                lhs,
+                rhs,
+                enum_id,
+                enum_ty,
+                *representative,
+                payload,
+                span,
+                ctx,
+            )?
+        } else {
+            let selector = self.build_enum_selector(air, lhs, enum_id, enum_ty, &group_of, span)?;
+            let mut arms = Vec::with_capacity(groups.len());
+            for (index, (payload, representative)) in groups.iter().enumerate() {
+                let body = self.build_enum_payload_equality(
+                    air,
+                    lhs,
+                    rhs,
+                    enum_id,
+                    enum_ty,
+                    *representative,
+                    payload,
+                    span,
+                    ctx,
+                )?;
+                arms.push((AirPattern::Int(index as i64), body));
+            }
+            air.add_match(selector, &arms, Type::BOOL, span)?
+        };
+
+        // The payload dispatch runs only once the tags agree, so reading the
+        // rhs payload as the lhs's variant is sound.
+        Ok(air.add_inst(AirInst {
+            data: AirInstData::And(tags_equal, payload_equal),
+            ty: Type::BOOL,
+            span,
+        }))
+    }
+
+    /// Read one integer per variant out of an enum operand: its tag, or the
+    /// index of the payload group its tag belongs to.
+    fn build_enum_selector(
+        &mut self,
+        air: &mut Air,
+        operand: AirRef,
+        enum_id: crate::types::EnumId,
+        enum_ty: Type,
+        values: &[i64],
+        span: Span,
+    ) -> CompileResult<AirRef> {
+        let scrutinee = self.reread_rooted_operand(air, operand, enum_ty, span)?;
+        let mut arms = Vec::with_capacity(values.len());
+        for (variant, value) in values.iter().enumerate() {
+            let selected = air.add_inst(AirInst {
+                data: AirInstData::Const(*value as u64),
+                ty: Type::U32,
+                span,
+            });
+            arms.push((
+                AirPattern::EnumVariant {
+                    enum_id,
+                    variant_index: variant as u32,
+                },
+                selected,
+            ));
+        }
+        Ok(air.add_match(scrutinee, &arms, Type::U32, span)?)
+    }
+
+    /// Compare the payload fields both operands carry under one variant.
+    #[allow(clippy::too_many_arguments)]
+    fn build_enum_payload_equality(
+        &mut self,
+        air: &mut Air,
+        lhs: AirRef,
+        rhs: AirRef,
+        enum_id: crate::types::EnumId,
+        enum_ty: Type,
+        variant_index: u32,
+        payload_types: &[Type],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AirRef> {
+        let mut statements = Vec::new();
+        let mut components = Vec::with_capacity(payload_types.len());
+        for (field_index, payload_ty) in payload_types.iter().enumerate() {
+            let lhs_payload = self.project_enum_payload(
+                air,
+                lhs,
+                enum_id,
+                enum_ty,
+                variant_index,
+                field_index as u32,
+                *payload_ty,
+                span,
+                ctx,
+                &mut statements,
+            )?;
+            let rhs_payload = self.project_enum_payload(
+                air,
+                rhs,
+                enum_id,
+                enum_ty,
+                variant_index,
+                field_index as u32,
+                *payload_ty,
+                span,
+                ctx,
+                &mut statements,
+            )?;
+            components.push(self.build_structural_equality(
+                air,
+                lhs_payload,
+                rhs_payload,
+                *payload_ty,
+                span,
+                ctx,
+            )?);
+        }
+        let equal = Self::conjoin_equality(air, components, span);
+        self.wrap_value_with_temp_scope(air, equal, Type::BOOL, span, statements)
+    }
+
+    /// Read one payload field of a known variant, giving it a non-owning home
+    /// only when the recursion below will borrow or project it.
+    #[allow(clippy::too_many_arguments)]
+    fn project_enum_payload(
+        &mut self,
+        air: &mut Air,
+        base: AirRef,
+        enum_id: crate::types::EnumId,
+        enum_ty: Type,
+        variant_index: u32,
+        field_index: u32,
+        payload_ty: Type,
+        span: Span,
+        ctx: &mut AnalysisContext,
+        statements: &mut Vec<AirRef>,
+    ) -> CompileResult<AirRef> {
+        let base = self.reread_rooted_operand(air, base, enum_ty, span)?;
+        let payload = air.add_inst(AirInst {
+            data: AirInstData::EnumPayloadGet {
+                base,
+                enum_id,
+                variant_index,
+                field_index,
+            },
+            ty: payload_ty,
+            span,
+        });
+        if !self.equality_component_needs_home(payload_ty) {
+            return Ok(payload);
+        }
+        let (home, prefix) =
+            self.materialize_borrowed_component(air, payload, payload_ty, span, ctx)?;
+        statements.extend(prefix);
+        Ok(home)
+    }
+
+    /// Conjoin the component comparisons of one aggregate.
+    ///
+    /// The conjunction is balanced rather than left-deep. `And` short-circuits
+    /// and re-associating it preserves both the order and the stopping point,
+    /// while CFG construction lowers each operand by recursive descent — so a
+    /// left-deep chain over an aggregate's components would put the compiler's
+    /// stack depth in the hands of the program's field count.
+    fn conjoin_equality(air: &mut Air, components: Vec<AirRef>, span: Span) -> AirRef {
+        if components.is_empty() {
+            return Self::equality_constant(air, true, span);
+        }
+        let mut level = components;
+        while level.len() > 1 {
+            let mut next = Vec::with_capacity(level.len().div_ceil(2));
+            let mut pairs = level.chunks_exact(2);
+            for pair in &mut pairs {
+                next.push(air.add_inst(AirInst {
+                    data: AirInstData::And(pair[0], pair[1]),
+                    ty: Type::BOOL,
+                    span,
+                }));
+            }
+            next.extend(pairs.remainder());
+            level = next;
+        }
+        level[0]
+    }
+
+    fn equality_constant(air: &mut Air, value: bool, span: Span) -> AirRef {
+        air.add_inst(AirInst {
+            data: AirInstData::BoolConst(value),
+            ty: Type::BOOL,
+            span,
+        })
     }
 
     // ========================================================================

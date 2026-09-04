@@ -2186,14 +2186,22 @@ pub fn integer_width(ty: Type) -> Option<IntegerWidth> {
 
 /// Select the width used by a scalar comparison. Booleans and discriminant-only
 /// enums are represented in the ordinary 32-bit unsigned scalar register form;
-/// every other valid scalar comparison operand must be an integer. Do not
-/// silently assign an integer width to malformed or unsupported types: doing so
-/// would let the backends choose a target-specific interpretation of the same
-/// invalid CFG.
+/// a raw pointer compares as its address at full width (spec 4.3:3e), the same
+/// width [`crate::types::slot_needs_wide_compare`] gives a pointer leaf of a
+/// slot-wise aggregate comparison — a component-wise aggregate equality
+/// (RUE-1992) reaches such a leaf as a comparison of its own; every other
+/// valid scalar comparison operand must be an integer. Do not silently assign
+/// an integer width to malformed or unsupported types: doing so would let the
+/// backends choose a target-specific interpretation of the same invalid CFG.
 pub fn comparison_integer_width(ty: Type) -> IntegerWidth {
     if ty == Type::BOOL || ty.is_enum() {
         IntegerWidth {
             bits: 32,
+            signed: false,
+        }
+    } else if crate::types::slot_needs_wide_compare(ty) && integer_width(ty).is_none() {
+        IntegerWidth {
+            bits: 64,
             signed: false,
         }
     } else {
