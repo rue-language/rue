@@ -10,7 +10,6 @@ use rue_air::normalize_module_path;
 use rue_cfg::OptLevel;
 use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeatures};
 use rue_target::Target;
-use sha2::{Digest, Sha256};
 
 use crate::{SourceMetadata, SourceSnapshot};
 
@@ -23,12 +22,11 @@ trait SourceDigester {
 struct Sha256Digester;
 
 impl SourceDigester for Sha256Digester {
+    /// Source identity is one instance of the compiler's domain-separated
+    /// content framing, under its own domain: the shared kernel is the single
+    /// authority on how a domain, a length, and the bytes are laid out.
     fn digest(&self, text: &[u8]) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        hasher.update(SOURCE_DOMAIN_V1);
-        hasher.update((text.len() as u64).to_le_bytes());
-        hasher.update(text);
-        hasher.finalize().into()
+        crate::content_digest::bytes_digest(SOURCE_DOMAIN_V1, text)
     }
 }
 
@@ -747,6 +745,34 @@ mod tests {
         value.hash(&mut h);
         h.finish()
     }
+
+    /// Pin the persisted source-identity framing to concrete digests.
+    ///
+    /// A `SourceId` is domain-separated SHA-256 over `SOURCE_DOMAIN_V1`, the
+    /// byte length as a little-endian `u64`, and the exact bytes. Every stored
+    /// identity and every module revision derived from one moves if any of
+    /// those three parts changes, and nothing else in the suite would fail, so
+    /// the framing is asserted here as a value rather than as a shape.
+    #[test]
+    fn source_digest_framing_is_pinned() {
+        fn hex(digest: [u8; 32]) -> String {
+            digest.iter().fold(String::new(), |mut text, byte| {
+                use std::fmt::Write as _;
+                write!(text, "{byte:02x}").expect("writing to a String cannot fail");
+                text
+            })
+        }
+
+        assert_eq!(
+            hex(Sha256Digester.digest(b"")),
+            "723317c691cf08d6625541302ba1ef39227c5345aa77ee207cd4bbf546fd8da8"
+        );
+        assert_eq!(
+            hex(Sha256Digester.digest(b"fn main() -> i64 { 0 }\n")),
+            "1fd809626528b30070eecf80925c0b37d85ead959c024e6a731aa8ba89ac3892"
+        );
+    }
+
     #[test]
     fn collisions_do_not_equal_or_replace_text() {
         let a = SourceId::from_shared_text_with(Arc::new("a".into()), &Constant);

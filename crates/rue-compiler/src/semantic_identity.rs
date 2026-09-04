@@ -31,6 +31,43 @@ pub type StableCallableId = rue_air::StableCallableId<StableDefinitionKey, Modul
 pub type LocalAtomId = rue_air::LocalAtomId<StableDefinitionKey, ModuleId>;
 pub type StableSymbolId = rue_air::StableSymbolId<StableDefinitionKey, ModuleId>;
 
+/// The identity a chain of specializations is applied to.
+///
+/// A specialization wraps the callable it specializes, so the innermost
+/// non-specialization variant is the callable an instance is an instance of.
+/// Answering that separately from what a caller does with the answer is what
+/// lets the arm lists below stay in one place.
+pub(crate) fn function_specialization_base(function: &FunctionInstanceKey) -> &FunctionInstanceKey {
+    let mut current = function;
+    while let FunctionInstanceKey::Specialization { base, .. } = current {
+        current = base.as_ref();
+    }
+    current
+}
+
+/// The source definition a callable identity is rooted at, or `None` when it
+/// is synthesized and has no definition of its own.
+///
+/// This walk is a property of the variant list, not of any one caller, and it
+/// is spelled once because every independent copy has to be revisited whenever
+/// a variant is added. `ErrorPrinter` and `TestDispatcher`, the two most
+/// recent, each had to be threaded through every copy, and a copy that misses
+/// one does not fail to compile: it answers with a wrong diagnostic name, or
+/// silently drops an unused-function warning or a foreign symbol.
+pub(crate) fn function_base_definition(
+    function: &FunctionInstanceKey,
+) -> Option<&StableDefinitionKey> {
+    match function_specialization_base(function) {
+        FunctionInstanceKey::Definition(definition) => Some(definition),
+        // The walk above never ends on a specialization.
+        FunctionInstanceKey::Specialization { .. }
+        | FunctionInstanceKey::AnonymousMember { .. }
+        | FunctionInstanceKey::DropGlue(_)
+        | FunctionInstanceKey::ErrorPrinter(_)
+        | FunctionInstanceKey::TestDispatcher => None,
+    }
+}
+
 /// The sole machine-symbol encoder for stable semantic identities.
 ///
 /// Fields are encoded with explicit tags and byte lengths. Text bytes are hex

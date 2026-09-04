@@ -2261,13 +2261,12 @@ pub(super) fn stable_function_definition_root(
     value: &crate::FunctionInstanceKey,
 ) -> Option<&crate::StableDefinitionKey> {
     use crate::FunctionInstanceKey as F;
-    match value {
+    match crate::semantic_identity::function_specialization_base(value) {
         F::Definition(value) => Some(value),
-        F::Specialization { base, .. } => stable_function_definition_root(base),
         F::AnonymousMember { owner, .. } | F::DropGlue(owner) | F::ErrorPrinter(owner) => {
             stable_type_definition_root(owner)
         }
-        F::TestDispatcher => None,
+        F::Specialization { .. } | F::TestDispatcher => None,
     }
 }
 
@@ -2324,19 +2323,6 @@ fn rooted_unused_function_warnings(
     graph: &RootedBodyGraph,
     warning_references: &BTreeSet<crate::StableDefinitionKey>,
 ) -> Vec<CompileWarning> {
-    fn source_definition(
-        instance: &crate::FunctionInstanceKey,
-    ) -> Option<&crate::StableDefinitionKey> {
-        match instance {
-            crate::FunctionInstanceKey::Definition(definition) => Some(definition),
-            crate::FunctionInstanceKey::Specialization { base, .. } => source_definition(base),
-            crate::FunctionInstanceKey::AnonymousMember { .. }
-            | crate::FunctionInstanceKey::DropGlue(_)
-            | crate::FunctionInstanceKey::ErrorPrinter(_)
-            | crate::FunctionInstanceKey::TestDispatcher => None,
-        }
-    }
-
     let mut referenced = graph
         .declaration_dependencies
         .iter()
@@ -2360,7 +2346,7 @@ fn rooted_unused_function_warnings(
             .closure
             .reached
             .iter()
-            .filter_map(source_definition)
+            .filter_map(crate::semantic_identity::function_base_definition)
             .cloned(),
     );
     referenced.extend(warning_references.iter().cloned());

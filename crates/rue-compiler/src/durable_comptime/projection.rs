@@ -205,14 +205,7 @@ fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
     use crate::durable_semantics::DurableType as T;
 
     fn function_name(function: &crate::FunctionInstanceKey) -> Option<&str> {
-        match function {
-            crate::FunctionInstanceKey::Definition(key) => Some(key.name()),
-            crate::FunctionInstanceKey::Specialization { base, .. } => function_name(base),
-            crate::FunctionInstanceKey::AnonymousMember { .. }
-            | crate::FunctionInstanceKey::DropGlue(_)
-            | crate::FunctionInstanceKey::ErrorPrinter(_)
-            | crate::FunctionInstanceKey::TestDispatcher => None,
-        }
+        crate::semantic_identity::function_base_definition(function).map(|key| key.name())
     }
 
     match ty {
@@ -305,31 +298,7 @@ pub(crate) fn durable_type_diagnostic_name_with_parameters(
     let crate::StableProducerId::Function(function) = &identity.producer else {
         return durable_type_diagnostic_name(ty);
     };
-    let definition = match function.as_ref() {
-        crate::FunctionInstanceKey::Definition(definition) => Some(definition),
-        crate::FunctionInstanceKey::Specialization { base, .. } => {
-            fn base_definition(
-                function: &crate::FunctionInstanceKey,
-            ) -> Option<&crate::StableDefinitionKey> {
-                match function {
-                    crate::FunctionInstanceKey::Definition(definition) => Some(definition),
-                    crate::FunctionInstanceKey::Specialization { base, .. } => {
-                        base_definition(base)
-                    }
-                    crate::FunctionInstanceKey::AnonymousMember { .. }
-                    | crate::FunctionInstanceKey::DropGlue(_)
-                    | crate::FunctionInstanceKey::ErrorPrinter(_)
-                    | crate::FunctionInstanceKey::TestDispatcher => None,
-                }
-            }
-            base_definition(base)
-        }
-        crate::FunctionInstanceKey::AnonymousMember { .. }
-        | crate::FunctionInstanceKey::DropGlue(_)
-        | crate::FunctionInstanceKey::ErrorPrinter(_)
-        | crate::FunctionInstanceKey::TestDispatcher => None,
-    };
-    let Some(definition) = definition else {
+    let Some(definition) = crate::semantic_identity::function_base_definition(function) else {
         return durable_type_diagnostic_name(ty);
     };
     let parameters = parameters

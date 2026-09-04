@@ -294,33 +294,25 @@ fn require_published_snapshot_membership(
         })
 }
 
+/// Run the canonical pipeline for a caller that cannot cancel it.
+///
+/// The cancellable entry point below owns the whole sequence — membership
+/// preflight, linker-mode dispatch, and finalization — so this hands it a
+/// never-canceled token and renders the control answer as errors. A preflight
+/// or ordering rule therefore exists once, in the one place both entry points
+/// run through.
 pub(crate) fn compile_with_session(
     session: &mut CompilerSession,
     snapshot: &SourceSnapshot,
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
-    let _span = info_span!("compile_pipeline").entered();
-    require_published_snapshot_membership(session, snapshot)?;
-    let rooted = if matches!(options.linker, LinkerMode::Internal) {
-        session
-            .rooted_codegen_internal_with_cancellation(
-                options,
-                rue_codegen::BackendArtifactRequest::default(),
-                rue_query::CancellationToken::new(),
-            )
-            .map_err(|control| match control {
-                crate::session::PipelineRequestControl::Compile(errors) => errors,
-                crate::session::PipelineRequestControl::Abort(abort) => {
-                    crate::session::pipeline_abort_errors("internal codegen", abort)
-                }
-                crate::session::PipelineRequestControl::Parked(park) => {
-                    crate::session::unresolved_toolchain_park_errors(&park)
-                }
-            })?
-    } else {
-        session.rooted_codegen(options, rue_codegen::BackendArtifactRequest::default())?
-    };
-    compile_rooted_with_session(session, snapshot, options, rooted)
+    compile_with_session_with_cancellation(
+        session,
+        snapshot,
+        options,
+        rue_query::CancellationToken::new(),
+    )
+    .map_err(|control| crate::session::pipeline_control_errors("compile pipeline", control))
 }
 
 pub(crate) fn compile_with_session_with_cancellation(
@@ -389,15 +381,7 @@ pub(crate) fn compile_rooted_with_session(
         rooted,
         &rue_query::CancellationToken::new(),
     )
-    .map_err(|control| match control {
-        crate::session::PipelineRequestControl::Compile(errors) => errors,
-        crate::session::PipelineRequestControl::Abort(abort) => {
-            crate::session::pipeline_abort_errors("compile finalization", abort)
-        }
-        crate::session::PipelineRequestControl::Parked(park) => {
-            crate::session::unresolved_toolchain_park_errors(&park)
-        }
-    })
+    .map_err(|control| crate::session::pipeline_control_errors("compile finalization", control))
 }
 
 pub(crate) fn compile_rooted_with_session_with_cancellation(

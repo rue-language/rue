@@ -754,11 +754,10 @@ pub(crate) type LocalSemanticMaterialization =
     rue_air::SemanticLocalMaterialization<StableDefinitionKey, ModuleId>;
 
 fn callable_kind_for_identity(identity: &FunctionInstanceKey) -> rue_air::AnalyzedCallableKind {
-    match identity {
+    match crate::semantic_identity::function_specialization_base(identity) {
         FunctionInstanceKey::Definition(key) if key.kind() == StableDefinitionKind::Destructor => {
             rue_air::AnalyzedCallableKind::Destructor
         }
-        FunctionInstanceKey::Specialization { base, .. } => callable_kind_for_identity(base),
         FunctionInstanceKey::AnonymousMember { member, .. }
             if member.kind == crate::AnonymousMemberKind::Destructor =>
         {
