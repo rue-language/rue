@@ -1,0 +1,100 @@
+// Tests for frontmatter.rue's TOML subset, plus a few exercises of the runner
+// itself: `?` on an Option producer, stdout capture, and the per-test scratch
+// directory.
+const std = @import("std");
+const frontmatter = @import("frontmatter.rue");
+const text = @import("text.rue");
+const value = @import("value.rue");
+const StrBuf = std.strbuf.StrBuf;
+const FileRes = std.result.Result(std.fs.File, std.fs.FileError);
+const Bytes = std.arraybuf.ArrayBuf(u8);
+
+fn scalar_at(inout arena: value.Arena, root: u64, key: StrBuf) -> StrBuf {
+    let idx = arena.map_get_literal(root, key);
+    arena.scalar(idx)
+}
+
+test "front matter scalars parse to their rendered forms" {
+    let mut arena = value.Arena.new();
+    let page: StrBuf = "+++\ntitle = \"Scope\"\nweight = 12\ngenerate_feeds = true\ndate = 2026-06-11\n+++\n\nbody\n";
+    let front = frontmatter.parse(inout arena, borrow page);
+    @assert(front.ok);
+    @assert_eq(scalar_at(inout arena, front.root, "title"), "Scope");
+    @assert_eq(scalar_at(inout arena, front.root, "weight"), "12");
+    @assert_eq(scalar_at(inout arena, front.root, "generate_feeds"), "true");
+    @assert_eq(scalar_at(inout arena, front.root, "date"), "2026-06-11");
+    @assert_eq(arena.error_count(), 0);
+}
+
+test "the body starts on the line after the closing fence" {
+    let mut arena = value.Arena.new();
+    let page: StrBuf = "+++\ntitle = \"x\"\n+++\nfirst body line\n";
+    let front = frontmatter.parse(inout arena, borrow page);
+    @assert_eq(front.body_line, 4);
+    @assert_eq(text.slice(borrow page, front.body_start, page.len()), "first body line\n");
+}
+
+test "a page without an opening fence is rejected with one diagnostic" {
+    let mut arena = value.Arena.new();
+    let page: StrBuf = "title = \"x\"\n";
+    let front = frontmatter.parse(inout arena, borrow page);
+    @assert(!front.ok);
+    @assert_eq(arena.error_count(), 1);
+}
+
+test "an unclosed front matter block is rejected" {
+    let mut arena = value.Arena.new();
+    let page: StrBuf = "+++\ntitle = \"x\"\n";
+    let front = frontmatter.parse(inout arena, borrow page);
+    @assert(!front.ok);
+    @assert_eq(arena.error_count(), 1);
+}
+
+test "nested tables and arrays are reachable through the arena" {
+    let mut arena = value.Arena.new();
+    let page: StrBuf = "+++\n[extra]\nauthors = [\"steve\", \"claude\"]\n+++\n";
+    let front = frontmatter.parse(inout arena, borrow page);
+    let extra = arena.map_get_literal(front.root, "extra");
+    let authors = arena.map_get_literal(extra, "authors");
+    @assert_eq(arena.length(authors), 2);
+    @assert_eq(arena.scalar(arena.item(authors, 1)), "claude");
+}
+
+test "out-of-subset constructs each produce a diagnostic, not a guess" {
+    let mut arena = value.Arena.new();
+    let bad: StrBuf = "+++\na = 'literal'\nb = { x = 1 }\nc.d = 1\n[deep.table]\ne = -3\n+++\n";
+    let _ = frontmatter.parse(inout arena, borrow bad);
+    @assert_eq(arena.error_count(), 5);
+}
+
+// --- probes of the runner itself ------------------------------------------
+
+test "question mark unwraps a Some in a test body" {
+    let page: StrBuf = "+++\ntitle = \"x\"\n+++\n";
+    let close = page.find_str_from(borrow "+++", 3)?;
+    @assert_eq(close, 16);
+}
+
+test "the scratch directory is writable and private" {
+    let path: StrBuf = "config.toml";
+    let mut file = std.fs.File.create(borrow path)?;
+    let body: StrBuf = "base_url = \"https://example.test\"\n";
+    let bytes = body.to_bytes();
+    file.write_all(borrow bytes)?;
+    file.close()?;
+    let mut back = std.fs.File.open(borrow path)?;
+    let mut raw = Bytes.new();
+    raw.reserve(4096);
+    let n = back.read(inout raw)?;
+    let _ = back.close();
+    @assert_eq(n, body.len());
+    let mut arena = value.Arena.new();
+    let read: StrBuf = StrBuf.from_bytes(borrow raw);
+    let parsed = frontmatter.parse_document(inout arena, borrow read);
+    @assert_eq(scalar_at(inout arena, parsed.root, "base_url"), "https://example.test");
+}
+
+test "stdout is captured and digested on a pass" {
+    print("this line goes to the runner, not the terminal\n");
+    @assert(true);
+}

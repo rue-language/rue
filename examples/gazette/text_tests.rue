@@ -1,0 +1,100 @@
+// Tests for text.rue's byte helpers. A same-directory sibling, so it sees
+// text.rue's private items too (spec 10.3 / 6.7:8) without any `pub` changes.
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn escaped_html(value: StrBuf) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_escaped_html(borrow value, inout out);
+    out
+}
+
+fn escaped_prose(value: StrBuf) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_escaped_prose(borrow value, 0, value.len(), inout out);
+    out
+}
+
+fn escaped_code_span(value: StrBuf) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_escaped_code_span(borrow value, 0, value.len(), inout out);
+    out
+}
+
+test "slugify lowercases and folds punctuation runs to one dash" {
+    let s: StrBuf = "Behavior   Categories -- (v2)!";
+    @assert_eq(text.slugify(borrow s), "behavior-categories-v2");
+}
+
+test "slugify drops leading and trailing separators" {
+    let s: StrBuf = "--hello world--";
+    @assert_eq(text.slugify(borrow s), "hello-world");
+}
+
+test "slugify passes multi-byte scalars through untouched" {
+    let s: StrBuf = "Café au lait";
+    @assert_eq(text.slugify(borrow s), "café-au-lait");
+}
+
+test "trim strips spaces and tabs but not interior whitespace" {
+    let s: StrBuf = " \t a b \t";
+    @assert_eq(text.trim(borrow s), "a b");
+}
+
+test "trim_end_at treats a carriage return as trailing space" {
+    let s: StrBuf = "line\r";
+    @assert_eq(text.trim_end_at(borrow s, 0, s.len()), 4);
+}
+
+test "find_from lands on the length when there is no match" {
+    let s: StrBuf = "abc";
+    @assert_eq(text.find_from(borrow s, borrow "zz", 0), s.len());
+}
+
+test "line_end and next_line walk a CRLF-free document" {
+    let s: StrBuf = "one\ntwo\nthree";
+    @assert_eq(text.line_end(borrow s, 0), 3);
+    @assert_eq(text.next_line(borrow s, 0), 4);
+    @assert_eq(text.next_line(borrow s, 8), s.len());
+}
+
+test "parse_digits refuses a range with a non-digit" {
+    let s: StrBuf = "12a4";
+    let d = text.parse_digits(borrow s, 0, s.len());
+    @assert_eq(d.count, 0);
+}
+
+test "parse_digits reads a bounded range" {
+    let s: StrBuf = "x2026y";
+    let d = text.parse_digits(borrow s, 1, 5);
+    @assert_eq(d.value, 2026);
+    @assert_eq(d.count, 4);
+}
+
+test "html escaping matches Tera's six-byte table" {
+    @assert_eq(escaped_html("a&b<c>d\"e'f/g"), "a&amp;b&lt;c&gt;d&quot;e&#x27;f&#x2F;g");
+}
+
+test "prose escaping passes an entity reference through" {
+    @assert_eq(escaped_prose("&amp; &copy; &#169; &#xA9; & alone"),
+        "&amp; &copy; &#169; &#xA9; &amp; alone");
+}
+
+test "prose escaping does not mistake a bare hash for an entity" {
+    @assert_eq(escaped_prose("&#; and &#x;"), "&amp;#; and &amp;#x;");
+}
+
+test "code span escaping folds line endings to a space" {
+    @assert_eq(escaped_code_span("inout\nstr and\r\nmore"), "inout str and more");
+}
+
+test "strip_tags removes nested angle runs" {
+    let s: StrBuf = "<p>Hello <b>bold</b> <a href=\"<x>\">link</a></p>";
+    @assert_eq(text.strip_tags(borrow s), "Hello bold link");
+}
+
+test "entity_end is reachable from a sibling because the directory is the boundary" {
+    let s: StrBuf = "&amp;x";
+    @assert_eq(text.entity_end(borrow s, 0, s.len()), 5);
+}

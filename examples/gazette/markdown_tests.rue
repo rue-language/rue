@@ -1,0 +1,85 @@
+// Tests for markdown.rue through the same Engine the site build uses. The
+// `bind_site` helper lives in main.rue; importing the root from a test file
+// is a cycle (main imports this file), which is exactly what a test of the
+// root module's own helpers would want to do.
+const std = @import("std");
+const ast = @import("tmpl_ast.rue");
+const markdown = @import("markdown.rue");
+const root = @import("main.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn engine() -> ast.Engine {
+    let mut eng = ast.Engine.new();
+    root.bind_site(inout eng, "https://rue-lang.dev");
+    eng
+}
+
+fn html(inout eng: ast.Engine, source: StrBuf) -> StrBuf {
+    let doc = markdown.render(inout eng, borrow source, 1);
+    doc.html
+}
+
+test "headings carry a slug id" {
+    let mut eng = engine();
+    @assert_eq(html(inout eng, "## Behavior Categories\n"),
+        "<h2 id=\"behavior-categories\">Behavior Categories</h2>\n");
+}
+
+test "a paragraph keeps soft line breaks" {
+    let mut eng = engine();
+    @assert_eq(html(inout eng, "first line\nsecond line\n"), "<p>first line\nsecond line</p>\n");
+}
+
+test "strong, emphasis, and code spans" {
+    let mut eng = engine();
+    @assert_eq(html(inout eng, "a **MUST** b *sharpen* c `@panic` d\n"),
+        "<p>a <strong>MUST</strong> b <em>sharpen</em> c <code>@panic</code> d</p>\n");
+}
+
+test "intraword underscores are not emphasis" {
+    let mut eng = engine();
+    @assert_eq(html(inout eng, "the is_bare_key helper\n"), "<p>the is_bare_key helper</p>\n");
+}
+
+test "a fenced block escapes its content and keeps the whole info string" {
+    let mut eng = engine();
+    @assert_eq(html(inout eng, "```rue check\nlet a: u8 = 1 < 2;\n```\n"),
+        "<pre><code class=\"language-rue check\">let a: u8 = 1 &lt; 2;\n</code></pre>\n");
+}
+
+test "end of input closes a fence" {
+    let mut eng = engine();
+    @assert_eq(html(inout eng, "```rue\nlet a = 1;\n"),
+        "<pre><code class=\"language-rue\">let a = 1;\n</code></pre>\n");
+}
+
+test "tight unordered list with a wrapped item" {
+    let mut eng = engine();
+    @assert_eq(html(inout eng, "- one\n- two\n  wrapped\n"),
+        "<ul>\n<li>one</li>\n<li>two\nwrapped</li>\n</ul>\n");
+}
+
+test "ordered list numbering starts where the source does" {
+    let mut eng = engine();
+    @assert_eq(html(inout eng, "3. three\n4. four\n"), "<ol start=\"3\">\n<li>three</li>\n<li>four</li>\n</ol>\n");
+}
+
+test "a block quote nests block content" {
+    let mut eng = engine();
+    @assert_eq(html(inout eng, "> quoted **text**\n"),
+        "<blockquote>\n<p>quoted <strong>text</strong></p>\n</blockquote>\n");
+}
+
+test "pipe table with escaped pipes in cells" {
+    let mut eng = engine();
+    @assert_eq(html(inout eng, "| Category | Description |\n|----------|-------------|\n| `syntax` | Grammar rules |\n| `\\|\\|` | logical or |\n"),
+        "<table><thead><tr><th>Category</th><th>Description</th></tr></thead><tbody>\n<tr><td><code>syntax</code></td><td>Grammar rules</td></tr>\n<tr><td><code>||</code></td><td>logical or</td></tr>\n</tbody></table>\n");
+}
+
+test "the summary marker records where the summary ends" {
+    let mut eng = engine();
+    let source: StrBuf = "intro\n\n<!-- more -->\n\nrest\n";
+    let doc = markdown.render(inout eng, borrow source, 1);
+    @assert(doc.ok);
+    @assert_eq(doc.summary_end, 13);
+}
