@@ -20,6 +20,7 @@ const SPEC_ROUTE_ROOT: &str = include_str!("spec-route-root.txt");
 #[derive(Debug)]
 struct WebsiteAuthorities {
     base_url: String,
+    github_url: String,
     anchor_prefix: String,
     spec_route_root: String,
 }
@@ -79,6 +80,13 @@ fn website_authorities() -> Result<WebsiteAuthorities, String> {
         .ok_or_else(|| "website/config.toml has no string base_url".to_string())?
         .trim_end_matches('/')
         .to_string();
+    let github_url = config
+        .get("extra")
+        .and_then(|value| value.get("github_url"))
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| "website/config.toml has no string extra.github_url".to_string())?
+        .trim_end_matches('/')
+        .to_string();
     let path_slugification = config
         .get("slugify")
         .and_then(|value| value.get("paths"))
@@ -112,6 +120,7 @@ fn website_authorities() -> Result<WebsiteAuthorities, String> {
     }
     Ok(WebsiteAuthorities {
         base_url,
+        github_url,
         anchor_prefix,
         spec_route_root: spec_route_root.to_string(),
     })
@@ -168,6 +177,35 @@ pub(crate) fn canonical_spec_path(source_path: &str, id: &str) -> Result<String,
         format!("{}/{page}/", authorities.spec_route_root)
     };
     Ok(format!("/{route}#{}{id}", authorities.anchor_prefix))
+}
+
+pub(crate) fn canonical_design_path(source_path: &str) -> Result<String, String> {
+    let relative = source_path.strip_prefix("docs/designs/").ok_or_else(|| {
+        format!("unsupported design reference path {source_path:?}: expected docs/designs/*.md")
+    })?;
+    let path = Path::new(relative);
+    // Interpolate only the conservative alphabet used by the checked-in ADR
+    // tree. These bytes are URL-path-safe as written; rejecting everything
+    // else avoids giving fragments, queries, escapes, platform separators, or
+    // non-ASCII spellings a second interpretation after filesystem validation.
+    let url_safe = relative
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'/'))
+        && relative.split('/').all(|component| !component.is_empty());
+    if !url_safe
+        || path.extension().and_then(|extension| extension.to_str()) != Some("md")
+        || path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(format!(
+            "unsupported design reference path {source_path:?}: expected docs/designs/*.md"
+        ));
+    }
+    Ok(format!(
+        "{}/blob/trunk/{source_path}",
+        website_authorities()?.github_url
+    ))
 }
 
 fn canonical_url(
@@ -374,6 +412,10 @@ mod tests {
     fn canonical_urls_follow_the_spec_site_path_and_anchor_contract() {
         let authorities = website_authorities().unwrap();
         assert_eq!(authorities.base_url, "https://rue-lang.dev");
+        assert_eq!(
+            authorities.github_url,
+            "https://github.com/rue-language/rue"
+        );
         assert_eq!(authorities.anchor_prefix, "r-");
         assert_eq!(authorities.spec_route_root, "spec");
         assert_eq!(
@@ -388,6 +430,30 @@ mod tests {
             canonical_url(&authorities, "_index.md", "1.1:1").unwrap(),
             "https://rue-lang.dev/spec/#r-1.1:1",
         );
+        assert_eq!(
+            canonical_design_path("docs/designs/0065-floating-point.md").unwrap(),
+            "https://github.com/rue-language/rue/blob/trunk/docs/designs/0065-floating-point.md",
+        );
+    }
+
+    #[test]
+    fn design_paths_reject_url_significant_and_non_inventory_bytes() {
+        for path in [
+            "docs/designs/0065.md#fragment",
+            "docs/designs/0065.md?view=1",
+            "docs/designs/0065%2emd",
+            "docs/designs/nested\\0065.md",
+            "docs/designs/0065 floating-point.md",
+            "docs/designs/0065-flöating-point.md",
+            "docs/designs/../0065.md",
+            "docs/designs//0065.md",
+            "/docs/designs/0065.md",
+        ] {
+            assert!(
+                canonical_design_path(path).is_err(),
+                "unsafe design path was accepted: {path:?}"
+            );
+        }
     }
 
     #[test]
