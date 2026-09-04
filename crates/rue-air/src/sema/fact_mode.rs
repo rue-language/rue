@@ -36,7 +36,13 @@ pub(crate) struct StructuredTypeSyntaxRequest<'a> {
 
 /// Exact input for resolving a module-qualified type prefix.
 pub(crate) struct ModulePrefixRequest<'a> {
+    /// The file the path is written in: the scope its root binding is looked
+    /// up in, and the domain its visibility is judged from.
     pub(crate) root_file: FileId,
+    /// A module the walk already starts from, for a spine whose root is a
+    /// binding that *is* a module. `None` resolves `segments[0]` as a module
+    /// binding of `root_file` instead (RUE-1964).
+    pub(crate) start_module: Option<crate::types::ModuleId>,
     pub(crate) segments: &'a [&'a str],
     pub(crate) span: Span,
 }

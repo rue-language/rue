@@ -11,7 +11,7 @@ use super::types::{InferType, TypeVarAllocator, TypeVarId};
 use crate::Type;
 use crate::intern_pool::TypeInternPool;
 use crate::scope::ScopedContext;
-use crate::sema::{ComptimeSelection, ConstValue, select_module_nominal};
+use crate::sema::{ComptimeSelection, ConstValue, decode_module_spine, select_module_nominal};
 use crate::semantic_type_resolution::{UnqualifiedNominalTier, select_unqualified_nominal};
 #[cfg(test)]
 use crate::types::ArrayLen;
@@ -3288,7 +3288,7 @@ impl<'a> ConstraintGenerator<'a> {
                         break;
                     }
                     // Patterns constrain the scrutinee type
-                    let pattern_ty = self.pattern_type(&pattern);
+                    let pattern_ty = self.pattern_type(&pattern, ctx);
                     self.add_constraint(Constraint::equal(
                         scrutinee_info.ty.clone(),
                         pattern_ty,
@@ -3467,7 +3467,7 @@ impl<'a> ConstraintGenerator<'a> {
                     base: module_ref,
                     field: type_name,
                 } = self.rir.get(*base).data
-                    && let Some(enum_ty) = self.enum_type_for_module(module_ref, &type_name)
+                    && let Some(enum_ty) = self.enum_type_for_module(module_ref, &type_name, ctx)
                     && let Some(enum_id) = enum_ty.as_enum()
                     && self
                         .type_pool
@@ -3590,7 +3590,7 @@ impl<'a> ConstraintGenerator<'a> {
                 module, type_name, ..
             } => {
                 let enum_ty = module
-                    .and_then(|module_ref| self.enum_type_for_module(module_ref, type_name))
+                    .and_then(|module_ref| self.enum_type_for_module(module_ref, type_name, ctx))
                     .or_else(|| self.enum_type_for(type_name, span.file_id));
                 if let Some(enum_ty) = enum_ty {
                     InferType::Concrete(enum_ty)
@@ -3808,12 +3808,9 @@ impl<'a> ConstraintGenerator<'a> {
                     base: module_ref,
                     field: type_name,
                 } = self.rir.get(*receiver).data
-                    && !matches!(self.rir.get(module_ref).data,
-                        InstData::VarRef { name, .. }
-                            if ctx.locals.contains_key(&name) || ctx.contains_param(name))
                     && let Some(member_ty) = self
-                        .struct_type_for_module(module_ref, &type_name)
-                        .or_else(|| self.enum_type_for_module(module_ref, &type_name))
+                        .struct_type_for_module(module_ref, &type_name, ctx)
+                        .or_else(|| self.enum_type_for_module(module_ref, &type_name, ctx))
                     && let Some(result) =
                         self.generate_call_on_reduced_type(member_ty, *method, args, span, ctx)
                 {
@@ -4126,8 +4123,8 @@ impl<'a> ConstraintGenerator<'a> {
                                 base: module_ref,
                                 field: type_name,
                             } => self
-                                .struct_type_for_module(module_ref, &type_name)
-                                .or_else(|| self.enum_type_for_module(module_ref, &type_name)),
+                                .struct_type_for_module(module_ref, &type_name, ctx)
+                                .or_else(|| self.enum_type_for_module(module_ref, &type_name, ctx)),
                             _ => None,
                         };
                         if let Some(reduced) = self
@@ -4718,8 +4715,13 @@ impl<'a> ConstraintGenerator<'a> {
     /// selector hands back the alias's whole `ConstInfo` so the semantic pass
     /// can apply E0706, and this fact source exposes types only — so the two
     /// share the order and not the selector (RUE-1956).
-    fn nominal_type_for_module(&self, module: InstRef, type_name: &Spur) -> Option<Type> {
-        let file_id = self.module_member_file(module)?;
+    fn nominal_type_for_module(
+        &self,
+        module: InstRef,
+        type_name: &Spur,
+        ctx: &ConstraintContext,
+    ) -> Option<Type> {
+        let file_id = self.module_member_file(module, ctx)?;
         select_module_nominal(
             || self.struct_type_by_file((file_id, *type_name)),
             || self.enum_type_by_file((file_id, *type_name)),
@@ -4727,8 +4729,13 @@ impl<'a> ConstraintGenerator<'a> {
         )
     }
 
-    fn enum_type_for_module(&self, module: InstRef, type_name: &Spur) -> Option<Type> {
-        self.nominal_type_for_module(module, type_name)
+    fn enum_type_for_module(
+        &self,
+        module: InstRef,
+        type_name: &Spur,
+        ctx: &ConstraintContext,
+    ) -> Option<Type> {
+        self.nominal_type_for_module(module, type_name, ctx)
             .filter(|ty| ty.is_enum())
     }
 
@@ -4738,8 +4745,13 @@ impl<'a> ConstraintGenerator<'a> {
     /// and an integer-literal operand later compared against the result
     /// defaulted to i32 — zero-extended against the callee's real 64-bit
     /// value at run time (the RUE-633 miscompile family).
-    fn struct_type_for_module(&self, module: InstRef, type_name: &Spur) -> Option<Type> {
-        self.nominal_type_for_module(module, type_name)
+    fn struct_type_for_module(
+        &self,
+        module: InstRef,
+        type_name: &Spur,
+        ctx: &ConstraintContext,
+    ) -> Option<Type> {
+        self.nominal_type_for_module(module, type_name, ctx)
             .filter(|ty| ty.as_struct().is_some())
     }
 
@@ -4750,20 +4762,37 @@ impl<'a> ConstraintGenerator<'a> {
     /// on) — without the recursion a nested-facade payload construction left
     /// its arguments unconstrained (RUE-633 family, reject-valid this time:
     /// sema's E0206 caught the defaulted literal).
-    fn module_member_file(&self, module: InstRef) -> Option<FileId> {
-        let inst = self.rir.get(module);
-        match &inst.data {
-            InstData::VarRef { name, .. } => {
-                let module_ty = self.module_binding_type((inst.span.file_id, *name))?;
-                self.module_file(module_ty)
+    ///
+    /// The spine is decoded by the one shared syntactic decoder and its root
+    /// obeys the one shadowing rule, so `let lib = 5; lib.Color.Green` is an
+    /// ordinary field access here exactly as it is in semantic analysis
+    /// (RUE-1964). The hops themselves are still walked with this pass's own
+    /// `module_binding_type` lookups rather than sema's canonical walker:
+    /// that walker resolves privacy, and this fact source exposes types only.
+    /// Resolving a private hop here is harmless — semantic analysis rejects
+    /// the same path with E0706 — while a *shadowed* root must not resolve,
+    /// since inference would otherwise constrain a value expression with an
+    /// unrelated module member's type.
+    fn module_member_file(&self, module: InstRef, ctx: &ConstraintContext) -> Option<FileId> {
+        let spine = decode_module_spine(self.rir, module)?;
+        let mut file_id = match ctx
+            .locals
+            .get(&spine.root)
+            .map(|local| &local.ty)
+            .or_else(|| ctx.lookup_param(spine.root).map(|param| &param.ty))
+        {
+            // A binding that *is* a module names it; any other binding
+            // shadows the import and this is not a module path.
+            Some(InferType::Concrete(ty)) => self.module_file(*ty)?,
+            Some(_) => return None,
+            None => {
+                self.module_file(self.module_binding_type((spine.root_span.file_id, spine.root))?)?
             }
-            InstData::FieldGet { base, field } => {
-                let base_file = self.module_member_file(*base)?;
-                let module_ty = self.module_binding_type((base_file, *field))?;
-                self.module_file(module_ty)
-            }
-            _ => None,
+        };
+        for field in spine.fields {
+            file_id = self.module_file(self.module_binding_type((file_id, field))?)?;
         }
+        Some(file_id)
     }
 
     fn module_file(&self, module_ty: Type) -> Option<FileId> {
@@ -4800,7 +4829,7 @@ impl<'a> ConstraintGenerator<'a> {
                     .and_then(|heads| heads.get(&head).copied())
             })
             .or_else(|| {
-                module.and_then(|module_ref| self.enum_type_for_module(module_ref, type_name))
+                module.and_then(|module_ref| self.enum_type_for_module(module_ref, type_name, ctx))
             })
             .or_else(|| self.enum_type_for(type_name, pat_span.file_id));
         let Some(payload) = enum_ty
@@ -4831,7 +4860,11 @@ impl<'a> ConstraintGenerator<'a> {
     }
 
     /// Get the inferred type for a pattern.
-    fn pattern_type(&mut self, pattern: &rue_rir::RirPatternView<'_>) -> InferType {
+    fn pattern_type(
+        &mut self,
+        pattern: &rue_rir::RirPatternView<'_>,
+        ctx: &ConstraintContext,
+    ) -> InferType {
         match pattern {
             rue_rir::RirPatternView::Wildcard(_) => {
                 // Wildcard matches anything - use a fresh type variable
@@ -4875,8 +4908,9 @@ impl<'a> ConstraintGenerator<'a> {
                             .and_then(|heads| heads.get(&head).copied())
                     })
                     .or_else(|| {
-                        module
-                            .and_then(|module_ref| self.enum_type_for_module(module_ref, type_name))
+                        module.and_then(|module_ref| {
+                            self.enum_type_for_module(module_ref, type_name, ctx)
+                        })
                     })
                     .or_else(|| self.enum_type_for(type_name, pattern.span().file_id));
                 if let Some(enum_ty) = enum_ty {

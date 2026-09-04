@@ -803,12 +803,21 @@ mod tests {
 
         let mut engine_methods = method_names(engine);
         engine_methods.sort_unstable();
-        assert_eq!(
-            engine_methods,
-            ["module_file_for_ref", "resolve_enum_through_module"]
+        // `resolve_enum_through_module` is the whole of visibility.rs: the
+        // module spine it needs is decoded and walked by the one canonical
+        // owner (`aggregates.rs`'s `try_module_id_of`), so the file holds no
+        // private module-reference walker of its own (RUE-1964).
+        assert_eq!(engine_methods, ["resolve_enum_through_module"]);
+        assert!(
+            !VISIBILITY_SOURCE.contains("InstData::"),
+            "visibility must not regrow its own RIR module-spine walker"
+        );
+        assert!(
+            VISIBILITY_SOURCE.contains("self.try_module_id_of("),
+            "visibility resolves its module spine through the canonical walker"
         );
 
-        for method in ["resolve_enum_through_module", "module_file_for_ref"] {
+        for method in ["resolve_enum_through_module"] {
             let needle = format!("fn {method}(");
             assert_eq!(
                 VISIBILITY_SOURCE.matches(&needle).count(),

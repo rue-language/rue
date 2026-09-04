@@ -1215,10 +1215,31 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         segments: &[&str],
         span: Span,
     ) -> CompileResult<(ModuleId, Option<FileId>, String)> {
+        self.resolve_type_module_prefix_from(root_file, None, segments, span)
+    }
+
+    /// Resolve a dotted module prefix, optionally continuing from a module the
+    /// caller already holds.
+    ///
+    /// `start_module` is `Some` only for a spine whose root is a binding that
+    /// *is* a module (`let m = lib.geo; m.deep.E.A`). The remaining segments
+    /// are then walked as members of that module by the same canonical per-hop
+    /// visibility loop the root-from-file entry uses, so there is exactly one
+    /// place where a private module hop is rejected (RUE-1964). `root_file`
+    /// stays the accessing file either way — privacy is judged from where the
+    /// path is written, not from where the module was bound.
+    pub(crate) fn resolve_type_module_prefix_from(
+        &mut self,
+        root_file: FileId,
+        start_module: Option<ModuleId>,
+        segments: &[&str],
+        span: Span,
+    ) -> CompileResult<(ModuleId, Option<FileId>, String)> {
         TypeResolutionHost::resolve_type_module_prefix(
             self.storage,
             super::fact_mode::ModulePrefixRequest {
                 root_file,
+                start_module,
                 segments,
                 span,
             },

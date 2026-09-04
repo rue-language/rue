@@ -14,8 +14,9 @@ use rue_rir::{InstData, InstRef, RirParamMode};
 use rue_span::Span;
 
 use super::aggregate_resolution::{
-    ModuleTypeMember, StructLiteralHead, resolve_aggregate_module_ref, resolve_enum_type_name,
-    resolve_struct_type_name, select_module_type_member, select_struct_literal_head,
+    ModuleSpine, ModuleSpineRoot, ModuleTypeMember, StructLiteralHead, decode_module_spine,
+    resolve_enum_type_name, resolve_struct_type_name, select_module_type_member,
+    select_struct_literal_head,
 };
 use super::analysis::FirstClassStrSite;
 use super::context::{AnalysisContext, AnalysisResult, ConstValue};
@@ -1568,6 +1569,79 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx.locals.contains_key(&name) || ctx.has_param(name)
     }
 
+    /// Classify a decoded module spine's root against this body's bindings —
+    /// the one shadowing rule (spec 5.1:11) every position shares (RUE-1964).
+    ///
+    /// A `let` binding shadows an outer name for the rest of its scope, so a
+    /// runtime local or parameter named `lib` makes `lib.Color.Green` ordinary
+    /// value field access even when the file also imports a module called
+    /// `lib`. A binding that *is* a module (`let m = lib.geo;`) is not a
+    /// runtime value at all: it names the module, and the walk continues
+    /// through its members.
+    pub(crate) fn classify_module_spine_root(
+        &self,
+        root: Spur,
+        ctx: &AnalysisContext,
+    ) -> ModuleSpineRoot {
+        let bound = ctx
+            .locals
+            .get(&root)
+            .map(|local| local.ty)
+            .or_else(|| ctx.param(root).map(|param| param.ty));
+        match bound {
+            Some(ty) => match ty.as_module() {
+                Some(module) => ModuleSpineRoot::LocalModule(module),
+                None => ModuleSpineRoot::Shadowed,
+            },
+            None => ModuleSpineRoot::FileBinding,
+        }
+    }
+
+    /// Resolve the module a decoded spine denotes, applying the one shadowing
+    /// rule and then the one per-hop visibility walk.
+    ///
+    /// `Ok(None)` means "not a module path here" — a shadowed root, an unknown
+    /// root or member, or a segment that is not a module — and every consumer
+    /// falls through to its own not-a-module-path behavior and diagnostic. A
+    /// private hop is a hard error (E0706) rather than a fall-through: the path
+    /// names a real module binding, it is simply not visible (RUE-1964).
+    fn resolve_module_spine(
+        &mut self,
+        spine: &ModuleSpine,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<Option<crate::types::ModuleId>> {
+        let start = match self.classify_module_spine_root(spine.root, ctx) {
+            ModuleSpineRoot::Shadowed => return Ok(None),
+            ModuleSpineRoot::LocalModule(module) if spine.fields.is_empty() => {
+                return Ok(Some(module));
+            }
+            ModuleSpineRoot::LocalModule(module) => Some(module),
+            ModuleSpineRoot::FileBinding => None,
+        };
+        let names: Vec<String> = start
+            .is_none()
+            .then_some(spine.root)
+            .into_iter()
+            .chain(spine.fields.iter().copied())
+            .map(|name| self.body_interner().resolve(&name).to_owned())
+            .collect();
+        let segments: Vec<&str> = names.iter().map(String::as_str).collect();
+        match self.resolve_type_module_prefix_from(spine.root_span.file_id, start, &segments, span)
+        {
+            Ok((module, _, _)) => Ok(Some(module)),
+            Err(error)
+                if matches!(
+                    error.kind,
+                    ErrorKind::UnknownType(_) | ErrorKind::UnknownModuleMember { .. }
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Resolve the module a reference denotes, if any, without emitting AIR.
     ///
     /// Used to recognize module-qualified dotted member access
@@ -1576,20 +1650,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// type or a per-file module binding) — and a nested submodule chain
     /// (`std.geo.Sign.Pos`), resolving `std.geo` by looking `geo` up as a module
     /// binding re-exported from `std`'s file.
+    ///
+    /// This is a thin consumer of [`decode_module_spine`] and
+    /// [`Self::resolve_module_spine`]: the shadowing rule and the per-hop
+    /// privacy check live there, shared with the match-pattern path, so a
+    /// private intermediate hop is E0706 in every position (RUE-1964).
     pub(crate) fn try_module_id_of(
-        &self,
+        &mut self,
         inst_ref: rue_rir::InstRef,
         span: Span,
         ctx: &AnalysisContext,
-    ) -> Option<crate::types::ModuleId> {
-        let facts = self.aggregate_facts();
-        resolve_aggregate_module_ref(
-            facts,
-            self.body_rir_ref(),
-            inst_ref,
-            span.file_id,
-            &ctx.locals,
-        )
+    ) -> CompileResult<Option<crate::types::ModuleId>> {
+        let Some(spine) = decode_module_spine(self.body_rir_ref(), inst_ref) else {
+            return Ok(None);
+        };
+        self.resolve_module_spine(&spine, span, ctx)
     }
 
     /// Try to analyze a module-qualified type-member call:
@@ -1612,7 +1687,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<Option<AnalysisResult>> {
-        let Some(module_id) = self.try_module_id_of(module_ref, span, ctx) else {
+        let Some(module_id) = self.try_module_id_of(module_ref, span, ctx)? else {
             return Ok(None);
         };
         let module_file = self.aggregate_facts().aggregate_module(module_id).file;
@@ -1708,7 +1783,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<Option<AnalysisResult>> {
-        let Some(module_id) = self.try_module_id_of(module_ref, span, ctx) else {
+        let Some(module_id) = self.try_module_id_of(module_ref, span, ctx)? else {
             return Ok(None);
         };
         let module_file = self.aggregate_facts().aggregate_module(module_id).file;

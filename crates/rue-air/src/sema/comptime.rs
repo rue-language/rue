@@ -13,6 +13,7 @@ use rue_span::Span;
 use std::hash::Hash;
 use std::sync::Arc;
 
+use super::aggregate_resolution::decode_module_spine;
 use crate::integer_semantics::{CheckedIntegerResult, IntegerType};
 
 // Source-level partitions of this one evaluator (RUE-1831), following the
@@ -1648,64 +1649,27 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         }
     }
 
-    /// Decode only the syntactic module path for a method call. Resolution of
-    /// the path's declarations and visibility stays in the semantic host; the
-    /// engine owns this RIR edge so hosts never need to inspect child
-    /// instructions to discover a callable.
+    /// Decode a dotted module path before crossing the host boundary, applying
+    /// the one lexical-shadowing rule to its root.
+    ///
+    /// The RIR spine itself is decoded by the shared syntactic decoder
+    /// [`decode_module_spine`], the same one semantic analysis and the
+    /// inference prepass use, so every position agrees on what a module path
+    /// even looks like (RUE-1964). Resolution of the path's declarations and
+    /// visibility stays in the semantic host; the engine owns this RIR edge so
+    /// hosts never need to inspect child instructions to discover a callable,
+    /// nor an evaluation environment to decide whether a name is shadowed.
+    ///
+    /// One decoder serves both consumers — a method call's receiver
+    /// (`lib.nums.max(..)`) and a dotted type path (`std.strbuf.StrBuf`) — as
+    /// they ask exactly the same question of exactly the same spine.
     fn decode_module_path(
-        &self,
-        receiver: InstRef,
-        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
-    ) -> Option<(H::File, Vec<H::Name>)> {
-        let mut chain_rev = Vec::new();
-        let mut cursor = receiver;
-        let root = loop {
-            match self.program_rir().get(cursor).data {
-                InstData::VarRef { name, .. } => break self.name_from_rir(name.into()),
-                InstData::FieldGet { base, field } => {
-                    chain_rev.push(self.name_from_rir(field.into()));
-                    cursor = base;
-                }
-                _ => return None,
-            }
-        };
-        if env.locals.contains_key(&root)
-            || env.is_runtime_local_name(&root)
-            || env.runtime_binding_names.contains(&root)
-            || env.type_subst.contains_key(&root)
-            || env.value_subst.contains_key(&root)
-        {
-            return None;
-        }
-        let file_id = env.defining_file.clone()?;
-        chain_rev.reverse();
-        let mut segments = Vec::with_capacity(chain_rev.len() + 1);
-        segments.push(root);
-        segments.extend(chain_rev);
-        Some((file_id, segments))
-    }
-
-    /// Decode a dotted type path before crossing the host boundary. The host
-    /// receives only copied semantic path facts; it never needs to inspect the
-    /// RIR spine or an evaluation environment to decide whether this is a
-    /// module/type path.
-    fn decode_type_path(
         &self,
         inst_ref: InstRef,
         env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> Option<(H::File, Vec<H::Name>)> {
-        let mut chain_rev = Vec::new();
-        let mut cursor = inst_ref;
-        let root = loop {
-            match self.program_rir().get(cursor).data {
-                InstData::VarRef { name, .. } => break self.name_from_rir(name.into()),
-                InstData::FieldGet { base, field } => {
-                    chain_rev.push(self.name_from_rir(field.into()));
-                    cursor = base;
-                }
-                _ => return None,
-            }
-        };
+        let spine = decode_module_spine(self.program_rir(), inst_ref)?;
+        let root = self.name_from_rir(spine.root.into());
         if env.locals.contains_key(&root)
             || env.is_runtime_local_name(&root)
             || env.runtime_binding_names.contains(&root)
@@ -1715,10 +1679,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             return None;
         }
         let file_id = env.defining_file.clone()?;
-        chain_rev.reverse();
-        let mut segments = Vec::with_capacity(chain_rev.len() + 1);
+        let mut segments = Vec::with_capacity(spine.fields.len() + 1);
         segments.push(root);
-        segments.extend(chain_rev);
+        segments.extend(
+            spine
+                .fields
+                .into_iter()
+                .map(|field| self.name_from_rir(field.into())),
+        );
         Some((file_id, segments))
     }
 
@@ -3218,7 +3186,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 if let Some(value) = env.const_module_members.get(&inst_ref) {
                     return ComptimeOutcome::Known(value.clone());
                 }
-                if let Some((file, segments)) = self.decode_type_path(inst_ref, env) {
+                if let Some((file, segments)) = self.decode_module_path(inst_ref, env) {
                     if let Some(value) =
                         host_value!(self.host.resolve_comptime_type_path(file, &segments, span))
                     {

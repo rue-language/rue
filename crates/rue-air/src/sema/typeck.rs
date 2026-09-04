@@ -796,11 +796,20 @@ fn module_path_compile_error(
                 span,
             )
         }
-        crate::SemanticModulePathFailure::PrivateMember {
-            member,
-            defining_file,
-            ..
-        } => private_qualified_item_error("constant", &member, &defining_file, span),
+        // A module binding is a `const` (spec 10.4:1), so crossing a private
+        // one is the ordinary module-member privacy violation E0706 — the same
+        // code the identical hop reports when it is read as a value, named in a
+        // struct literal, or used as an associated-function receiver (spec
+        // 10.3:7, 10.4:18). E0460 stays reserved for its one carve-out,
+        // applying a private comptime type constructor in type position
+        // (10.4:16), which arrives through `PrivateItem`, not here (RUE-1964).
+        crate::SemanticModulePathFailure::PrivateMember { member, .. } => CompileError::new(
+            ErrorKind::PrivateMemberAccess {
+                item_kind: "const".to_string(),
+                name: member.to_string(),
+            },
+            span,
+        ),
     }
 }
 

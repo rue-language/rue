@@ -14,7 +14,7 @@ use rue_span::FileId;
 
 use super::ConstInfo;
 use super::body_identity::{DurableNominalSource, ProviderIdentityContext};
-use super::context::{ConstValue, LocalVar};
+use super::context::ConstValue;
 use crate::intern_pool::TypeInternPool;
 use crate::semantic_type_resolution::{
     UnqualifiedNominal, UnqualifiedNominalTier, select_unqualified_nominal,
@@ -259,58 +259,61 @@ pub(crate) fn select_module_type_member<P: AggregateFacts>(
     .unwrap_or(ModuleTypeMember::Absent)
 }
 
-pub(crate) fn resolve_aggregate_module_ref<P: AggregateFacts>(
-    facts: &P,
-    rir: &Rir,
-    inst_ref: InstRef,
-    root_file: FileId,
-    locals: &AHashMap<Spur, LocalVar>,
-) -> Option<ModuleId> {
-    match rir.get(inst_ref).data {
-        InstData::VarRef { name, .. } => {
-            if let Some(local) = locals.get(&name) {
-                if let Some(module_id) = local.ty.as_module() {
-                    return Some(module_id);
-                }
-            }
-            facts
-                .aggregate_module_binding(root_file, name)
-                .and_then(|binding| binding.ty.as_module())
-        }
-        InstData::FieldGet { base, field } => {
-            let parent = resolve_aggregate_module_ref(facts, rir, base, root_file, locals)?;
-            let parent_file = facts.aggregate_module(parent).file;
-            facts
-                .aggregate_module_binding(parent_file, field)
-                .and_then(|binding| binding.ty.as_module())
-        }
-        _ => None,
-    }
+/// The dotted spine of a candidate module path (`lib.inner.deep`), decoded
+/// from RIR syntax alone.
+pub(crate) struct ModuleSpine {
+    /// The name at the root of the `FieldGet` chain.
+    pub(crate) root: Spur,
+    /// The span of the root `VarRef`, whose file owns the root binding.
+    pub(crate) root_span: rue_span::Span,
+    /// The field names hanging off the root, in source order.
+    pub(crate) fields: Vec<Spur>,
 }
 
-pub(crate) fn resolve_visibility_module_ref<P: AggregateFacts>(
-    facts: &P,
-    rir: &Rir,
-    inst_ref: InstRef,
-    locals: &AHashMap<Spur, LocalVar>,
-) -> Option<ModuleId> {
-    let inst = rir.get(inst_ref);
-    let module_ty = match inst.data {
-        InstData::VarRef { name, .. } => locals.get(&name).map(|local| local.ty).or_else(|| {
-            facts
-                .aggregate_module_binding(inst.span.file_id, name)
-                .map(|binding| binding.ty)
-        }),
-        InstData::FieldGet { base, field } => {
-            let parent = resolve_visibility_module_ref(facts, rir, base, locals)?;
-            let parent_file = facts.aggregate_module(parent).file;
-            facts
-                .aggregate_module_binding(parent_file, field)
-                .map(|binding| binding.ty)
+/// The one syntactic decoder for a dotted module spine (RUE-1964).
+///
+/// Pure syntax: it walks the `FieldGet` chain down to its `VarRef` root and
+/// reports the root name plus the field names in source order. No fact source,
+/// scope, or visibility rule is consulted here, so every consumer — semantic
+/// analysis, the comptime engine, and the inference prepass — decodes the same
+/// spine and then applies the one shadowing rule and (where privacy is its
+/// job) the one per-hop visibility walk to it. Returns `None` for a spine that
+/// bottoms out in anything other than a name, which can never be a module path.
+pub(crate) fn decode_module_spine(rir: &Rir, inst_ref: InstRef) -> Option<ModuleSpine> {
+    let mut fields = Vec::new();
+    let mut cursor = inst_ref;
+    let (root, root_span) = loop {
+        let inst = rir.get(cursor);
+        match inst.data {
+            InstData::VarRef { name, .. } => break (name, inst.span),
+            InstData::FieldGet { base, field } => {
+                fields.push(field);
+                cursor = base;
+            }
+            _ => return None,
         }
-        _ => None,
-    }?;
-    module_ty.as_module()
+    };
+    fields.reverse();
+    Some(ModuleSpine {
+        root,
+        root_span,
+        fields,
+    })
+}
+
+/// Where a decoded [`ModuleSpine`]'s root binds, after the one shadowing rule
+/// (spec 5.1:11) is applied to it.
+pub(crate) enum ModuleSpineRoot {
+    /// A runtime local or parameter of non-module type carries the name, so it
+    /// shadows any import of the same name and this is not a module path at
+    /// all — the consumer falls through to ordinary value field/method access.
+    Shadowed,
+    /// A local or parameter that *is* a module (`let m = lib.geo;`): the
+    /// binding is the module, and any remaining segments are its members.
+    LocalModule(ModuleId),
+    /// Nothing shadows the name: the root is a module binding of the file the
+    /// spine is written in, resolved by the canonical module-path walker.
+    FileBinding,
 }
 
 pub(crate) fn is_accessible<P: AggregateFacts>(
