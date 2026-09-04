@@ -470,7 +470,9 @@ compile-time known (rule 4.14:6), and each `type`-typed argument must be
 supplied by a `comptime` parameter or another type value.
 
 In *value position*, the reduced type is an ordinary compile-time type value:
-it may be bound with `let` and then used as the path of a struct-literal
+it may be bound with `let`, or by a top-level `const` as the type alias described
+by rule 10.4:21. Either binding may then be used unqualified as a type
+annotation, as a comptime `type` argument, or as the path of a struct-literal
 expression (`P { … }`), a method call, or an associated-function call
 (`P.origin()`), exactly as in rules 4.14:7 through 4.14:13.
 

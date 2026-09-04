@@ -147,8 +147,8 @@ fn provider_type_facts_resolve_primitive_and_structural_shapes() {
 
     // Enumerate the `SemanticImportType` (durable) arms r2 covers structurally.
     // Each is resolved through the shared logic driven by ProviderTypeFacts;
-    // primitives and structural wrappers consult no declaration fact, so they
-    // record no dependency edge (proven below).
+    // Primitive spellings first consult the higher-precedence file-alias
+    // namespace, including the canonical spellings for unit and never.
     let primitive_cases: &[(&str, T)] = &[
         ("i8", T::I8),
         ("i16", T::I16),
@@ -169,9 +169,15 @@ fn provider_type_facts_resolve_primitive_and_structural_shapes() {
         let (resolved, _materialized, deps) =
             resolve_type_via_provider(&database, revision, &scope, syntax, None);
         assert_eq!(resolved.as_ref(), Some(expected), "primitive `{syntax}`");
+        assert_eq!(
+            deps.len(),
+            1,
+            "primitives record exactly their canonical file-alias probe: `{syntax}` -> {deps:?}"
+        );
         assert!(
-            deps.is_empty(),
-            "a primitive consults no declaration fact and records no edge: `{syntax}` -> {deps:?}"
+            deps.iter()
+                .all(|dependency| dependency.family() == "compiler.lookup-name"),
+            "primitive resolution recorded a non-name dependency: `{syntax}` -> {deps:?}"
         );
     }
 
@@ -204,10 +210,12 @@ fn provider_type_facts_resolve_primitive_and_structural_shapes() {
         let (resolved, _materialized, deps) =
             resolve_type_via_provider(&database, revision, &scope, syntax, None);
         assert_eq!(resolved.as_ref(), Some(expected), "structural `{syntax}`");
-        assert!(
-            deps.is_empty(),
-            "structural `{syntax}` records no edge: {deps:?}"
+        assert_eq!(
+            deps.len(),
+            1,
+            "each structural case contains one named primitive and records its canonical file-alias probe: `{syntax}` -> {deps:?}"
         );
+        assert_eq!(deps[0].family(), "compiler.lookup-name");
     }
 }
 
@@ -526,12 +534,14 @@ fn provider_type_facts_builtin_str_and_slice_names_match_epoch() {
         }),
         "`str` resolves to the builtin-nominal durable identity"
     );
-    // A pool/overlay-answered name fact records no provider query edge (edge
-    // honesty — the builtin identity is not a boundary lookup).
-    assert!(
-        deps.is_empty(),
-        "resolving `str` records no provider edge: {deps:?}"
+    // The builtin identity itself is pool answered, but the higher-precedence
+    // file declaration/alias namespace must first be disproved.
+    assert_eq!(
+        deps.len(),
+        1,
+        "resolving `str` probes its file name: {deps:?}"
     );
+    assert_eq!(deps[0].family(), "compiler.lookup-name");
 
     // `[i32]` resolves to the durable slice identity whose name IS the slice
     // syntax and whose element is the resolved element type.
@@ -545,10 +555,12 @@ fn provider_type_facts_builtin_str_and_slice_names_match_epoch() {
         }),
         "`[i32]` resolves to the slice durable identity keyed by the slice syntax"
     );
-    assert!(
-        deps.is_empty(),
-        "resolving `[i32]` records no provider edge: {deps:?}"
+    assert_eq!(
+        deps.len(),
+        1,
+        "resolving `[i32]` probes the element's file alias: {deps:?}"
     );
+    assert_eq!(deps[0].family(), "compiler.lookup-name");
 }
 
 // Explicit enumeration of the `SemanticImportType` arms this family does NOT

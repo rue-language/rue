@@ -5,6 +5,7 @@
 
 use ahash::AHashMap;
 use std::cell::RefCell;
+use std::convert::Infallible;
 use std::hash::Hash;
 
 use lasso::Spur;
@@ -15,6 +16,9 @@ use super::ConstInfo;
 use super::body_identity::{DurableNominalSource, ProviderIdentityContext};
 use super::context::{ConstValue, LocalVar};
 use crate::intern_pool::TypeInternPool;
+use crate::semantic_type_resolution::{
+    UnqualifiedNominal, UnqualifiedNominalTier, select_unqualified_nominal,
+};
 use crate::types::{EnumId, ModuleId, StructId, Type};
 use crate::{SemanticImportNominalKind, SemanticImportType};
 
@@ -23,6 +27,7 @@ pub(crate) trait AggregateFacts {
     fn aggregate_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
     fn aggregate_struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId>;
     fn aggregate_enum_in_file(&self, file: FileId, name: Spur) -> Option<EnumId>;
+    fn aggregate_primitive_type(&self, name: Spur) -> Option<Type>;
     fn aggregate_builtin_struct(&self, name: Spur) -> Option<StructId>;
     fn aggregate_builtin_enum(&self, name: Spur) -> Option<EnumId>;
     fn aggregate_module(&self, module: ModuleId) -> AggregateModuleFact;
@@ -63,6 +68,38 @@ pub(crate) enum ModuleTypeMember {
     Enum(EnumId),
     Const(ConstInfo),
     Absent,
+}
+
+fn select_unqualified_aggregate_type<P: AggregateFacts>(
+    facts: &P,
+    local_type: Option<Type>,
+    file: FileId,
+    name: Spur,
+) -> Option<UnqualifiedNominal<Type>> {
+    select_unqualified_nominal(|tier| {
+        Ok::<_, Infallible>(match tier {
+            UnqualifiedNominalTier::Substitution => None,
+            UnqualifiedNominalTier::LexicalAlias => local_type,
+            UnqualifiedNominalTier::FileAlias => {
+                facts
+                    .aggregate_value_const(file, name)
+                    .and_then(|info| match info.value {
+                        ConstValue::Type(ty) => Some(ty),
+                        _ => None,
+                    })
+            }
+            UnqualifiedNominalTier::Primitive => facts.aggregate_primitive_type(name),
+            UnqualifiedNominalTier::Declaration => facts
+                .aggregate_struct_in_file(file, name)
+                .map(Type::new_struct)
+                .or_else(|| facts.aggregate_enum_in_file(file, name).map(Type::new_enum)),
+            UnqualifiedNominalTier::Builtin => facts
+                .aggregate_builtin_struct(name)
+                .map(Type::new_struct)
+                .or_else(|| facts.aggregate_builtin_enum(name).map(Type::new_enum)),
+        })
+    })
+    .expect("infallible aggregate nominal selection")
 }
 
 /// A nominal type named through a module (`m.Name`), plus the `const` binding
@@ -134,18 +171,12 @@ pub(crate) fn resolve_enum_type_name<P: AggregateFacts>(
     file: FileId,
     name: Spur,
 ) -> Option<(EnumId, bool)> {
-    if let Some(ty) = local_type {
-        return ty.as_enum().map(|id| (id, true));
-    }
-    if let Some(info) = facts.aggregate_value_const(file, name)
-        && let ConstValue::Type(ty) = info.value
-    {
-        return ty.as_enum().map(|id| (id, true));
-    }
-    facts
-        .aggregate_enum_in_file(file, name)
-        .or_else(|| facts.aggregate_builtin_enum(name))
-        .map(|id| (id, false))
+    select_unqualified_aggregate_type(facts, local_type, file, name).and_then(|selected| {
+        selected
+            .value
+            .as_enum()
+            .map(|id| (id, selected.tier.via_binding()))
+    })
 }
 
 pub(crate) fn resolve_struct_type_name<P: AggregateFacts>(
@@ -154,18 +185,12 @@ pub(crate) fn resolve_struct_type_name<P: AggregateFacts>(
     file: FileId,
     name: Spur,
 ) -> Option<(StructId, bool)> {
-    if let Some(ty) = local_type {
-        return ty.as_struct().map(|id| (id, true));
-    }
-    if let Some(info) = facts.aggregate_value_const(file, name)
-        && let ConstValue::Type(ty) = info.value
-    {
-        return ty.as_struct().map(|id| (id, true));
-    }
-    facts
-        .aggregate_struct_in_file(file, name)
-        .or_else(|| facts.aggregate_builtin_struct(name))
-        .map(|id| (id, false))
+    select_unqualified_aggregate_type(facts, local_type, file, name).and_then(|selected| {
+        selected
+            .value
+            .as_struct()
+            .map(|id| (id, selected.tier.via_binding()))
+    })
 }
 
 pub(crate) fn select_struct_literal_head<P: AggregateFacts>(
@@ -174,18 +199,15 @@ pub(crate) fn select_struct_literal_head<P: AggregateFacts>(
     file: FileId,
     name: Spur,
 ) -> StructLiteralHead {
-    if let Some(ty) = local_type {
-        return StructLiteralHead::Bound(ty);
+    let selected = select_unqualified_aggregate_type(facts, local_type, file, name);
+    match selected {
+        Some(selected) if selected.tier.via_binding() => StructLiteralHead::Bound(selected.value),
+        Some(selected) => selected
+            .value
+            .as_struct()
+            .map_or(StructLiteralHead::Absent, StructLiteralHead::Named),
+        None => StructLiteralHead::Absent,
     }
-    if let Some(info) = facts.aggregate_value_const(file, name)
-        && let ConstValue::Type(ty) = info.value
-    {
-        return StructLiteralHead::Bound(ty);
-    }
-    facts
-        .aggregate_struct_in_file(file, name)
-        .or_else(|| facts.aggregate_builtin_struct(name))
-        .map_or(StructLiteralHead::Absent, StructLiteralHead::Named)
 }
 
 /// The one source order for a type named through a module (`m.Name`): a struct
@@ -563,8 +585,8 @@ where
     }
 
     /// Run the provider-generic [`select_struct_literal_head`] over this driver
-    /// for an unqualified head (`local_type = None`): the const→struct→builtin
-    /// order, including an installed const arm.
+    /// for an unqualified head (`local_type = None`), including an installed
+    /// const arm and the canonical declaration/builtin fallback order.
     pub fn select_struct_literal_head(&self, file: FileId, name: &str) -> ProviderStructHead {
         let Ok(symbol) = self.identity.pool().intern_name(name) else {
             return ProviderStructHead::Absent;
@@ -629,6 +651,10 @@ where
             .resolve(&SemanticImportType::Nominal(key))
             .ok()?
             .as_enum()
+    }
+
+    fn aggregate_primitive_type(&self, name: Spur) -> Option<Type> {
+        Type::from_primitive_name(self.identity.pool().resolve_symbol(name))
     }
 
     fn aggregate_builtin_struct(&self, name: Spur) -> Option<StructId> {

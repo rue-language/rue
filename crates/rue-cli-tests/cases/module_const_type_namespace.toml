@@ -112,6 +112,114 @@ fn main() -> i32 {
 """ }]
 stdout = "42\n"
 
+# --- RUE-1966: the alias must reach inference, not only sema ---
+
+[[case]]
+name = "module_const_u8_struct_literal_constrains_fields"
+description = "RUE-1966: a file const alias constrains a struct literal's fields before AIR emission; 200 fits u8 and must not reach the mixed-width ICE path."
+files = [{ path = "main.rue", source = """
+fn Point(comptime T: type) -> type { struct { x: T } }
+const P = Point(u8);
+
+fn identity(comptime T: type, value: T) -> T { value }
+fn get(p: P) -> u8 { p.x }
+
+fn main() -> i32 {
+    let p: P = P { x: 200 };
+    let q = identity(P, p);
+    if get(q) == 200 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "module_const_u8_struct_literal_out_of_range"
+description = "RUE-1966 control: the same alias gives an out-of-range field a stable user diagnostic rather than an ICE."
+files = [{ path = "main.rue", source = """
+fn Point(comptime T: type) -> type { struct { x: T } }
+const P = Point(u8);
+fn main() -> i32 { let _ = P { x: 300 }; 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0800", "300", "out of range", "u8"]
+
+[[case]]
+name = "module_const_u8_struct_literal_type_mismatch"
+description = "RUE-1966 control: the alias-constrained field keeps the ordinary E0206 mismatch class."
+files = [{ path = "main.rue", source = """
+fn Point(comptime T: type) -> type { struct { x: T } }
+const P = Point(u8);
+fn main() -> i32 { let _ = P { x: true }; 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0206", "expected u8", "found bool"]
+
+[[case]]
+name = "user_struct_shadows_opposite_kind_builtin_enum"
+description = "RUE-1966 precedence control: a user struct named Arch wins before the builtin Arch enum for annotations, generic arguments, and literals."
+files = [{ path = "main.rue", source = """
+struct Arch { x: i32 }
+fn identity(comptime T: type, value: T) -> T { value }
+fn get(value: Arch) -> i32 { value.x }
+fn main() -> i32 { get(identity(Arch, Arch { x: 42 })) }
+""" }]
+exit_code = 42
+
+[[case]]
+name = "local_comptime_alias_shadows_file_alias"
+description = "RUE-1966 precedence control: a lexical comptime alias wins over a same-named file alias for a struct-literal head."
+files = [{ path = "main.rue", source = """
+fn Point(comptime T: type) -> type { struct { x: T } }
+const P = Point(i32);
+fn main() -> i32 {
+    let P = Point(u8);
+    let p = P { x: 200 };
+    if p.x == 200 { 0 } else { 1 }
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "user_struct_blocks_opposite_kind_builtin_enum_variant"
+description = "RUE-1966 wrong-kind control: a same-named user struct blocks fallback to the builtin Arch enum."
+files = [{ path = "main.rue", source = """
+struct Arch { x: i32 }
+fn main() -> i32 { let _ = Arch.X86_64; 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0423", "field access on non-struct type 'type'"]
+
+[[case]]
+name = "user_enum_blocks_opposite_kind_builtin_struct_literal"
+description = "RUE-1966 symmetric wrong-kind control: a same-named user enum blocks fallback to builtin str as a struct-literal head."
+files = [{ path = "main.rue", source = """
+enum str { Value }
+fn main() -> i32 { let _ = str { x: 1 }; 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0204", "unknown type 'str'"]
+
+[[case]]
+name = "primitive_spelling_blocks_same_named_user_struct_literal"
+description = "RUE-1966 primitive control: the legal declaration spelling `f32` cannot make struct-literal resolution disagree with annotation resolution, where the primitive wins."
+args = ["--preview", "floats", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct f32 { x: i32 }
+fn main() -> i32 { let _: f32 = f32 { x: 42 }; 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0204", "unknown type 'f32'"]
+
+[[case]]
+name = "non_type_const_is_not_a_struct_literal_alias"
+description = "RUE-1966 counterfeit control: a value const cannot satisfy the nominal alias slot."
+files = [{ path = "main.rue", source = """
+const P: i32 = 0;
+fn main() -> i32 { let _ = P { x: 200 }; 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0204", "unknown type 'P'"]
+
 # --- Guard: enum consts (which always worked) still resolve, so the struct
 #     fix keeps struct and enum namespaces uniform ---
 
