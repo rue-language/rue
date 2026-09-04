@@ -86,21 +86,6 @@ use super::mir::{
 };
 use crate::{EmittedCode, EmittedInst, EmittedRelocation};
 
-/// Scale a folded byte `offset` into the unsigned scaled `imm12` field of a
-/// narrow load/store (RUE-1079). The immediate is scaled by the access `width`
-/// (`ldrb`/`strb` by 1, `ldrh`/`strh` by 2, `ldr w`/`str w` by 4), so the
-/// encoded index is `offset / width`. CFG-lowering only folds an offset the
-/// scaled form can encode; the asserts (kept in release) re-check that invariant
-/// so a mis-threaded offset traps rather than encoding a wrong address.
-fn narrow_scaled_imm12(offset: i32, width: u8) -> u32 {
-    let width = width as i32;
-    assert!(
-        offset >= 0 && offset % width == 0 && offset / width <= 0xFFF,
-        "narrow access offset {offset} not encodable in scaled imm12 for width {width}"
-    );
-    (offset / width) as u32 & 0xFFF
-}
-
 /// Format a folded narrow addressing offset for the textual assembly dump:
 /// `, #N` for a nonzero offset, the empty string for offset 0 (so a zero-offset
 /// narrow access prints `[base]`, byte-identical to before RUE-1079).
@@ -110,6 +95,14 @@ fn fmt_narrow_offset(offset: i32) -> String {
     } else {
         format!(", #{offset}")
     }
+}
+
+/// Annotate a conditional branch in the assembly dump that branch relaxation
+/// widened into an inverted short skip over an unconditional `b` (RUE-2002).
+/// The dump keeps one logical line per MIR branch, so without the note its
+/// eight bytes would read as a single four-byte instruction.
+fn relax_note(relaxed: bool) -> &'static str {
+    if relaxed { "  ; relaxed" } else { "" }
 }
 
 /// Encode a signed byte offset in the imm9 field used by AArch64's unscaled
@@ -302,6 +295,14 @@ const BRANCH_OPCODE_MASK: u32 = 0xFC000000;
 const COND_BRANCH_OFFSET_MASK: u32 = 0x7FFFF;
 /// Conditional branch opcode mask
 const COND_BRANCH_OPCODE_MASK: u32 = 0xFF00001F;
+/// Signed instruction distance an `imm19` conditional branch reaches (±1 MiB).
+const COND_BRANCH_RANGE: std::ops::Range<i64> = -(1 << 18)..(1 << 18);
+/// Signed instruction distance an `imm26` unconditional branch reaches
+/// (±128 MiB), the range a relaxed conditional branch inherits.
+const BRANCH_RANGE: std::ops::Range<i64> = -(1 << 25)..(1 << 25);
+/// The `imm19`/`imm26` displacement of a branch over exactly one following
+/// instruction: the short skip a relaxed conditional branch takes.
+const SKIP_ONE_INST: u32 = 2;
 
 /// A pending fixup for a forward branch.
 struct Fixup {
@@ -311,6 +312,12 @@ struct Fixup {
     label: LabelId,
     /// Kind of branch (for calculating offset).
     kind: FixupKind,
+    /// For a `CondBranch`, the ordinal of the conditional-branch site that
+    /// emitted it, in emission order. Branch relaxation keys the set of sites
+    /// it has already widened on this ordinal, which is stable across the
+    /// re-emission a relaxation round performs (RUE-2002). `None` for an
+    /// unconditional branch, including the `b` inside a relaxed sequence.
+    site: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -398,6 +405,18 @@ pub struct Emitter<'a> {
     labels: LabelOffsets,
     /// Forward branches that need to be patched.
     fixups: Vec<Fixup>,
+    /// Conditional-branch sites, by emission ordinal, that must be emitted as
+    /// an inverted short skip over an unconditional `b` because their target
+    /// is outside the `imm19` range. Grows monotonically across relaxation
+    /// rounds and survives the state reset between them (RUE-2002).
+    relaxed_cond_sites: Vec<bool>,
+    /// Relax every conditional branch regardless of measured distance. The
+    /// convergence backstop: it makes the next round's conditional branches
+    /// all `imm19`-local, so no further round can be needed.
+    relax_all_cond: bool,
+    /// Conditional-branch sites emitted so far in the current round; reset
+    /// with the rest of the per-round output state.
+    cond_site_count: u32,
     /// Total number of local slots including spills (for stack frame size).
     num_locals: u32,
     /// Frame slots the local area occupies after marker-driven slot sharing
@@ -479,6 +498,9 @@ impl<'a> Emitter<'a> {
             relocations: Vec::new(), // Relocations are rare, don't pre-allocate
             labels: LabelOffsets::with_capacity(estimated_inline_labels, estimated_block_labels),
             fixups: Vec::with_capacity(estimated_fixups),
+            relaxed_cond_sites: Vec::new(),
+            relax_all_cond: false,
+            cond_site_count: 0,
             num_locals,
             frame_local_slots,
             num_params,
@@ -674,6 +696,12 @@ impl<'a> Emitter<'a> {
 
     /// Internal implementation of emit.
     fn emit_internal(&mut self) -> CompileResult<()> {
+        self.emit_with_relaxation()
+    }
+
+    /// Emit the prologue, every instruction, and the epilogue once, leaving
+    /// branch fixups pending.
+    fn emit_body(&mut self) -> CompileResult<()> {
         // Verify no LdrIndexed/StrIndexed variants survived into emission
         // These should have been lowered by regalloc into Ldr/Str with physical registers
         for (i, inst) in self.mir.iter().enumerate() {
@@ -730,7 +758,82 @@ impl<'a> Emitter<'a> {
             )));
         }
 
-        self.apply_fixups()
+        Ok(())
+    }
+
+    /// Emit the function, relaxing conditional branches whose target turned out
+    /// to be outside the `imm19` range, then patch every branch (RUE-2002).
+    ///
+    /// A `b.cond` reaches ±1 MiB. A function whose body outgrows that — a
+    /// generated one, or a big `if` over straight-line code — used to reach
+    /// `apply_fixups` and ICE, because a distance is only known once the whole
+    /// body has been laid out. Relaxation replaces the branch with an inverted
+    /// short skip over an unconditional `b`, which reaches ±128 MiB:
+    ///
+    /// ```asm
+    /// b.<inv> .Lskip      ; 2 instructions ahead
+    /// b       target
+    /// .Lskip:
+    /// ```
+    ///
+    /// Widening one branch moves every later instruction, so the distances have
+    /// to be measured again — hence a round re-emits the whole function with
+    /// the accumulated relaxation set applied. The common case measures nothing
+    /// extra: the first round finds no out-of-range branch and stops.
+    ///
+    /// Each round widens at least one site that no later round can revisit (a
+    /// relaxed site records no `imm19` fixup), so the loop terminates. The
+    /// round cap short-circuits a pathological staircase by relaxing every
+    /// conditional branch at once, after which one more round is decisive.
+    fn emit_with_relaxation(&mut self) -> CompileResult<()> {
+        /// Rounds of measured, incremental relaxation before falling back to
+        /// relaxing every conditional branch. Two suffice for every layout seen
+        /// so far; the cap only bounds the pathological case.
+        const MEASURED_ROUNDS: usize = 4;
+
+        let mut round = 0usize;
+        loop {
+            self.emit_body()?;
+            let out_of_range = self.out_of_range_cond_sites()?;
+            if out_of_range.is_empty() {
+                return self.apply_fixups();
+            }
+            if self.relax_all_cond {
+                // Every conditional branch is already a local skip, so an
+                // out-of-range `imm19` here is impossible.
+                return Err(ice_error!(
+                    "conditional branch still out of range after full relaxation",
+                    phase: "codegen/emit",
+                    details: { "sites" => out_of_range.len().to_string() }
+                ));
+            }
+            if round >= MEASURED_ROUNDS {
+                self.relax_all_cond = true;
+            } else {
+                for site in out_of_range {
+                    let index = site as usize;
+                    if index >= self.relaxed_cond_sites.len() {
+                        self.relaxed_cond_sites.resize(index + 1, false);
+                    }
+                    self.relaxed_cond_sites[index] = true;
+                }
+            }
+            self.reset_round();
+            round += 1;
+        }
+    }
+
+    /// Discard the output of one relaxation round, keeping the accumulated
+    /// relaxation decisions, so the next round re-emits from a clean slate.
+    fn reset_round(&mut self) {
+        self.code.clear();
+        self.instructions.clear();
+        self.relocations.clear();
+        self.labels = LabelOffsets::default();
+        self.fixups.clear();
+        self.inst_start = 0;
+        self.cond_site_count = 0;
+        self.frameless_frame_reference = false;
     }
 
     /// Emit function prologue.
@@ -1488,15 +1591,15 @@ impl<'a> Emitter<'a> {
             Aarch64Inst::Cbz { src, label } => {
                 let rt = src.as_physical();
                 self.begin_inst();
-                self.emit_cbz(rt, *label, false);
-                end_inst!(self, "cbz {}, L{}", rt, label);
+                let relaxed = self.emit_cbz(rt, *label, false);
+                end_inst!(self, "cbz {}, L{}{}", rt, label, relax_note(relaxed));
             }
 
             Aarch64Inst::Cbnz { src, label } => {
                 let rt = src.as_physical();
                 self.begin_inst();
-                self.emit_cbz(rt, *label, true);
-                end_inst!(self, "cbnz {}, L{}", rt, label);
+                let relaxed = self.emit_cbz(rt, *label, true);
+                end_inst!(self, "cbnz {}, L{}{}", rt, label, relax_note(relaxed));
             }
 
             Aarch64Inst::Cset { dst, cond } => {
@@ -1571,22 +1674,22 @@ impl<'a> Emitter<'a> {
 
             Aarch64Inst::BCond { cond, label } => {
                 self.begin_inst();
-                self.emit_bcond(*cond, *label);
-                end_inst!(self, "b.{} L{}", cond, label);
+                let relaxed = self.emit_bcond(*cond, *label);
+                end_inst!(self, "b.{} L{}{}", cond, label, relax_note(relaxed));
             }
 
             Aarch64Inst::Bvs { label } => {
                 // B.VS = branch if overflow set (cond = 0110)
                 self.begin_inst();
-                self.emit_bcond_raw(6, *label);
-                end_inst!(self, "b.vs L{}", label);
+                let relaxed = self.emit_bcond_raw(6, *label);
+                end_inst!(self, "b.vs L{}{}", label, relax_note(relaxed));
             }
 
             Aarch64Inst::Bvc { label } => {
                 // B.VC = branch if overflow clear (cond = 0111)
                 self.begin_inst();
-                self.emit_bcond_raw(7, *label);
-                end_inst!(self, "b.vc L{}", label);
+                let relaxed = self.emit_bcond_raw(7, *label);
+                end_inst!(self, "b.vc L{}{}", label, relax_note(relaxed));
             }
 
             Aarch64Inst::Label { id } => {
@@ -1879,6 +1982,43 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// The signed instruction distance from a fixup site to its label.
+    fn fixup_distance(&self, fixup: &Fixup) -> CompileResult<i64> {
+        let target = self.labels.get(&fixup.label).ok_or_else(|| {
+            CompileError::without_span(ErrorKind::InternalCodegenError(format!(
+                "undefined label: {}",
+                fixup.label
+            )))
+        })?;
+        // Correctness guard (must run in release): a misaligned branch
+        // distance would lose its low bits in the `/ 4` below and branch to
+        // the wrong instruction, so plain `assert!` not `debug_assert!`
+        // (RUE-45).
+        assert_eq!(
+            (target as i64 - fixup.offset as i64) % 4,
+            0,
+            "branch target/site must be 4-byte aligned"
+        );
+        Ok((target as i64 - fixup.offset as i64) / 4)
+    }
+
+    /// Conditional-branch sites whose target this round placed outside the
+    /// `imm19` range, in emission order (RUE-2002).
+    fn out_of_range_cond_sites(&self) -> CompileResult<Vec<u32>> {
+        let mut sites = Vec::new();
+        for fixup in &self.fixups {
+            if !matches!(fixup.kind, FixupKind::CondBranch) {
+                continue;
+            }
+            if !COND_BRANCH_RANGE.contains(&self.fixup_distance(fixup)?)
+                && let Some(site) = fixup.site
+            {
+                sites.push(site);
+            }
+        }
+        Ok(sites)
+    }
+
     /// Apply pending fixups for forward branches.
     fn apply_fixups(&mut self) -> CompileResult<()> {
         for fixup in &self.fixups {
@@ -1903,7 +2043,7 @@ impl<'a> Emitter<'a> {
                     // B instruction: imm26 is a SIGNED instruction count. Masking an
                     // out-of-range offset would silently branch somewhere else, so
                     // ICE instead (mirrors the x86 emitter's rel32 range check).
-                    if !(-(1 << 25)..(1 << 25)).contains(&offset) {
+                    if !BRANCH_RANGE.contains(&offset) {
                         return Err(ice_error!(
                             "branch offset exceeds imm26 range",
                             phase: "codegen/emit",
@@ -1926,9 +2066,12 @@ impl<'a> Emitter<'a> {
                 }
                 FixupKind::CondBranch => {
                     // Conditional branch (B.cond/CBZ/CBNZ): imm19, also signed.
-                    if !(-(1 << 18)..(1 << 18)).contains(&offset) {
+                    // `emit_with_relaxation` has already widened every site
+                    // that measured out of range, so reaching this is an
+                    // internal inconsistency rather than a program too large.
+                    if !COND_BRANCH_RANGE.contains(&offset) {
                         return Err(ice_error!(
-                            "conditional branch offset exceeds imm19 range",
+                            "conditional branch offset exceeds imm19 range after relaxation",
                             phase: "codegen/emit",
                             details: {
                                 "offset_insts" => offset.to_string(),
@@ -2066,15 +2209,11 @@ impl<'a> Emitter<'a> {
             return;
         }
 
-        assert!(
-            base != Reg::Sp && base != SCRATCH_ADDRESS,
-            "large float offset needs a general base register"
-        );
-        self.emit_mov_imm(SCRATCH_ADDRESS, offset as i64);
-        self.emit_add_rr(SCRATCH_ADDRESS, base, SCRATCH_ADDRESS, false);
-        self.emit_u32(
-            scaled_opcode | ((SCRATCH_ADDRESS.encoding() as u32) << 5) | reg.encoding() as u32,
-        );
+        // Out of both immediate forms: address through the scratch. `reg` is
+        // an FP register, a different bank from the GP address scratch, so
+        // only the base can collide and `scratch_base` guards that.
+        let addr = self.scratch_base(base, offset);
+        self.emit_u32(scaled_opcode | ((addr.encoding() as u32) << 5) | reg.encoding() as u32);
     }
 
     fn emit_scvtf(
@@ -2227,6 +2366,36 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Materialize `base + offset` in the emitter's address scratch and return
+    /// it as the replacement base for an access whose displacement fits none of
+    /// the addressing form's immediate fields.
+    ///
+    /// Two bases need distinct treatment (RUE-2002):
+    ///
+    /// * `sp` is not nameable by the shifted-register `ADD`, where register
+    ///   encoding 31 is `xzr`. A frame whose slot region outgrows the scaled
+    ///   `imm12` (32 KiB at 8-byte scale) reaches here with `sp` as the base —
+    ///   an outgoing call-argument area or an sret buffer is always
+    ///   SP-relative — so the extended-register form, which does name `sp`,
+    ///   is used there.
+    /// * The scratch itself cannot be the base: materializing the address
+    ///   overwrites it before the `add` reads it. `mir::RESERVED_REGS` keeps
+    ///   SCRATCH_ADDRESS out of allocation, so this is an internal-consistency
+    ///   guard, kept in release for the reason RUE-45 gives.
+    fn scratch_base(&mut self, base: Reg, offset: i32) -> Reg {
+        assert!(
+            base != SCRATCH_ADDRESS,
+            "large-offset access base must not be the address scratch"
+        );
+        self.emit_mov_imm(SCRATCH_ADDRESS, offset as i64);
+        if base == Reg::Sp {
+            self.emit_add_ext_rr(SCRATCH_ADDRESS, base, SCRATCH_ADDRESS);
+        } else {
+            self.emit_add_rr(SCRATCH_ADDRESS, base, SCRATCH_ADDRESS, false);
+        }
+        SCRATCH_ADDRESS
+    }
+
     fn emit_ldr(&mut self, rd: Reg, base: Reg, offset: i32) {
         // LDR Xt, [Xn, #imm]
         // Scaled offset (divide by 8 for 64-bit)
@@ -2253,18 +2422,8 @@ impl<'a> Emitter<'a> {
             // Previously the offset was masked & 0x1FF, silently WRAPPING —
             // locals deeper than 256 bytes loaded from above the frame
             // pointer. (RUE-129)
-            // Correctness guard (must run in release): if the base were the
-            // address scratch we would clobber it while materializing the
-            // address and load from the wrong location, so plain `assert!` not
-            // `debug_assert!` (RUE-45).
-            assert!(
-                base != Reg::Sp && base != SCRATCH_ADDRESS,
-                "large-offset load needs a general base register"
-            );
-            self.emit_mov_imm(SCRATCH_ADDRESS, offset as i64);
-            self.emit_add_rr(SCRATCH_ADDRESS, base, SCRATCH_ADDRESS, false);
-            let inst =
-                OPCODE_LDR_UOFF | (SCRATCH_ADDRESS.encoding() as u32) << 5 | rd.encoding() as u32;
+            let addr = self.scratch_base(base, offset);
+            let inst = OPCODE_LDR_UOFF | (addr.encoding() as u32) << 5 | rd.encoding() as u32;
             self.emit_u32(inst);
         }
     }
@@ -2291,18 +2450,16 @@ impl<'a> Emitter<'a> {
             // register will do. Previously the offset was masked & 0x1FF,
             // silently WRAPPING — locals deeper than 256 bytes stored ABOVE
             // the frame pointer, corrupting the caller's stack. (RUE-129)
-            // Correctness guard (must run in release): if the base or source
-            // were the address scratch we would clobber it while materializing
-            // the address and store to/from the wrong location, so plain
-            // `assert!` not `debug_assert!` (RUE-45).
+            // Correctness guard (must run in release): the stored value cannot
+            // live in the address scratch, which the address materialization
+            // overwrites before the store reads it, so plain `assert!` not
+            // `debug_assert!` (RUE-45).
             assert!(
-                base != Reg::Sp && base != SCRATCH_ADDRESS && rs != SCRATCH_ADDRESS,
-                "large-offset store needs a general base register"
+                rs != SCRATCH_ADDRESS,
+                "large-offset store source must not be the address scratch"
             );
-            self.emit_mov_imm(SCRATCH_ADDRESS, offset as i64);
-            self.emit_add_rr(SCRATCH_ADDRESS, base, SCRATCH_ADDRESS, false);
-            let inst =
-                OPCODE_STR_UOFF | (SCRATCH_ADDRESS.encoding() as u32) << 5 | rs.encoding() as u32;
+            let addr = self.scratch_base(base, offset);
+            let inst = OPCODE_STR_UOFF | (addr.encoding() as u32) << 5 | rs.encoding() as u32;
             self.emit_u32(inst);
         }
     }
@@ -2323,10 +2480,7 @@ impl<'a> Emitter<'a> {
             (4, true) => 0xB980_0000,  // ldrsw x, [base]
             _ => unreachable!("narrow load width must be 1, 2, or 4: {width}"),
         };
-        let imm12 = narrow_scaled_imm12(offset, width);
-        let inst =
-            base_opcode | (imm12 << 10) | ((base.encoding() as u32) << 5) | rd.encoding() as u32;
-        self.emit_u32(inst);
+        self.emit_narrow_mem(base_opcode, rd, base, offset, width);
     }
 
     /// Emit a narrow (1/2/4-byte) store of the low `width` bytes of `rs` to
@@ -2339,9 +2493,45 @@ impl<'a> Emitter<'a> {
             4 => 0xB900_0000, // str  w, [base]
             _ => unreachable!("narrow store width must be 1, 2, or 4: {width}"),
         };
-        let imm12 = narrow_scaled_imm12(offset, width);
-        let inst =
-            base_opcode | (imm12 << 10) | ((base.encoding() as u32) << 5) | rs.encoding() as u32;
+        assert!(
+            rs != SCRATCH_ADDRESS,
+            "narrow store source must not be the address scratch"
+        );
+        self.emit_narrow_mem(base_opcode, rs, base, offset, width);
+    }
+
+    /// Encode a narrow load or store given its scaled-form opcode, picking the
+    /// addressing form the displacement fits (RUE-2002):
+    ///
+    /// 1. the scaled `imm12` (`offset / width` up to 4095) for the common case;
+    /// 2. the unscaled signed `imm9` (`-256..=255`) for a misaligned or small
+    ///    negative displacement — the unscaled opcode is the scaled one with
+    ///    bit 24 cleared;
+    /// 3. otherwise the address materialized in the scratch, offset 0.
+    ///
+    /// Before RUE-2002 only the first form existed, behind an assert; a field
+    /// past 4 KiB (1-byte scale) or a deep frame slot ICEd there.
+    fn emit_narrow_mem(&mut self, scaled_opcode: u32, reg: Reg, base: Reg, offset: i32, width: u8) {
+        let scale = i32::from(width);
+        if offset >= 0 && offset % scale == 0 && offset / scale <= 0xFFF {
+            let inst = scaled_opcode
+                | (((offset / scale) as u32) << 10)
+                | ((base.encoding() as u32) << 5)
+                | reg.encoding() as u32;
+            self.emit_u32(inst);
+            return;
+        }
+        if (-256..=255).contains(&offset) {
+            let unscaled_opcode = scaled_opcode & !(1 << 24);
+            let inst = unscaled_opcode
+                | (((offset as u32) & 0x1FF) << 12)
+                | ((base.encoding() as u32) << 5)
+                | reg.encoding() as u32;
+            self.emit_u32(inst);
+            return;
+        }
+        let addr = self.scratch_base(base, offset);
+        let inst = scaled_opcode | ((addr.encoding() as u32) << 5) | reg.encoding() as u32;
         self.emit_u32(inst);
     }
 
@@ -2825,9 +3015,22 @@ impl<'a> Emitter<'a> {
         self.emit_u32(inst);
     }
 
-    fn emit_cbz(&mut self, rt: Reg, label: LabelId, is_nz: bool) {
+    /// Emit `cbz`/`cbnz`, returning whether relaxation widened it (RUE-2002).
+    fn emit_cbz(&mut self, rt: Reg, label: LabelId, is_nz: bool) -> bool {
         // CBZ/CBNZ Xt, label
-        let op = if is_nz { 1 } else { 0 };
+        let (site, relaxed) = self.next_cond_site();
+        if relaxed {
+            // The opposite test skips the unconditional branch that carries
+            // the out-of-`imm19` target (RUE-2002).
+            let inverted = u32::from(!is_nz);
+            self.emit_u32(
+                OPCODE_CBZ_X | (inverted << 24) | (SKIP_ONE_INST << 5) | rt.encoding() as u32,
+            );
+            self.emit_b(label);
+            return true;
+        }
+
+        let op = u32::from(is_nz);
         let offset = self.code.len();
 
         // Placeholder instruction
@@ -2838,7 +3041,9 @@ impl<'a> Emitter<'a> {
             offset,
             label,
             kind: FixupKind::CondBranch,
+            site: Some(site),
         });
+        false
     }
 
     fn emit_cset(&mut self, rd: Reg, cond: Cond) {
@@ -2877,22 +3082,31 @@ impl<'a> Emitter<'a> {
             offset,
             label,
             kind: FixupKind::Branch,
+            site: None,
         });
     }
 
-    fn emit_bcond(&mut self, cond: Cond, label: LabelId) {
-        let offset = self.code.len();
-        let inst = OPCODE_BCOND | cond.encoding() as u32;
-        self.emit_u32(inst);
-
-        self.fixups.push(Fixup {
-            offset,
-            label,
-            kind: FixupKind::CondBranch,
-        });
+    /// Emit `b.cond`, returning whether relaxation widened it (RUE-2002).
+    fn emit_bcond(&mut self, cond: Cond, label: LabelId) -> bool {
+        self.emit_bcond_raw(cond.encoding(), label)
     }
 
-    fn emit_bcond_raw(&mut self, cond: u8, label: LabelId) {
+    /// Emit `b.cond` from a raw 4-bit condition encoding, returning whether
+    /// relaxation widened it (RUE-2002).
+    fn emit_bcond_raw(&mut self, cond: u8, label: LabelId) -> bool {
+        // AArch64 pairs every condition with its inverse across the low bit,
+        // so `cond ^ 1` inverts any real condition. `al`/`nv` (0b111x) have no
+        // inverse and the backend never branches on them.
+        assert!(cond < 0b1110, "cannot branch on the unconditional codes");
+        let (site, relaxed) = self.next_cond_site();
+        if relaxed {
+            // The inverted condition skips the unconditional branch that
+            // carries the out-of-`imm19` target (RUE-2002).
+            self.emit_u32(OPCODE_BCOND | (SKIP_ONE_INST << 5) | (cond ^ 1) as u32);
+            self.emit_b(label);
+            return true;
+        }
+
         let offset = self.code.len();
         let inst = OPCODE_BCOND | cond as u32;
         self.emit_u32(inst);
@@ -2901,7 +3115,25 @@ impl<'a> Emitter<'a> {
             offset,
             label,
             kind: FixupKind::CondBranch,
+            site: Some(site),
         });
+        false
+    }
+
+    /// Take the next conditional-branch site ordinal for this round, and say
+    /// whether relaxation has already widened that site (RUE-2002). The
+    /// ordinal is assigned in emission order and so names the same branch in
+    /// every round, which is what lets the relaxation set survive a re-emit.
+    fn next_cond_site(&mut self) -> (u32, bool) {
+        let site = self.cond_site_count;
+        self.cond_site_count += 1;
+        let relaxed = self.relax_all_cond
+            || self
+                .relaxed_cond_sites
+                .get(site as usize)
+                .copied()
+                .unwrap_or(false);
+        (site, relaxed)
     }
 
     fn emit_bl(&mut self, symbol: &str) {
@@ -3562,6 +3794,309 @@ mod tests {
         );
         assert_eq!((last >> 5) & 0x1F, 15, "STR base should be X15");
         assert_eq!((last >> 10) & 0xFFF, 0, "STR offset should be 0");
+    }
+
+    /// Decode a byte buffer of AArch64 instructions into words.
+    fn words(code: &[u8]) -> Vec<u32> {
+        code.chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect()
+    }
+
+    /// Assert that `code` is the three-word large-offset sequence: materialize
+    /// the displacement in the address scratch, add it to `base`, then access
+    /// through the scratch at offset 0 (RUE-2002).
+    fn assert_addresses_through_scratch(code: &[u8], base: Reg, data_reg: Reg) {
+        let encoded = words(code);
+        assert_eq!(
+            encoded.len(),
+            3,
+            "expected mov + add + access, got {encoded:x?}"
+        );
+        let add = encoded[1];
+        if base == Reg::Sp {
+            // Register 31 is `xzr` in the shifted-register ADD, so an SP base
+            // has to use the extended-register form with UXTX.
+            assert_eq!(add & 0xFF200000, OPCODE_ADD_EXT_X & 0xFF200000);
+            assert_eq!((add >> 13) & 0x7, 3, "extended add must use UXTX");
+        } else {
+            assert_eq!(add & 0xFF200000, OPCODE_ADD_X & 0xFF200000);
+        }
+        assert_eq!((add >> 16) & 0x1F, SCRATCH_ADDRESS.encoding() as u32);
+        assert_eq!((add >> 5) & 0x1F, base.encoding() as u32);
+        assert_eq!(add & 0x1F, SCRATCH_ADDRESS.encoding() as u32);
+
+        let access = encoded[2];
+        assert_eq!(
+            (access >> 5) & 0x1F,
+            SCRATCH_ADDRESS.encoding() as u32,
+            "access must be based on the scratch"
+        );
+        assert_eq!((access >> 10) & 0xFFF, 0, "folded offset must be zero");
+        assert_eq!(access & 0x1F, data_reg.encoding() as u32);
+    }
+
+    /// A frame deeper than the scaled `imm12` reaches the emitter with an
+    /// SP-relative displacement (an outgoing argument area or an sret buffer)
+    /// as well as an FP-relative one, at every access width. Before RUE-2002
+    /// the SP cases asserted out and the narrow cases had no fallback at all.
+    #[test]
+    fn large_frame_offsets_address_through_the_scratch_at_every_width() {
+        // 64-bit, both bases. The scaled form tops out at 32760.
+        assert_addresses_through_scratch(
+            &emit_single(Aarch64Inst::Str {
+                src: Operand::Physical(Reg::X0),
+                base: Reg::Sp,
+                offset: 40000,
+            }),
+            Reg::Sp,
+            Reg::X0,
+        );
+        assert_addresses_through_scratch(
+            &emit_single(Aarch64Inst::Ldr {
+                dst: Operand::Physical(Reg::X2),
+                base: Reg::Sp,
+                offset: 40000,
+            }),
+            Reg::Sp,
+            Reg::X2,
+        );
+        assert_addresses_through_scratch(
+            &emit_single(Aarch64Inst::Str {
+                src: Operand::Physical(Reg::X0),
+                base: Reg::Fp,
+                offset: -40000,
+            }),
+            Reg::Fp,
+            Reg::X0,
+        );
+        assert_addresses_through_scratch(
+            &emit_single(Aarch64Inst::Ldr {
+                dst: Operand::Physical(Reg::X0),
+                base: Reg::Fp,
+                offset: -40000,
+            }),
+            Reg::Fp,
+            Reg::X0,
+        );
+
+        // Narrow widths: the scaled index is `offset / width`, so a byte access
+        // leaves the immediate at 4096 bytes and a halfword at 8192.
+        for (width, offset) in [(1u8, 8000i32), (2, 40000), (4, 40000)] {
+            assert_addresses_through_scratch(
+                &emit_single(Aarch64Inst::NarrowStore {
+                    src: Operand::Physical(Reg::X3),
+                    base: Reg::Sp,
+                    offset,
+                    width,
+                }),
+                Reg::Sp,
+                Reg::X3,
+            );
+            for signed in [false, true] {
+                assert_addresses_through_scratch(
+                    &emit_single(Aarch64Inst::NarrowLoad {
+                        dst: Operand::Physical(Reg::X4),
+                        base: Reg::X1,
+                        offset,
+                        width,
+                        signed,
+                    }),
+                    Reg::X1,
+                    Reg::X4,
+                );
+            }
+        }
+
+        // Float forms (RUE-2001): the data register is in the other bank, so
+        // only the base can collide with the scratch.
+        for width in [FloatWidth::F32, FloatWidth::F64] {
+            assert_addresses_through_scratch(
+                &emit_single(Aarch64Inst::FloatStore {
+                    base: Reg::Sp,
+                    offset: 40000,
+                    src: Operand::Physical(Reg::V0),
+                    width,
+                }),
+                Reg::Sp,
+                Reg::V0,
+            );
+            assert_addresses_through_scratch(
+                &emit_single(Aarch64Inst::FloatLoad {
+                    dst: Operand::Physical(Reg::V1),
+                    base: Reg::Fp,
+                    offset: -40000,
+                    width,
+                }),
+                Reg::Fp,
+                Reg::V1,
+            );
+        }
+    }
+
+    /// A narrow access the scaled immediate cannot hold but the unscaled signed
+    /// `imm9` can takes the one-word `ldur`/`stur` form, which is the scaled
+    /// opcode with bit 24 cleared (RUE-2002).
+    #[test]
+    fn narrow_access_uses_the_unscaled_form_for_a_small_negative_offset() {
+        let code = emit_single(Aarch64Inst::NarrowLoad {
+            dst: Operand::Physical(Reg::X4),
+            base: Reg::X1,
+            offset: -8,
+            width: 4,
+            signed: false,
+        });
+        let load = words(&code);
+        assert_eq!(load.len(), 1, "in-range unscaled access is one word");
+        // ldur w4, [x1, #-8]
+        assert_eq!(load[0] & 0xFFE00C00, 0xB840_0000);
+        assert_eq!((load[0] >> 12) & 0x1FF, (-8i32 as u32) & 0x1FF);
+        assert_eq!((load[0] >> 5) & 0x1F, Reg::X1.encoding() as u32);
+        assert_eq!(load[0] & 0x1F, Reg::X4.encoding() as u32);
+
+        let code = emit_single(Aarch64Inst::NarrowStore {
+            src: Operand::Physical(Reg::X4),
+            base: Reg::X1,
+            offset: -3,
+            width: 1,
+        });
+        let store = words(&code);
+        assert_eq!(store.len(), 1);
+        // sturb w4, [x1, #-3]
+        assert_eq!(store[0] & 0xFFE00C00, 0x3800_0000);
+        assert_eq!((store[0] >> 12) & 0x1FF, (-3i32 as u32) & 0x1FF);
+    }
+
+    /// Filler that encodes to exactly one word, for laying out a synthetic
+    /// function large enough to exercise branch ranges.
+    fn one_word_filler() -> Aarch64Inst {
+        Aarch64Inst::MovRR {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+        }
+    }
+
+    /// Emit a bare instruction stream, with no prologue or epilogue.
+    fn emit_bare(mir: &Aarch64Mir) -> Vec<u8> {
+        Emitter::new(mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .expect("synthetic branch layout must emit")
+            .0
+    }
+
+    /// The largest forward `imm19` displacement, in instructions.
+    const MAX_IMM19_FORWARD: usize = (1 << 18) - 1;
+
+    /// A conditional branch whose target sits just inside `imm19` keeps the
+    /// one-word encoding; one instruction further and relaxation widens it into
+    /// an inverted skip over an unconditional `b` (RUE-2002).
+    #[test]
+    fn conditional_branch_relaxes_only_past_imm19() {
+        for (distance, relaxed) in [(MAX_IMM19_FORWARD, false), (MAX_IMM19_FORWARD + 1, true)] {
+            let mut mir = Aarch64Mir::new();
+            let target = mir.alloc_label();
+            mir.push(Aarch64Inst::BCond {
+                cond: Cond::Eq,
+                label: target,
+            });
+            for _ in 0..distance - 1 {
+                mir.push(one_word_filler());
+            }
+            mir.push(Aarch64Inst::Label { id: target });
+
+            let code = words(&emit_bare(&mir));
+            if relaxed {
+                assert_eq!(code.len(), distance + 1, "relaxation adds one word");
+                // b.ne #8 — the inverted condition over the following branch.
+                assert_eq!(
+                    code[0],
+                    OPCODE_BCOND | (2 << 5) | u32::from(Cond::Ne.encoding())
+                );
+                // b target, now one word further from it.
+                assert_eq!(code[1], OPCODE_B | distance as u32);
+            } else {
+                assert_eq!(code.len(), distance, "in-range branch stays one word");
+                assert_eq!(
+                    code[0],
+                    OPCODE_BCOND
+                        | ((distance as u32 & COND_BRANCH_OFFSET_MASK) << 5)
+                        | u32::from(Cond::Eq.encoding())
+                );
+            }
+        }
+    }
+
+    /// `cbz`/`cbnz` share the `imm19` field and relax the same way, into the
+    /// opposite test over an unconditional branch (RUE-2002).
+    #[test]
+    fn compare_and_branch_relaxes_past_imm19() {
+        let distance = MAX_IMM19_FORWARD + 1;
+        let mut mir = Aarch64Mir::new();
+        let target = mir.alloc_label();
+        mir.push(Aarch64Inst::Cbz {
+            src: Operand::Physical(Reg::X0),
+            label: target,
+        });
+        for _ in 0..distance - 1 {
+            mir.push(one_word_filler());
+        }
+        mir.push(Aarch64Inst::Label { id: target });
+
+        let code = words(&emit_bare(&mir));
+        assert_eq!(code.len(), distance + 1);
+        // cbnz x0, #8
+        assert_eq!(code[0], OPCODE_CBZ_X | (1 << 24) | (2 << 5));
+        assert_eq!(code[1], OPCODE_B | distance as u32);
+    }
+
+    /// Relaxation is iterative: widening one branch moves every later
+    /// instruction, which can push a second branch that measured in range out
+    /// of it. Here a backward branch sits exactly at the negative `imm19`
+    /// limit, and the word the first relaxation inserts ahead of it takes it
+    /// one past — so a single measuring pass would leave it unencodable and
+    /// `apply_fixups` would reject the function (RUE-2002).
+    #[test]
+    fn relaxation_reruns_until_every_branch_fits() {
+        const BACKWARD_LIMIT: usize = 1 << 18;
+
+        let mut mir = Aarch64Mir::new();
+        let backward = mir.alloc_label();
+        let forward = mir.alloc_label();
+        // Word 0 is both the backward target and the far forward branch.
+        mir.push(Aarch64Inst::Label { id: backward });
+        mir.push(Aarch64Inst::BCond {
+            cond: Cond::Eq,
+            label: forward,
+        });
+        for _ in 0..BACKWARD_LIMIT - 1 {
+            mir.push(one_word_filler());
+        }
+        // Exactly -2^18 from word 0 before anything is widened.
+        mir.push(Aarch64Inst::BCond {
+            cond: Cond::Ne,
+            label: backward,
+        });
+        mir.push(Aarch64Inst::Label { id: forward });
+
+        let code = words(&emit_bare(&mir));
+        // Both branches widened: two extra words over the unrelaxed layout.
+        assert_eq!(code.len(), BACKWARD_LIMIT + 3);
+        assert_eq!(
+            code[0],
+            OPCODE_BCOND | (2 << 5) | u32::from(Cond::Ne.encoding())
+        );
+        assert_eq!(code[1], OPCODE_B | (BACKWARD_LIMIT as u32 + 2));
+        let second = BACKWARD_LIMIT + 1;
+        assert_eq!(
+            code[second],
+            OPCODE_BCOND | (2 << 5) | u32::from(Cond::Eq.encoding())
+        );
+        let back = -((second as i64) + 1);
+        assert_eq!(
+            code[second + 1],
+            OPCODE_B | ((back as u32) & BRANCH_OFFSET_MASK)
+        );
     }
 
     #[test]

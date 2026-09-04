@@ -184,18 +184,31 @@ impl CostModel {
 /// Information about loop nesting for instructions.
 ///
 /// This is computed by analyzing back-edges in the MIR control flow.
+///
+/// Register allocation asks for the maximum depth over an interval — once per
+/// vreg for the spill candidate, and once per *active* vreg when choosing what
+/// to evict — so a range-max query must not be a scan. Two structures answer
+/// it in constant time (RUE-302, RUE-2002):
+///
+/// * Loop-free code caches `max_depth == 0` and answers immediately, which is
+///   the whole answer for a straight-line body however long its live ranges.
+/// * Code with loops keeps the depth array run-length encoded and a sparse
+///   table over the runs. Depth changes only at a loop boundary, so the run
+///   count is proportional to the loop structure rather than to the
+///   instruction count, and the table is small even for a very long function.
 #[derive(Debug, Clone)]
 pub struct LoopInfo {
     /// Loop depth for each instruction index.
     /// 0 = not in a loop, 1 = in one loop, 2 = nested two levels, etc.
     pub depths: Vec<u32>,
-    /// Maximum loop depth across all instructions, cached so that loop-free code
-    /// (`max_depth == 0`) answers range-max queries in O(1) instead of scanning
-    /// the range. Register allocation queries the max depth over a vreg's whole
-    /// live range once per vreg; on loop-free code with long live ranges (e.g. a
-    /// large array literal) the scan was O(range) per vreg and quadratic overall
-    /// (RUE-302).
+    /// Maximum loop depth across all instructions.
     max_depth: u32,
+    /// First instruction index of each maximal run of equal depth, ascending.
+    /// Empty when `max_depth == 0`, where no query consults it.
+    run_starts: Vec<usize>,
+    /// Sparse table over the runs: `run_max[k][i]` is the greatest depth among
+    /// runs `i..i + 2^k`. Level 0 is the runs' own depths.
+    run_max: Vec<Vec<u32>>,
 }
 
 impl LoopInfo {
@@ -204,13 +217,55 @@ impl LoopInfo {
         Self {
             depths: vec![0; instruction_count],
             max_depth: 0,
+            run_starts: Vec::new(),
+            run_max: Vec::new(),
         }
     }
 
-    /// Create loop info from a per-instruction depth vector, caching the max.
+    /// Create loop info from a per-instruction depth vector, building the
+    /// range-max index a program with loops needs.
     pub fn from_depths(depths: Vec<u32>) -> Self {
         let max_depth = depths.iter().copied().max().unwrap_or(0);
-        Self { depths, max_depth }
+        if max_depth == 0 {
+            return Self {
+                depths,
+                max_depth,
+                run_starts: Vec::new(),
+                run_max: Vec::new(),
+            };
+        }
+
+        let mut run_starts = Vec::new();
+        let mut run_depths = Vec::new();
+        for (index, &depth) in depths.iter().enumerate() {
+            if index == 0 || depth != depths[index - 1] {
+                run_starts.push(index);
+                run_depths.push(depth);
+            }
+        }
+
+        let runs = run_depths.len();
+        let levels = usize::BITS as usize - runs.leading_zeros() as usize;
+        let mut run_max = Vec::with_capacity(levels);
+        run_max.push(run_depths);
+        for level in 1..levels {
+            let span = 1usize << level;
+            let half = span / 2;
+            let previous = &run_max[level - 1];
+            let count = runs + 1 - span;
+            let mut current = Vec::with_capacity(count);
+            for index in 0..count {
+                current.push(previous[index].max(previous[index + half]));
+            }
+            run_max.push(current);
+        }
+
+        Self {
+            depths,
+            max_depth,
+            run_starts,
+            run_max,
+        }
     }
 
     /// Get the loop depth for an instruction.
@@ -220,7 +275,7 @@ impl LoopInfo {
 
     /// Get the maximum loop depth across a range of instructions.
     pub fn max_depth_in_range(&self, start: usize, end: usize) -> u32 {
-        // Loop-free code: the max is trivially 0, no scan needed.
+        // Loop-free code: the max is trivially 0, no index needed.
         if self.max_depth == 0 {
             return 0;
         }
@@ -228,7 +283,21 @@ impl LoopInfo {
             return 0;
         }
         let end = end.min(self.depths.len() - 1);
-        self.depths[start..=end].iter().copied().max().unwrap_or(0)
+        let first = self.run_of(start);
+        let last = self.run_of(end);
+        // Sparse-table range max: two overlapping power-of-two windows cover
+        // `first..=last` exactly, and overlap is harmless for a maximum.
+        let len = last - first + 1;
+        let level = (usize::BITS - 1 - len.leading_zeros()) as usize;
+        let window = 1usize << level;
+        let table = &self.run_max[level];
+        table[first].max(table[last + 1 - window])
+    }
+
+    /// The index of the depth run containing `inst_idx`, which
+    /// `max_depth_in_range` has already bounded to a real instruction.
+    fn run_of(&self, inst_idx: usize) -> usize {
+        self.run_starts.partition_point(|&start| start <= inst_idx) - 1
     }
 }
 // ============================================================================
@@ -4095,6 +4164,40 @@ mod tests {
         assert_eq!(info.max_depth_in_range(5, 6), 2); // In inner loop
         assert_eq!(info.max_depth_in_range(0, 9), 2); // Entire range
         assert_eq!(info.max_depth_in_range(7, 9), 1); // Exiting loops
+    }
+
+    /// The run-length + sparse-table index must answer exactly what a scan of
+    /// the depth array answers, for every range of several shapes: a single
+    /// run, alternating runs, a run count that is not a power of two, and one
+    /// long trailing run (RUE-2002).
+    #[test]
+    fn loop_info_range_max_matches_a_scan() {
+        let shapes: Vec<Vec<u32>> = vec![
+            vec![1],
+            vec![2, 2, 2, 2],
+            vec![0, 1, 0, 1, 0, 1, 0],
+            vec![0, 0, 1, 1, 1, 2, 2, 1, 0, 0],
+            vec![3, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4],
+            vec![1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6],
+        ];
+        for depths in shapes {
+            let info = LoopInfo::from_depths(depths.clone());
+            for start in 0..depths.len() {
+                for end in start..depths.len() {
+                    let expected = depths[start..=end].iter().copied().max().unwrap();
+                    assert_eq!(
+                        info.max_depth_in_range(start, end),
+                        expected,
+                        "range {start}..={end} of {depths:?}"
+                    );
+                }
+            }
+            // An end past the last instruction is clamped, not a panic.
+            assert_eq!(
+                info.max_depth_in_range(0, depths.len() + 5),
+                depths.iter().copied().max().unwrap()
+            );
+        }
     }
 
     #[test]

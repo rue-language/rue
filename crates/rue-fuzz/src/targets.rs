@@ -2376,11 +2376,37 @@ fn main() -> i32 {
         code
     }
 
-    fn emit_is_err(build: &SequenceBuild) -> bool {
-        Aarch64Emitter::new(&build.mir, 0, 0, 0, &[], &[])
+    /// Assert that a conditional branch past the `imm19` range was relaxed
+    /// rather than refused (RUE-2002): the site holds the inverted condition
+    /// skipping one instruction, and the `b` behind it carries the real target.
+    ///
+    /// `target_byte` is the label's byte offset in the *relaxed* layout, which
+    /// the extra word shifts for a forward branch and leaves alone for a
+    /// backward one.
+    fn assert_relaxed_over_b(build: &SequenceBuild, site_index: usize, target_byte: i64) -> u32 {
+        let (code, _) = Aarch64Emitter::new(&build.mir, 0, 0, 0, &[], &[])
             .without_frame()
             .emit()
-            .is_err()
+            .expect("a branch past imm19 must relax, not fail");
+        let site = site_index * 4;
+        let skip = u32::from_le_bytes(code[site..site + 4].try_into().unwrap());
+        assert_eq!(
+            aarch64_seq::decode_cond_target(skip, site),
+            (site + 8) as i64,
+            "the inverted branch must skip exactly the following b"
+        );
+        let long = u32::from_le_bytes(code[site + 4..site + 8].try_into().unwrap());
+        assert_eq!(
+            long & 0xFC00_0000,
+            0x1400_0000,
+            "a relaxed conditional must be followed by B, got {long:#010x}"
+        );
+        assert_eq!(
+            aarch64_seq::decode_b_target(long, site + 4),
+            target_byte,
+            "relaxed B must reach the label"
+        );
+        skip
     }
 
     #[test]
@@ -2428,15 +2454,28 @@ fn main() -> i32 {
             max_backward,
         ));
 
-        // One instruction past each boundary is a graceful ICE Err, not a panic.
-        assert!(emit_is_err(&build_forward_branch(
-            BranchKind::Cbz(Aarch64Reg::X0),
-            max_forward + 1
-        )));
-        assert!(emit_is_err(&build_backward_branch(
-            BranchKind::BCond(A64Cond::Ne),
-            max_backward + 1
-        )));
+        // One instruction past each boundary, branch relaxation widens the
+        // site into an inverted skip over an unconditional B (RUE-2002); before
+        // that the emitter had no encoding and returned an ICE.
+        let forward = build_forward_branch(BranchKind::Cbz(Aarch64Reg::X0), max_forward + 1);
+        // The label sits one word later than it would unrelaxed.
+        let skip = assert_relaxed_over_b(&forward, 0, ((max_forward + 2) * 4) as i64);
+        assert_eq!(
+            (skip >> 24) & 0xFF,
+            0xB5,
+            "cbz relaxes through cbnz, got {skip:#010x}"
+        );
+        assert_eq!(skip & 0x1F, Aarch64Reg::X0.encoding() as u32);
+
+        let backward = build_backward_branch(BranchKind::BCond(A64Cond::Ne), max_backward + 1);
+        // Nothing before the branch moved, so the label is still at byte 0.
+        let skip = assert_relaxed_over_b(&backward, max_backward + 1, 0);
+        assert_eq!((skip >> 24) & 0xFF, 0x54);
+        assert_eq!(
+            skip & 0xF,
+            A64Cond::Eq.encoding() as u32,
+            "b.ne relaxes through b.eq, got {skip:#010x}"
+        );
     }
 
     #[test]
