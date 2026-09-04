@@ -304,7 +304,13 @@ Each `unimported_test_files` entry is `{"path": string, "tests": integer,
 or parsed, so `tests` counts nothing and the honest answer is that the count is
 unknown. Without `--test-candidates`, the human summary appends
 `note: no --test-candidates inventory; unimported test files are not detected` —
-silence would be read as "none found".
+silence would be read as "none found" — but only when the compiled closure holds
+more than one user module (the standard library does not count). A closure of
+one has no second module that could have failed to import a test file, so the
+note would answer a question that run cannot raise; it was noise under every
+filtered rerun pasted from a `repro:` line. The condition is presentation only:
+`test_candidates` still answers `"none"` for such a run, and no event carries the
+closure size.
 
 ### `test` (listing records)
 

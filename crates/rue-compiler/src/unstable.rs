@@ -696,6 +696,16 @@ pub fn unimported_test_files(
     session.unimported_test_files(candidates)
 }
 
+/// How many caller-authored modules the published closure holds, excluding the
+/// standard library.
+///
+/// `rue test` uses it as presentation policy: a closure of one user module has
+/// nothing that another module could have failed to import, so there is nothing
+/// for the missing-candidate-inventory notice to be about (RUE-1959).
+pub fn published_user_module_count(session: &crate::CompilerSession) -> usize {
+    session.published_user_module_count()
+}
+
 /// Produce an executable inside a compile span owned by the filesystem
 /// driver. Stable callers use `compile_snapshot`, which owns its tracing
 /// root.

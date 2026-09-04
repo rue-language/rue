@@ -208,6 +208,11 @@ impl FilesystemCompilerHost {
         unimported_test_files(&mut self.state.session, candidates)
     }
 
+    /// How many caller-authored modules the published closure holds (RUE-1959).
+    pub fn published_user_module_count(&self) -> usize {
+        rue_compiler::unstable::published_user_module_count(&self.state.session)
+    }
+
     /// Reach ADR-0068's codegen-ready endpoint without projecting objects.
     pub fn codegen_ready(&mut self, options: &CompileOptions) -> MultiErrorResult<CodegenReady> {
         codegen_ready(&mut self.state.session, options)

@@ -731,10 +731,11 @@ compile_stdout_contains = [
 ]
 
 [[case]]
-name = "without_an_inventory_the_summary_says_orphans_are_not_detected"
+name = "without_an_inventory_a_multi_module_summary_says_orphans_are_not_detected"
 description = """
-Silence would be read as "no orphans found". The run says instead that it did
-not look.
+Silence would be read as "no orphans found". This root imports a second module,
+so an orphan is a thing that could exist here, and the run says instead that it
+did not look.
 """
 files = [
     { path = "main.rue", source = """
@@ -755,6 +756,54 @@ driver_exit_code = 0
 compile_stdout_contains = [
     "note: no --test-candidates inventory; unimported test files are not detected",
 ]
+
+[[case]]
+name = "a_single_module_run_is_owed_no_note_about_candidates"
+description = """
+RUE-1959: a closure of one user module has no second module that could have
+failed to import a test file, so there is nothing for the note to be about. It
+was noise under every filtered rerun pasted from a `repro:` line. The JSON
+`test_candidates` field is unaffected — this is the human summary only.
+"""
+files = [
+    { path = "main.rue", source = """
+test "alpha" {
+    @assert(1 == 1);
+}
+
+fn main() -> i32 {
+    0
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1"]
+driver_exit_code = 0
+compile_stdout_contains = ["1 passed"]
+compile_stdout_not_contains = ["note: no --test-candidates inventory"]
+
+[[case]]
+name = "a_single_module_run_still_reports_test_candidates_none_in_json"
+description = """
+RUE-1959 changed the human summary only. `run_finished.test_candidates` is a
+published field and answers `"none"` for the same run.
+"""
+files = [
+    { path = "main.rue", source = """
+test "alpha" {
+    @assert(1 == 1);
+}
+
+fn main() -> i32 {
+    0
+}
+""" },
+]
+args = [
+    "test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1",
+    "--format", "json",
+]
+driver_exit_code = 0
+compile_stdout_contains = ['"test_candidates":"none"']
 
 # ========================= dispatch and flag combinations =========================
 
