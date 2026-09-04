@@ -346,6 +346,176 @@ compile_stdout_contains = [
 ]
 
 # =============================================================================
+# Owning temporaries (RUE-1951).
+#
+# An operand with no place of its own — a call temporary such as `make()` or
+# `s.clone()` — is materialized into a hidden frame slot, and that slot's scope
+# has to reach past the branch. When it ended with the comparison instead, drop
+# elaboration freed the buffer before the report arm ran and the printer
+# rendered a freed heap block: the first eight bytes of every such rendering
+# came back as the allocator's own free-list header. The renderings pinned below
+# are therefore exact, on both sides, and the passing case proves the drop that
+# moved is still run exactly once.
+# =============================================================================
+
+[[case]]
+name = "a_returned_strbuf_renders_on_the_left"
+description = """
+The left operand is a call temporary and the right a literal, which takes the
+left's `StrBuf` type. Both renderings are the real bytes.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn rendered() -> StrBuf {
+    let mut s = StrBuf.new();
+    s.push_str("alpha");
+    s
+}
+
+test "compares a returned string on the left" {
+    @assert_eq(rendered(), "alpine");
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"diff":[{"op":"equal","text":"alp"},{"op":"delete","text":"ha"},{"op":"insert","text":"ine"}],"exit_code":101,"kind":"assert_eq","left":"alpha"',
+    '"message":"assertion failed: left == right","right":"alpine"',
+    '"verdict":"fail"',
+]
+
+[[case]]
+name = "a_returned_strbuf_renders_on_the_right"
+description = "The same operand on the other side: the slot and its scope are per operand, not per side."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn rendered() -> StrBuf {
+    let mut s = StrBuf.new();
+    s.push_str("alpha");
+    s
+}
+
+test "compares a returned string on the right" {
+    @assert_eq("alpine", rendered());
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"diff":[{"op":"equal","text":"alp"},{"op":"delete","text":"ine"},{"op":"insert","text":"ha"}],"exit_code":101,"kind":"assert_eq","left":"alpine"',
+    '"message":"assertion failed: left == right","right":"alpha"',
+    '"verdict":"fail"',
+]
+
+[[case]]
+name = "a_returned_struct_renders_its_owned_field"
+description = """
+A struct temporary owns its `StrBuf` field the same way, and the printer reaches
+that field's bytes through the same slot the comparison read.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+struct Thing { name: StrBuf, size: i32 }
+
+fn built() -> Thing {
+    let mut s = StrBuf.new();
+    s.push_str("alpha");
+    Thing { name: s, size: 3 }
+}
+
+test "compares a returned struct" {
+    @assert_eq(built(), Thing { name: StrBuf.from_str(borrow "alpha"), size: 4 });
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"kind":"assert_eq"',
+    '"left":"{ name: alpha, size: 3 }"',
+    '"right":"{ name: alpha, size: 4 }"',
+]
+
+[[case]]
+name = "owning_temporaries_are_dropped_exactly_once"
+description = """
+The passing half. Ten thousand comparisons of two fresh `StrBuf` temporaries run
+to completion: the drop that moved past the branch still runs on the holding
+path, once per operand — a second one would free a live block and take the
+process down long before the loop ended.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn rendered() -> StrBuf {
+    let mut s = StrBuf.new();
+    s.push_str("alpha");
+    s
+}
+
+test "owning temporaries are dropped exactly once" {
+    let mut i: i32 = 0;
+    while i < 10000 {
+        @assert_eq(rendered(), rendered());
+        i = i + 1;
+    }
+    @assert_eq(i, 10000);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 0
+compile_stdout_contains = [
+    '"verdict":"pass"',
+    '"crash":0,"event":"run_finished","failed":0,"passed":1',
+]
+
+# =============================================================================
 # The human rendering, built from the same values (ADR-0083 §2).
 # =============================================================================
 

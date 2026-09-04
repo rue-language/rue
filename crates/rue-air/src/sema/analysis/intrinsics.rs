@@ -1452,7 +1452,45 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Ok(AnalysisResult::new(block, Type::UNIT));
         }
 
-        let condition = self.build_comparison(air, failed, left, right, span, ctx)?;
+        // Give an owning operand a home that outlives the report.
+        //
+        // The comparison and the rendering must name one value, and that value
+        // has to still be alive when the report arm runs. A non-addressable
+        // operand — a call temporary such as `make()` or `s.clone()` — owns its
+        // resources with no place to own them from, so the aggregate comparison
+        // route materializes it into a frame slot in order to borrow it at all.
+        // Materializing it *here* instead is what keeps it alive (RUE-1951): a
+        // temp scope opened around the comparison alone ends with the block
+        // that computes the condition, so drop elaboration freed the temporary
+        // before the branch and the printer then read the freed heap block.
+        // Opening the scope around the whole intrinsic — comparison, branch,
+        // and report — puts that drop after the report instead. The report arm
+        // diverges, so on the failing path the drop never runs; on the passing
+        // path it runs exactly once, at the point the comparison's own scope
+        // used to run it.
+        //
+        // Only a value that owns something can be freed early, so only a type
+        // with drop glue needs the slot; a scalar rvalue stays a scalar rvalue
+        // and costs no frame storage.
+        let (left_value, mut temp_scope) =
+            self.materialize_comparison_operand(air, left.air_ref, left.ty, left_span, ctx)?;
+        let (right_value, right_scope) =
+            self.materialize_comparison_operand(air, right.air_ref, right.ty, right_span, ctx)?;
+        temp_scope.extend(right_scope);
+        let failed = if equality {
+            AirInstData::Ne(left_value, right_value)
+        } else {
+            AirInstData::Eq(left_value, right_value)
+        };
+
+        let condition = self.build_comparison(
+            air,
+            failed,
+            AnalysisResult::new(left_value, left.ty),
+            AnalysisResult::new(right_value, right.ty),
+            span,
+            ctx,
+        )?;
 
         // The report arm consumes nothing. Both operands were read as
         // projections above — the borrowing read `==` performs (4.3:3f) — and
@@ -1466,8 +1504,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             air,
             intrinsic_name,
             left.ty,
-            left.air_ref,
-            right.air_ref,
+            left_value,
+            right_value,
             span,
             ctx,
         )?;
@@ -1481,7 +1519,31 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty: Type::UNIT,
             span,
         });
+        let branch = self.wrap_value_with_temp_scope(air, branch, Type::UNIT, span, temp_scope)?;
         Ok(AnalysisResult::new(branch, Type::UNIT))
+    }
+
+    /// Stage one `@assert_eq`/`@assert_ne` operand so the comparison and the
+    /// failure report read the same live value.
+    ///
+    /// An operand that already names addressable storage is returned unchanged:
+    /// a local, a field of a `borrow` parameter, or any other place is read as
+    /// the projection it is, never copied and never dropped here. An owning
+    /// rvalue gets the same StorageLive/Alloc/Load home a borrow argument gets,
+    /// and the returned prefix is the temp scope the caller must stretch across
+    /// the whole intrinsic.
+    fn materialize_comparison_operand(
+        &mut self,
+        air: &mut Air,
+        value: AirRef,
+        ty: Type,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<(AirRef, Vec<AirRef>)> {
+        if !self.type_has_drop_glue(ty) {
+            return Ok((value, Vec::new()));
+        }
+        self.materialize_borrow_argument(air, value, ty, span, ctx)
     }
 
     /// The failing arm of a comparison assertion: render, stage the site,
