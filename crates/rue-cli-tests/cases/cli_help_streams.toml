@@ -35,3 +35,31 @@ args = ["--nonsense-flag", "main.rue"]
 compile_fail = true
 error_contains = ["Unknown option", "Usage: rue [options]"]
 compile_stdout_not_contains = ["Usage: rue"]
+
+# RUE-1960: `rue test` with no root used to report the compile-mode wording
+# ("No source file specified"), so the error named a form the user had not
+# typed. The subcommand was already recognized at that point, so the message
+# names it, and the usage block that follows carries the test-mode form.
+[[case]]
+name = "test_subcommand_without_a_root_names_the_test_form"
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
+args = ["test"]
+compile_fail = true
+error_contains = [
+    "Error: rue test needs a root source file",
+    "rue test [options] <root.rue>",
+]
+compile_stdout_not_contains = ["Usage: rue"]
+
+# The compile-mode wording is unchanged: a flag with no positional source is
+# still the generic message, and it is still the one the compile forms explain.
+[[case]]
+name = "compile_mode_without_a_root_keeps_the_generic_message"
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
+args = ["-O2"]
+compile_fail = true
+error_contains = [
+    "Error: No source file specified",
+    "Usage: rue [options] <root.rue> [output]",
+]
+compile_stderr_not_contains = ["rue test needs a root source file"]

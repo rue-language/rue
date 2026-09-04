@@ -158,15 +158,17 @@ A test is a declaration, not a convention:
 
 ```rue
 const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const Port = std.option.Option(u16);
 
-fn parse_port(s: StrBuf) -> Option(u16) { ... }
+fn parse_port(s: StrBuf) -> Port { ... }
 
 test "parse_port accepts the loopback default" {
-    @assert(parse_port(StrBuf.from("8080")).is_some());
+    @assert(parse_port(StrBuf.from_str(borrow "8080")) == Port.Some(8080));
 }
 
 test "parse_port rejects out-of-range values" {
-    @assert(parse_port(StrBuf.from("70000")).is_none());
+    @assert(parse_port(StrBuf.from_str(borrow "70000")) == Port.None);
 }
 ```
 

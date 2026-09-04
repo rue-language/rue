@@ -840,7 +840,13 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     }
 
     if positional.is_empty() {
-        eprintln!("Error: No source file specified");
+        // Name the form the user actually invoked. `rue test` with no root
+        // reached the compile-mode wording, so the error and the usage text
+        // that follows it both described a command the user had not typed.
+        match mode {
+            DriverMode::Test => eprintln!("Error: rue test needs a root source file"),
+            DriverMode::Compile => eprintln!("Error: No source file specified"),
+        }
         print_usage();
         return ParseResult::Error;
     }

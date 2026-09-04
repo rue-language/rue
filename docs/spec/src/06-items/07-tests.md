@@ -145,10 +145,17 @@ the expression evaluates to `v` and execution continues normally, exactly as
 
 When the operand is `None` or `Err(e)`, the enclosing function does **not**
 return. The implementation reports a structured failure naming the kind
-`unhandled_error`, the source position of the `?` operator itself, and the
-rendered error value (6.7:15); it then terminates the process the way every
-other trap does — exit status 101, with `panic: unhandled error` on the standard
-error stream (8.5). No further code in the test body is executed.
+`unhandled_error`, the source position at which the `?` operator's operand
+begins, and the rendered error value (6.7:15); it then terminates the process
+the way every other trap does — exit status 101, with `panic: unhandled error`
+on the standard error stream (8.5). No further code in the test body is
+executed.
+
+The reported position is the operand's first character rather than the `?`
+token, so the report names the expression that failed: in
+`let mut f = std.fs.File.open(borrow path)?;` it is the column of
+`std.fs.File.open`, which is what a reader needs in order to see which call
+produced the error.
 
 {{ rule(id="6.7:15", cat="normative") }}
 

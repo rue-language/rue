@@ -1,0 +1,38 @@
+[section]
+id = "diagnostics.std-path-missing"
+name = "A missing standard library says how to supply one"
+description = """
+RUE-1960: E0705's message says only that std was not found. Run directly —
+no build system, no toolchain wrapper — that was the whole diagnostic: a span
+on the `@import("std")` and nothing about what to do. The diagnostic now
+carries the `help:` line naming `RUE_STD_PATH`, the same variable
+`rue explain E0705` already names in its likely-cause text.
+
+The harness removes `RUE_STD_PATH` from every case environment that does not
+ask for the real standard library, so these cases reach the missing-std path
+without arranging anything.
+"""
+
+[[case]]
+name = "missing_std_import_helps_with_the_std_path_variable"
+description = "The E0705 diagnostic carries an actionable help line, not just the failing span."
+source = """
+const std = @import("std");
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "E0705",
+    "standard library not found",
+    "help: set RUE_STD_PATH to the toolchain's standard-library directory",
+]
+
+[[case]]
+name = "a_resolvable_std_import_carries_no_std_path_help"
+description = "The help line belongs to the failure, not to every std import: with a real standard library the program compiles and nothing mentions the variable."
+real_std = true
+source = """
+const std = @import("std");
+fn main() -> i32 { std.math.abs(-7) }
+"""
+exit_code = 7

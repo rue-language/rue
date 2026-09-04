@@ -6,8 +6,8 @@ RUE-1921 (ADR-0083 §1, spec 6.7:13 - 6.7:17): `?` in a test body reports and
 traps instead of propagating. These run the whole path through the real binary —
 compiler, linked test image, dispatched process, failure channel, runner — so
 what is pinned here is the verdict a consumer of the event stream actually sees:
-kind `unhandled_error`, the `?` site's own line and column rather than the test
-declaration's header, and the error rendered by the synthesized structural
+kind `unhandled_error`, the `?` operand's own line and column rather than the
+test declaration's header, and the error rendered by the synthesized structural
 printer.
 
 They use the real standard library because `?` accepts only the trusted
@@ -18,8 +18,8 @@ is by design under parallel workers, and the event schema is a consumer contract
 (docs/process/test-events.md).
 
 Each `?` site is pinned by line and column, which is how these cases show the
-report names the operator's own position rather than the test declaration's
-header: `    let value = <call>()?;` puts the operand at column 17.
+report names the operand's own start rather than the test declaration's header
+or the `?` token: `    let value = <call>()?;` puts the operand at column 17.
 """
 
 # =============================================================================
@@ -199,3 +199,52 @@ args = ["test", "main.rue", "--seed", "1", "-j1"]
 driver_exit_code = 0
 compile_stdout_contains = ["1 passed ("]
 compile_stdout_not_contains = ["FAIL", "unhandled_error"]
+
+# =============================================================================
+# Which position 6.7:14 means (RUE-1960).
+# =============================================================================
+
+[[case]]
+name = "the_reported_site_is_the_operand_start_not_the_operator"
+description = """
+Spec 6.7:14: the report names where the `?` operator's OPERAND begins, not the
+`?` token. The two coordinates are one column apart in the sibling cases above,
+which is enough to show the header is not used but not enough to show which end
+of the expression is. Here the `?` site is indented inside an `if` and the
+operand is eight characters wide, so the operand starts at column 21 and the
+operator sits at column 29 — an implementation that staged the operator's own
+position would report 29, and this case would fail.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+
+fn absent() -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
+    O.None
+}
+
+test "reports where the failing expression begins" {
+    if true {
+        let value = absent()?;
+        @assert(value == 0);
+    }
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"kind":"unhandled_error"',
+    '"column":21,"file":',
+    '"line":10}',
+]
+compile_stdout_not_contains = ['"column":29,', '"column":9,']

@@ -345,7 +345,7 @@ pub const KNOWN_UNCOVERED_NORMATIVE: &[(&str, &str)] = &[
          Covered end to end by \
          `crates/rue-compiler/src/test_image_tests.rs::platform_native_a_failing_test_body_question_reports_and_traps` \
          (exit 101, `panic: unhandled error` on stderr, one `unhandled_error` frame \
-         naming the `?` site) and \
+         naming the start of the `?` operand) and \
          `..._a_succeeding_test_body_question_completes_normally`.",
     ),
     (
