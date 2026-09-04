@@ -46,6 +46,7 @@ to the language's own `rue test` subcommand.
 - `docs/process/diagnostics.md`, `docs/process/logging.md`: the versioned
   `--error-format json` surface and the `tracing` conventions.
 - `docs/process/issue-tracking.md`: working with Linear.
+- `docs/process/codex.md`: guidance that applies only to Codex sessions.
 - `docs/designs/`: ADRs. `docs/spec/`: the language specification.
 
 ## Working rules
