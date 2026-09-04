@@ -34,7 +34,7 @@ pub struct Parser {
     }
 
     fn fallback() -> token.Token {
-        token.Token { kind: token.EOF, start: 0, end: 0, value: 0, aux: 0 }
+        token.Token { kind: token.EOF, start: 0, end: 0, value: 0, aux: 0, ctx: token.CTX_NONE }
     }
 
     fn current(borrow self) -> token.Token {
@@ -844,6 +844,27 @@ pub struct Parser {
         self.add(ast.DROP_FN, name.value, start, self.arena.at(body).end, body, 0, 0)
     }
 
+    // Whether the cursor is at the contextual `test` keyword introducing a
+    // test item: an IDENT spelled `test` whose very next token is a STRING
+    // (6.7:2, 6.7:3). Everywhere else `test` is an ordinary identifier
+    // (6.7:4), so this lookahead is the whole of the contextual split.
+    fn at_test_item(borrow self) -> bool {
+        self.at(token.IDENT) && self.current().ctx == token.CTX_TEST &&
+            self.kind_at(self.pos + 1) == token.STRING
+    }
+
+    // `test_item = directives "test" STRING block ;` (6.7:2). A test item
+    // takes no visibility or `unchecked`/`linear` modifier (6.7:5), so the
+    // caller only reaches this with no modifier eaten. The name string is a
+    // value, not a child: like `parse_function`, the node records its
+    // directives and body and nothing else.
+    fn parse_test(inout self, directives: u64) -> u64 {
+        let start = self.bump().start;
+        let name = self.expect(token.STRING);
+        let body = self.parse_block();
+        self.add(ast.TEST_DECL, name.value, start, self.arena.at(body).end, directives, body, 0)
+    }
+
     fn parse_item(inout self) -> u64 {
         let directives = self.parse_directives();
         let mut flags: u64 = 0;
@@ -855,6 +876,7 @@ pub struct Parser {
         else if self.at(token.ENUM) { self.parse_enum(directives, flags) }
         else if self.at(token.DROP) { self.parse_drop(false) }
         else if self.at(token.CONST) { self.parse_const(directives, flags) }
+        else if flags == 0 && self.at_test_item() { self.parse_test(directives) }
         else {
             self.report(token.FN);
             let bad = self.bump();

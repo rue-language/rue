@@ -1395,6 +1395,7 @@ pub(crate) const ROOTS: &[(&str, &[&str])] = &[
             "structs.rue",
             "sudoku/board.rue",
             "sudoku/main.rue",
+            "test_items.rue",
             "tinydb/db/_db.rue",
             "tinydb/db/query.rue",
             "tinydb/db/record.rue",

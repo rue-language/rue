@@ -1,0 +1,55 @@
+// Test items (6.7), and the contextual keyword that introduces them.
+//
+// `test` is not a keyword (2.4:2): it introduces a test item only at item
+// position and only when the very next token is a string literal (6.7:2,
+// 6.7:3). Everywhere else it is an ordinary identifier (6.7:4). Both halves
+// live here so the stage-1 frontend differential compares them against the
+// production parser on every run.
+//
+// A test item takes no visibility or `unchecked`/`linear` modifier (6.7:5),
+// but it may carry the directives a function carries. An executable build
+// ignores the bodies (RUE-1955), so `main` below is the whole program.
+
+const std = @import("std");
+const OptI64 = std.option.Option(i64);
+
+// 6.7:4: `test` as an ordinary function name.
+fn test(x: i32) -> i32 { x }
+
+// 6.7:4: `test` as a struct field name.
+struct Fixture {
+    test: i64,
+}
+
+// 6.7:4: `test` as a method name.
+struct Runner {
+    count: i64,
+
+    fn test(borrow self) -> i64 { self.count }
+}
+
+fn present() -> OptI64 {
+    OptI64.Some(7)
+}
+
+// 6.7:2: directives precede the contextual keyword.
+@allow(unused_variable)
+test "a test item may carry directives" {
+    let ignored = test(1);
+}
+
+// 6.7:2: the block is a block, so an empty one is a whole test item.
+test "an empty body is still a test item" {}
+
+test "a body is an ordinary block" {
+    let value = present()?;
+    @assert_eq(value, 7);
+}
+
+fn main() -> i32 {
+    // 6.7:4: `test` as a local binder, and as the callee initializing it.
+    let test = test(0);
+    let fixture = Fixture { test: 2 };
+    let runner = Runner { count: 3 };
+    if test == 0 && fixture.test == 2 && runner.test() == 3 { 0 } else { 1 }
+}

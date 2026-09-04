@@ -107,6 +107,13 @@ pub const GTGTEQ: u64 = 105;
 
 pub const UNKNOWN: u64 = 255;
 
+// Contextual keywords (6.7:4). A contextual keyword lexes as an ordinary
+// IDENT — the token dump is unchanged — so the parser needs the lexeme to
+// decide whether it introduces an item. The parser has no interner, so the
+// lexer tags the word here instead.
+pub const CTX_NONE: u64 = 0;
+pub const CTX_TEST: u64 = 1;
+
 pub struct Token {
     kind: u64,
     start: u64,
@@ -115,6 +122,10 @@ pub struct Token {
     // Parser-only lexical policy (0 ordinary, 1 all intrinsic args are types,
     // 2 only the first intrinsic arg is a type). Never affects token dumps.
     aux: u64,
+    // Contextual-keyword identity of an IDENT lexeme (CTX_* above), kept apart
+    // from `aux` so an intrinsic spelled with a contextual keyword's name
+    // cannot be read as a type-argument policy. Never affects token dumps.
+    ctx: u64,
 }
 
 pub const Tokens = std.arraybuf.ArrayBuf(Token);
