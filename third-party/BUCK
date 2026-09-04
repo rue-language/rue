@@ -5523,6 +5523,12 @@ buildscript_run(
     version = "0.8.31",
 )
 
+rue_alias(
+    name = "zmij",
+    actual = ":zmij-0.1.7",
+    visibility = ["PUBLIC"],
+)
+
 rue_rust_library(
     name = "zmij-0.1.7",
     srcs = [

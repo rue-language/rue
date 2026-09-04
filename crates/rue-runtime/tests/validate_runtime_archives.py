@@ -17,6 +17,7 @@ N_SECT = 0x0E
 N_PEXT = 0x10
 CHUNKED_SYMBOLS = ("memcpy", "memmove", "memset", "memcmp", "bcmp", "__rue_str_eq")
 RESERVED_SYMBOLS = ("memcpy", "memmove", "memset", "memcmp", "bcmp")
+FLOAT_FORMAT_SYMBOL = "__rue_to_string_float"
 ELF_SHT_RELA = 4
 ELF_SHT_REL = 9
 ELF_SHT_SYMTAB = 2
@@ -194,6 +195,41 @@ def validate_str_eq_source(path: Path):
         raise AssertionError(f"{path}: bcmp result is not the returned equality")
     if re.search(r"\b(?:while|for)\b|read_chunk|write_chunk|read_unaligned|write_unaligned", body):
         raise AssertionError(f"{path}: __rue_str_eq contains an independent comparison loop")
+
+
+def validate_float_format_source(path: Path):
+    """Require one width-explicit helper that delegates both widths to zmij."""
+    code = _strip_rust_comments(path.read_text())
+    declarations = re.findall(r"\bfn\s+__rue_to_string_float\s*\(", code)
+    if len(declarations) != 1:
+        raise AssertionError(
+            f"{path}: expected one __rue_to_string_float implementation, "
+            f"found {len(declarations)}"
+        )
+    body = _function_body(code, FLOAT_FORMAT_SYMBOL)
+    required = (
+        r"zmij::Buffer::new\s*\(",
+        r"FLOAT_WIDTH_F32",
+        r"f32::from_bits\s*\(",
+        r"FLOAT_WIDTH_F64",
+        r"f64::from_bits\s*\(",
+        r"publish_owned_strbuf\s*\(",
+    )
+    for pattern in required:
+        if not re.search(pattern, body):
+            raise AssertionError(
+                f"{path}: __rue_to_string_float is missing required source shape {pattern}"
+            )
+    if len(re.findall(r"\.format\s*\(", body)) != 2:
+        raise AssertionError(
+            f"{path}: __rue_to_string_float must delegate both widths directly to zmij"
+        )
+    if re.search(r"\b(?:while|for)\b|format!|\.to_string\s*\(", body):
+        raise AssertionError(
+            f"{path}: __rue_to_string_float contains an independent formatter"
+        )
+    if re.search(r"\bfn\s+__rue_to_string_float_(?:f32|f64)\s*\(", code):
+        raise AssertionError(f"{path}: width-specific float formatter authority is forbidden")
 
 
 def parse_elf_object(payload: bytes):
@@ -770,6 +806,29 @@ def validate_chunked_primitives(path: Path, expected_format: str, expected_machi
         )
 
 
+def validate_float_format_symbol(path: Path, expected_format: str, expected_machine: int):
+    """Require exactly one canonical float-format export and no width peers."""
+    definitions = []
+    forbidden = []
+    for member, payload in archive_members(path):
+        machine = elf_machine(payload) if expected_format == "elf" else macho_cpu(payload)
+        if machine != expected_machine:
+            continue
+        bodies = parse_elf_object(payload) if expected_format == "elf" else parse_macho_object(payload)
+        for name in bodies:
+            normalized = _normalized_target(name, expected_format)
+            if normalized == FLOAT_FORMAT_SYMBOL:
+                definitions.append(member)
+            elif normalized.startswith(FLOAT_FORMAT_SYMBOL + "_"):
+                forbidden.append((member, normalized))
+    if len(definitions) != 1:
+        raise AssertionError(
+            f"{path}: expected one {FLOAT_FORMAT_SYMBOL} definition, found {len(definitions)}"
+        )
+    if forbidden:
+        raise AssertionError(f"{path}: forbidden width-specific float formatter exports: {forbidden}")
+
+
 def _collect_archive_definitions(path: Path, objects, expected_format: str):
     """Collect every required definition so duplicate members fail closed."""
     definitions = {symbol: [] for symbol in CHUNKED_SYMBOLS}
@@ -840,12 +899,14 @@ def validate_archive(path: Path, expected_format: str, expected_machine: int):
             )
 
     validate_chunked_primitives(path, expected_format, expected_machine)
+    validate_float_format_symbol(path, expected_format, expected_machine)
 
 
 def main():
     source = os.environ.get("RUNTIME_STRING_SOURCE")
     if source:
         validate_str_eq_source(Path(source))
+        validate_float_format_source(Path(source))
     validate_archive(Path(os.environ["RUNTIME_X86_64_LINUX"]), "elf", 62)
     validate_archive(Path(os.environ["RUNTIME_AARCH64_LINUX"]), "elf", 183)
     validate_archive(Path(os.environ["RUNTIME_AARCH64_MACOS"]), "macho", 0x0100000C)

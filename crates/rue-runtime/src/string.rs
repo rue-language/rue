@@ -6,7 +6,7 @@
 //! results returned through the `StrBuf` three-word representation.
 
 use crate::heap;
-pub use rue_runtime_abi::StrBufResult;
+pub use rue_runtime_abi::{FLOAT_WIDTH_F32, FLOAT_WIDTH_F64, StrBufResult};
 
 /// Minimum capacity for runtime-produced `StrBuf` values.
 pub const STRING_MIN_CAPACITY: u64 = 16;
@@ -62,6 +62,36 @@ crate::define_runtime_implementation! {
         // SAFETY: Equal lengths and the caller's contract make both ranges
         // valid for the comparison.
         (unsafe { crate::memory::bcmp(ptr1, ptr2, len1 as usize) == 0 }) as u64
+    }
+}
+
+/// Copy formatter-owned bytes into a fresh allocation with the canonical
+/// runtime-produced `StrBuf` capacity and ownership contract.
+///
+/// # Safety
+///
+/// `out` must point to valid, aligned, exclusive result storage.
+unsafe fn publish_owned_strbuf(out: *mut StrBufResult, bytes: &[u8]) {
+    let len = bytes.len() as u64;
+    let cap = if len < STRING_MIN_CAPACITY {
+        STRING_MIN_CAPACITY
+    } else {
+        len
+    };
+    let ptr = heap::alloc(cap, 1);
+    if ptr.is_null() {
+        crate::error::allocation_failure();
+    }
+
+    // SAFETY: `ptr` is a fresh allocation of `cap >= len` bytes, `bytes`
+    // contains exactly `len` initialized bytes, and the caller provides valid
+    // result storage. Publishing happens only after allocation succeeds, so a
+    // trap cannot leave a partially initialized owner behind.
+    unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+        (*out).ptr = ptr;
+        (*out).cap = cap;
+        (*out).len = len;
     }
 }
 
@@ -621,6 +651,49 @@ crate::define_runtime_implementation! {
     }
 }
 
+crate::define_runtime_implementation! {
+    /// Format an IEEE-754 `f32` or `f64` to its shortest round-trip decimal
+    /// representation through the vendored `zmij` implementation.
+    ///
+    /// # ABI (sret convention)
+    ///
+    /// ```text
+    /// extern "C" fn __rue_to_string_float(
+    ///     out: *mut StrBufResult,
+    ///     bits: u64,
+    ///     width: u32,
+    /// )
+    /// ```
+    ///
+    /// `bits` carries the input's raw IEEE representation. `width` is exactly
+    /// `FLOAT_WIDTH_F32` or `FLOAT_WIDTH_F64`; an f32 encoding must have its
+    /// upper 32 bits clear. Using integer boundary types makes width and NaN
+    /// payload preservation independent of target C floating-point ABIs. Any
+    /// invalid encoding traps before allocation rather than guessing a width.
+    /// The returned `StrBuf` owns a fresh heap buffer.
+    ///
+    /// # Safety
+    ///
+    /// `out` must point to valid, aligned, exclusive result storage.
+    pub unsafe extern "C" fn __rue_to_string_float(
+        out: *mut StrBufResult,
+        bits: u64,
+        width: u32,
+    ) {
+        let mut formatter = zmij::Buffer::new();
+        let formatted = match width {
+            FLOAT_WIDTH_F32 if bits <= u32::MAX as u64 => {
+                formatter.format(f32::from_bits(bits as u32))
+            }
+            FLOAT_WIDTH_F64 => formatter.format(f64::from_bits(bits)),
+            _ => crate::error::__rue_panic_no_msg(),
+        };
+
+        // SAFETY: inherited from this function's caller contract.
+        unsafe { publish_owned_strbuf(out, formatted.as_bytes()) };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -641,6 +714,44 @@ mod tests {
         // SAFETY: Formatting functions publish at least `len` initialized
         // bytes in a live allocation.
         unsafe { core::slice::from_raw_parts(result.ptr, result.len as usize) }
+    }
+
+    fn free_result(result: &mut StrBufResult) {
+        // SAFETY: Formatting returned this live allocation with exactly the
+        // published capacity and byte alignment. Clear the header so tests
+        // cannot accidentally inspect or free the released owner again.
+        unsafe { heap::free(result.ptr, result.cap, 1) };
+        *result = blank_result();
+    }
+
+    fn assert_f32(value: f32, expected: &str) {
+        let mut out = blank_result();
+        // SAFETY: `out` is valid, aligned, exclusive result storage and the
+        // zero-extended raw bits match the explicit f32 width.
+        unsafe { __rue_to_string_float(&mut out, value.to_bits() as u64, FLOAT_WIDTH_F32) };
+        assert_eq!(result_bytes(&out), expected.as_bytes());
+        assert!(out.cap >= out.len);
+        if value.is_finite() {
+            let rendered = self::std::str::from_utf8(result_bytes(&out)).unwrap();
+            let parsed: f32 = rendered.parse().unwrap();
+            assert_eq!(parsed.to_bits(), value.to_bits(), "{value:?} -> {rendered}");
+        }
+        free_result(&mut out);
+    }
+
+    fn assert_f64(value: f64, expected: &str) {
+        let mut out = blank_result();
+        // SAFETY: `out` is valid, aligned, exclusive result storage and the raw
+        // bits match the explicit f64 width.
+        unsafe { __rue_to_string_float(&mut out, value.to_bits(), FLOAT_WIDTH_F64) };
+        assert_eq!(result_bytes(&out), expected.as_bytes());
+        assert!(out.cap >= out.len);
+        if value.is_finite() {
+            let rendered = self::std::str::from_utf8(result_bytes(&out)).unwrap();
+            let parsed: f64 = rendered.parse().unwrap();
+            assert_eq!(parsed.to_bits(), value.to_bits(), "{value:?} -> {rendered}");
+        }
+        free_result(&mut out);
     }
 
     #[test]
@@ -767,9 +878,74 @@ mod tests {
         // SAFETY: `out` is valid, aligned, exclusive result storage.
         unsafe { __rue_to_string(&mut out, i64::MIN) };
         assert_eq!(result_bytes(&out), b"-9223372036854775808");
+        free_result(&mut out);
 
         unsafe { __rue_to_string_unsigned(&mut out, u64::MAX) };
         assert_eq!(result_bytes(&out), b"18446744073709551615");
+        free_result(&mut out);
+    }
+
+    #[test]
+    fn float_formatting_is_shortest_round_trip_for_f32() {
+        assert_f32(-0.0, "-0.0");
+        assert_f32(f32::INFINITY, "inf");
+        assert_f32(f32::NEG_INFINITY, "-inf");
+        assert_f32(f32::NAN, "NaN");
+        assert_f32(f32::from_bits(1), "1e-45");
+        assert_f32(f32::from_bits(0x007f_ffff), "1.1754942e-38");
+        assert_f32(f32::MIN_POSITIVE, "1.1754944e-38");
+        assert_f32(0.1, "0.1");
+        assert_f32(1.234_567_8, "1.2345678");
+        assert_f32(f32::MAX, "3.4028235e+38");
+        assert_f32(f32::MIN, "-3.4028235e+38");
+    }
+
+    #[test]
+    fn float_formatting_is_shortest_round_trip_for_f64() {
+        assert_f64(-0.0, "-0.0");
+        assert_f64(f64::INFINITY, "inf");
+        assert_f64(f64::NEG_INFINITY, "-inf");
+        assert_f64(f64::NAN, "NaN");
+        assert_f64(f64::from_bits(1), "5e-324");
+        assert_f64(
+            f64::from_bits(0x000f_ffff_ffff_ffff),
+            "2.225073858507201e-308",
+        );
+        assert_f64(f64::MIN_POSITIVE, "2.2250738585072014e-308");
+        assert_f64(0.1, "0.1");
+        assert_f64(1.234_567_890_123_456_7, "1.2345678901234567");
+        assert_f64(f64::MAX, "1.7976931348623157e+308");
+        assert_f64(f64::MIN, "-1.7976931348623157e+308");
+    }
+
+    #[test]
+    fn float_formatting_rejects_ambiguous_width_encodings() {
+        const CHILD_ENV: &str = "RUE_FLOAT_WIDTH_CHILD";
+        if let Some(mode) = self::std::env::var_os(CHILD_ENV) {
+            let mut out = blank_result();
+            unsafe {
+                match mode.to_string_lossy().as_ref() {
+                    "unknown-width" => __rue_to_string_float(&mut out, 0, 0),
+                    "wide-f32-bits" => __rue_to_string_float(&mut out, 1 << 32, FLOAT_WIDTH_F32),
+                    other => panic!("unknown float-width failure mode: {other}"),
+                }
+            }
+            unreachable!();
+        }
+
+        for mode in ["unknown-width", "wide-f32-bits"] {
+            let output = Command::new(self::std::env::current_exe().expect("current test binary"))
+                .args([
+                    "--exact",
+                    "string::tests::float_formatting_rejects_ambiguous_width_encodings",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, mode)
+                .output()
+                .expect("spawn invalid-float-width child");
+            assert_eq!(output.status.code(), Some(101), "mode {mode}");
+            assert_eq!(output.stderr, b"panic\n", "mode {mode}");
+        }
     }
 
     #[test]
@@ -782,13 +958,14 @@ mod tests {
                 match mode.to_string_lossy().as_ref() {
                     "signed" => __rue_to_string(&mut out, 1),
                     "unsigned" => __rue_to_string_unsigned(&mut out, 1),
+                    "float" => __rue_to_string_float(&mut out, 1.0f64.to_bits(), FLOAT_WIDTH_F64),
                     other => panic!("unknown allocation failure mode: {other}"),
                 }
             }
             unreachable!();
         }
 
-        for mode in ["signed", "unsigned"] {
+        for mode in ["signed", "unsigned", "float"] {
             let output = Command::new(self::std::env::current_exe().expect("current test binary"))
                 .args([
                     "--exact",

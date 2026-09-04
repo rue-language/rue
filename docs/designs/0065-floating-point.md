@@ -287,7 +287,7 @@ register-class pre-work (Phase 1) is a hard prerequisite for Phases 5–6.
   diagnostic naming the tracking issue and the `std.math.rem` path (§9). RUE-1070
 - [ ] **Phase 5: x86-64 backend** — SSE2 scalar ops, XMM regs, SysV FP ABI. RUE-NNN
 - [ ] **Phase 6: aarch64 backend** — FP/NEON scalar ops, V-regs, AAPCS64 FP ABI. RUE-NNN
-- [ ] **Phase 7: Runtime dtoa** — wire `zmij` as `__rue_to_string_float`. RUE-NNN
+- [x] **Phase 7: Runtime dtoa** — wire `zmij` as `__rue_to_string_float`. RUE-1073
 - [ ] **Phase 8: std.math / std.fmt / @dbg** — hardware-instruction math, float
   formatting, `@total_cmp` lowering (§8). RUE-NNN
 - [ ] **Phase 9: Spec + spec tests** — a `03-types/` float chapter, division-divergence
