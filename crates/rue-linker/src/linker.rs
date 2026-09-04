@@ -1160,13 +1160,63 @@ impl Linker {
         }
     }
 
+    /// Translate a caller-supplied symbol name into the spelling this linker's
+    /// symbol tables use.
+    ///
+    /// Every table the linker keys by name — `global_symbols`, the archive
+    /// provider index built by [`Self::select_archive_members`], and the
+    /// laid-out `symbol_addresses` — holds *parsed* names. Parsing a Mach-O
+    /// object strips the single leading underscore that emission adds to every
+    /// symbol, so the runtime's on-disk `__main` is stored as `_main`
+    /// (`strip_macho_underscore`, RUE-919). ELF names pass through unchanged
+    /// during parsing, so there is nothing to undo there.
+    ///
+    /// Callers name symbols the way the target's tooling does — the on-disk
+    /// spelling, the same one handed to `ld -e`. Comparing that raw against the
+    /// parsed tables silently missed on Mach-O: the entry point required as
+    /// `__main` never matched the archive index's `_main`, so the required-symbol
+    /// pull never fired and the runtime's entry member was only ever extracted
+    /// because it also happens to define the reserved exports (`memcpy`,
+    /// `memset`, ...) that real programs reference (RUE-1996). Routing both the
+    /// required list and the entry lookup through this one function is what keeps
+    /// them agreeing on a single spelling.
+    fn parsed_symbol_name(target: Target, name: &str) -> &str {
+        if target.is_macho() {
+            crate::util::strip_macho_underscore(name)
+        } else {
+            name
+        }
+    }
+
     /// Mark a symbol as required.
     ///
     /// Required symbols are treated as undefined during archive linking,
     /// ensuring that objects defining them are pulled in from archives.
     /// This is typically used for the entry point symbol.
+    ///
+    /// The name is stored in the parsed spelling ([`Self::parsed_symbol_name`]),
+    /// because archive selection matches it against parsed member symbols.
     pub fn require_symbol(&mut self, name: impl Into<String>) {
-        self.required_symbols.push(name.into());
+        let name = name.into();
+        let parsed = Self::parsed_symbol_name(self.target, &name);
+        if parsed.len() == name.len() {
+            self.required_symbols.push(name);
+        } else {
+            let parsed = parsed.to_string();
+            self.required_symbols.push(parsed);
+        }
+    }
+
+    /// Whether some object already taken into this link defines `name`.
+    ///
+    /// `name` is given in the target's on-disk spelling and normalized by
+    /// [`Self::parsed_symbol_name`], so a caller can ask about a symbol using
+    /// the same name it passed to [`Self::require_symbol`] — which is how a
+    /// caller checks that its required symbol actually pulled an archive member.
+    #[must_use]
+    pub fn defines_symbol(&self, name: &str) -> bool {
+        self.global_symbols
+            .contains_key(Self::parsed_symbol_name(self.target, name))
     }
 
     /// Add an object file to be linked.
@@ -1784,17 +1834,19 @@ impl Linker {
         // the single leading underscore that Mach-O adds to every symbol (see
         // `strip_macho_underscore`). The caller passes the entry point by its
         // on-disk Mach-O name (e.g. the runtime's `_main` is requested here as
-        // its emitted `__main`), so strip it the same way before looking it up.
-        // We still try the raw and one-more-prefixed forms so an already
-        // source-level entry name, or a differently-prefixed one, resolves too.
+        // its emitted `__main`), so normalize it the same way `require_symbol`
+        // does before looking it up — one function, so the required-symbol pull
+        // and this lookup can never disagree about the spelling (RUE-1996).
         // Getting the strip right made `_foo`/`__foo` distinct but also shortened
         // the runtime entry to `_main`, so this lookup must strip in lockstep
-        // (RUE-919).
-        let stripped_entry = crate::util::strip_macho_underscore(entry_point);
+        // (RUE-919). We still try the raw and one-more-prefixed forms so an
+        // already source-level entry name, or a differently-prefixed one,
+        // resolves too.
+        let parsed_entry = Self::parsed_symbol_name(self.target, entry_point);
         let entry_vaddr = symbol_addresses
             .globals
-            .get(entry_point)
-            .or_else(|| symbol_addresses.globals.get(stripped_entry))
+            .get(parsed_entry)
+            .or_else(|| symbol_addresses.globals.get(entry_point))
             .or_else(|| symbol_addresses.globals.get(&format!("_{}", entry_point)))
             .copied()
             .ok_or_else(|| LinkError::UndefinedSymbol(entry_point.to_string()))?;
@@ -2253,10 +2305,18 @@ impl Linker {
             }
         }
 
-        // Find entry point (always a global symbol)
+        // Find entry point (always a global symbol).
+        //
+        // ELF parsing passes symbol names through unchanged (RUE-919), so
+        // normalization is the identity here and this lookup sees the caller's
+        // `_start` verbatim. It still goes through the same function as the
+        // required-symbol list and the Mach-O lookup, so the ELF path cannot
+        // drift into the mirror image of RUE-1996 if the parse side ever gains a
+        // decoration of its own.
+        let parsed_entry = Self::parsed_symbol_name(self.target, entry_point);
         let entry_addr = *symbol_addresses
             .globals
-            .get(entry_point)
+            .get(parsed_entry)
             .ok_or_else(|| LinkError::UndefinedSymbol(entry_point.to_string()))?;
 
         drop(layout_span);
@@ -2545,6 +2605,7 @@ mod tests {
     // Use X86_64Linux explicitly for ELF tests since ObjectFile only parses ELF
     // and the Linker produces ELF executables
     const ELF_TARGET: Target = Target::X86_64Linux;
+    const MACHO_TARGET: Target = Target::Aarch64Macos;
 
     #[test]
     fn large_structured_link_observes_bounded_cancellation_checkpoints() {
@@ -3743,6 +3804,19 @@ mod tests {
     /// symbols. Each member gets a one-byte `.text` section so distinct members
     /// stay individually linkable. Used by the RUE-848 archive-order tests.
     fn archive_member(defs: &[(&str, SymbolBinding)], undefs: &[&str]) -> ObjectFile {
+        archive_member_for(ELF_TARGET, defs, undefs)
+    }
+
+    /// [`archive_member`] in `target`'s object form.
+    ///
+    /// Symbol names are given as the linker sees them after parsing, which for
+    /// Mach-O means the leading underscore emission adds has already been
+    /// stripped (RUE-919) — the same shape a real archive member arrives in.
+    fn archive_member_for(
+        target: Target,
+        defs: &[(&str, SymbolBinding)],
+        undefs: &[&str],
+    ) -> ObjectFile {
         use crate::elf::SymbolType;
         let mut symbols: Vec<Symbol> = defs
             .iter()
@@ -3774,8 +3848,79 @@ mod tests {
             }],
             symbols,
             section_map: AHashMap::from([(".text".into(), 0)]),
-            machine: crate::elf::ElfMachine::X86_64,
-            format: crate::elf::ObjectFormat::Elf,
+            machine: match target {
+                Target::X86_64Linux => crate::elf::ElfMachine::X86_64,
+                Target::Aarch64Linux | Target::Aarch64Macos => crate::elf::ElfMachine::Aarch64,
+            },
+            format: if target.is_macho() {
+                crate::elf::ObjectFormat::MachO
+            } else {
+                crate::elf::ObjectFormat::Elf
+            },
+        }
+    }
+
+    /// RUE-1996: a required symbol must pull the archive member that defines it
+    /// on every object format.
+    ///
+    /// The caller names the symbol the way the target's tooling does — the
+    /// on-disk spelling — while the provider index `select_archive_members`
+    /// builds is keyed by parsed names, from which Mach-O parsing has already
+    /// stripped one leading underscore. Comparing the two raw made the pull a
+    /// no-op on Mach-O: the entry point required as `__main` never matched the
+    /// runtime's parsed `_main`, so its member arrived only when something else
+    /// in the link happened to reference one of the reserved exports that member
+    /// also defines. Nothing else references anything here, so the requirement
+    /// is the only thing that can pull the member.
+    #[test]
+    fn test_required_symbol_pulls_member_across_object_formats() {
+        for (target, on_disk, parsed) in [
+            (ELF_TARGET, "_start", "_start"),
+            (MACHO_TARGET, "__main", "_main"),
+        ] {
+            let members = || {
+                vec![
+                    archive_member_for(target, &[("unrelated", SymbolBinding::Global)], &[]),
+                    archive_member_for(
+                        target,
+                        &[
+                            (parsed, SymbolBinding::Global),
+                            ("entry_member_marker", SymbolBinding::Global),
+                        ],
+                        &[],
+                    ),
+                ]
+            };
+
+            let mut linker = Linker::new(target);
+            linker.require_symbol(on_disk);
+            linker
+                .add_archive(Archive { objects: members() })
+                .expect("the archive links");
+            assert!(
+                linker.defines_symbol(on_disk),
+                "{target}: requiring {on_disk} must pull the member defining {parsed}"
+            );
+            assert!(
+                linker.global_symbols.contains_key("entry_member_marker"),
+                "{target}: the whole required member is pulled, not just its name"
+            );
+            assert!(
+                !linker.global_symbols.contains_key("unrelated"),
+                "{target}: a member nothing needs stays out"
+            );
+
+            // Control: without the requirement nothing references the member, so
+            // it must not be selected. This is what makes the assertion above
+            // evidence that the *required* pull fired.
+            let mut unrequired = Linker::new(target);
+            unrequired
+                .add_archive(Archive { objects: members() })
+                .expect("the archive links");
+            assert!(
+                !unrequired.defines_symbol(on_disk),
+                "{target}: an unrequired, unreferenced member must not be pulled"
+            );
         }
     }
 
