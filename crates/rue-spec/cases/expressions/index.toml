@@ -212,6 +212,160 @@ fn main() -> i32 {
 """
 exit_code = 4
 
+# A write names an element the same way a read does. An assignment target is a
+# place context and its base chain is not a use (3.8:76), but the element it
+# names must still exist, so every traced write path applies the same
+# constant-index check the reads above do: a field assignment through the
+# element, a nested field or element assignment under it, an `inout` argument,
+# a compound assignment, and an accessor receiver. Each reports E0902 at the
+# index, with the span `xs[5].a` reports as a read (RUE-2008).
+
+[[case]]
+name = "constant_index_out_of_bounds_in_field_assignment"
+error_contains = "[E0902]"
+expected_error_code = "E0902"
+spec = ["4.11:7"]
+description = "Assigning a field through an out-of-range constant element is rejected"
+source = """
+struct P { a: i32, b: i32 }
+
+fn main() -> i32 {
+    let mut xs: [P; 2] = [P { a: 1, b: 2 }, P { a: 3, b: 4 }];
+    xs[5].a = 7;
+    xs[0].a
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "constant_index_out_of_bounds_in_nested_field_assignment"
+error_contains = "[E0902]"
+expected_error_code = "E0902"
+spec = ["4.11:7"]
+description = "The out-of-range element is found however deep the assigned field chain is"
+source = """
+struct Inner { b: i32 }
+struct P { a: i32, inner: Inner }
+
+fn main() -> i32 {
+    let mut xs: [P; 2] = [
+        P { a: 1, inner: Inner { b: 2 } },
+        P { a: 3, inner: Inner { b: 4 } },
+    ];
+    xs[5].inner.b = 1;
+    xs[0].a
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "constant_index_out_of_bounds_in_nested_element_assignment"
+error_contains = "[E0902]"
+expected_error_code = "E0902"
+spec = ["4.11:7"]
+description = "An element assignment reports the out-of-range index in its base, not only its own"
+source = """
+struct P { a: i32, arr: [i32; 2] }
+
+fn main() -> i32 {
+    let mut xs: [P; 2] = [P { a: 1, arr: [1, 2] }, P { a: 3, arr: [3, 4] }];
+    xs[5].arr[0] = 1;
+    xs[0].a
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "constant_index_out_of_bounds_in_inout_argument"
+error_contains = "[E0902]"
+expected_error_code = "E0902"
+spec = ["4.11:7"]
+description = "An `inout` argument naming a field of an out-of-range element is rejected"
+source = """
+struct P { a: i32, b: i32 }
+
+fn bump(inout v: i32) { v = v + 1; }
+
+fn main() -> i32 {
+    let mut xs: [P; 2] = [P { a: 1, b: 2 }, P { a: 3, b: 4 }];
+    bump(inout xs[5].a);
+    xs[0].a
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "constant_index_out_of_bounds_in_compound_assignment"
+error_contains = "[E0902]"
+expected_error_code = "E0902"
+spec = ["4.11:7", "5.2:16"]
+description = "A compound assignment through an out-of-range element is rejected"
+source = """
+struct P { a: i32, b: i32 }
+
+fn main() -> i32 {
+    let mut xs: [P; 2] = [P { a: 1, b: 2 }, P { a: 3, b: 4 }];
+    xs[5].a += 1;
+    xs[0].a
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "constant_index_out_of_bounds_in_accessor_receiver"
+error_contains = "[E0902]"
+expected_error_code = "E0902"
+spec = ["4.11:7", "6.6:15"]
+description = "An accessor receiver written through an out-of-range element is rejected"
+source = """
+struct Cell { value: i64 }
+struct P {
+    cell: Cell,
+    fn cell_mut(inout self) -> inout Cell { yield self.cell; }
+}
+
+fn main() -> i32 {
+    let mut xs: [P; 2] = [P { cell: Cell { value: 1 } }, P { cell: Cell { value: 2 } }];
+    xs[5].cell_mut().value = 7;
+    0
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "constant_index_in_bounds_in_write_chain_runs"
+spec = ["4.11:7", "4.11:12", "5.2:16", "6.6:15"]
+description = "The in-bounds forms of those same writes compile and run"
+source = """
+struct Inner { b: i32 }
+struct Cell { value: i32 }
+struct P {
+    a: i32,
+    inner: Inner,
+    arr: [i32; 2],
+    cell: Cell,
+
+    fn cell_mut(inout self) -> inout Cell { yield self.cell; }
+}
+
+fn bump(inout v: i32) { v = v + 1; }
+
+fn main() -> i32 {
+    let mut xs: [P; 2] = [
+        P { a: 1, inner: Inner { b: 2 }, arr: [3, 4], cell: Cell { value: 5 } },
+        P { a: 6, inner: Inner { b: 7 }, arr: [8, 9], cell: Cell { value: 10 } },
+    ];
+    xs[1].a = 7;
+    xs[0].inner.b = 1;
+    xs[1].arr[0] = 1;
+    bump(inout xs[0].a);
+    xs[1].inner.b += 1;
+    xs[0].cell_mut().value = 3;
+    xs[1].a + xs[0].inner.b + xs[1].arr[0] + xs[0].a + xs[1].inner.b + xs[0].cell.value
+}
+"""
+exit_code = 22
+
 # =============================================================================
 # Runtime Bounds Checking
 # =============================================================================
