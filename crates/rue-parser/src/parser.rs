@@ -119,6 +119,22 @@ impl PrimitiveTypeSpurs {
 }
 
 impl Parser {
+    fn parse_items_with_recovery(&mut self) -> Vec<Item> {
+        let mut items = Vec::new();
+        while !self.at(TokenKind::Eof) {
+            let start = self.cursor;
+            match self.item() {
+                Ok(item) => items.push(item),
+                Err(()) => {
+                    self.cursor = start;
+                    let span = self.recover_item();
+                    items.push(Item::Error(span));
+                }
+            }
+        }
+        items
+    }
+
     /// Snapshot the anonymous-type-literal counter before parsing a body.
     fn anonymous_literal_mark(&self) -> usize {
         self.anonymous_type_literals
@@ -235,19 +251,7 @@ impl Parser {
 
         let items = {
             let _span = info_span!("parser_grammar_execution").entered();
-            let mut items = Vec::new();
-            while !self.at(TokenKind::Eof) {
-                let start = self.cursor;
-                match self.item() {
-                    Ok(item) => items.push(item),
-                    Err(()) => {
-                        self.cursor = start;
-                        let span = self.recover_item();
-                        items.push(Item::Error(span));
-                    }
-                }
-            }
-            items
+            self.parse_items_with_recovery()
         };
         let raw_parse_error_count = self.errors.raw_count();
         let (errors, diagnostic_equality_checks) = std::mem::take(&mut self.errors).finish();
@@ -305,6 +309,15 @@ mod expressions;
 mod shared;
 mod statements;
 mod types;
+
+#[cfg(test)]
+impl Parser {
+    fn parse_recovered_for_test(mut self) -> (Ast, Vec<CompileError>, ThreadedRodeo) {
+        let items = self.parse_items_with_recovery();
+        let (errors, _) = std::mem::take(&mut self.errors).finish();
+        (Ast { items }, errors, self.interner)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -365,6 +378,349 @@ mod tests {
         ] {
             parse_source(source).unwrap_or_else(|errors| panic!("{errors:?}\n{source}"));
         }
+    }
+
+    #[test]
+    fn canonical_item_start_table_matches_every_dispatchable_item() {
+        let rows: &[(&str, recovery::ItemStart, fn(&Item) -> bool)] = &[
+            (
+                "@allow(unused_function) fn directed() {}",
+                recovery::ItemStart::Directive,
+                |item| matches!(item, Item::Function(_)),
+            ),
+            ("pub fn public() {}", recovery::ItemStart::Public, |item| {
+                matches!(item, Item::Function(_))
+            }),
+            (
+                "unchecked fn raw() {}",
+                recovery::ItemStart::UncheckedFunction,
+                |item| matches!(item, Item::Function(_)),
+            ),
+            ("fn plain() {}", recovery::ItemStart::Function, |item| {
+                matches!(item, Item::Function(_))
+            }),
+            (
+                "linear struct Buffer {}",
+                recovery::ItemStart::LinearStruct,
+                |item| matches!(item, Item::Struct(_)),
+            ),
+            ("struct Record {}", recovery::ItemStart::Struct, |item| {
+                matches!(item, Item::Struct(_))
+            }),
+            ("enum Choice { A }", recovery::ItemStart::Enum, |item| {
+                matches!(item, Item::Enum(_))
+            }),
+            (
+                "drop fn Buffer(self) {}",
+                recovery::ItemStart::Drop,
+                |item| matches!(item, Item::DropFn(_)),
+            ),
+            (
+                "extern \"C\" { fn imported() -> i32; }",
+                recovery::ItemStart::Extern,
+                |item| matches!(item, Item::Extern(_)),
+            ),
+            (
+                "const ANSWER: i32 = 42;",
+                recovery::ItemStart::Const,
+                |item| matches!(item, Item::Const(_)),
+            ),
+            ("test \"works\" {}", recovery::ItemStart::Test, |item| {
+                matches!(item, Item::Test(_))
+            }),
+        ];
+
+        assert_eq!(rows.len(), recovery::ITEM_STARTS.len());
+        for metadata in recovery::ITEM_STARTS {
+            if let Some(token) = metadata.token {
+                assert_eq!(
+                    recovery::classify_item_start(&token, false),
+                    Some(metadata.start)
+                );
+            }
+            assert!(
+                rows.iter()
+                    .any(|(_, row_start, _)| *row_start == metadata.start),
+                "missing parser case for {:?}",
+                metadata.token
+            );
+        }
+        for (source, expected_start, expected_item) in rows {
+            let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+            let parser = Parser::new(tokens, interner);
+            assert_eq!(
+                recovery::classify_item_start(&parser.kind(), parser.at_test_item()),
+                Some(*expected_start),
+                "{source}"
+            );
+
+            let (ast, _) =
+                parse_source(source).unwrap_or_else(|errors| panic!("{source}: {errors:?}"));
+            assert_eq!(ast.items.len(), 1, "{source}");
+            assert!(expected_item(&ast.items[0]), "{source}: {:?}", ast.items[0]);
+            let span = match &ast.items[0] {
+                Item::Function(item) => item.span,
+                Item::Struct(item) => item.span,
+                Item::Enum(item) => item.span,
+                Item::DropFn(item) => item.span,
+                Item::Extern(item) => item.span,
+                Item::Const(item) => item.span,
+                Item::Test(item) => item.span,
+                Item::Error(span) => *span,
+            };
+            assert_eq!(span, Span::new(0, source.len() as u32), "{source}");
+        }
+
+        // The public extern spelling starts with the canonical `pub` prefix,
+        // then dispatches through the same `Extern` classification as imports.
+        let (ast, _) = parse_source("pub extern \"C\" fn exported() -> i32 { 0 }").unwrap();
+        let Item::Function(function) = &ast.items[0] else {
+            panic!("expected an extern export, got {:?}", ast.items[0]);
+        };
+        assert_eq!(function.visibility, Visibility::Public);
+        assert_eq!(function.export_abi.as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn item_recovery_preserves_all_contextual_adjacent_item_boundaries() {
+        let cases = [
+            (
+                "fn broken( -> i32 { 0 }\nextern \"C\" { fn bad( -> i32; }",
+                vec![
+                    (
+                        11,
+                        "'comptime' or 'inout' or 'borrow' or identifier or …",
+                        "'->'",
+                    ),
+                    (
+                        45,
+                        "'comptime' or 'inout' or 'borrow' or identifier or …",
+                        "'->'",
+                    ),
+                ],
+            ),
+            (
+                "fn broken( -> i32 { 0 }\ntest \"next\" 1",
+                vec![
+                    (
+                        11,
+                        "'comptime' or 'inout' or 'borrow' or identifier or …",
+                        "'->'",
+                    ),
+                    (36, "'{'", "integer"),
+                ],
+            ),
+            (
+                "fn broken( -> i32 { 0 }\n@allow(unused_function) fn next( -> i32 { 0 }",
+                vec![
+                    (
+                        11,
+                        "'comptime' or 'inout' or 'borrow' or identifier or …",
+                        "'->'",
+                    ),
+                    (
+                        57,
+                        "'comptime' or 'inout' or 'borrow' or identifier or …",
+                        "'->'",
+                    ),
+                ],
+            ),
+        ];
+
+        for (source, expected) in cases {
+            let errors = parse_source(source).unwrap_err();
+            assert_eq!(errors.len(), expected.len(), "{source}: {errors:?}");
+            for (error, (start, expected_text, found)) in errors.iter().zip(expected) {
+                assert_eq!(error.span().map(|span| span.start), Some(start), "{source}");
+                assert_eq!(
+                    error.kind,
+                    ErrorKind::UnexpectedToken {
+                        expected: expected_text.into(),
+                        found: found.into(),
+                    },
+                    "{source}"
+                );
+            }
+        }
+    }
+
+    fn parse_recovered_source(source: &str) -> (Ast, Vec<CompileError>, ThreadedRodeo) {
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        Parser::new(tokens, interner).parse_recovered_for_test()
+    }
+
+    fn assert_two_malformed_function_diagnostics(
+        source: &str,
+        errors: &[CompileError],
+        starts: [u32; 2],
+    ) {
+        assert_eq!(errors.len(), 2, "{source}: {errors:?}");
+        for (error, start) in errors.iter().zip(starts) {
+            assert_eq!(error.span(), Some(Span::new(start, start + 2)), "{source}");
+            assert_eq!(
+                error.kind,
+                ErrorKind::UnexpectedToken {
+                    expected: "'comptime' or 'inout' or 'borrow' or identifier or …".into(),
+                    found: "'->'".into(),
+                },
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn recovered_ast_retains_private_and_public_extern_items_between_errors() {
+        let private =
+            "fn broken( -> i32 { 0 }\nextern \"C\" { fn kept() -> i32; }\nfn later( -> i32 { 0 }";
+        let (ast, errors, interner) = parse_recovered_source(private);
+        assert_two_malformed_function_diagnostics(private, &errors, [11, 67]);
+        assert_eq!(ast.items.len(), 3, "{ast:?}");
+        assert_eq!(ast.items[0], Item::Error(Span::new(0, 2)));
+        let Item::Extern(extern_block) = &ast.items[1] else {
+            panic!("private extern boundary was not retained: {ast:?}");
+        };
+        assert_eq!(extern_block.span, Span::new(24, 56));
+        assert_eq!(extern_block.abi, "C");
+        assert_eq!(extern_block.fns.len(), 1);
+        assert_eq!(interner.resolve(&extern_block.fns[0].name.name), "kept");
+        assert_eq!(ast.items[2], Item::Error(Span::new(57, 59)));
+
+        let public = "fn broken( -> i32 { 0 }\npub extern \"C\" fn kept() -> i32 { 0 }\nfn later( -> i32 { 0 }";
+        let (ast, errors, interner) = parse_recovered_source(public);
+        assert_two_malformed_function_diagnostics(public, &errors, [11, 72]);
+        assert_eq!(ast.items.len(), 3, "{ast:?}");
+        assert_eq!(ast.items[0], Item::Error(Span::new(0, 2)));
+        let Item::Function(export) = &ast.items[1] else {
+            panic!("public extern boundary was not retained: {ast:?}");
+        };
+        assert_eq!(export.span, Span::new(24, 61));
+        assert_eq!(export.visibility, Visibility::Public);
+        assert_eq!(export.export_abi.as_deref(), Some("C"));
+        assert_eq!(interner.resolve(&export.name.name), "kept");
+        assert_eq!(ast.items[2], Item::Error(Span::new(62, 64)));
+    }
+
+    #[test]
+    fn expected_item_inventory_has_one_source_authority() {
+        let sources = [
+            ("lib.rs", include_str!("lib.rs")),
+            ("ast.rs", include_str!("ast.rs")),
+            ("intrinsics.rs", include_str!("intrinsics.rs")),
+            ("parser.rs", include_str!("parser.rs")),
+            (
+                "parser/declarations.rs",
+                include_str!("parser/declarations.rs"),
+            ),
+            (
+                "parser/expressions.rs",
+                include_str!("parser/expressions.rs"),
+            ),
+            ("parser/shared.rs", include_str!("parser/shared.rs")),
+            ("parser/statements.rs", include_str!("parser/statements.rs")),
+            ("parser/types.rs", include_str!("parser/types.rs")),
+            (
+                "parser_policy/condition.rs",
+                include_str!("parser_policy/condition.rs"),
+            ),
+            (
+                "parser_policy/diagnostics.rs",
+                include_str!("parser_policy/diagnostics.rs"),
+            ),
+            ("parser_policy/mod.rs", include_str!("parser_policy/mod.rs")),
+            (
+                "parser_policy/nesting.rs",
+                include_str!("parser_policy/nesting.rs"),
+            ),
+            (
+                "parser_policy/recovery.rs",
+                include_str!("parser_policy/recovery.rs"),
+            ),
+            ("validate.rs", include_str!("validate.rs")),
+        ];
+        let declarations = include_str!("parser/declarations.rs");
+        let item_dispatch = declarations
+            .split("pub(super) fn item")
+            .nth(1)
+            .expect("item parser exists")
+            .split("pub(super) fn at_test_item")
+            .next()
+            .expect("contextual-item classifier follows item parser");
+        assert!(
+            !item_dispatch.contains("TokenKind::"),
+            "item dispatch must use the canonical classification instead of a token inventory"
+        );
+
+        let recovery_source = include_str!("parser_policy/recovery.rs");
+        let expected_literal = "'@' or 'pub' or 'unchecked' or 'fn' or 'test' or …";
+        fn production_source(source: &str) -> &str {
+            source
+                .split_once("#[cfg(test)]\nmod tests")
+                .map_or(source, |(production, _)| production)
+        }
+        let parser_production = production_source(include_str!("parser.rs"));
+        assert!(parser_production.contains("mod types;"));
+        assert!(!parser_production.contains("fn canonical_item_start_table_matches"));
+        assert_eq!(
+            sources
+                .iter()
+                .map(|(_, source)| production_source(source).matches(expected_literal).count())
+                .sum::<usize>(),
+            0,
+            "expected-item presentation must be derived from metadata"
+        );
+        assert!(item_dispatch.contains("recovery::classify_item_start"));
+        assert!(recovery_source.contains("classify_item_start(token, at_test_item).is_some()"));
+        assert_eq!(
+            sources
+                .iter()
+                .map(|(_, source)| production_source(source)
+                    .matches("const ITEM_STARTS:")
+                    .count())
+                .sum::<usize>(),
+            1,
+            "there must be one canonical item-start metadata table"
+        );
+        assert_eq!(
+            recovery::expected_item(),
+            "'@' or 'pub' or 'unchecked' or 'fn' or 'test' or …"
+        );
+        assert_eq!(
+            recovery::expected_after_public(),
+            "'unchecked' or 'fn' or 'linear' or 'struct' or …"
+        );
+
+        fn modules(source: &str) -> Vec<&str> {
+            source
+                .lines()
+                .filter_map(|line| {
+                    let line = line.trim();
+                    let declaration = line
+                        .strip_prefix("mod ")
+                        .or_else(|| line.strip_prefix("pub mod "))
+                        .or_else(|| line.strip_prefix("pub(crate) mod "))?;
+                    declaration.strip_suffix(';')
+                })
+                .filter(|name| *name != "tests" && *name != "size_guards")
+                .collect()
+        }
+        assert_eq!(
+            modules(include_str!("lib.rs")),
+            ["ast", "intrinsics", "parser", "parser_policy", "validate"]
+        );
+        assert_eq!(
+            modules(include_str!("parser.rs")),
+            [
+                "declarations",
+                "expressions",
+                "shared",
+                "statements",
+                "types"
+            ]
+        );
+        assert_eq!(
+            modules(include_str!("parser_policy/mod.rs")),
+            ["condition", "diagnostics", "nesting", "recovery"]
+        );
     }
 
     #[test]
