@@ -1,9 +1,9 @@
 //! Deterministic website pages projected from the compiler's error inventory.
 
-use crate::machine_index::canonical_spec_path;
-use crate::traceability::parse_spec_paragraphs;
-use rue_error::{error_code_explanation, error_code_metadata};
-use std::collections::BTreeSet;
+use crate::machine_index::{canonical_design_path, canonical_spec_path};
+use crate::traceability::{SpecParagraph, parse_spec_paragraphs};
+use rue_error::{ErrorCodeReference, error_code_explanation, error_code_metadata};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -37,7 +37,65 @@ fn front_matter_string(value: &str) -> String {
     escaped
 }
 
-pub fn generate(spec_dir: &Path) -> Result<Vec<GeneratedPage>, String> {
+fn render_reference(
+    reference: &ErrorCodeReference,
+    code: &str,
+    spec_dir: &Path,
+    designs_dir: &Path,
+    spec_paragraphs: &BTreeMap<String, SpecParagraph>,
+) -> Result<String, String> {
+    let href = if let Some(relative) = reference.path.strip_prefix("docs/spec/src/") {
+        let rule = reference.rule.ok_or_else(|| {
+            format!(
+                "error-code reference {:?} for {code} has no specification rule",
+                reference.title
+            )
+        })?;
+        if !spec_dir.join(relative).is_file() {
+            return Err(format!(
+                "error-code reference {:?} for {code} does not exist under {}",
+                reference.path,
+                spec_dir.display()
+            ));
+        }
+        let paragraph = spec_paragraphs.get(rule).ok_or_else(|| {
+            format!(
+                "error-code reference {:?} for {code} names unknown specification rule {rule}",
+                reference.title
+            )
+        })?;
+        if paragraph.source_path != relative {
+            return Err(format!(
+                "error-code reference {:?} for {code} places specification rule {rule} in {:?}, but its canonical source is {:?}",
+                reference.title, relative, paragraph.source_path
+            ));
+        }
+        canonical_spec_path(reference.path, rule)?
+    } else if let Some(relative) = reference.path.strip_prefix("docs/designs/") {
+        if let Some(rule) = reference.rule {
+            return Err(format!(
+                "design reference {:?} for {code} must not name specification rule {rule}",
+                reference.title
+            ));
+        }
+        if !designs_dir.join(relative).is_file() {
+            return Err(format!(
+                "error-code design reference {:?} for {code} does not exist under {}",
+                reference.path,
+                designs_dir.display()
+            ));
+        }
+        canonical_design_path(reference.path)?
+    } else {
+        return Err(format!(
+            "unsupported error-code reference path {:?} for {code}",
+            reference.path
+        ));
+    };
+    Ok(format!("\n- [{}]({href})\n", reference.title))
+}
+
+pub fn generate(spec_dir: &Path, designs_dir: &Path) -> Result<Vec<GeneratedPage>, String> {
     let metadata = error_code_metadata();
     let (spec_paragraphs, duplicate_spec_ids) = parse_spec_paragraphs(spec_dir)?;
     if !duplicate_spec_ids.is_empty() {
@@ -102,43 +160,13 @@ pub fn generate(spec_dir: &Path) -> Result<Vec<GeneratedPage>, String> {
             if !explanation.references.is_empty() {
                 page.push_str("\n## References\n");
                 for reference in explanation.references {
-                    let rule = reference.rule.ok_or_else(|| {
-                        format!(
-                            "error-code reference {:?} for {code} has no specification rule",
-                            reference.title
-                        )
-                    })?;
-                    let relative =
-                        reference
-                            .path
-                            .strip_prefix("docs/spec/src/")
-                            .ok_or_else(|| {
-                                format!(
-                                    "unsupported error-code reference path {:?} for {code}",
-                                    reference.path
-                                )
-                            })?;
-                    if !spec_dir.join(relative).is_file() {
-                        return Err(format!(
-                            "error-code reference {:?} for {code} does not exist under {}",
-                            reference.path,
-                            spec_dir.display()
-                        ));
-                    }
-                    let paragraph = spec_paragraphs.get(rule).ok_or_else(|| {
-                        format!(
-                            "error-code reference {:?} for {code} names unknown specification rule {rule}",
-                            reference.title
-                        )
-                    })?;
-                    if paragraph.source_path != relative {
-                        return Err(format!(
-                            "error-code reference {:?} for {code} places specification rule {rule} in {:?}, but its canonical source is {:?}",
-                            reference.title, relative, paragraph.source_path
-                        ));
-                    }
-                    let href = canonical_spec_path(reference.path, rule)?;
-                    page.push_str(&format!("\n- [{}]({href})\n", reference.title));
+                    page.push_str(&render_reference(
+                        reference,
+                        &code,
+                        spec_dir,
+                        designs_dir,
+                        &spec_paragraphs,
+                    )?);
                 }
             }
         } else {
@@ -190,8 +218,9 @@ fn write_to_paths(
     staging: &Path,
     backup: &Path,
     spec_dir: &Path,
+    designs_dir: &Path,
 ) -> Result<(), String> {
-    let pages = generate(spec_dir)?;
+    let pages = generate(spec_dir, designs_dir)?;
     remove_generated_directory(staging)?;
     fs::create_dir_all(staging)
         .map_err(|error| format!("failed to create {}: {error}", staging.display()))?;
@@ -227,12 +256,13 @@ fn write_to_paths(
     Ok(())
 }
 
-pub fn write(spec_dir: &Path) -> Result<(), String> {
+pub fn write(spec_dir: &Path, designs_dir: &Path) -> Result<(), String> {
     write_to_paths(
         Path::new(OUTPUT_DIR),
         Path::new(STAGING_DIR),
         Path::new(BACKUP_DIR),
         spec_dir,
+        designs_dir,
     )
 }
 
@@ -242,25 +272,33 @@ mod tests {
     use rue_error::RETIRED_ERROR_CODES;
     use std::collections::BTreeMap;
 
-    fn spec_fixture() -> tempfile::TempDir {
-        let directory = tempfile::tempdir().unwrap();
+    fn reference_fixture() -> (tempfile::TempDir, tempfile::TempDir) {
+        let spec_directory = tempfile::tempdir().unwrap();
+        let designs_directory = tempfile::tempdir().unwrap();
         let mut rules_by_path = BTreeMap::<&str, BTreeSet<&str>>::new();
         for metadata in error_code_metadata() {
             let Some(explanation) = error_code_explanation(metadata.code) else {
                 continue;
             };
             for reference in explanation.references {
-                rules_by_path
-                    .entry(reference.path)
-                    .or_default()
-                    .insert(reference.rule.expect("website references require a rule"));
+                if let Some(relative) = reference.path.strip_prefix("docs/spec/src/") {
+                    rules_by_path.entry(relative).or_default().insert(
+                        reference
+                            .rule
+                            .expect("specification references require a rule"),
+                    );
+                } else if let Some(relative) = reference.path.strip_prefix("docs/designs/") {
+                    assert_eq!(reference.rule, None, "design references are not spec rules");
+                    let fixture_path = designs_directory.path().join(relative);
+                    fs::create_dir_all(fixture_path.parent().unwrap()).unwrap();
+                    fs::write(fixture_path, "# Design fixture\n").unwrap();
+                } else {
+                    panic!("unsupported reference fixture path: {}", reference.path);
+                }
             }
         }
-        for (path, rules) in rules_by_path {
-            let relative = path
-                .strip_prefix("docs/spec/src/")
-                .expect("website references must name specification sources");
-            let fixture_path = directory.path().join(relative);
+        for (relative, rules) in rules_by_path {
+            let fixture_path = spec_directory.path().join(relative);
             fs::create_dir_all(fixture_path.parent().unwrap()).unwrap();
             let mut source = String::from("# Fixture\n");
             for rule in rules {
@@ -270,14 +308,14 @@ mod tests {
             }
             fs::write(fixture_path, source).unwrap();
         }
-        directory
+        (spec_directory, designs_directory)
     }
 
     #[test]
     fn pages_are_complete_unique_active_only_and_reproducible() {
-        let fixture = spec_fixture();
-        let first = generate(fixture.path()).unwrap();
-        let second = generate(fixture.path()).unwrap();
+        let (spec_fixture, designs_fixture) = reference_fixture();
+        let first = generate(spec_fixture.path(), designs_fixture.path()).unwrap();
+        let second = generate(spec_fixture.path(), designs_fixture.path()).unwrap();
         assert_eq!(first, second, "generation must be byte-reproducible");
         assert_eq!(first.len(), error_code_metadata().len() + 1);
 
@@ -316,18 +354,24 @@ mod tests {
 
     #[test]
     fn generated_internal_links_use_existing_routes() {
-        let fixture = spec_fixture();
-        let pages = generate(fixture.path()).unwrap();
-        let expected_spec_links = error_code_metadata()
+        let (spec_fixture, designs_fixture) = reference_fixture();
+        let pages = generate(spec_fixture.path(), designs_fixture.path()).unwrap();
+        let expected_reference_links = error_code_metadata()
             .iter()
             .filter_map(|metadata| error_code_explanation(metadata.code))
             .flat_map(|explanation| explanation.references)
             .map(|reference| {
-                canonical_spec_path(
-                    reference.path,
-                    reference.rule.expect("website references require a rule"),
-                )
-                .unwrap()
+                if reference.path.starts_with("docs/designs/") {
+                    canonical_design_path(reference.path).unwrap()
+                } else {
+                    canonical_spec_path(
+                        reference.path,
+                        reference
+                            .rule
+                            .expect("specification references require a rule"),
+                    )
+                    .unwrap()
+                }
             })
             .collect::<BTreeSet<_>>();
         for page in pages {
@@ -349,13 +393,95 @@ mod tests {
                     );
                 } else if href.starts_with("/spec/") {
                     assert!(
-                        expected_spec_links.contains(href),
+                        expected_reference_links.contains(href),
                         "explanation links only to declared specification references"
+                    );
+                } else if href
+                    .starts_with("https://github.com/rue-language/rue/blob/trunk/docs/designs/")
+                {
+                    assert!(
+                        expected_reference_links.contains(href),
+                        "explanation links only to declared design references"
                     );
                 } else {
                     panic!("unsupported generated internal link: {href}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn ruleless_design_references_render_as_repository_links() {
+        let spec_fixture = tempfile::tempdir().unwrap();
+        let designs_fixture = tempfile::tempdir().unwrap();
+        fs::write(
+            designs_fixture.path().join("0065-floating-point.md"),
+            "# ADR-0065\n",
+        )
+        .unwrap();
+        let rendered = render_reference(
+            &rue_error::ErrorCodeReference {
+                title: "Floating point",
+                path: "docs/designs/0065-floating-point.md",
+                rule: None,
+            },
+            "E0709",
+            spec_fixture.path(),
+            designs_fixture.path(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            rendered,
+            "\n- [Floating point](https://github.com/rue-language/rue/blob/trunk/docs/designs/0065-floating-point.md)\n"
+        );
+    }
+
+    #[test]
+    fn malformed_reference_contracts_are_rejected() {
+        let spec_fixture = tempfile::tempdir().unwrap();
+        let designs_fixture = tempfile::tempdir().unwrap();
+        fs::write(designs_fixture.path().join("0065.md"), "# ADR\n").unwrap();
+        let paragraphs = BTreeMap::new();
+        let cases = [
+            (
+                rue_error::ErrorCodeReference {
+                    title: "Missing spec rule",
+                    path: "docs/spec/src/chapter.md",
+                    rule: None,
+                },
+                "has no specification rule",
+            ),
+            (
+                rue_error::ErrorCodeReference {
+                    title: "Design with spec rule",
+                    path: "docs/designs/0065.md",
+                    rule: Some("1.2:3"),
+                },
+                "must not name specification rule",
+            ),
+            (
+                rue_error::ErrorCodeReference {
+                    title: "Unsupported tree",
+                    path: "docs/process/ci.md",
+                    rule: None,
+                },
+                "unsupported error-code reference path",
+            ),
+        ];
+        for (reference, expected) in cases {
+            let error = render_reference(
+                &reference,
+                "E9999",
+                spec_fixture.path(),
+                designs_fixture.path(),
+                &paragraphs,
+            )
+            .unwrap_err();
+            assert!(
+                error.contains(expected),
+                "{error:?} does not contain {expected:?}"
+            );
         }
     }
 
@@ -388,7 +514,7 @@ mod tests {
 
     #[test]
     fn staged_write_replaces_only_after_every_page_is_ready() {
-        let fixture = spec_fixture();
+        let (spec_fixture, designs_fixture) = reference_fixture();
         let root = tempfile::tempdir().unwrap();
         let output = root.path().join("errors");
         let staging = root.path().join("staging");
@@ -396,7 +522,14 @@ mod tests {
         fs::create_dir(&output).unwrap();
         fs::write(output.join("stale.md"), "stale").unwrap();
 
-        write_to_paths(&output, &staging, &backup, fixture.path()).unwrap();
+        write_to_paths(
+            &output,
+            &staging,
+            &backup,
+            spec_fixture.path(),
+            designs_fixture.path(),
+        )
+        .unwrap();
 
         assert!(!output.join("stale.md").exists());
         assert!(output.join("_index.md").is_file());

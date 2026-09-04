@@ -62,6 +62,7 @@ mod traceability;
 
 /// Possible paths for the spec directory.
 const SPEC_DIR_PATHS: &[&str] = &["docs/spec/src", "../docs/spec/src", "../../docs/spec/src"];
+const DESIGNS_DIR_PATHS: &[&str] = &["docs/designs", "../docs/designs", "../../docs/designs"];
 
 /// Possible paths for the cases directory.
 const CASES_DIR_PATHS: &[&str] = &["crates/rue-spec/cases", "cases", "../rue-spec/cases"];
@@ -298,7 +299,8 @@ fn main() {
 
     if raw_args.iter().any(|argument| argument == "--error-pages") {
         let spec_dir = find_dir("RUE_SPEC_DIR", SPEC_DIR_PATHS, "docs/spec/src");
-        error_pages::write(&spec_dir).unwrap_or_else(|error| {
+        let designs_dir = find_dir("RUE_DESIGNS_DIR", DESIGNS_DIR_PATHS, "docs/designs");
+        error_pages::write(&spec_dir, &designs_dir).unwrap_or_else(|error| {
             eprintln!("error: {error}");
             std::process::exit(1);
         });

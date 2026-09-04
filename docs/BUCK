@@ -21,7 +21,7 @@ filegroup(
 filegroup(
     name = "designs",
     srcs = dict([(path[len("designs/"):], path) for path in glob(["designs/**"])]),
-    visibility = ["//:"],
+    visibility = ["//:", "//crates/rue-spec:"],
 )
 
 # ADR-0071 phase 3: the note //:compiler-allocator-policy-validation reads.
