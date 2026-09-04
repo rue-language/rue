@@ -1,0 +1,9 @@
+// ADR-0083 fixture root (RUE-2004): the aggregator import is the whole point.
+// `lib_tests.rue` is reachable only because this file imports it, and
+// `orphan_tests.rue` is deliberately reachable from nothing — which is what
+// the two rue_test targets over this directory pin from both sides.
+const tests = @import("lib_tests.rue");
+
+fn main() -> i32 {
+    0
+}

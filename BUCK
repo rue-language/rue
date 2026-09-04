@@ -139,8 +139,9 @@ sh_binary(
 
 # The rue_program tool surface (ADR-0070 / RUE-1404): the scan wrapper, the
 # manifest derivation script that owns the declared-boundary check, the two
-# advisory precision reports, and the scenario runner. rue_rules.bzl reaches
-# them by default attr, so they are PUBLIC.
+# advisory precision reports, the scenario runner, and `rue_test`'s `rue test`
+# supervisor (ADR-0083 / RUE-2004). rue_rules.bzl reaches them by default attr,
+# so they are PUBLIC.
 sh_binary(
     name = "rue-program-scan",
     main = "scripts/rue-program-scan",
@@ -162,6 +163,7 @@ sh_binary(
         ("rue-program-srcs-precision", "rue-program-srcs-precision.py"),
         ("rue-program-family-report", "rue-program-family-report.py"),
         ("rue-program-test-runner", "rue-program-test-runner.py"),
+        ("rue-test-supervisor", "rue-test-supervisor.py"),
     ]
 ]
 

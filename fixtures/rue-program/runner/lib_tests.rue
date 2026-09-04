@@ -1,0 +1,8 @@
+// Imported by main.rue, so its tests are in the compiled closure.
+test "the runner reaches an imported test module" {
+    @assert(1 == 1);
+}
+
+test "and runs every test it declares" {
+    @assert_eq(2 + 2, 4);
+}

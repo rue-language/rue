@@ -34,6 +34,11 @@ declared std tree:
     it, and manifest membership means "available to import", not "read"
     (ADR-0047).
 
+`--include-srcs` adds the declared srcs to that union for `rue_test`
+(ADR-0083 / RUE-2004), whose run observes its `--test-candidates` inventory
+under this manifest; see the comment at the call site. The boundary check is
+unaffected either way.
+
 `--expect-violation PATH` inverts the boundary check for negative control 1:
 the script succeeds (writing a marker as the output) if and only if the
 boundary check rejects exactly PATH. The control materializes its
@@ -96,6 +101,11 @@ def main() -> None:
     parser.add_argument("--srcs-list", required=True, help="file of project-relative srcs")
     parser.add_argument("--std-dir", required=True, help="project-relative std root directory")
     parser.add_argument("--out", required=True, help="project-relative manifest output path")
+    parser.add_argument(
+        "--include-srcs",
+        action="store_true",
+        help="union the declared srcs into the manifest (rue_test)",
+    )
     parser.add_argument("--expect-violation", default=None)
     args = parser.parse_args()
 
@@ -165,6 +175,18 @@ def main() -> None:
             f"(outside srcs and std):\n{details}\n"
             "Declare them in srcs, or remove the import."
         )
+
+    # `rue_test` additionally declares every src (ADR-0083 / RUE-2004). The
+    # boundary check above is unchanged — an accepted read outside srcs ∪ std
+    # still fails the build — so this widens the read policy only to files the
+    # target already declares and Buck already materializes and keys. It is
+    # what a candidate inventory needs to mean anything: `--test-candidates`
+    # entries are observed UNDER the manifest, so an orphan test file, which by
+    # definition is not an accepted read, would otherwise be unreadable and
+    # reported as "could not be parsed" with no test count — the same warning
+    # for an unimported file as for a corrupt one.
+    if args.include_srcs:
+        entries.update(srcs)
 
     # Every file of the declared std tree, unconditionally (trusted-std reads
     # are invisible to the scan).

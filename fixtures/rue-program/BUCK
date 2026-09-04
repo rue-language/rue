@@ -12,8 +12,13 @@
 #                       assertion; the sh_test only gives it a test surface).
 #   :family-*           two sibling roots sharing a glob, plus the aggregate
 #                       srcs report that judges unread files family-wide.
+#   :runner-*           the `rue_test` rule (ADR-0083 / RUE-2004) from both
+#                       sides: an allowed orphan and the negative control that
+#                       the same orphan otherwise FAILS the target. `rue test`
+#                       itself exits 0 either way, so nothing else in the tree
+#                       can tell the two apart.
 
-load("//:rue_rules.bzl", "rue_program", "rue_program_boundary_control", "rue_program_family", "rue_program_test")
+load("//:rue_rules.bzl", "rue_program", "rue_program_boundary_control", "rue_program_family", "rue_program_test", "rue_test")
 load("//:test_defs.bzl", "rue_sh_test")
 
 rue_program(
@@ -68,4 +73,28 @@ rue_program_test(
     name = "family-alpha-test",
     program = ":family-alpha",
     exit_code = 10,
+)
+
+# The rue_test proving ground. `runner/main.rue` imports `lib_tests.rue` and
+# nothing imports `orphan_tests.rue`; both files are in srcs, so both are in
+# the declared candidate inventory.
+#
+# The pair is what pins the rule's one non-obvious behavior. `rue test` reports
+# the orphan as a warning and still exits 0, so a rule that only forwarded the
+# exit code would pass here — and a target that merely passes proves nothing
+# about a check that never fired.
+rue_test(
+    name = "runner-allowed-orphan-test",
+    root = "fixtures/rue-program/runner/main.rue",
+    srcs = glob(["runner/**/*.rue"]),
+    allow_unimported = True,
+)
+
+rue_test(
+    name = "runner-orphan-control-test",
+    root = "fixtures/rue-program/runner/main.rue",
+    srcs = glob(["runner/**/*.rue"]),
+    # Negative control: passes if and only if the run WOULD have failed the
+    # target, for exactly this path and for no other reason.
+    expect_unimported = ["orphan_tests.rue"],
 )

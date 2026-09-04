@@ -6,7 +6,7 @@
 # A root-package `glob()` cannot reach into this package, so anything at the
 # root that needs example files depends on a target declared here.
 
-load("//:rue_rules.bzl", "rue_program", "rue_program_family", "rue_program_staging", "rue_program_test")
+load("//:rue_rules.bzl", "rue_program", "rue_program_family", "rue_program_staging", "rue_program_test", "rue_test")
 load("//:test_defs.bzl", "rue_test_suite")
 
 # The example programs are runtime inputs to the CLI integration tests: the
@@ -89,6 +89,20 @@ filegroup(
         ("second-calculator", "second/calculator", glob(["second/**/*.rue"])),
     ]
 ]
+
+# ADR-0083 (RUE-2004): Gazette's own `test` declarations, run by `rue test`
+# under the declared candidate inventory. The glob is deliberately the same one
+# `:gazette` compiles from, because the inventory IS that srcs list: a fourth
+# `*_tests.rue` dropped into the directory without an aggregator import lands
+# in the glob, is reported as unimported, and fails this target instead of
+# being silently invisible. The CLI case over the same suite
+# (`cli.examples_gazette`) asserts the count through the human summary; this
+# target is what makes the inventory a build-declared fact.
+rue_test(
+    name = "gazette-tests",
+    root = "examples/gazette/main.rue",
+    srcs = glob(["gazette/**/*.rue"]),
+)
 
 # The ten artifacts as one directory keyed by root path, so a corpus action
 # declares a single `$(location ...)` and the harness's lookup key is the

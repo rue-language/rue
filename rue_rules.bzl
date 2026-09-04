@@ -32,6 +32,14 @@ corpus.bzl's action does: this repository's genrule upload gating is driven by
 a Meta-internal label allowlist, and the whole point of the rule is that a PR
 run's compile is served to the merge-group run.
 
+`rue_test` is the third rule and the odd one out: it produces no executable and
+runs no scenario, it runs the compiler's OWN `rue test` subcommand over a
+declared closure (ADR-0083 / RUE-2004). It reuses the scan and derive actions
+for the same boundary reason `rue_program` does — with the manifest widened by
+`--include-srcs`, since a run reads its candidate inventory under that policy —
+and it is the build-side producer of that `--test-candidates` inventory, the
+one input ADR-0083's boundary gives the build system.
+
 `rue_program_test` is not the only consumer. `rue_program_staging` collects
 programs into one directory keyed by root path, which the CLI corpus actions
 declare as an ordinary input so their harness runs prebuilt executables
@@ -105,8 +113,14 @@ def _resolve(ctx: AnalysisContext):
     return toolchain, resolved_target, opt_level, std_dir
 
 
-def _scan_and_derive(ctx: AnalysisContext, toolchain, std_dir, expect_violation = None):
-    """The scan and derive actions, shared by rue_program and the boundary control."""
+def _scan_and_derive(
+        ctx: AnalysisContext,
+        toolchain,
+        std_dir,
+        expect_violation = None,
+        include_srcs = False):
+    """The scan and derive actions, shared by rue_program, rue_test, and the
+    boundary control."""
     envelope = ctx.actions.declare_output("deps-envelope.json")
     scan_cmd = cmd_args(
         ctx.attrs._scan[RunInfo],
@@ -146,6 +160,8 @@ def _scan_and_derive(ctx: AnalysisContext, toolchain, std_dir, expect_violation 
         # directly (the unconditional union walks it).
         hidden = [toolchain.std],
     )
+    if include_srcs:
+        derive_cmd.add("--include-srcs")
     if expect_violation:
         derive_cmd.add("--expect-violation", expect_violation)
     ctx.actions.run(
@@ -156,6 +172,44 @@ def _scan_and_derive(ctx: AnalysisContext, toolchain, std_dir, expect_violation 
         allow_cache_upload = True,
     )
     return envelope, manifest
+
+
+def _test_candidate_list(ctx: AnalysisContext):
+    """The declared candidate inventory, spelled the way `rue test` reads it.
+
+    TWO DIFFERENT PROJECT ROOTS MEET HERE, which is the whole reason this is a
+    function rather than one `ctx.actions.write` of `srcs`. Buck's project root
+    is the repository root, and that is what `root` and every `srcs` path are
+    spelled against everywhere else in this file. The compiler's is the ROOT
+    MODULE'S DIRECTORY — `source_loader.rs` builds the discovery context from
+    the root file's parent — so `rue test examples/gazette/main.rue` resolves
+    each `--test-candidates` entry under `examples/gazette/`.
+
+    Handing it repository-relative paths instead is not a loud error: every
+    candidate resolves to a file that does not exist, an absent candidate is
+    not an orphan, and the warning the inventory exists to power silently
+    reports nothing. So entries are re-anchored on the root's directory here,
+    once, for both rules.
+
+    A source artifact's `short_path` is package-relative, so its repository
+    path is the package plus that — which assumes `srcs` are this package's own
+    files. A src from elsewhere fails below rather than being re-anchored on a
+    prefix that was never its own.
+    """
+    root_dir = ctx.attrs.root.rsplit("/", 1)[0] if "/" in ctx.attrs.root else ""
+    prefix = root_dir + "/" if root_dir else ""
+    package = ctx.label.package
+    candidates = []
+    for src in ctx.attrs.srcs:
+        project_path = package + "/" + src.short_path if package else src.short_path
+        if not project_path.startswith(prefix):
+            fail("{}: src '{}' lies outside the root's directory '{}', so it has no spelling in the test-candidate inventory; declare srcs from the package that owns the root".format(
+                ctx.label.name,
+                project_path,
+                root_dir,
+            ))
+        candidates.append(project_path[len(prefix):])
+    return ctx.actions.write("test-candidates.list", candidates)
 
 
 def _rue_program_impl(ctx: AnalysisContext) -> list[Provider]:
@@ -224,9 +278,10 @@ def _rue_program_impl(ctx: AnalysisContext) -> list[Provider]:
     # derive step exists to close. Consumers that want the inventory — the
     # `rue test` driver mode — take it from the provider and pass it themselves.
     #
-    # The content shape matches `srcs.list`: project-root-relative paths, one
-    # per line, which is exactly what `--test-candidates` parses.
-    test_candidates = ctx.actions.write("test-candidates.list", ctx.attrs.srcs)
+    # One path per line, anchored on the ROOT'S DIRECTORY rather than on Buck's
+    # project root, which is what `--test-candidates` parses; see
+    # `_test_candidate_list`. `rue_test` writes the identical file.
+    test_candidates = _test_candidate_list(ctx)
 
     runs_natively = resolved_target == toolchain.native_target
     return [
@@ -373,6 +428,130 @@ def rue_program_test(name, tier = "premerge", platform = None, labels = [], **kw
     and reads the labels attr — both conditions are load-bearing (ADR-0070).
     """
     _rue_program_test(
+        name = name,
+        labels = rue_test_labels(tier, platform, labels),
+        **kwargs
+    )
+
+
+def _rue_test_impl(ctx: AnalysisContext) -> list[Provider]:
+    """The `rue test` driver over one declared closure (ADR-0083 / RUE-2004).
+
+    This is the build side of ADR-0083's boundary, and it is exactly one input
+    wide: the declared candidate inventory, written from `srcs` in the same
+    shape `rue_program` writes it. Everything else — discovery, the test image,
+    execution, the event stream — is the compiler's.
+
+    The closure is bounded the way a `rue_program` compile is, by the SAME
+    scan and derive actions: a test image free to read outside `srcs` would be
+    a hermeticity hole the program build does not have, and the derive step
+    fails the build on exactly that.
+
+    The two files the run receives are not interchangeable, which is why they
+    are written separately. `sources.manifest` is a READ POLICY — what may be
+    imported — and `test-candidates.list` is an INVENTORY: what this target
+    owns, orphans included, spelled relative to the root's directory. The
+    manifest is a superset by construction here, because a candidate is
+    observed under the policy; it is still the policy that decides what the
+    image may read.
+    """
+    toolchain = ctx.attrs._rue_toolchain[RueToolchainInfo]
+    std_dir = toolchain.std
+
+    # `--include-srcs` because a candidate is observed UNDER the read policy:
+    # an orphan test file is by definition not an accepted read, so a manifest
+    # of accepted reads alone would make every orphan "could not be parsed"
+    # with no test count — one warning for an unimported file and a corrupt
+    # one. The declared boundary is unchanged: the derive step still fails the
+    # build on a read outside srcs ∪ std, and srcs are this target's declared,
+    # keyed inputs either way.
+    _envelope, manifest = _scan_and_derive(ctx, toolchain, std_dir, include_srcs = True)
+
+    # The inventory, byte-identical to what `rue_program` puts on
+    # RueProgramInternalInfo for the same root and srcs.
+    candidates = _test_candidate_list(ctx)
+
+    command = cmd_args(
+        ctx.attrs._runner[RunInfo],
+        # The compiler reads the roots and their imports from their real
+        # project paths, so srcs and std must be materialized even though the
+        # command line names only the root, the manifest, and the inventory.
+        hidden = [ctx.attrs.srcs, toolchain.std],
+    )
+    if ctx.attrs.allow_unimported:
+        command.add("--allow-unimported")
+    for path in ctx.attrs.expect_unimported:
+        command.add("--expect-unimported", path)
+
+    # Everything after `--` is the compiler argv the supervisor runs, assembled
+    # here so the whole command is a fact of the rule rather than of a script.
+    # `--seed 1` because a suite that shuffles differently every run reports a
+    # different failure order for the same tree; rerunning under another seed
+    # is a deliberate act, not the default.
+    command.add("--")
+    command.add(toolchain.compiler)
+    command.add("test", ctx.attrs.root)
+    command.add("--source-manifest", manifest)
+    command.add("--test-candidates", candidates)
+    command.add("--seed", "1")
+    command.add("--format", "json")
+    for feature in ctx.attrs.preview_features:
+        command.add("--preview", feature)
+
+    return inject_test_run_info(
+        ctx,
+        ExternalRunnerTestInfo(
+            type = "custom",
+            command = [command],
+            env = {"RUE_STD_PATH": cmd_args(std_dir)},
+            labels = ctx.attrs.labels,
+            contacts = [],
+        ),
+    ) + [DefaultInfo(default_output = candidates, other_outputs = [manifest])]
+
+
+_rue_test = rule(
+    impl = _rue_test_impl,
+    attrs = {
+        # `root` and `srcs` carry the same meaning as on rue_program: a
+        # project-relative path string for the root the compiler resolves, and
+        # the declared file set. Here srcs is also the candidate inventory.
+        "root": attrs.string(),
+        "srcs": attrs.list(attrs.source()),
+        "preview_features": attrs.list(attrs.string(), default = []),
+        # `rue test` exits 0 with the orphan warning on stderr, so a rule that
+        # only forwarded the exit code would let an unimported `*_tests.rue`
+        # stay invisible — the whole reason to declare the inventory. The
+        # target fails on a non-empty report unless this says it is intended.
+        "allow_unimported": attrs.bool(default = False),
+        # Negative control, the way `--expect-violation` inverts the derive
+        # step's boundary check (fixtures/rue-program/BUCK): the target passes
+        # if and only if the run WOULD have been failed, for exactly these
+        # paths. Not for production targets.
+        "expect_unimported": attrs.list(attrs.string(), default = []),
+        "labels": attrs.list(attrs.string(), default = []),
+        "_derive": attrs.dep(providers = [RunInfo], default = "root//:rue-program-derive-manifest"),
+        "_runner": attrs.dep(providers = [RunInfo], default = "root//:rue-test-supervisor"),
+        "_scan": attrs.dep(providers = [RunInfo], default = "root//:rue-program-scan"),
+        "_rue_toolchain": attrs.toolchain_dep(default = "toolchains//:rue"),
+        "_inject_test_env": attrs.default_only(
+            attrs.dep(default = "prelude//test/tools:inject_test_env"),
+        ),
+    },
+)
+
+
+def rue_test(name, tier = "premerge", platform = None, labels = [], **kwargs):
+    """One `rue test` run over a declared closure, with tier ownership.
+
+    Like rue_program_test, the rule name keeps the `_test` suffix and exposes
+    `labels` so test_tiers.bxl's `^(.*_test|test_suite)$` kind regex and its
+    label read both find it (ADR-0070). The name is the language subcommand's,
+    not the ecosystem's `rue_binary`/`rue_test` pair ADR-0070 declined: this
+    rule runs `rue test`, and a runtime scenario over one prebuilt executable
+    is still `rue_program_test`.
+    """
+    _rue_test(
         name = name,
         labels = rue_test_labels(tier, platform, labels),
         **kwargs

@@ -1,0 +1,6 @@
+// Declared in srcs, imported by nothing. A `rue test` run exits 0 with only a
+// warning about this file, so the rue_test rule — not the compiler — is what
+// turns it into a failure.
+test "nothing imports this file" {
+    @assert(1 == 1);
+}
