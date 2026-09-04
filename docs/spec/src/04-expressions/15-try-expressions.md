@@ -50,8 +50,10 @@ the `None` or `Err(e)` of the enclosing function's own return type (rule 4.15:7)
 
 {{ rule(id="4.15:5", cat="normative") }}
 
-The type of a try expression `operand?`, where `operand` has type `Option(T)`,
-is `T`.
+The type of a try expression `operand?` is the operand's success payload: `T`
+when `operand` has type `Option(T)`, and `T` when it has type `Result(T, E)`.
+The error type `E` is not part of the try expression's type; it constrains only
+the enclosing function's return type (4.15:4).
 
 {{ rule(id="4.15:6", cat="dynamic-semantics") }}
 
