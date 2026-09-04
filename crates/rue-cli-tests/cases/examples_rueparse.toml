@@ -75,3 +75,53 @@ env = { RUE_STD_PATH = "${REAL_STD}" }
 program_args = ["--ast", "missing.rue"]
 exit_code = 1
 stdout = "ruelex: cannot read missing.rue\n"
+
+[[case]]
+name = "rueparse_parses_test_items"
+description = "6.7:2/6.7:3: `test` followed by a string literal at item position is a test item whose children are its directives then its body block, in that order; an empty body is still a test item."
+contract = "heavyweight"
+source_path = "examples/ruelex/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "tests.rue", source = """
+@allow(unused_variable)
+test "a test item may carry directives" {
+    let ignored = 1;
+}
+
+test "an empty body is still a test item" {}
+
+fn main() -> i32 {
+    0
+}
+""" }]
+program_args = ["--ast", "tests.rue"]
+exit_code = 0
+stdout_contains = [
+    "(test v=3 @24..88 (list v=0 @0..23 (directive",
+    "(test v=5 @90..134 (block v=0 @132..134))",
+]
+
+[[case]]
+name = "rueparse_keeps_test_an_ordinary_identifier"
+description = "6.7:4: `test` is a contextual keyword only at item position with a string literal next. As a function name, a field name, a method name, a let binder, and a callee it stays IDENT, so the shape holds no test node at all."
+contract = "heavyweight"
+source_path = "examples/ruelex/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "ident.rue", source = """
+fn test(x: i32) -> i32 { x }
+
+struct Fixture {
+    test: i64,
+
+    fn test(borrow self) -> i64 { self.test }
+}
+
+fn main() -> i32 {
+    let test = test(0);
+    test
+}
+""" }]
+program_args = ["--ast-shape", "ident.rue"]
+exit_code = 0
+stdout = """(program (list (list (list _ (function flags=0 _ (list _ (param mode=0 (type form=named _ _ _ _) _ _ _) _ _) (type form=named _ _ _ _) (block _ (ident _ _ _ _) _ _)) _ _) (struct flags=0 _ (list (list _ (field-def (type form=named _ _ _ _) _ _ _) _ _) (method _ (list _ (param mode=10 _ _ _ _) _ _) (type form=named _ _ _ _) (block _ (field (ident _ _ _ _) _ _ _) _ _)) _ _) _ _) _ _) (function flags=0 _ _ (type form=named _ _ _ _) (block (list _ (let flags=512 _ _ (call (ident _ _ _ _) (list _ (arg mode=0 (int _ _ _ _) _ _ _) _ _) _ _) _) _ _) (ident _ _ _ _) _ _)) _ _) _ _ _)
+"""

@@ -64,6 +64,7 @@ pub const CONST_DECL: u64 = 52;
 pub const ANON_ENUM_TYPE: u64 = 53;
 pub const SLICE_TYPE: u64 = 54;
 pub const YIELD: u64 = 55;
+pub const TEST_DECL: u64 = 56;
 
 pub struct Node {
     kind: u64,
@@ -167,6 +168,7 @@ pub struct Arena {
         else if kind == ENUM_DEF { "enum" }
         else if kind == VARIANT { "variant" }
         else if kind == DROP_FN { "drop-fn" }
+        else if kind == TEST_DECL { "test" }
         else { "const" }
     }
 
