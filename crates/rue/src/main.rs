@@ -3362,12 +3362,12 @@ mod tests {
     #[test]
     fn flags_before_the_subcommand_do_not_hide_it() {
         assert_eq!(
-            test_subcommand_index(&["--preview", "test_declarations", "test", "main.rue"]),
+            test_subcommand_index(&["--preview", "test_infra", "test", "main.rue"]),
             Some(2)
         );
         let options = unwrap_options(parse_args_from(&[
             "--preview",
-            "test_declarations",
+            "test_infra",
             "-O2",
             "--jobs",
             "3",
@@ -3540,7 +3540,7 @@ mod tests {
             "test",
             "main.rue",
             "--preview",
-            "test_declarations",
+            "test_infra",
             "--target",
             "x86-64-linux",
             "-O1",
@@ -3588,7 +3588,7 @@ mod tests {
             "x86-64-linux",
             "-O2",
             "--preview",
-            "test_declarations",
+            "test_infra",
             "--timeout-ms",
             "500",
             "--source-manifest",
@@ -3602,7 +3602,7 @@ mod tests {
                 "x86-64-linux",
                 "-O2",
                 "--preview",
-                "test_declarations",
+                "test_infra",
                 "--timeout-ms",
                 "500",
                 "--source-manifest",

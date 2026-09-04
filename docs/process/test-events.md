@@ -11,16 +11,13 @@ surface: `--error-format json` compiler diagnostics on stderr. The two are
 orthogonal and stay on their own streams.
 
 ```bash
-rue test app/main.rue --preview test_declarations
-rue test app/main.rue --preview test_declarations --format json
-rue test app/main.rue --preview test_declarations --list --format json
+rue test app/main.rue
+rue test app/main.rue --format json
+rue test app/main.rue --list --format json
 ```
 
-`--preview test_declarations` is required exactly as it is for a build. `rue
-test` does not enable it implicitly: any request whose closure contains test
-items — ordinary executable builds included — needs the flag to compile at all,
-so auto-enabling it here would leave those same files failing ordinary builds
-while making `rue test` the first flag to bypass ADR-0005's explicit opt-in.
+Test declarations are stable (RUE-1955), so no preview flag is needed here or
+for an ordinary build of the same closure.
 
 ## Streams
 
@@ -474,13 +471,13 @@ Every `test_finished` carries the exact argv that reproduces that one test:
 
 ```json
 ["rue","test","app/main.rue","--filter","app/t.rue::parses a port","--seed","417",
- "--target","x86-64-linux","-O0","--preview","test_declarations","--timeout-ms","10000"]
+ "--target","x86-64-linux","-O0","--timeout-ms","10000"]
 ```
 
 It selects by the **full stable ID, never the bare name** — two modules may
 declare tests with the same name, and a repro that re-runs both is not a repro.
-The seed, target, optimization level, preview set, and per-test budget travel
-with it so the same image is rebuilt, and `--source-manifest` and
+The seed, target, optimization level, any enabled preview features, and the
+per-test budget travel with it so the same image is rebuilt, and `--source-manifest` and
 `--link-archive` are repeated when they were given. The target and optimization
 level are emitted even when they were defaulted: a repro is run later, possibly
 elsewhere, and "whatever the host was" is not a reproduction.

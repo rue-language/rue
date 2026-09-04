@@ -796,7 +796,7 @@ mod tests {
                 "x86-64-linux".to_owned(),
                 "-O1".to_owned(),
                 "--preview".to_owned(),
-                "test_declarations".to_owned(),
+                "test_infra".to_owned(),
                 "--timeout-ms".to_owned(),
                 "500".to_owned(),
             ],
@@ -815,7 +815,7 @@ mod tests {
                 "x86-64-linux",
                 "-O1",
                 "--preview",
-                "test_declarations",
+                "test_infra",
                 "--timeout-ms",
                 "500",
             ]

@@ -16,7 +16,6 @@ use crate::*;
 use std::sync::Arc;
 
 use ahash::{AHashMap, AHashSet};
-use rue_error::{PreviewFeature, PreviewFeatures};
 
 /// The trusted standard-library `Option`, verbatim from `std/option.rue`.
 const TRUSTED_OPTION_SOURCE: &str = r#"
@@ -127,7 +126,6 @@ pub(crate) fn trusted_snapshot(root_source: &str) -> SourceSnapshot {
 
 pub(crate) fn test_options() -> CompileOptions {
     CompileOptions {
-        preview_features: PreviewFeatures::from([PreviewFeature::TestDeclarations]),
         root_selection: RootSelection::Tests,
         ..CompileOptions::default()
     }

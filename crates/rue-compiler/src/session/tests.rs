@@ -5559,7 +5559,6 @@ fn unreachable_body_is_not_requested_by_production_reachability() {
 
 fn test_declaration_options(root_selection: crate::RootSelection) -> CompileOptions {
     CompileOptions {
-        preview_features: PreviewFeatures::from([PreviewFeature::TestDeclarations]),
         root_selection,
         ..CompileOptions::default()
     }
@@ -5928,10 +5927,7 @@ fn a_test_request_roots_no_c_export() {
     )
     .unwrap();
     let options = |root_selection| CompileOptions {
-        preview_features: PreviewFeatures::from([
-            PreviewFeature::TestDeclarations,
-            PreviewFeature::CFfi,
-        ]),
+        preview_features: PreviewFeatures::from([PreviewFeature::CFfi]),
         root_selection,
         ..CompileOptions::default()
     };
@@ -6004,32 +6000,25 @@ fn test_body_calls_count_as_warning_references_in_an_executable_build() {
     );
 }
 
-/// The request-level preview gate of ADR-0083 §1 fires for an executable
-/// build, not only for a test request.
+/// Test declarations are stable (RUE-1955): no flag is needed, in either
+/// request shape. The executable half is the one that used to be surprising —
+/// an ordinary build parses test items for the unused-item scan.
 #[test]
-fn test_declarations_require_their_preview_feature_in_every_request() {
+fn test_declarations_need_no_preview_feature_in_any_request() {
     let source =
-        SourceSnapshot::single("main.rue", "fn main() -> i32 { 0 }\ntest \"gated\" { }").unwrap();
+        SourceSnapshot::single("main.rue", "fn main() -> i32 { 0 }\ntest \"stable\" { }").unwrap();
     let mut session = CompilerSession::new();
     session.update(&source).into_result().unwrap();
     for selection in [
         crate::RootSelection::Executable,
         crate::RootSelection::Tests,
     ] {
-        let errors = session
+        session
             .rooted_cfg(&CompileOptions {
                 root_selection: selection,
                 ..CompileOptions::default()
             })
-            .expect_err("a test declaration is gated in every request");
-        assert!(
-            errors.iter().any(|error| matches!(
-                &error.kind,
-                ErrorKind::PreviewFeatureRequired { feature, .. }
-                    if *feature == PreviewFeature::TestDeclarations
-            )),
-            "{selection:?}: unexpected diagnostics: {errors:?}"
-        );
+            .unwrap_or_else(|errors| panic!("{selection:?}: unexpected diagnostics: {errors:?}"));
     }
 }
 

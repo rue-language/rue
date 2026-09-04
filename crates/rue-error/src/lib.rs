@@ -2230,12 +2230,6 @@ pub enum PreviewFeature {
     Floats,
     /// Public enums may promise that importing matches include a wildcard.
     NonExhaustiveEnums,
-    /// Test declarations: the `test "name" { .. }` language item (ADR-0083
-    /// §1, RUE-1618). The gate covers a parser change, so any request whose
-    /// closure contains a test item — an executable build included, which
-    /// parses test items for the unused-item scan — needs the flag to compile
-    /// at all. `rue test` will not enable it implicitly.
-    TestDeclarations,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -2259,7 +2253,6 @@ impl PreviewFeature {
             PreviewFeature::CFfi => "c_ffi",
             PreviewFeature::Floats => "floats",
             PreviewFeature::NonExhaustiveEnums => "non_exhaustive_enums",
-            PreviewFeature::TestDeclarations => "test_declarations",
         }
     }
 
@@ -2271,7 +2264,6 @@ impl PreviewFeature {
             PreviewFeature::CFfi => "ADR-0064",
             PreviewFeature::Floats => "ADR-0065",
             PreviewFeature::NonExhaustiveEnums => "ADR-0005",
-            PreviewFeature::TestDeclarations => "ADR-0083",
         }
     }
 
@@ -2282,7 +2274,6 @@ impl PreviewFeature {
             PreviewFeature::CFfi,
             PreviewFeature::Floats,
             PreviewFeature::NonExhaustiveEnums,
-            PreviewFeature::TestDeclarations,
         ]
     }
 
@@ -2326,7 +2317,6 @@ impl std::str::FromStr for PreviewFeature {
             "c_ffi" => Ok(PreviewFeature::CFfi),
             "floats" => Ok(PreviewFeature::Floats),
             "non_exhaustive_enums" => Ok(PreviewFeature::NonExhaustiveEnums),
-            "test_declarations" => Ok(PreviewFeature::TestDeclarations),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -5496,10 +5486,7 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(
-            names,
-            "test_infra, c_ffi, floats, non_exhaustive_enums, test_declarations"
-        );
+        assert_eq!(names, "test_infra, c_ffi, floats, non_exhaustive_enums");
     }
 
     #[test]
@@ -5604,8 +5591,9 @@ mod tests {
     fn test_preview_feature_stabilized_are_unknown() {
         // for_loops, method_receivers, enum_payloads, array_repeat,
         // field_init_shorthand, inline_type_ctor_paths, raw_bytes,
-        // aggregate_layout, slices, and borrow_accessors were stabilized (no
-        // longer gated) — their names must now be rejected.
+        // aggregate_layout, slices, borrow_accessors, and test_declarations
+        // were stabilized (no longer gated) — their names must now be
+        // rejected.
         for name in [
             "for_loops",
             "method_receivers",
@@ -5617,6 +5605,7 @@ mod tests {
             "aggregate_layout",
             "slices",
             "borrow_accessors",
+            "test_declarations",
         ] {
             assert!(
                 name.parse::<PreviewFeature>().is_err(),

@@ -3,10 +3,10 @@ id: 0083
 title: "rue test MVP: test declarations, runner, and event protocol"
 status: accepted
 tags: [tooling, testing, syntax, semantics, incremental, cli, language-shape]
-feature-flag: test_declarations
+feature-flag: (none - feature stabilized)
 created: 2026-08-22
 accepted: 2026-09-02
-implemented:
+implemented: 2026-09-04
 spec-sections: []
 superseded-by:
 relates: ["RUE-506", "RUE-505", "RUE-504", "RUE-438", "ADR-0063", "ADR-0061", "ADR-0058", "ADR-0055", "ADR-0064", "ADR-0038", "ADR-0027", "ADR-0025", "ADR-0069", "ADR-0005"]
@@ -31,6 +31,10 @@ unimported-test-file warning (§1); `--filter` narrows the run set and never
 the analysis root set (§2); and the structured failure channel is a
 dedicated inherited pipe (§5.1). Phases 1 through 2.5 (RUE-1618, RUE-1619,
 RUE-1620) are authorized to proceed on that basis, and are complete.
+
+Test declarations were stabilized by RUE-1955 on 2026-09-04: the
+`test_declarations` preview gate is removed, and a test item compiles with no
+flag in every request shape. ADR-0005 records the stabilization.
 
 Acceptance does not settle the lower-impact calls that Open Questions marks
 decidable within their phase — exit codes, `@assert` stabilization, the
@@ -266,14 +270,14 @@ design-capture rounds on rue-language/rue#2239 and is not revisited here.
   honestly: test items in the closure cost executable requests parse plus
   that syntactic scan — nothing more.
 - **Preview gate**: `test_declarations`, required explicitly like every
-  other preview feature — `rue test` does **not** enable it implicitly.
-  The gate covers a parser change, so any request whose closure contains
+  other preview feature — `rue test` did **not** enable it implicitly.
+  The gate covered a parser change, so any request whose closure contained
   test items — executable builds included, which parse test items for the
-  warnings scan — needs the flag to compile at all. Auto-enabling it in
-  test mode alone would leave those same files failing ordinary builds
+  warnings scan — needed the flag to compile at all. Auto-enabling it in
+  test mode alone would have left those same files failing ordinary builds
   while making `rue test` the first flag to bypass ADR-0005's explicit
-  opt-in, for no net convenience. Declaring a test without the preview
-  enabled is the standard preview-gate diagnostic.
+  opt-in, for no net convenience. *Historical: the gate was removed by
+  RUE-1955 on 2026-09-04 and a test declaration now needs no flag.*
 
 ### 2. `rue test` is a driver mode emitting a versioned event stream
 
@@ -694,6 +698,13 @@ companion project "rue test follow-ups" (§6).
       unchanged (spec 4.13:5d). The dedicated message-carrying `@assert`
       lowering retires with it: the conditional `assert` intrinsic now has
       exactly one producer, a comptime-decidable comparison.
+- [x] **Phase 3: stabilization** - RUE-1955. The `test_declarations` preview
+      gate is removed from the enum, both gate sites, the cases, the spec, and
+      the repro argv, so a test item compiles with no flag in every request
+      shape. Dogfooding a maintained example on the runner is deferred to a
+      follow-up: `examples/ruelex`, the Rue-written stage-1 parser, has no
+      `test` item production, and `//:frontend-diff-test` runs it over all of
+      `examples/`, so a test item cannot land there until ruelex parses one.
 
 ## Consequences
 

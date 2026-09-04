@@ -180,6 +180,7 @@ The following preview features completed this process and are now stable (their
 - `string_trio` — see ADR-0043; stabilized by RUE-876 on 2026-07-14.
 - `slices` — see ADR-0043; stabilized by RUE-936 on 2026-08-20.
 - `borrow_accessors` — see ADR-0062; stabilized by RUE-1018 on 2026-08-21.
+- `test_declarations` — see ADR-0083; stabilized by RUE-1955 on 2026-09-04.
 
 `test_infra` remains permanently unstable (it exists only to exercise the gating
 mechanism), so the `PreviewFeature` enum is not empty.
@@ -192,13 +193,6 @@ mechanism), so the `PreviewFeature` enum is not empty.
   module remain exhaustively checked against the variants known there. Adding
   variants can still change layout, ABI, or runtime behavior, so the promise
   does not provide a binary compatibility guarantee.
-- `test_declarations` — the `test "name" { ... }` language item (RUE-1618). See
-  ADR-0083, which owns the feature. The gate covers a grammar change, so any
-  request whose module closure contains a test declaration needs the flag,
-  executable builds included; `rue test` will not enable it implicitly. It
-  gates semantic analysis and rooting only — pre-semantic requests
-  (`--emit tokens|ast|rir|deps`) present test items without the flag, exactly
-  as float literals do.
 
 ## Implementation Phases
 

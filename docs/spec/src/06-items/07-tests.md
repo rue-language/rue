@@ -102,15 +102,15 @@ A test body nevertheless participates in the whole-program reference scan that
 filters unused-item warnings, so an item used only by a test is not reported as
 unused in an executable build.
 
-## Preview gate
+## Stability
 
 {{ rule(id="6.7:11", cat="informative") }}
 
-Test declarations require the `test_declarations` preview feature (8.4:1). The
-gate covers a grammar change, so *any* request whose module closure contains a
-test declaration needs the flag — an executable build included, since it parses
-test declarations for the reference scan of 6.7:10. Declaring a test without
-the feature enabled is the standard preview-gate diagnostic (E1100).
+Test declarations are part of the stable language surface. No preview flag is
+required to declare one, in any request — an executable build included, since
+it parses test declarations for the reference scan of 6.7:10. (The feature was
+introduced behind the `test_declarations` preview gate and stabilized by
+RUE-1955.)
 
 {{ rule(id="6.7:12", cat="informative") }}
 

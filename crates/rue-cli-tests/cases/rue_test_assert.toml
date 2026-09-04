@@ -51,7 +51,7 @@ test "parses a port" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"kind":"assert_eq"',
@@ -92,7 +92,7 @@ test "compares two owned strings" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"kind":"assert_eq"',
@@ -129,7 +129,7 @@ test "compares two points" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"left":"{ x: 41, y: true }"',
@@ -163,7 +163,7 @@ test "compares two shapes" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"left":"Line(3)"',
@@ -196,7 +196,7 @@ test "rejects a duplicate port" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"kind":"assert_ne"',
@@ -227,7 +227,7 @@ test "accepts a port" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 0
 compile_stdout_contains = [
     '"verdict":"pass"',
@@ -280,7 +280,7 @@ test "compares a borrowed field" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"kind":"assert_eq"',
@@ -338,7 +338,7 @@ test "borrowed operands are read, not taken" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 0
 compile_stdout_contains = [
     '"verdict":"pass"',
@@ -388,7 +388,7 @@ test "compares a returned string on the left" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"diff":[{"op":"equal","text":"alp"},{"op":"delete","text":"ha"},{"op":"insert","text":"ine"}],"exit_code":101,"kind":"assert_eq","left":"alpha"',
@@ -423,7 +423,7 @@ test "compares a returned string on the right" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"diff":[{"op":"equal","text":"alp"},{"op":"delete","text":"ine"},{"op":"insert","text":"ha"}],"exit_code":101,"kind":"assert_eq","left":"alpine"',
@@ -463,7 +463,7 @@ test "compares a returned struct" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"kind":"assert_eq"',
@@ -508,7 +508,7 @@ test "owning temporaries are dropped exactly once" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 0
 compile_stdout_contains = [
     '"verdict":"pass"',
@@ -545,7 +545,7 @@ test "parses a port" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1"]
+args = ["test", "main.rue", "--seed", "1", "-j1"]
 driver_exit_code = 1
 compile_stdout_contains = [
     "assert_eq: assertion failed: left == right",
@@ -576,7 +576,7 @@ test "compares two documents" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1"]
+args = ["test", "main.rue", "--seed", "1", "-j1"]
 driver_exit_code = 1
 compile_stdout_contains = [
     "  left:\n    alpha\n    beta\n    gamma\n",
