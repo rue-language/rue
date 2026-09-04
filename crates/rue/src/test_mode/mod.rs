@@ -210,6 +210,10 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
     // can be allocated there and then be destroyed by a child's `dup2` onto
     // the channel. See `exec::reserve_channel_descriptor`.
     exec::reserve_channel_descriptor();
+    // And take responsibility for the children: each test leads its own process
+    // group, so a terminal's Ctrl-C reaches this process alone and would
+    // otherwise leave every live test running unsupervised.
+    exec::install_signal_forwarding();
 
     let seed = options.seed.unwrap_or_else(fresh_seed);
 
@@ -360,6 +364,10 @@ fn candidate_source(candidates: Option<&TestCandidateInventory>) -> CandidateSou
 /// Filtering and sharding apply — a listing answers "what would this
 /// invocation run" — but the shuffle does not. A listing is an inventory, and
 /// stable-ID order is the property that makes two listings comparable.
+///
+/// Membership therefore comes from `selection::select`, the same computation
+/// `plan` runs, rather than from a second copy of the predicate here: a listing
+/// that could disagree with the run it previews is worse than no listing.
 fn list(
     host: &mut FilesystemCompilerHost,
     compile_options: &CompileOptions,
@@ -374,16 +382,7 @@ fn list(
             return TestExitCode::RunnerError;
         }
     };
-    let selected: Vec<&TestInventoryEntry> = inventory
-        .entries
-        .iter()
-        .filter(|entry| selection::matches_filters(&entry.id, &options.filters))
-        .filter(|entry| {
-            options.shard.is_none_or(|shard| {
-                selection::shard_hash(&entry.id) % shard.count == shard.index - 1
-            })
-        })
-        .collect();
+    let selected = selection::select(&inventory.entries, &options.filters, options.shard);
     if selected.is_empty() {
         eprintln!("{}", empty_selection_reason(inventory.entries.len()));
         return TestExitCode::EmptySelection;
@@ -656,9 +655,10 @@ fn failure_message(
         FailureKind::Incomplete => {
             "the test exited 0 without the dispatcher's completion record".to_owned()
         }
-        FailureKind::OutputOverflow => format!(
-            "a captured stream exceeded its {DEFAULT_STREAM_BUDGET}-byte retention budget; \
-             the process group was killed"
+        FailureKind::OutputOverflow(overflow) => format!(
+            "{} exceeded its {}-byte retention budget; the process group was killed",
+            overflow.stream.name(),
+            overflow.budget
         ),
         FailureKind::Assert
         | FailureKind::AssertEq

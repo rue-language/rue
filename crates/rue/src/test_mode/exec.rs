@@ -21,12 +21,15 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
 use rue_test_runner::pipe_drain::{PIPE_DRAIN_FINISH_TIMEOUT, PipeDrain, spawn_pipe_drain};
 use rue_test_runner::{configure_process_group, kill_process_group};
 
-use super::verdict::{ChannelFrames, Classification, Observation, Supervision, classify};
+use super::verdict::{
+    CaptureStream, ChannelFrames, Classification, Observation, Overflow, Supervision, classify,
+};
 
 /// The failure channel's descriptor, pinned by the ADR-0083 §3 exec contract
 /// and by `crates/rue-runtime/src/test_channel.rs`, which writes to it.
@@ -167,6 +170,131 @@ pub(crate) fn reserve_channel_descriptor() {
     });
 }
 
+/// Slots in the live-group registry.
+///
+/// One slot per concurrently running test, with room to spare: `--jobs` is
+/// capped at `MAX_EXPLICIT_JOBS` (256) in `main.rs`, so a run cannot have more
+/// children alive than that. The registry is a fixed array because the signal
+/// handler walks it, and a handler may neither allocate nor take a lock.
+const MAX_LIVE_GROUPS: usize = 1024;
+
+/// The process-group ids of the tests running right now; 0 marks a free slot.
+///
+/// Async-signal-safe storage on purpose. Every child leads its own process
+/// group, so the terminal's SIGINT reaches the runner and nothing else; without
+/// this registry a Ctrl-C would leave the images running with nobody left to
+/// enforce their timeout.
+static LIVE_GROUPS: [AtomicI32; MAX_LIVE_GROUPS] = [const { AtomicI32::new(0) }; MAX_LIVE_GROUPS];
+
+/// Publish a live process group to the signal handler.
+///
+/// `None` means the registry was full, which is not a failure: the test still
+/// runs, and only the handler's best-effort teardown is missed. The slot index
+/// comes back so the entry can be withdrawn by exactly its owner.
+fn register_group(pgid: i32) -> Option<usize> {
+    register_in(&LIVE_GROUPS, pgid)
+}
+
+/// Withdraw a group once its child is reaped.
+///
+/// Prompt withdrawal is what keeps the handler honest: a pid is reusable the
+/// moment its group is empty, and a stale entry would aim a SIGKILL at whatever
+/// unrelated process inherited the number.
+fn unregister_group(slot: usize, pgid: i32) {
+    unregister_in(&LIVE_GROUPS, slot, pgid);
+}
+
+/// SIGKILL every registered process group.
+///
+/// This is what the handler runs, and the tests exercise the same body over a
+/// registry of their own — the only way to observe it without signalling the
+/// test binary itself.
+fn kill_registered_groups() {
+    kill_groups_in(&LIVE_GROUPS);
+}
+
+/// The registry operations, over the array rather than the static, so a test
+/// can drive them without publishing pids into the process-wide registry the
+/// signal handler reads.
+fn register_in(groups: &[AtomicI32], pgid: i32) -> Option<usize> {
+    groups.iter().position(|slot| {
+        slot.compare_exchange(0, pgid, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+    })
+}
+
+fn unregister_in(groups: &[AtomicI32], slot: usize, pgid: i32) {
+    if let Some(entry) = groups.get(slot) {
+        let _ = entry.compare_exchange(pgid, 0, Ordering::AcqRel, Ordering::Relaxed);
+    }
+}
+
+fn kill_groups_in(groups: &[AtomicI32]) {
+    for slot in groups {
+        let pgid = slot.load(Ordering::Acquire);
+        if pgid > 0 {
+            // SAFETY: async-signal-safe. A negative pid names the group led by
+            // `pgid`; an already-empty group fails harmlessly.
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+/// The handler installed for SIGINT, SIGTERM, and SIGHUP.
+///
+/// Kill the tests, then die of the same signal with the default disposition, so
+/// the runner's wait status is the conventional one and an interactive shell
+/// sees an interrupt rather than an ordinary exit.
+extern "C" fn forward_termination(signal: i32) {
+    kill_registered_groups();
+    // SAFETY: every call here is async-signal-safe and nothing allocates.
+    // `sigaction` with SIG_DFL cannot fail for a catchable signal, and the
+    // `raise` that follows does not return.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = libc::SIG_DFL;
+        libc::sigemptyset(&mut action.sa_mask);
+        libc::sigaction(signal, &action, std::ptr::null_mut());
+        libc::raise(signal);
+    }
+}
+
+static SIGNAL_FORWARDING: OnceLock<()> = OnceLock::new();
+
+/// Take responsibility for the tests when the runner is asked to stop.
+///
+/// Each test leads its own process group so a timeout can kill its whole tree,
+/// which also means the terminal's Ctrl-C is delivered to the runner alone.
+/// Without a handler the runner would die and leave every live test running
+/// with no supervisor and no timeout.
+///
+/// Idempotent, and called once per invocation next to
+/// [`reserve_channel_descriptor`]. A signal already ignored when we started —
+/// `nohup`, or a shell that detached the job — stays ignored: overriding that
+/// would make the runner catchable where its parent deliberately made it not.
+pub(crate) fn install_signal_forwarding() {
+    SIGNAL_FORWARDING.get_or_init(|| {
+        for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+            // SAFETY: `sigaction` on a catchable signal with a valid handler.
+            unsafe {
+                let mut previous: libc::sigaction = std::mem::zeroed();
+                if libc::sigaction(signal, std::ptr::null(), &mut previous) == 0
+                    && previous.sa_sigaction == libc::SIG_IGN
+                {
+                    continue;
+                }
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = forward_termination as libc::sighandler_t;
+                libc::sigemptyset(&mut action.sa_mask);
+                action.sa_flags = libc::SA_RESTART;
+                libc::sigaction(signal, &action, std::ptr::null_mut());
+            }
+        }
+    });
+}
+
 /// Run one test to a verdict.
 ///
 /// Errors are runner errors — the image could not be executed at all — and are
@@ -209,6 +337,10 @@ pub(crate) fn run_one(dispatch: Dispatch<'_>) -> io::Result<Execution> {
     // reader below can never see end of stream.
     drop(channel_write);
     let pid = child.id() as i32;
+    // The child leads its own group, so its pid is its pgid. Registered before
+    // anything can block, so a signal arriving during the drain below still
+    // finds this test.
+    let group_slot = register_group(pid);
 
     let mut stdout_drain = spawn_pipe_drain(child.stdout.take(), Some(dispatch.stream_budget));
     let mut stderr_drain = spawn_pipe_drain(child.stderr.take(), Some(dispatch.stream_budget));
@@ -226,8 +358,13 @@ pub(crate) fn run_one(dispatch: Dispatch<'_>) -> io::Result<Execution> {
         stderr_drain.poll();
         channel_drain.poll();
 
-        if stdout_drain.overflowed() || stderr_drain.overflowed() {
-            supervision = Supervision::OutputOverflow;
+        if let Some(overflow) = overflowed(
+            &stdout_drain,
+            &stderr_drain,
+            &channel_drain,
+            dispatch.stream_budget,
+        ) {
+            supervision = Supervision::OutputOverflow(overflow);
             kill_process_group(&mut child);
             break None;
         }
@@ -250,6 +387,9 @@ pub(crate) fn run_one(dispatch: Dispatch<'_>) -> io::Result<Execution> {
     // (ADR-0083 §3). A descendant that outlived its parent would otherwise keep
     // a pipe open and stall the bounded finish below for no useful reason.
     reap_process_group(pid);
+    if let Some(slot) = group_slot {
+        unregister_group(slot, pid);
+    }
 
     finish(&mut stdout_drain);
     finish(&mut stderr_drain);
@@ -261,9 +401,14 @@ pub(crate) fn run_one(dispatch: Dispatch<'_>) -> io::Result<Execution> {
     // the flag again after the bounded finish is what keeps such a test from
     // reporting as a pass whose digest silently covers a truncated prefix.
     if supervision == Supervision::Exited
-        && (stdout_drain.overflowed() || stderr_drain.overflowed())
+        && let Some(overflow) = overflowed(
+            &stdout_drain,
+            &stderr_drain,
+            &channel_drain,
+            dispatch.stream_budget,
+        )
     {
-        supervision = Supervision::OutputOverflow;
+        supervision = Supervision::OutputOverflow(overflow);
     }
 
     let (exit_code, signal) = match &status {
@@ -306,22 +451,59 @@ fn finish(drain: &mut PipeDrain) {
     drain.finish(PIPE_DRAIN_FINISH_TIMEOUT);
 }
 
+/// The first capture to outgrow its budget, if any.
+///
+/// The channel is checked with the streams rather than left to the frame parser
+/// (RUE-2025): a channel truncated mid-line surfaces as a malformed frame, which
+/// reports the test as a bare `exit` with a runner note about an unreadable
+/// channel — a description of the symptom, not of the test writing a quarter of
+/// a megabyte of failure records.
+fn overflowed(
+    stdout: &PipeDrain,
+    stderr: &PipeDrain,
+    channel: &PipeDrain,
+    stream_budget: usize,
+) -> Option<Overflow> {
+    let candidates = [
+        (stdout, CaptureStream::Stdout, stream_budget),
+        (stderr, CaptureStream::Stderr, stream_budget),
+        (channel, CaptureStream::Channel, CHANNEL_BUDGET),
+    ];
+    candidates
+        .into_iter()
+        .find(|(drain, _, _)| drain.overflowed())
+        .map(|(_, stream, budget)| Overflow { stream, budget })
+}
+
 /// A fresh pipe for one test's failure channel.
 ///
-/// Both ends are marked close-on-exec immediately: this runner spawns from
-/// several threads at once, and a descriptor without the flag would be
-/// inherited by whichever unrelated test happened to fork next, keeping that
-/// test's channel from ever reaching end of stream. The child's own descriptor
-/// 3 has the flag cleared inside `pre_exec`, where it is the one descriptor
-/// meant to survive.
+/// Both ends are close-on-exec: this runner spawns from several threads at
+/// once, and a descriptor without the flag would be inherited by whichever
+/// unrelated test happened to fork next, keeping that test's channel from ever
+/// reaching end of stream and making it pay the bounded finish timeout. The
+/// child's own descriptor 3 has the flag cleared inside `pre_exec`, where it is
+/// the one descriptor meant to survive.
+///
+/// On Linux the flag is set by `pipe2(O_CLOEXEC)`, atomically with the pipe's
+/// creation. A `pipe` followed by two `fcntl` calls leaves exactly the window
+/// this flag exists to close: a fork on another worker thread in between
+/// inherits an unflagged end (RUE-2025). Other targets keep that spelling
+/// because they have no `pipe2` — macOS in particular — so the window is
+/// narrowed there rather than closed.
 fn channel_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0 as libc::c_int; 2];
+    #[cfg(target_os = "linux")]
+    // SAFETY: `fds` is a valid two-element array for `pipe2` to fill.
+    let created = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+    #[cfg(not(target_os = "linux"))]
     // SAFETY: `fds` is a valid two-element array for `pipe` to fill.
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+    let created = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if created != 0 {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: `pipe` succeeded, so both descriptors are open and unowned.
+    // SAFETY: the pipe was created, so both descriptors are open and unowned.
     let ends = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    #[cfg(not(target_os = "linux"))]
     for end in [&ends.0, &ends.1] {
         // SAFETY: the descriptor is owned and open.
         if unsafe { libc::fcntl(end.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
@@ -344,6 +526,22 @@ fn channel_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 /// `dup2` onto itself, which is a no-op that leaves close-on-exec set and would
 /// hand the image a channel that closes at `exec`.
 fn install_channel(write_fd: i32, read_fd: i32) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        // A runner killed by SIGKILL runs no handler, so nothing forwards the
+        // kill to the tests; this asks the kernel to do it instead. Best effort
+        // — a kernel that refuses it costs nothing that was promised.
+        //
+        // PDEATHSIG fires when the forking *thread* dies, not the process. That
+        // is the behaviour we want here: a worker thread outlives every child
+        // it spawns, waiting for each before claiming the next and exiting only
+        // when the scope ends, so the signal cannot arrive while the test is
+        // still legitimately supervised.
+        // SAFETY: async-signal-safe, and `prctl` here touches only this child.
+        unsafe {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+        }
+    }
     if write_fd == CHANNEL_FD {
         // SAFETY: async-signal-safe, on a descriptor this child owns.
         if unsafe { libc::fcntl(CHANNEL_FD, libc::F_SETFD, 0) } < 0 {
@@ -441,6 +639,40 @@ mod tests {
         assert_ne!(DEFAULT_STREAM_BUDGET, CHANNEL_BUDGET);
     }
 
+    fn drained(bytes: usize, budget: usize) -> PipeDrain {
+        let mut drain =
+            spawn_pipe_drain(Some(std::io::Cursor::new(vec![b'x'; bytes])), Some(budget));
+        drain.finish(Duration::from_secs(5));
+        drain
+    }
+
+    /// A channel past its budget is the same supervision outcome as a flooded
+    /// stream, and names its own budget: before RUE-2025 it was not checked at
+    /// all, so it surfaced as a truncated frame and a bare `exit`.
+    #[test]
+    fn a_channel_past_its_budget_overflows_naming_the_channel() {
+        let quiet = drained(16, DEFAULT_STREAM_BUDGET);
+        let flooded = drained(CHANNEL_BUDGET + 1, CHANNEL_BUDGET);
+        let overflow = overflowed(&quiet, &quiet, &flooded, DEFAULT_STREAM_BUDGET)
+            .expect("a channel past its budget is an overflow");
+        assert_eq!(overflow.stream, CaptureStream::Channel);
+        assert_eq!(overflow.budget, CHANNEL_BUDGET);
+    }
+
+    /// Each capture reports its own budget, which is the whole reason the
+    /// overflow carries one: the channel's is a quarter of a stream's.
+    #[test]
+    fn an_overflowing_stream_reports_the_budget_it_exceeded() {
+        let quiet = drained(16, 64);
+        let flooded = drained(128, 64);
+        let stdout = overflowed(&flooded, &quiet, &quiet, 64).expect("stdout overflowed");
+        assert_eq!(stdout.stream, CaptureStream::Stdout);
+        assert_eq!(stdout.budget, 64);
+        let stderr = overflowed(&quiet, &flooded, &quiet, 64).expect("stderr overflowed");
+        assert_eq!(stderr.stream, CaptureStream::Stderr);
+        assert!(overflowed(&quiet, &quiet, &quiet, 64).is_none());
+    }
+
     /// A pipe both of whose ends leaked into an unrelated concurrent spawn
     /// would keep that test's channel from ever reaching end of stream.
     #[test]
@@ -484,6 +716,120 @@ mod tests {
         // An ordinary file open is allocated from the same descriptor space.
         let file = std::fs::File::open("/dev/null").expect("/dev/null");
         assert_ne!(file.as_raw_fd(), CHANNEL_FD);
+    }
+
+    /// A registry of the tests' own. The process-wide one is what the signal
+    /// handler kills, so a test must never publish a pid into it that it is not
+    /// about to reap: an unrelated process could hold that number by then.
+    fn registry(slots: usize) -> Vec<AtomicI32> {
+        (0..slots).map(|_| AtomicI32::new(0)).collect()
+    }
+
+    /// A registration is visible until it is withdrawn, and withdrawal is by
+    /// owner: a slot recycled between the two must not be cleared by the
+    /// previous tenant.
+    #[test]
+    fn a_group_registration_is_withdrawn_by_its_owner() {
+        let groups = registry(4);
+        let slot = register_in(&groups, 4_242).expect("a free slot");
+        assert_eq!(groups[slot].load(Ordering::Acquire), 4_242);
+        unregister_in(&groups, slot, 9_999);
+        assert_eq!(
+            groups[slot].load(Ordering::Acquire),
+            4_242,
+            "a withdrawal naming another group leaves the slot alone"
+        );
+        unregister_in(&groups, slot, 4_242);
+        assert_eq!(groups[slot].load(Ordering::Acquire), 0);
+        // An out-of-range slot is a lost teardown, never a crashed runner.
+        unregister_in(&groups, groups.len(), 1);
+    }
+
+    /// A full registry refuses rather than failing a run: registration is best
+    /// effort, and all that is lost is the handler's teardown of that group.
+    #[test]
+    fn a_full_registry_refuses_rather_than_failing_a_run() {
+        let groups = registry(3);
+        let held: Vec<usize> = (0..3)
+            .map(|index| register_in(&groups, 100 + index).expect("a free slot"))
+            .collect();
+        assert_eq!(held.len(), 3);
+        assert!(register_in(&groups, 200).is_none());
+        unregister_in(&groups, held[1], 101);
+        assert_eq!(
+            register_in(&groups, 200),
+            Some(held[1]),
+            "a freed slot is reused"
+        );
+    }
+
+    /// What a Ctrl-C must do, exercised without signalling this process: the
+    /// registered group dies even though the child leads a process group of its
+    /// own, which is exactly the group the terminal's SIGINT never reaches.
+    #[test]
+    fn killing_the_registered_groups_kills_a_live_child() {
+        use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
+
+        let mut command = Command::new("sleep");
+        command
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0);
+        let mut child = command.spawn().expect("sleep(1) is a POSIX utility");
+        let pid = child.id() as i32;
+        let groups = registry(2);
+        register_in(&groups, pid).expect("a free slot");
+
+        kill_groups_in(&groups);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("waiting on our own child") {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "the child outlived the kill");
+            std::thread::sleep(POLL_INTERVAL);
+        };
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+    }
+
+    /// A withdrawn group is not signalled again: the pid is reusable the moment
+    /// its group empties, and a stale entry would aim a kill at a stranger.
+    #[test]
+    fn a_withdrawn_group_is_no_longer_reachable_from_the_handler() {
+        let groups = registry(2);
+        let slot = register_in(&groups, 1_234).expect("a free slot");
+        unregister_in(&groups, slot, 1_234);
+        assert!(
+            groups.iter().all(|slot| slot.load(Ordering::Acquire) == 0),
+            "a withdrawn group leaves nothing for the handler to kill"
+        );
+    }
+
+    /// The registry is sized against the driver's own cap on `--jobs`, so the
+    /// full case is unreachable in a real run rather than merely handled.
+    #[test]
+    fn the_registry_holds_more_groups_than_a_run_can_have_children() {
+        assert!(MAX_LIVE_GROUPS > crate::MAX_EXPLICIT_JOBS);
+        assert_eq!(LIVE_GROUPS.len(), MAX_LIVE_GROUPS);
+    }
+
+    /// Installing the handlers twice must be harmless: the runner calls it once
+    /// per invocation, and these tests call it alongside.
+    #[test]
+    fn installing_signal_forwarding_is_idempotent() {
+        install_signal_forwarding();
+        install_signal_forwarding();
+        for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+            // SAFETY: a bare query of a signal's current disposition.
+            let mut installed: libc::sigaction = unsafe { std::mem::zeroed() };
+            // SAFETY: `installed` is a valid destination for the query.
+            let queried = unsafe { libc::sigaction(signal, std::ptr::null(), &mut installed) };
+            assert_eq!(queried, 0);
+            assert_ne!(installed.sa_sigaction, libc::SIG_DFL, "signal {signal}");
+        }
     }
 
     /// Reserving twice is not an error and does not change what is held: the

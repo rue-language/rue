@@ -73,8 +73,11 @@ pub(crate) enum FailureKind {
     UnhandledError,
     /// Any other nonzero exit.
     Exit,
-    /// A capture budget was exhausted and the process group was killed.
-    OutputOverflow,
+    /// A capture budget was exhausted and the process group was killed. It
+    /// carries which capture overflowed and the budget that was exceeded,
+    /// because the three budgets differ and a message naming the wrong one
+    /// sends a reader to the wrong flag.
+    OutputOverflow(Overflow),
     /// A kind a failure frame supplied verbatim (ADR-0083 §5.1).
     Reported(String),
 }
@@ -102,7 +105,10 @@ impl fmt::Display for FailureKind {
             Self::Trap(class) => write!(f, "trap:{class}"),
             Self::UnhandledError => f.write_str("unhandled_error"),
             Self::Exit => f.write_str("exit"),
-            Self::OutputOverflow => f.write_str("output_overflow"),
+            // The published kind names the class, not which capture produced
+            // it: the stream is presentation, and a consumer branching on
+            // `kind` must not have to enumerate three spellings.
+            Self::OutputOverflow(_) => f.write_str("output_overflow"),
             Self::Reported(kind) => f.write_str(kind),
         }
     }
@@ -259,6 +265,37 @@ fn location_number(value: &serde_json::Value, key: &str) -> u32 {
         .unwrap_or(0)
 }
 
+/// One of the three captures a test process feeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CaptureStream {
+    Stdout,
+    Stderr,
+    /// The §5.1 failure channel on descriptor 3.
+    Channel,
+}
+
+impl CaptureStream {
+    /// How a failure message names this capture to a person.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+            Self::Channel => "the failure channel",
+        }
+    }
+}
+
+/// A capture that outgrew its retention budget.
+///
+/// The budget travels with the stream because the channel's is a quarter of a
+/// stream's (ADR-0083 §2): a message that always quoted the stream budget would
+/// misreport the channel by a factor of four.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Overflow {
+    pub(crate) stream: CaptureStream,
+    pub(crate) budget: usize,
+}
+
 /// How the runner's own supervision ended a test, before its exit status is
 /// consulted at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,7 +305,7 @@ pub(crate) enum Supervision {
     /// The wall-clock budget expired; the group was killed.
     TimedOut,
     /// A capture budget was exhausted; the group was killed.
-    OutputOverflow,
+    OutputOverflow(Overflow),
 }
 
 /// Everything the classifier reads about one finished test process.
@@ -308,9 +345,9 @@ pub(crate) fn classify(observation: Observation<'_>) -> Classification {
                 runner_note: None,
             };
         }
-        Supervision::OutputOverflow => {
+        Supervision::OutputOverflow(overflow) => {
             return Classification {
-                verdict: Verdict::Fail(FailureKind::OutputOverflow),
+                verdict: Verdict::Fail(FailureKind::OutputOverflow(overflow)),
                 runner_note: None,
             };
         }
@@ -562,16 +599,45 @@ mod tests {
         });
         assert_eq!(timed_out.verdict, Verdict::Timeout);
 
+        let overflow = Overflow {
+            stream: CaptureStream::Stdout,
+            budget: 1024,
+        };
         let overflowed = classify(Observation {
-            supervision: Supervision::OutputOverflow,
+            supervision: Supervision::OutputOverflow(overflow),
             status: Err(9),
             stderr: b"",
             frames: &ChannelFrames::default(),
         });
         assert_eq!(
             overflowed.verdict,
-            Verdict::Fail(FailureKind::OutputOverflow)
+            Verdict::Fail(FailureKind::OutputOverflow(overflow))
         );
+    }
+
+    /// A channel that outgrew its budget is the same supervision outcome as a
+    /// flooded stream — the group is killed and the verdict is a failure —
+    /// but it carries its own, smaller budget so the message names that one.
+    #[test]
+    fn an_overflow_carries_the_capture_that_produced_it() {
+        let overflow = Overflow {
+            stream: CaptureStream::Channel,
+            budget: 256 * 1024,
+        };
+        let classified = classify(Observation {
+            supervision: Supervision::OutputOverflow(overflow),
+            status: Err(9),
+            stderr: b"",
+            frames: &ChannelFrames::default(),
+        });
+        let Verdict::Fail(FailureKind::OutputOverflow(reported)) = classified.verdict else {
+            panic!("a channel overflow is an output_overflow failure");
+        };
+        assert_eq!(reported.stream, CaptureStream::Channel);
+        assert_eq!(reported.budget, 256 * 1024);
+        assert_eq!(CaptureStream::Stdout.name(), "stdout");
+        assert_eq!(CaptureStream::Stderr.name(), "stderr");
+        assert_eq!(CaptureStream::Channel.name(), "the failure channel");
     }
 
     /// A channel the runner could not read is never silently ignored — least
@@ -704,7 +770,15 @@ mod tests {
         assert_eq!(FailureKind::Trap("panic").to_string(), "trap:panic");
         assert_eq!(FailureKind::UnhandledError.to_string(), "unhandled_error");
         assert_eq!(FailureKind::Exit.to_string(), "exit");
-        assert_eq!(FailureKind::OutputOverflow.to_string(), "output_overflow");
+        // The kind is one published spelling whichever capture overflowed.
+        for stream in [
+            CaptureStream::Stdout,
+            CaptureStream::Stderr,
+            CaptureStream::Channel,
+        ] {
+            let kind = FailureKind::OutputOverflow(Overflow { stream, budget: 7 });
+            assert_eq!(kind.to_string(), "output_overflow");
+        }
     }
 
     #[test]
