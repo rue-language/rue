@@ -16,7 +16,7 @@ use core::fmt;
 #[macro_export]
 macro_rules! runtime_abi_version {
     ($callback:ident) => {
-        $callback!(3, __rue_runtime_abi_v3);
+        $callback!(4, __rue_runtime_abi_v4);
     };
 }
 
@@ -48,6 +48,15 @@ pub enum AbiType {
     /// The target C ABI's `usize`, used only by compiler-built memory routines.
     Usize,
 }
+
+/// Width discriminants accepted by `__rue_to_string_float`.
+///
+/// The value travels as a `u32`, not as a Rust or C enum, so an invalid caller
+/// value cannot create undefined behavior at the boundary. The runtime traps
+/// on any value other than these two constants. For [`FLOAT_WIDTH_F32`], only
+/// the low 32 bits of the adjacent `u64` bit-pattern parameter may be set.
+pub const FLOAT_WIDTH_F32: u32 = 32;
+pub const FLOAT_WIDTH_F64: u32 = 64;
 
 /// How a parameter crosses the C boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -714,6 +723,17 @@ macro_rules! for_each_runtime_helper {
             safety: WRITABLE,
             returns: RETURNS
         },
+        ToStringFloat => unsafe __rue_to_string_float(
+            out: *mut $crate::StrBufResult,
+            bits: u64,
+            width: u32,
+        ) {
+            symbol: "__rue_to_string_float",
+            parameters: params![STR_BUF_OUT, U64_VALUE, U32_VALUE],
+            result: VOID,
+            safety: WRITABLE,
+            returns: RETURNS
+        },
         Print => unsafe __rue_print(ptr: *const u8, len: u64, cap: u64) {
             symbol: "__rue_print",
             parameters: params![BYTE_VIEW, U64_VALUE, U64_VALUE],
@@ -1356,11 +1376,11 @@ const fn starts_with(value: &str, prefix: &str) -> bool {
 }
 
 const fn ends_with_decimal_version(symbol: &str, version: u32) -> bool {
-    // Version 2 added the ADR-0083 §5.1 test failure channel; version 3 added
-    // its comparison form, `__rue_test_fail_comparison` (Phase 2.5). This
-    // explicit check makes an ABI bump update both metadata values rather than
-    // silently retaining a stale symbol.
-    version == 3 && string_eq(symbol, "__rue_runtime_abi_v3")
+    // Version 3 added the ADR-0083 §5.1 comparison failure channel; version 4
+    // added width-explicit float formatting. This explicit check makes an ABI
+    // bump update both metadata values rather than silently retaining a stale
+    // symbol.
+    version == 4 && string_eq(symbol, "__rue_runtime_abi_v4")
 }
 
 /// Validate all table ordering, uniqueness, classification, and layout invariants.
@@ -1446,7 +1466,7 @@ mod tests {
     #[test]
     fn manifest_is_const_valid_and_exhaustive() {
         assert_eq!(validate_manifest(), Ok(()));
-        assert_eq!(RuntimeHelperId::ALL.len(), 52);
+        assert_eq!(RuntimeHelperId::ALL.len(), 53);
         assert_eq!(RuntimeHelperId::ALL.len(), RUNTIME_HELPERS.len());
         for (index, id) in RuntimeHelperId::ALL.iter().copied().enumerate() {
             assert_eq!(id as usize, index);
@@ -1493,6 +1513,7 @@ mod tests {
             "__rue_str_char_next_lossy",
             "__rue_to_string",
             "__rue_to_string_unsigned",
+            "__rue_to_string_float",
             "__rue_print",
             "__rue_println",
             "__rue_str_print",
@@ -1531,7 +1552,7 @@ mod tests {
     #[test]
     fn every_helper_has_the_exact_accepted_signature_and_contract() {
         fn check(
-            visited: &mut [bool; 52],
+            visited: &mut [bool; 53],
             ids: &[RuntimeHelperId],
             parameters: &[AbiParameter],
             result: AbiResult,
@@ -1552,7 +1573,7 @@ mod tests {
             }
         }
 
-        let mut visited = [false; 52];
+        let mut visited = [false; 53];
         check(
             &mut visited,
             &[RuntimeHelperId::Exit],
@@ -1683,6 +1704,14 @@ mod tests {
             &mut visited,
             &[RuntimeHelperId::ToStringUnsigned],
             &[STR_BUF_OUT, U64_VALUE],
+            VOID,
+            WRITABLE,
+            RETURNS,
+        );
+        check(
+            &mut visited,
+            &[RuntimeHelperId::ToStringFloat],
+            &[STR_BUF_OUT, U64_VALUE, U32_VALUE],
             VOID,
             WRITABLE,
             RETURNS,
@@ -1910,6 +1939,11 @@ mod tests {
             ParameterMode::OutPointer(AggregateShapeId::StrBufResult)
         );
         assert_eq!(
+            RuntimeHelperId::ToStringFloat.helper().parameters,
+            [STR_BUF_OUT, U64_VALUE, U32_VALUE],
+            "float bits and width must cross the ABI explicitly"
+        );
+        assert_eq!(
             RuntimeHelperId::ParseI64.helper().parameters[0].mode,
             ParameterMode::OutPointer(AggregateShapeId::OptionIntResult)
         );
@@ -1997,7 +2031,7 @@ mod tests {
 
     #[test]
     fn abi_version_metadata_is_a_one_byte_data_export() {
-        assert_eq!(RUNTIME_ABI_VERSION, 3);
+        assert_eq!(RUNTIME_ABI_VERSION, 4);
         assert_eq!(
             RUNTIME_ABI_VERSION_SYMBOL,
             format!("__rue_runtime_abi_v{RUNTIME_ABI_VERSION}")

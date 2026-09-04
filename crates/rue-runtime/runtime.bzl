@@ -29,7 +29,16 @@ def _runtime_staticlib_impl(ctx: AnalysisContext) -> list[Provider]:
     target_sysroot = target_std.project("rust-std-{}".format(target))
     abi_rlib = ctx.actions.declare_output("librue_runtime_abi-{}.rlib".format(target))
     allocator_rlib = ctx.actions.declare_output("librue_allocator-{}.rlib".format(target))
+    zmij_rlib = ctx.actions.declare_output("libzmij-{}.rlib".format(target))
     archive = ctx.actions.declare_output("librue_runtime-{}.a".format(target))
+    zmij_source_dir = ctx.actions.symlinked_dir(
+        "zmij-src-{}".format(target),
+        {
+            "lib.rs": ctx.attrs.zmij_crate_root,
+            "traits.rs": ctx.attrs.zmij_srcs[0],
+        },
+    )
+    zmij_crate_root = zmij_source_dir.project("lib.rs")
 
     abi_args = cmd_args(toolchain.compiler)
     abi_args.add(
@@ -91,6 +100,36 @@ def _runtime_staticlib_impl(ctx: AnalysisContext) -> list[Provider]:
         identifier = target,
     )
 
+    zmij_args = cmd_args(toolchain.compiler)
+    zmij_args.add(
+        "--crate-name",
+        "zmij",
+        "--crate-type",
+        "rlib",
+        "--edition",
+        "2021",
+        "--target",
+        target,
+        "--sysroot",
+        target_sysroot,
+    )
+    zmij_args.add(ctx.attrs.rustc_flags)
+    zmij_args.add(
+        "--remap-path-prefix",
+        cmd_args(
+            zmij_crate_root,
+            format = "{}=/rue/third-party/vendor/zmij-0.1.7/src/lib.rs",
+        ),
+    )
+    zmij_args.add(zmij_crate_root)
+    zmij_args.add("-o", zmij_rlib.as_output())
+
+    ctx.actions.run(
+        zmij_args,
+        category = "runtime_zmij_rlib",
+        identifier = target,
+    )
+
     args = cmd_args(toolchain.compiler)
     args.add(
         "--crate-name",
@@ -113,6 +152,10 @@ def _runtime_staticlib_impl(ctx: AnalysisContext) -> list[Provider]:
         "--extern",
         cmd_args("rue_runtime_abi=", abi_rlib, delimiter = ""),
     )
+    args.add(
+        "--extern",
+        cmd_args("zmij=", zmij_rlib, delimiter = ""),
+    )
     args.add(cmd_args(ctx.attrs.crate_root, hidden = ctx.attrs.srcs))
     args.add("-o", archive.as_output())
 
@@ -134,6 +177,8 @@ _runtime_staticlib = rule(
         "target_std": attrs.dep(),
         "target_triple": attrs.string(),
         "rustc_flags": attrs.list(attrs.arg()),
+        "zmij_crate_root": attrs.source(),
+        "zmij_srcs": attrs.list(attrs.source()),
         "_rust_toolchain": attrs.toolchain_dep(default = "toolchains//:rust"),
     },
 )
@@ -153,5 +198,9 @@ def runtime_staticlib(name: str, target_triple: str, target_std: str, visibility
         target_std = target_std,
         target_triple = target_triple,
         rustc_flags = flags,
+        zmij_crate_root = "//third-party:zmij-0.1.7-lib.rs",
+        zmij_srcs = [
+            "//third-party:zmij-0.1.7-traits.rs",
+        ],
         visibility = visibility,
     )

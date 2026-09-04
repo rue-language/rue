@@ -111,6 +111,21 @@ def _libtest2_scheduler_test():
         ],
     )
 
+def _zmij_runtime_sources():
+    # The freestanding runtime compiles fixed cross-target rlibs directly with
+    # the hermetic rustc, so preserve module-relative source paths as explicit
+    # exported inputs beside Reindeer's generated library.
+    native.export_file(
+        name = "zmij-0.1.7-lib.rs",
+        src = "vendor/zmij-0.1.7/src/lib.rs",
+        visibility = ["//crates/rue-runtime:"],
+    )
+    native.export_file(
+        name = "zmij-0.1.7-traits.rs",
+        src = "vendor/zmij-0.1.7/src/traits.rs",
+        visibility = ["//crates/rue-runtime:"],
+    )
+
 def _is_linux_mimalloc_target(name):
     return name == "libmimalloc-sys" or name == "libmimalloc-sys-0.1.49" or name == "mimalloc" or name == "mimalloc-0.1.52"
 
@@ -132,3 +147,5 @@ def rue_rust_library(name, **kwargs):
         _mimalloc_native_targets()
     elif name == "libtest2-harness-0.0.3":
         _libtest2_scheduler_test()
+    elif name == "zmij-0.1.7":
+        _zmij_runtime_sources()

@@ -182,6 +182,7 @@ macro_rules! call_runtime_helper_implementation {
     (__rue_str_char_next_lossy($($argument:expr),*)) => { crate::string::__rue_str_char_next_lossy($($argument),*) };
     (__rue_to_string($($argument:expr),*)) => { crate::string::__rue_to_string($($argument),*) };
     (__rue_to_string_unsigned($($argument:expr),*)) => { crate::string::__rue_to_string_unsigned($($argument),*) };
+    (__rue_to_string_float($($argument:expr),*)) => { crate::string::__rue_to_string_float($($argument),*) };
     (__rue_print($($argument:expr),*)) => { crate::io::__rue_print($($argument),*) };
     (__rue_println($($argument:expr),*)) => { crate::io::__rue_println($($argument),*) };
     (__rue_str_print($($argument:expr),*)) => { crate::io::__rue_str_print($($argument),*) };

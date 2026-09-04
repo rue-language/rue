@@ -274,6 +274,67 @@ class TestConfigurationTests(unittest.TestCase):
             finally:
                 path.unlink()
 
+    def test_float_format_source_requires_one_width_explicit_zmij_authority(self):
+        import tempfile
+
+        positive = """
+        fn __rue_to_string_float(out: *mut StrBufResult, bits: u64, width: u32) {
+            let mut formatter = zmij::Buffer::new();
+            let formatted = match width {
+                FLOAT_WIDTH_F32 => formatter.format(f32::from_bits(bits as u32)),
+                FLOAT_WIDTH_F64 => formatter.format(f64::from_bits(bits)),
+                _ => trap(),
+            };
+            publish_owned_strbuf(out, formatted.as_bytes());
+        }
+        """
+        with tempfile.NamedTemporaryFile("w", delete=False) as file:
+            file.write(positive)
+            path = Path(file.name)
+        try:
+            validator.validate_float_format_source(path)
+        finally:
+            path.unlink()
+
+    def test_float_format_source_rejects_peer_or_independent_formatters(self):
+        import tempfile
+
+        sources = [
+            """
+            fn __rue_to_string_float(out: *mut StrBufResult, bits: u64, width: u32) {
+                let mut formatter = zmij::Buffer::new();
+                let formatted = match width {
+                    FLOAT_WIDTH_F32 => formatter.format(f32::from_bits(bits as u32)),
+                    FLOAT_WIDTH_F64 => formatter.format(f64::from_bits(bits)),
+                    _ => trap(),
+                };
+                while false {}
+                publish_owned_strbuf(out, formatted.as_bytes());
+            }
+            """,
+            """
+            fn __rue_to_string_float(out: *mut StrBufResult, bits: u64, width: u32) {
+                let mut formatter = zmij::Buffer::new();
+                let formatted = match width {
+                    FLOAT_WIDTH_F32 => formatter.format(f32::from_bits(bits as u32)),
+                    FLOAT_WIDTH_F64 => formatter.format(f64::from_bits(bits)),
+                    _ => trap(),
+                };
+                publish_owned_strbuf(out, formatted.as_bytes());
+            }
+            fn __rue_to_string_float_f32() {}
+            """,
+        ]
+        for source in sources:
+            with tempfile.NamedTemporaryFile("w", delete=False) as file:
+                file.write(source)
+                path = Path(file.name)
+            try:
+                with self.assertRaises(AssertionError):
+                    validator.validate_float_format_source(path)
+            finally:
+                path.unlink()
+
     def test_elf_fixture_skips_undefined_then_keeps_defined_function(self):
         sections = [{}, {"flags": 0x4, "name": ".text.memcpy"}]
         entries = [

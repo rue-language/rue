@@ -100,6 +100,21 @@ Core `str` remains a non-owning packed-byte view. `std.strbuf.StrBuf` is the
 source-defined growable string type. Its algorithms and destructor are ordinary
 Rue code, not runtime ABI exports.
 
+## Width-explicit float formatting
+
+The runtime has one float-to-text authority and one production symbol,
+`__rue_to_string_float`. Its scalar inputs are the raw IEEE-754 bits in a
+`u64` and a separate `u32` width discriminator. The canonical discriminator
+values are `FLOAT_WIDTH_F32` (32) and `FLOAT_WIDTH_F64` (64); an f32 encoding
+must also have its upper 32 bits clear. Invalid encodings trap before allocation
+instead of selecting a width implicitly.
+
+The helper delegates both widths to the vendored no-std `zmij` formatter and
+then copies the shortest-round-trip spelling into a fresh runtime allocation.
+The ordinary `StrBufResult` out-pointer contract transfers that allocation to
+the caller. Language-level formatting and debug exposure are separate compiler
+and standard-library concerns.
+
 ## Safety and termination
 
 Manifest pointer modes distinguish readable inputs, writable inputs, mutable
