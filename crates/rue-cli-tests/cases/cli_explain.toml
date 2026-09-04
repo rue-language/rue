@@ -553,6 +553,88 @@ compile_stdout_contains = ["E0602: Invalid match type", "Match a string value:",
 compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
+# This bounded tranche covers intrinsic signature checking, import discovery,
+# and module-member resolution. Invalid source pins every `explain` invocation
+# as a deterministic, non-compiling metadata query.
+[[case]]
+name = "unknown_intrinsic_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0700"]
+compile_only = true
+compile_stdout_contains = ["E0700: Unknown intrinsic", "Call an unknown intrinsic:", "Use a recognized intrinsic:", "docs/spec/src/04-expressions/13-intrinsics.md (spec rule 4.13:5)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "intrinsic_argument_count_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0701"]
+compile_only = true
+compile_stdout_contains = ["E0701: Intrinsic wrong arg count", "Omit a required intrinsic argument:", "Supply the declared argument count:", "docs/spec/src/04-expressions/13-intrinsics.md (spec rule 4.13:4)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "intrinsic_type_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0702"]
+compile_only = true
+compile_stdout_contains = ["E0702: Intrinsic type mismatch", "Use a non-integer type with an integer-bound intrinsic:", "Use an integer type:", "docs/spec/src/04-expressions/13-intrinsics.md (spec rule 4.13:129)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "import_literal_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0703"]
+compile_only = true
+compile_stdout_contains = ["E0703: Import requires string literal", "Import through a string variable:", "Write the import path as a literal:", "docs/spec/src/04-expressions/13-intrinsics.md (spec rule 4.13:84)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "missing_module_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0704"]
+compile_only = true
+compile_stdout_contains = ["E0704: Module not found", "Import a missing file module:", "Provide the file at the selected path:", "docs/spec/src/10-modules/02-import-resolution.md (spec rule 10.2:1)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "missing_standard_library_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0705"]
+compile_only = true
+compile_stdout_contains = ["E0705: Std lib not found", "Import std when no standard library is available:", "Remove an unnecessary standard-library import:", "docs/spec/src/10-modules/02-import-resolution.md (spec rule 10.2:6)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "private_module_member_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0706"]
+compile_only = true
+compile_stdout_contains = ["E0706: Private member access", "Access a private function across directories:", "Export the cross-directory member:", "docs/spec/src/10-modules/04-module-bindings.md (spec rule 10.4:18)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "unknown_module_member_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0707"]
+compile_only = true
+compile_stdout_contains = ["E0707: Unknown module member", "Name a member absent from the imported module:", "Use a member declared by that module:", "docs/spec/src/04-expressions/13-intrinsics.md (spec rule 4.13:90)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "retired_ambiguous_module_code_is_rejected"
+files = [{ path = "main.rue", source = "fn main() {}\n" }]
+args = ["explain", "E0708"]
+compile_fail = true
+error_contains = ["unknown or retired error code E0708"]
+
 [[case]]
 name = "malformed_code_is_rejected"
 files = [{ path = "main.rue", source = "fn main() {}\n" }]

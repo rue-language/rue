@@ -60,28 +60,42 @@ mod integration_tests {
     }
 
     #[test]
-    fn private_type_constructor_explanation_examples_have_the_declared_outcome() {
-        let code = rue_error::ErrorCode::PRIVATE_UNQUALIFIED_ACCESS;
-        let explanation = rue_error::error_code_explanation(code).expect("E0460 explanation");
-        for example in explanation.examples {
-            let snapshot = explanation_example_snapshot(example.source);
-            let mut session = CompilerSession::new();
-            let published = crate::test_support::publish_test_snapshot(&mut session, &snapshot);
-            let result =
-                published.and_then(|_| session.rooted_cfg(&CompileOptions::default()).map(|_| ()));
-            match example.outcome {
-                rue_error::ErrorCodeExampleOutcome::EmitsThisCode => {
-                    let errors = result.expect_err("failing E0460 example compiled");
-                    let codes = errors
-                        .iter()
-                        .map(|error| error.kind.code())
-                        .collect::<Vec<_>>();
-                    assert_eq!(codes, [code], "example {:?}: {errors:?}", example.title);
-                }
-                rue_error::ErrorCodeExampleOutcome::Compiles => {
-                    result.unwrap_or_else(|errors| {
-                        panic!("example {:?} emitted {errors:?}", example.title)
-                    });
+    fn multi_file_explanation_examples_have_the_declared_outcome() {
+        for code in [
+            rue_error::ErrorCode::PRIVATE_UNQUALIFIED_ACCESS,
+            rue_error::ErrorCode::IMPORT_REQUIRES_STRING_LITERAL,
+            rue_error::ErrorCode::MODULE_NOT_FOUND,
+            rue_error::ErrorCode::STD_LIB_NOT_FOUND,
+            rue_error::ErrorCode::PRIVATE_MEMBER_ACCESS,
+            rue_error::ErrorCode::UNKNOWN_MODULE_MEMBER,
+        ] {
+            let explanation = rue_error::error_code_explanation(code)
+                .unwrap_or_else(|| panic!("{code} explanation"));
+            for example in explanation.examples {
+                let snapshot = explanation_example_snapshot(example.source);
+                let mut session = CompilerSession::new();
+                let published = crate::test_support::publish_test_snapshot(&mut session, &snapshot);
+                let result = published
+                    .and_then(|_| session.rooted_cfg(&CompileOptions::default()).map(|_| ()));
+                match example.outcome {
+                    rue_error::ErrorCodeExampleOutcome::EmitsThisCode => {
+                        let errors = result.unwrap_err();
+                        let codes = errors
+                            .iter()
+                            .map(|error| error.kind.code())
+                            .collect::<Vec<_>>();
+                        assert_eq!(
+                            codes,
+                            [code],
+                            "{code} example {:?}: {errors:?}",
+                            example.title
+                        );
+                    }
+                    rue_error::ErrorCodeExampleOutcome::Compiles => {
+                        result.unwrap_or_else(|errors| {
+                            panic!("{code} example {:?} emitted {errors:?}", example.title)
+                        });
+                    }
                 }
             }
         }
