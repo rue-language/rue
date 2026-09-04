@@ -201,13 +201,48 @@ fn push_block(out: &mut String, label: &str, value: &str) {
     }
 }
 
+/// How many lines of one captured stream a person is shown before the middle is
+/// elided, and the byte ceiling that applies first when the lines are long.
+///
+/// The retained window is a megabyte per stream, which is the right size for a
+/// machine and about thirteen thousand lines for a person: a failure printed
+/// whole would push its own `scratch:` and `repro:` lines out of the scrollback
+/// it exists to be read in. `--format json` carries the window losslessly, so
+/// nothing is lost by bounding what the terminal gets.
+const DISPLAY_LINES: usize = 64;
+const DISPLAY_BYTES: usize = 8 * 1024;
+/// The elision keeps the start, where a test says what it was doing, and the
+/// end, where it says how it stopped.
+const HEAD_LINES: usize = 48;
+const TAIL_LINES: usize = 16;
+
 /// A captured stream, indented under its failure, or nothing when it is empty.
 fn push_capture(out: &mut String, label: &str, capture: &Capture) {
     if capture.bytes_total == 0 {
         return;
     }
     let _ = write!(out, "\n  --- {label} ({} bytes) ---", capture.bytes_total);
-    for line in capture.encoded_data().lines() {
+    let data = capture.encoded_data();
+    let lines: Vec<&str> = data.lines().collect();
+    let (head, tail) = display_window(&lines, data.len());
+    for line in &lines[..head] {
+        let _ = write!(out, "\n  {line}");
+    }
+    let omitted = lines.len() - head - tail;
+    if omitted > 0 {
+        let shown: usize = lines[..head]
+            .iter()
+            .chain(&lines[lines.len() - tail..])
+            .map(|line| line.len() + 1)
+            .sum();
+        let plural = if omitted == 1 { "" } else { "s" };
+        let _ = write!(
+            out,
+            "\n  ... {omitted} line{plural} ({} bytes) omitted here; --format json carries the whole capture ...",
+            data.len().saturating_sub(shown)
+        );
+    }
+    for line in &lines[lines.len() - tail..] {
         let _ = write!(out, "\n  {line}");
     }
     if capture.bytes_total > capture.retained.len() as u64 {
@@ -217,6 +252,45 @@ fn push_capture(out: &mut String, label: &str, capture: &Capture) {
             capture.bytes_total - capture.retained.len() as u64
         );
     }
+}
+
+/// How many lines to print from each end of a capture.
+///
+/// This is a display bound, distinct from the retention window the capture
+/// arrived with: a stream can be short enough to be retained whole and still be
+/// too long to print. Lines are taken whole — a byte budget that lands mid-line
+/// stops before it rather than cutting, so what is printed is always something
+/// the test actually wrote.
+fn display_window(lines: &[&str], bytes: usize) -> (usize, usize) {
+    if lines.len() <= DISPLAY_LINES && bytes <= DISPLAY_BYTES {
+        return (lines.len(), 0);
+    }
+    let tail_budget = DISPLAY_BYTES / 4;
+    let head_budget = DISPLAY_BYTES - tail_budget;
+    let head = whole_lines_within(lines.iter().copied(), head_budget, HEAD_LINES);
+    let tail = whole_lines_within(lines.iter().rev().copied(), tail_budget, TAIL_LINES);
+    // A capture shorter than head plus tail is only here because of the byte
+    // budget; the two ends must still not overlap into a doubled line.
+    (head, tail.min(lines.len() - head))
+}
+
+/// How many of `lines` fit in `budget` bytes, at most `limit` of them, counting
+/// each line's newline and stopping before the line that would exceed it.
+fn whole_lines_within<'a>(
+    lines: impl Iterator<Item = &'a str>,
+    budget: usize,
+    limit: usize,
+) -> usize {
+    let mut used = 0;
+    let mut taken = 0;
+    for line in lines.take(limit) {
+        used += line.len() + 1;
+        if used > budget {
+            break;
+        }
+        taken += 1;
+    }
+    taken
 }
 
 /// The repro argv as a line a person can paste.
@@ -547,6 +621,77 @@ mod tests {
             shell_command(&["--seed".to_owned(), "417".to_owned()]),
             "--seed 417"
         );
+    }
+
+    /// The retention window is a megabyte; the display bound is a screenful.
+    /// A flooding test's failure has to stay readable in a terminal, which
+    /// means its own `scratch:` and `repro:` lines must survive the capture
+    /// above them.
+    #[test]
+    fn a_long_capture_is_shown_as_a_head_a_tail_and_what_was_skipped() {
+        let data: String = (0..20_000).map(|i| format!("line {i}\n")).collect();
+        let total = data.len() as u64;
+        let mut out = String::new();
+        push_capture(
+            &mut out,
+            "stdout",
+            &Capture::new(data.into_bytes(), total, false),
+        );
+
+        assert!(out.contains("\n  line 0"), "{out}");
+        assert!(out.contains("\n  line 47"), "{out}");
+        assert!(!out.contains("\n  line 48"), "{out}");
+        assert!(out.contains("\n  line 19984"), "{out}");
+        assert!(out.contains("\n  line 19999"), "{out}");
+        assert!(
+            out.contains(
+                "19936 lines (208340 bytes) omitted here; --format json carries the whole capture"
+            ),
+            "{out}"
+        );
+        // Head, tail, the header, the one omission line, and the empty line
+        // the leading newline makes: a screenful.
+        assert_eq!(out.lines().count(), 48 + 16 + 3);
+        // Nothing was retained past the window, so no second truncation line.
+        assert!(!out.contains("not retained"), "{out}");
+    }
+
+    /// The bound only elides what would not fit. A capture under both limits is
+    /// printed exactly as the test wrote it.
+    #[test]
+    fn a_capture_within_both_bounds_is_printed_whole() {
+        let data: String = (0..60).map(|i| format!("line {i}\n")).collect();
+        let total = data.len() as u64;
+        let mut out = String::new();
+        push_capture(
+            &mut out,
+            "stdout",
+            &Capture::new(data.into_bytes(), total, false),
+        );
+
+        assert!(out.contains("\n  line 0"), "{out}");
+        assert!(out.contains("\n  line 59"), "{out}");
+        assert!(!out.contains("omitted here"), "{out}");
+        assert_eq!(out.lines().count(), 60 + 2);
+    }
+
+    /// The byte ceiling binds before the line count when lines are long, and it
+    /// still stops between lines rather than through one.
+    #[test]
+    fn the_byte_ceiling_binds_first_and_never_cuts_a_line() {
+        let data: String = (0..40).map(|i| format!("{i:0>500}\n")).collect();
+        let total = data.len() as u64;
+        let mut out = String::new();
+        push_capture(
+            &mut out,
+            "stdout",
+            &Capture::new(data.into_bytes(), total, false),
+        );
+
+        assert!(out.contains("omitted here"), "{out}");
+        for line in out.lines().skip(2).filter(|line| !line.contains("omitted")) {
+            assert_eq!(line.len(), 502, "a whole line, indented: {line}");
+        }
     }
 
     #[test]
