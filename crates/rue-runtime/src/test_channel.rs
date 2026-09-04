@@ -246,8 +246,9 @@ fn failure_frame(
 /// It carries `left` and `right` where [`failure_frame`] carries the open
 /// `payload`, and no `payload` at all: two rendered operands are not one string
 /// a consumer has to split, and the runner computes the diff between them.
-/// `left` and `right` are the operands in the order the source wrote them, so
-/// `@assert_eq(want, got)` reads the way it is spelled.
+/// `left` and `right` are the operands in the order the source wrote them and
+/// carry no role, so `@assert_eq(got, want)` — the conventional spelling, with
+/// the observed value first — reads the way it is spelled.
 ///
 /// The message is not a parameter: it is pinned by the kind, which is what
 /// keeps this call to the six registers a runtime helper is limited to while

@@ -26,10 +26,13 @@ for an ordinary build of the same closure.
   events are rendered as text on stdout instead.
 - **stderr is the compiler's surface**, byte-for-byte as
   [diagnostics.md](diagnostics.md) pins it, plus the runner's own warnings
-  (unimported test files) and its one-line reason for a nonzero exit. Those
-  warnings are stderr's alone, once, in both formats: the human renderer does
-  not repeat them on stdout, where a terminal joining the streams would show
-  two copies of one warning.
+  (unimported test files) and notices (the missing-inventory note), and its
+  one-line reason for a nonzero exit. Those are stderr's alone, once: the human
+  renderer does not repeat them on stdout, where a terminal joining the streams
+  would show two copies of one line. The warnings are written in both formats;
+  the missing-inventory note is presentation and so is written in the human
+  format only, because `--format json` publishes the same fact as
+  `run_finished.test_candidates`.
 - **No event is emitted before the test image exists.** A compile failure is
   diagnostics on stderr, an empty event stream, and exit `2` — never a
   `run_started` for a run that never began.
@@ -105,11 +108,17 @@ put in the open field. `payload` is the open, versioned extension point §5.1
 reserves for
 an assertion library with something structured to say in one string.
 `left`/`right` is the shape a **comparison** assertion writes: they are the two
-operands in the order the source spelled them, so `@assert_eq(want, got)` reads
-the way it is written — each rendered by the compiler-synthesized structural
-printer under the same rules and the same 4 KiB bound the test-body `?` payload
-uses. An empty rendering is a value and stays present as an empty string; a
-comparison is recognized by the fields' presence, not by parsing `kind`.
+operands in the order the source spelled them and are never reordered or
+labelled by role, so `@assert_eq(got, want)` reads the way it is written — each
+rendered by the compiler-synthesized structural printer under the same rules and
+the same 4 KiB bound the test-body `?` payload uses. The runner has no notion of
+which operand is expected and which observed. The conventional spelling puts the
+observed value first, as Go's `got, want` idiom and this repository's own tests
+do; the human rendering prints `left:` above `right:` with the caret under
+`right`, so that spelling shows the wanted value beneath the observed one at the
+first differing column. An empty rendering is a value and stays present as an
+empty string; a comparison is recognized by the fields' presence, not by parsing
+`kind`.
 
 `@assert_eq` and `@assert_ne` are the producers of that pair in this version,
 through the `__rue_test_fail_comparison` helper
@@ -265,9 +274,10 @@ kind `exit` and a `runner_note` (see Precedence below). There is no second
 encoding tag on these fields, unlike a capture record's.
 
 Under `--format human` the same values are printed as `left:` and `right:`
-lines. A single-line pair gets a caret under the first differing character; a
-multi-line pair gets a `-`/`+` hunk listing instead, because a caret into a wall
-of text locates nothing.
+lines, in source order — the labels name the operand positions, not roles. A
+single-line pair gets a caret under the first differing character; a multi-line
+pair gets a `-`/`+` hunk listing instead, because a caret into a wall of text
+locates nothing.
 
 #### Capture records
 
@@ -314,15 +324,16 @@ second retention limit.
 Each `unimported_test_files` entry is `{"path": string, "tests": integer,
 "parse_failed": boolean}`. `parse_failed` means the candidate could not be read
 or parsed, so `tests` counts nothing and the honest answer is that the count is
-unknown. Without `--test-candidates`, the human summary appends
-`note: no --test-candidates inventory; unimported test files are not detected` —
-silence would be read as "none found" — but only when the compiled closure holds
-more than one user module (the standard library does not count). A closure of
-one has no second module that could have failed to import a test file, so the
-note would answer a question that run cannot raise; it was noise under every
-filtered rerun pasted from a `repro:` line. The condition is presentation only:
-`test_candidates` still answers `"none"` for such a run, and no event carries the
-closure size.
+unknown. Without `--test-candidates`, a human-format run writes
+`note: no --test-candidates inventory; unimported test files are not detected`
+to stderr after the summary line — silence would be read as "none found" — but
+only when the compiled closure holds more than one user module (the standard
+library does not count). A closure of one has no second module that could have
+failed to import a test file, so the note would answer a question that run
+cannot raise; it was noise under every filtered rerun pasted from a `repro:`
+line. Both conditions are presentation only: `test_candidates` still answers
+`"none"` for such a run, no event carries the closure size, and stdout carries
+the summary alone (RUE-2021).
 
 The inventory file is one path per line, each relative to the ROOT MODULE'S
 DIRECTORY — the compiler's project root — and its build-side producer is the
