@@ -1829,6 +1829,11 @@ mod tests {
             "allocate_local_storage",
             "try_read_traced_place",
             "materialize_borrow_argument",
+            "materialize_borrowed_component",
+            "materialize_in_temporary",
+            "open_counter_slot",
+            "project_addressable_component",
+            "read_place_path",
             "project_strbuf_text_fields",
             "peel_projected_rvalue_scope",
             "emit_projected_rvalue_read",
@@ -1972,6 +1977,12 @@ mod tests {
             "analyze_enum_ops",
             "validate_equality_operand_type",
             "try_prepare_aggregate_equality",
+            "type_carries_string",
+            "is_string_equality_leaf",
+            "build_structural_equality",
+            "build_strbuf_content_equality",
+            "build_array_structural_equality",
+            "build_enum_structural_equality",
         ] {
             let definition = format!("fn {method}(");
             assert!(

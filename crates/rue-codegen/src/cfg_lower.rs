@@ -454,14 +454,17 @@ impl<'a> CfgLowerContext<'a> {
     /// Check if a type has string byte-content equality semantics.
     ///
     /// `StrBuf`, `str`, and `Str(N)` use byte-content equality rather than
-    /// structural pointer/length equality.
+    /// structural pointer/length equality. Semantic analysis asks the same
+    /// question of a *component* of an aggregate — a string leaf compares by
+    /// content at any depth (spec 4.3:3, RUE-1992) — so the view spelling is
+    /// read through the one shared classifier rather than open-coded here:
+    /// two walks with two answers would compare the same field by content on
+    /// one and by address on the other.
     pub fn is_string_like_for_equality(&self, ty: Type) -> bool {
         match ty.kind() {
             TypeKind::Struct(struct_id) => {
                 let struct_def = self.type_pool.struct_def(struct_id);
-                self.is_strbuf(ty)
-                    || &*struct_def.name == "str"
-                    || (struct_def.name.starts_with("Str(") && struct_def.name.ends_with(')'))
+                self.is_strbuf(ty) || rue_air::is_string_view_struct_name(&struct_def.name)
             }
             _ => false,
         }

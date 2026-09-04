@@ -100,6 +100,12 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "expressions.intrinsics",
+        "assert_eq_on_a_string_carrying_struct_aborts_on_different_bytes",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    Entry::new(
+        "expressions.intrinsics",
         "assert_ne_failing_names_the_other_comparison",
         intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],

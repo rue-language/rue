@@ -995,10 +995,13 @@ impl Value {
             Value::Int(n) => *n,
             Value::AddressInt { value, .. } => *value,
             Value::Bool(b) => *b as i128,
-            // Unreachable for a well-typed program (aggregates/pointers never
-            // reach a bare scalar context; a pointer becomes an integer only
-            // through `@ptr_to_int`, which computes its address explicitly);
-            // defined so callers need not thread an error.
+            // Zero is a placeholder, not an address: a pointer becomes an
+            // integer only through `@ptr_to_int`, which computes its address
+            // explicitly and yields an `AddressInt`. Nothing that observes a
+            // pointer's identity may route it here — comparison in particular
+            // sends a pointer to `values_equal_typed` instead, because reading
+            // every address as zero would call two distinct pointers equal
+            // (spec 4.3:3e). Defined so callers need not thread an error.
             Value::Unit | Value::Aggregate(_) | Value::Ptr(_) => 0,
         }
     }
@@ -4450,11 +4453,15 @@ impl<'a> Interp<'a> {
         // aggregates (structs, arrays, payload enums) compare STRUCTURALLY,
         // field-by-field / element-by-element / same-variant-and-equal-payload,
         // via `Value`'s derived `PartialEq` which recurses into nested
-        // aggregates (RUE-285). Only `==` / `!=` reach a non-text aggregate here
-        // (ordering `< > <= >=` is a type error on those), so we report `Equal`
-        // iff structurally equal and an arbitrary non-`Equal` ordering
+        // aggregates (RUE-285). A raw pointer compares by ADDRESS — allocation
+        // identity, lifetime generation, and byte offset — which is the same
+        // identity `values_equal_typed` gives a pointer leaf nested in an
+        // aggregate (spec 4.3:3e). Only `==` / `!=` reach a non-text aggregate
+        // or a pointer here (ordering `< > <= >=` is a type error on those), so
+        // we report `Equal` iff equal and an arbitrary non-`Equal` ordering
         // otherwise — enough for `pick` to decide `==`/`!=`. Everything else
-        // compares by integer value.
+        // compares by integer value, which is what an *address integer* from
+        // `@ptr_to_int` must do: its provenance is invisible to arithmetic.
         let ty = cfg.get_inst(a).ty;
         let ord = if self.is_text_type(ty) {
             let bx = self.text_bytes(&x)?;
@@ -4462,11 +4469,19 @@ impl<'a> Interp<'a> {
             bx.cmp(&by)
         } else {
             match (&x, &y) {
-                (Value::Aggregate(_), _) | (_, Value::Aggregate(_)) => {
-                    // Only `==`/`!=` reach an aggregate; compare with text
-                    // awareness so a text field/element/payload is judged by its
-                    // byte content, not by the identity of its heap buffer
-                    // pointer (RUE-1010 §6.13).
+                // A pointer belongs here rather than below: `as_int` reads
+                // every pointer as zero, so the numeric path would call two
+                // distinct addresses equal. Component-wise aggregate equality
+                // (RUE-1992) compares a string-carrying aggregate one
+                // component at a time, so a pointer field reaches this
+                // comparison directly and not only through the aggregate arm.
+                (Value::Aggregate(_), _)
+                | (_, Value::Aggregate(_))
+                | (Value::Ptr(_), _)
+                | (_, Value::Ptr(_)) => {
+                    // Compare with text awareness so a text field/element/
+                    // payload is judged by its byte content, not by the
+                    // identity of its heap buffer pointer (RUE-1010 §6.13).
                     if self.values_equal_typed(&x, &y, ty)? {
                         std::cmp::Ordering::Equal
                     } else {

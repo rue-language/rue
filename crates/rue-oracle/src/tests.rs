@@ -1800,6 +1800,36 @@ fn raw_pointer_read_roundtrip() {
     assert_eq!(run(src).stdout, "123\n");
 }
 
+/// A raw-pointer leaf compares by ADDRESS, not by pointee, when equality
+/// reaches it as an operand of its own (spec 4.3:3e).
+///
+/// A bare `p == q` is a type error, so a pointer used to reach the comparison
+/// only inside an aggregate, where `values_equal_typed` judged it by identity.
+/// Component-wise aggregate equality (RUE-1992) compares a string-carrying
+/// aggregate one component at a time, so a pointer field now reaches the
+/// scalar comparison path directly — which used to read every pointer as the
+/// integer zero and call two distinct addresses equal.
+#[test]
+fn raw_pointer_component_compares_by_address() {
+    let src = r#"struct Marked { s: str, at: ptr const i32 }
+        fn main() -> i32 {
+            let x: i32 = 42;
+            let y: i32 = 42;
+            let a = checked { Marked { s: "q", at: @raw(x) } };
+            let b = checked { Marked { s: "q", at: @raw(x) } };
+            let c = checked { Marked { s: "q", at: @raw(y) } };
+            let d = checked { Marked { s: "r", at: @raw(x) } };
+            let mut r: i32 = 0;
+            if a == b { r = r + 1; }
+            if a != c { r = r + 2; }
+            if a != d { r = r + 4; }
+            r
+        }"#;
+    // Same address and same bytes: equal. Same bytes, different address:
+    // unequal. Same address, different bytes: unequal.
+    assert_eq!(exit(src), 7);
+}
+
 /// A write through a `ptr mut` from `@raw_mut` mutates the source local.
 #[test]
 fn raw_mut_write_mutates_local() {

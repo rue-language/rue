@@ -71,6 +71,31 @@ pub(crate) enum BorrowOperandElaboration {
     Temporary,
 }
 
+/// Whether a compiler-synthesized temporary owns what its slot holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TemporaryOwnership {
+    /// The slot owns its value and is dropped when its scope closes.
+    Owning,
+    /// The slot holds a view of storage something else owns, so drop
+    /// elaboration schedules nothing for it (see [`Air::add_borrow_slot`]).
+    NonOwning,
+}
+
+/// One frame slot holding a compiler-synthesized temporary, and the AIR pieces
+/// that establish it. Kept separate so each lands in the position its
+/// obligation requires.
+pub(crate) struct MaterializedTemporary {
+    /// The reserved frame slot.
+    pub(crate) slot: u32,
+    /// Addressable read of the temporary.
+    pub(crate) load: AirRef,
+    /// Initializer. Its position fixes when the value is evaluated.
+    pub(crate) alloc: AirRef,
+    /// Storage annotation. Its position fixes the scope whose exit ends the
+    /// temporary's lifetime.
+    pub(crate) storage_live: AirRef,
+}
+
 /// The AIR pieces of an elaborated `borrow` operand, kept separate so each
 /// lands in the position its obligation requires.
 pub(crate) struct ElaboratedBorrowOperand {
@@ -570,31 +595,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         } else {
             BorrowOperandElaboration::Temporary
         };
-        let slots = self.require_layout_slots(ty, span)?;
-        let slot = self.reserve_frame_slots(&mut ctx.next_slot, slots, span)?;
-        if kind == BorrowOperandElaboration::Promoted {
-            // The promoted image is immortal and owns nothing — a literal's
-            // bytes live in `.rodata`, and a `StrBuf` promoted at a `borrow
-            // StrBuf` position is the non-owning `cap == 0` header over them.
-            // Registering the slot as non-owning is what makes "no drop glue"
-            // structural rather than incidental.
-            air.add_borrow_slot(slot);
-        }
-        let live = air.add_inst(AirInst {
-            data: AirInstData::StorageLive { slot },
-            ty,
-            span,
-        });
-        let alloc = air.add_inst(AirInst {
-            data: AirInstData::Alloc { slot, init: value },
-            ty: Type::UNIT,
-            span,
-        });
-        let load = air.add_inst(AirInst {
-            data: AirInstData::Load { slot },
-            ty,
-            span,
-        });
+        // The promoted image is immortal and owns nothing — a literal's bytes
+        // live in `.rodata`, and a `StrBuf` promoted at a `borrow StrBuf`
+        // position is the non-owning `cap == 0` header over them. Registering
+        // its slot as non-owning is what makes "no drop glue" structural
+        // rather than incidental.
+        let ownership = if kind == BorrowOperandElaboration::Promoted {
+            TemporaryOwnership::NonOwning
+        } else {
+            TemporaryOwnership::Owning
+        };
+        let temporary = self.materialize_in_temporary(air, value, ty, ownership, span, ctx)?;
+        let (load, alloc, live) = (temporary.load, temporary.alloc, temporary.storage_live);
         Ok(ElaboratedBorrowOperand {
             load,
             alloc,
@@ -615,9 +627,41 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if self.is_addressable_read(air, value) {
             return Ok((value, prefix));
         }
+        let temporary =
+            self.materialize_in_temporary(air, value, ty, TemporaryOwnership::Owning, span, ctx)?;
+        prefix.extend([temporary.storage_live, temporary.alloc]);
+        Ok((temporary.load, prefix))
+    }
+
+    /// Store one value in a fresh frame slot and read it back.
+    ///
+    /// This is the single place a compiler-synthesized temporary is created.
+    /// The only choice a caller makes is whether the slot *owns* what it
+    /// holds: an owning slot is dropped when its scope closes, while a
+    /// non-owning one (registered through [`Air::add_borrow_slot`]) holds a
+    /// view of storage something else owns and drop elaboration schedules
+    /// nothing for it. Getting that choice wrong is a leak on one side and a
+    /// double free on the other, so it is the parameter rather than a
+    /// per-caller convention.
+    ///
+    /// The `StorageLive` and `Alloc` are returned rather than emitted into a
+    /// block: each caller decides which scope they open, which is what lets a
+    /// borrow operand's drop land after the call it is passed to.
+    fn materialize_in_temporary(
+        &mut self,
+        air: &mut Air,
+        value: AirRef,
+        ty: Type,
+        ownership: TemporaryOwnership,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<MaterializedTemporary> {
         let slots = self.require_layout_slots(ty, span)?;
         let slot = self.reserve_frame_slots(&mut ctx.next_slot, slots, span)?;
-        let live = air.add_inst(AirInst {
+        if ownership == TemporaryOwnership::NonOwning {
+            air.add_borrow_slot(slot);
+        }
+        let storage_live = air.add_inst(AirInst {
             data: AirInstData::StorageLive { slot },
             ty,
             span,
@@ -632,8 +676,273 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty,
             span,
         });
-        prefix.extend([live, alloc]);
-        Ok((load, prefix))
+        Ok(MaterializedTemporary {
+            slot,
+            load,
+            alloc,
+            storage_live,
+        })
+    }
+
+    /// Decompose a read that already names storage into its place path.
+    ///
+    /// This is the one AIR-level place decomposition: `Load`/`Param` name a
+    /// bare slot, a `PlaceRead` carries a base and a projection chain, and a
+    /// move marker is transparent. `None` for anything else — a computed
+    /// value names no storage to extend.
+    pub(super) fn read_place_path(
+        &self,
+        air: &Air,
+        value: AirRef,
+        base_ty: Type,
+    ) -> Option<(AirPlaceBase, Type, Vec<AirProjection>)> {
+        let mut value = value;
+        while let AirInstData::MarkMoved { value: inner, .. } = air.get(value).data {
+            value = inner;
+        }
+        match air.get(value).data {
+            AirInstData::Load { slot } => Some((AirPlaceBase::Local(slot), base_ty, Vec::new())),
+            AirInstData::Param { index } => Some((AirPlaceBase::Param(index), base_ty, Vec::new())),
+            AirInstData::PlaceRead { place } => {
+                let stored = air.get_place(place);
+                let projections = air.get_place_projections(stored).to_vec();
+                Some((stored.base, stored.base_type, projections))
+            }
+            _ => None,
+        }
+    }
+
+    /// Decompose a comparison operand, re-emitting every index the path names.
+    ///
+    /// An index is an operand of the place, so a single index instruction
+    /// shared by two derived reads is lowered in whichever short-circuit
+    /// conjunct, loop header, or dispatch arm demanded it first and dominates
+    /// neither. Every derived place therefore reads its own index. Constants
+    /// and slot reads are the only indices that reach here — a path naming any
+    /// other computed index is copied to a slot first
+    /// ([`Self::root_comparison_operand`]) — and re-reading either is free and
+    /// yields the same value at every point of the comparison.
+    fn comparison_operand_path(
+        &self,
+        air: &mut Air,
+        value: AirRef,
+        base_ty: Type,
+        span: Span,
+    ) -> CompileResult<(AirPlaceBase, Type, Vec<AirProjection>)> {
+        let Some((place_base, place_base_type, mut projections)) =
+            self.read_place_path(air, value, base_ty)
+        else {
+            return Err(CompileError::new(
+                ErrorKind::InternalError(
+                    "a structural comparison operand names no storage".to_string(),
+                ),
+                span,
+            ));
+        };
+        for projection in &mut projections {
+            if let AirProjection::Index { array_type, index } = *projection {
+                let data = match air.get(index).data {
+                    AirInstData::Const(constant) => Some(AirInstData::Const(constant)),
+                    AirInstData::Load { slot } => Some(AirInstData::Load { slot }),
+                    _ => None,
+                };
+                if let Some(data) = data {
+                    let index_ty = air.get(index).ty;
+                    *projection = AirProjection::Index {
+                        array_type,
+                        index: air.add_inst(AirInst {
+                            data,
+                            ty: index_ty,
+                            span,
+                        }),
+                    };
+                }
+            }
+        }
+        Ok((place_base, place_base_type, projections))
+    }
+
+    /// Read one component out of an operand that already names storage,
+    /// without copying the aggregate the component belongs to.
+    ///
+    /// [`Self::emit_projected_rvalue_read`] is the counterpart for a computed
+    /// base: it gives the rvalue an *owning* temporary home before projecting
+    /// it. A structural comparison never owns its operands — equality borrows
+    /// them (4.3:3f) — so it needs the other half: extend the path of a place
+    /// the caller already named and read through it. The result is itself an
+    /// addressable read, so a nested component composes by calling this again.
+    pub(crate) fn project_addressable_component(
+        &mut self,
+        air: &mut Air,
+        base: AirRef,
+        base_ty: Type,
+        projection: AirProjection,
+        result_ty: Type,
+        span: Span,
+    ) -> CompileResult<AirRef> {
+        let (place_base, place_base_type, mut projections) =
+            self.comparison_operand_path(air, base, base_ty, span)?;
+        projections.push(projection);
+        let place = air.make_place(place_base, place_base_type, projections)?;
+        Ok(air.add_inst(AirInst {
+            data: AirInstData::PlaceRead { place },
+            ty: result_ty,
+            span,
+        }))
+    }
+
+    /// Root a comparison operand at a frame slot or a parameter, so every
+    /// component read below it stands on its own.
+    ///
+    /// A component is read by extending its operand's place path, so every
+    /// *value* that path names — an accessor or `@place` base, a computed
+    /// array index — is carried into every extension. CFG construction lowers
+    /// a value once and caches it at the block that first demanded it, so such
+    /// a value shared by the arms of a short-circuit conjunction, a loop
+    /// header, or a variant dispatch would be defined in a block that
+    /// dominates neither. An operand whose path names one is copied into a
+    /// non-owning slot first, leaving a bare slot every component read can
+    /// stand on.
+    pub(crate) fn root_comparison_operand(
+        &mut self,
+        air: &mut Air,
+        value: AirRef,
+        ty: Type,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<(AirRef, Vec<AirRef>)> {
+        let mut read = value;
+        while let AirInstData::MarkMoved { value: inner, .. } = air.get(read).data {
+            read = inner;
+        }
+        let rooted = self
+            .read_place_path(air, read, ty)
+            .is_some_and(|(base, _, projections)| {
+                matches!(base, AirPlaceBase::Local(_) | AirPlaceBase::Param(_))
+                    && projections.iter().all(|projection| match projection {
+                        AirProjection::Field { .. } => true,
+                        AirProjection::Index { index, .. } => matches!(
+                            air.get(*index).data,
+                            AirInstData::Const(_) | AirInstData::Load { .. }
+                        ),
+                    })
+            });
+        if rooted {
+            return Ok((read, Vec::new()));
+        }
+        self.stage_borrowed_component(air, read, ty, span, ctx)
+    }
+
+    /// Re-emit a read of the storage an operand already names.
+    ///
+    /// A dispatch arm, a loop header, and each conjunct of a short-circuit
+    /// conjunction are separate blocks, and a single shared read instruction
+    /// would be lowered and cached in whichever of them demanded it first.
+    /// Reading the same place again through a fresh instruction costs nothing
+    /// at run time and leaves each of them self-contained. The operand must
+    /// already be rooted at storage ([`Self::root_comparison_operand`]).
+    pub(crate) fn reread_rooted_operand(
+        &self,
+        air: &mut Air,
+        value: AirRef,
+        ty: Type,
+        span: Span,
+    ) -> CompileResult<AirRef> {
+        let (place_base, place_base_type, projections) =
+            self.comparison_operand_path(air, value, ty, span)?;
+        if projections.is_empty() {
+            let data = match place_base {
+                AirPlaceBase::Local(slot) => Some(AirInstData::Load { slot }),
+                AirPlaceBase::Param(index) => Some(AirInstData::Param { index }),
+                AirPlaceBase::Accessor(_) | AirPlaceBase::Indirect(_) => None,
+            };
+            if let Some(data) = data {
+                return Ok(air.add_inst(AirInst { data, ty, span }));
+            }
+        }
+        let place = air.make_place(place_base, place_base_type, projections)?;
+        Ok(air.add_inst(AirInst {
+            data: AirInstData::PlaceRead { place },
+            ty,
+            span,
+        }))
+    }
+
+    /// Open a compiler-synthesized loop counter: one `u64` slot initialized to
+    /// zero, plus the statements that establish it.
+    ///
+    /// The counter carries no drop glue, so its slot is an ordinary owning one
+    /// and the enclosing block's scope exit ends its storage.
+    pub(crate) fn open_counter_slot(
+        &mut self,
+        air: &mut Air,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<(u32, Vec<AirRef>)> {
+        let zero = air.add_inst(AirInst {
+            data: AirInstData::Const(0),
+            ty: Type::U64,
+            span,
+        });
+        let temporary = self.materialize_in_temporary(
+            air,
+            zero,
+            Type::U64,
+            TemporaryOwnership::Owning,
+            span,
+            ctx,
+        )?;
+        Ok((
+            temporary.slot,
+            vec![temporary.storage_live, temporary.alloc],
+        ))
+    }
+
+    /// Give a component the body does not own an addressable home.
+    ///
+    /// An enum payload is reached by decoding the active variant rather than by
+    /// a place projection, so a payload a comparison only borrows still has to
+    /// be staged in a frame slot before it can be borrowed again. The slot is
+    /// registered as non-owning, because the bits it holds belong to the enum
+    /// being compared: dropping them when the staging scope closes would free
+    /// storage the operand still owns. The returned statements must precede
+    /// every read of the home.
+    pub(crate) fn materialize_borrowed_component(
+        &mut self,
+        air: &mut Air,
+        value: AirRef,
+        ty: Type,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<(AirRef, Vec<AirRef>)> {
+        if self.is_addressable_read(air, value) {
+            return Ok((value, Vec::new()));
+        }
+        self.stage_borrowed_component(air, value, ty, span, ctx)
+    }
+
+    /// The staging half of [`Self::materialize_borrowed_component`], for a
+    /// caller that needs the slot even though the value already names storage.
+    fn stage_borrowed_component(
+        &mut self,
+        air: &mut Air,
+        value: AirRef,
+        ty: Type,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<(AirRef, Vec<AirRef>)> {
+        let temporary = self.materialize_in_temporary(
+            air,
+            value,
+            ty,
+            TemporaryOwnership::NonOwning,
+            span,
+            ctx,
+        )?;
+        Ok((
+            temporary.load,
+            vec![temporary.storage_live, temporary.alloc],
+        ))
     }
 
     pub(crate) fn wrap_value_with_temp_scope(
@@ -837,12 +1146,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // twice.
         let (base, mut stmts) = self.peel_projected_rvalue_scope(air, base);
         if !stmts.is_empty()
-            && let AirInstData::PlaceRead { place } = air.get(base).data
+            && matches!(air.get(base).data, AirInstData::PlaceRead { .. })
+            && let Some((base, base_type, mut projections)) =
+                self.read_place_path(air, base, base_type)
         {
-            let place = air.get_place(place);
-            let base = place.base;
-            let base_type = place.base_type;
-            let mut projections = air.get_place_projections(place).to_vec();
             projections.push(projection);
             let place = air.make_place(base, base_type, projections)?;
             let value = air.add_inst(AirInst {

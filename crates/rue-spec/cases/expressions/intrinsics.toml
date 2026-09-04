@@ -3081,3 +3081,49 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "takes a type in this argument position"
+
+# The comparison the intrinsic performs is the one `==` performs: it reaches
+# `build_comparison`, so a struct carrying a string is compared on content
+# (4.3:3b) rather than on the string's header (RUE-1992).
+[[case]]
+name = "assert_eq_on_a_string_carrying_struct_holds_on_equal_bytes"
+spec = ["4.13:5f", "4.3:3b"]
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+struct Pair { name: StrBuf }
+
+fn mk(s: str) -> StrBuf { StrBuf.from_str(borrow s) }
+
+fn main() -> i32 {
+    let a = Pair { name: mk("abc") };
+    let b = Pair { name: mk("abc") };
+    @assert_eq(a, b);
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "assert_eq_on_a_string_carrying_struct_aborts_on_different_bytes"
+spec = ["4.13:5f", "4.3:3b"]
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+struct Pair { name: StrBuf }
+
+fn mk(s: str) -> StrBuf { StrBuf.from_str(borrow s) }
+
+fn main() -> i32 {
+    let a = Pair { name: mk("abc") };
+    let b = Pair { name: mk("abd") };
+    @assert_eq(a, b);
+    0
+}
+"""
+exit_code = 101
+stderr_contains = "panic: assertion failed: left == right"

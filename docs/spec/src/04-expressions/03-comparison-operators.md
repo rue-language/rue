@@ -29,6 +29,11 @@ aggregate types: structs, arrays, and enums.
 {{ rule(id="4.3:3", cat="normative") }}
 
 Two strings are equal if they have the same length and identical byte content.
+This holds wherever a string is reached, not only as a whole operand: a string
+that is a struct field, an array element, or an enum payload field, at any
+depth, is compared by this rule and not by the representation of its header
+(a string is a leaf of the structural recursion in rule 4.3:3b, so rule 4.3:3e
+never applies to the pointer inside one).
 
 {{ rule(id="4.3:3a", cat="normative") }}
 
