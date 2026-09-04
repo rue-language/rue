@@ -1929,7 +1929,19 @@ define_error_codes! {
     /// (RUE-952, spec 4.13:120). A bit reinterpretation renames the bits it is
     /// given; it neither invents nor discards any, so the source and target
     /// **must** share a width. The value-changing conversion is `@intCast`.
-    BIT_CAST_WIDTH_MISMATCH = 950;
+    BIT_CAST_WIDTH_MISMATCH = 950 => {
+        explanation: "`@bitCast` reinterprets an integer value's bits at another integer type of the same width. It is the bit-preserving counterpart to `@intCast`: `@bitCast` keeps the representation and lets the number change, while `@intCast` keeps the number and rejects the values the target cannot represent. A reinterpretation neither invents nor discards bits, so it is defined only between the same-width pairs — `i8`/`u8`, `i16`/`u16`, `i32`/`u32`, and `i64`/`u64` — in either direction, and between an integer type and itself. E0950 reports a width disagreement specifically: a target type that cannot be inferred reports E0709 instead, and a non-integer argument or target reports E0702.",
+        likely_cause: "The target type — taken from the surrounding annotation, parameter, or return position exactly as `@intCast`'s is — is narrower or wider than the argument's type, as in `let narrow: u32 = @bitCast(wide);` for a `u64` source. Reinterpret at the same-width partner of the argument's type when only a signedness change was intended, or use `@intCast` when the width change was intended.",
+        examples: [
+            ErrorCodeExample { title: "Reinterpret across a width change", source: "fn main() -> i32 {\n    let wide: u64 = 1;\n    let narrow: u32 = @bitCast(wide);\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Reinterpret at the same width", source: "fn main() -> i32 {\n    let bits: u32 = 1;\n    let signed: i32 = @bitCast(bits);\n    signed\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Bit reinterpretation legality", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:120") },
+            ErrorCodeReference { title: "Bit reinterpretation semantics", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:121") },
+            ErrorCodeReference { title: "Context-inferred cast targets", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:26") },
+        ],
+    };
 
     // ========================================================================
     // Linker/target errors (E1000-E1099)
@@ -4565,6 +4577,34 @@ mod tests {
             .iter()
             .filter_map(|declaration| {
                 (800..=802)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(explained, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
+        );
+    }
+
+    #[test]
+    fn active_bit_reinterpretation_explanation_band_is_complete_and_bounded() {
+        let expected = [ErrorCode::BIT_CAST_WIDTH_MISMATCH];
+        let active = error_code_metadata()
+            .iter()
+            .filter(|metadata| (950..=959).contains(&metadata.code.0))
+            .map(|metadata| {
+                assert_eq!(metadata.source_path, "crates/rue-error/src/lib.rs");
+                metadata.code
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(active, expected);
+        let explained = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (950..=959)
                     .contains(&declaration.code.0)
                     .then_some(declaration.code)
             })
