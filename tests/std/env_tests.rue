@@ -1,0 +1,37 @@
+// The runner pins the test-visible inventory (docs/process/test-events.md):
+// argv is exactly ["rue-test"], the environment is exactly ["RUE_TEST=1"],
+// stdin is EOF, and the working directory is a private scratch directory.
+// These tests are the contract's executable form.
+const std = @import("std");
+const env = std.env;
+const StrBuf = std.strbuf.StrBuf;
+const OptS = std.option.Option(StrBuf);
+
+test "a test process sees exactly one argument, the logical argv[0]" {
+    @assert_eq(env.arg_count(), 1);
+    @assert_eq(env.arg(0), OptS.Some("rue-test"));
+    @assert_eq(env.arg(1), OptS.None);
+    let all = env.args();
+    @assert_eq(all.len(), 1);
+    @assert_eq(all.get_ref(0), "rue-test");
+}
+
+test "a test process sees exactly RUE_TEST=1 in its environment" {
+    @assert_eq(env.env_count(), 1);
+    let name: StrBuf = "RUE_TEST";
+    @assert_eq(env.var(borrow name), OptS.Some("1"));
+    let home: StrBuf = "HOME";
+    @assert_eq(env.var(borrow home), OptS.None);
+    let path: StrBuf = "PATH";
+    @assert_eq(env.var(borrow path), OptS.None);
+}
+
+test "the scratch directory starts empty and is writable" {
+    let dot: StrBuf = ".";
+    let entries = std.fs.read_dir(borrow dot);
+    let R = std.result.Result(std.fs.DirEntries, std.fs.FileError);
+    match entries {
+        R.Ok(d) => @assert_eq(d.len(), 0),
+        R.Err(e) => @assert(false, "read_dir of the scratch directory failed"),
+    }
+}

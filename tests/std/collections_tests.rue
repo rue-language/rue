@@ -1,0 +1,249 @@
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const OptI = std.option.Option(i64);
+const OptS = std.option.Option(StrBuf);
+const Stack = std.stack.Stack(i64);
+const StackS = std.stack.Stack(StrBuf);
+const Queue = std.queue.Queue(i64);
+const Deque = std.deque.Deque(i64);
+const Heap = std.binary_heap.BinaryHeap(i64);
+const PQ = std.binary_heap.PriorityQueue(u64, i64);
+const Grid = std.grid.Grid2D(i64);
+const BitSet = std.bitset.BitSet();
+
+test "Stack is LIFO with peek, pop, and clear" {
+    let mut s = Stack.new();
+    @assert(s.is_empty());
+    @assert_eq(s.pop(), OptI.None);
+    @assert_eq(s.peek(), OptI.None);
+    s.push(10);
+    s.push(20);
+    @assert_eq(s.len(), 2);
+    @assert_eq(s.peek(), OptI.Some(20));
+    @assert_eq(s.pop(), OptI.Some(20));
+    @assert_eq(s.pop(), OptI.Some(10));
+    @assert_eq(s.pop(), OptI.None);
+    s.push(1);
+    s.clear();
+    @assert(s.is_empty());
+}
+
+test "Stack of owned StrBuf moves elements out with pop" {
+    let mut s = StackS.new();
+    let a: StrBuf = "first";
+    let b: StrBuf = "second";
+    s.push(a);
+    s.push(b);
+    // RUE-2012: `@assert_eq(s.peek_ref(), "second")` on Stack(StrBuf) is
+    // E9000 "mandatory accessor CFG splice failed"; restore it when that lands.
+    @assert_eq(s.len(), 2);
+    match s.pop() {
+        OptS.Some(v) => @assert_eq(v, "second"),
+        OptS.None => @assert(false, "expected an element"),
+    }
+    @assert_eq(s.len(), 1);
+}
+
+test "Queue is FIFO and reclaims its buffer after a full drain" {
+    let mut q = Queue.new();
+    @assert_eq(q.dequeue(), OptI.None);
+    q.enqueue(1);
+    q.enqueue(2);
+    q.enqueue(3);
+    @assert_eq(q.len(), 3);
+    @assert_eq(q.peek(), OptI.Some(1));
+    @assert_eq(q.dequeue(), OptI.Some(1));
+    @assert_eq(q.len(), 2);
+    @assert_eq(q.dequeue(), OptI.Some(2));
+    @assert_eq(q.dequeue(), OptI.Some(3));
+    @assert(q.is_empty());
+    q.enqueue(4);
+    @assert_eq(q.peek_ref(), 4);
+    @assert_eq(q.dequeue(), OptI.Some(4));
+    @assert_eq(q.dequeue(), OptI.None);
+}
+
+test "Queue interleaves enqueue and dequeue in order" {
+    let mut q = Queue.new();
+    let mut next_in: i64 = 0;
+    let mut next_out: i64 = 0;
+    let mut round: u64 = 0;
+    while round < 50 {
+        q.enqueue(next_in); next_in += 1;
+        q.enqueue(next_in); next_in += 1;
+        @assert_eq(q.dequeue(), OptI.Some(next_out));
+        next_out += 1;
+        round += 1;
+    }
+    @assert_eq(q.len(), 50);
+}
+
+test "Deque pushes and pops at both ends" {
+    let mut d = Deque.new(0);
+    @assert(d.is_empty());
+    @assert_eq(d.pop_front(), OptI.None);
+    @assert_eq(d.pop_back(), OptI.None);
+    d.push_back(2);
+    d.push_front(1);
+    d.push_back(3);
+    @assert_eq(d.len(), 3);
+    @assert_eq(d.front(), OptI.Some(1));
+    @assert_eq(d.back(), OptI.Some(3));
+    @assert_eq(d.pop_front(), OptI.Some(1));
+    @assert_eq(d.pop_back(), OptI.Some(3));
+    @assert_eq(d.pop_back(), OptI.Some(2));
+    @assert_eq(d.front(), OptI.None);
+}
+
+test "Deque wraps around and grows past its initial ring" {
+    let mut d = Deque.new(-1);
+    // Rotate the head away from zero so growth must re-lay a wrapped ring.
+    let mut i: i64 = 0;
+    while i < 5 { d.push_back(i); i += 1; }
+    let mut k: u64 = 0;
+    while k < 5 { let _ = d.pop_front(); k += 1; }
+    let mut j: i64 = 0;
+    while j < 100 {
+        d.push_back(j);
+        d.push_front(-j - 1);
+        j += 1;
+    }
+    @assert_eq(d.len(), 200);
+    @assert_eq(d.front(), OptI.Some(-100));
+    @assert_eq(d.back(), OptI.Some(99));
+    let mut expect: i64 = -100;
+    while expect < 100 {
+        @assert_eq(d.pop_front(), OptI.Some(expect));
+        expect += 1;
+    }
+    @assert(d.is_empty());
+}
+
+test "BinaryHeap pops in ascending order with duplicates" {
+    let mut h = Heap.new();
+    @assert_eq(h.pop(), OptI.None);
+    @assert_eq(h.peek(), OptI.None);
+    h.push(5); h.push(1); h.push(3); h.push(1); h.push(-7); h.push(3);
+    @assert_eq(h.len(), 6);
+    @assert_eq(h.peek(), OptI.Some(-7));
+    @assert_eq(h.pop(), OptI.Some(-7));
+    @assert_eq(h.pop(), OptI.Some(1));
+    @assert_eq(h.pop(), OptI.Some(1));
+    @assert_eq(h.pop(), OptI.Some(3));
+    @assert_eq(h.pop(), OptI.Some(3));
+    @assert_eq(h.pop(), OptI.Some(5));
+    @assert_eq(h.pop(), OptI.None);
+}
+
+test "BinaryHeap of a pseudo-random sequence pops sorted" {
+    let mut rng = std.rand.Lcg.new(42);
+    let mut h = Heap.new();
+    let mut i: u64 = 0;
+    while i < 200 {
+        let v: i64 = @intCast(rng.next_below(1000));
+        h.push(v);
+        i += 1;
+    }
+    let mut prev: i64 = -1;
+    let mut popped: u64 = 0;
+    while !h.is_empty() {
+        match h.pop() {
+            OptI.Some(v) => {
+                @assert(v >= prev);
+                prev = v;
+                popped += 1;
+            },
+            OptI.None => @assert(false, "non-empty heap popped None"),
+        }
+    }
+    @assert_eq(popped, 200);
+}
+
+test "PriorityQueue pops the lowest priority first and keeps its payload" {
+    let OptItem = std.option.Option(std.tuple.Pair(u64, i64));
+    let mut pq = PQ.new();
+    pq.push(30, 300);
+    pq.push(10, 100);
+    pq.push(20, 200);
+    @assert_eq(pq.len(), 3);
+    match pq.pop() {
+        OptItem.Some(it) => {
+            @assert_eq(it.first, 10);
+            @assert_eq(it.second, 100);
+        },
+        OptItem.None => @assert(false, "expected an item"),
+    }
+    match pq.pop() {
+        OptItem.Some(it) => @assert_eq(it.second, 200),
+        OptItem.None => @assert(false, "expected an item"),
+    }
+    match pq.pop() {
+        OptItem.Some(it) => @assert_eq(it.second, 300),
+        OptItem.None => @assert(false, "expected an item"),
+    }
+    @assert(pq.is_empty());
+}
+
+test "Grid2D get and set are bounds-aware" {
+    let mut g = Grid.new(2, 3, 0);
+    @assert_eq(g.rows(), 2);
+    @assert_eq(g.cols(), 3);
+    @assert(g.in_bounds(1, 2));
+    @assert(!g.in_bounds(2, 0));
+    @assert(!g.in_bounds(0, 3));
+    g.set(1, 2, 42);
+    g.set(5, 5, 99);
+    @assert_eq(g.get(1, 2), OptI.Some(42));
+    @assert_eq(g.get(0, 0), OptI.Some(0));
+    @assert_eq(g.get(2, 0), OptI.None);
+    @assert_eq(g.get(0, 3), OptI.None);
+    @assert_eq(g.get_ref(1, 2), 42);
+}
+
+test "Grid2D row-major layout keeps rows apart" {
+    let mut g = Grid.new(3, 3, 0);
+    g.set(0, 2, 1);
+    g.set(1, 0, 2);
+    @assert_eq(g.get(0, 2), OptI.Some(1));
+    @assert_eq(g.get(1, 0), OptI.Some(2));
+    @assert_eq(g.get(0, 1), OptI.Some(0));
+    @assert_eq(g.get(1, 1), OptI.Some(0));
+}
+
+test "a zero-sized Grid2D has no cells" {
+    let g = Grid.new(0, 5, 7);
+    @assert_eq(g.rows(), 0);
+    @assert(!g.in_bounds(0, 0));
+    @assert_eq(g.get(0, 0), OptI.None);
+    let h = Grid.new(4, 0, 7);
+    @assert_eq(h.get(0, 0), OptI.None);
+}
+
+test "BitSet set, test, clear, toggle, count across word boundaries" {
+    let mut bs = BitSet.new();
+    @assert_eq(bs.count(), 0);
+    @assert(!bs.test(0));
+    bs.set(0);
+    bs.set(63);
+    bs.set(64);
+    bs.set(200);
+    @assert(bs.test(0));
+    @assert(bs.test(63));
+    @assert(bs.test(64));
+    @assert(bs.test(200));
+    @assert(!bs.test(1));
+    @assert(!bs.test(65));
+    @assert(!bs.test(10000));
+    @assert_eq(bs.count(), 4);
+    bs.clear(63);
+    @assert(!bs.test(63));
+    @assert_eq(bs.count(), 3);
+    bs.clear(5000);
+    @assert_eq(bs.count(), 3);
+    bs.toggle(1);
+    @assert(bs.test(1));
+    bs.toggle(1);
+    @assert(!bs.test(1));
+    bs.set(0);
+    @assert_eq(bs.count(), 3);
+}

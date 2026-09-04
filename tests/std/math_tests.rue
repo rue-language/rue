@@ -1,0 +1,115 @@
+const std = @import("std");
+const math = std.math;
+const OptI64 = std.option.Option(i64);
+const OptU8 = std.option.Option(u8);
+const OptU64 = std.option.Option(u64);
+
+test "legacy i32 helpers: abs, min, max, clamp" {
+    @assert_eq(math.abs(-5), 5);
+    @assert_eq(math.abs(5), 5);
+    @assert_eq(math.abs(0), 0);
+    @assert_eq(math.min(2, 9), 2);
+    @assert_eq(math.max(2, 9), 9);
+    @assert_eq(math.clamp(15, 0, 10), 10);
+    @assert_eq(math.clamp(-15, 0, 10), 0);
+}
+
+test "sign of negative, zero, positive" {
+    @assert_eq(math.sign(i64, -99), -1);
+    @assert_eq(math.sign(i64, 0), 0);
+    @assert_eq(math.sign(i64, 17), 1);
+}
+
+test "gcd handles zero, commutes, and normalises sign" {
+    @assert_eq(math.gcd(i64, 12, 18), 6);
+    @assert_eq(math.gcd(i64, 18, 12), 6);
+    @assert_eq(math.gcd(i64, 0, 0), 0);
+    @assert_eq(math.gcd(i64, 0, 7), 7);
+    @assert_eq(math.gcd(i64, -12, 18), 6);
+    @assert_eq(math.gcd(i64, -12, -18), 6);
+    @assert_eq(math.gcd(u64, 100, 75), 25);
+}
+
+test "gcd survives an i64::MIN operand when the answer is representable" {
+    // RUE-1708: the old |a|/|b| prelude trapped here.
+    @assert_eq(math.gcd(i64, @int_min(i64), 2), 2);
+    @assert_eq(math.gcd(i64, @int_min(i64), 1), 1);
+    @assert_eq(math.gcd(i64, -1, @int_min(i64)), 1);
+}
+
+test "lcm is zero on a zero operand and positive otherwise" {
+    @assert_eq(math.lcm(i64, 4, 6), 12);
+    @assert_eq(math.lcm(i64, -4, 6), 12);
+    @assert_eq(math.lcm(i64, 0, 6), 0);
+    @assert_eq(math.lcm(i64, 6, 0), 0);
+    @assert_eq(math.lcm(i64, 7, 7), 7);
+}
+
+test "pow by squaring" {
+    @assert_eq(math.pow(i64, 2, 10), 1024);
+    @assert_eq(math.pow(i64, 3, 0), 1);
+    @assert_eq(math.pow(i64, 0, 0), 1);
+    @assert_eq(math.pow(i64, -2, 3), -8);
+    @assert_eq(math.pow(u64, 10, 19), 10000000000000000000);
+}
+
+test "isqrt is the floor square root" {
+    @assert_eq(math.isqrt(u64, 0), 0);
+    @assert_eq(math.isqrt(u64, 1), 1);
+    @assert_eq(math.isqrt(u64, 15), 3);
+    @assert_eq(math.isqrt(u64, 16), 4);
+    @assert_eq(math.isqrt(u64, 17), 4);
+    @assert_eq(math.isqrt(u64, @int_max(u64)), 4294967295);
+    @assert_eq(math.isqrt(i32, @int_max(i32)), 46340);
+}
+
+test "is_pow_of_two rejects zero and non-powers" {
+    @assert(!math.is_pow_of_two(u64, 0));
+    @assert(math.is_pow_of_two(u64, 1));
+    @assert(math.is_pow_of_two(u64, 1024));
+    @assert(!math.is_pow_of_two(u64, 1023));
+    @assert(!math.is_pow_of_two(i64, -8));
+}
+
+test "is_prime at the small cases and at the i32 maximum" {
+    @assert(!math.is_prime(i64, 0));
+    @assert(!math.is_prime(i64, 1));
+    @assert(math.is_prime(i64, 2));
+    @assert(math.is_prime(i64, 3));
+    @assert(!math.is_prime(i64, 4));
+    @assert(math.is_prime(i64, 97));
+    @assert(!math.is_prime(i64, 91));
+    // RUE-1708: `i * i <= n` overflowed here.
+    @assert(math.is_prime(i32, @int_max(i32)));
+}
+
+test "checked_add reports overflow at both ends" {
+    @assert_eq(math.checked_add(i64, 1, 2), OptI64.Some(3));
+    @assert_eq(math.checked_add(i64, @int_max(i64), 1), OptI64.None);
+    @assert_eq(math.checked_add(i64, @int_min(i64), -1), OptI64.None);
+    @assert_eq(math.checked_add(i64, @int_max(i64), 0), OptI64.Some(@int_max(i64)));
+    @assert_eq(math.checked_add(u8, 200, 55), OptU8.Some(255));
+    @assert_eq(math.checked_add(u8, 200, 56), OptU8.None);
+}
+
+test "checked_sub reports overflow at both ends" {
+    @assert_eq(math.checked_sub(i64, 1, 2), OptI64.Some(-1));
+    @assert_eq(math.checked_sub(i64, @int_min(i64), 1), OptI64.None);
+    @assert_eq(math.checked_sub(i64, @int_max(i64), -1), OptI64.None);
+    @assert_eq(math.checked_sub(u8, 0, 1), OptU8.None);
+    @assert_eq(math.checked_sub(u8, 1, 1), OptU8.Some(0));
+}
+
+test "checked_mul covers the signed corners" {
+    @assert_eq(math.checked_mul(i64, 6, 7), OptI64.Some(42));
+    @assert_eq(math.checked_mul(i64, 0, @int_min(i64)), OptI64.Some(0));
+    @assert_eq(math.checked_mul(i64, -1, @int_min(i64)), OptI64.None);
+    @assert_eq(math.checked_mul(i64, @int_min(i64), -1), OptI64.None);
+    @assert_eq(math.checked_mul(i64, -1, @int_max(i64)), OptI64.Some(-@int_max(i64)));
+    @assert_eq(math.checked_mul(i64, 4611686018427387904, 2), OptI64.None);
+    @assert_eq(math.checked_mul(i64, -4611686018427387904, 2), OptI64.Some(@int_min(i64)));
+    @assert_eq(math.checked_mul(i64, -3, -4), OptI64.Some(12));
+    @assert_eq(math.checked_mul(i64, 3, -4), OptI64.Some(-12));
+    @assert_eq(math.checked_mul(u64, 4294967296, 4294967296), OptU64.None);
+    @assert_eq(math.checked_mul(u64, 4294967295, 4294967297), OptU64.Some(18446744073709551615));
+}

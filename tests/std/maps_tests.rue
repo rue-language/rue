@@ -1,0 +1,143 @@
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const OptI = std.option.Option(i64);
+const IntMap = std.intmap.IntMap(i64);
+const StrMap = std.strmap.StrMap(i64);
+
+test "IntMap insert, get, contains, overwrite, remove" {
+    let mut m = IntMap.new(0);
+    @assert(m.is_empty());
+    @assert_eq(m.get(1), OptI.None);
+    m.insert(42, 100);
+    @assert_eq(m.len(), 1);
+    @assert_eq(m.get(42), OptI.Some(100));
+    @assert(m.contains(42));
+    @assert(!m.contains(43));
+    m.insert(42, 101);
+    @assert_eq(m.len(), 1);
+    @assert_eq(m.get(42), OptI.Some(101));
+    @assert(m.remove(42));
+    @assert(!m.remove(42));
+    @assert_eq(m.get(42), OptI.None);
+    @assert(m.is_empty());
+}
+
+test "IntMap accepts negative keys, zero, and i64::MIN" {
+    let mut m = IntMap.new(0);
+    m.insert(-1, 1);
+    m.insert(0, 2);
+    m.insert(@int_min(i64), 3);
+    m.insert(@int_max(i64), 4);
+    @assert_eq(m.get(-1), OptI.Some(1));
+    @assert_eq(m.get(0), OptI.Some(2));
+    @assert_eq(m.get(@int_min(i64)), OptI.Some(3));
+    @assert_eq(m.get(@int_max(i64)), OptI.Some(4));
+    @assert_eq(m.len(), 4);
+}
+
+test "IntMap grows and keeps every entry" {
+    let mut m = IntMap.new(0);
+    let mut k: i64 = 0;
+    while k < 2000 {
+        m.insert(k * 7, k);
+        k += 1;
+    }
+    @assert_eq(m.len(), 2000);
+    let mut j: i64 = 0;
+    while j < 2000 {
+        @assert_eq(m.get(j * 7), OptI.Some(j));
+        j += 1;
+    }
+    @assert_eq(m.get(1), OptI.None);
+}
+
+test "IntMap survives insert/remove churn that fills the table with tombstones" {
+    let mut m = IntMap.new(0);
+    let mut k: i64 = 0;
+    while k < 5000 {
+        m.insert(k, k);
+        @assert(m.remove(k));
+        k += 1;
+    }
+    @assert(m.is_empty());
+    m.insert(7, 7);
+    @assert_eq(m.get(7), OptI.Some(7));
+    @assert_eq(m.get(8), OptI.None);
+    @assert_eq(m.len(), 1);
+}
+
+test "IntMap remove then reinsert of the same key" {
+    let mut m = IntMap.new(0);
+    m.insert(5, 1);
+    @assert(m.remove(5));
+    m.insert(5, 2);
+    @assert_eq(m.get(5), OptI.Some(2));
+    @assert_eq(m.len(), 1);
+}
+
+test "StrMap insert, get, contains, overwrite, remove" {
+    let mut m = StrMap.new(0);
+    let k: StrBuf = "alpha";
+    let other: StrBuf = "beta";
+    @assert_eq(m.get(borrow k), OptI.None);
+    m.insert(borrow k, 1);
+    @assert_eq(m.get(borrow k), OptI.Some(1));
+    @assert(m.contains(borrow k));
+    @assert(!m.contains(borrow other));
+    m.insert(borrow k, 2);
+    @assert_eq(m.len(), 1);
+    @assert_eq(m.get(borrow k), OptI.Some(2));
+    @assert(m.remove(borrow k));
+    @assert(!m.remove(borrow k));
+    @assert(m.is_empty());
+}
+
+test "StrMap distinguishes prefixes, the empty key, and byte-identical copies" {
+    let mut m = StrMap.new(0);
+    let a: StrBuf = "ab";
+    let ab: StrBuf = "abc";
+    let empty: StrBuf = "";
+    m.insert(borrow a, 1);
+    m.insert(borrow ab, 2);
+    m.insert(borrow empty, 3);
+    @assert_eq(m.len(), 3);
+    @assert_eq(m.get(borrow a), OptI.Some(1));
+    @assert_eq(m.get(borrow ab), OptI.Some(2));
+    @assert_eq(m.get(borrow empty), OptI.Some(3));
+    let copy: StrBuf = "abc";
+    @assert_eq(m.get(borrow copy), OptI.Some(2));
+    let built = std.fmt.int_to_string(i64, 0);
+    @assert_eq(m.get(borrow built), OptI.None);
+}
+
+test "StrMap grows, compacting its key pool, and keeps every entry" {
+    let mut m = StrMap.new(0);
+    let mut i: i64 = 0;
+    while i < 1000 {
+        let key = std.fmt.int_to_string(i64, i);
+        m.insert(borrow key, i);
+        i += 1;
+    }
+    @assert_eq(m.len(), 1000);
+    let mut j: i64 = 0;
+    while j < 1000 {
+        let key = std.fmt.int_to_string(i64, j);
+        @assert_eq(m.get(borrow key), OptI.Some(j));
+        j += 1;
+    }
+}
+
+test "StrMap survives tombstone churn" {
+    let mut m = StrMap.new(0);
+    let mut i: i64 = 0;
+    while i < 3000 {
+        let key = std.fmt.int_to_string(i64, i);
+        m.insert(borrow key, i);
+        @assert(m.remove(borrow key));
+        i += 1;
+    }
+    @assert(m.is_empty());
+    let k: StrBuf = "survivor";
+    m.insert(borrow k, 9);
+    @assert_eq(m.get(borrow k), OptI.Some(9));
+}

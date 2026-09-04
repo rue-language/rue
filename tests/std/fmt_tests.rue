@@ -1,0 +1,34 @@
+const std = @import("std");
+const fmt = std.fmt;
+
+test "int_to_string renders signed and unsigned widths" {
+    @assert_eq(fmt.int_to_string(i64, 0), "0");
+    @assert_eq(fmt.int_to_string(i64, -42), "-42");
+    @assert_eq(fmt.int_to_string(u8, 255), "255");
+    @assert_eq(fmt.int_to_string(i64, @int_min(i64)), "-9223372036854775808");
+    @assert_eq(fmt.int_to_string(u64, @int_max(u64)), "18446744073709551615");
+}
+
+test "bool_to_string" {
+    @assert_eq(fmt.bool_to_string(true), "true");
+    @assert_eq(fmt.bool_to_string(false), "false");
+}
+
+test "to_hex and to_binary have no prefix and are lowercase" {
+    @assert_eq(fmt.to_hex(0), "0");
+    @assert_eq(fmt.to_hex(255), "ff");
+    @assert_eq(fmt.to_hex(3735928559), "deadbeef");
+    @assert_eq(fmt.to_hex(@int_max(u64)), "ffffffffffffffff");
+    @assert_eq(fmt.to_binary(0), "0");
+    @assert_eq(fmt.to_binary(5), "101");
+    @assert_eq(fmt.to_binary(256), "100000000");
+}
+
+test "to_radix covers the whole 2..=16 range" {
+    @assert_eq(fmt.to_radix(255, 2), "11111111");
+    @assert_eq(fmt.to_radix(255, 3), "100110");
+    @assert_eq(fmt.to_radix(255, 8), "377");
+    @assert_eq(fmt.to_radix(255, 10), "255");
+    @assert_eq(fmt.to_radix(255, 16), "ff");
+    @assert_eq(fmt.to_radix(35, 6), "55");
+}

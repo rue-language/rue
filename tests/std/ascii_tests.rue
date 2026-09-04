@@ -1,0 +1,58 @@
+const std = @import("std");
+const ascii = std.ascii;
+const OptU8 = std.option.Option(u8);
+
+test "digit and letter classes are disjoint and exact at their edges" {
+    @assert(ascii.is_digit(48));
+    @assert(ascii.is_digit(57));
+    @assert(!ascii.is_digit(47));
+    @assert(!ascii.is_digit(58));
+    @assert(ascii.is_upper(65));
+    @assert(ascii.is_upper(90));
+    @assert(!ascii.is_upper(91));
+    @assert(ascii.is_lower(97));
+    @assert(ascii.is_lower(122));
+    @assert(!ascii.is_lower(96));
+    @assert(ascii.is_alpha(65));
+    @assert(ascii.is_alpha(122));
+    @assert(!ascii.is_alpha(48));
+    @assert(ascii.is_alnum(48));
+    @assert(ascii.is_alnum(65));
+    @assert(!ascii.is_alnum(32));
+}
+
+test "whitespace is exactly space, tab, newline, carriage return" {
+    @assert(ascii.is_whitespace(32));
+    @assert(ascii.is_whitespace(9));
+    @assert(ascii.is_whitespace(10));
+    @assert(ascii.is_whitespace(13));
+    @assert(!ascii.is_whitespace(11));
+    @assert(!ascii.is_whitespace(12));
+    @assert(!ascii.is_whitespace(0));
+}
+
+test "is_ascii cuts at 127" {
+    @assert(ascii.is_ascii(0));
+    @assert(ascii.is_ascii(127));
+    @assert(!ascii.is_ascii(128));
+    @assert(!ascii.is_ascii(255));
+}
+
+test "case mapping touches only letters" {
+    @assert_eq(ascii.to_upper(97), 65);
+    @assert_eq(ascii.to_upper(122), 90);
+    @assert_eq(ascii.to_upper(65), 65);
+    @assert_eq(ascii.to_upper(48), 48);
+    @assert_eq(ascii.to_lower(65), 97);
+    @assert_eq(ascii.to_lower(90), 122);
+    @assert_eq(ascii.to_lower(97), 97);
+    @assert_eq(ascii.to_lower(200), 200);
+}
+
+test "digit_value is Some only for a digit" {
+    @assert_eq(ascii.digit_value(48), OptU8.Some(0));
+    @assert_eq(ascii.digit_value(55), OptU8.Some(7));
+    @assert_eq(ascii.digit_value(57), OptU8.Some(9));
+    @assert_eq(ascii.digit_value(97), OptU8.None);
+    @assert_eq(ascii.digit_value(47), OptU8.None);
+}

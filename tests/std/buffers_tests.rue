@@ -1,0 +1,231 @@
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const Buf = std.arraybuf.ArrayBuf(i64);
+const Bytes = std.arraybuf.ArrayBuf(u8);
+const Strs = std.arraybuf.ArrayBuf(StrBuf);
+const OptI = std.option.Option(i64);
+const OptU8 = std.option.Option(u8);
+const OptU64 = std.option.Option(u64);
+
+test "ArrayBuf push, len, get, get_or, set, pop" {
+    let mut v = Buf.new();
+    @assert(v.is_empty());
+    @assert_eq(v.get(0), OptI.None);
+    @assert_eq(v.get_or(0, -1), -1);
+    @assert_eq(v.pop(), OptI.None);
+    v.push(10);
+    v.push(20);
+    @assert_eq(v.len(), 2);
+    @assert_eq(v.get(0), OptI.Some(10));
+    @assert_eq(v.get(2), OptI.None);
+    v.set(0, 99);
+    @assert_eq(v.get(0), OptI.Some(99));
+    @assert_eq(v.pop(), OptI.Some(20));
+    @assert_eq(v.pop_or(-5), 99);
+    @assert_eq(v.pop_or(-5), -5);
+}
+
+test "ArrayBuf first, last, index_of, contains" {
+    let mut v = Buf.new();
+    @assert_eq(v.first(), OptI.None);
+    @assert_eq(v.last(), OptI.None);
+    v.push(3); v.push(1); v.push(4); v.push(1);
+    @assert_eq(v.first(), OptI.Some(3));
+    @assert_eq(v.last(), OptI.Some(1));
+    @assert_eq(v.index_of(1), OptU64.Some(1));
+    @assert_eq(v.index_of(5), OptU64.None);
+    @assert(v.contains(4));
+    @assert(!v.contains(2));
+}
+
+test "ArrayBuf swap and reverse" {
+    let mut v = Buf.new();
+    v.push(1); v.push(2); v.push(3); v.push(4);
+    v.swap(0, 3);
+    @assert_eq(v.get(0), OptI.Some(4));
+    @assert_eq(v.get(3), OptI.Some(1));
+    v.reverse();
+    @assert_eq(v.get(0), OptI.Some(1));
+    @assert_eq(v.get(1), OptI.Some(3));
+    @assert_eq(v.get(2), OptI.Some(2));
+    @assert_eq(v.get(3), OptI.Some(4));
+    let mut one = Buf.new();
+    one.push(7);
+    one.reverse();
+    @assert_eq(one.get(0), OptI.Some(7));
+    let mut none = Buf.new();
+    none.reverse();
+    @assert_eq(none.len(), 0);
+}
+
+test "ArrayBuf grows well past its initial capacity" {
+    let mut v = Buf.new();
+    let mut i: i64 = 0;
+    while i < 10000 {
+        v.push(i * i);
+        i += 1;
+    }
+    @assert_eq(v.len(), 10000);
+    @assert_eq(v.get(9999), OptI.Some(99980001));
+    @assert(v.capacity() >= 10000);
+}
+
+test "ArrayBuf with_capacity and reserve do not change len" {
+    let mut v = Buf.with_capacity(32);
+    @assert_eq(v.len(), 0);
+    @assert(v.capacity() >= 32);
+    v.reserve(100);
+    @assert(v.capacity() >= 100);
+    @assert_eq(v.len(), 0);
+}
+
+test "ArrayBuf clear keeps capacity and free resets it" {
+    let mut v = Buf.new();
+    v.push(1); v.push(2);
+    v.clear();
+    @assert_eq(v.len(), 0);
+    @assert(v.capacity() >= 2);
+    v.push(3);
+    @assert_eq(v.get(0), OptI.Some(3));
+    v.free();
+    @assert_eq(v.len(), 0);
+    v.push(4);
+    @assert_eq(v.get(0), OptI.Some(4));
+}
+
+test "ArrayBuf extend_from copies another buffer" {
+    let mut a = Buf.new();
+    a.push(1);
+    let mut b = Buf.new();
+    b.push(2); b.push(3);
+    a.extend_from(borrow b);
+    @assert_eq(a.len(), 3);
+    @assert_eq(a.get(2), OptI.Some(3));
+    @assert_eq(b.len(), 2);
+}
+
+test "ArrayBuf(u8) bridges from str" {
+    let mut b = Bytes.from_str(borrow "Rue");
+    @assert_eq(b.len(), 3);
+    @assert_eq(b.get(0), OptU8.Some(82));
+    b.extend_str(borrow "!");
+    @assert_eq(b.len(), 4);
+    @assert_eq(b.get(3), OptU8.Some(33));
+    let s = StrBuf.from_bytes(borrow b);
+    @assert_eq(s, "Rue!");
+}
+
+test "ArrayBuf of StrBuf reads in place and moves out with pop" {
+    let mut v = Strs.new();
+    let a: StrBuf = "one";
+    let b: StrBuf = "two";
+    v.push(a);
+    v.push(b);
+    @assert_eq(v.get_ref(0), "one");
+    @assert_eq(v.get_ref(1), "two");
+    let OS = std.option.Option(StrBuf);
+    match v.pop() {
+        OS.Some(s) => @assert_eq(s, "two"),
+        OS.None => @assert(false, "expected an element"),
+    }
+    @assert_eq(v.len(), 1);
+}
+
+test "StrBuf construction, length, and push" {
+    let mut s = StrBuf.new();
+    @assert(s.is_empty());
+    @assert_eq(s.len(), 0);
+    s.push(104);
+    s.push(105);
+    @assert_eq(s, "hi");
+    @assert_eq(s.len(), 2);
+    s.append_str(borrow " there");
+    @assert_eq(s, "hi there");
+    let tail: StrBuf = "!";
+    s.push_str(tail);
+    @assert_eq(s, "hi there!");
+}
+
+test "StrBuf from_str and clone are independent copies" {
+    let a = StrBuf.from_str(borrow "abc");
+    let mut b = a.clone();
+    b.push(100);
+    @assert_eq(a, "abc");
+    @assert_eq(b, "abcd");
+    @assert_ne(a, b);
+}
+
+test "StrBuf byte access and indexing" {
+    let s: StrBuf = "abc";
+    @assert_eq(s.byte_at(0), OptU8.Some(97));
+    @assert_eq(s.byte_at(2), OptU8.Some(99));
+    @assert_eq(s.byte_at(3), OptU8.None);
+    @assert_eq(s[1], 98);
+}
+
+test "StrBuf prefix, suffix, containment, and search" {
+    let s: StrBuf = "hello world";
+    @assert(s.starts_with(borrow "hello"));
+    @assert(!s.starts_with(borrow "world"));
+    @assert(s.ends_with(borrow "world"));
+    @assert(!s.ends_with(borrow "hello"));
+    @assert(s.starts_with(borrow ""));
+    @assert(s.ends_with(borrow ""));
+    @assert(s.contains(borrow "o w"));
+    @assert(!s.contains(borrow "ow"));
+    @assert_eq(s.find_str(borrow "o"), OptU64.Some(4));
+    @assert_eq(s.rfind_str(borrow "o"), OptU64.Some(7));
+    @assert_eq(s.find_str_from(borrow "o", 5), OptU64.Some(7));
+    @assert_eq(s.find_str_from(borrow "o", 8), OptU64.None);
+    @assert(s.matches_at(6, borrow "world"));
+    @assert(!s.matches_at(7, borrow "world"));
+}
+
+test "StrBuf substring, byte_range, and concat" {
+    let s: StrBuf = "hello world";
+    @assert_eq(s.substring(6, 5), "world");
+    @assert_eq(s.byte_range(0, 5), "hello");
+    @assert_eq(s.byte_range(11, 0), "");
+    let other: StrBuf = "!";
+    @assert_eq(s.concat(borrow other), "hello world!");
+    @assert_eq(s, "hello world");
+}
+
+test "StrBuf to_bytes and back" {
+    let s: StrBuf = "bytes";
+    let b = s.to_bytes();
+    @assert_eq(b.len(), 5);
+    @assert_eq(b.get(0), OptU8.Some(98));
+    @assert_eq(StrBuf.from_bytes(borrow b), "bytes");
+    @assert_eq(StrBuf.from_byte_range(borrow b, 1, 3), "yte");
+}
+
+test "StrBuf clear empties but stays usable" {
+    let mut s: StrBuf = "data";
+    s.clear();
+    @assert_eq(s.len(), 0);
+    @assert_eq(s, "");
+    s.append_str(borrow "again");
+    @assert_eq(s, "again");
+}
+
+test "StrBuf equality is by content" {
+    let a: StrBuf = "same";
+    let b = StrBuf.from_str(borrow "same");
+    let c: StrBuf = "Same";
+    @assert_eq(a, b);
+    @assert_ne(a, c);
+    @assert(StrBuf.equals_borrowed(borrow a, borrow b));
+}
+
+test "StrBuf chars iterates scalars" {
+    let s: StrBuf = "aé😀";
+    let mut n: u64 = 0;
+    let mut last: u32 = 0;
+    for c in s.chars() {
+        n += 1;
+        last = c;
+    }
+    @assert_eq(n, 3);
+    @assert_eq(last, 0x1F600);
+}

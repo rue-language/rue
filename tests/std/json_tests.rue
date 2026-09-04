@@ -1,0 +1,120 @@
+const std = @import("std");
+const json = std.json;
+const Json = std.json.Json;
+const ParseError = std.json.ParseError;
+const StrBuf = std.strbuf.StrBuf;
+const R = std.result.Result(Json, ParseError);
+
+fn roundtrip(text: StrBuf) -> StrBuf {
+    match json.parse(text) {
+        R.Ok(v) => json.to_string(v),
+        R.Err(e) => @panic("parse failed"),
+    }
+}
+
+fn error_of(text: StrBuf) -> ParseError {
+    match json.parse(text) {
+        R.Ok(v) => @panic("expected a parse error"),
+        R.Err(e) => e,
+    }
+}
+
+test "scalars round-trip through parse and to_string" {
+    @assert_eq(roundtrip("null"), "null");
+    @assert_eq(roundtrip("true"), "true");
+    @assert_eq(roundtrip("false"), "false");
+    @assert_eq(roundtrip("0"), "0");
+    @assert_eq(roundtrip("-12"), "-12");
+    @assert_eq(roundtrip("1.5e+10"), "1.5e+10");
+    @assert_eq(roundtrip("123456789012345678901234567890"), "123456789012345678901234567890");
+    @assert_eq(roundtrip("\"hi\""), "\"hi\"");
+}
+
+test "surrounding whitespace is accepted and dropped" {
+    @assert_eq(roundtrip(" \n\t[ 1 , 2 ] \r\n"), "[1,2]");
+    @assert_eq(roundtrip("  {  \"a\" : null }  "), "{\"a\":null}");
+}
+
+test "nested arrays and objects serialize compactly in source order" {
+    @assert_eq(roundtrip("[]"), "[]");
+    @assert_eq(roundtrip("{}"), "{}");
+    @assert_eq(roundtrip("[[1],[2,[3]]]"), "[[1],[2,[3]]]");
+    @assert_eq(roundtrip("{\"b\":1,\"a\":{\"c\":[true,false]}}"), "{\"b\":1,\"a\":{\"c\":[true,false]}}");
+}
+
+test "string escapes decode and re-encode canonically" {
+    @assert_eq(roundtrip("\"a\\nb\""), "\"a\\nb\"");
+    @assert_eq(roundtrip("\"tab\\there\""), "\"tab\\there\"");
+    @assert_eq(roundtrip("\"q\\\"q\""), "\"q\\\"q\"");
+    @assert_eq(roundtrip("\"back\\\\slash\""), "\"back\\\\slash\"");
+    @assert_eq(roundtrip("\"sl\\/ash\""), "\"sl/ash\"");
+    @assert_eq(roundtrip("\"\\u0041\""), "\"A\"");
+    @assert_eq(roundtrip("\"\\u00e9\""), "\"é\"");
+    @assert_eq(roundtrip("\"\\u0001\""), "\"\\u0001\"");
+}
+
+test "surrogate pairs decode to one scalar" {
+    @assert_eq(roundtrip("\"\\ud83d\\ude00\""), "\"😀\"");
+}
+
+test "raw UTF-8 in strings passes through" {
+    @assert_eq(roundtrip("\"日本語\""), "\"日本語\"");
+}
+
+// RUE-2015: the offset each variant names follows no single convention yet;
+// these pin the observed values and change with that issue.
+test "parse errors name the byte offset" {
+    @assert_eq(error_of(""), ParseError.UnexpectedEnd(0));
+    @assert_eq(error_of("[1,"), ParseError.UnexpectedEnd(3));
+    @assert_eq(error_of("[1 2]"), ParseError.UnexpectedByte(3));
+    @assert_eq(error_of("nul"), ParseError.UnexpectedEnd(3));
+    @assert_eq(error_of("01"), ParseError.InvalidNumber(1));
+    @assert_eq(error_of("1."), ParseError.InvalidNumber(2));
+    @assert_eq(error_of("-"), ParseError.InvalidNumber(0));
+    @assert_eq(error_of("1e"), ParseError.InvalidNumber(2));
+    @assert_eq(error_of("\"\\x\""), ParseError.InvalidEscape(1));
+    @assert_eq(error_of("\"\\u12\""), ParseError.InvalidUnicode(3));
+    @assert_eq(error_of("\"\\ud800\""), ParseError.InvalidUnicode(1));
+    @assert_eq(error_of("1 2"), ParseError.TrailingCharacters(2));
+    @assert_eq(error_of("{\"a\" 1}"), ParseError.UnexpectedByte(5));
+    @assert_eq(error_of("{1:2}"), ParseError.UnexpectedByte(1));
+    @assert_eq(error_of("\"unterminated"), ParseError.UnexpectedEnd(0));
+}
+
+test "a control byte inside a string is rejected" {
+    let mut s = StrBuf.new();
+    s.push(34);
+    s.push(10);
+    s.push(34);
+    @assert_eq(error_of(s), ParseError.UnexpectedByte(1));
+}
+
+test "deep nesting is bounded" {
+    let deep = std.strings.repeat("[", 10000);
+    match json.parse(deep) {
+        R.Ok(v) => @assert(false, "expected an error"),
+        R.Err(e) => {
+            match e {
+                ParseError.NestingTooDeep(at) => @assert(at > 0),
+                ParseError.UnexpectedEnd(at) => @assert(false, "ran off the end before the depth limit"),
+                ParseError.UnexpectedByte(at) => @assert(false, "unexpected byte"),
+                ParseError.InvalidNumber(at) => @assert(false, "invalid number"),
+                ParseError.InvalidEscape(at) => @assert(false, "invalid escape"),
+                ParseError.InvalidUnicode(at) => @assert(false, "invalid unicode"),
+                ParseError.TrailingCharacters(at) => @assert(false, "trailing"),
+            }
+        },
+    }
+}
+
+test "values built by hand serialize" {
+    let Items = std.arraybuf.ArrayBuf(Json);
+    let mut items = Items.new();
+    items.push(Json.Null);
+    items.push(Json.Bool(true));
+    let n: StrBuf = "42";
+    items.push(Json.Number(n));
+    let s: StrBuf = "x\"y";
+    items.push(Json.String(s));
+    @assert_eq(json.to_string(Json.Array(items)), "[null,true,42,\"x\\\"y\"]");
+}

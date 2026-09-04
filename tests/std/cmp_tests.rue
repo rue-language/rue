@@ -1,0 +1,33 @@
+const std = @import("std");
+const cmp = std.cmp;
+const Ordering = std.cmp.Ordering;
+
+test "cmp orders two integers three ways" {
+    @assert_eq(cmp.cmp(i64, 3, 7), Ordering.Less);
+    @assert_eq(cmp.cmp(i64, 7, 3), Ordering.Greater);
+    @assert_eq(cmp.cmp(i64, 5, 5), Ordering.Equal);
+}
+
+test "cmp works on unsigned and narrow types" {
+    @assert_eq(cmp.cmp(u8, 0, 255), Ordering.Less);
+    @assert_eq(cmp.cmp(u64, 18446744073709551615, 0), Ordering.Greater);
+}
+
+test "min and max return the first argument on a tie" {
+    @assert_eq(cmp.min(i64, 3, 7), 3);
+    @assert_eq(cmp.max(i64, 3, 7), 7);
+    @assert_eq(cmp.min(i64, -4, -4), -4);
+    @assert_eq(cmp.max(i32, -1, -9), -1);
+}
+
+test "clamp pins to either bound and passes an in-range value" {
+    @assert_eq(cmp.clamp(i64, 12, 0, 9), 9);
+    @assert_eq(cmp.clamp(i64, -3, 0, 9), 0);
+    @assert_eq(cmp.clamp(i64, 4, 0, 9), 4);
+    @assert_eq(cmp.clamp(i64, 0, 0, 0), 0);
+}
+
+test "eq is structural equality" {
+    @assert(cmp.eq(i64, 42, 42));
+    @assert(!cmp.eq(u8, 1, 2));
+}

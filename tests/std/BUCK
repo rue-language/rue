@@ -1,0 +1,13 @@
+# The standard library's own `rue test` suite (ADR-0083). The root lives
+# outside `std/` because a test root may not sit inside the configured
+# standard-library tree, so these tests exercise std's PUBLIC surface only —
+# the contract a user program sees. `srcs` doubles as the candidate inventory:
+# a `*_tests.rue` added here without an `@import` from main.rue fails this
+# target as unimported instead of silently not running.
+load("//:rue_rules.bzl", "rue_test")
+
+rue_test(
+    name = "std-tests",
+    root = "tests/std/main.rue",
+    srcs = glob(["**/*.rue"]),
+)

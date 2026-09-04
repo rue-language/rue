@@ -1,0 +1,102 @@
+const std = @import("std");
+const hash = std.hash;
+const StrBuf = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+
+test "fnv1a matches the published 64-bit vectors" {
+    @assert_eq(hash.fnv1a_str(borrow ""), 0xcbf29ce484222325);
+    @assert_eq(hash.fnv1a_str(borrow "a"), 0xaf63dc4c8601ec8c);
+    @assert_eq(hash.fnv1a_str(borrow "foobar"), 0x85944171f73967e8);
+}
+
+test "djb2 (64-bit state) known answers" {
+    @assert_eq(hash.djb2_str(borrow ""), 0x1505);
+    @assert_eq(hash.djb2_str(borrow "a"), 0x2b606);
+    @assert_eq(hash.djb2_str(borrow "foobar"), 0x652fde460be);
+}
+
+test "the three byte-shaped one-shot entry points agree" {
+    let s: StrBuf = "foobar";
+    let b = Bytes.from_str(borrow "foobar");
+    @assert_eq(hash.fnv1a_strbuf(borrow s), hash.fnv1a_str(borrow "foobar"));
+    @assert_eq(hash.fnv1a_bytes(borrow b), hash.fnv1a_str(borrow "foobar"));
+    @assert_eq(hash.djb2_strbuf(borrow s), hash.djb2_str(borrow "foobar"));
+    @assert_eq(hash.djb2_bytes(borrow b), hash.djb2_str(borrow "foobar"));
+}
+
+test "Hasher depends only on the concatenated bytes, not the chunking" {
+    let mut h = hash.Hasher.fnv1a();
+    h.write_str(borrow "foo");
+    h.write_str(borrow "bar");
+    @assert_eq(h.finish(), hash.fnv1a_str(borrow "foobar"));
+    let mut d = hash.Hasher.djb2();
+    d.write_byte(102);
+    let oobar: StrBuf = "oobar";
+    d.write_strbuf(borrow oobar);
+    @assert_eq(d.finish(), hash.djb2_str(borrow "foobar"));
+}
+
+test "finish does not consume; reset returns to the seed" {
+    let mut h = hash.Hasher.fnv1a();
+    @assert_eq(h.finish(), 0xcbf29ce484222325);
+    h.write_str(borrow "a");
+    @assert_eq(h.finish(), 0xaf63dc4c8601ec8c);
+    h.write_str(borrow "");
+    @assert_eq(h.finish(), 0xaf63dc4c8601ec8c);
+    h.reset();
+    @assert_eq(h.finish(), 0xcbf29ce484222325);
+    h.write_str(borrow "foobar");
+    @assert_eq(h.finish(), 0x85944171f73967e8);
+}
+
+test "Hasher.new with an explicit Algorithm equals the named constructors" {
+    let mut a = hash.Hasher.new(hash.Algorithm.Djb2);
+    let mut b = hash.Hasher.djb2();
+    a.write_bytes(borrow Bytes.from_str(borrow "xyz"));
+    b.write_str(borrow "xyz");
+    @assert_eq(a.finish(), b.finish());
+    @assert_ne(a.finish(), hash.fnv1a_str(borrow "xyz"));
+}
+
+test "Lcg is deterministic per seed and follows the Numerical Recipes step" {
+    let mut a = std.rand.Lcg.new(0);
+    @assert_eq(a.next_u64(), 1013904223);
+    @assert_eq(a.next_u64(), (1013904223 * 1664525 + 1013904223) % 4294967296);
+    let mut b = std.rand.Lcg.new(12345);
+    let mut c = std.rand.Lcg.new(12345);
+    let mut i: u64 = 0;
+    while i < 20 {
+        @assert_eq(b.next_u64(), c.next_u64());
+        i += 1;
+    }
+}
+
+test "Lcg reduces its seed modulo 2^32" {
+    let mut a = std.rand.Lcg.new(5);
+    let mut b = std.rand.Lcg.new(4294967296 + 5);
+    @assert_eq(a.next_u64(), b.next_u64());
+}
+
+test "next_u64 stays below 2^32 and next_below respects its bound" {
+    let mut r = std.rand.Lcg.new(99);
+    let mut i: u64 = 0;
+    while i < 1000 {
+        @assert(r.next_u64() < 4294967296);
+        @assert(r.next_below(6) < 6);
+        @assert_eq(r.next_below(1), 0);
+        i += 1;
+    }
+    @assert_eq(r.next_below(0), 0);
+}
+
+test "next_bool produces both values over a short run" {
+    let mut r = std.rand.Lcg.new(3);
+    let mut trues: u64 = 0;
+    let mut i: u64 = 0;
+    while i < 64 {
+        if r.next_bool() { trues += 1; }
+        i += 1;
+    }
+    @assert(trues > 0);
+    @assert(trues < 64);
+}
