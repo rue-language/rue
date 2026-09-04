@@ -68,13 +68,26 @@ mod integration_tests {
             rue_error::ErrorCode::STD_LIB_NOT_FOUND,
             rue_error::ErrorCode::PRIVATE_MEMBER_ACCESS,
             rue_error::ErrorCode::UNKNOWN_MODULE_MEMBER,
+            rue_error::ErrorCode::IMPORT_ESCAPES_ROOT,
+            rue_error::ErrorCode::IMPORT_SPECIFIER_NOT_RELATIVE,
+            rue_error::ErrorCode::IMPORT_SPELLINGS_SAME_FILE,
         ] {
             let explanation = rue_error::error_code_explanation(code)
                 .unwrap_or_else(|| panic!("{code} explanation"));
             for example in explanation.examples {
                 let snapshot = explanation_example_snapshot(example.source);
                 let mut session = CompilerSession::new();
-                let published = crate::test_support::publish_test_snapshot(&mut session, &snapshot);
+                let published = if code == rue_error::ErrorCode::IMPORT_SPELLINGS_SAME_FILE
+                    && example.outcome == rue_error::ErrorCodeExampleOutcome::EmitsThisCode
+                {
+                    crate::test_support::publish_hard_link_explanation_snapshot(
+                        &mut session,
+                        &snapshot,
+                        ["a.rue", "b.rue"],
+                    )
+                } else {
+                    crate::test_support::publish_test_snapshot(&mut session, &snapshot)
+                };
                 let result = published
                     .and_then(|_| session.rooted_cfg(&CompileOptions::default()).map(|_| ()));
                 match example.outcome {

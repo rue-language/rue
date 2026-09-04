@@ -221,6 +221,28 @@ pub(crate) fn publish_test_snapshot(
     Ok(TestDiscoveryHost::new(snapshot)?.drive(session)?.snapshot)
 }
 
+/// Drive an explanation fixture whose two logical module paths are hard-link
+/// aliases for one physical file. This keeps E0715's executable example on the
+/// same compiler-owned discovery path as production while letting the
+/// presentation-neutral `// --- path` source format describe the logical tree.
+#[cfg(test)]
+pub(crate) fn publish_hard_link_explanation_snapshot(
+    session: &mut CompilerSession,
+    snapshot: &SourceSnapshot,
+    aliases: [&str; 2],
+) -> MultiErrorResult<SourceSnapshot> {
+    let mut host = TestDiscoveryHost::new(snapshot)?;
+    let shared_identity = PhysicalFileIdentity::new(7, 15);
+    for alias in aliases {
+        let requested = format!("{FIXTURE_PROJECT_ROOT}/{alias}");
+        host.files
+            .get_mut(&requested)
+            .unwrap_or_else(|| panic!("hard-link explanation fixture must contain {alias}"))
+            .identity = shared_identity;
+    }
+    Ok(host.drive(session)?.snapshot)
+}
+
 /// Whether `snapshot` declares any import directive, decided by a standalone
 /// parse so the answer costs the session nothing when discovery follows.
 pub(crate) fn fixture_has_imports(snapshot: &SourceSnapshot) -> MultiErrorResult<bool> {

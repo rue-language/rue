@@ -23,6 +23,7 @@ fn compiler_owned_explanation_examples_have_the_declared_outcome() {
                     | 499
                     | 600..=602
                     | 700..=702
+                    | 709..=712
             )
     }) {
         let explanation = error_code_explanation(metadata.code)

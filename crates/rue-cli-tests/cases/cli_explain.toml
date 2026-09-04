@@ -635,6 +635,72 @@ args = ["explain", "E0708"]
 compile_fail = true
 error_contains = ["unknown or retired error code E0708"]
 
+# The post-E0708 tranche spans context-directed inference, the by-copy
+# ownership gate, byte-allocation alignment, and import identity/provenance.
+# Invalid source pins each command as a deterministic metadata-only query.
+[[case]]
+name = "uninferrable_cast_target_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0709"]
+compile_only = true
+compile_stdout_contains = ["E0709: Cannot infer cast target", "those floating-point intrinsics are unavailable without that preview gate", "Leave an integer cast target unconstrained:", "Annotate the cast result:", "docs/spec/src/04-expressions/13-intrinsics.md (spec rule 4.13:27)", "docs/designs/0065-floating-point.md"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "uninferrable_pointee_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0710"]
+compile_only = true
+compile_stdout_contains = ["E0710: Cannot infer pointee type", "Discard a pointer with no inferred pointee:", "Annotate the pointer result:", "docs/spec/src/09-unchecked-code/02-intrinsics.md (spec rule 9.2:6d)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "nontrivial_container_element_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0711"]
+compile_only = true
+compile_stdout_contains = ["E0711: Container element not trivially droppable", "Copy an element that has drop glue:", "Copy a trivially droppable element:", "docs/spec/src/03-types/09-destructors.md (spec rule 3.9:7)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "invalid_intrinsic_alignment_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0712"]
+compile_only = true
+compile_stdout_contains = ["E0712: Intrinsic align not power of two", "Allocate with a three-byte alignment:", "Use a power-of-two alignment:", "docs/spec/src/09-unchecked-code/02-intrinsics.md (spec rule 9.2:13a)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "import_escape_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0713"]
+compile_only = true
+compile_stdout_contains = ["E0713: Import escapes root", "Import a file above the project root:", "Keep the imported file inside the project:", "// --- sub/helper.rue", "docs/spec/src/10-modules/02-import-resolution.md (spec rule 10.2:7)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "nonrelative_import_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0714"]
+compile_only = true
+compile_stdout_contains = ["E0714: Import specifier not relative", "Use an absolute import path:", "Use a relative import path:", "docs/spec/src/04-expressions/13-intrinsics.md (spec rule 4.13:133)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "physical_import_alias_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0715"]
+compile_only = true
+compile_stdout_contains = ["E0715: Import spellings same file", "Import hard-linked paths under different names:", "// --- b.rue", "Repeat one logical import spelling:", "docs/spec/src/10-modules/02-import-resolution.md (spec rule 10.2:4)", "docs/designs/0078-import-resolution-policy.md"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
 [[case]]
 name = "malformed_code_is_rejected"
 files = [{ path = "main.rue", source = "fn main() {}\n" }]
