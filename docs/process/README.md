@@ -33,6 +33,7 @@ Each step has a corresponding document in this directory.
 | - | [ci.md](ci.md) | Maintain required CI and its pinned tools |
 | - | [diagnostics.md](diagnostics.md) | Consume `--error-format json` structured diagnostics |
 | - | [mcp.md](mcp.md) | Use the local Rue MCP server from coding agents |
+| - | [codex.md](codex.md) | Guidance that applies only to Codex sessions |
 | - | [profiling.md](profiling.md) | Build symbolized executables for native profiling |
 | - | [compiler-scaling.md](compiler-scaling.md) | Measure maintained-program compiler scaling |
 | - | [compiler-facade.md](compiler-facade.md) | Review compiler API and tooling-view changes |
