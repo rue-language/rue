@@ -35,7 +35,10 @@ pub(crate) struct Context {
 
 /// Render one event for a person, or `None` when a person is owed nothing by
 /// it.
-pub(crate) fn render(event: &Event, context: Context) -> Option<String> {
+///
+/// Every line it produces is run data. Presentation policy that is not — the
+/// missing-inventory notice — is [`notice`]'s, and goes to stderr.
+pub(crate) fn render(event: &Event) -> Option<String> {
     match event {
         Event::RunStarted { .. } | Event::TestStarted { .. } => None,
         Event::Test { id, .. } => Some(id.clone()),
@@ -53,17 +56,32 @@ pub(crate) fn render(event: &Event, context: Context) -> Option<String> {
             // "Streams"). Rendering them here too would print a second copy
             // on stdout whenever a terminal joins the streams.
             unimported_test_files: _,
-            test_candidates,
-        } => {
-            let mut out = summary(*passed, *failed, *timeout, *crash, *wall_ms);
-            if *test_candidates == CandidateSource::None && context.multi_module_closure {
-                out.push('\n');
-                out.push_str(
-                    "note: no --test-candidates inventory; unimported test files are not detected",
-                );
-            }
-            Some(out)
+            // The missing-inventory notice is the runner's own too, and goes
+            // to stderr with them. See `notice`.
+            test_candidates: _,
+        } => Some(summary(*passed, *failed, *timeout, *crash, *wall_ms)),
+    }
+}
+
+/// The runner's own notice for this event, or `None` when a run is owed none.
+///
+/// A notice is not run data, so it goes where the runner's warnings go: stderr,
+/// once, and never repeated on stdout, where a terminal joining the streams
+/// would show two copies of one line (test-events.md, "Streams"). Only the
+/// human format is owed one at all — `--format json` publishes the same fact as
+/// `run_finished.test_candidates`.
+pub(crate) fn notice(event: &Event, context: Context) -> Option<&'static str> {
+    match event {
+        // RUE-1959: a closure of one user module has no second module that
+        // could have failed to import a test file, so the note would answer a
+        // question this run cannot raise. `test_candidates` is unaffected.
+        Event::RunFinished {
+            test_candidates: CandidateSource::None,
+            ..
+        } if context.multi_module_closure => {
+            Some("note: no --test-candidates inventory; unimported test files are not detected")
         }
+        _ => None,
     }
 }
 
@@ -322,11 +340,10 @@ mod tests {
     use crate::test_mode::events::{Comparison, FailureRecord, Location, UnimportedFile};
     use crate::test_mode::verdict::FailureKind;
 
-    /// Render as an ordinary multi-module program, which is what every case
-    /// that is not about the closure size wants: the closure-size policy only
-    /// governs the missing-inventory note.
-    fn render_multi(event: &Event) -> Option<String> {
-        super::render(
+    /// The notice an ordinary multi-module program is owed: the closure-size
+    /// policy governs the missing-inventory note and nothing else.
+    fn notice_multi(event: &Event) -> Option<&'static str> {
+        super::notice(
             event,
             Context {
                 multi_module_closure: true,
@@ -368,7 +385,7 @@ mod tests {
     /// No wall of green: a pass prints nothing.
     #[test]
     fn a_pass_prints_nothing() {
-        assert!(render_multi(&finished(Verdict::Pass, None)).is_none());
+        assert!(super::render(&finished(Verdict::Pass, None)).is_none());
     }
 
     /// The head events are machine bookkeeping; a person is shown failures and
@@ -376,13 +393,13 @@ mod tests {
     #[test]
     fn run_and_test_start_print_nothing() {
         assert!(
-            render_multi(&Event::TestStarted {
+            super::render(&Event::TestStarted {
                 id: "app/t.rue::ok".to_owned()
             })
             .is_none()
         );
         assert!(
-            render_multi(&Event::RunStarted {
+            super::render(&Event::RunStarted {
                 root: "m.rue".to_owned(),
                 target: "x86-64-linux".to_owned(),
                 opt_level: "0".to_owned(),
@@ -398,7 +415,7 @@ mod tests {
 
     #[test]
     fn a_failure_prints_structure_output_scratch_and_repro() {
-        let rendered = render_multi(&finished(
+        let rendered = super::render(&finished(
             Verdict::Fail(FailureKind::Assert),
             Some(FailureRecord {
                 kind: "assert".to_owned(),
@@ -439,7 +456,7 @@ mod tests {
     /// disagree about where the difference is.
     #[test]
     fn a_single_line_comparison_prints_both_values_and_a_caret() {
-        let rendered = render_multi(&finished(
+        let rendered = super::render(&finished(
             Verdict::Fail(FailureKind::AssertEq),
             Some(FailureRecord {
                 kind: "assert_eq".to_owned(),
@@ -460,7 +477,7 @@ mod tests {
     /// difference and no caret is drawn — the two values *are* the report.
     #[test]
     fn identical_values_print_no_caret() {
-        let rendered = render_multi(&finished(
+        let rendered = super::render(&finished(
             Verdict::Fail(FailureKind::AssertNe),
             Some(FailureRecord {
                 kind: "assert_ne".to_owned(),
@@ -480,7 +497,7 @@ mod tests {
     /// of text locates nothing.
     #[test]
     fn a_multi_line_comparison_prints_a_hunk_listing() {
-        let rendered = render_multi(&finished(
+        let rendered = super::render(&finished(
             Verdict::Fail(FailureKind::AssertEq),
             Some(FailureRecord {
                 kind: "assert_eq".to_owned(),
@@ -508,7 +525,7 @@ mod tests {
     /// is the only account of a failure report the runner could not read.
     #[test]
     fn a_runner_note_is_printed_with_its_failure() {
-        let rendered = render_multi(&finished(
+        let rendered = super::render(&finished(
             Verdict::Fail(FailureKind::Exit),
             Some(FailureRecord {
                 kind: "exit".to_owned(),
@@ -526,9 +543,9 @@ mod tests {
 
     #[test]
     fn timeouts_and_crashes_carry_their_own_banners() {
-        let timeout = render_multi(&finished(Verdict::Timeout, None)).expect("a timeout renders");
+        let timeout = super::render(&finished(Verdict::Timeout, None)).expect("a timeout renders");
         assert!(timeout.starts_with("TIMEOUT "), "{timeout}");
-        let crash = render_multi(&finished(Verdict::Crash(11), None)).expect("a crash renders");
+        let crash = super::render(&finished(Verdict::Crash(11), None)).expect("a crash renders");
         assert!(crash.starts_with("CRASH "), "{crash}");
     }
 
@@ -537,17 +554,17 @@ mod tests {
     #[test]
     fn the_summary_names_only_the_classes_that_occurred() {
         assert!(
-            render_multi(&run_finished(2, 0, 0, 0))
+            super::render(&run_finished(2, 0, 0, 0))
                 .unwrap()
                 .starts_with("2 passed (0.9s)")
         );
         assert!(
-            render_multi(&run_finished(2, 1, 0, 0))
+            super::render(&run_finished(2, 1, 0, 0))
                 .unwrap()
                 .starts_with("2 passed, 1 failed (0.9s)")
         );
         assert!(
-            render_multi(&run_finished(2, 1, 1, 1))
+            super::render(&run_finished(2, 1, 1, 1))
                 .unwrap()
                 .starts_with("2 passed, 1 failed, 1 timed out, 1 crashed (0.9s)")
         );
@@ -567,16 +584,14 @@ mod tests {
 
     /// Where an orphan is possible, the runner cannot detect one without an
     /// inventory and says so, rather than leaving silence to be read as "none
-    /// found".
+    /// found". It says so as a notice, so stdout carries the summary alone.
     #[test]
     fn a_multi_module_run_without_a_candidate_inventory_says_so() {
-        let rendered = render_multi(&no_inventory()).expect("a summary renders");
-        assert!(rendered.contains("0 passed (0.1s)"), "{rendered}");
-        assert!(
-            rendered.contains(
-                "note: no --test-candidates inventory; unimported test files are not detected"
-            ),
-            "{rendered}"
+        let rendered = super::render(&no_inventory()).expect("a summary renders");
+        assert_eq!(rendered, "0 passed (0.1s)");
+        assert_eq!(
+            notice_multi(&no_inventory()),
+            Some("note: no --test-candidates inventory; unimported test files are not detected")
         );
     }
 
@@ -586,22 +601,34 @@ mod tests {
     /// line. The event's `test_candidates` is unchanged.
     #[test]
     fn a_single_module_run_is_owed_no_note_about_candidates() {
-        let rendered = super::render(
-            &no_inventory(),
-            Context {
-                multi_module_closure: false,
-            },
-        )
-        .expect("a summary renders");
+        let context = Context {
+            multi_module_closure: false,
+        };
+        let rendered = super::render(&no_inventory()).expect("a summary renders");
         assert_eq!(rendered, "0 passed (0.1s)");
+        assert_eq!(super::notice(&no_inventory(), context), None);
+    }
+
+    /// Only a run's terminal event can be owed a notice, so nothing repeats it
+    /// per test.
+    #[test]
+    fn no_event_but_the_run_summary_carries_a_notice() {
+        assert_eq!(notice_multi(&finished(Verdict::Pass, None)), None);
+        assert_eq!(
+            notice_multi(&Event::TestStarted {
+                id: "app/t.rue::parses a port".to_owned(),
+            }),
+            None
+        );
     }
 
     /// The runner already warns about these on stderr, in both formats. The
     /// human renderer writes to stdout, so repeating them here would show a
     /// person two copies of one warning on a terminal that joins the streams.
+    /// A run that supplied an inventory is owed no notice either: it did look.
     #[test]
     fn orphaned_test_files_are_left_to_the_stderr_warning() {
-        let rendered = render_multi(&Event::RunFinished {
+        let event = Event::RunFinished {
             passed: 1,
             failed: 0,
             timeout: 0,
@@ -620,22 +647,19 @@ mod tests {
                 },
             ]),
             test_candidates: CandidateSource::Declared,
-        })
-        .expect("a summary renders");
+        };
+        let rendered = super::render(&event).expect("a summary renders");
         assert_eq!(rendered, "1 passed (0.0s)");
         assert!(!rendered.contains("warning:"), "{rendered}");
         assert!(!rendered.contains("app/orphan.rue"), "{rendered}");
         assert!(!rendered.contains("could not be parsed"), "{rendered}");
-        assert!(
-            !rendered.contains("note: no --test-candidates"),
-            "{rendered}"
-        );
+        assert_eq!(notice_multi(&event), None);
     }
 
     #[test]
     fn a_listing_entry_renders_as_its_bare_identity() {
         assert_eq!(
-            render_multi(&Event::Test {
+            super::render(&Event::Test {
                 id: "app/t.rue::ok".to_owned(),
                 module: "app/t.rue".to_owned(),
                 name: "ok".to_owned(),

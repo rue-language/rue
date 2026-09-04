@@ -155,7 +155,7 @@ fn fresh_seed() -> u64 {
 /// and routes each event to the surface the invocation asked for.
 struct Reporter {
     format: OutputFormat,
-    /// Presentation policy the human renderer needs and the event schema does
+    /// Presentation policy the runner's notices need and the event schema does
     /// not carry. See `render::Context`.
     context: render::Context,
     stdout: Mutex<()>,
@@ -181,12 +181,21 @@ impl Reporter {
                 let _ = writeln!(out, "{}", event.to_ndjson());
             }
             OutputFormat::Human => {
-                if let Some(text) = render::render(event, self.context) {
+                if let Some(text) = render::render(event) {
                     let _ = writeln!(out, "{text}");
                 }
             }
         }
         let _ = out.flush();
+        // A notice is the runner's own voice, not run data, so it follows the
+        // warnings onto stderr rather than joining the events on stdout. Said
+        // under the same lock, after the line it annotates, so a terminal
+        // joining the streams reads them in order.
+        if self.format == OutputFormat::Human
+            && let Some(notice) = render::notice(event, self.context)
+        {
+            eprintln!("{notice}");
+        }
     }
 }
 
