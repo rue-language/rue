@@ -613,6 +613,25 @@ impl ValidatedRuntimeIndex<'_, '_> {
     }
 }
 
+/// Return the runtime entry symbol for `target`, in the target's on-disk
+/// spelling.
+///
+/// The two formats enter the runtime through different functions: the Linux
+/// kernel jumps to `_start`, while on macOS `dyld` calls the `LC_MAIN` entry,
+/// which is the runtime's `_main`. Mach-O emission prefixes every symbol with a
+/// single underscore, so that one is spelled `__main` on disk, which is what
+/// both `ld -e` and the internal linker are handed. The internal linker
+/// normalizes it back to the parsed `_main` (`Linker::require_symbol`,
+/// RUE-1996); keeping the decoration in this one function is what stops the two
+/// link paths from spelling the entry differently.
+pub(crate) fn entry_point_symbol(target: Target) -> &'static str {
+    if target.is_macho() {
+        "__main"
+    } else {
+        "_start"
+    }
+}
+
 /// Return the embedded rue-runtime archive matching `target`.
 pub(crate) fn runtime_for_target(target: Target) -> &'static [u8] {
     match target {
@@ -1324,11 +1343,7 @@ fn finish_internal_link_with_cancellation(
 ) -> CancellableLinkResult<CompileOutput> {
     check_cancellation(cancellation)?;
     let runtime_bytes = runtime_for_target(options.target);
-    let entry_point = if options.target.is_macho() {
-        "__main"
-    } else {
-        "_start"
-    };
+    let entry_point = entry_point_symbol(options.target);
     linker.require_symbol(entry_point);
     {
         let _span = info_span!("link_archive_resolve").entered();
@@ -1573,7 +1588,7 @@ pub(crate) fn link_system_with_warnings_and_cancellation(
         // macOS-specific flags
         cmd.arg("-nostdlib");
         cmd.arg("-arch").arg("arm64");
-        cmd.arg("-e").arg("__main");
+        cmd.arg("-e").arg(entry_point_symbol(options.target));
     } else {
         // Linux/ELF-specific flags
         cmd.arg("-static");
@@ -2195,6 +2210,59 @@ mod runtime_archive_validation_tests {
             after,
             "a caller-supplied archive must still be fully validated"
         );
+    }
+
+    /// RUE-1996: the runtime member holding the entry point must be selected
+    /// because the entry point is *required*, not because something else in the
+    /// image happens to reference one of the reserved exports (`memcpy`,
+    /// `memset`, ...) that member also defines.
+    ///
+    /// Linking nothing but the runtime is the strongest form of that check: with
+    /// no user objects there is no reference at all, so `require_symbol` is the
+    /// only thing that can pull a member, and the control below confirms the
+    /// archive contributes nothing without it. On Mach-O this pull used to be a
+    /// no-op — the entry went in as the on-disk `__main` and was matched against
+    /// the parsed `_main` — which is why a program missing its dispatcher failed
+    /// with two different errors depending on whether anything else reached the
+    /// entry member (RUE-1995).
+    #[test]
+    fn a_required_entry_point_pulls_the_runtime_entry_member() {
+        let cancellation = rue_query::CancellationToken::default();
+        let embedded_indexes = EmbeddedRuntimeIndexCaches::new();
+
+        for &target in Target::all() {
+            let entry = entry_point_symbol(target);
+
+            let mut linker = Linker::new(target);
+            linker.require_symbol(entry);
+            add_runtime_archive_to_linker_with_cancellation(
+                &mut linker,
+                runtime_for_target(target),
+                target,
+                &cancellation,
+                &embedded_indexes,
+            )
+            .expect("the embedded runtime is admitted");
+            assert!(
+                linker.defines_symbol(entry),
+                "{target}: requiring {entry} must select the runtime member defining it"
+            );
+
+            let mut unrequired = Linker::new(target);
+            add_runtime_archive_to_linker_with_cancellation(
+                &mut unrequired,
+                runtime_for_target(target),
+                target,
+                &cancellation,
+                &embedded_indexes,
+            )
+            .expect("the embedded runtime is admitted");
+            assert!(
+                !unrequired.defines_symbol(entry),
+                "{target}: with nothing required and nothing referenced, no member is pulled — \
+                 so the assertion above measures the required pull"
+            );
+        }
     }
 
     #[test]
