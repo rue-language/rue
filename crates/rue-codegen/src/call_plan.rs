@@ -648,16 +648,28 @@ impl CallPlan {
                     } else {
                         vec![materializer.materialize_scalar(*value)]
                     };
-                    let mut classes = slot_types
-                        .iter()
-                        .map(|ty| match crate::value_plan::float_width(*ty) {
-                            Some(width) => AbiSlotClass::Fp(width),
-                            None => AbiSlotClass::Gp,
-                        })
-                        .collect::<Vec<_>>();
+                    // A zero-sized normal argument has no ABI slot. Its
+                    // semantic type can still appear in `slot_types`, but it
+                    // must not consume a register-bank index or a stack slot.
+                    let mut classes = if slots.is_empty() {
+                        Vec::new()
+                    } else {
+                        slot_types
+                            .iter()
+                            .map(|ty| match crate::value_plan::float_width(*ty) {
+                                Some(width) => AbiSlotClass::Fp(width),
+                                None => AbiSlotClass::Gp,
+                            })
+                            .collect::<Vec<_>>()
+                    };
                     if *is_multislot_aggregate && callee_abi == CalleeAbi::Rue {
                         classes.reverse();
                     }
+                    assert_eq!(
+                        slots.len(),
+                        classes.len(),
+                        "value argument ABI slots and classes must have equal cardinality"
+                    );
                     (UserArgMode::Value, slots, classes)
                 }
             };
@@ -667,8 +679,18 @@ impl CallPlan {
             user_args.push(UserArgPlan { mode, slots });
         }
 
+        assert_eq!(
+            abi_slots.len(),
+            abi_classes.len(),
+            "call ABI slots and classes must have equal cardinality"
+        );
         let abi_locations =
             assign_abi_slots(abi_classes.iter().copied(), arg_register_banks.into());
+        assert_eq!(
+            abi_slots.len(),
+            abi_locations.len(),
+            "call ABI slots and locations must have equal cardinality"
+        );
         let stack_slot_count = abi_locations
             .iter()
             .filter(|location| matches!(location, AbiSlotLocation::Stack(_)))
@@ -929,6 +951,59 @@ mod tests {
         assert!(plan.user_args[0].slots.is_empty());
         assert_eq!(plan.user_args[1].slots, slots);
         assert_eq!(plan.abi_slots.len(), 1);
+    }
+
+    #[test]
+    fn zero_sized_normal_arguments_do_not_consume_abi_locations() {
+        let mut args = Vec::new();
+        for value in 1..=9 {
+            if value == 4 {
+                // Semantic lowering retains the unit type even though the
+                // value has no physical ABI slot.
+                args.push(CallArgInput::Value {
+                    value: rue_cfg::CfgValue::from_raw(100),
+                    slot_count: 0,
+                    is_multislot_aggregate: false,
+                    slot_types: vec![Type::UNIT],
+                });
+            }
+            args.push(CallArgInput::Value {
+                value: rue_cfg::CfgValue::from_raw(value),
+                slot_count: 1,
+                is_multislot_aggregate: false,
+                slot_types: vec![Type::I32],
+            });
+        }
+
+        let mut materializer = TestMaterializer;
+        let plan = CallPlan::from_inputs(
+            CallTarget::rue("callee"),
+            ReturnPlan::ZeroSized,
+            &args,
+            AbiRegisterBanks { gp: 6, fp: 8 },
+            &mut materializer,
+        );
+
+        assert_eq!(plan.user_args[3].slots, Vec::<VReg>::new());
+        assert_eq!(plan.abi_slots.len(), 9);
+        assert_eq!(plan.abi_classes.len(), 9);
+        assert_eq!(plan.abi_locations.len(), 9);
+        assert_eq!(
+            plan.abi_locations,
+            vec![
+                AbiSlotLocation::GpReg(0),
+                AbiSlotLocation::GpReg(1),
+                AbiSlotLocation::GpReg(2),
+                AbiSlotLocation::GpReg(3),
+                AbiSlotLocation::GpReg(4),
+                AbiSlotLocation::GpReg(5),
+                AbiSlotLocation::Stack(0),
+                AbiSlotLocation::Stack(1),
+                AbiSlotLocation::Stack(2),
+            ]
+        );
+        assert_eq!(plan.stack_slot_count, 3);
+        assert_eq!(plan.stack_bytes, 32);
     }
 
     #[test]
