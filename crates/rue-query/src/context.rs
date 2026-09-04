@@ -710,6 +710,12 @@ impl QueryContext {
         }
         let mut workers = Vec::with_capacity(worker_claim.count);
         let mut coordinator_measurement = BatchCoordinatorMeasurement::new(&self.task.core.metrics);
+        // A host that refuses a worker thread stops dispatch but not the batch.
+        // The inline worker below drains the whole queue regardless of how many
+        // physical workers exist, so every already-dispatched child still joins
+        // and absorbs through the ordinary path; the refusal is reported after
+        // that scope closes.
+        let mut worker_spawn_failure = None;
         for _ in 0..worker_claim.count {
             let queue = queue.clone();
             let items = items.clone();
@@ -719,7 +725,7 @@ impl QueryContext {
             let tracing_dispatch = tracing_dispatch.clone();
             let tracing_parent = tracing_parent.clone();
             let dispatch_started = Instant::now();
-            let (worker, born) = self.task.core.batch_executor.submit(move || {
+            let dispatched = self.task.core.batch_executor.submit(move || {
                 run_registered_batch_worker(
                     queue,
                     items,
@@ -730,6 +736,13 @@ impl QueryContext {
                     tracing_parent,
                 )
             });
+            let (worker, born) = match dispatched {
+                Ok(dispatched) => dispatched,
+                Err(failure) => {
+                    worker_spawn_failure = Some(failure);
+                    break;
+                }
+            };
             coordinator_measurement
                 .record_submission(born, duration_ns(dispatch_started.elapsed()));
             workers.push(worker);
@@ -804,7 +817,10 @@ impl QueryContext {
             );
             terminals.push(result.into_result()?);
         }
-        Ok(terminals)
+        match worker_spawn_failure {
+            Some(failure) => Err(QueryAbort::WorkerSpawn(failure)),
+            None => Ok(terminals),
+        }
     }
 
     /// Duplicates every terminal lease currently observed by this rooted task.

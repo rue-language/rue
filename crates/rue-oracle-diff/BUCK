@@ -27,6 +27,10 @@ rue_binary(
         # as the spec suite does, so the `spec` mode's templating can't drift.
         "//crates/rue-test-runner:rue-test-runner",
         "//crates/rue-error:rue-error",
+        # The harness classifies a refused query-runtime worker thread as a host
+        # resource condition rather than a corpus failure, and matches on the
+        # runtime's own contracted message prefix to do it (RUE-1994).
+        "//crates/rue-query:rue-query",
         "//third-party:serde",
         # Generated native runs use a unique RAII work directory so every
         # normal exit path removes sources and binaries (RUE-589).

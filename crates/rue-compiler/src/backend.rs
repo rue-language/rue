@@ -212,7 +212,10 @@ pub(crate) fn project_backend_structured_object(
         }
         Err(crate::session::PipelineRequestControl::Abort(abort)) => {
             Err(CompileError::without_span(ErrorKind::InternalCodegenError(
-                format!("uncancellable structured object projection aborted: {abort:?}"),
+                crate::session::abort_internal_message(
+                    "uncancellable structured object projection",
+                    &abort,
+                ),
             )))
         }
         Err(crate::session::PipelineRequestControl::Parked(_)) => {

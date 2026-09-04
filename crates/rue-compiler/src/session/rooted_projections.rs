@@ -2028,8 +2028,8 @@ impl CompilerSession {
                 )
                 .map_err(|abort| {
                     crate::CompileErrors::from(crate::CompileError::without_span(
-                        crate::ErrorKind::InternalError(format!(
-                            "codegen query aborted: {abort:?}"
+                        crate::ErrorKind::InternalError(crate::session::abort_internal_message(
+                            "codegen", &abort,
                         )),
                     ))
                 })?;
@@ -2042,7 +2042,9 @@ impl CompilerSession {
             }
             let terminal = attempt.into_result().map_err(|abort| {
                 crate::CompileErrors::from(crate::CompileError::without_span(
-                    crate::ErrorKind::InternalError(format!("codegen query aborted: {abort:?}")),
+                    crate::ErrorKind::InternalError(crate::session::abort_internal_message(
+                        "codegen", &abort,
+                    )),
                 ))
             })?;
             let rue_query::QueryOutcome::Success(unit) = terminal.outcome() else {

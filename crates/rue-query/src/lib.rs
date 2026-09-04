@@ -17,6 +17,7 @@ mod task;
 mod validation;
 
 pub use context::*;
+pub use executor::{WORKER_SPAWN_MESSAGE_PREFIX, WorkerSpawnFailure};
 pub use hash::*;
 pub use metrics::*;
 pub use node::*;

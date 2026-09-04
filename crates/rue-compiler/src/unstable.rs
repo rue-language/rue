@@ -850,9 +850,9 @@ pub fn cancellable_executable_in_compile_scope(
         }
         Err(crate::session::PipelineRequestControl::Abort(abort)) => {
             CancellableCompileOutcome::Errors(crate::CompileErrors::from(
-                crate::CompileError::without_span(crate::ErrorKind::InternalError(format!(
-                    "cancellable compile query aborted: {abort:?}"
-                ))),
+                crate::CompileError::without_span(crate::ErrorKind::InternalError(
+                    crate::session::abort_internal_message("cancellable compile", &abort),
+                )),
             ))
         }
         Err(crate::session::PipelineRequestControl::Parked(park)) => {

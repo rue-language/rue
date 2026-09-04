@@ -164,6 +164,50 @@ fn run_registered_batch(worker_count: usize) -> QueryRequestAttempt<Arc<[u64]>> 
 }
 
 #[test]
+fn a_refused_worker_thread_aborts_the_batch_without_panicking() {
+    let runtime = QueryRuntime::new(2);
+    publish_empty(&runtime, [revision(1)]);
+    let child = runtime
+        .family_with_evaluator::<Slot, u64, _>("refused-worker-child", 8, |_, _, key| {
+            Ok(QueryOutput::success(key.0))
+        })
+        .unwrap();
+    let child_for_root = child.clone();
+    let root = runtime
+        .family_with_evaluator::<Key, u64, _>("refused-worker-root", 8, move |context, _, _| {
+            let mut sum = 0;
+            for terminal in context.query_registered_batch(&child_for_root, [Slot(1), Slot(2)])? {
+                let QueryOutcome::Success(value) = terminal.outcome() else {
+                    unreachable!()
+                };
+                sum += *value;
+            }
+            Ok(QueryOutput::success(sum))
+        })
+        .unwrap();
+
+    runtime.force_next_batch_worker_spawn_failure(std::io::Error::from_raw_os_error(35));
+    let abort = runtime
+        .request_registered(&root, revision(1), Key("root"), CancellationToken::new())
+        .into_result()
+        .expect_err("a refused worker thread must reach the caller as a typed abort");
+    let QueryAbort::WorkerSpawn(failure) = abort else {
+        panic!("a refused worker thread must not be reported as another abort: {abort:?}")
+    };
+    assert_eq!(failure.raw_os_error(), Some(35));
+    assert_eq!(failure.live_workers(), 0);
+    assert!(failure.to_string().starts_with(WORKER_SPAWN_MESSAGE_PREFIX));
+
+    // The runtime is not poisoned by the refusal: with the host willing again,
+    // the same request completes on a freshly created worker.
+    let recovered = runtime
+        .request_registered(&root, revision(1), Key("root"), CancellationToken::new())
+        .into_result()
+        .expect("a runtime that reported a refusal must still be usable");
+    assert_eq!(recovered.outcome(), &QueryOutcome::Success(3));
+}
+
+#[test]
 fn reusable_worker_births_do_not_repeat_across_registered_batches() {
     let runtime = QueryRuntime::new(2);
     let startup = runtime.metrics();

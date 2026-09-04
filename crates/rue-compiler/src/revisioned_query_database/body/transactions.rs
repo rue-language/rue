@@ -34,9 +34,13 @@ pub(in crate::revisioned_query_database) fn classify_well_known_dependency_abort
         QueryAbort::Canceled | QueryAbort::MissingInput(_) => {
             WellKnownDependencyAbortClass::Incomplete
         }
-        QueryAbort::Cycle(_) | QueryAbort::ForeignRuntime | QueryAbort::UnpublishedRevision(_) => {
-            WellKnownDependencyAbortClass::Propagate
-        }
+        QueryAbort::Cycle(_)
+        | QueryAbort::ForeignRuntime
+        | QueryAbort::UnpublishedRevision(_)
+        // A refused worker thread is a host condition, not missing input. It
+        // propagates so the requesting boundary can publish it as an internal
+        // error rather than reporting the dependency as merely incomplete.
+        | QueryAbort::WorkerSpawn(_) => WellKnownDependencyAbortClass::Propagate,
     }
 }
 

@@ -242,6 +242,10 @@ enum CaseOutcome {
     Ineligible(IneligibleReason),
     /// An eligible case was rejected by the shared compiler front end.
     FrontendFailure(String),
+    /// The host, not the compiler, stopped the case: the query runtime could
+    /// not obtain a worker thread. Nothing was judged, so this is neither an
+    /// agreement nor evidence of a defect — but it is not a green run either.
+    HarnessResource(String),
     /// Interpretation hit a resource limit or compiler/oracle contract breach.
     OracleFailure(String),
     /// The oracle ran but disagreed with the expected behavior.
@@ -387,6 +391,10 @@ struct Report {
     disagreements: Vec<String>,
     /// corpus discovery/read/parse failures — the harness did not check all inputs
     harness_failures: Vec<String>,
+    /// host resource conditions — the machine, not the corpus or the compiler,
+    /// stopped these cases. Reported apart from harness failures so a loaded
+    /// host cannot read as a broken harness or a real disagreement.
+    harness_resource: Vec<String>,
 }
 
 impl Report {
@@ -401,6 +409,7 @@ impl Report {
                 *self.ineligible_reasons.entry(reason).or_default() += 1;
             }
             CaseOutcome::FrontendFailure(failure) => self.frontend_failures.push(failure),
+            CaseOutcome::HarnessResource(condition) => self.harness_resource.push(condition),
             CaseOutcome::OracleFailure(failure) => self.oracle_failures.push(failure),
             CaseOutcome::Disagreement(disagreement) => self.disagreements.push(disagreement),
         }
@@ -428,6 +437,7 @@ impl Report {
             + self.frontend_failures.len() as u32
             + self.oracle_failures.len() as u32
             + self.disagreements.len() as u32
+            + self.harness_resource.len() as u32
     }
 
     fn ineligible_breakdown_lines(&self) -> Vec<String> {
@@ -443,6 +453,61 @@ impl Report {
             .map(|(reason, count)| format!("    {reason}: {count}"))
             .collect()
     }
+}
+
+/// Classify one already-rendered compiler failure.
+///
+/// A refused query-runtime worker thread is a condition of the machine this
+/// harness is running on — too many live threads or too little address space
+/// for another 8 MiB stack — and it reaches here looking exactly like a
+/// front-end rejection. Separating the two is the whole point: a resource
+/// condition judged nothing, so calling it a front-end failure would report the
+/// host as a compiler defect (RUE-1994).
+fn classify_frontend_failure(message: String) -> CaseOutcome {
+    if message.contains(rue_query::WORKER_SPAWN_MESSAGE_PREFIX) {
+        CaseOutcome::HarnessResource(message)
+    } else {
+        CaseOutcome::FrontendFailure(message)
+    }
+}
+
+/// Environment variable bounding this harness's in-process query concurrency.
+const ORACLE_JOBS_VAR: &str = "RUE_ORACLE_JOBS";
+
+/// Read `RUE_ORACLE_JOBS`, which bounds the compiler's shared structured-query
+/// concurrency for every case this process compiles.
+///
+/// `None` keeps the compiler's own default (host parallelism), which is the
+/// behavior every existing invocation gets. A loaded host — several worktrees
+/// building, corpora running side by side — sets a smaller number and trades
+/// wall time for worker threads it can actually obtain.
+fn parse_oracle_jobs(raw: Option<&str>) -> Result<Option<usize>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match trimmed.parse::<usize>() {
+        Ok(0) => Err(format!(
+            "{ORACLE_JOBS_VAR} must be a positive worker count, got {trimmed:?}: \
+             zero would leave no thread to run a case on"
+        )),
+        Ok(jobs) => Ok(Some(jobs)),
+        Err(_) => Err(format!(
+            "{ORACLE_JOBS_VAR} must be a positive whole number of workers, got {trimmed:?}"
+        )),
+    }
+}
+
+/// Apply the `RUE_ORACLE_JOBS` bound to the shared compiler query concurrency.
+fn apply_oracle_jobs() -> Result<(), String> {
+    let raw = std::env::var(ORACLE_JOBS_VAR).ok();
+    if let Some(jobs) = parse_oracle_jobs(raw.as_deref())? {
+        rue_compiler::configure_thread_pool(jobs);
+    }
+    Ok(())
 }
 
 fn main() -> ExitCode {
@@ -461,6 +526,10 @@ fn main() -> ExitCode {
 }
 
 fn run() -> ExitCode {
+    if let Err(message) = apply_oracle_jobs() {
+        eprintln!("rue-oracle-diff: {message}");
+        return ExitCode::FAILURE;
+    }
     // Subcommand dispatch: `rue-oracle-diff fuzz [...]` runs the differential
     // *fuzzer* (generate valid programs, cross-check oracle vs compiled binary);
     // with no subcommand it runs the corpus differential (below).
@@ -645,7 +714,11 @@ fn model_gap_observation(case: &Case, outcome: &CaseOutcome) -> model_gaps::Obse
         CaseOutcome::Ineligible(_) => model_gaps::Observation::OtherIneligible,
         CaseOutcome::FrontendFailure(_)
         | CaseOutcome::OracleFailure(_)
-        | CaseOutcome::Disagreement(_) => model_gaps::Observation::HardFailure,
+        | CaseOutcome::Disagreement(_)
+        // A host that refused a worker thread already fails the run, and the
+        // case never reached the oracle. Diagnosing stale registry debt on top
+        // of that would be reading a loaded machine as coverage evidence.
+        | CaseOutcome::HarnessResource(_) => model_gaps::Observation::HardFailure,
     }
 }
 
@@ -670,6 +743,10 @@ fn finish_report(report: &Report, corpus: &str) -> ExitCode {
     for failure in &report.harness_failures {
         println!("\n  ✗ {failure}");
     }
+    println!("  HARNESS RESOURCE: {}", report.harness_resource.len());
+    for condition in &report.harness_resource {
+        println!("\n  ⚠ {condition}");
+    }
     println!("  FRONTEND FAILURES: {}", report.frontend_failures.len());
     for failure in &report.frontend_failures {
         println!("\n  ✗ {failure}");
@@ -681,6 +758,22 @@ fn finish_report(report: &Report, corpus: &str) -> ExitCode {
     println!("  DISAGREEMENTS:    {}", report.disagreements.len());
     for d in &report.disagreements {
         println!("\n  ✗ {d}");
+    }
+
+    // A host resource condition judged nothing, so it is reported before the
+    // coverage checks below: the run is not green, but the cause is the machine
+    // rather than the corpus, the compiler, or the oracle. Say so explicitly and
+    // name the lever, because the alternative — reading a loaded host as a
+    // corpus failure — is exactly what RUE-1994 fixed.
+    if !report.harness_resource.is_empty() {
+        println!(
+            "\n{} case(s) stopped on a host resource condition, not a disagreement — \
+             each ⚠ above carries the operating system's own refusal and the worker \
+             budget that was live. Lower in-process concurrency with {ORACLE_JOBS_VAR}=N \
+             (or run fewer corpora and worktrees at once) and rerun.",
+            report.harness_resource.len(),
+        );
+        return ExitCode::FAILURE;
     }
 
     // Ineligible and unmodeled cases do not judge compiler semantics. A corpus
@@ -831,7 +924,11 @@ fn spec_model_gap_observation(
         CaseOutcome::Ineligible(_) => model_gaps::Observation::OtherIneligible,
         CaseOutcome::FrontendFailure(_)
         | CaseOutcome::OracleFailure(_)
-        | CaseOutcome::Disagreement(_) => model_gaps::Observation::HardFailure,
+        | CaseOutcome::Disagreement(_)
+        // A host that refused a worker thread already fails the run, and the
+        // case never reached the oracle. Diagnosing stale registry debt on top
+        // of that would be reading a loaded machine as coverage evidence.
+        | CaseOutcome::HarnessResource(_) => model_gaps::Observation::HardFailure,
     }
 }
 
@@ -1051,7 +1148,7 @@ fn check_spec_case_with_known_gap(
         match run_source_with_real_std(&case.source, &preview_features) {
             Ok(result) => result,
             Err(error) => {
-                return CaseOutcome::FrontendFailure(format!(
+                return classify_frontend_failure(format!(
                     "{ident} :: {}\n      {error}",
                     case.name
                 ));
@@ -1335,7 +1432,7 @@ fn check_case_with_native(
         match run_source_with_real_std(source, &preview_features) {
             Ok(result) => result,
             Err(error) => {
-                return CaseOutcome::FrontendFailure(format!(
+                return classify_frontend_failure(format!(
                     "{} :: {}\n      {error}",
                     rel(path),
                     case.name
@@ -1495,7 +1592,7 @@ fn check_case_with_native(
 fn record_oracle_error(context: &str, error: RunSourceError) -> CaseOutcome {
     match error {
         RunSourceError::Compile(errors) => {
-            CaseOutcome::FrontendFailure(format!("{context}\n      {errors:#?}"))
+            classify_frontend_failure(format!("{context}\n      {errors:#?}"))
         }
         RunSourceError::Unsupported(unsupported) => {
             if let Some(kind) = unsupported.model_gap() {
@@ -2618,6 +2715,67 @@ files = [{ path = "probe.rue", source = "not Rue" }]
             check_case(Path::new("trap.toml"), &case),
             CaseOutcome::Disagreement(_)
         ));
+    }
+
+    #[test]
+    fn a_refused_query_worker_is_a_resource_condition_not_a_frontend_failure() {
+        let refused = rue_query::WorkerSpawnFailure::new(
+            &std::io::Error::from_raw_os_error(35),
+            9,
+            8 * 1024 * 1024,
+        )
+        .to_string();
+        let outcome = classify_frontend_failure(format!("case :: probe\n      {refused}"));
+        let CaseOutcome::HarnessResource(condition) = &outcome else {
+            panic!("a refused worker thread must not be reported as a corpus failure: {outcome:?}")
+        };
+        assert!(
+            condition.contains("os error 35"),
+            "the reported condition must carry the operating system's refusal: {condition}"
+        );
+        assert!(
+            condition.contains("9 workers of 8 MiB stack were live"),
+            "the reported condition must carry the worker budget: {condition}"
+        );
+
+        // A resource condition is counted and reported apart from a real
+        // corpus failure, and judges no case.
+        let mut report = Report::default();
+        report.record(outcome);
+        report.record(CaseOutcome::FrontendFailure("frontend".to_string()));
+        assert_eq!(report.harness_resource.len(), 1);
+        assert_eq!(report.frontend_failures.len(), 1);
+        assert!(report.harness_failures.is_empty());
+        assert_eq!(report.modeled_eligible_count(), 1);
+        assert_eq!(report.classified_case_count(), 2);
+
+        // An ordinary front-end rejection keeps its own class.
+        assert!(matches!(
+            classify_frontend_failure("case :: probe\n      unresolved name".to_string()),
+            CaseOutcome::FrontendFailure(_)
+        ));
+    }
+
+    #[test]
+    fn oracle_jobs_bounds_in_process_concurrency_and_rejects_nonsense() {
+        // Unset and empty keep the compiler's own host-parallelism default.
+        assert_eq!(parse_oracle_jobs(None), Ok(None));
+        assert_eq!(parse_oracle_jobs(Some("")), Ok(None));
+        assert_eq!(parse_oracle_jobs(Some("  ")), Ok(None));
+
+        assert_eq!(parse_oracle_jobs(Some("1")), Ok(Some(1)));
+        assert_eq!(parse_oracle_jobs(Some(" 4 ")), Ok(Some(4)));
+
+        let zero = parse_oracle_jobs(Some("0")).expect_err("zero leaves nothing to run on");
+        assert!(zero.contains(ORACLE_JOBS_VAR), "{zero}");
+        assert!(zero.contains("positive"), "{zero}");
+
+        for rejected in ["two", "-1", "2.5", "4 workers"] {
+            let message = parse_oracle_jobs(Some(rejected))
+                .expect_err("a non-numeric worker count must be rejected, not ignored");
+            assert!(message.contains(ORACLE_JOBS_VAR), "{message}");
+            assert!(message.contains(rejected), "{message}");
+        }
     }
 
     #[test]
