@@ -1,6 +1,6 @@
 # Code Review
 
-This document describes how we review code before committing. The `/code-review` command automates this workflow.
+This document describes how we review code before committing.
 
 ## When to Review
 
@@ -161,4 +161,4 @@ Provide specific, actionable feedback:
 
 1. Fix all blocking issues
 2. Re-run tests: `./test.sh`
-3. Proceed to commit: `/commit`
+3. Proceed to commit (see [committing.md](committing.md))

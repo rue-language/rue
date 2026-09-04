@@ -6,7 +6,8 @@ once: the Rust comment/literal masker, the repository walker with its prune
 policy, the workflow job splitter, the ``--source CRATE=DIR`` parser, the
 gate main skeleton, and the dash-named-script loader the tool tests use.
 
-Runs on Python 3.9 (the repository tooling floor in AGENTS.md).
+Runs on Python 3.9 (the repository tooling floor in
+docs/process/tooling-baseline.md).
 """
 
 from __future__ import annotations

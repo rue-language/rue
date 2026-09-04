@@ -125,8 +125,8 @@ For large features, the Linear epic and ADR reference each other:
 
 ### Finishing Work
 
-1. `jj commit -m "... Fixes RUE-NN"`
-2. `save_issue` with state `Done`
+1. Commit with `Fixes RUE-NN` in the message and land the PR
+2. `save_issue` with state `Done`, then verify it moved
 
 ### Found a Bug While Working
 

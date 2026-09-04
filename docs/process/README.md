@@ -2,7 +2,7 @@
 
 > **Audience: internal maintainers and AI agents.** These documents describe the
 > maintainers' internal operations — Linear-based issue tracking, Jujutsu (`jj`)
-> version control, Claude Code workflows, and merge-queue management. They are
+> version control, coding-agent workflows, and merge-queue management. They are
 > **not required for external contributions**. If you are contributing through
 > GitHub, read [CONTRIBUTING.md](../../CONTRIBUTING.md) instead — ordinary Git
 > and GitHub issues/PRs are the supported path, and nothing here is needed to
@@ -18,25 +18,27 @@ Our development process follows this cycle:
 Idea → Plan → Implement → Review → Commit → (Stabilize)
 ```
 
-Each step has a corresponding document in this directory and a Claude Code command that automates it.
+Each step has a corresponding document in this directory.
 
 ## Quick Reference
 
-| Step | Document | Command | Purpose |
-|------|----------|---------|---------|
-| Plan | [planning.md](planning.md) | `/plan` | Design features, create ADRs and issues |
-| Implement | [implementation.md](implementation.md) | `/implement` | Write code, tests, and spec updates |
-| Review | [code-review.md](code-review.md) | `/code-review` | Check quality before committing |
-| Commit | [committing.md](committing.md) | `/commit` | Create well-formed commits |
-| - | [ci.md](ci.md) | - | Maintain required CI and its pinned tools |
-| - | [diagnostics.md](diagnostics.md) | - | Consume `--error-format json` structured diagnostics |
-| - | [mcp.md](mcp.md) | - | Use the local Rue MCP server from coding agents |
-| - | [profiling.md](profiling.md) | - | Build symbolized executables for native profiling |
-| - | [compiler-scaling.md](compiler-scaling.md) | - | Measure maintained-program compiler scaling |
-| - | [compiler-facade.md](compiler-facade.md) | - | Review compiler API and tooling-view changes |
-| - | [tutorial.md](tutorial.md) | - | Maintain tutorial outline, style, and snippet checks |
-| - | [issue-tracking.md](issue-tracking.md) | Linear MCP tools | Track work with Linear |
-| - | [fuzz-failure-reporting.md](fuzz-failure-reporting.md) | - | How nightly fuzz crashes reach Linear (and the `LINEAR_API_KEY` setup) |
+| Step | Document | Purpose |
+|------|----------|---------|
+| Plan | [planning.md](planning.md) | Design features, create ADRs and issues |
+| Implement | [implementation.md](implementation.md) | Write code, tests, and spec updates |
+| Review | [code-review.md](code-review.md) | Check quality before committing |
+| Commit | [committing.md](committing.md) | Create well-formed commits |
+| - | [testing.md](testing.md) | Test tiers, local-run limits, wall-clock budgets, Buck storage |
+| - | [tooling-baseline.md](tooling-baseline.md) | Python and Bash floors for repository scripts |
+| - | [ci.md](ci.md) | Maintain required CI and its pinned tools |
+| - | [diagnostics.md](diagnostics.md) | Consume `--error-format json` structured diagnostics |
+| - | [mcp.md](mcp.md) | Use the local Rue MCP server from coding agents |
+| - | [profiling.md](profiling.md) | Build symbolized executables for native profiling |
+| - | [compiler-scaling.md](compiler-scaling.md) | Measure maintained-program compiler scaling |
+| - | [compiler-facade.md](compiler-facade.md) | Review compiler API and tooling-view changes |
+| - | [tutorial.md](tutorial.md) | Maintain tutorial outline, style, and snippet checks |
+| - | [issue-tracking.md](issue-tracking.md) | Track work with Linear |
+| - | [fuzz-failure-reporting.md](fuzz-failure-reporting.md) | How nightly fuzz crashes reach Linear (and the `LINEAR_API_KEY` setup) |
 
 ## Feature Types
 
@@ -77,7 +79,8 @@ Language semantics are formally documented in [../spec/](../spec/). Changes to l
 - **Buck2**: Build system (`./buck2 build`, `./buck2 test`)
 - **Jujutsu**: Version control (`jj status`, `jj commit`)
 - **Linear**: Issue tracking (via the Linear MCP tools)
-- **Claude Code**: AI assistant with `/plan`, `/implement`, etc.
+- **Coding agents**: read [AGENTS.md](../../AGENTS.md); it is the canonical
+  agent guidance and points back at these documents
 
 ## Getting Started
 

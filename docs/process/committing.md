@@ -1,20 +1,22 @@
 # Committing Changes
 
-This document describes how we create commits. The `/commit` command automates this workflow.
+This document describes how we create commits.
 
 ## Prerequisites
 
 Before committing:
 1. All tests pass (`./test.sh`)
-2. Code review is complete (`/code-review`)
+2. Code review is complete (see [code-review.md](code-review.md))
 3. No blocking issues remain
 
 ## Version Control
 
-We use **Jujutsu (jj)**, not git. Key differences:
-- Working copy is always a commit (no staging area)
-- Use `jj commit` to finalize and start a new change
-- Use `jj status` and `jj diff` to see current state
+The maintainers' canonical checkout uses **Jujutsu (jj)**; agent worktrees,
+cloud sessions, and forks use Git. The publication rules are the same for
+both and live in [AGENTS.md](../../AGENTS.md#version-control-and-publication).
+With jj, the working copy is always a commit (no staging area): `jj commit`
+finalizes it and starts a new change, and `jj status` / `jj diff` show the
+current state.
 
 ## Commit Message Guidelines
 
@@ -49,6 +51,8 @@ We use **Jujutsu (jj)**, not git. Key differences:
 
 - Reference Linear issues: `Fixes RUE-42` or `Related to RUE-42`
 - Multiple issues on separate lines
+- No agent attribution, co-author trailers, or session links; commit text is
+  tool-neutral (see [AGENTS.md](../../AGENTS.md#version-control-and-publication))
 
 ### Examples
 
@@ -85,13 +89,11 @@ Related to RUE-46
 ### 1. Create the Commit
 
 ```bash
-jj commit -m "<message>"
+jj commit -m "<message>"      # Jujutsu checkout
+git commit -m "<message>"     # Git checkout
 ```
 
-For multi-line messages, use your editor:
-```bash
-jj commit
-```
+For multi-line messages, omit `-m` and use your editor.
 
 ### 2. Mark Related Issues Done
 
@@ -99,11 +101,9 @@ If this commit completes a Linear issue, mark it Done **after** committing: use 
 
 ### 3. Verify
 
-After committing, the working copy becomes a new empty change. You can verify with:
-```bash
-jj log -r @-   # See the commit you just made
-jj status      # Should show clean working copy
-```
+After committing, the working copy should be clean (`jj status` or
+`git status`), and `jj log -r @-` or `git log -1` shows the commit you just
+made.
 
 ## What NOT to Include
 
