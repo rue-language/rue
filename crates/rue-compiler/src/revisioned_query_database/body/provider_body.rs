@@ -667,7 +667,11 @@ impl SemanticNucleusTypeProvider<'_> {
     }
 
     pub(in crate::revisioned_query_database) fn type_has_drop_glue(
-        &mut self,
+        &self,
+        type_facts: &QueryFamily<
+            crate::type_queries::TypeQueryKey,
+            crate::type_queries::TypeFactsValue,
+        >,
         ty: &crate::durable_semantics::DurableType,
     ) -> Result<
         bool,
@@ -676,155 +680,49 @@ impl SemanticNucleusTypeProvider<'_> {
             crate::semantic_query_nucleus::SemanticNucleusFailure,
         >,
     > {
-        self.type_has_drop_glue_inner(ty, &mut OwnershipWalk::new())
-    }
+        use crate::durable_semantics::DurableType as T;
 
-    /// See [`Self::type_carries_linear_inner`] for why the memo is keyed on
-    /// nominal types and why a tainted answer is not stored.
-    fn type_has_drop_glue_inner(
-        &mut self,
-        ty: &crate::durable_semantics::DurableType,
-        walk: &mut OwnershipWalk,
-    ) -> Result<
-        bool,
-        rue_air::SemanticProviderError<
-            QueryAbort,
-            crate::semantic_query_nucleus::SemanticNucleusFailure,
-        >,
-    > {
-        let crate::durable_semantics::DurableType::Nominal(key) = ty else {
-            return self.type_has_drop_glue_walk(ty, walk);
-        };
-        if let Some(has_glue) = self
-            .ownership_properties
-            .get(key)
-            .and_then(|properties| properties.has_drop_glue)
-        {
-            return Ok(has_glue);
+        // These two cases are observable provider contracts rather than
+        // recursive facts. A zero-multiplicity array never consults its
+        // element, while an unsubstituted generic is not a concrete type the
+        // ownership gate may accept.
+        if matches!(ty, T::Array { len: 0, .. }) {
+            return Ok(false);
         }
-        let outer = std::mem::replace(&mut walk.tainted, false);
-        let result = self.type_has_drop_glue_walk(ty, walk);
-        let tainted = walk.tainted;
-        walk.tainted = outer || tainted;
-        if let Ok(has_glue) = &result
-            && !tainted
-        {
-            self.ownership_properties
-                .entry(key.clone())
-                .or_default()
-                .has_drop_glue = Some(*has_glue);
-        }
-        result
-    }
-
-    fn type_has_drop_glue_walk(
-        &mut self,
-        ty: &crate::durable_semantics::DurableType,
-        walk: &mut OwnershipWalk,
-    ) -> Result<
-        bool,
-        rue_air::SemanticProviderError<
-            QueryAbort,
-            crate::semantic_query_nucleus::SemanticNucleusFailure,
-        >,
-    > {
-        use crate::durable_semantics::{DurableAnonymousNominalShape as S, DurableType as T};
-        use crate::semantic_query_nucleus::DeclarationSignatureProjection as P;
-        match ty {
-            T::Array { len: 0, .. } => Ok(false),
-            T::Array { element, .. } => self.type_has_drop_glue_inner(element, walk),
-            T::Nominal(key) => {
-                if !walk.visiting.insert(key.clone()) {
-                    // Provisional; see `type_carries_linear_walk`.
-                    walk.taint();
-                    return Ok(false);
-                }
-                if key.kind() == crate::StableDefinitionKind::Struct {
-                    let destructors = self
-                        .context
-                        .query_registered(
-                            self.names,
-                            LookupNameKey {
-                                module: key.module().clone(),
-                                namespace: DefinitionNamespace::Destructor,
-                                name: Arc::from(key.name()),
-                            },
-                        )
-                        .map_err(rue_air::SemanticProviderError::Abort)?;
-                    let rue_query::QueryOutcome::Success(LookupNameValue(destructors)) =
-                        destructors.outcome()
-                    else {
-                        unreachable!("LookupName publishes typed values")
-                    };
-                    if destructors.as_ref().is_ok_and(|facts| !facts.is_empty()) {
-                        walk.visiting.remove(key);
-                        return Ok(true);
-                    }
-                }
-                let kind = match key.kind() {
-                    crate::StableDefinitionKind::Struct => DefinitionKind::Struct,
-                    crate::StableDefinitionKind::Enum => DefinitionKind::Enum,
-                    _ => {
-                        walk.visiting.remove(key);
-                        return Ok(false);
-                    }
-                };
-                let candidate = self
-                    .candidate(key.module(), key.name(), kind)?
-                    .ok_or_else(|| Self::provider_failure_value("nominal type is unavailable"))?;
-                let signature = self.resolved_signature(candidate)?.signature;
-                let has_glue = match signature {
-                    P::Struct { fields, .. } => {
-                        let mut has_glue = false;
-                        for (_, field) in fields.iter() {
-                            has_glue |= self.type_has_drop_glue_inner(field, walk)?;
-                        }
-                        has_glue
-                    }
-                    P::Enum { variants, .. } => {
-                        let mut has_glue = false;
-                        for (_, payload) in variants.iter() {
-                            for field in payload.iter() {
-                                has_glue |= self.type_has_drop_glue_inner(field, walk)?;
-                            }
-                        }
-                        has_glue
-                    }
-                    _ => false,
-                };
-                walk.visiting.remove(key);
-                Ok(has_glue)
-            }
-            T::AnonymousNominal(key) => {
-                let nominal = self.anonymous_projection(key).ok_or_else(|| {
-                    Self::provider_failure_value(
-                        "anonymous nominal is unavailable while checking drop glue",
-                    )
-                })?;
-                match nominal.shape {
-                    S::Struct { fields, .. } => {
-                        for (_, field) in fields.iter() {
-                            if self.type_has_drop_glue_inner(field, walk)? {
-                                return Ok(true);
-                            }
-                        }
-                    }
-                    S::Enum { variants, .. } => {
-                        for (_, payload) in variants.iter() {
-                            for field in payload.iter() {
-                                if self.type_has_drop_glue_inner(field, walk)? {
-                                    return Ok(true);
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(false)
-            }
-            T::GenericParameter { .. } => Self::provider_failure(
+        if matches!(ty, T::GenericParameter { .. }) {
+            return Self::provider_failure(
                 "generic parameter remained unresolved while checking drop glue",
-            ),
-            _ => Ok(false),
+            );
+        }
+
+        // TypeFacts owns durable recursive drop-glue evaluation. This provider
+        // preserves the query engine's dependency, cancellation, failure, and
+        // retention semantics by consuming that terminal directly.
+        let terminal = match self.context.query_registered(
+            type_facts,
+            crate::type_queries::TypeQueryKey {
+                ty: crate::type_queries::type_instance(ty),
+                configuration: self.configuration.clone(),
+            },
+        ) {
+            Ok(terminal) => terminal,
+            Err(QueryAbort::Cycle(nodes)) if is_recursive_type_facts_cycle(&nodes) => {
+                // A by-value recursive type has the same least fixed point as
+                // the live containment pass when no reachable destructor
+                // disproves it. The aborted TypeFacts attempt publishes no
+                // terminal, preserving the old provisional/no-memo behavior.
+                return Ok(false);
+            }
+            Err(abort) => return Err(rue_air::SemanticProviderError::Abort(abort)),
+        };
+        let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+            unreachable!("TypeFacts publishes typed values")
+        };
+        match value {
+            crate::type_queries::TypeFactsValue::Available(facts) => Ok(facts.needs_drop),
+            crate::type_queries::TypeFactsValue::Failure(failure) => {
+                Self::provider_failure(format!("drop-glue facts are unavailable: {failure:?}"))
+            }
         }
     }
 
@@ -981,10 +879,12 @@ impl SemanticNucleusTypeProvider<'_> {
                 })?;
                 match nominal.shape {
                     S::Struct { fields, methods } => {
-                        if methods
-                            .iter()
-                            .any(|method| method.has_self && method.name.as_ref() == "__drop")
-                        {
+                        if methods.iter().any(|method| {
+                            rue_air::drop_glue::is_anonymous_destructor(
+                                method.name.as_ref(),
+                                method.has_self,
+                            )
+                        }) {
                             return Ok(false);
                         }
                         for (_, field) in fields.iter() {
@@ -1633,6 +1533,15 @@ impl SemanticNucleusTypeProvider<'_> {
             defining_file: Arc::from(module.as_str()),
         }))
     }
+}
+
+pub(in crate::revisioned_query_database) fn is_recursive_type_facts_cycle(
+    nodes: &[rue_query::NodeIdentity],
+) -> bool {
+    !nodes.is_empty()
+        && nodes
+            .iter()
+            .all(|node| node.family() == "compiler.type-facts")
 }
 
 impl rue_air::SemanticModulePathProvider<ModuleId, ModuleId, StableDefinitionKey>

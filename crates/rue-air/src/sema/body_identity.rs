@@ -174,20 +174,20 @@ pub trait DurableNominalSource<K, M> {
 /// Method BODIES are deliberately absent: registering an anonymous struct's
 /// methods needs the request-local whole-program `Rir`
 /// (`register_projected_anon_struct_methods`, `binding_manifest.rs`), which the
-/// body-scoped pool does not hold. `struct_method_names` carries only the source
-/// method-name vocabulary the epoch's [`find_or_create_anon_struct`] reads to
-/// decide copyability and the destructor symbol — the reserved `__drop` name
-/// forces the struct non-Copy and names its destructor. Method DISPATCH
+/// body-scoped pool does not hold. `struct_methods` carries only the source
+/// method name and receiver-presence vocabulary the epoch's
+/// [`find_or_create_anon_struct`] reads to decide copyability and the destructor
+/// symbol. Only an instance `__drop` method forces the struct non-Copy and names
+/// its destructor. Method DISPATCH
 /// registration is left to the flip's overlay method installation.
 #[derive(Debug, Clone)]
 pub enum DurableAnonymousShape<K, M> {
     Struct {
         /// Fields in declaration order: source name and durable field type.
         fields: Vec<(Arc<str>, SemanticImportType<K, M>)>,
-        /// Source method names in declaration order (bodies excluded). Only the
-        /// presence of the reserved `__drop` destructor name is consumed, to
-        /// mirror the epoch's copyability / destructor metadata.
-        struct_method_names: Vec<Arc<str>>,
+        /// Source method names and receiver presence in declaration order
+        /// (bodies excluded), sufficient to classify the reserved destructor.
+        struct_methods: Vec<(Arc<str>, bool)>,
     },
     Enum {
         /// Variants in declaration order: source name and durable payload types.
@@ -1687,10 +1687,6 @@ where
     }
 }
 
-/// The reserved method name whose presence gives an anonymous struct a user
-/// destructor (RUE-312); mirrored from the epoch's `find_or_create_anon_struct`.
-const ANON_DROP_METHOD: &str = "__drop";
-
 /// Which name derived from an anonymous nominal's digest a generation's
 /// spelling memo holds: the nominal's own, or its destructor's.
 const ANON_NAME_SPELLING: u8 = 0;
@@ -1764,8 +1760,8 @@ where
         let minted = match shape {
             DurableAnonymousShape::Struct {
                 fields,
-                struct_method_names,
-            } => self.mint_anon_struct(key, digest, &fields, &struct_method_names),
+                struct_methods,
+            } => self.mint_anon_struct(key, digest, &fields, &struct_methods),
             DurableAnonymousShape::Enum { variants } => self.mint_anon_enum(key, digest, &variants),
         };
         match minted {
@@ -2040,7 +2036,7 @@ where
         key: &AnonymousNominalKey<K, M>,
         digest: u128,
         fields: &[(Arc<str>, SemanticImportType<K, M>)],
-        method_names: &[Arc<str>],
+        methods: &[(Arc<str>, bool)],
     ) -> Result<Type, IdentityMintError> {
         // Both spellings are a total function of the digest, so the generation
         // renders and interns each once instead of once per body that mints
@@ -2052,9 +2048,9 @@ where
                 super::anon_structs::anonymous_struct_name(digest)
             })
             .map_err(IdentityMintError::Interner)?;
-        let has_destructor = method_names
-            .iter()
-            .any(|method| method.as_ref() == ANON_DROP_METHOD);
+        let has_destructor = methods.iter().any(|(name, has_self)| {
+            crate::drop_glue::is_anonymous_destructor(name.as_ref(), *has_self)
+        });
         let destructor = has_destructor.then(|| {
             self.space.keyed_name(digest, ANON_DESTRUCTOR_SPELLING, || {
                 format!("{name}.__drop")
@@ -3715,7 +3711,7 @@ mod tests {
                 anonymous,
                 DurableAnonymousShape::Struct {
                     fields: vec![(Arc::from("element"), DType::Nominal(0))],
-                    struct_method_names: Vec::new(),
+                    struct_methods: Vec::new(),
                 },
             )],
             [],
@@ -4744,7 +4740,7 @@ mod tests {
                 key,
                 DurableAnonymousShape::Struct {
                     fields: vec![(Arc::from("value"), DType::I32)],
-                    struct_method_names: Vec::new(),
+                    struct_methods: Vec::new(),
                 },
             )
         });
@@ -4776,7 +4772,7 @@ mod tests {
                 outer.clone(),
                 DurableAnonymousShape::Struct {
                     fields: vec![(Arc::from("missing"), DType::AnonymousNominal(missing))],
-                    struct_method_names: Vec::new(),
+                    struct_methods: Vec::new(),
                 },
             )],
             [],
@@ -4803,7 +4799,7 @@ mod tests {
         let key = anon_key(AnonymousNominalKind::Struct, 3, 0);
         let shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("v"), DType::I32)],
-            struct_method_names: Vec::new(),
+            struct_methods: Vec::new(),
         };
         let mut pool = anon_pool([], [(key.clone(), shape)], []);
         let ty = pool.find_or_create_anon(&key).unwrap();
@@ -4828,7 +4824,7 @@ mod tests {
         let key = anon_key(AnonymousNominalKind::Struct, 77, 0);
         let shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("value"), DType::I32)],
-            struct_method_names: Vec::new(),
+            struct_methods: Vec::new(),
         };
         let mut durable = source([]);
         durable.anonymous_shapes.insert(key.clone(), shape);
@@ -4854,7 +4850,7 @@ mod tests {
         let key = anon_key(AnonymousNominalKind::Struct, 0, 1);
         let shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("a"), DType::I32), (Arc::from("b"), DType::Bool)],
-            struct_method_names: Vec::new(),
+            struct_methods: Vec::new(),
         };
         let mut pool = anon_pool([], [(key.clone(), shape)], []);
 
@@ -4894,7 +4890,7 @@ mod tests {
         let key = anon_key(AnonymousNominalKind::Struct, 0, 2);
         let shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("v"), DType::I32)],
-            struct_method_names: vec![Arc::from("__drop"), Arc::from("len")],
+            struct_methods: vec![(Arc::from("__drop"), true), (Arc::from("len"), true)],
         };
         let mut pool = anon_pool([], [(key.clone(), shape)], []);
         let ty = pool.find_or_create_anon(&key).unwrap();
@@ -4904,6 +4900,21 @@ mod tests {
             def.destructor.as_deref(),
             Some(format!("{}.__drop", def.name).as_str())
         );
+    }
+
+    #[test]
+    fn find_or_create_anon_struct_rejects_associated_drop_counterfeit() {
+        let key = anon_key(AnonymousNominalKind::Struct, 0, 3);
+        let shape = DurableAnonymousShape::Struct {
+            fields: vec![(Arc::from("v"), DType::I32)],
+            struct_methods: vec![(Arc::from("__drop"), false)],
+        };
+        let mut pool = anon_pool([], [(key.clone(), shape)], []);
+        let ty = pool.find_or_create_anon(&key).unwrap();
+        let def = pool.type_pool().struct_def(ty.as_struct().unwrap());
+        assert!(def.is_copy);
+        assert_eq!(def.destructor, None);
+        assert!(!pool.type_pool().type_needs_drop(ty));
     }
 
     /// An anonymous enum mints the bare `__anon_enum_{digest}` source symbol;
@@ -4951,7 +4962,7 @@ mod tests {
         let enum_key = anon_key(AnonymousNominalKind::Enum, 0, 8);
         let struct_shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("x"), DType::I32)],
-            struct_method_names: vec![Arc::from("get")],
+            struct_methods: vec![(Arc::from("get"), true)],
         };
         let enum_shape = DurableAnonymousShape::Enum {
             variants: vec![(Arc::from("A"), vec![])],
@@ -4998,7 +5009,7 @@ mod tests {
         assert_ne!(first, second);
         let shape = |()| DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("v"), DType::I32)],
-            struct_method_names: Vec::new(),
+            struct_methods: Vec::new(),
         };
         let mut pool = anon_pool(
             [],
@@ -5037,7 +5048,7 @@ mod tests {
         let other = anon_key(AnonymousNominalKind::Struct, 21, 0);
         let shape = || DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("v"), DType::I32)],
-            struct_method_names: Vec::new(),
+            struct_methods: Vec::new(),
         };
         let mut pool = anon_pool([], [(key.clone(), shape()), (other.clone(), shape())], []);
         let minted = pool.find_or_create_anon(&key).unwrap();
@@ -5074,7 +5085,7 @@ mod tests {
 
         let shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("v"), DType::I32)],
-            struct_method_names: Vec::new(),
+            struct_methods: Vec::new(),
         };
         let mut pool = anon_pool([], [(collapsed.clone(), shape)], []);
         let minted = pool.find_or_create_anon(&collapsed).unwrap();
@@ -5122,7 +5133,7 @@ mod tests {
         // `DurableAnonymousSource` contract).
         let shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("v"), DType::I32)],
-            struct_method_names: Vec::new(),
+            struct_methods: Vec::new(),
         };
         let mut pool = anon_pool([], [(collapsed.clone(), shape)], []);
 
@@ -5281,7 +5292,7 @@ mod tests {
         let key = anon_key(AnonymousNominalKind::Struct, 50, 0);
         let shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("v"), DType::I32)],
-            struct_method_names: Vec::new(),
+            struct_methods: Vec::new(),
         };
         let mut pool = anon_pool([], [(key.clone(), shape)], []);
         assert_eq!(
@@ -5331,7 +5342,7 @@ mod tests {
         };
         let bad_shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("v"), DType::I32)],
-            struct_method_names: Vec::new(),
+            struct_methods: Vec::new(),
         };
         let mut pool = anon_pool(
             [],

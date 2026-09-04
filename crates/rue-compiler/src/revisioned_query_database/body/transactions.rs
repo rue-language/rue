@@ -1223,7 +1223,10 @@ impl BodyTransactionEvaluator {
                     .with_terminal_kind(QueryTerminalKind::Failure));
                 };
                 let Some(method) = methods.iter().find(|candidate| {
-                    let kind = if candidate.name.as_ref() == "__drop" {
+                    let kind = if rue_air::drop_glue::is_anonymous_destructor(
+                        candidate.name.as_ref(),
+                        candidate.has_self,
+                    ) {
                         crate::AnonymousMemberKind::Destructor
                     } else if candidate.has_self {
                         crate::AnonymousMemberKind::Method

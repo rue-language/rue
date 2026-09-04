@@ -1572,6 +1572,83 @@ fn request_drop_glue(
 }
 
 #[test]
+fn type_facts_leaf_drop_matrix_covers_every_nonaggregate_variant() {
+    use crate::{NominalInstanceKey as N, TypeInstanceKey as T};
+    use rue_air::AnonymousNominalKind as K;
+
+    let source = source_snapshot(&[(1, "/main.rue", "main.rue", "fn main() {}")], 1);
+    let module = ModuleId::from_logical_path("main.rue").unwrap();
+    let missing = crate::StableDefinitionKey::from_stable_parts(
+        module.clone(),
+        crate::StableDefinitionNamespace::Type,
+        crate::StableDefinitionKind::Struct,
+        "Missing",
+        None,
+    );
+    let pointee = T::Nominal(N::Named(missing));
+    let cases = [
+        T::I8,
+        T::I16,
+        T::I32,
+        T::I64,
+        T::U8,
+        T::U16,
+        T::U32,
+        T::U64,
+        T::Bool,
+        T::Unit,
+        T::Never,
+        T::ComptimeType,
+        T::F32,
+        T::F64,
+        T::ComptimeFloat,
+        T::BuiltinNominal {
+            kind: K::Struct,
+            name: Arc::from("str"),
+        },
+        T::BuiltinNominal {
+            kind: K::Struct,
+            name: Arc::from("UnknownBuiltin"),
+        },
+        T::Nominal(N::Builtin {
+            kind: K::Struct,
+            name: Arc::from("str"),
+        }),
+        T::Nominal(N::Builtin {
+            kind: K::Enum,
+            name: Arc::from("UnknownBuiltin"),
+        }),
+        T::PtrConst(Node::new(pointee.clone())),
+        T::PtrMut(Node::new(pointee.clone())),
+        T::Slice {
+            element: Node::new(pointee),
+            name: Arc::from("[]Missing"),
+        },
+        T::Module(module),
+        T::GenericParameter(17),
+    ];
+    let mut database = RevisionedQueryDatabase::default();
+    let revision = revision_for(&mut database, &source);
+    for ty in cases {
+        let attempt = database.runtime.request_registered(
+            &database.type_facts,
+            revision,
+            crate::type_queries::TypeQueryKey {
+                ty: ty.clone(),
+                configuration: semantic_configuration(),
+            },
+            CancellationToken::new(),
+        );
+        let rue_query::QueryOutcome::Success(crate::type_queries::TypeFactsValue::Available(facts)) =
+            attempt.terminal().unwrap().outcome()
+        else {
+            panic!("leaf TypeFacts must be available for {ty:?}")
+        };
+        assert!(!facts.needs_drop, "leaf unexpectedly needs drop: {ty:?}");
+    }
+}
+
+#[test]
 fn drop_glue_reads_the_shape_carried_by_type_facts_instead_of_requesting_it() {
     // RUE-1556: `TypeFacts` already carries the canonical `TypeShape` for
     // its own key — `evaluate_type_facts` stamps the shape it queried onto

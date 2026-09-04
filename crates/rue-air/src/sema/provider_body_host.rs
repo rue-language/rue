@@ -3208,13 +3208,15 @@ where
                 &method.name,
                 method.has_self,
             )?;
-            let kind = if method.name.as_ref() == "__drop" {
-                crate::AnonymousMemberKind::Destructor
-            } else if method.has_self {
-                crate::AnonymousMemberKind::Method
-            } else {
-                crate::AnonymousMemberKind::AssociatedFunction
-            };
+            let kind =
+                if crate::drop_glue::is_anonymous_destructor(method.name.as_ref(), method.has_self)
+                {
+                    crate::AnonymousMemberKind::Destructor
+                } else if method.has_self {
+                    crate::AnonymousMemberKind::Method
+                } else {
+                    crate::AnonymousMemberKind::AssociatedFunction
+                };
             self.anonymous_function_identities.borrow_mut().insert(
                 callable,
                 FunctionInstanceKey::AnonymousMember {
@@ -3364,13 +3366,15 @@ where
                 &method.name,
                 method.has_self,
             )?;
-            let kind = if method.name.as_ref() == "__drop" {
-                crate::AnonymousMemberKind::Destructor
-            } else if method.has_self {
-                crate::AnonymousMemberKind::Method
-            } else {
-                crate::AnonymousMemberKind::AssociatedFunction
-            };
+            let kind =
+                if crate::drop_glue::is_anonymous_destructor(method.name.as_ref(), method.has_self)
+                {
+                    crate::AnonymousMemberKind::Destructor
+                } else if method.has_self {
+                    crate::AnonymousMemberKind::Method
+                } else {
+                    crate::AnonymousMemberKind::AssociatedFunction
+                };
             self.anonymous_function_identities.borrow_mut().insert(
                 callable,
                 FunctionInstanceKey::AnonymousMember {
@@ -6141,13 +6145,15 @@ fn anonymous_member_in_producer(
                 let InstData::FnDecl { name, has_self, .. } = &rir.get(method_ref).data else {
                     return Err("anonymous owner method edge does not reference a function");
                 };
-                let kind = if interner.resolve(name) == "__drop" {
-                    crate::AnonymousMemberKind::Destructor
-                } else if *has_self {
-                    crate::AnonymousMemberKind::Method
-                } else {
-                    crate::AnonymousMemberKind::AssociatedFunction
-                };
+                let kind =
+                    if crate::drop_glue::is_anonymous_destructor(interner.resolve(name), *has_self)
+                    {
+                        crate::AnonymousMemberKind::Destructor
+                    } else if *has_self {
+                        crate::AnonymousMemberKind::Method
+                    } else {
+                        crate::AnonymousMemberKind::AssociatedFunction
+                    };
                 if *name == member_symbol
                     && kind == member.kind
                     && declaration.replace(method_ref).is_some()
@@ -6466,13 +6472,14 @@ where
                     ));
                 }
             };
-        let expected_kind = if member.name.as_ref() == "__drop" {
-            crate::AnonymousMemberKind::Destructor
-        } else if has_self {
-            crate::AnonymousMemberKind::Method
-        } else {
-            crate::AnonymousMemberKind::AssociatedFunction
-        };
+        let expected_kind =
+            if crate::drop_glue::is_anonymous_destructor(member.name.as_ref(), has_self) {
+                crate::AnonymousMemberKind::Destructor
+            } else if has_self {
+                crate::AnonymousMemberKind::Method
+            } else {
+                crate::AnonymousMemberKind::AssociatedFunction
+            };
         if expected_kind != member.kind {
             return Err(CompileError::without_span(
                 rue_error::ErrorKind::InvalidCompilerInput(

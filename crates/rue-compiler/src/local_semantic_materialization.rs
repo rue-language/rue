@@ -1219,7 +1219,12 @@ pub(crate) fn materialize_semantic_body_with_indexes_in_space(
             DurableAnonymousNominalShape::Struct { fields, methods } => {
                 let destructor = methods
                     .iter()
-                    .find(|method| method.has_self && method.name.as_ref() == "__drop")
+                    .find(|method| {
+                        rue_air::drop_glue::is_anonymous_destructor(
+                            method.name.as_ref(),
+                            method.has_self,
+                        )
+                    })
                     .map(|_| FunctionInstanceKey::AnonymousMember {
                         owner: Node::new(crate::TypeInstanceKey::Nominal(
                             crate::NominalInstanceKey::Anonymous(Node::new(
@@ -1735,7 +1740,10 @@ pub(crate) fn select_materialization_facts(
                                     if let crate::durable_semantics::DurableAnonymousMethodType::Concrete(ty) = &method.result {
                                         self.semantic_type(ty);
                                     }
-                                    if method.has_self && method.name.as_ref() == "__drop" {
+                                    if rue_air::drop_glue::is_anonymous_destructor(
+                                        method.name.as_ref(),
+                                        method.has_self,
+                                    ) {
                                         self.callable(&FunctionInstanceKey::AnonymousMember {
                                             owner: Node::new(crate::TypeInstanceKey::Nominal(
                                                 crate::NominalInstanceKey::Anonymous(Node::new(

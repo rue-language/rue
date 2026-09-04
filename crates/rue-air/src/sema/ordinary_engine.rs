@@ -1365,8 +1365,12 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         let id = self.storage.body_type_pool().reserve_struct_id();
         let name = super::anon_structs::anonymous_struct_name(digest);
         let name_spur = self.intern_body_symbol(&name)?;
-        let drop_marker = self.intern_body_symbol("__drop")?;
-        let has_destructor = sigs.iter().any(|sig| sig.name == drop_marker);
+        let has_destructor = sigs.iter().any(|sig| {
+            crate::drop_glue::is_anonymous_destructor(
+                self.body_interner().resolve(&sig.name),
+                sig.has_self,
+            )
+        });
         let is_copy = !has_destructor
             && fields
                 .iter()

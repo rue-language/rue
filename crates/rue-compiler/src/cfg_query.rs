@@ -1082,8 +1082,20 @@ fn type_may_need_drop_glue<K, M>(ty: &rue_air::SemanticImportType<K, M>) -> bool
     use rue_air::SemanticImportType as T;
 
     match ty {
-        T::Array { element, len } => *len != 0 && type_may_need_drop_glue(element),
-        T::BuiltinNominal { .. } | T::Nominal(_) | T::AnonymousNominal(_) => true,
+        T::Array { element, len } => rue_air::drop_glue::may_require_drop_glue(
+            rue_air::drop_glue::DropGlueShape::Array { len: *len },
+            [type_may_need_drop_glue(element)],
+        ),
+        T::BuiltinNominal { .. } | T::Nominal(_) | T::AnonymousNominal(_) => {
+            rue_air::drop_glue::may_require_drop_glue(
+                rue_air::drop_glue::DropGlueShape::Aggregate {
+                    // This is deliberately a conservative prefilter: exact
+                    // destructor presence belongs to TypeFacts.
+                    has_destructor: true,
+                },
+                [],
+            )
+        }
         T::I8
         | T::I16
         | T::I32
@@ -1103,7 +1115,10 @@ fn type_may_need_drop_glue<K, M>(ty: &rue_air::SemanticImportType<K, M>) -> bool
         | T::PtrMut(_)
         | T::Slice { .. }
         | T::Module(_)
-        | T::GenericParameter(_) => false,
+        | T::GenericParameter(_) => rue_air::drop_glue::may_require_drop_glue(
+            rue_air::drop_glue::DropGlueShape::Trivial,
+            [],
+        ),
     }
 }
 
