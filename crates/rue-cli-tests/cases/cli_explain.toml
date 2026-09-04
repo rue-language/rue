@@ -701,6 +701,37 @@ compile_stdout_contains = ["E0715: Import spellings same file", "Import hard-lin
 compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
+# The literal/operator tranche covers integer-literal range validation, the
+# signed/floating-point operand requirement of unary `-`, and the syntactic
+# ban on chained comparisons. Invalid source pins each invocation as a
+# non-compiling metadata path.
+[[case]]
+name = "literal_out_of_range_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0800"]
+compile_only = true
+compile_stdout_contains = ["E0800: Literal out of range", "Assign a literal too large for its type:", "Widen the annotated type:", "docs/spec/src/03-types/01-integer-types.md (spec rule 3.1:17)", "docs/spec/src/03-types/01-integer-types.md (spec rule 3.1:18)", "docs/spec/src/06-items/05-constants.md (spec rule 6.5:5)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "cannot_negate_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0801"]
+compile_only = true
+compile_stdout_contains = ["E0801: Cannot negate", "Negate an unsigned value:", "Negate a signed value:", "docs/spec/src/04-expressions/02-arithmetic-operators.md (spec rule 4.2:14)", "docs/spec/src/04-expressions/02-arithmetic-operators.md (spec rule 4.2:6)", "docs/spec/src/04-expressions/07-match-expressions.md (spec rule 4.7:24)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "chained_comparison_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0802"]
+compile_only = true
+compile_stdout_contains = ["E0802: Chained comparison", "Chain two comparisons:", "Combine comparisons with a logical operator:", "docs/spec/src/04-expressions/03-comparison-operators.md (spec rule 4.3:12)", "docs/spec/src/04-expressions/03-comparison-operators.md (spec rule 4.3:13)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
 [[case]]
 name = "malformed_code_is_rejected"
 files = [{ path = "main.rue", source = "fn main() {}\n" }]
