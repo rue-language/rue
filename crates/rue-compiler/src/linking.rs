@@ -1716,6 +1716,47 @@ mod temp_link_dir_tests {
         "out=''\nprev=''\nfor arg in \"$@\"; do\n  if [ \"$prev\" = '-o' ]; then out=$arg; break; fi\n  prev=$arg\ndone\n"
     }
 
+    /// Upper bound for every wait in this module.
+    ///
+    /// Each of those waits synchronizes on an event — a marker file the mock
+    /// linker writes, the child leaving the process table, the link call
+    /// returning — so this bound is a hang guard and never the assertion: it
+    /// exists only so a wedged test fails by name instead of running to the
+    /// suite timeout. It is deliberately far above any latency a loaded host
+    /// can produce, because exceeding it must mean "blocked", not "slow".
+    const EVENT_WAIT_LIMIT: Duration = Duration::from_secs(60);
+
+    /// How often the marker-file and process-liveness waits re-check.
+    const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(1);
+
+    /// How long the cancellation mock linker stays alive when nobody kills it.
+    /// Cancellation has to beat this, not merely finish quickly.
+    const MOCK_LINKER_LIFETIME: Duration = Duration::from_secs(30);
+
+    /// Bound on the interval between the cancel request and the link call
+    /// returning.
+    ///
+    /// This one is a real budget, derived from the mechanism: `wait_for_linker`
+    /// polls the child every 10 ms and then kills and reaps the process group,
+    /// so a working cancellation answers within about one poll interval. The
+    /// limit allows five hundred of them for a loaded host while staying six
+    /// times below `MOCK_LINKER_LIFETIME`, so failing it means the link waited
+    /// the child out rather than cancelling it. It is measured from the cancel
+    /// request rather than from the start of the link, because the runtime
+    /// validation and the 3 MB archive write that precede the spawn are not
+    /// part of the property under test and are exactly what host load inflates.
+    const CANCELLATION_RESPONSE_LIMIT: Duration = Duration::from_secs(5);
+
+    /// Poll `ready` until it observes the event, failing with `message` only if
+    /// the event never arrives at all.
+    fn wait_for_event(message: &str, mut ready: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + EVENT_WAIT_LIMIT;
+        while !ready() {
+            assert!(std::time::Instant::now() < deadline, "{message}");
+            std::thread::sleep(EVENT_POLL_INTERVAL);
+        }
+    }
+
     #[test]
     #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
     fn platform_native_system_link_cancellation_reaps_child_and_cleans_workspace() {
@@ -1725,9 +1766,10 @@ mod temp_link_dir_tests {
         let descendant_pid_path = directory.path().join("descendant-pid");
         let workspace_path = directory.path().join("workspace");
         let body = format!(
-            "{}printf '%s\\n' \"$$\" > '{}'\nsleep 30 &\nprintf '%s\\n' \"$!\" > '{}'\nprintf '%s\\n' \"$(dirname \"$out\")\" > '{}'\n: > '{}'\nwait",
+            "{}printf '%s\\n' \"$$\" > '{}'\nsleep {} &\nprintf '%s\\n' \"$!\" > '{}'\nprintf '%s\\n' \"$(dirname \"$out\")\" > '{}'\n: > '{}'\nwait",
             mock_output_argument(),
             pid_path.display(),
+            MOCK_LINKER_LIFETIME.as_secs(),
             descendant_pid_path.display(),
             workspace_path.display(),
             ready.display(),
@@ -1737,19 +1779,15 @@ mod temp_link_dir_tests {
         let canceler = cancellation.clone();
         let ready_for_thread = ready.clone();
         let cancel_thread = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            while !ready_for_thread.exists() {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "mock linker never started"
-                );
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            wait_for_event("mock linker never started", || ready_for_thread.exists());
+            // Time the cancellation from the request, so the answer does not
+            // include the setup the link performs before the child exists.
+            let requested = std::time::Instant::now();
             canceler.cancel();
+            requested
         });
         let mut options = CompileOptions::default();
         options.target = Target::host().unwrap();
-        let started = std::time::Instant::now();
         let result = link_system_with_warnings_and_cancellation(
             &options,
             &[],
@@ -1757,7 +1795,8 @@ mod temp_link_dir_tests {
             &[],
             &cancellation,
         );
-        cancel_thread.join().unwrap();
+        let returned = std::time::Instant::now();
+        let requested = cancel_thread.join().unwrap();
 
         assert!(matches!(
             result,
@@ -1765,7 +1804,12 @@ mod temp_link_dir_tests {
                 rue_query::QueryAbort::Canceled
             ))
         ));
-        assert!(started.elapsed() < Duration::from_secs(2));
+        let response = returned.saturating_duration_since(requested);
+        assert!(
+            response < CANCELLATION_RESPONSE_LIMIT,
+            "cancellation answered in {response:?}; the mock linker's own \
+             lifetime is {MOCK_LINKER_LIFETIME:?}"
+        );
         let workspace = std::fs::read_to_string(&workspace_path).unwrap();
         assert!(!Path::new(workspace.trim()).exists());
         for pid_path in [&pid_path, &descendant_pid_path] {
@@ -1774,19 +1818,16 @@ mod temp_link_dir_tests {
                 .trim()
                 .parse()
                 .unwrap();
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            loop {
-                if unsafe { libc::kill(pid, 0) } == -1
-                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-                {
-                    break;
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "linker process {pid} survived process-group termination"
-                );
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            // The property is that the process group is gone, not how quickly
+            // the kernel reaped it, so this waits on the event.
+            wait_for_event(
+                &format!("linker process {pid} survived process-group termination"),
+                || {
+                    let probe = unsafe { libc::kill(pid, 0) };
+                    probe == -1
+                        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                },
+            );
         }
     }
 
@@ -1831,16 +1872,25 @@ mod temp_link_dir_tests {
                     replacement_command,
                 ),
             );
-            let mut options = CompileOptions::default();
-            options.target = Target::host().unwrap();
-            let started = std::time::Instant::now();
-            let error = link_system_with_warnings(&options, &[], linker.to_str().unwrap(), &[])
+            // The capture is read through the descriptor the link created, so
+            // unlinking `linker.stderr` and putting a symlink or a fifo in its
+            // place cannot redirect the read or stall it. The failure mode a
+            // regression would produce is not slowness: reopening the pathname
+            // would block in `open(2)` forever on a fifo nobody writes to. So
+            // the link runs on a worker and the bound below is a hang guard on
+            // that block, never a latency budget the healthy path must fit in.
+            let (finished, link_result) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut options = CompileOptions::default();
+                options.target = Target::host().unwrap();
+                let result =
+                    link_system_with_warnings(&options, &[], linker.to_str().unwrap(), &[]);
+                let _ = finished.send(result.map(|_| ()).map_err(|error| error.to_string()));
+            });
+            let diagnostic = link_result
+                .recv_timeout(EVENT_WAIT_LIMIT)
+                .unwrap_or_else(|_| panic!("{replacement} replacement blocked stderr capture"))
                 .unwrap_err();
-            assert!(
-                started.elapsed() < Duration::from_secs(2),
-                "{replacement} replacement blocked stderr capture"
-            );
-            let diagnostic = error.to_string();
             assert!(diagnostic.contains("retained diagnostic"));
             assert!(!diagnostic.contains("pathname replacement must not be read"));
         }
@@ -1852,9 +1902,9 @@ mod temp_link_dir_tests {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "exit 0"]);
         let mut job = LinkerJob::spawn(&mut command).unwrap();
-        while job.try_wait().unwrap().is_none() {
-            std::thread::yield_now();
-        }
+        wait_for_event("linker child never exited", || {
+            job.try_wait().unwrap().is_some()
+        });
         let cancellation = rue_query::CancellationToken::new();
         cancellation.cancel();
 

@@ -251,6 +251,14 @@ target once in isolation. A clean isolated 64/64 run is sufficient local
 evidence; do not repeatedly rerun the entire suite. A semantic disagreement,
 compiler error, or isolated timeout remains a real failure.
 
+One other wall-clock budget is deliberate: the linking test
+`platform_native_system_link_cancellation_reaps_child_and_cleans_workspace`
+gives cancellation five seconds to answer, measured from the cancel request
+rather than from the start of the link, because its mock linker would otherwise
+live for thirty seconds and the point of the test is that cancellation does not
+wait the child out (RUE-2005). Every other wait in that module synchronizes on
+an event and its bound is only a hang guard.
+
 An unfiltered `scripts/rue test` delegates selection and execution to Buck in
 one `buck2 test` invocation. Its standard selection includes the premerge and
 slow tiers while leaving stress tests opt-in. Corpus suites are cacheable Buck
