@@ -80,6 +80,42 @@ if [[ "$commands" -gt 0 ]]; then
     hit_rate="$((cached * 100 / commands))%"
 fi
 
+# Buck ends every invocation with `Network: Up: <n>  Down: <n>`, counting both
+# remote-cache traffic and the toolchain archives it fetches over HTTP. Nothing
+# recorded that, so the cost of a lane's cold materialization was invisible
+# after the fact and RUE-2003's before/after had to be reconstructed from raw
+# job logs. Sum it per step instead, alongside the action counters it explains:
+# a lane whose Commands line says everything was cached and whose Down is
+# hundreds of megabytes is a lane that materialized a toolchain.
+network_up="—"
+network_down="—"
+network="$(grep -oE 'Network: Up: [0-9.]+[A-Za-z]+ +Down: [0-9.]+[A-Za-z]+' "$log" | awk '
+    function bytes(v,   n, u, m) {
+        n = v + 0
+        u = v
+        sub(/^[0-9.]+/, "", u)
+        m = 1
+        if (u == "KiB") m = 1024
+        else if (u == "MiB") m = 1048576
+        else if (u == "GiB") m = 1073741824
+        else if (u == "TiB") m = 1099511627776
+        return n * m
+    }
+    function human(b,   unit, i) {
+        split("B KiB MiB GiB TiB", unit, " ")
+        i = 1
+        while (b >= 1024 && i < 5) { b /= 1024; i++ }
+        if (i == 1) return sprintf("%dB", b)
+        return sprintf("%.1f%s", b, unit[i])
+    }
+    { up += bytes($3); down += bytes($5) }
+    END { if (NR > 0) printf "%s %s", human(up), human(down) }
+')"
+if [[ -n "$network" ]]; then
+    network_up="${network%% *}"
+    network_down="${network##* }"
+fi
+
 if [[ "$status" -eq 0 && "${RUE_CI_REQUIRE_REMOTE_ACTIONS:-0}" == "1" && "$remote" -eq 0 ]]; then
     echo "::error::remote-execution canary completed without any remotely executed Buck actions" >&2
     status=1
@@ -96,14 +132,16 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     {
         echo "### CI timing: $safe_label"
         echo
-        echo "| Result | Wall time | Test time | Cache hits | CLI cases | Buck invocations | Commands | Cached | Remote | Local |"
-        echo "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
-        echo "| $result | ${elapsed}s | $test_time | $hit_rate | $cli_cases | $invocations | $commands | $cached | $remote | $local_actions |"
+        echo "| Result | Wall time | Test time | Cache hits | CLI cases | Buck invocations | Commands | Cached | Remote | Local | Net down | Net up |"
+        echo "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+        echo "| $result | ${elapsed}s | $test_time | $hit_rate | $cli_cases | $invocations | $commands | $cached | $remote | $local_actions | $network_down | $network_up |"
         echo
         echo "<sup>Cached/Remote/Local count Buck actions by how each was obtained."
         echo "Test time is the summed duration Buck reports for the test processes"
         echo "themselves — opaque to those counters, and where a corpus lane's wall"
-        echo "time actually goes.</sup>"
+        echo "time actually goes. Net down/up is Buck's own byte count for the"
+        echo "invocations in this step: remote-cache traffic plus the toolchain"
+        echo "archives fetched from their origin.</sup>"
         echo
     } >>"$GITHUB_STEP_SUMMARY"
 fi

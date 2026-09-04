@@ -87,6 +87,16 @@ Error: (Failed to make BatchReadBlobs request: Unexpected EOF decoding stream)
 EOF
 }
 
+# RUE-1949's classifier matched only the Zig tree. The same transport failure
+# lands on the rustc and rust-std distributions too, and those merge-group
+# ejections were never retried (RUE-2003).
+rust_tree_failure() {
+    cat <<'EOF'
+Internal error (stage: materialize_inputs_failed): Error materializing artifact at path `buck-out/v2/art/toolchains/01d1977e3655e393/rust/__rustc-linux-x86_64__/rustc-linux-x86_64/rustc/bin/rustc`
+Error: (Failed to make BatchReadBlobs request: code: 'Internal error', message: "Unexpected EOF decoding stream.")
+EOF
+}
+
 disjoint_grpc_failure() {
     cat <<'EOF'
 Internal error (stage: materialize_inputs_failed): Error materializing artifact at path `buck-out/v2/art/toolchains/01d1977e3655e393/zig/__dist-linux-x86_64__/dist-linux-x86_64/zig`
@@ -153,6 +163,9 @@ test_cache_install() {
         "$(grep -Eq '^default_allow_cache_upload = true$' "$config" && echo 0 || echo 1)"
     check "cache: the remote-cache execution platform is selected" \
         "$(grep -Eq '^execution_platforms = root//platforms:remote_cache$' "$config" && echo 0 || echo 1)"
+    check "cache: one BatchReadBlobs response is bounded" \
+        "$(grep -Eq '^max_total_batch_size = 1000000$' "$config" &&
+           grep -Eq '^max_decoding_message_size = 16000000$' "$config" && echo 0 || echo 1)"
     check "cache: install writes nothing into the checkout" \
         "$([ ! -e "$sb/checkout/.buckconfig.local" ] && echo 0 || echo 1)"
 
@@ -276,7 +289,7 @@ test_buck_wrapper_links_installed_config() {
     rm -rf "$sb"
 }
 
-test_buck_wrapper_retries_only_truncated_zig_materialization() {
+test_buck_wrapper_retries_only_truncated_cas_materialization() {
     local sb out rc fixture variant missing preference_ok status_ok expected_output
     sb="$(mktemp -d)"
     make_wrapper_sandbox "$sb"
@@ -287,9 +300,13 @@ EOF
 
     # Both transport endings observed for this incident classify, and a clean
     # replay returns success while retaining both attempts' output.
-    for variant in grpc eof; do
+    for variant in grpc eof rust; do
         rm -f "$sb"/attempt.* "$sb"/retry.args.*
-        if [[ "$variant" == grpc ]]; then fixture="$(grpc_failure)"; else fixture="$(eof_failure)"; fi
+        case "$variant" in
+            grpc) fixture="$(grpc_failure)" ;;
+            eof) fixture="$(eof_failure)" ;;
+            rust) fixture="$(rust_tree_failure)" ;;
+        esac
         write_retry_attempt "$sb" 1 41 "first attempt stdout ($variant)"
         write_retry_stderr_attempt "$sb" 1 "$fixture"
         write_retry_attempt "$sb" 2 0 "second attempt succeeded ($variant)"
@@ -387,12 +404,12 @@ EOF
     done
 
     # Removing any one invariant from the conjunction fails closed.
-    for missing in stage zig batch transport; do
+    for missing in stage path batch transport; do
         rm -f "$sb"/attempt.* "$sb"/retry.args.*
         fixture="$(grpc_failure)"
         case "$missing" in
             stage) fixture="${fixture/materialize_inputs_failed/materialize_failed}" ;;
-            zig) fixture="${fixture/toolchains\/01d1977e3655e393\/zig/toolchains\/01d1977e3655e393\/rust}" ;;
+            path) fixture="${fixture/Error materializing artifact at path/Error preparing artifact}" ;;
             batch) fixture="${fixture/BatchReadBlobs/ReadBlob}" ;;
             transport) fixture="${fixture/missing grpc-status trailer, stream was terminated without a final status (possible truncation by a proxy or load balancer)/connection reset by peer}" ;;
         esac
@@ -491,7 +508,7 @@ EOF
 test_cache_install
 test_buck_wrapper_prefers_local_cache_misses
 test_buck_wrapper_links_installed_config
-test_buck_wrapper_retries_only_truncated_zig_materialization
+test_buck_wrapper_retries_only_truncated_cas_materialization
 test_full_suite_orchestration
 
 echo "--------------------------------------------------"

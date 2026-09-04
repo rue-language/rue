@@ -33,12 +33,18 @@
 #     when remote is enabled — even for cache-only use)
 #   - default_allow_cache_upload=true (the upload-enabled executor is one gate;
 #     ordinary Rust actions defer to this separate OSS-default-off gate)
+#
+# max_total_batch_size is not one of those four: it affects no hit rate, only
+# how much one BatchReadBlobs response may carry. See "Toolchain distributions
+# do not travel through the CAS" in docs/process/build-cache.md (RUE-2003).
 
 [buck2_re_client]
 engine_address = grpc://remote.buildbuddy.io
 action_cache_address = grpc://remote.buildbuddy.io
 cas_address = grpc://remote.buildbuddy.io
 tls = true
+max_total_batch_size = 1000000
+max_decoding_message_size = 16000000
 http_headers = x-buildbuddy-api-key:<YOUR_BUILDBUDDY_API_KEY>
 
 [buck2]

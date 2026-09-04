@@ -100,31 +100,44 @@ if [[ "$uses_remote_cache" -eq 1 ]] && [[ "$execution_command" -eq 1 ]] && [[ "$
     [[ "$inserted" -eq 1 ]] || args+=(--prefer-local)
 fi
 
-# BuildBuddy occasionally terminates a large BatchReadBlobs response while
-# Buck is materializing the Zig executable. The failure happens before the
-# requested action runs, and immediately replaying the same command has proved
-# sufficient. Keep the exception deliberately narrower than a general remote
-# cache retry: every observed invariant must be present in the first attempt's
-# stderr, and the replay calls DotSlash directly so there can only be one retry.
-is_truncated_zig_materialization() {
-    local line previous_is_zig_failure=0
-    local zig_failure_re='Internal error \(stage: materialize_inputs_failed\): Error materializing artifact at path `buck-out/[^[:space:]`]+/toolchains/[^[:space:]`]+/zig/[^[:space:]`]+/zig`'
+# BuildBuddy sometimes terminates a BatchReadBlobs response mid-stream while
+# Buck is materializing an artifact it declared from a cache hit. The failure
+# happens before the requested action runs, so replaying the command can only
+# repeat work that was going to be attempted anyway.
+#
+# RUE-2003 removed the reason this fires at all: the hermetic toolchain
+# distributions, the only artifacts big enough to need a batch of thousands of
+# blobs, no longer travel through the remote CAS. This stays as the
+# belt-and-braces path for a merge-group run, which has no operator to press
+# rerun, and it is no longer scoped to the Zig tree: of the twenty-three
+# failing jobs surveyed for RUE-2003, three named the rustc or rust-std tree
+# instead and RUE-1949's zig-only classifier never fired for them. Note the
+# ceiling this buys: the replay rescued five of the twenty it did fire on,
+# because the failure is deterministic for a given batch. It is a mitigation,
+# not a fix.
+#
+# Keep the exception deliberately narrower than a general remote-cache retry:
+# every invariant must be present in the first attempt's stderr, and the replay
+# calls DotSlash directly so there can only be one retry.
+is_truncated_cas_materialization() {
+    local line previous_is_materialization_failure=0
+    local materialization_failure_re='Internal error \(stage: materialize_inputs_failed\): Error materializing artifact at path `buck-out/[^[:space:]`]+`'
 
     # Buck emits the materialization failure and its transport cause as two
     # adjacent stderr diagnostics. Requiring that structure prevents ordinary
     # action/program output from assembling the classifier out of unrelated
     # lines after the requested action has already run.
     while IFS= read -r line; do
-        if [[ "$previous_is_zig_failure" -eq 1 ]] &&
+        if [[ "$previous_is_materialization_failure" -eq 1 ]] &&
            [[ "$line" == *'Error: (Failed to make BatchReadBlobs request:'* ]] &&
            { [[ "$line" == *'missing grpc-status trailer, stream was terminated without a final status (possible truncation by a proxy or load balancer)'* ]] ||
              [[ "$line" == *'Unexpected EOF decoding stream'* ]]; }; then
             return 0
         fi
-        if [[ "$line" =~ $zig_failure_re ]]; then
-            previous_is_zig_failure=1
+        if [[ "$line" =~ $materialization_failure_re ]]; then
+            previous_is_materialization_failure=1
         else
-            previous_is_zig_failure=0
+            previous_is_materialization_failure=0
         fi
     done <"$1"
     return 1
@@ -164,8 +177,8 @@ if [[ "${#args[@]}" -gt 0 ]]; then
 
         if [[ "$first_status" -ne 0 ]] && [[ "$stdout_tee_status" -eq 0 ]] &&
            [[ "$stderr_tee_status" -eq 0 ]] &&
-           is_truncated_zig_materialization "$retry_stderr"; then
-            echo "note: retrying Buck once after a truncated BuildBuddy Zig materialization" >&2
+           is_truncated_cas_materialization "$retry_stderr"; then
+            echo "note: retrying Buck once after a truncated BuildBuddy CAS materialization" >&2
             cleanup_retry_capture
             trap - EXIT
             set +e

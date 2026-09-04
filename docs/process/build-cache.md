@@ -97,43 +97,134 @@ intended experiment. The checked-in `.buckconfig.local.example` documents the
 same knobs for a hand-written per-checkout config; the installed user config
 is the recommended setup.
 
-### Bounded Zig materialization retry
+### Toolchain distributions do not travel through the CAS (RUE-2003)
 
-On 2026-09-03 and 2026-09-04 UTC, first attempts of CI runs
-33814662565 and 33824226528 intermittently failed before their requested tests
-ran. Buck reported `materialize_inputs_failed` for the Zig executable under
-`buck-out/.../toolchains/.../zig/.../zig`; BuildBuddy's `BatchReadBlobs`
-response ended without its final `grpc-status` trailer and the diagnostic
-called out possible proxy/load-balancer truncation. The same incident record
-also includes one `BatchReadBlobs` `Unexpected EOF decoding stream` failure for
-that stage and artifact. Plain failed-job reruns passed.
+Between 2026-09-03 16:34 UTC and 2026-09-04, CI jobs began dying in their first
+minute, and the merge queue ejected the pull requests they were validating.
+Buck reported `materialize_inputs_failed` for a toolchain path and named a
+transport cause:
 
-The repository `./buck2` wrapper therefore makes one bounded replay of the
-exact same DotSlash/Buck argv only in GitHub Actions, when those facts occur as
-an adjacent pair of Buck stderr diagnostics on a failed execution command using
-the configured remote-cache platform. The first attempt remains in the log and
-the replay streams normally. A successful replay returns success; a failed
-replay preserves the first failure's status and both attempts' output. A
-matching second failure is not retried again. Successful
-commands, compiler/test/semantic failures, other remote errors, non-Zig
-materialization failures, ordinary local configurations, and
-`RUE_NO_REMOTE_CACHE=1`, `--no-remote-cache`, and `--local-only` retain
-fail-fast behavior. Other explicit local/remote preferences are replayed
-unchanged, so this applies equally to cache-only and intentionally remote
-execution without changing either mode's semantics.
+```
+Error: (Failed to make BatchReadBlobs request: code: 'Unknown error', message:
+"protocol error: missing grpc-status trailer, stream was terminated without a
+final status (possible truncation by a proxy or load balancer)")
+```
 
-This policy is centralized in the wrapper used by CI rather than duplicated in
-workflow jobs. Interactive and other local commands still directly `exec`
-DotSlash without capture. Fork jobs without the secret never acquire the
-installed config and remain ineligible. The wrapper does not read config
-contents into the capture or print argv, configuration, or credentials; the
-temporary captures hold only the first attempt's output that was already
-streamed to the caller.
-Hermetic synthetic tests pin the exact classifier, argv replay, one-retry
-ceiling, and exit propagation. Those tests prove the repository policy, not
-that the intermittent service-side truncation has disappeared; that conclusion
-requires continued operational evidence from ordinary pull-request and
-merge-group runs.
+with `Unexpected EOF decoding stream` as the other ending. Both mean the same
+thing: BuildBuddy's response body stopped part-way.
+
+Across the failing pull-request and merge-group runs of those two days, the
+failing artifact was one of **exactly four action digests**, and all four are
+hermetic toolchain distributions — the Zig `x86_64-linux` and `aarch64-linux`
+trees, the `rustc` component, and the `rust-std` component. Nothing else in the
+graph ever failed this way, and no run before 2026-09-03 16:34 UTC contains the
+signature at all. Those four are also the only artifacts Rue has that are made
+of tens of thousands of tiny files: the Zig 0.16.0 `x86_64-linux` distribution
+is 19,546 files and 341 MiB, of which 19,544 files and 170 MiB are under the
+batch threshold. Materializing one is therefore the only thing Rue ever asks
+BuildBuddy to answer with a batch of thousands of blobs. The failures land
+within seconds of a build starting, after a few hundred kilobytes of traffic:
+this is a property of one response, not of load or of a lane's total volume.
+
+The same operation demonstrably worked three days earlier. The 2026-08-31 cache
+probe rebuilds from an emptied `buck-out`, which is the same condition, and its
+warm phase pulled `Network: Down: 483MiB` from the CAS with all four trees
+included. Nothing in the client configuration changed in between — RUE-1934
+rewrote how that config is delivered but generates it byte for byte — and
+per-lane traffic did not grow either side of the onset, so the change is on
+BuildBuddy's side rather than in this repository. What varies is *exposure*,
+because these action-cache entries come and go: a lane that finds one
+materializes the tree from the CAS and can be truncated, while a lane that
+misses extracts locally and cannot. That is why plain reruns sometimes passed,
+why merge-group runs stayed green through the evening of 2026-09-03 and began
+failing on 2026-09-04, and why the wrapper replay described below rescued only
+a quarter of the failures it caught.
+
+Two changes remove it, in that order of importance.
+
+**The distributions are no longer cache artifacts.** `http_archive`'s
+extraction is an ordinary Buck action, so `[buck2] default_allow_cache_upload =
+true` — which ordinary Rust actions need — also uploaded each unpacked
+toolchain tree and served it back from the CAS. `toolchain_distribution`
+(`toolchains/distribution.bzl`) replaces `http_archive` for all of them: the
+archive is fetched with `download_file`, which buck2's materializer serves from
+the origin URL and never through the CAS, and the extraction sets
+`allow_cache_upload = False`, an explicit opt-out that buck2 honours over the
+config default. No action-cache entry exists for these trees, so no machine can
+be served one, and the four poisoned digests are permanently orphaned. The
+archives are SHA-pinned, so the extracted bytes are what the cache would have
+returned: converting them re-ran the twelve extraction actions and invalidated
+nothing downstream.
+
+**This is not free, and the cost is not where you would guess.** An action's
+output digest is what keys its consumers, and with no action-cache entry buck2
+can only learn that digest by running the action. Every lane with a fresh
+`buck-out` therefore fetches and extracts every toolchain distribution its
+graph reaches, including a lane that would otherwise have been served entirely
+from cache and materialized nothing. Measured on the same tree, `CI` run
+33820449895 (before) against 33889388662 (after):
+
+| Lane | Before | After |
+| --- | --- | --- |
+| `clippy` (38 local actions) | 273 MiB down | 296 MiB down |
+| `release (linux-x64)` (1 local action) | 2.3 MiB down, 20s | 237 MiB down, 34s |
+| `test (linux-x64-cli-shard-2)` (0 local actions) | 2.4 MiB down, 21s | 237 MiB down, 28s |
+
+A lane that already needed a toolchain pays roughly what it paid before — the
+bytes move from BuildBuddy's CAS to the origin CDNs — and a lane that did not
+pays about 237 MiB and ten to twenty seconds it did not pay before. Across the
+whole run that was +134 seconds of job time and roughly 2.8 GiB of additional
+origin traffic. That is the price of the failing operation being impossible
+rather than merely less likely, and it is the line to reconsider first if
+BuildBuddy confirms a fix: dropping `allow_cache_upload = False` restores
+cache-served trees while leaving the bound below in place.
+
+**One BatchReadBlobs response is bounded.** The provisioned config now sets
+`max_total_batch_size = 1000000` and `max_decoding_message_size = 16000000`.
+buck2 packs blobs up to `max_total_batch_size` content bytes per request and
+uses `min(this, the server's advertised max_batch_total_size_bytes)`, so
+lowering it can only cost extra round trips. This covers every remaining CAS
+read rather than just the toolchains, and it matters because buck2's own CAS
+retry cannot help here: `remote_execution/oss/re_grpc/src/client.rs` retries
+`BatchReadBlobs` five times, but only for `Unavailable`, `ResourceExhausted`,
+`Aborted`, or an `io::Error`. The truncation arrives as `Unknown` or
+`Internal`, so buck2 treats it as fatal on the first attempt.
+
+Whether the response BuildBuddy could not send exceeded its own limit, its
+proxy's, or something else is **not settled from this side**; the bound is
+chosen with an order of magnitude of headroom under the 4 MiB message size gRPC
+servers and proxies commonly enforce, and it is the knob to revisit if the
+signature returns.
+
+The `./buck2` wrapper keeps one bounded replay of the same DotSlash/Buck argv
+in GitHub Actions when the materialization failure and the transport cause
+occur as an adjacent pair of Buck stderr diagnostics on a failed execution
+command using the configured remote-cache platform. RUE-1949 introduced it
+scoped to the Zig path; it is now scoped to any artifact, because three of the
+twenty-three failing jobs surveyed named the rustc or rust-std tree and never
+qualified for a retry at all. **Read the ceiling honestly**: of the twenty jobs
+where it did fire, the replay rescued five. The failure is deterministic for a
+given batch, so replaying the same command usually reproduces it. The retry is
+there because a merge-group run has no operator to press rerun, not because it
+works.
+
+A successful replay returns success; a failed replay preserves the first
+failure's status and both attempts' output, and is not retried again.
+Successful commands, compiler/test/semantic failures, other remote errors,
+ordinary local configurations, and `RUE_NO_REMOTE_CACHE=1`,
+`--no-remote-cache`, and `--local-only` retain fail-fast behavior. Fork jobs
+without the secret never acquire the installed config and remain ineligible.
+The wrapper does not read config contents into the capture or print argv,
+configuration, or credentials. Hermetic synthetic tests in
+`scripts/test-build-sharing.sh` pin the classifier, the argv replay, the
+one-retry ceiling, and exit propagation; they prove the repository policy, not
+that the service-side truncation has disappeared.
+
+Each required-CI step's job summary now records Buck's own `Network` byte
+counters next to the action counters (`scripts/ci-timed`), so "did this lane
+materialize a toolchain" is answerable from the summary rather than by
+reconstructing it from raw job logs, which is what RUE-2003 had to do.
+
 
 ## Full-suite host coordination
 
