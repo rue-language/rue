@@ -602,6 +602,7 @@ where
         vreg_count,
         &inst_uses,
         &inst_defs,
+        &successors,
         live_in,
         has_back_edge,
     );
@@ -903,23 +904,49 @@ fn materialize_live_out(
 
 /// Build live ranges from dataflow results.
 ///
-/// `has_back_edge` selects the algorithm:
+/// A range is derived from three sources, none of which walks the live set of
+/// an instruction:
 ///
-/// * **No back-edges (loop-free control flow):** a vreg's live range is exactly
-///   `[first def/use, last def/use]`. Scanning `live_in`/`live_out` cannot widen
-///   it — a vreg can only be live at an instruction that is neither a def nor a
-///   use of it if that instruction sits *between* a def and a later use (already
-///   inside the def/use span) or across a back-edge (excluded here). So we skip
-///   the per-instruction bitset scan entirely and read ranges off the def/use
-///   lists in O(defs + uses). This matters because a single basic block can hold
-///   many simultaneously-live vregs (e.g. a large array literal materializes N
-///   element values before storing them); the bitset scan is then O(N²) in the
-///   number of live bits, whereas this path stays linear (RUE-302).
-/// * **Has back-edges (loops):** loop-carried values are live past their textual
-///   last use, so we extend the same dense range table from the exact `live_in`
-///   scan as well as definitions and uses. Scanning `live_out` too would be
-///   redundant: `live_in = uses ∪ (live_out - defs)`, so every live-out value
-///   is already either live-in or defined at that instruction.
+/// * **Definitions and uses.** Every def and use index is inside its vreg's
+///   range, so one linear pass over the fact lists gives the `[first, last]`
+///   extent of the textual def/use span in O(defs + uses).
+/// * **Loop-free control flow adds nothing.** A vreg can only be live at an
+///   instruction that is neither a def nor a use of it if that instruction sits
+///   *between* a def and a later use (already inside the def/use span) or across
+///   a back-edge. Without back-edges the def/use pass is therefore the whole
+///   answer, and the dataflow sets are not even computed (RUE-302).
+/// * **Back-edges extend it, at the boundaries only.** With loops a value is
+///   live past its textual last use, so the live-in sets have to be consulted.
+///   They are consulted at the *ends of each live run* rather than at every
+///   instruction: the set of indices where a vreg is live-in is a union of
+///   maximal runs of consecutive indices, and a range only needs each run's two
+///   endpoints. A run boundary is a row where `live_in[idx]` and
+///   `live_in[idx + 1]` disagree about the vreg, so only rows whose membership
+///   can differ from the next row's are examined (RUE-2011).
+///
+/// # Which rows can differ from the next row
+///
+/// For an instruction whose only successor is `idx + 1`, the transfer function
+/// is `live_in[idx] = uses[idx] ∪ (live_in[idx + 1] - defs[idx])`, so the two
+/// rows can only disagree about a vreg in `uses[idx] ∪ defs[idx]`, and such a
+/// disagreement is already inside the def/use extent:
+///
+/// * live at `idx` but not at `idx + 1` forces the vreg into `uses[idx]`, so
+///   `idx` is a use index;
+/// * live at `idx + 1` but not at `idx` forces it into `defs[idx]`, so `idx` is
+///   a def index and the range already covers `idx < idx + 1`. That run's upper
+///   end is found at its own boundary row.
+///
+/// A straight-line row therefore contributes nothing, and only branch, jump,
+/// and return rows — plus the first and last rows, which have no neighbour on
+/// one side — are inspected. Each inspection is a word-level XOR of the two
+/// rows, so its cost is the row width plus the number of vregs that actually
+/// change, not the number that are live.
+///
+/// The result is identical to scanning `live_in` at every instruction, which is
+/// what `live_in_scan_reference` asserts. Scanning `live_out` too would be
+/// redundant either way: `live_in = uses ∪ (live_out - defs)`, so every live-out
+/// value is already either live-in or defined at that instruction.
 ///
 /// # A range is a textual interval, not liveness
 ///
@@ -951,6 +978,7 @@ fn build_live_ranges(
     vreg_count: u32,
     inst_uses: &[VRegList],
     inst_defs: &[VRegList],
+    successors: &[SuccessorList],
     live_in: &[FixedBitSet],
     has_back_edge: bool,
 ) -> IndexMap<VReg, Option<LiveRange>> {
@@ -970,19 +998,6 @@ fn build_live_ranges(
         slot @ None => *slot = Some(LiveRange::new(idx, idx)),
     };
 
-    if !has_back_edge {
-        // Fast O(defs + uses) path: no loops, so def/use extents are the range.
-        for idx in 0..num_insts {
-            for vreg in &inst_defs[idx] {
-                extend(*vreg, idx);
-            }
-            for vreg in &inst_uses[idx] {
-                extend(*vreg, idx);
-            }
-        }
-        return ranges;
-    }
-
     for idx in 0..num_insts {
         for vreg in &inst_defs[idx] {
             extend(*vreg, idx);
@@ -990,12 +1005,76 @@ fn build_live_ranges(
         for vreg in &inst_uses[idx] {
             extend(*vreg, idx);
         }
-        for vreg_idx in live_in[idx].ones() {
-            extend(VReg::new(vreg_idx as u32), idx);
+    }
+
+    if !has_back_edge {
+        return ranges;
+    }
+
+    // The first and last rows have no neighbour below and above them, so every
+    // value live-in there ends a run at that row.
+    let (Some(first_row), Some(last_row)) = (live_in.first(), live_in.last()) else {
+        return ranges;
+    };
+    for vreg_idx in first_row.ones() {
+        extend(VReg::new(vreg_idx as u32), 0);
+    }
+    for vreg_idx in last_row.ones() {
+        extend(VReg::new(vreg_idx as u32), num_insts - 1);
+    }
+
+    for idx in 0..num_insts - 1 {
+        let row_successors: &[usize] = &successors[idx];
+        if *row_successors == [idx + 1] {
+            // Straight-line row: any disagreement with the next row is a def or
+            // a use here, and the def/use pass has already covered it.
+            continue;
         }
+        for_each_live_in_transition(&live_in[idx], &live_in[idx + 1], |vreg, live_here| {
+            extend(vreg, if live_here { idx } else { idx + 1 });
+        });
     }
 
     ranges
+}
+
+/// Visit every vreg whose live-in membership differs between two adjacent rows.
+///
+/// `live_here` reports which side the vreg is on: `true` when it is live in
+/// `row` and not in `next`, which ends a run at `row`; `false` when it is live
+/// in `next` only, which starts one at the following index.
+///
+/// The comparison is a word-level XOR, so it costs one pass over the row width
+/// plus one step per differing vreg. Iterating either row's set bits instead
+/// would reintroduce the per-instruction live-set walk this construction exists
+/// to avoid.
+fn for_each_live_in_transition(
+    row: &FixedBitSet,
+    next: &FixedBitSet,
+    mut visit: impl FnMut(VReg, bool),
+) {
+    const BLOCK_BITS: usize = usize::BITS as usize;
+    let row_blocks = row.as_slice();
+    let next_blocks = next.as_slice();
+    // One length compare per inspected row, against the word scan below: the
+    // XOR walk would silently miss transitions past the shorter row, and a
+    // missed transition is a range that ends too early, so this stays on in
+    // release builds (the codegen crate keeps no debug-only assertions).
+    assert_eq!(
+        row_blocks.len(),
+        next_blocks.len(),
+        "dataflow rows are allocated at one width"
+    );
+
+    for (block_idx, (&row_block, &next_block)) in row_blocks.iter().zip(next_blocks).enumerate() {
+        let mut changed = row_block ^ next_block;
+        while changed != 0 {
+            let bit = changed.trailing_zeros() as usize;
+            changed &= changed - 1;
+            let vreg = VReg::new((block_idx * BLOCK_BITS + bit) as u32);
+            visit(vreg, row_block & (1 << bit) != 0);
+        }
+    }
 }
 
 // ============================================================================
@@ -1336,6 +1415,312 @@ mod tests {
                 defs.push(def_facts);
             }
             assert_worklist_matches_reference(num_insts, vreg_count, &successors, &uses, &defs);
+        }
+    }
+
+    /// The construction RUE-2011 replaced: extend a vreg's range at every
+    /// instruction where it is defined, used, or live-in.
+    ///
+    /// This is the specification the boundary-driven construction in
+    /// [`build_live_ranges`] answers, kept here so the two can be compared
+    /// directly. It is O(instructions x live set); the production construction
+    /// reads the same ranges off the ends of each live run instead.
+    fn live_in_scan_reference(
+        num_insts: usize,
+        vreg_count: u32,
+        inst_uses: &[VRegList],
+        inst_defs: &[VRegList],
+        live_in: &[FixedBitSet],
+    ) -> IndexMap<VReg, Option<LiveRange>> {
+        let mut ranges: IndexMap<VReg, Option<LiveRange>> =
+            IndexMap::with_capacity(vreg_count as usize);
+        ranges.resize(vreg_count as usize, None);
+
+        let mut extend = |vreg: VReg, idx: usize| match &mut ranges[vreg] {
+            Some(range) => {
+                if idx < range.start {
+                    range.start = idx;
+                }
+                if idx > range.end {
+                    range.end = idx;
+                }
+            }
+            slot @ None => *slot = Some(LiveRange::new(idx, idx)),
+        };
+
+        for idx in 0..num_insts {
+            for vreg in &inst_defs[idx] {
+                extend(*vreg, idx);
+            }
+            for vreg in &inst_uses[idx] {
+                extend(*vreg, idx);
+            }
+            for vreg_idx in live_in[idx].ones() {
+                extend(VReg::new(vreg_idx as u32), idx);
+            }
+        }
+
+        ranges
+    }
+
+    fn assert_ranges_match_scan(
+        label: &str,
+        num_insts: usize,
+        vreg_count: u32,
+        successors: &[SuccessorList],
+        inst_uses: &[VRegList],
+        inst_defs: &[VRegList],
+    ) {
+        // Both constructions are compared on the path that consumes the
+        // dataflow sets, so the solver and the range builder are asked for the
+        // cyclic treatment even when the generated graph happens to be
+        // loop-free. The loop-free production path is a separate, deliberate
+        // approximation that never reads `live_in` at all (RUE-302), so it is
+        // not what this equivalence is about.
+        let (sets, _) = compute_dataflow(
+            num_insts, vreg_count, successors, inst_uses, inst_defs, true,
+        );
+        let DataflowSets::Cyclic { live_in, .. } = &sets else {
+            panic!("cyclic dataflow storage was requested");
+        };
+
+        let built = build_live_ranges(
+            num_insts, vreg_count, inst_uses, inst_defs, successors, live_in, true,
+        );
+        let expected = live_in_scan_reference(num_insts, vreg_count, inst_uses, inst_defs, live_in);
+        assert_eq!(
+            built.iter().collect::<Vec<_>>(),
+            expected.iter().collect::<Vec<_>>(),
+            "{label}: boundary-driven ranges disagree with the live-in scan"
+        );
+    }
+
+    /// Build the successor, use, and def tables a `TestInst` program implies.
+    fn test_program_facts(
+        instructions: &[TestInst],
+    ) -> (Vec<SuccessorList>, Vec<VRegList>, Vec<VRegList>) {
+        let num_insts = instructions.len();
+        let label_to_idx = build_label_map(instructions, test_get_label);
+        let successors = build_successor_lists(instructions, &label_to_idx, |idx, inst, labels| {
+            test_get_successors(idx, inst, labels, num_insts)
+        });
+        let uses = instructions.iter().map(test_get_uses).collect();
+        let defs = instructions.iter().map(test_get_defs).collect();
+        (successors, uses, defs)
+    }
+
+    fn assert_program_ranges_match_scan(label: &str, instructions: &[TestInst], vreg_count: u32) {
+        let (successors, uses, defs) = test_program_facts(instructions);
+        assert_ranges_match_scan(
+            label,
+            instructions.len(),
+            vreg_count,
+            &successors,
+            &uses,
+            &defs,
+        );
+    }
+
+    #[test]
+    fn live_ranges_match_a_live_in_scan_on_loop_shapes() {
+        let l0 = LabelId::new(0);
+        let l1 = LabelId::new(1);
+        let l2 = LabelId::new(2);
+
+        // A value defined before a loop and used after it stays live around the
+        // back-edge, so its range covers the whole loop body even though the
+        // body neither defines nor uses it.
+        assert_program_ranges_match_scan(
+            "value live across a back-edge",
+            &[
+                TestInst::Def { dst: 0 },
+                TestInst::Def { dst: 1 },
+                TestInst::Label { id: l0 },
+                TestInst::Def { dst: 2 },
+                TestInst::Use { src: 2 },
+                TestInst::Use { src: 1 },
+                TestInst::Branch { label: l0 },
+                TestInst::Use { src: 0 },
+                TestInst::Ret,
+            ],
+            3,
+        );
+
+        // A loop-carried value whose use precedes its definition inside the
+        // body: liveness runs backwards from the use to the loop header and
+        // forwards from the definition to the back-edge.
+        assert_program_ranges_match_scan(
+            "loop-carried value used before it is redefined",
+            &[
+                TestInst::Def { dst: 0 },
+                TestInst::Label { id: l0 },
+                TestInst::Use { src: 0 },
+                TestInst::Def { dst: 1 },
+                TestInst::Move { dst: 0, src: 1 },
+                TestInst::Branch { label: l0 },
+                TestInst::Ret,
+            ],
+            2,
+        );
+
+        // Nested loops: the outer back-edge extends a value the inner body only
+        // reads, and the inner back-edge extends one the outer body defines.
+        assert_program_ranges_match_scan(
+            "nested loops",
+            &[
+                TestInst::Def { dst: 0 },
+                TestInst::Label { id: l0 },
+                TestInst::Def { dst: 1 },
+                TestInst::Label { id: l1 },
+                TestInst::Use { src: 0 },
+                TestInst::Use { src: 1 },
+                TestInst::Def { dst: 2 },
+                TestInst::Branch { label: l1 },
+                TestInst::Use { src: 2 },
+                TestInst::Branch { label: l0 },
+                TestInst::Use { src: 1 },
+                TestInst::Ret,
+            ],
+            3,
+        );
+
+        // A value defined inside a loop and dead before it: the range must not
+        // reach back to the header even though the header is inside the loop.
+        assert_program_ranges_match_scan(
+            "value defined in a loop and dead before it",
+            &[
+                TestInst::Def { dst: 0 },
+                TestInst::Label { id: l0 },
+                TestInst::Use { src: 0 },
+                TestInst::Def { dst: 1 },
+                TestInst::Use { src: 1 },
+                TestInst::Branch { label: l0 },
+                TestInst::Ret,
+            ],
+            2,
+        );
+
+        // A value with no definition is live-in to the function, so its range
+        // starts at instruction 0 rather than at its first use.
+        assert_program_ranges_match_scan(
+            "value live-in to the function",
+            &[
+                TestInst::Def { dst: 0 },
+                TestInst::Label { id: l0 },
+                TestInst::Use { src: 0 },
+                TestInst::Branch { label: l0 },
+                TestInst::Use { src: 1 },
+                TestInst::Ret,
+            ],
+            2,
+        );
+
+        // A loop whose body is skipped by a forward branch, so the rows next to
+        // each other in the instruction stream are not adjacent in the CFG.
+        assert_program_ranges_match_scan(
+            "forward branch over a loop body",
+            &[
+                TestInst::Def { dst: 0 },
+                TestInst::Branch { label: l2 },
+                TestInst::Label { id: l1 },
+                TestInst::Def { dst: 1 },
+                TestInst::Use { src: 1 },
+                TestInst::Branch { label: l1 },
+                TestInst::Label { id: l2 },
+                TestInst::Use { src: 0 },
+                TestInst::Ret,
+            ],
+            2,
+        );
+
+        // A self-looping instruction: its own successor is itself, which is a
+        // back-edge that is not a straight-line row.
+        assert_program_ranges_match_scan(
+            "self loop",
+            &[
+                TestInst::Def { dst: 0 },
+                TestInst::Label { id: l0 },
+                TestInst::Branch { label: l0 },
+                TestInst::Use { src: 0 },
+                TestInst::Ret,
+            ],
+            1,
+        );
+    }
+
+    #[test]
+    fn live_ranges_match_a_live_in_scan_on_generated_cfgs() {
+        let mut state = 0xd1ce_u64;
+        let next = |state: &mut u64| {
+            *state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (*state >> 32) as usize
+        };
+
+        for case in 0..256 {
+            let num_insts = 4 + next(&mut state) % 40;
+            // Exercise both a single dataflow word and several of them, since
+            // the transition scan walks the rows word by word.
+            let vreg_count = 1 + (next(&mut state) % 140) as u32;
+            let mut successors = vec![SuccessorList::new(); num_insts];
+            for idx in 0..num_insts {
+                match next(&mut state) % 8 {
+                    // A return or trap: no successors at all.
+                    0 => {}
+                    // A backward branch, which is what makes the graph cyclic.
+                    1 | 2 if idx > 0 => {
+                        if idx + 1 < num_insts {
+                            successors[idx].push(idx + 1);
+                        }
+                        successors[idx].push(next(&mut state) % (idx + 1));
+                    }
+                    // A forward branch, so neighbouring rows are not always
+                    // adjacent in the CFG.
+                    3 if idx + 2 < num_insts => {
+                        successors[idx].push(idx + 1);
+                        successors[idx]
+                            .push(idx + 2 + next(&mut state) % (num_insts - idx - 2).max(1));
+                    }
+                    _ => {
+                        if idx + 1 < num_insts {
+                            successors[idx].push(idx + 1);
+                        }
+                    }
+                }
+            }
+            // Some cases stay loop-free on purpose; the rest carry a back-edge.
+            if case % 4 != 0 {
+                successors[num_insts - 1] = [num_insts / 2].into_iter().collect();
+            }
+
+            let mut uses = Vec::with_capacity(num_insts);
+            let mut defs = Vec::with_capacity(num_insts);
+            for _ in 0..num_insts {
+                let mut use_facts = VRegList::new();
+                let mut def_facts = VRegList::new();
+                if next(&mut state) % 2 == 0 {
+                    use_facts.push(VReg::new((next(&mut state) % vreg_count as usize) as u32));
+                }
+                // Definitions never name vreg 0, so every case has one value
+                // that is used without ever being defined and is therefore
+                // live-in to the whole function.
+                if vreg_count > 1 && next(&mut state) % 2 == 0 {
+                    let defined = 1 + next(&mut state) % (vreg_count as usize - 1);
+                    def_facts.push(VReg::new(defined as u32));
+                }
+                uses.push(use_facts);
+                defs.push(def_facts);
+            }
+
+            assert_ranges_match_scan(
+                &format!("generated case {case}"),
+                num_insts,
+                vreg_count,
+                &successors,
+                &uses,
+                &defs,
+            );
         }
     }
 
