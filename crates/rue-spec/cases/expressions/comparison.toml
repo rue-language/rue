@@ -665,3 +665,172 @@ pub struct F { s: Str(8) }
 pub fn make() -> F { F { s: "hello" } }
 """ }
 exit_code = 5
+
+# =============================================================================
+# Aggregates carrying a float (`floats` preview, RUE-2001)
+#
+# A float is an ordinary scalar leaf of the structural recursion, so a float
+# field, element, or payload compares exactly the way a top-level `f64 == f64`
+# compares: the IEEE-754 equality predicate, not a comparison of the stored
+# bits. The two places that distinguishes are signed zero, where `-0.0 == 0.0`
+# holds although the bit patterns differ, and `NaN`, where a value is not equal
+# to itself although the bit patterns agree.
+# =============================================================================
+
+[[case]]
+name = "struct_float_field_equality_{variant}"
+spec = ["4.3:2", "4.3:3b"]
+preview = "floats"
+preview_should_pass = true
+description = "Float fields compare field-by-field under IEEE equality, at both widths."
+source = """
+struct Sample { wide: f64, small: f32 }
+
+fn main() -> i32 {
+    let a = Sample { wide: {aw}, small: {as} };
+    let b = Sample { wide: {bw}, small: {bs} };
+    if a {op} b { 1 } else { 0 }
+}
+"""
+params = [
+  { variant = "equal", aw = "1.5", as = "2.5", bw = "1.5", bs = "2.5", op = "==", exit_code = 1 },
+  { variant = "different_f64_field", aw = "1.5", as = "2.5", bw = "1.25", bs = "2.5", op = "==", exit_code = 0 },
+  { variant = "different_f32_field", aw = "1.5", as = "2.5", bw = "1.5", bs = "2.25", op = "==", exit_code = 0 },
+  { variant = "inequality", aw = "1.5", as = "2.5", bw = "1.25", bs = "2.5", op = "!=", exit_code = 1 },
+]
+
+# The wrapper is one storage slot, so it travels through the primary register
+# rather than the per-slot walk. That is the shape that used to lose the float
+# register class and reach the float compare with a general-purpose operand
+# (RUE-2001).
+[[case]]
+name = "struct_single_float_field_equality_{width}"
+spec = ["4.3:2", "4.3:3b"]
+preview = "floats"
+preview_should_pass = true
+description = "A struct whose only field is a float compares on that field's value."
+source = """
+struct Wrapper { value: {width} }
+
+fn main() -> i32 {
+    let a = Wrapper { value: 1.5 };
+    let b = Wrapper { value: 1.5 };
+    let c = Wrapper { value: 2.5 };
+    if a == b && a != c { 1 } else { 0 }
+}
+"""
+params = [
+  { width = "f64", exit_code = 1 },
+  { width = "f32", exit_code = 1 },
+]
+
+[[case]]
+name = "struct_float_field_negative_zero_equals_positive_zero"
+spec = ["4.3:2", "4.3:3b"]
+preview = "floats"
+preview_should_pass = true
+description = "`-0.0 == 0.0` inside an aggregate, as it is for a bare float: IEEE equality, not a bit comparison."
+source = """
+struct Sample { wide: f64, small: f32 }
+
+fn main() -> i32 {
+    let positive = Sample { wide: 0.0, small: 0.0 };
+    let negative = Sample { wide: -0.0, small: -0.0 };
+    if positive == negative && !(positive != negative) { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "array_of_floats_equality_{variant}"
+spec = ["4.3:2", "4.3:3c"]
+preview = "floats"
+preview_should_pass = true
+description = "Float array elements compare index-by-index under IEEE equality."
+source = """
+fn main() -> i32 {
+    let a: [f64; 3] = [{a0}, {a1}, {a2}];
+    let b: [f64; 3] = [{b0}, {b1}, {b2}];
+    if a {op} b { 1 } else { 0 }
+}
+"""
+params = [
+  { variant = "equal", a0 = "1.5", a1 = "2.5", a2 = "3.5", b0 = "1.5", b1 = "2.5", b2 = "3.5", op = "==", exit_code = 1 },
+  { variant = "different_element", a0 = "1.5", a1 = "2.5", a2 = "3.5", b0 = "1.5", b1 = "2.5", b2 = "9.5", op = "==", exit_code = 0 },
+  { variant = "signed_zero_elements_are_equal", a0 = "1.5", a1 = "-0.0", a2 = "3.5", b0 = "1.5", b1 = "0.0", b2 = "3.5", op = "==", exit_code = 1 },
+  { variant = "inequality", a0 = "1.5", a1 = "2.5", a2 = "3.5", b0 = "1.5", b1 = "2.5", b2 = "9.5", op = "!=", exit_code = 1 },
+]
+
+[[case]]
+name = "single_element_float_array_equality_{width}"
+spec = ["4.3:2", "4.3:3c"]
+preview = "floats"
+preview_should_pass = true
+description = "A one-element float array is one storage slot and still compares on its element's value."
+source = """
+fn main() -> i32 {
+    let a: [{width}; 1] = [1.5];
+    let b: [{width}; 1] = [1.5];
+    let c: [{width}; 1] = [2.5];
+    if a == b && a != c { 1 } else { 0 }
+}
+"""
+params = [
+  { width = "f64", exit_code = 1 },
+  { width = "f32", exit_code = 1 },
+]
+
+[[case]]
+name = "enum_float_payload_equality_{variant}"
+spec = ["4.3:2", "4.3:3d"]
+preview = "floats"
+preview_should_pass = true
+description = "A float enum payload compares under IEEE equality once the variants agree."
+source = """
+enum Reading { Value(f64), Missing }
+
+fn main() -> i32 {
+    let a = Reading.{a};
+    let b = Reading.{b};
+    if a {op} b { 1 } else { 0 }
+}
+"""
+params = [
+  { variant = "same_payload", a = "Value(1.5)", b = "Value(1.5)", op = "==", exit_code = 1 },
+  { variant = "different_payload", a = "Value(1.5)", b = "Value(2.5)", op = "==", exit_code = 0 },
+  { variant = "signed_zero_payload_is_equal", a = "Value(-0.0)", b = "Value(0.0)", op = "==", exit_code = 1 },
+  { variant = "different_variant", a = "Value(1.5)", b = "Missing", op = "==", exit_code = 0 },
+  { variant = "inequality", a = "Value(1.5)", b = "Missing", op = "!=", exit_code = 1 },
+]
+
+# RUE-2007 baseline. Structural equality is documented as a total equivalence
+# (4.3:3g), which `NaN` breaks: a float leaf compares under IEEE equality, so an
+# aggregate holding a `NaN` is not equal to itself even though both operands are
+# the same value with the same bits. This case records what the implementation
+# does today, at each depth the recursion reaches; deciding what the language
+# should say about it is RUE-2007's, not this case's.
+[[case]]
+name = "aggregate_holding_nan_is_not_equal_to_itself"
+spec = ["4.3:2", "4.3:3b", "4.3:3c", "4.3:3d"]
+preview = "floats"
+preview_should_pass = true
+description = "Observed NaN behaviour inside an aggregate, the measured baseline for RUE-2007's partial-equality decision."
+source = """
+struct Sample { wide: f64 }
+enum Reading { Value(f64), Missing }
+
+fn main() -> i32 {
+    let zero: f64 = 0.0;
+    let nan = zero / zero;
+    let field = Sample { wide: nan };
+    let element: [f64; 2] = [1.5, nan];
+    let payload = Reading.Value(nan);
+    let mut r: i32 = 0;
+    if field != field { r = r + 1; }
+    if !(field == field) { r = r + 2; }
+    if element != element { r = r + 4; }
+    if payload != payload { r = r + 8; }
+    r
+}
+"""
+exit_code = 15

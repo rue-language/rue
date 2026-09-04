@@ -87,6 +87,126 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
         &[],
     ),
+    // Float-carrying aggregate equality (RUE-2001). The oracle has no
+    // floating-point value domain, so a case reaches the same
+    // `FloatArithmetic` boundary the `floats` CLI cases reach as soon as a
+    // float literal is evaluated — before any of the aggregate equality these
+    // cases are about. The equality itself is checked natively by the spec
+    // suite and by the codegen lowering tests.
+    Entry::new(
+        "expressions.comparison",
+        "aggregate_holding_nan_is_not_equal_to_itself",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "expressions.comparison",
+        "array_of_floats_equality_different_element",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "expressions.comparison",
+        "array_of_floats_equality_equal",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "expressions.comparison",
+        "array_of_floats_equality_inequality",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "expressions.comparison",
+        "array_of_floats_equality_signed_zero_elements_are_equal",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "expressions.comparison",
+        "enum_float_payload_equality_different_payload",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "expressions.comparison",
+        "enum_float_payload_equality_different_variant",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "expressions.comparison",
+        "enum_float_payload_equality_inequality",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "expressions.comparison",
+        "enum_float_payload_equality_same_payload",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "expressions.comparison",
+        "enum_float_payload_equality_signed_zero_payload_is_equal",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "expressions.comparison",
+        "single_element_float_array_equality_f32",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "expressions.comparison",
+        "single_element_float_array_equality_f64",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "expressions.comparison",
+        "struct_float_field_equality_different_f32_field",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "expressions.comparison",
+        "struct_float_field_equality_different_f64_field",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "expressions.comparison",
+        "struct_float_field_equality_equal",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "expressions.comparison",
+        "struct_float_field_equality_inequality",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "expressions.comparison",
+        "struct_float_field_negative_zero_equals_positive_zero",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "expressions.comparison",
+        "struct_single_float_field_equality_f32",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "expressions.comparison",
+        "struct_single_float_field_equality_f64",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
     // A *failing* comparison assertion renders both operands first (spec
     // 4.13:5f), and the compiler-synthesized structural printer opens by taking
     // a bounded buffer from the allocation helper. The interpreter stops there;
@@ -431,6 +551,10 @@ const fn intrinsic(kind: UnsupportedIntrinsicKind) -> ModelGapKind {
 
 const fn external(kind: ExternalDependencyKind) -> ModelGapKind {
     ModelGapKind::ExternalDependency(kind)
+}
+
+const fn semantic(kind: SemanticGapKind) -> ModelGapKind {
+    ModelGapKind::Semantic(kind)
 }
 
 #[cfg(test)]
