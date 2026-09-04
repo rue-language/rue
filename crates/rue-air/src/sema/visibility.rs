@@ -6,7 +6,7 @@
 
 use rue_error::{CompileError, CompileResult, ErrorKind};
 
-use super::aggregate_resolution::{resolve_visibility_module_ref, select_module_type_member};
+use super::aggregate_resolution::select_module_type_member;
 use super::context::AnalysisContext;
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use crate::types::EnumId;
@@ -21,27 +21,28 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// declaration does (RUE-1956). Visibility is E0706, checked against the
     /// alias binding when the name arrived through one.
     pub(crate) fn resolve_enum_through_module(
-        &self,
+        &mut self,
         module_ref: rue_rir::InstRef,
         type_name: lasso::Spur,
         span: rue_span::Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<EnumId> {
-        let type_name_str = self.body_interner().resolve(&type_name);
+        let type_name_str = self.body_interner().resolve(&type_name).to_string();
 
-        // Resolve the receiver's full module spine.  The root binding belongs
-        // to the source file containing the expression; every subsequent
-        // field is a module binding in the preceding module's defining file.
-        // This mirrors inference's module-member walk for paths such as
-        // `std.geo.Sign.Pos`, while keeping every lookup file-qualified.
-        let module_file_id = self.module_file_for_ref(module_ref, ctx);
+        // Resolve the receiver's full module spine through the one canonical
+        // walker, shared with expression position (`Self::try_module_id_of`):
+        // the root binding belongs to the source file containing the pattern,
+        // a runtime binding of the same name shadows it, and every subsequent
+        // field is a module binding in the preceding module's defining file
+        // whose own visibility is checked as it is crossed (RUE-1964).
+        let module_id = self.try_module_id_of(module_ref, span, ctx)?;
 
         // A qualified member is resolved only in the referenced module's
         // defining file. If the receiver has no module identity, it is not a
         // valid qualified type path.
         let unknown_enum =
             || CompileError::new(ErrorKind::UnknownEnumType(type_name_str.to_string()), span);
-        let module_file = module_file_id
+        let module_file = module_id
             .map(|module_id| self.aggregate_facts().aggregate_module(module_id).file)
             .ok_or_else(&unknown_enum)?;
         let member = {
@@ -56,19 +57,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             module_file,
             (enum_def.file_id, enum_def.is_pub),
             "enum",
-            type_name_str,
+            &type_name_str,
             span,
         )?;
 
         Ok(nominal.id)
-    }
-
-    fn module_file_for_ref(
-        &self,
-        module_ref: rue_rir::InstRef,
-        ctx: &AnalysisContext,
-    ) -> Option<crate::types::ModuleId> {
-        let facts = self.aggregate_facts();
-        resolve_visibility_module_ref(facts, self.body_rir_ref(), module_ref, &ctx.locals)
     }
 }

@@ -270,6 +270,12 @@ fn lift_provider<T, E, P, F>(
     })
 }
 
+/// Resolve a dotted module path whose root is a module binding of `root_scope`.
+///
+/// The root's own visibility is checked here; every subsequent hop is checked
+/// by the one shared member walk [`resolve_semantic_module_path_from`], so a
+/// private module binding is rejected the same way wherever it appears in a
+/// path (RUE-1964).
 pub fn resolve_semantic_module_path<S, M, A, P>(
     provider: &mut P,
     root_scope: &S,
@@ -307,11 +313,41 @@ where
         }));
     }
 
-    let mut resolved = SemanticResolvedModule {
+    let resolved = SemanticResolvedModule {
         module: first.target,
         site: first.site,
     };
-    for segment in rest {
+    resolve_semantic_module_path_from(provider, root_scope, resolved, rest)
+}
+
+/// Resolve the remaining `segments` as module members of an already-known
+/// `start` module, judged from `root_scope`'s accessing domain.
+///
+/// This is the one per-hop module walk. The root-from-scope entry
+/// [`resolve_semantic_module_path`] delegates its tail here, and callers that
+/// already hold a module — a `let`-bound `@import`, whose local binding *is*
+/// the module — enter here directly rather than writing a second hop loop with
+/// its own visibility rule (RUE-1964).
+pub fn resolve_semantic_module_path_from<S, M, A, P>(
+    provider: &mut P,
+    root_scope: &S,
+    start: SemanticResolvedModule<M, A>,
+    segments: &[&str],
+) -> Result<
+    SemanticResolvedModule<M, A>,
+    SemanticResolutionError<P::Abort, P::Failure, SemanticModulePathFailure<A>>,
+>
+where
+    M: Clone,
+    A: Clone,
+    P: SemanticModulePathProvider<S, M, A>,
+{
+    use SemanticModulePathFailure as F;
+    use SemanticResolutionError as E;
+
+    let accessing = provider.accessing_domain(root_scope);
+    let mut resolved = start;
+    for segment in segments {
         let display = provider.module_display_name(&resolved.module);
         let binding = lift_provider(provider.module_binding(&resolved.module, segment))?
             .ok_or_else(|| {

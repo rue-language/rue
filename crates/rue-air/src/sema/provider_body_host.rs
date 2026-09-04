@@ -4524,9 +4524,32 @@ where
             None,
             None,
         );
+        // A spine rooted at a binding that already *is* a module enters the
+        // canonical walk at that module; every other spine resolves its root as
+        // a module binding of the accessing file first. Both then share the one
+        // per-hop visibility loop (RUE-1964).
+        let start = request.start_module.map(|module| {
+            let site = self
+                .calls
+                .module_def(module)
+                .map_or(request.root_file, |definition| definition.file_id);
+            crate::SemanticResolvedModule { module, site }
+        });
         let resolved = {
             let mut provider = TypeSyntaxProvider::new(self, &mut state);
-            crate::resolve_semantic_module_path(&mut provider, &request.root_file, request.segments)
+            match start {
+                Some(start) => crate::resolve_semantic_module_path_from(
+                    &mut provider,
+                    &request.root_file,
+                    start,
+                    request.segments,
+                ),
+                None => crate::resolve_semantic_module_path(
+                    &mut provider,
+                    &request.root_file,
+                    request.segments,
+                ),
+            }
         }
         .map_err(|failure| {
             super::typeck::module_path_resolution_compile_error(failure, request.span)

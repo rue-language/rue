@@ -753,3 +753,233 @@ pub const H = Hidden;
 """ }
 compile_fail = true
 error_contains = ["E0706", "enum", "is private"]
+
+# =============================================================================
+# A private module binding crossed as an INTERMEDIATE path segment (RUE-1964).
+#
+# `lib.inner.E` names the private `const inner` of `sub/facade.rue` on its way
+# to the public enum behind it. A module binding is a `const` (10.4:1), so that
+# hop is the ordinary uniform module-member privacy violation E0706 (10.3:7,
+# 10.4:18) — in every position, not only the ones that happened to route
+# through the type-annotation walker. Before the fix the expression, pattern,
+# and associated-function spellings accepted the private hop outright and the
+# type-annotation spelling reported E0460, the code 10.4:18 reserves for
+# applying a private comptime type constructor.
+
+[[case]]
+name = "private_module_hop_variant_expression_rejected"
+spec = ["10.4:18", "10.3:7"]
+description = "A private intermediate module binding crossed in a variant expression is E0706 naming the binding (RUE-1964)"
+source = """
+const lib = @import("sub/facade.rue");
+
+fn main() -> i32 {
+    let e = lib.inner.E.B;
+    0
+}
+"""
+aux_files = { "sub/facade.rue" = """
+const inner = @import("deep/inner.rue");
+pub fn touch() -> i32 { match inner.E.A { inner.E.A => 1, inner.E.B => 2, } }
+""", "sub/deep/inner.rue" = """
+pub enum E { A, B, }
+pub struct Point {
+    x: i32,
+    fn origin() -> Point { Point { x: 1 } }
+}
+""" }
+compile_fail = true
+error_contains = ["E0706", "inner", "is private"]
+
+[[case]]
+name = "private_module_hop_match_pattern_rejected"
+spec = ["10.4:18", "10.3:7"]
+description = "A private intermediate module binding crossed in a match-pattern head is E0706 (RUE-1964)"
+source = """
+const lib = @import("sub/facade.rue");
+
+fn main() -> i32 {
+    let e = lib.make();
+    match e {
+        lib.inner.E.A => 1,
+        lib.inner.E.B => 2,
+    }
+}
+"""
+aux_files = { "sub/facade.rue" = """
+const inner = @import("deep/inner.rue");
+pub fn make() -> inner.E { inner.E.A }
+""", "sub/deep/inner.rue" = """
+pub enum E { A, B, }
+""" }
+compile_fail = true
+error_contains = ["E0706", "inner", "is private"]
+
+[[case]]
+name = "private_module_hop_assoc_fn_call_rejected"
+spec = ["10.4:18", "10.4:19"]
+description = "A private intermediate module binding crossed in a module-qualified associated-function call is E0706 (RUE-1964)"
+source = """
+const lib = @import("sub/facade.rue");
+
+fn main() -> i32 {
+    let p = lib.inner.Point.origin();
+    p.x
+}
+"""
+aux_files = { "sub/facade.rue" = """
+const inner = @import("deep/inner.rue");
+pub fn touch() -> i32 { inner.Point.origin().x }
+""", "sub/deep/inner.rue" = """
+pub struct Point {
+    x: i32,
+    fn origin() -> Point { Point { x: 1 } }
+}
+""" }
+compile_fail = true
+error_contains = ["E0706", "inner", "is private"]
+
+[[case]]
+name = "private_module_hop_struct_literal_rejected"
+spec = ["10.4:18"]
+description = "A private intermediate module binding crossed in a module-qualified struct literal is E0706 (RUE-1964)"
+source = """
+const lib = @import("sub/facade.rue");
+
+fn main() -> i32 {
+    let p = lib.inner.Point { x: 7 };
+    p.x
+}
+"""
+aux_files = { "sub/facade.rue" = """
+const inner = @import("deep/inner.rue");
+pub fn touch() -> i32 { let p = inner.Point { x: 1 }; p.x }
+""", "sub/deep/inner.rue" = """
+pub struct Point { x: i32, }
+""" }
+compile_fail = true
+error_contains = ["E0706", "inner", "is private"]
+
+[[case]]
+name = "private_module_hop_type_annotation_rejected"
+spec = ["10.4:18", "10.4:16"]
+description = "A private intermediate module binding crossed in a type annotation is E0706, not the type-constructor carve-out E0460 (RUE-1964)"
+source = """
+const lib = @import("sub/facade.rue");
+
+fn main() -> i32 {
+    let e: lib.inner.E = lib.make();
+    0
+}
+"""
+aux_files = { "sub/facade.rue" = """
+const inner = @import("deep/inner.rue");
+pub fn make() -> inner.E { inner.E.A }
+""", "sub/deep/inner.rue" = """
+pub enum E { A, B, }
+""" }
+compile_fail = true
+error_contains = ["E0706", "inner", "is private"]
+
+[[case]]
+name = "pub_module_hop_all_positions_allowed"
+spec = ["10.4:18", "10.4:15", "10.4:16"]
+description = "The positive twin: with `pub const inner = @import(..)` every position that crosses the hop compiles and runs (RUE-1964)"
+source = """
+const lib = @import("sub/facade.rue");
+
+fn classify(e: lib.inner.E) -> i32 {
+    match e {
+        lib.inner.E.A => 1,
+        lib.inner.E.B => 2,
+    }
+}
+
+fn main() -> i32 {
+    let e = lib.inner.E.B;
+    let p = lib.inner.Point.origin();
+    let q = lib.inner.Point { x: 39 };
+    classify(e) + p.x + q.x
+}
+"""
+aux_files = { "sub/facade.rue" = """
+pub const inner = @import("deep/inner.rue");
+""", "sub/deep/inner.rue" = """
+pub enum E { A, B, }
+pub struct Point {
+    x: i32,
+    fn origin() -> Point { Point { x: 1 } }
+}
+""" }
+exit_code = 42
+
+# =============================================================================
+# A local binding shadows a file's module binding (5.1:10-5.1:12, 10.4:8).
+#
+# After `let lib = 5;` the name is a runtime i32, so `lib.Color.Green` is field
+# access on that value in every position and never the import's module path.
+# Before RUE-1964 the expression and associated-function spellings silently used
+# the import anyway, so a shadowed name resolved differently in three positions.
+
+[[case]]
+name = "runtime_binding_shadows_module_in_expression"
+spec = ["10.4:8", "5.1:10"]
+description = "A runtime local shadows the file's module binding: `lib.Color.Green` is field access on the local, not a module path (RUE-1964)"
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    let lib = 5;
+    let c = lib.Color.Green;
+    0
+}
+"""
+aux_files = { "sub/lib.rue" = """
+pub enum Color { Red, Green, }
+""" }
+compile_fail = true
+error_contains = ["E0423"]
+
+[[case]]
+name = "runtime_binding_shadows_module_in_pattern"
+spec = ["10.4:8", "5.1:10"]
+description = "The same shadowing rule applies to a match-pattern head (RUE-1964)"
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    let c = lib.Color.Green;
+    let lib = 5;
+    match c {
+        lib.Color.Red => 1,
+        lib.Color.Green => 2,
+    }
+}
+"""
+aux_files = { "sub/lib.rue" = """
+pub enum Color { Red, Green, }
+""" }
+compile_fail = true
+error_contains = ["E0421"]
+
+[[case]]
+name = "runtime_binding_shadows_module_in_assoc_fn_call"
+spec = ["10.4:8", "5.1:10"]
+description = "The same shadowing rule applies to a module-qualified associated-function call (RUE-1964)"
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    let lib = 5;
+    let p = lib.Point.origin();
+    p.x
+}
+"""
+aux_files = { "sub/lib.rue" = """
+pub struct Point {
+    x: i32,
+    fn origin() -> Point { Point { x: 1 } }
+}
+""" }
+compile_fail = true
+error_contains = ["E0423"]

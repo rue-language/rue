@@ -38,6 +38,12 @@ A top-level `const` module binding is scoped to the file that declares it,
 like every other top-level name (10.5:2). Two files **MAY** bind the same
 name — whether to the same module or to different modules — without
 conflict; references in each file resolve to that file's own binding.
+A local binding of the same name shadows the file's module binding by the
+ordinary shadowing rules (5.1:10–5.1:12): after `let lib = 5;`, the path
+`lib.Color.Green` is field access on that local and not a module-qualified
+path, in every position. A local binding whose value *is* a module
+(`let m = lib.geo;`) names that module and member access continues through
+it, since a module is not a runtime value (10.4:6).
 Declaring two module bindings with the same name in one file remains a
 compile-time error (E0418).
 
@@ -181,9 +187,14 @@ and reports one member-access diagnostic: accessing a private member
 through a module binding from a source file in another directory is a
 compile-time error E0706 — for a struct named in a qualified struct
 literal or type annotation, for an enum's variant, for an associated
-function's enclosing type, and for functions and constants alike. The one
-exception is the comptime type-constructor application form in a type
-position (10.4:16), which reports E0460 (10.3:7).
+function's enclosing type, and for functions and constants alike. A module
+binding named as an intermediate segment of a longer path
+(`lib.inner.E.B`, `lib.inner.Point.origin()`, `let e: lib.inner.E`) is
+itself a `const` member of the preceding module (10.4:1), so crossing a
+private one is this same E0706 in every position — expression, pattern,
+associated-function receiver, struct literal, and type annotation alike.
+The one exception is the comptime type-constructor application form in a
+type position (10.4:16), which reports E0460 (10.3:7).
 
 {{ rule(id="10.4:19", cat="legality-rule") }}
 

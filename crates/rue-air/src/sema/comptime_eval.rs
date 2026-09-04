@@ -54,6 +54,7 @@ use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_rir::{InstData, InstRef};
 use rue_span::{FileId, Span};
 
+use super::aggregate_resolution::decode_module_spine;
 use super::comptime::{
     ComptimeAnonymousKind, ComptimeArgMode, ComptimeArrayLengthBinding, ComptimeCallAdmission,
     ComptimeCallArgument, ComptimeCallKey, ComptimeCallPreparation, ComptimeCallProtocol,
@@ -1162,40 +1163,26 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         arg: InstRef,
         ctx: &AnalysisContext,
     ) -> Option<String> {
-        // Walk the FieldGet chain to its root, collecting the dotted spine.
-        let mut fields_rev: Vec<Spur> = Vec::new();
-        let mut cursor = arg;
-        let root_name = loop {
-            match self.body_rir_ref().get(cursor).data {
-                InstData::VarRef { name, .. } => break name,
-                InstData::FieldGet { base, field } => {
-                    fields_rev.push(field);
-                    cursor = base;
-                }
-                _ => return None,
-            }
-        };
+        // Decode the dotted spine with the one shared syntactic decoder
+        // (RUE-1964), then apply the same shadowing rule every other position
+        // applies to its root.
+        let spine = decode_module_spine(self.body_rir_ref(), arg)?;
         // A bare `VarRef` (no field) is a plain runtime binding, not a path.
-        if fields_rev.is_empty() {
+        if spine.fields.is_empty() {
             return None;
         }
         // A runtime local or parameter of the same name shadows the import, so
         // this is an ordinary field access on a value — the generic help is
         // correct there.
-        if ctx.locals.contains_key(&root_name) || ctx.has_param(root_name) {
+        if self.is_runtime_value_binding(spine.root, ctx) {
             return None;
         }
         // The root must name a module import of the current file for this to be
         // a module-qualified member-access path at all.
-        let binding = self.module_binding(&(ctx.current_file_id, root_name))?;
+        let binding = self.module_binding(&(ctx.current_file_id, spine.root))?;
         binding.ty.as_module()?;
-        let mut segments: Vec<&str> = vec![self.body_interner().resolve(&root_name)];
-        segments.extend(
-            fields_rev
-                .iter()
-                .rev()
-                .map(|s| self.body_interner().resolve(s)),
-        );
+        let mut segments: Vec<&str> = vec![self.body_interner().resolve(&spine.root)];
+        segments.extend(spine.fields.iter().map(|s| self.body_interner().resolve(s)));
         let path = segments.join(".");
         Some(format!(
             "the module-qualified path `{path}` names a compile-time value that \
