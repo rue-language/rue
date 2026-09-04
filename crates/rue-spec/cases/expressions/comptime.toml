@@ -2561,6 +2561,85 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "anonymous_struct_option_strbuf_is_move_type"
+spec = ["3.7:39", "3.8:2", "3.8:3", "4.14:22"]
+real_std = true
+description = "An anonymous struct containing Option(StrBuf) is a move type, so a second use after assignment is E0205 (RUE-1963)"
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn Wrapper(comptime T: type) -> type { struct { value: T } }
+fn main() -> i32 {
+    let O = Option(StrBuf);
+    let W = Wrapper(O);
+    let value: W = W { value: O.Some("owned") };
+    let moved = value;
+    @dbg(value);
+    @dbg(moved);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0205", "use of moved value 'value'"]
+
+[[case]]
+name = "anonymous_struct_user_enum_with_move_payload_is_move_type"
+spec = ["3.8:2", "3.8:3", "4.14:22"]
+description = "An anonymous struct containing a user enum with a non-Copy named payload is a move type, so a second use is E0205 (RUE-1963)"
+source = """
+struct Owner { value: i32 }
+enum Choice { Some(Owner), None }
+fn Wrapper(comptime T: type) -> type { struct { value: T } }
+fn main() -> i32 {
+    let W = Wrapper(Choice);
+    let value: W = W { value: Choice.Some(Owner { value: 42 }) };
+    let moved = value;
+    @dbg(value);
+    @dbg(moved);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0205", "use of moved value 'value'"]
+
+[[case]]
+name = "anonymous_struct_copy_array_is_copy"
+spec = ["3.8:2", "4.14:22"]
+description = "An anonymous struct containing an array of Copy elements can be used after assignment (RUE-1963)"
+source = """
+fn Wrapper(comptime T: type) -> type { struct { value: T } }
+fn main() -> i32 {
+    let W = Wrapper([i32; 2]);
+    let value: W = W { value: [20, 1] };
+    let duplicate = value;
+    value.value[0] + duplicate.value[1] + 21
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anonymous_struct_pointer_to_move_type_is_copy"
+spec = ["3.8:2", "4.14:22", "9.1:12"]
+description = "An anonymous struct containing a pointer remains Copy regardless of its pointee's ownership (RUE-1963)"
+source = """
+struct Owner { value: i32 }
+fn PointerWrapper(comptime T: type) -> type { struct { value: ptr mut T } }
+fn main() -> i32 {
+    let W = PointerWrapper(Owner);
+    let zero: u64 = 0;
+    let value: W = checked { W { value: @int_to_ptr(zero) } };
+    let duplicate = value;
+    let first = value.value;
+    let second = duplicate.value;
+    let _ = first;
+    let _ = second;
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
 name = "type_constructor_accepts_unit_type_argument"
 spec = ["4.14:22"]
 description = "The unit type () is a valid comptime type argument; the parameter's declared `type` kind disambiguates it from the unit value (RUE-565)"

@@ -890,6 +890,12 @@ impl SemanticNucleusTypeProvider<'_> {
             crate::semantic_query_nucleus::SemanticNucleusFailure,
         >,
     > {
+        // COPY_POLICY_DURABLE_PROJECTION_OWNER: provider-body
+        // This walk runs before AIR pool materialization, so it is the durable
+        // representation of `TypeInternPool::is_copy_type`: scalar and pointer
+        // leaves are Copy, arrays and enums recursively conjoin their children,
+        // structs use their validated declaration bit, and cycles provisionally
+        // answer true until a reachable non-Copy leaf disproves them.
         use crate::durable_semantics::{DurableAnonymousNominalShape as S, DurableType as T};
         use crate::semantic_query_nucleus::DeclarationSignatureProjection as P;
 
@@ -974,7 +980,13 @@ impl SemanticNucleusTypeProvider<'_> {
                     )
                 })?;
                 match nominal.shape {
-                    S::Struct { fields, .. } => {
+                    S::Struct { fields, methods } => {
+                        if methods
+                            .iter()
+                            .any(|method| method.has_self && method.name.as_ref() == "__drop")
+                        {
+                            return Ok(false);
+                        }
                         for (_, field) in fields.iter() {
                             if !self.type_is_copy_inner(field, walk)? {
                                 return Ok(false);

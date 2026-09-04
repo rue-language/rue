@@ -2481,14 +2481,76 @@ impl TypeInternPoolInner {
         }
     }
 
+    /// Canonical Copy decision for an AIR type in this pool.
+    ///
+    /// Composite Copy behavior must be decided here because only the pool can
+    /// resolve every compact child handle. Cycles are provisionally Copy: the
+    /// equations for enum payloads and arrays are conjunctions, so a cycle is
+    /// Copy exactly when no reachable leaf disproves it. Struct declarations
+    /// are leaves because `StructDef::is_copy` records the already-validated
+    /// nominal `@copy` contract (and the derived contract for anonymous
+    /// structs).
     fn is_copy_type(&self, ty: Type) -> bool {
-        ty.as_struct()
-            .map(|id| {
-                self.struct_metadata(id)
-                    .map(|metadata| metadata.is_copy)
-                    .expect("struct type must have declaration metadata")
-            })
-            .unwrap_or_else(|| ty.is_copy())
+        self.is_copy_type_inner(ty, &mut AHashSet::new())
+    }
+
+    fn is_copy_type_inner(&self, ty: Type, visiting: &mut AHashSet<Type>) -> bool {
+        match ty.kind() {
+            TypeKind::I8
+            | TypeKind::I16
+            | TypeKind::I32
+            | TypeKind::I64
+            | TypeKind::U8
+            | TypeKind::U16
+            | TypeKind::U32
+            | TypeKind::U64
+            | TypeKind::Bool
+            | TypeKind::Unit
+            | TypeKind::Never
+            | TypeKind::Error
+            | TypeKind::Module(_)
+            | TypeKind::ComptimeType
+            | TypeKind::F32
+            | TypeKind::F64
+            | TypeKind::ComptimeFloat
+            | TypeKind::PtrConst(_)
+            | TypeKind::PtrMut(_) => true,
+            TypeKind::Struct(id) => self
+                .struct_metadata(id)
+                .map(|metadata| metadata.is_copy)
+                .expect("struct type must have declaration metadata"),
+            TypeKind::Enum(id) => {
+                if !visiting.insert(ty) {
+                    return true;
+                }
+                let is_copy = match self.try_enum_def(id) {
+                    Some(def) => def
+                        .variant_payloads
+                        .iter()
+                        .flatten()
+                        .all(|&payload| self.is_copy_type_inner(payload, visiting)),
+                    // Declaration shells exist only while the graph is being
+                    // assembled. Reaching one from a completed child's Copy
+                    // derivation is the cycle back-edge; use the same
+                    // provisional-true answer as an explicit visiting hit.
+                    None if self.enum_metadata(id).is_some() => true,
+                    None => panic!("enum type must have declaration metadata"),
+                };
+                visiting.remove(&ty);
+                is_copy
+            }
+            TypeKind::Array(id) => {
+                if !visiting.insert(ty) {
+                    return true;
+                }
+                let is_copy = self
+                    .try_array_def(id)
+                    .map(|(element, _)| self.is_copy_type_inner(element, visiting))
+                    .expect("array type must have a definition");
+                visiting.remove(&ty);
+                is_copy
+            }
+        }
     }
 
     fn stats(&self) -> TypeInternPoolStats {
@@ -4255,6 +4317,85 @@ mod tests {
             is_non_exhaustive: false,
             file_id: FileId::DEFAULT,
         }
+    }
+
+    #[test]
+    fn copy_policy_recurses_through_composites_and_terminates_on_cycles() {
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+
+        let mut copy_leaf = struct_def("CopyLeaf", vec![]);
+        copy_leaf.is_copy = true;
+        let (copy_leaf, _) =
+            pool.register_struct(declarations.get_or_intern("CopyLeaf"), copy_leaf);
+        let (move_leaf, _) = pool.register_struct(
+            declarations.get_or_intern("MoveLeaf"),
+            struct_def("MoveLeaf", vec![]),
+        );
+        let copy_array = pool
+            .try_intern_array(Type::new_struct(copy_leaf), 2)
+            .unwrap();
+        let move_array = pool
+            .try_intern_array(Type::new_struct(move_leaf), 2)
+            .unwrap();
+        let move_pointer = pool
+            .try_intern_ptr_const(Type::new_struct(move_leaf))
+            .unwrap();
+
+        let copy_choice = EnumDef {
+            name: "CopyChoice".into(),
+            variants: Arc::from(["Array".into(), "Pointer".into()]),
+            variant_payloads: vec![vec![copy_array], vec![move_pointer]],
+            is_pub: false,
+            is_non_exhaustive: false,
+            file_id: FileId::DEFAULT,
+        };
+        let (copy_choice, _) =
+            pool.register_enum(declarations.get_or_intern("CopyChoice"), copy_choice);
+        let move_choice = EnumDef {
+            name: "MoveChoice".into(),
+            variants: Arc::from(["Array".into()]),
+            variant_payloads: vec![vec![move_array]],
+            is_pub: false,
+            is_non_exhaustive: false,
+            file_id: FileId::DEFAULT,
+        };
+        let (move_choice, _) =
+            pool.register_enum(declarations.get_or_intern("MoveChoice"), move_choice);
+
+        assert!(Type::I32.is_copy_in_pool(&pool));
+        assert!(Type::new_struct(copy_leaf).is_copy_in_pool(&pool));
+        assert!(!Type::new_struct(move_leaf).is_copy_in_pool(&pool));
+        assert!(copy_array.is_copy_in_pool(&pool));
+        assert!(!move_array.is_copy_in_pool(&pool));
+        assert!(move_pointer.is_copy_in_pool(&pool));
+        assert!(Type::new_enum(copy_choice).is_copy_in_pool(&pool));
+        assert!(!Type::new_enum(move_choice).is_copy_in_pool(&pool));
+        let frozen = pool.freeze();
+        assert!(Type::new_enum(copy_choice).is_copy_in_frozen_pool(&frozen));
+        assert!(!Type::new_enum(move_choice).is_copy_in_frozen_pool(&frozen));
+
+        // Invalid recursive-by-value graphs are rejected before freezing, but
+        // the query can run while declarations are being assembled and must
+        // still terminate deterministically rather than overflowing.
+        let cycle_pool = TypeInternPool::new();
+        let (recursive, _) = cycle_pool.declare_enum(
+            declarations.get_or_intern("Recursive"),
+            enum_def("Recursive"),
+        );
+        cycle_pool.complete_declared_enum(
+            recursive,
+            EnumDef {
+                name: "Recursive".into(),
+                variants: Arc::from(["Next".into(), "End".into()]),
+                variant_payloads: vec![vec![Type::new_enum(recursive)], vec![]],
+                is_pub: false,
+                is_non_exhaustive: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        assert!(Type::new_enum(recursive).is_copy_in_pool(&cycle_pool));
+        assert!(Type::new_enum(recursive).is_copy_in_pool(&cycle_pool));
     }
 
     #[test]

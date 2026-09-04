@@ -1235,10 +1235,11 @@ pub(crate) fn materialize_semantic_body_with_indexes_in_space(
                     rue_air::SemanticImportNominalKind::Struct,
                     rue_air::SemanticLocalNominalShape::Struct {
                         fields: fields.clone(),
-                        // Anonymous structs have no `copy` or `linear`
-                        // declaration modifiers. Transitive ownership facts are
-                        // derived by the completed local type pool.
-                        is_copy: false,
+                        // Anonymous structs have no `copy` modifier. Carry
+                        // only destructor eligibility here; the AIR import
+                        // pool recursively derives the field portion after it
+                        // has resolved the durable children.
+                        is_copy: destructor.is_none(),
                         is_linear: false,
                         declared_linear: false,
                         destructor,

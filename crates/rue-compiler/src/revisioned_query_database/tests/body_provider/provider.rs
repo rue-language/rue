@@ -212,6 +212,272 @@ fn provider_type_facts_resolve_primitive_and_structural_shapes() {
 }
 
 #[test]
+fn durable_copy_facts_match_the_air_composite_policy() {
+    use crate::DurableType as T;
+    use crate::StableDefinitionKind as K;
+
+    let source = "struct Owner { value: i32 }\n\
+                  @copy struct CopyLeaf { value: i32 }\n\
+                  enum MoveChoice { Some(Owner), None }\n\
+                  enum CopyChoice { Some(CopyLeaf), None }\n\
+                  fn CopyAnonStruct() -> type { struct { value: i32 } }\n\
+                  fn MoveAnonStruct() -> type { struct { value: Owner } }\n\
+                  fn DropAnonStruct() -> type { struct { value: i32, drop fn(self) {} } }\n\
+                  fn CopyAnonEnum() -> type { enum { Some(i32), None } }\n\
+                  fn MoveAnonEnum() -> type { enum { Some(Owner), None } }\n\
+                  struct Holder {\n\
+                      owner: Owner, copy_leaf: CopyLeaf,\n\
+                      move_choice: MoveChoice, copy_choice: CopyChoice,\n\
+                      copy_anon_struct: CopyAnonStruct(),\n\
+                      move_anon_struct: MoveAnonStruct(),\n\
+                      drop_anon_struct: DropAnonStruct(),\n\
+                      copy_anon_enum: CopyAnonEnum(),\n\
+                      move_anon_enum: MoveAnonEnum(),\n\
+                      zero_owner_array: [Owner; 0],\n\
+                      copy_array: [CopyLeaf; 2],\n\
+                      owner_pointer: ptr mut Owner,\n\
+                  }\n\
+                  fn make() -> Holder {\n\
+                      let CopyStruct = CopyAnonStruct();\n\
+                      let MoveStruct = MoveAnonStruct();\n\
+                      let DropStruct = DropAnonStruct();\n\
+                      let CopyEnum = CopyAnonEnum();\n\
+                      let MoveEnum = MoveAnonEnum();\n\
+                      let zero: u64 = 0;\n\
+                      Holder {\n\
+                          owner: Owner { value: 1 },\n\
+                          copy_leaf: CopyLeaf { value: 2 },\n\
+                          move_choice: MoveChoice.None, copy_choice: CopyChoice.None,\n\
+                          copy_anon_struct: CopyStruct { value: 3 },\n\
+                          move_anon_struct: MoveStruct { value: Owner { value: 4 } },\n\
+                          drop_anon_struct: DropStruct { value: 5 },\n\
+                          copy_anon_enum: CopyEnum.None, move_anon_enum: MoveEnum.None,\n\
+                          zero_owner_array: [],\n\
+                          copy_array: [CopyLeaf { value: 6 }, CopyLeaf { value: 7 }],\n\
+                          owner_pointer: checked { @int_to_ptr(zero) },\n\
+                      }\n\
+                  }\n\
+                  fn consume(value: Holder) -> i32 { value.copy_leaf.value }\n\
+                  fn main() -> i32 { consume(make()) }\n";
+    let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+    let declarations = production_declarations(&snapshot);
+    let holder = durable_decl(&declarations, K::Struct, "Holder");
+    let crate::durable_semantics::DurableDeclarationPayload::Struct {
+        fields: durable_fields,
+        ..
+    } = &holder.payload
+    else {
+        panic!("Holder has a durable struct projection")
+    };
+
+    // This is the independent ordinary semantic result. Its frozen AIR pool
+    // has already materialized the same named and producer-anonymous types;
+    // comparing its field handles with durable TypeFacts makes this a real
+    // cross-representation differential rather than two expected-value lists.
+    let (_, ordinary, _) =
+        crate::test_support::test_frontend_snapshot(&snapshot, &crate::CompileOptions::default())
+            .expect("ordinary frontend compiles the Copy matrix");
+    let pool = ordinary
+        .functions()
+        .iter()
+        .find(|unit| unit.source_name() == "main")
+        .expect("main has a rooted CFG")
+        .type_pool();
+    let holder_id = pool
+        .all_struct_ids()
+        .find(|&id| pool.struct_def(id).name.as_ref() == "Holder")
+        .unwrap_or_else(|| {
+            panic!(
+                "ordinary AIR materialized Holder; structs: {:?}",
+                pool.all_struct_ids()
+                    .map(|id| pool.struct_def(id).name.clone())
+                    .collect::<Vec<_>>()
+            )
+        });
+    let air_holder = pool.struct_def(holder_id);
+    assert_eq!(air_holder.fields.len(), durable_fields.len());
+
+    let mut database = RevisionedQueryDatabase::default();
+    let revision = revision_for(&mut database, &snapshot);
+
+    let durable_is_copy = |ty: &T| {
+        let attempt = database.runtime.request_registered(
+            &database.type_facts,
+            revision,
+            crate::type_queries::TypeQueryKey {
+                ty: crate::drop_glue::type_instance_from_semantic(ty),
+                configuration: semantic_configuration(),
+            },
+            CancellationToken::new(),
+        );
+        let rue_query::QueryOutcome::Success(crate::type_queries::TypeFactsValue::Available(facts)) =
+            attempt
+                .terminal()
+                .expect("type-facts query completes")
+                .outcome()
+        else {
+            panic!("type-facts query did not produce available facts")
+        };
+        facts.is_copy
+    };
+
+    let expected = AHashMap::from([
+        ("owner", false),
+        ("copy_leaf", true),
+        ("move_choice", false),
+        ("copy_choice", true),
+        ("copy_anon_struct", true),
+        ("move_anon_struct", false),
+        ("drop_anon_struct", false),
+        ("copy_anon_enum", true),
+        ("move_anon_enum", false),
+        ("zero_owner_array", false),
+        ("copy_array", true),
+        ("owner_pointer", true),
+    ]);
+    for ((durable_name, durable_ty), air_field) in
+        durable_fields.iter().zip(air_holder.fields.iter())
+    {
+        assert_eq!(durable_name.as_ref(), air_field.name);
+        let durable_copy = durable_is_copy(durable_ty);
+        let air_copy = air_field.ty.is_copy_in_frozen_pool(pool);
+        assert_eq!(
+            durable_copy,
+            air_copy,
+            "durable TypeFacts and ordinary AIR disagree for `{durable_name}`: AIR type {:?} ({:?})",
+            air_field.ty,
+            air_field
+                .ty
+                .as_struct()
+                .map(|id| pool.struct_def(id).clone())
+        );
+        assert_eq!(
+            durable_copy,
+            expected[durable_name.as_ref()],
+            "unexpected Copy classification for `{durable_name}`"
+        );
+        if durable_name.contains("anon") {
+            assert!(
+                matches!(durable_ty, T::AnonymousNominal(_)),
+                "`{durable_name}` must exercise anonymous TypeFacts"
+            );
+            let air_is_anonymous = air_field
+                .ty
+                .as_struct()
+                .is_some_and(|id| pool.is_anonymous_struct(id))
+                || air_field
+                    .ty
+                    .as_enum()
+                    .is_some_and(|id| pool.enum_def(id).name.starts_with("__anon_enum_"));
+            assert!(
+                air_is_anonymous,
+                "`{durable_name}` must exercise an AIR anonymous nominal"
+            );
+        }
+    }
+
+    // Exercise the other permitted durable projection directly: resolving a
+    // named `@copy` signature asks `SemanticNucleusTypeProvider` to validate
+    // every field through `type_is_copy_walk` before any AIR pool exists.
+    use crate::declaration_candidate::DeclarationCandidateCategory as Cat;
+    use crate::semantic_query_nucleus::{SemanticNucleusFailure as F, SemanticNucleusKey as Key};
+    let module = ModuleId::from_logical_path("m.rue").unwrap();
+    let accepted_source = "struct Owner { value: i32 }\n\
+                           @copy struct CopyLeaf { value: i32 }\n\
+                           fn CopyStruct() -> type { struct { value: CopyLeaf } }\n\
+                           fn CopyEnum() -> type { enum { Some(CopyLeaf), None } }\n\
+                           @copy struct Good {\n\
+                               s: CopyStruct(), e: CopyEnum(), a: [CopyLeaf; 2],\n\
+                               p: ptr const Owner, named: CopyLeaf,\n\
+                           }\n\
+                           fn main() -> i32 { 0 }\n";
+    let accepted = source_snapshot(&[(1, "/m.rue", "m.rue", accepted_source)], 1);
+    let mut accepted_db = RevisionedQueryDatabase::default();
+    let accepted_revision = revision_for(&mut accepted_db, &accepted);
+    let good = declaration_candidate(
+        &accepted_db,
+        accepted_revision,
+        &module,
+        Cat::Struct,
+        "Good",
+    );
+    let good = request_semantic_nucleus(
+        &accepted_db,
+        accepted_revision,
+        Key::Signature(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+            declaration: good,
+            configuration: semantic_configuration(),
+        }),
+    );
+    assert!(matches!(
+        good,
+        crate::semantic_query_nucleus::SemanticNucleusValue::Signature(ref signature)
+            if matches!(
+                signature.signature,
+                crate::semantic_query_nucleus::DeclarationSignatureProjection::Struct {
+                    is_copy: true,
+                    ..
+                }
+            )
+    ));
+
+    let rejected = [
+        (
+            "anonymous struct with move field",
+            "struct Owner { value: i32 }\n\
+             fn MoveStruct() -> type { struct { value: Owner } }\n\
+             @copy struct Bad { value: MoveStruct() }\n\
+             fn main() -> i32 { 0 }\n",
+        ),
+        (
+            "anonymous enum with move payload",
+            "struct Owner { value: i32 }\n\
+             fn MoveEnum() -> type { enum { Some(Owner), None } }\n\
+             @copy struct Bad { value: MoveEnum() }\n\
+             fn main() -> i32 { 0 }\n",
+        ),
+        (
+            "owning anonymous wrapper",
+            "struct Owner { value: i32 }\n\
+             fn MoveEnum() -> type { enum { Some(Owner), None } }\n\
+             fn Wrapper() -> type { struct { value: MoveEnum() } }\n\
+             @copy struct Bad { value: Wrapper() }\n\
+             fn main() -> i32 { 0 }\n",
+        ),
+        (
+            "destructor-bearing anonymous struct",
+            "fn Resource() -> type { struct { value: i32, drop fn(self) {} } }\n\
+             @copy struct Bad { value: Resource() }\n\
+             fn main() -> i32 { 0 }\n",
+        ),
+    ];
+    for (label, rejected_source) in rejected {
+        let rejected = source_snapshot(&[(1, "/m.rue", "m.rue", rejected_source)], 1);
+        let mut rejected_db = RevisionedQueryDatabase::default();
+        let rejected_revision = revision_for(&mut rejected_db, &rejected);
+        let bad =
+            declaration_candidate(&rejected_db, rejected_revision, &module, Cat::Struct, "Bad");
+        let failure = request_semantic_nucleus(
+            &rejected_db,
+            rejected_revision,
+            Key::Signature(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration: bad,
+                configuration: semantic_configuration(),
+            }),
+        );
+        assert!(
+            matches!(
+                failure,
+                crate::semantic_query_nucleus::SemanticNucleusValue::Failure(F::Diagnostic(
+                    rue_error::ErrorKind::CopyStructNonCopyField(_)
+                ))
+            ),
+            "provider Copy validation accepted {label}: {failure:?}"
+        );
+    }
+}
+
+#[test]
 fn provider_type_facts_absent_and_kind_mismatch_do_not_resolve() {
     let source = "pub struct Point { x: i32 }\n\
                       pub enum Shape { A, B }\n\

@@ -3940,38 +3940,8 @@ mod tests {
         }
     }
 
-    /// A local mirror of the host's `is_type_copy`, likewise index-independent.
     fn is_copy(pool: &TypeInternPool, ty: Type) -> bool {
-        use crate::types::TypeKind;
-        match ty.kind() {
-            TypeKind::I8
-            | TypeKind::I16
-            | TypeKind::I32
-            | TypeKind::I64
-            | TypeKind::U8
-            | TypeKind::U16
-            | TypeKind::U32
-            | TypeKind::U64
-            | TypeKind::Bool
-            | TypeKind::Unit
-            | TypeKind::Never
-            | TypeKind::Error
-            | TypeKind::Module(_)
-            | TypeKind::ComptimeType
-            | TypeKind::F32
-            | TypeKind::F64
-            | TypeKind::ComptimeFloat
-            | TypeKind::PtrConst(_)
-            | TypeKind::PtrMut(_) => true,
-            TypeKind::Enum(id) => pool
-                .enum_def(id)
-                .variant_payloads
-                .iter()
-                .flatten()
-                .all(|&ty| is_copy(pool, ty)),
-            TypeKind::Struct(id) => pool.struct_def(id).is_copy,
-            TypeKind::Array(id) => is_copy(pool, pool.array_def(id).0),
-        }
+        ty.is_copy_in_pool(pool)
     }
 
     // ----- Epoch-registration twin -------------------------------------------

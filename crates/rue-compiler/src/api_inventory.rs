@@ -4285,7 +4285,7 @@ pub(super) use register_parse_import_parse;"#;
             (
                 "revisioned_database::tests::body_provider::provider".to_owned(),
                 "RevisionedQueryDatabase:call".to_owned(),
-                32
+                35
             ),
             (
                 "revisioned_database::tests::parse_import".to_owned(),
@@ -9153,4 +9153,47 @@ fn candidate_plan_metrics_have_one_query_terminal_authority() {
     assert!(database.contains("candidate_body_plan.construction"));
     assert!(database.contains("candidate_body_plan.materialization"));
     assert!(session.contains("accrue_candidate_body_plan_work"));
+}
+
+#[test]
+fn durable_copy_policy_projections_have_an_exact_inventory() {
+    const OWNER_MARKER: &str = "COPY_POLICY_DURABLE_PROJECTION_OWNER:";
+    let owners = REVISIONED_DATABASE_PHASES
+        .iter()
+        .filter_map(|(name, source)| source.contains(OWNER_MARKER).then_some(*name))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        owners,
+        ["semantic", "body_provider_body"],
+        "the only permitted pre-materialization Copy projections are TypeFacts and the body provider"
+    );
+    assert_eq!(
+        REVISIONED_DATABASE_PHASES
+            .iter()
+            .map(|(_, source)| source.matches(OWNER_MARKER).count())
+            .sum::<usize>(),
+        2,
+        "every durable Copy projection must be explicitly inventoried"
+    );
+
+    let semantic = REVISIONED_DATABASE_PHASES
+        .iter()
+        .find(|(name, _)| *name == "semantic")
+        .map(|(_, source)| *source)
+        .unwrap();
+    let provider = REVISIONED_DATABASE_PHASES
+        .iter()
+        .find(|(name, _)| *name == "body_provider_body")
+        .map(|(_, source)| *source)
+        .unwrap();
+    assert_eq!(provider.matches("fn type_is_copy_walk(").count(), 1);
+    assert!(
+        provider.contains("T::Array { element, .. } => self.type_is_copy_inner(element, walk)")
+    );
+    assert!(provider.contains("P::Enum { variants, .. }"));
+    assert!(provider.contains("method.name.as_ref() == \"__drop\""));
+    assert_eq!(semantic.matches("is_copy &= child.is_copy;").count(), 2);
+    assert!(semantic.contains("T::Array { element, .. }"));
+    assert!(semantic.contains("S::Enum { .. } => (true, true, false)"));
+    assert!(semantic.contains("let mut is_copy = destructor.is_none();"));
 }

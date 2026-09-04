@@ -794,6 +794,7 @@ pub(super) fn evaluate_type_facts(
     use crate::type_queries::{TypeFacts, TypeFactsValue, TypeShape};
     use crate::{NominalInstanceKey as N, TypeInstanceKey as T};
 
+    // COPY_POLICY_DURABLE_PROJECTION_OWNER: type-facts
     let shape_terminal = context.query_registered(type_shapes, key.clone())?;
     let canonical_shape = match type_shape_from_terminal(&shape_terminal) {
         Ok(shape) => shape.clone(),
@@ -839,18 +840,7 @@ pub(super) fn evaluate_type_facts(
             direct(rue_builtins::get_builtin_enum(name).is_some())
         }
         T::BuiltinNominal { .. } | T::Nominal(N::Builtin { .. }) => direct(false),
-        T::Array { element, len } => {
-            if *len == 0 {
-                return Ok(QueryOutput::success(TypeFactsValue::Available(Box::new(
-                    TypeFacts {
-                        is_copy: true,
-                        carries_linear: false,
-                        needs_drop: false,
-                        destructor: None,
-                        shape: canonical_shape.clone(),
-                    },
-                ))));
-            }
+        T::Array { element, .. } => {
             let child = context.query_registered(
                 family,
                 crate::type_queries::TypeQueryKey {
@@ -888,14 +878,14 @@ pub(super) fn evaluate_type_facts(
             let rue_query::QueryOutcome::Success(signature) = signature.outcome() else {
                 unreachable!("SemanticNucleus publishes typed values")
             };
-            let (is_copy, is_linear) = match signature {
+            let (mut is_copy, copy_from_children, is_linear) = match signature {
                 crate::semantic_query_nucleus::SemanticNucleusValue::Signature(signature) => {
                     use crate::semantic_query_nucleus::DeclarationSignatureProjection as S;
                     match &signature.signature {
                         S::Struct {
                             is_copy, is_linear, ..
-                        } => (*is_copy, *is_linear),
-                        S::Enum { .. } => (false, false),
+                        } => (*is_copy, false, *is_linear),
+                        S::Enum { .. } => (true, true, false),
                         _ => {
                             return Ok(QueryOutput::success(type_query_failure(
                                 "named type resolved to a non-type signature",
@@ -942,6 +932,9 @@ pub(super) fn evaluate_type_facts(
             for child in &child_terminals {
                 match type_facts_from_terminal(child) {
                     Ok(child) => {
+                        if copy_from_children {
+                            is_copy &= child.is_copy;
+                        }
                         carries_linear |= child.carries_linear;
                         needs_drop |= child.needs_drop;
                     }
@@ -1033,11 +1026,18 @@ pub(super) fn evaluate_type_facts(
                         configuration: key.configuration.clone(),
                     }),
             )?;
+            // Durable types cannot delegate directly to the AIR pool because
+            // they are evaluated before pool materialization. This is the
+            // representation-boundary projection of TypeInternPool's policy:
+            // anonymous composites are Copy iff they have no destructor and
+            // every by-value child is Copy.
+            let mut is_copy = destructor.is_none();
             let mut carries_linear = false;
             let mut needs_drop = destructor.is_some();
             for child in &child_terminals {
                 match type_facts_from_terminal(child) {
                     Ok(child) => {
+                        is_copy &= child.is_copy;
                         carries_linear |= child.carries_linear;
                         needs_drop |= child.needs_drop;
                     }
@@ -1048,7 +1048,7 @@ pub(super) fn evaluate_type_facts(
                 }
             }
             TypeFactsValue::Available(Box::new(TypeFacts {
-                is_copy: false,
+                is_copy,
                 carries_linear,
                 needs_drop,
                 destructor,

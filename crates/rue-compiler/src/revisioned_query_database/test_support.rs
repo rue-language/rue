@@ -374,18 +374,7 @@ pub(crate) fn endpoint_display(pool: &rue_air::TypeInternPool, ty: rue_air::Type
 
 /// Index-independent copyability over the pool's own definitions.
 pub(crate) fn endpoint_is_copy(pool: &rue_air::TypeInternPool, ty: rue_air::Type) -> bool {
-    use rue_air::TypeKind;
-    match ty.kind() {
-        TypeKind::Struct(id) => pool.struct_def(id).is_copy,
-        TypeKind::Enum(id) => pool
-            .enum_def(id)
-            .variant_payloads
-            .iter()
-            .flatten()
-            .all(|&ty| endpoint_is_copy(pool, ty)),
-        TypeKind::Array(id) => endpoint_is_copy(pool, pool.array_def(id).0),
-        _ => true,
-    }
+    ty.is_copy_in_pool(pool)
 }
 
 /// Render a nominal (struct or enum) pool [`rue_air::Type`] to its

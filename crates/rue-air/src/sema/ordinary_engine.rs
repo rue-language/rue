@@ -1621,39 +1621,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         }
     }
     pub(crate) fn is_type_copy(&self, ty: Type) -> bool {
-        match ty.kind() {
-            crate::types::TypeKind::I8
-            | crate::types::TypeKind::I16
-            | crate::types::TypeKind::I32
-            | crate::types::TypeKind::I64
-            | crate::types::TypeKind::U8
-            | crate::types::TypeKind::U16
-            | crate::types::TypeKind::U32
-            | crate::types::TypeKind::U64
-            | crate::types::TypeKind::Bool
-            | crate::types::TypeKind::Unit
-            | crate::types::TypeKind::Never
-            | crate::types::TypeKind::Error
-            | crate::types::TypeKind::Module(_)
-            | crate::types::TypeKind::ComptimeType
-            | crate::types::TypeKind::ComptimeFloat
-            | crate::types::TypeKind::F32
-            | crate::types::TypeKind::F64
-            | crate::types::TypeKind::PtrConst(_)
-            | crate::types::TypeKind::PtrMut(_) => true,
-            crate::types::TypeKind::Enum(id) => self
-                .body_type_pool()
-                .enum_def(id)
-                .variant_payloads
-                .iter()
-                .flatten()
-                .all(|&ty| self.is_type_copy(ty)),
-            crate::types::TypeKind::Struct(id) => self.body_type_pool().struct_def(id).is_copy,
-            crate::types::TypeKind::Array(id) => {
-                let (element, _) = self.body_type_pool().array_def(id);
-                self.is_type_copy(element)
-            }
-        }
+        ty.is_copy_in_pool(self.body_type_pool())
     }
     pub(crate) fn types_compatible(&self, found: Type, expected: Type) -> bool {
         found.is_never() || found.is_error() || self.types_equivalent(found, expected)
