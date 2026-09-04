@@ -1768,26 +1768,101 @@ define_error_codes! {
     // names the directory facade alone and a file module is spelled with its
     // extension, so the file/facade ambiguity no longer exists. Keep the
     // number retired rather than reusing it.
-    CANNOT_INFER_CAST_TARGET = 709;
-    CANNOT_INFER_POINTEE_TYPE = 710;
-    CONTAINER_ELEMENT_NOT_TRIVIALLY_DROPPABLE = 711;
+    CANNOT_INFER_CAST_TARGET = 709 => {
+        explanation: "A context-directed numeric conversion has no target type to convert to. The stable `@intCast` and `@bitCast` intrinsics infer an integer result type from the surrounding annotation, parameter, or return position. When the `floats` preview is enabled, `@int_to_float`, `@float_to_int`, and `@float_cast` use the same contextual rule for their float or integer result; those floating-point intrinsics are unavailable without that preview gate.",
+        likely_cause: "The conversion result is discarded, stored in an unannotated binding, or passed only to a type-polymorphic operation such as `@dbg`, so no surrounding use requires the concrete integer or floating-point result type expected by that intrinsic.",
+        examples: [
+            ErrorCodeExample { title: "Leave an integer cast target unconstrained", source: "fn main() -> i32 {\n    let source: u64 = 5;\n    @dbg(@intCast(source));\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Annotate the cast result", source: "fn main() -> i32 {\n    let source: u64 = 5;\n    let converted: i32 = @intCast(source);\n    converted\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Context-inferred integer cast targets", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:26") },
+            ErrorCodeReference { title: "Uninferrable cast targets", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:27") },
+            ErrorCodeReference { title: "Preview floating-point conversion semantics (ADR-0065 §4)", path: "docs/designs/0065-floating-point.md", rule: None },
+        ],
+    };
+    CANNOT_INFER_POINTEE_TYPE = 710 => {
+        explanation: "`@int_to_ptr` converts a `u64` address to `ptr mut T`, but the address alone does not say what `T` is. Rue therefore takes the pointee type from the context in which the resulting pointer is used.",
+        likely_cause: "The pointer result is discarded or assigned to a binding without a pointer type annotation, and no later use constrains the pointer to one concrete pointee type.",
+        examples: [
+            ErrorCodeExample { title: "Discard a pointer with no inferred pointee", source: "fn main() {\n    checked {\n        let address: u64 = 0;\n        @int_to_ptr(address);\n    }\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Annotate the pointer result", source: "fn main() {\n    checked {\n        let address: u64 = 0;\n        let pointer: ptr mut u8 = @int_to_ptr(address);\n    }\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Integer-to-pointer result type", path: "docs/spec/src/09-unchecked-code/02-intrinsics.md", rule: Some("9.2:6c") },
+            ErrorCodeReference { title: "Integer-to-pointer operand and inference", path: "docs/spec/src/09-unchecked-code/02-intrinsics.md", rule: Some("9.2:6d") },
+        ],
+    };
+    CONTAINER_ELEMENT_NOT_TRIVIALLY_DROPPABLE = 711 => {
+        explanation: "A by-copy container read would duplicate an element while leaving the stored value live. When the element type has drop glue, both values would later clean up the same owned resources, so `@require_trivially_droppable(T)` rejects the read.",
+        likely_cause: "A container's by-copy accessor such as `get` or `get_or` was instantiated for an element type with a destructor or nested drop glue. Read the element in place through `get_ref`, or transfer its ownership with `pop` or `pop_or`.",
+        examples: [
+            ErrorCodeExample { title: "Copy an element that has drop glue", source: "struct Resource { value: i32 }\ndrop fn Resource(self) {}\nfn Reader(comptime T: type) -> type {\n    struct {\n        value: T,\n        fn first(borrow self) -> T {\n            @require_trivially_droppable(T);\n            self.value\n        }\n    }\n}\nfn main() -> i32 {\n    let R = Reader(Resource);\n    let reader = R { value: Resource { value: 42 } };\n    let value = reader.first();\n    value.value\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Copy a trivially droppable element", source: "fn Reader(comptime T: type) -> type {\n    struct {\n        value: T,\n        fn first(borrow self) -> T {\n            @require_trivially_droppable(T);\n            self.value\n        }\n    }\n}\nfn main() -> i32 {\n    let R = Reader(i32);\n    let reader = R { value: 42 };\n    reader.first()\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Trivially droppable types", path: "docs/spec/src/03-types/09-destructors.md", rule: Some("3.9:7") },
+            ErrorCodeReference { title: "By-value reads of borrowed resources", path: "docs/spec/src/06-items/06-borrow-accessors.md", rule: Some("6.6:11") },
+        ],
+    };
     /// A comptime-constant `align` argument to a byte-allocation intrinsic
     /// (`@alloc`/`@alloc_zeroed`/`@free`/`@realloc`/`@resize`, ADR-0059) was
     /// zero or not a power of two. Alignment must be a power of two.
-    INTRINSIC_ALIGN_NOT_POWER_OF_TWO = 712;
+    INTRINSIC_ALIGN_NOT_POWER_OF_TWO = 712 => {
+        explanation: "The byte-allocation family requires alignment to be a nonzero power-of-two byte count. Rue checks that contract at compile time whenever the `align` operand is a constant.",
+        likely_cause: "The constant alignment passed to `@alloc`, `@alloc_zeroed`, `@free`, `@realloc`, or `@resize` is zero or has more than one bit set, often because a size was used where an alignment was required. Use a valid alignment such as `@align_of(T)` converted to `u64`.",
+        examples: [
+            ErrorCodeExample { title: "Allocate with a three-byte alignment", source: "fn main() {\n    checked {\n        let block = @alloc(8, 3);\n    }\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use a power-of-two alignment", source: "fn main() {\n    checked {\n        let block = @alloc(8, 8);\n        @free(block, 8, 8);\n    }\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Allocation alignment contract", path: "docs/spec/src/09-unchecked-code/02-intrinsics.md", rule: Some("9.2:13a") }],
+    };
     /// A relative `@import` path resolves outside the project root (the root
     /// source file's directory), so it can receive no project-relative module
     /// identity (ADR-0078).
-    IMPORT_ESCAPES_ROOT = 713;
+    IMPORT_ESCAPES_ROOT = 713 => {
+        explanation: "A relative import normalized to a candidate outside the lexical identity boundary selected from the importing module's accepted provenance. That boundary is normally the project root (the root source file's directory); for a trusted standard-library importer it is the captured standard-library root. The candidate cannot receive an identity in the importer's namespace, so Rue rejects it before deriving any filesystem request.",
+        likely_cause: "A `..` component climbs above the importer's provenance-selected identity root, or a dependency was moved outside that root while its old relative import remained. Move the dependency back under the applicable project or captured standard-library root, or choose an in-root relative path.",
+        examples: [
+            ErrorCodeExample { title: "Import a file above the project root", source: "// --- main.rue\nconst outside = @import(\"../outside.rue\");\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Keep the imported file inside the project", source: "// --- main.rue\nconst helper = @import(\"sub/helper.rue\");\nfn main() -> i32 { helper.answer() }\n// --- sub/helper.rue\npub fn answer() -> i32 { 42 }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Import escape diagnostic", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:89") },
+            ErrorCodeReference { title: "Project-root module identity", path: "docs/spec/src/10-modules/02-import-resolution.md", rule: Some("10.2:7") },
+        ],
+    };
     /// An `@import` specifier is not a relative path: it is empty, or it is
     /// absolute. Resolution is defined for relative paths only (spec 10.2:1-2),
     /// and an absolute specifier would additionally bind the program to one
     /// machine's layout, which project-root-relative identity exists to avoid.
-    IMPORT_SPECIFIER_NOT_RELATIVE = 714;
+    IMPORT_SPECIFIER_NOT_RELATIVE = 714 => {
+        explanation: "An import path must be relative to the importing file. An empty path names no candidate, while an absolute path is anchored to one machine's filesystem instead of the source tree; Rue rejects either spelling before any filesystem probe. The reserved `std` specifier follows its own program-anchored rule.",
+        likely_cause: "The import string is empty, begins with `/`, or was generated as an absolute host path. Spell a source-tree dependency relative to the file containing the `@import` call.",
+        examples: [
+            ErrorCodeExample { title: "Use an absolute import path", source: "// --- main.rue\nconst helper = @import(\"/project/helper.rue\");\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use a relative import path", source: "// --- main.rue\nconst helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.answer() }\n// --- helper.rue\npub fn answer() -> i32 { 42 }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Non-relative import diagnostic", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:133") },
+            ErrorCodeReference { title: "Relative import paths", path: "docs/spec/src/10-modules/02-import-resolution.md", rule: Some("10.2:8") },
+        ],
+    };
     /// Two logical import spellings resolve to one physical file. Importing a
     /// physical file under more than one logical identity would make the
     /// source graph ambiguous (RUE-1705).
-    IMPORT_SPELLINGS_SAME_FILE = 715;
+    IMPORT_SPELLINGS_SAME_FILE = 715 => {
+        explanation: "Two distinct logical import names reached the same physical file through non-symlink filesystem aliases, such as hard links or case variants on a case-insensitive filesystem. Giving one file multiple logical module identities within its applicable namespace would make declaration and provenance ownership ambiguous, so Rue reports the later import site. Repeating one logical spelling remains valid, and symlink routes canonicalize to one module.",
+        likely_cause: "The source tree contains hard-linked paths to one file, or two import strings differ only in spelling while the host filesystem treats them as the same file. Remove the alias and import the file consistently under one logical name in the applicable namespace.",
+        examples: [
+            ErrorCodeExample { title: "Import hard-linked paths under different names", source: "// --- main.rue\nconst first = @import(\"a.rue\");\nconst second = @import(\"b.rue\");\nfn main() -> i32 { 0 }\n// --- a.rue\npub fn value() -> i32 { 1 }\n// --- b.rue\npub fn value() -> i32 { 1 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Repeat one logical import spelling", source: "// --- main.rue\nconst first = @import(\"helper.rue\");\nconst second = @import(\"helper.rue\");\nfn main() -> i32 { first.value() + second.value() }\n// --- helper.rue\npub fn value() -> i32 { 1 }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Canonical project-relative module identity", path: "docs/spec/src/10-modules/02-import-resolution.md", rule: Some("10.2:4") },
+            ErrorCodeReference { title: "Path normalization and physical-identity aliasing (ADR-0078 §3)", path: "docs/designs/0078-import-resolution-policy.md", rule: None },
+        ],
+    };
 
     // ========================================================================
     // Literal/operator errors (E0800-E0899)
@@ -4237,9 +4312,13 @@ mod tests {
             }
             for reference in explanation.references {
                 assert!(!reference.title.is_empty());
-                assert!(reference.path.starts_with("docs/spec/src/"));
                 assert!(reference.path.ends_with(".md"));
-                assert!(reference.rule.is_some_and(|rule| !rule.is_empty()));
+                if reference.path.starts_with("docs/spec/src/") {
+                    assert!(reference.rule.is_some_and(|rule| !rule.is_empty()));
+                } else {
+                    assert!(reference.path.starts_with("docs/designs/"));
+                    assert_eq!(reference.rule, None);
+                }
             }
         }
 
@@ -4387,6 +4466,60 @@ mod tests {
 
         let retired = ErrorCode(708);
         assert!(RETIRED_ERROR_CODES.contains(&retired));
+        assert_eq!(error_code_explanation(retired), None);
+        assert_eq!(
+            retired.to_string().parse::<ErrorCode>(),
+            Err(ParseErrorCodeError::Unknown(retired))
+        );
+    }
+
+    #[test]
+    fn active_inference_ownership_alignment_and_import_explanation_band_is_complete_and_bounded() {
+        let expected = [
+            ErrorCode::CANNOT_INFER_CAST_TARGET,
+            ErrorCode::CANNOT_INFER_POINTEE_TYPE,
+            ErrorCode::CONTAINER_ELEMENT_NOT_TRIVIALLY_DROPPABLE,
+            ErrorCode::INTRINSIC_ALIGN_NOT_POWER_OF_TWO,
+            ErrorCode::IMPORT_ESCAPES_ROOT,
+            ErrorCode::IMPORT_SPECIFIER_NOT_RELATIVE,
+            ErrorCode::IMPORT_SPELLINGS_SAME_FILE,
+        ];
+        let active = error_code_metadata()
+            .iter()
+            .filter(|metadata| (709..=715).contains(&metadata.code.0))
+            .map(|metadata| {
+                assert_eq!(metadata.source_path, "crates/rue-error/src/lib.rs");
+                metadata.code
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(active, expected);
+        let explained = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (709..=715)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(explained, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
+        );
+
+        let retired = ErrorCode(708);
+        assert!(RETIRED_ERROR_CODES.contains(&retired));
+        assert!(
+            error_code_metadata()
+                .iter()
+                .all(|metadata| metadata.code != retired)
+        );
+        assert!(
+            ERROR_CODE_EXPLANATION_DECLARATIONS
+                .iter()
+                .all(|declaration| declaration.code != retired)
+        );
         assert_eq!(error_code_explanation(retired), None);
         assert_eq!(
             retired.to_string().parse::<ErrorCode>(),
