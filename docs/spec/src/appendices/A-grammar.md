@@ -93,7 +93,7 @@ const_decl     = directives [ "pub" ] "const" IDENT [ ":" type ] "=" expression 
 
 (* Tests. `test` is a contextual keyword: it introduces a test only at item
    position and only when followed by a STRING. Name uniqueness within a
-   module and the `test_declarations` preview gate are legality rules. *)
+   module is a legality rule. *)
 test_item      = directives "test" STRING "{" block "}" ;
 
 (* Statements *)

@@ -2061,7 +2061,6 @@ impl TestRootCorpus {
 
 fn test_root_options(root_selection: RootSelection) -> CompileOptions {
     CompileOptions {
-        preview_features: PreviewFeatures::from([PreviewFeature::TestDeclarations]),
         root_selection,
         ..CompileOptions::default()
     }

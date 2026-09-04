@@ -14,7 +14,6 @@
 #![cfg(all(test, unix))]
 
 use crate::{CompileOptions, CompilerSession, RootSelection};
-use rue_error::{PreviewFeature, PreviewFeatures};
 
 /// The exact completion frame the dispatcher's epilogue writes.
 const COMPLETE_FRAME: &str = "{\"record\":\"complete\",\"schema\":\"1.0\"}\n";
@@ -45,7 +44,6 @@ struct DispatchedRun {
 
 fn test_options() -> CompileOptions {
     CompileOptions {
-        preview_features: PreviewFeatures::from([PreviewFeature::TestDeclarations]),
         root_selection: RootSelection::Tests,
         ..CompileOptions::default()
     }

@@ -1,8 +1,8 @@
 # Test declarations (ADR-0083 Phase 1, RUE-1618).
 #
-# `test "name" { ... }` is an item behind the `test_declarations` preview
-# feature. It is analyzed as an ordinary parameterless `()`-returning body and
-# is a root only for a test request, so an executable request never sees it.
+# `test "name" { ... }` is a stable item (stabilized by RUE-1955). It is
+# analyzed as an ordinary parameterless `()`-returning body and is a root only
+# for a test request, so an executable request never sees it.
 
 [section]
 id = "items.tests"
@@ -11,30 +11,23 @@ name = "Tests"
 description = "Test declarations: the contextual `test` keyword, per-module name uniqueness, ordinary `()` body analysis, and invisibility to executable requests."
 
 # =============================================================================
-# The preview gate (8.4:1). Both sides of the gate are pinned.
+# The declaration itself (6.7:11: no preview flag).
 # =============================================================================
 
 [[case]]
-name = "test_declaration_requires_its_preview_feature"
-spec = ["6.7:2", "8.4:1"]
-description = "Without --preview test_declarations, a test declaration is the standard preview-gate diagnostic — in an ordinary executable build."
+name = "test_declaration_needs_no_preview_feature"
+spec = ["6.7:2", "6.7:11"]
+description = "Test declarations are stable: an ordinary executable build carrying one compiles with no flag."
 source = """
 fn main() -> i32 { 0 }
-test "needs the flag" { }
+test "needs no flag" { }
 """
-compile_fail = true
-error_contains = [
-    "E1100",
-    "a test declaration requires preview feature `test_declarations`",
-    "use --preview test_declarations",
-]
+exit_code = 0
 
 [[case]]
-name = "test_declaration_compiles_with_its_preview_feature"
+name = "test_declaration_compiles_in_an_executable_build"
 spec = ["6.7:2", "6.7:7"]
-description = "With the flag, a program carrying test declarations builds and runs exactly as it would without them."
-preview = "test_declarations"
-preview_should_pass = true
+description = "A program carrying test declarations builds and runs exactly as it would without them."
 source = """
 fn double(x: i32) -> i32 { x * 2 }
 
@@ -54,8 +47,6 @@ exit_code = 42
 name = "test_declaration_accepts_function_directives"
 spec = ["6.7:5"]
 description = "A test declaration carries the same directives a function carries."
-preview = "test_declarations"
-preview_should_pass = true
 source = """
 @allow(unused_variable)
 test "tolerates an unused binding" {
@@ -69,8 +60,6 @@ exit_code = 0
 name = "public_test_declaration_is_rejected"
 spec = ["6.7:5"]
 description = "`test` takes no visibility modifier: a test is not callable, so `pub` has no meaning for it."
-preview = "test_declarations"
-preview_should_pass = true
 source = """
 pub test "not public" { }
 fn main() -> i32 { 0 }
@@ -82,8 +71,6 @@ error_contains = ["E0100"]
 name = "unchecked_test_declaration_is_rejected"
 spec = ["6.7:5"]
 description = "`test` takes no `unchecked` modifier either."
-preview = "test_declarations"
-preview_should_pass = true
 source = """
 unchecked test "not unchecked" { }
 fn main() -> i32 { 0 }
@@ -99,8 +86,6 @@ error_contains = ["E0100"]
 name = "test_remains_an_ordinary_identifier"
 spec = ["6.7:3"]
 description = "`test` is a keyword only at item position followed by a string; a function, a constant, and a local binding named `test` keep their meaning."
-preview = "test_declarations"
-preview_should_pass = true
 source = """
 fn test(x: i32) -> i32 { x }
 const test_limit: i32 = 1;
@@ -124,8 +109,6 @@ exit_code = 42
 name = "duplicate_test_names_in_one_module_are_rejected"
 spec = ["6.7:6"]
 description = "Two test declarations in one module may not share a name."
-preview = "test_declarations"
-preview_should_pass = true
 source = """
 test "same name" { }
 test "same name" { }
@@ -141,8 +124,6 @@ error_contains = [
 name = "a_test_may_share_its_spelling_with_a_function"
 spec = ["6.7:6"]
 description = "Test names live in their own namespace, so `test \"parse\"` and `fn parse` coexist."
-preview = "test_declarations"
-preview_should_pass = true
 source = """
 fn parse() -> i32 { 42 }
 
@@ -162,8 +143,6 @@ exit_code = 42
 name = "test_body_is_an_ordinary_unit_block"
 spec = ["6.7:7"]
 description = "A test body is an ordinary `()`-typed block: statements, control flow, and calls all behave as they do in a `()`-returning function."
-preview = "test_declarations"
-preview_should_pass = true
 source = """
 fn classify(x: i32) -> i32 {
     if x > 0 { 1 } else { 0 }
@@ -190,8 +169,6 @@ exit_code = 1
 name = "a_test_sees_its_modules_private_items"
 spec = ["6.7:8"]
 description = "A test resolves names exactly as its module's other items do, so it uses private siblings with no visibility loosening."
-preview = "test_declarations"
-preview_should_pass = true
 source = """
 fn private_helper(x: i32) -> i32 { x + 1 }
 
@@ -211,8 +188,6 @@ exit_code = 42
 name = "a_test_body_is_invisible_to_an_executable_request"
 spec = ["6.7:9"]
 description = "An executable request never analyzes a test body, so a type error inside one does not reject the program."
-preview = "test_declarations"
-preview_should_pass = true
 source = """
 test "carries a type error an executable never sees" {
     let x: i32 = true;
@@ -226,8 +201,6 @@ exit_code = 42
 name = "a_test_only_helper_does_not_warn_as_unused"
 spec = ["6.7:10"]
 description = "A private helper referenced only from a test body is not reported as unused in an executable build."
-preview = "test_declarations"
-preview_should_pass = true
 source = """
 fn only_a_test_calls_me(x: i32) -> i32 { x + 1 }
 
@@ -248,8 +221,6 @@ no_warnings = true
 name = "test_declaration_ast_shape"
 spec = ["6.7:2"]
 description = "A test declaration is its own AST item kind, named by its string literal."
-preview = "test_declarations"
-preview_should_pass = true
 source = "test \"names the block\" { let x = 1; }"
 expected_ast = """
 Test sym:1

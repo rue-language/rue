@@ -56,7 +56,7 @@ test "unwraps a missing option" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"exit_code":101,"kind":"unhandled_error"',
@@ -103,7 +103,7 @@ test "unwraps a failed result" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"kind":"unhandled_error"',
@@ -157,7 +157,7 @@ test "a payload variant" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"payload":"Missing"',
@@ -195,7 +195,7 @@ test "unwraps a present option" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1"]
+args = ["test", "main.rue", "--seed", "1", "-j1"]
 driver_exit_code = 0
 compile_stdout_contains = ["1 passed ("]
 compile_stdout_not_contains = ["FAIL", "unhandled_error"]

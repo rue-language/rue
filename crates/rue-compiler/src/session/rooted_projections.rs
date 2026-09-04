@@ -69,43 +69,6 @@ impl CompilerSession {
                 ));
             }
         };
-        // ADR-0083 §1: the `test_declarations` gate covers a parser change, so
-        // ANY request whose closure contains a test item needs the flag —
-        // executable builds included, since they parse test items for the
-        // unused-item scan. This is the request-level half of the gate; the
-        // body-analysis half (`analyze_provider_ordinary_body`'s `Test` arm)
-        // catches a test-rooted request that reached analysis another way.
-        if !options
-            .preview_features
-            .contains(&rue_error::PreviewFeature::TestDeclarations)
-            && projection
-                .declarations
-                .iter()
-                .any(|declaration| declaration.key.kind() == crate::StableDefinitionKind::Test)
-        {
-            let kind = ErrorKind::PreviewFeatureRequired {
-                feature: rue_error::PreviewFeature::TestDeclarations,
-                what: "a test declaration".to_owned(),
-            };
-            // The first test item in module order, so the diagnostic points at
-            // the declaration a reader would fix first.
-            let span = program.modules().iter().find_map(|module| {
-                module.ast().items.iter().find_map(|item| match item {
-                    rue_parser::ast::Item::Test(test) => Some(test.header_span),
-                    _ => None,
-                })
-            });
-            let error = match span {
-                Some(span) => CompileError::new(kind, span),
-                None => CompileError::without_span(kind),
-            };
-            return Err(SemanticRequestControl::Compile(
-                error
-                    .with_help(rue_error::PreviewFeature::TestDeclarations.enable_help())
-                    .into(),
-            ));
-        }
-
         // This is the single root-set authority. `RootSelection::Tests` roots
         // every test declaration in the module closure and neither needs nor
         // roots `main`; `RootSelection::Executable` roots `main` plus the

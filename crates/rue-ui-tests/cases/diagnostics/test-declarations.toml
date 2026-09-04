@@ -2,35 +2,20 @@
 id = "diagnostics.test-declarations"
 name = "Test declaration diagnostics"
 description = """
-ADR-0083 Phase 1 (RUE-1618). The two-sided `test_declarations` preview gate —
-E1100 without `--preview test_declarations`, and an ordinary compile with it,
-since Phase 1 ships the declaration whole — plus the duplicate-name diagnostic
-and the modifiers the grammar does not accept.
+ADR-0083 (RUE-1618), stabilized by RUE-1955: a test declaration compiles with
+no flag, in an ordinary executable build included — plus the duplicate-name
+diagnostic and the modifiers the grammar does not accept.
 """
 
 [[case]]
-name = "gated_without_the_preview_flag"
-description = "Spec 8.4:1 — a gated feature errors without its flag, and the help names the flag and the ADR. The request is an ordinary executable build: a test item in the closure gates it too."
+name = "no_preview_gate_for_a_test_item"
+description = "Spec 6.7:11 — test declarations are stable, so no E1100 is emitted for one. The request is an ordinary executable build, which is the case that used to be gated: a test item is in its parsed closure."
 source = """
 fn main() -> i32 { 0 }
-test "needs the flag" { }
+test "needs no flag" { }
 """
-compile_fail = true
-error_contains = [
-    "E1100",
-    "a test declaration requires preview feature `test_declarations`",
-    "use --preview test_declarations to enable this feature (ADR-0083)",
-]
-
-[[case]]
-name = "enabled_by_the_preview_flag"
-description = "With the flag the declaration compiles: unlike the float gate, Phase 1 ships the whole declaration, so nothing stops at a phase marker."
-source = """
-fn main() -> i32 { 0 }
-test "needs the flag" { }
-"""
-preview = "test_declarations"
 exit_code = 0
+no_warnings = true
 
 [[case]]
 name = "duplicate_test_names_name_the_test_and_its_first_declaration"
@@ -40,7 +25,6 @@ test "same name" { }
 test "same name" { }
 fn main() -> i32 { 0 }
 """
-preview = "test_declarations"
 compile_fail = true
 error_contains = [
     "E0262",
@@ -55,7 +39,6 @@ source = """
 pub test "not public" { }
 fn main() -> i32 { 0 }
 """
-preview = "test_declarations"
 compile_fail = true
 error_contains = [
     "E0100",
@@ -69,6 +52,5 @@ source = """
 test { }
 fn main() -> i32 { 0 }
 """
-preview = "test_declarations"
 compile_fail = true
 error_contains = ["E0100", "'test'"]

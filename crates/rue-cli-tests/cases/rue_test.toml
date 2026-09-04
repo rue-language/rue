@@ -42,7 +42,7 @@ test "so does comparison" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1"]
+args = ["test", "main.rue", "--seed", "1", "-j1"]
 driver_exit_code = 0
 compile_stdout_contains = ["2 passed ("]
 compile_stdout_not_contains = ["FAIL", "PASS "]
@@ -71,7 +71,7 @@ test "two plus two is five" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"failure":{"exit_code":101,"kind":"assert","location":{"column":5,"file":"tests.rue","line":2}',
@@ -105,7 +105,7 @@ test "checks the port" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"failure":{"exit_code":101,"kind":"assert","location":{"column":5,"file":"tests.rue","line":3}',
@@ -138,7 +138,7 @@ test "several checks" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"failure":{"exit_code":101,"kind":"assert","location":{"column":5,"file":"tests.rue","line":3}',
@@ -172,7 +172,7 @@ test "formats its message" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"failure":{"exit_code":101,"kind":"assert","location":{"column":5,"file":"tests.rue","line":4}',
@@ -205,7 +205,7 @@ test "with a message" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1"]
+args = ["test", "main.rue", "--seed", "1", "-j1"]
 driver_exit_code = 1
 compile_stdout_contains = [
     "assert: assertion failed  (tests.rue:2:5)",
@@ -276,7 +276,7 @@ test "gives up" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = ['"kind":"trap:panic"', '"message":"panic: boom"']
 
@@ -303,7 +303,7 @@ test "divides by zero" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = ['"kind":"trap:div_by_zero"', '"message":"error: division by zero"']
 
@@ -332,7 +332,7 @@ test "leaves before it checks anything" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"kind":"incomplete"',
@@ -366,7 +366,7 @@ test "never finishes" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--timeout-ms", "500", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--timeout-ms", "500", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"verdict":"timeout"',
@@ -402,7 +402,7 @@ test "floods its own stdout" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = ['"kind":"output_overflow"', '"verdict":"fail"']
 # RUE-1958 bounds the *human* rendering only. The event stream carries the
@@ -436,7 +436,7 @@ test "floods its own stdout" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "human"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "human"]
 driver_exit_code = 1
 compile_stdout_contains = [
     "FAIL tests.rue::floods its own stdout",
@@ -470,7 +470,7 @@ test "alpha" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--list"]
+args = ["test", "main.rue", "--list"]
 driver_exit_code = 0
 compile_stdout_contains = ["tests.rue::alpha\ntests.rue::beta\n"]
 
@@ -494,7 +494,7 @@ test "alpha" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--list", "--format", "json"]
+args = ["test", "main.rue", "--list", "--format", "json"]
 driver_exit_code = 0
 compile_stdout_contains = [
     '{"column":1,"event":"test","file":"tests.rue","id":"tests.rue::alpha","line":1,"module":"tests.rue","name":"alpha","schema":"1.0"}',
@@ -525,7 +525,7 @@ test "lexer eats spaces" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--list", "--filter", "parse_port"]
+args = ["test", "main.rue", "--list", "--filter", "parse_port"]
 driver_exit_code = 0
 compile_stdout_contains = ["tests.rue::parse_port accepts\ntests.rue::parse_port rejects\n"]
 compile_stdout_not_contains = ["lexer"]
@@ -555,7 +555,7 @@ test "unrelated" {
 """ },
 ]
 args = [
-    "test", "main.rue", "--preview", "test_declarations", "--list",
+    "test", "main.rue", "--list",
     "--filter", "parse_port", "--filter", "lexer",
 ]
 driver_exit_code = 0
@@ -582,7 +582,7 @@ test "alpha" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--filter", "no_such_test", "-j1"]
+args = ["test", "main.rue", "--filter", "no_such_test", "-j1"]
 driver_exit_code = 3
 compile_stderr_contains = ["no tests matched the selection"]
 
@@ -620,7 +620,7 @@ test "delta" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--list", "--shard", "1/2"]
+args = ["test", "main.rue", "--list", "--shard", "1/2"]
 driver_exit_code = 0
 compile_stdout_contains = ["tests.rue::alpha\ntests.rue::beta\ntests.rue::delta\n"]
 compile_stdout_not_contains = ["gamma"]
@@ -653,7 +653,7 @@ test "delta" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--list", "--shard", "2/2"]
+args = ["test", "main.rue", "--list", "--shard", "2/2"]
 driver_exit_code = 0
 compile_stdout_contains = ["tests.rue::gamma\n"]
 compile_stdout_not_contains = ["alpha", "beta", "delta"]
@@ -683,7 +683,7 @@ test "alpha" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "424242", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "424242", "-j1", "--format", "json"]
 driver_exit_code = 0
 compile_stdout_contains = [
     '{"event":"run_started","jobs":1,"opt_level":"0",',
@@ -721,13 +721,13 @@ test "fails on purpose" {
 """ },
 ]
 args = [
-    "test", "main.rue", "--preview", "test_declarations", "--seed", "9",
+    "test", "main.rue", "--seed", "9",
     "-j1", "--timeout-ms", "9000", "--format", "json",
 ]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"repro":["rue","test","main.rue","--filter","tests.rue::fails on purpose","--seed","9",',
-    '"-O0","--preview","test_declarations","--timeout-ms","9000"]',
+    '"-O0","--timeout-ms","9000"]',
     '"stderr":{"bytes_total":17,"data":"assertion failed\n","encoding":"utf8"}',
     '"scratch_dir":"',
 ]
@@ -760,7 +760,7 @@ test "fails on purpose" {
 ]
 args = [
     "test", "main.rue", "--filter", "tests.rue::fails on purpose", "--seed", "9",
-    "-O0", "--preview", "test_declarations", "--timeout-ms", "9000",
+    "-O0", "--timeout-ms", "9000",
     "-j1", "--format", "json",
 ]
 driver_exit_code = 1
@@ -796,7 +796,7 @@ test "beta" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "7", "-j1", "--format", "json"]
+args = ["test", "main.rue", "--seed", "7", "-j1", "--format", "json"]
 driver_exit_code = 0
 compile_stdout_contains = ['"seed":7,', '"--seed","7"']
 
@@ -829,40 +829,13 @@ test "delta" {
 """ },
 ]
 args = [
-    "test", "main.rue", "--preview", "test_declarations", "--seed", "1",
+    "test", "main.rue", "--seed", "1",
     "-j1", "--shard", "2/2", "--format", "json",
 ]
 driver_exit_code = 0
 compile_stdout_contains = ['"shard":"2/2"', '"plan":{"selected":1,"total":4}']
 
-# ========================= the preview gate and the candidate inventory =========================
-
-[[case]]
-name = "test_mode_does_not_enable_the_preview_gate_for_you"
-description = """
-ADR-0083 §1, ruled: `--preview test_declarations` is required exactly as for a
-build. Auto-enabling it in test mode would make `rue test` the first flag to
-bypass ADR-0005's explicit opt-in while leaving the same files failing ordinary
-builds. A program that will not compile is the runner-error status.
-"""
-files = [
-    { path = "main.rue", source = """
-const tests = @import("tests.rue");
-
-fn main() -> i32 {
-    0
-}
-""" },
-    { path = "tests.rue", source = """
-test "alpha" {
-    @assert(1 == 1);
-}
-""" },
-]
-args = ["test", "main.rue"]
-driver_exit_code = 2
-compile_stderr_contains = ["E1100", "test_declarations"]
-compile_stdout_not_contains = ["run_started"]
+# ========================= the candidate inventory =========================
 
 [[case]]
 name = "an_orphaned_test_file_is_warned_about_and_reported_in_run_finished"
@@ -900,7 +873,7 @@ test "nor this one" {
 """ },
 ]
 args = [
-    "test", "main.rue", "--preview", "test_declarations",
+    "test", "main.rue",
     "--test-candidates", "test-candidates.list", "--seed", "1", "-j1", "--format", "json",
 ]
 driver_exit_code = 0
@@ -952,7 +925,7 @@ test "nor this one" {
 """ },
 ]
 args = [
-    "test", "main.rue", "--preview", "test_declarations",
+    "test", "main.rue",
     "--test-candidates", "test-candidates.list", "--seed", "1", "-j1", "--format", "human",
 ]
 driver_exit_code = 0
@@ -983,7 +956,7 @@ test "alpha" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1"]
+args = ["test", "main.rue", "--seed", "1", "-j1"]
 driver_exit_code = 0
 compile_stdout_contains = [
     "note: no --test-candidates inventory; unimported test files are not detected",
@@ -1008,7 +981,7 @@ fn main() -> i32 {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1"]
+args = ["test", "main.rue", "--seed", "1", "-j1"]
 driver_exit_code = 0
 compile_stdout_contains = ["1 passed"]
 compile_stdout_not_contains = ["note: no --test-candidates inventory"]
@@ -1031,7 +1004,7 @@ fn main() -> i32 {
 """ },
 ]
 args = [
-    "test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1",
+    "test", "main.rue", "--seed", "1", "-j1",
     "--format", "json",
 ]
 driver_exit_code = 0
@@ -1075,7 +1048,7 @@ test "alpha" {
 }
 """ },
 ]
-args = ["test", "./test", "--preview", "test_declarations", "--list"]
+args = ["test", "./test", "--list"]
 driver_exit_code = 0
 compile_stdout_contains = ["tests.rue::alpha"]
 
@@ -1182,7 +1155,7 @@ test "trivial" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "-O2"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "-O2"]
 driver_exit_code = 0
 compile_stdout_contains = ["2 passed ("]
 compile_stdout_not_contains = ["FAIL"]
@@ -1204,7 +1177,7 @@ test "trivial" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "-O3"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "-O3"]
 driver_exit_code = 0
 compile_stdout_contains = ["2 passed ("]
 compile_stdout_not_contains = ["FAIL"]
@@ -1227,7 +1200,7 @@ test "two plus two is five" {
 }
 """ },
 ]
-args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "-O2", "--format", "json"]
+args = ["test", "main.rue", "--seed", "1", "-j1", "-O2", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
     '"failure":{"exit_code":101,"kind":"assert"',

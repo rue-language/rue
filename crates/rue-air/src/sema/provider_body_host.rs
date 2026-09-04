@@ -5894,10 +5894,8 @@ where
             // A test declaration is an ordinary `()`-returning, parameterless
             // body (ADR-0083 §1), so it reuses the free-function mechanics
             // above rather than forking a second analysis path. The only
-            // differences are where the declaration is found — its own RIR
-            // index, since a test's name is not a callable name — and the
-            // preview gate, which is repeated here so a test-rooted request is
-            // gated even when the request-level check is bypassed.
+            // difference is where the declaration is found — its own RIR
+            // index, since a test's name is not a callable name.
             crate::StableDefinitionKind::Test => {
                 let declaration = host.endpoint.first_test(name, owner_file).ok_or_else(|| {
                     CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(format!(
@@ -5906,11 +5904,6 @@ where
                 })?;
                 let instruction = host.rir.rir().get(declaration);
                 let declaration_span = instruction.span;
-                host.require_preview(
-                    rue_error::PreviewFeature::TestDeclarations,
-                    "a test declaration",
-                    declaration_span,
-                )?;
                 let InstData::FnDecl {
                     return_type,
                     body,
