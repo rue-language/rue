@@ -556,9 +556,10 @@ fn direct_identity_and_signature_families_are_complete_per_declaration() {
                 &[
                     "compiler.declaration-occurrence-index",
                     "compiler.declaration-shell",
+                    "compiler.lookup-name",
                     "compiler.parse-module",
                 ],
-                4,
+                5,
             ),
         }
         let V::Signature(signature) = signature else {

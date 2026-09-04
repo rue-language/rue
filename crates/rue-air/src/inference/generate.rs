@@ -12,6 +12,7 @@ use crate::Type;
 use crate::intern_pool::TypeInternPool;
 use crate::scope::ScopedContext;
 use crate::sema::{ComptimeSelection, ConstValue, select_module_nominal};
+use crate::semantic_type_resolution::{UnqualifiedNominalTier, select_unqualified_nominal};
 #[cfg(test)]
 use crate::types::ArrayLen;
 use crate::types::{ModuleId, StructId, TypeKind};
@@ -1201,18 +1202,6 @@ impl<'a> ConstraintGenerator<'a> {
             ConstValue::Integer(n) => Some(*n),
             _ => None,
         }
-    }
-
-    /// Resolve a bare type-alias name in alias-head position against the
-    /// referencing file's scope, with the same by-file discipline as
-    /// [`Self::scoped_const_value`]: a `const T = SomeType(...)` in the current
-    /// module resolves; a same-named alias elsewhere is qualified, not bare.
-    fn scoped_const_type_alias(&self, sym: Spur, file_id: FileId) -> Option<Type> {
-        if let Some(lazy) = self.lazy {
-            return lazy.const_type_alias((file_id, sym));
-        }
-        self.const_type_aliases
-            .and_then(|aliases| aliases.get(&(file_id, sym)).copied())
     }
 
     /// Get the type variables allocated for integer literals.
@@ -3349,10 +3338,9 @@ impl<'a> ConstraintGenerator<'a> {
                 // could not reduce falls through to the error path below and
                 // sema diagnoses it. Module-qualified literals
                 // (`m.Point { ... }`) resolve in the module's defining file,
-                // matching sema. Unqualified literals check type_subst first
-                // (for Self/type parameters), then comptime type aliases
-                // (`let P = F(); P { ... }`, RUE-170), then the current
-                // file's module-local type table, then builtins.
+                // matching sema. Unqualified literals delegate their
+                // substitution/alias/declaration/builtin precedence to the
+                // shared nominal selector below.
                 let struct_ty = if let Some(head) = ctor_head {
                     self.inline_ctor_head_types
                         .and_then(|heads| heads.get(head).copied())
@@ -3368,13 +3356,7 @@ impl<'a> ConstraintGenerator<'a> {
                         .and_then(|module_id| self.module_file_id(module_id))
                         .and_then(|file_id| self.struct_type_by_file((file_id, *type_name)))
                 } else {
-                    self.type_subst
-                        .and_then(|subst| subst.get(type_name).copied())
-                        .or_else(|| self.comptime_alias_types.get(type_name).copied())
-                        .or_else(|| {
-                            self.struct_type_by_file((span.file_id, *type_name))
-                                .or_else(|| self.builtin_struct_type(*type_name))
-                        })
+                    self.struct_type_for(type_name, span.file_id)
                 };
 
                 let fields = self.rir.field_inits(fields);
@@ -4619,61 +4601,60 @@ impl<'a> ConstraintGenerator<'a> {
         Some(method_sig.return_type.clone())
     }
 
-    /// Resolve an enum type name that may be a comptime type-variable binding
-    /// (`let O = Option(i32); O.Some(..)`), falling back to the named-enum
-    /// table. Mirrors sema's `resolve_enum_type_name`; without the
-    /// comptime-alias lookup, generic-enum construction/matching inferred
-    /// `<error>` and poisoned the surrounding constraints (RUE-6 phase 2).
-    /// Struct type for an unqualified name. Present precedence is substitutions,
-    /// lexical aliases, file-level aliases, a declaration in the reference
-    /// file, then builtins (RUE-525).
+    /// Resolve one unqualified nominal spelling through the shared inference /
+    /// aggregate-sema authority. Keeping the kind filter at each consumer is
+    /// important: a higher-precedence enum binding in struct position (or vice
+    /// versa) must not fall through to a lower-precedence declaration.
+    fn unqualified_nominal_type(&self, type_name: Spur, file_id: FileId) -> Option<Type> {
+        self.unqualified_nominal_type_with_substitution(type_name, file_id, self.type_subst, false)
+    }
+
+    fn unqualified_nominal_type_with_substitution(
+        &self,
+        type_name: Spur,
+        file_id: FileId,
+        substitution: Option<&AHashMap<Spur, Type>>,
+        lexical_shadowed: bool,
+    ) -> Option<Type> {
+        select_unqualified_nominal(|tier| {
+            Ok::<_, std::convert::Infallible>(match tier {
+                UnqualifiedNominalTier::Substitution => {
+                    substitution.and_then(|subst| subst.get(&type_name).copied())
+                }
+                UnqualifiedNominalTier::LexicalAlias => {
+                    if let Some(ty) = self.comptime_alias_types.get(&type_name).copied() {
+                        Some(ty)
+                    } else if lexical_shadowed {
+                        Some(Type::ERROR)
+                    } else {
+                        None
+                    }
+                }
+                UnqualifiedNominalTier::FileAlias => self.const_type_alias((file_id, type_name)),
+                UnqualifiedNominalTier::Primitive => {
+                    Type::from_primitive_name(self.interner.resolve(&type_name))
+                }
+                UnqualifiedNominalTier::Declaration => self
+                    .struct_type_by_file((file_id, type_name))
+                    .or_else(|| self.enum_type_by_file((file_id, type_name))),
+                UnqualifiedNominalTier::Builtin => self
+                    .builtin_struct_type(type_name)
+                    .or_else(|| self.builtin_enum_type(type_name)),
+            })
+        })
+        .expect("infallible inference nominal selection")
+        .map(|selected| selected.value)
+    }
+
+    /// Struct type for an unqualified name.
     fn struct_type_for(&self, type_name: &Spur, file_id: FileId) -> Option<Type> {
-        // `Self` (and comptime type parameters) resolve through the enclosing
-        // substitution first, so `Self.assoc_fn(args)` constrains its
-        // arguments like `StructName.assoc_fn(args)` (RUE-639).
-        self.type_subst
-            .and_then(|subst| subst.get(type_name).copied())
+        self.unqualified_nominal_type(*type_name, file_id)
             .filter(|ty| ty.as_struct().is_some())
-            .or_else(|| {
-                self.comptime_alias_types
-                    .get(type_name)
-                    .copied()
-                    .filter(|ty| ty.as_struct().is_some())
-            })
-            .or_else(|| {
-                // File-level `const Ints = ArrayBuf(i64);` aliases: without
-                // this, a method chain rooted at the alias (`Ints.new()`)
-                // missed the type-qualified path, the receiver degraded to a
-                // fresh variable, and every later method argument was left
-                // unconstrained — an integer-literal expression argument then
-                // defaulted to i32 and was zero-extended into the declared
-                // 64-bit slot (miscompile, RUE-633).
-                self.const_type_alias((file_id, *type_name))
-                    .filter(|ty| ty.as_struct().is_some())
-            })
-            .or_else(|| self.struct_type_by_file((file_id, *type_name)))
-            .or_else(|| self.builtin_struct_type(*type_name))
     }
 
     fn enum_type_for(&self, type_name: &Spur, file_id: FileId) -> Option<Type> {
-        self.type_subst
-            .and_then(|subst| subst.get(type_name).copied())
-            .filter(|ty| ty.is_enum())
-            .or_else(|| {
-                self.comptime_alias_types
-                    .get(type_name)
-                    .copied()
-                    .filter(|ty| ty.is_enum())
-            })
-            .or_else(|| {
-                // File-level const enum aliases, for the same reason as
-                // `struct_type_for` (RUE-633): a construction rooted at the
-                // alias must constrain its payload arguments.
-                self.const_type_alias((file_id, *type_name))
-                    .filter(|ty| ty.is_enum())
-            })
-            .or_else(|| self.enum_type_by_file((file_id, *type_name)))
-            .or_else(|| self.builtin_enum_type(*type_name))
+        self.unqualified_nominal_type(*type_name, file_id)
+            .filter(Type::is_enum)
     }
 
     /// The type `module.Name` names, over the one source order semantic
@@ -4869,29 +4850,6 @@ impl<'a> ConstraintGenerator<'a> {
     /// type) - those are type-checked in sema instead.
     fn extract_type_argument(&self, arg: InstRef, ctx: &ConstraintContext) -> Option<Type> {
         let file_id = self.rir.get(arg).span.file_id;
-        let resolve_sym = |sym: &Spur| -> Option<Type> {
-            // A forwarded type parameter substitutes to whatever the enclosing
-            // specialization bound it to, of any kind (a primitive, an array,
-            // a nominal type), so this lookup is unfiltered and comes first.
-            if let Some(subst) = self.type_subst {
-                if let Some(&ty) = subst.get(sym) {
-                    return Some(ty);
-                }
-            }
-            // A directly named struct/enum — `identity(Foo, ..)` — is a type
-            // value exactly like `identity(i32, ..)`. `struct_type_for` /
-            // `enum_type_for` are the same by-file lookups the type-qualified
-            // call path uses (lexical aliases, file-level aliases, the
-            // referencing file's declarations, then builtins), so a nominal
-            // spelling resolves wherever its alias spelling already did.
-            // Consulting only the builtin tables left the argument out of
-            // `type_subst`, so a `-> T` return type could not be substituted
-            // and stayed the literal `type` placeholder — reported as a bogus
-            // "expected Foo, found type" mismatch at the binding (RUE-1680).
-            self.struct_type_for(sym, file_id)
-                .or_else(|| self.enum_type_for(sym, file_id))
-        };
-
         match &self.rir.get(arg).data {
             InstData::TypeConst { type_name } => {
                 match self.infer_rir_type_hint(*type_name, self.rir.get(arg).span.file_id) {
@@ -4912,9 +4870,6 @@ impl<'a> ConstraintGenerator<'a> {
                 // RUE-281). The literal form (`identity(i32, 42)`) already
                 // worked via the `TypeConst` arm; this makes an aliased type
                 // behave identically.
-                if let Some(ty) = self.comptime_alias_types.get(name).copied() {
-                    return Some(ty);
-                }
                 // A local or parameter shadows any same-named struct/enum. A
                 // local *not* bound to a comptime type value (a runtime value)
                 // has no concrete type here. Preserve that error through
@@ -4924,10 +4879,13 @@ impl<'a> ConstraintGenerator<'a> {
                 // Forwarded type parameters (`T` inside a specialized generic
                 // body) are not in scope as runtime params/locals and resolve
                 // via `self.type_subst` above.
-                if ctx.locals.contains_key(name) || ctx.contains_param(*name) {
-                    return Some(Type::ERROR);
-                }
-                resolve_sym(name)
+                let lexical_shadowed = ctx.locals.contains_key(name) || ctx.contains_param(*name);
+                self.unqualified_nominal_type_with_substitution(
+                    *name,
+                    file_id,
+                    self.type_subst,
+                    lexical_shadowed,
+                )
             }
             _ => None,
         }
@@ -4993,16 +4951,8 @@ impl<'a> ConstraintGenerator<'a> {
         match arena.node(syntax)? {
             RirTypeSyntaxNode::Named(symbol) => {
                 let name = *arena.symbol(*symbol)?;
-                if let Some(ty) = subst.and_then(|subst| subst.get(&name)).copied() {
-                    return Some(self.type_to_infer(ty));
-                }
-                if let Some(ty) = self.comptime_alias_types.get(&name).copied() {
-                    return Some(self.type_to_infer(ty));
-                }
-                if let Some(ty) = self.const_type_alias((file_id, name)) {
-                    return Some(self.type_to_infer(ty));
-                }
-                self.infer_named_type_hint(self.interner.resolve(&name), file_id)
+                self.unqualified_nominal_type_with_substitution(name, file_id, subst, false)
+                    .map(|ty| self.type_to_infer(ty))
             }
             RirTypeSyntaxNode::Unit => Some(InferType::Concrete(Type::UNIT)),
             RirTypeSyntaxNode::Never => Some(InferType::Concrete(Type::NEVER)),
@@ -5050,31 +5000,12 @@ impl<'a> ConstraintGenerator<'a> {
         }
     }
 
+    #[cfg(test)]
     fn infer_named_type_hint(&self, name: &str, file_id: FileId) -> Option<InferType> {
-        // Check primitives (single shared table, RUE-155)
-        if let Some(ty) = Type::from_primitive_name(name) {
-            return Some(InferType::Concrete(ty));
-        }
-
-        // Check for struct types (including builtin String)
-        if let Some(name_spur) = self.interner.get(name) {
-            if let Some(ty) = self.struct_type_by_file((file_id, name_spur)) {
-                return Some(InferType::Concrete(ty));
-            }
-            if let Some(ty) = self.enum_type_by_file((file_id, name_spur)) {
-                return Some(InferType::Concrete(ty));
-            }
-            if let Some(struct_ty) = self.builtin_struct_type(name_spur) {
-                return Some(InferType::Concrete(struct_ty));
-            }
-            if let Some(enum_ty) = self.builtin_enum_type(name_spur) {
-                return Some(InferType::Concrete(enum_ty));
-            }
-            if let Some(alias_ty) = self.scoped_const_type_alias(name_spur, file_id) {
-                return Some(InferType::Concrete(alias_ty));
-            }
-        }
-        None
+        self.interner
+            .get(name)
+            .and_then(|name| self.unqualified_nominal_type(name, file_id))
+            .map(InferType::Concrete)
     }
 }
 

@@ -392,6 +392,48 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "file_const_type_alias_struct_literal_head"
+spec = ["4.14:22"]
+description = "A top-level const binding of a type-constructor result is an unqualified struct-literal head, and constrains its fields before AIR emission (RUE-1966)"
+source = """
+fn Point(comptime T: type) -> type { struct { x: T } }
+const P = Point(u8);
+fn main() -> i32 {
+    let p = P { x: 200 };
+    if p.x == 200 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "file_const_type_alias_generic_argument"
+spec = ["4.14:22"]
+description = "A top-level const type alias is an unqualified comptime type argument (RUE-1966)"
+source = """
+fn Point(comptime T: type) -> type { struct { x: T } }
+const P = Point(u8);
+fn identity(comptime T: type, value: T) -> T { value }
+fn main() -> i32 {
+    let p = identity(P, P { x: 42 });
+    if p.x == 42 { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "file_const_type_alias_annotation"
+spec = ["4.14:22"]
+description = "A top-level const type alias is an unqualified parameter, return, and local annotation (RUE-1966)"
+source = """
+fn Point(comptime T: type) -> type { struct { x: T } }
+const P = Point(i32);
+fn make() -> P { P { x: 42 } }
+fn get(p: P) -> i32 { p.x }
+fn main() -> i32 { let p: P = make(); get(p) }
+"""
+exit_code = 42
+
+[[case]]
 name = "generic_function_type_arg_is_user_struct_name"
 spec = ["4.14:5"]
 description = "A user-declared struct name is a comptime type argument in its own right (`identity(Foo, ..)`), resolving T:=Foo exactly as the primitive and alias spellings do (RUE-1680)"

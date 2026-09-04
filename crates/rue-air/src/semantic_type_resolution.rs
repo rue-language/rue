@@ -12,6 +12,58 @@ use std::sync::Arc;
 use ahash::AHashMap;
 use lasso::{Key, Spur};
 
+/// One precedence tier in unqualified type-name resolution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnqualifiedNominalTier {
+    Substitution,
+    LexicalAlias,
+    FileAlias,
+    Primitive,
+    Declaration,
+    Builtin,
+}
+
+impl UnqualifiedNominalTier {
+    pub(crate) fn via_binding(self) -> bool {
+        matches!(
+            self,
+            Self::Substitution | Self::LexicalAlias | Self::FileAlias
+        )
+    }
+}
+
+/// The winner selected by [`select_unqualified_nominal`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UnqualifiedNominal<T> {
+    pub(crate) value: T,
+    pub(crate) tier: UnqualifiedNominalTier,
+}
+
+/// Canonical precedence authority for one unqualified type spelling.
+///
+/// The probe owns all provider-specific work and is invoked lazily, once per
+/// tier, until a winner or provider failure is observed. Declaration and
+/// builtin probes must each expose their unified nominal namespace before a
+/// consumer applies a struct/enum kind filter; otherwise an opposite-kind user
+/// declaration can be skipped and a same-named builtin can counterfeit it.
+pub(crate) fn select_unqualified_nominal<T, E>(
+    mut probe: impl FnMut(UnqualifiedNominalTier) -> Result<Option<T>, E>,
+) -> Result<Option<UnqualifiedNominal<T>>, E> {
+    for tier in [
+        UnqualifiedNominalTier::Substitution,
+        UnqualifiedNominalTier::LexicalAlias,
+        UnqualifiedNominalTier::FileAlias,
+        UnqualifiedNominalTier::Primitive,
+        UnqualifiedNominalTier::Declaration,
+        UnqualifiedNominalTier::Builtin,
+    ] {
+        if let Some(value) = probe(tier)? {
+            return Ok(Some(UnqualifiedNominal { value, tier }));
+        }
+    }
+    Ok(None)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SemanticVisibilityDomain(Option<Arc<str>>);
 
@@ -622,51 +674,57 @@ fn resolve_unqualified_semantic_type<S, M, A, K, N, T, V, P>(
 where
     P: SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>,
 {
-    // Computed lazily, next to the only readers below: the substituted,
-    // primitive and builtin fast paths resolve most names and all return before
-    // any visibility check, so eagerly deriving the domain here made every `i32`
-    // pay a path parse and an Arc<str> allocation it discarded (RUE-1840).
-    if let Some(ty) = lift_provider(provider.substituted_type(root_scope, name))? {
-        lift_provider(provider.observe_materialized_type(&ty))?;
-        return Ok(Some(ty));
+    enum Candidate<T, A> {
+        Materialized(T),
+        Direct(T),
+        Named(SemanticTypeFactKind, SemanticTypeFact<T, A>),
     }
-    if let Some(ty) = lift_provider(provider.primitive_type(name))? {
-        return Ok(Some(ty));
-    }
-    if let Some(ty) = lift_provider(provider.builtin_type(root_scope, name))? {
-        return Ok(Some(ty));
-    }
-    if let Some(fact) = lift_provider(provider.root_struct_type(root_scope, name))? {
-        return select_named_type(
+
+    let selected = select_unqualified_nominal(|tier| match tier {
+        UnqualifiedNominalTier::Substitution => {
+            lift_provider(provider.substituted_type(root_scope, name))
+                .map(|value| value.map(Candidate::Materialized))
+        }
+        // The structured semantic provider's substitution hook owns all
+        // lexical comptime bindings for its current continuation.
+        UnqualifiedNominalTier::LexicalAlias => Ok(None),
+        UnqualifiedNominalTier::FileAlias => {
+            lift_provider(provider.root_type_alias(root_scope, name)).map(|value| {
+                value.map(|fact| Candidate::Named(SemanticTypeFactKind::Constant, fact))
+            })
+        }
+        UnqualifiedNominalTier::Primitive => {
+            lift_provider(provider.primitive_type(name)).map(|value| value.map(Candidate::Direct))
+        }
+        UnqualifiedNominalTier::Declaration => {
+            if let Some(fact) = lift_provider(provider.root_struct_type(root_scope, name))? {
+                Ok(Some(Candidate::Named(SemanticTypeFactKind::Struct, fact)))
+            } else {
+                lift_provider(provider.root_enum_type(root_scope, name)).map(|value| {
+                    value.map(|fact| Candidate::Named(SemanticTypeFactKind::Enum, fact))
+                })
+            }
+        }
+        UnqualifiedNominalTier::Builtin => lift_provider(provider.builtin_type(root_scope, name))
+            .map(|value| value.map(Candidate::Direct)),
+    })?;
+
+    match selected.map(|selected| selected.value) {
+        Some(Candidate::Materialized(ty)) => {
+            lift_provider(provider.observe_materialized_type(&ty))?;
+            Ok(Some(ty))
+        }
+        Some(Candidate::Direct(ty)) => Ok(Some(ty)),
+        Some(Candidate::Named(kind, fact)) => select_named_type(
             provider,
             fact,
-            SemanticTypeFactKind::Struct,
+            kind,
             name,
             &provider.accessing_domain(root_scope),
         )
-        .map(Some);
+        .map(Some),
+        None => Ok(None),
     }
-    if let Some(fact) = lift_provider(provider.root_enum_type(root_scope, name))? {
-        return select_named_type(
-            provider,
-            fact,
-            SemanticTypeFactKind::Enum,
-            name,
-            &provider.accessing_domain(root_scope),
-        )
-        .map(Some);
-    }
-    if let Some(fact) = lift_provider(provider.root_type_alias(root_scope, name))? {
-        return select_named_type(
-            provider,
-            fact,
-            SemanticTypeFactKind::Constant,
-            name,
-            &provider.accessing_domain(root_scope),
-        )
-        .map(Some);
-    }
-    Ok(None)
 }
 
 fn resolve_qualified_semantic_type<S, M, A, K, N, T, V, P>(
@@ -2493,6 +2551,62 @@ mod tests {
     }
 
     #[test]
+    fn unqualified_nominal_selector_is_ordered_lazy_and_kind_neutral() {
+        let tiers = [
+            UnqualifiedNominalTier::Substitution,
+            UnqualifiedNominalTier::LexicalAlias,
+            UnqualifiedNominalTier::FileAlias,
+            UnqualifiedNominalTier::Primitive,
+            UnqualifiedNominalTier::Declaration,
+            UnqualifiedNominalTier::Builtin,
+        ];
+        for (winner_index, winner) in tiers.into_iter().enumerate() {
+            let mut probes = Vec::new();
+            let selected = select_unqualified_nominal(|tier| {
+                probes.push(tier);
+                Ok::<_, ()>((tier == winner).then_some(winner_index))
+            })
+            .unwrap()
+            .expect("configured winner is selected");
+            assert_eq!(selected.tier, winner);
+            assert_eq!(selected.value, winner_index);
+            assert_eq!(probes, &tiers[..=winner_index]);
+        }
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum Kind {
+            Struct,
+            Enum,
+        }
+        let selected = select_unqualified_nominal(|tier| {
+            Ok::<_, ()>(match tier {
+                UnqualifiedNominalTier::Declaration => Some(Kind::Struct),
+                UnqualifiedNominalTier::Builtin => Some(Kind::Enum),
+                _ => None,
+            })
+        })
+        .unwrap()
+        .expect("declaration wins");
+        assert_eq!(selected.value, Kind::Struct);
+        assert!(
+            (selected.value == Kind::Enum).then_some(()).is_none(),
+            "a consumer kind filter must not fall through to the builtin"
+        );
+
+        let mut probes = Vec::new();
+        let failed = select_unqualified_nominal(|tier| {
+            probes.push(tier);
+            if tier == UnqualifiedNominalTier::FileAlias {
+                Err("ambiguous")
+            } else {
+                Ok(None::<()>)
+            }
+        });
+        assert_eq!(failed, Err("ambiguous"));
+        assert_eq!(probes, &tiers[..=2]);
+    }
+
+    #[test]
     fn structured_poll_suspends_each_call_once_without_replaying_traversal() {
         let mut fixture = Fixture::default();
         configure_nested_calls(&mut fixture);
@@ -2571,6 +2685,7 @@ mod tests {
                 "builtin_call:app/main.rue:Inner",
                 "root_constructor:app/main.rue:Inner",
                 "substitution:app/main.rue:i32",
+                "root_alias:app/main.rue:i32",
                 "primitive:-:i32",
                 "reduce:ctor-key",
                 "root_constructor:app/main.rue:InnerValue",
@@ -2797,7 +2912,7 @@ mod tests {
     }
 
     #[test]
-    fn unqualified_nominal_precedes_alias_and_stops_discovery_exactly() {
+    fn unqualified_alias_precedes_declaration_and_stops_discovery_exactly() {
         let mut fixture = Fixture::default();
         fixture.root_structs.insert(
             ("app/main.rue", "Thing"),
@@ -2808,14 +2923,12 @@ mod tests {
             fact("alias", "alias-site", true, "app/aliases.rue"),
         );
 
-        assert_eq!(resolve_type(&mut fixture, "Thing"), Ok("struct"));
+        assert_eq!(resolve_type(&mut fixture, "Thing"), Ok("alias"));
         assert_eq!(
             fixture.calls,
             [
                 "substitution:app/main.rue:Thing",
-                "primitive:-:Thing",
-                "builtin:app/main.rue:Thing",
-                "root_struct:app/main.rue:Thing",
+                "root_alias:app/main.rue:Thing",
             ]
         );
     }
@@ -2888,6 +3001,7 @@ mod tests {
                 "[i32; 2]",
                 &[
                     "substitution:app/main.rue:i32",
+                    "root_alias:app/main.rue:i32",
                     "primitive:-:i32",
                     "array_length:app/main.rue:Integer(2)",
                     "array_type",
@@ -2897,6 +3011,7 @@ mod tests {
                 "ptr const i32",
                 &[
                     "substitution:app/main.rue:i32",
+                    "root_alias:app/main.rue:i32",
                     "primitive:-:i32",
                     "ptr_const",
                 ],
@@ -2907,6 +3022,7 @@ mod tests {
                     "builtin_call:app/main.rue:Make",
                     "root_constructor:app/main.rue:Make",
                     "substitution:app/main.rue:i32",
+                    "root_alias:app/main.rue:i32",
                     "primitive:-:i32",
                     "reduce:ctor-key",
                 ],
@@ -2915,6 +3031,7 @@ mod tests {
                 "[i32]",
                 &[
                     "substitution:app/main.rue:i32",
+                    "root_alias:app/main.rue:i32",
                     "primitive:-:i32",
                     "slice:app/main.rue:[i32]",
                 ],
@@ -3317,6 +3434,7 @@ mod tests {
             fixture.calls,
             [
                 "substitution:app/main.rue:i32",
+                "root_alias:app/main.rue:i32",
                 "primitive:-:i32",
                 "root_constructor:app/main.rue:Width",
                 "value:app/main.rue:Width",
@@ -3812,7 +3930,11 @@ mod tests {
             assert_eq!(resolve_type(&mut fixture, "i32"), Err(expected));
             assert_eq!(
                 fixture.calls,
-                ["substitution:app/main.rue:i32", "primitive:-:i32"]
+                [
+                    "substitution:app/main.rue:i32",
+                    "root_alias:app/main.rue:i32",
+                    "primitive:-:i32"
+                ]
             );
         }
     }

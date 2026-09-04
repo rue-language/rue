@@ -2397,44 +2397,58 @@ where
         Some(info)
     }
 
-    fn nominal_type_for_symbol(&self, file: FileId, symbol: Spur) -> Option<Type> {
+    fn declared_nominal_type_for_symbol(&self, file: FileId, symbol: Spur) -> Option<Type> {
         if let Some(id) = self.generated_structs.get(&symbol) {
             return Some(Type::new_struct(*id));
         }
         if let Some(id) = self.generated_enums.get(&symbol) {
             return Some(Type::new_enum(*id));
         }
-        if let Some(id) = self.endpoint.endpoint_builtin_or_generated_struct(symbol) {
-            return Some(Type::new_struct(id));
-        }
-        if let Some(id) = self.endpoint.endpoint_builtin_enum(symbol) {
-            return Some(Type::new_enum(id));
-        }
         let name = self.interner.resolve(&symbol);
-        let (key, kind) = if file == self.owner_file {
-            DurableBodyLookupSource::nominal(&self.source, &self.key, name)?
+        let declared = if file == self.owner_file {
+            DurableBodyLookupSource::nominal(&self.source, &self.key, name)
         } else {
-            let module = self.modules_by_file.borrow().get(&file)?.clone();
-            self.source.qualified_nominal(&module, name)?
+            self.modules_by_file
+                .borrow()
+                .get(&file)
+                .cloned()
+                .and_then(|module| self.source.qualified_nominal(&module, name))
         };
-        let token = self
-            .endpoint
-            .register_named_nominal(key.clone(), file.index(), name, kind)?;
-        let imported = crate::SemanticImportType::Nominal(key.clone());
-        self.register_import_nominal_identities(&imported).ok()?;
-        let ty = self
-            .state
-            .identity_context()
-            .pool_mut()?
-            .resolve_provider_type(&imported)
-            .ok()?;
-        match kind {
-            crate::StableDefinitionKind::Struct if ty.as_struct().is_some() => {}
-            crate::StableDefinitionKind::Enum if ty.as_enum().is_some() => {}
-            _ => return None,
+        if let Some((key, kind)) = declared {
+            let token =
+                self.endpoint
+                    .register_named_nominal(key.clone(), file.index(), name, kind)?;
+            let imported = crate::SemanticImportType::Nominal(key.clone());
+            self.register_import_nominal_identities(&imported).ok()?;
+            let ty = self
+                .state
+                .identity_context()
+                .pool_mut()?
+                .resolve_provider_type(&imported)
+                .ok()?;
+            match kind {
+                crate::StableDefinitionKind::Struct if ty.as_struct().is_some() => {}
+                crate::StableDefinitionKind::Enum if ty.as_enum().is_some() => {}
+                _ => return None,
+            }
+            self.nominal_tokens.borrow_mut().insert(ty, (token, key));
+            return Some(ty);
         }
-        self.nominal_tokens.borrow_mut().insert(ty, (token, key));
-        Some(ty)
+        None
+    }
+
+    fn nominal_type_for_symbol(&self, file: FileId, symbol: Spur) -> Option<Type> {
+        self.declared_nominal_type_for_symbol(file, symbol)
+            .or_else(|| {
+                self.endpoint
+                    .endpoint_builtin_or_generated_struct(symbol)
+                    .map(Type::new_struct)
+            })
+            .or_else(|| {
+                self.endpoint
+                    .endpoint_builtin_enum(symbol)
+                    .map(Type::new_enum)
+            })
     }
 
     fn ensure_named_nominal_identity(
@@ -3494,10 +3508,11 @@ where
         self.endpoint.endpoint_module_endpoint(token)
     }
     fn endpoint_struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId> {
-        self.nominal_type_for_symbol(file, name)?.as_struct()
+        self.declared_nominal_type_for_symbol(file, name)?
+            .as_struct()
     }
     fn endpoint_enum_by_file_name(&self, file: FileId, name: Spur) -> Option<EnumId> {
-        self.nominal_type_for_symbol(file, name)?.as_enum()
+        self.declared_nominal_type_for_symbol(file, name)?.as_enum()
     }
     fn endpoint_builtin_or_generated_struct(&self, name: Spur) -> Option<StructId> {
         self.endpoint.endpoint_builtin_or_generated_struct(name)
@@ -3611,10 +3626,14 @@ where
         self.module_binding_for_symbol(file, name)
     }
     fn aggregate_struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
-        self.nominal_type_for_symbol(file, name)?.as_struct()
+        self.declared_nominal_type_for_symbol(file, name)?
+            .as_struct()
     }
     fn aggregate_enum_in_file(&self, file: FileId, name: Spur) -> Option<EnumId> {
-        self.nominal_type_for_symbol(file, name)?.as_enum()
+        self.declared_nominal_type_for_symbol(file, name)?.as_enum()
+    }
+    fn aggregate_primitive_type(&self, name: Spur) -> Option<Type> {
+        Type::from_primitive_name(self.interner.resolve(&name))
     }
     fn aggregate_builtin_struct(&self, name: Spur) -> Option<StructId> {
         AggregateFactsTrait::aggregate_builtin_struct(&self.aggregate, name)
@@ -3743,7 +3762,7 @@ where
             .map(Type::new_struct)
     }
     fn inference_struct_type_by_file(&self, key: (FileId, Spur)) -> Option<Type> {
-        self.nominal_type_for_symbol(key.0, key.1)
+        self.declared_nominal_type_for_symbol(key.0, key.1)
             .filter(|ty| ty.as_struct().is_some())
     }
     fn inference_builtin_enum_type(&self, name: Spur) -> Option<Type> {
@@ -3752,7 +3771,7 @@ where
             .map(Type::new_enum)
     }
     fn inference_enum_type_by_file(&self, key: (FileId, Spur)) -> Option<Type> {
-        self.nominal_type_for_symbol(key.0, key.1)
+        self.declared_nominal_type_for_symbol(key.0, key.1)
             .filter(|ty| ty.as_enum().is_some())
     }
     fn inference_nominal_type_accessible(&self, accessing_file: FileId, ty: Type) -> bool {
@@ -3890,7 +3909,7 @@ where
             .unwrap_or_else(|| authority.file());
         let selected = match kind {
             TypeSyntaxNamedKind::Struct => self
-                .nominal_type_for_symbol(file, name)
+                .declared_nominal_type_for_symbol(file, name)
                 .filter(|ty| ty.as_struct().is_some())
                 .map(|ty| {
                     let metadata = self
@@ -3900,7 +3919,7 @@ where
                     (ty, metadata.file_id, metadata.is_pub)
                 }),
             TypeSyntaxNamedKind::Enum => self
-                .nominal_type_for_symbol(file, name)
+                .declared_nominal_type_for_symbol(file, name)
                 .filter(|ty| ty.as_enum().is_some())
                 .map(|ty| {
                     let metadata = self
@@ -4940,7 +4959,8 @@ where
     }
 
     fn struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
-        self.nominal_type_for_symbol(file, name)?.as_struct()
+        self.declared_nominal_type_for_symbol(file, name)?
+            .as_struct()
     }
 
     fn builtin_struct(&self, name: Spur) -> Option<StructId> {

@@ -133,6 +133,26 @@ mod tests {
     const TYPES_SOURCE: &str = include_str!("../types.rs");
     const AIR_LIB_SOURCE: &str = include_str!("../lib.rs");
     const VISIBILITY_SOURCE: &str = include_str!("visibility.rs");
+
+    fn source_item<'source>(source: &'source str, header: &str) -> &'source str {
+        let start = source.find(header).expect("item header is present");
+        let rest = &source[start..];
+        let open = rest.find('{').expect("item body opens");
+        let mut depth = 0;
+        for (offset, ch) in rest[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &rest[..open + offset + 1];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("item body closes");
+    }
     const BINDING_MANIFEST_SOURCE: &str = include_str!("binding_manifest.rs");
     const CALL_INTRINSIC_PEER_SOURCE: &str = concat!(
         include_str!("mod.rs"),
@@ -1390,6 +1410,261 @@ mod tests {
         assert!(FACT_MODE_SOURCE.contains(
             "BodyEndpointProvider + CallResolutionFacts + AggregateFacts + InferenceFactSource"
         ));
+    }
+
+    #[test]
+    fn unqualified_nominal_resolution_has_one_ordered_authority() {
+        assert_eq!(
+            [
+                SEMANTIC_TYPE_RESOLUTION_SOURCE,
+                AGGREGATE_RESOLUTION_SOURCE,
+                GENERATE_SOURCE,
+            ]
+            .iter()
+            .map(|source| {
+                source
+                    .matches("pub(crate) fn select_unqualified_nominal<")
+                    .count()
+            })
+            .sum::<usize>(),
+            1,
+            "unqualified nominal selection must have one policy authority"
+        );
+
+        let authority = source_item(
+            SEMANTIC_TYPE_RESOLUTION_SOURCE,
+            "pub(crate) fn select_unqualified_nominal<",
+        );
+        let mut previous = 0;
+        for tier in [
+            "UnqualifiedNominalTier::Substitution",
+            "UnqualifiedNominalTier::LexicalAlias",
+            "UnqualifiedNominalTier::FileAlias",
+            "UnqualifiedNominalTier::Primitive",
+            "UnqualifiedNominalTier::Declaration",
+            "UnqualifiedNominalTier::Builtin",
+        ] {
+            let position = authority[previous..]
+                .find(tier)
+                .map(|offset| previous + offset)
+                .unwrap_or_else(|| panic!("canonical unqualified nominal precedence lost {tier}"));
+            assert!(position >= previous, "{tier} moved out of canonical order");
+            previous = position + tier.len();
+        }
+
+        for (source, marker) in [
+            (
+                GENERATE_SOURCE,
+                "fn unqualified_nominal_type_with_substitution(",
+            ),
+            (GENERATE_SOURCE, "fn extract_type_argument("),
+            (GENERATE_SOURCE, "fn infer_type_hint("),
+            (GENERATE_SOURCE, "fn infer_named_type_hint("),
+            (
+                AGGREGATE_RESOLUTION_SOURCE,
+                "fn select_unqualified_aggregate_type<",
+            ),
+            (
+                SEMANTIC_TYPE_RESOLUTION_SOURCE,
+                "fn resolve_unqualified_semantic_type<",
+            ),
+        ] {
+            assert!(
+                source_item(source, marker).contains("select_unqualified_nominal(")
+                    || source_item(source, marker).contains("unqualified_nominal_type(")
+                    || source_item(source, marker)
+                        .contains("unqualified_nominal_type_with_substitution("),
+                "{marker} regained a peer unqualified nominal arm chain"
+            );
+        }
+
+        let adapter = source_item(
+            GENERATE_SOURCE,
+            "fn unqualified_nominal_type_with_substitution(",
+        );
+        assert_eq!(adapter.matches("select_unqualified_nominal(").count(), 1);
+        for probe in [
+            "substitution.and_then(",
+            "self.comptime_alias_types.get(",
+            "self.const_type_alias(",
+            "Type::from_primitive_name(",
+            ".struct_type_by_file(",
+            ".enum_type_by_file(",
+            ".builtin_struct_type(",
+            ".builtin_enum_type(",
+        ] {
+            assert_eq!(
+                adapter.matches(probe).count(),
+                1,
+                "the inference adapter must contain exactly its one tier probe {probe}"
+            );
+        }
+        assert_eq!(
+            adapter.matches(".or_else(").count(),
+            2,
+            "only the declaration and builtin tiers may join their two nominal kinds"
+        );
+        assert!(!adapter.contains("return Some("));
+
+        let direct_nominal_probes = [
+            "self.comptime_alias_types.get(",
+            "self.const_type_alias(",
+            "Type::from_primitive_name(",
+            ".struct_type_by_file(",
+            ".enum_type_by_file(",
+            ".builtin_struct_type(",
+            ".builtin_enum_type(",
+        ];
+        let extract = source_item(GENERATE_SOURCE, "fn extract_type_argument(");
+        assert_eq!(
+            extract
+                .matches("self.unqualified_nominal_type_with_substitution(")
+                .count(),
+            1
+        );
+        assert_eq!(extract.matches(".or_else(").count(), 0);
+        assert_eq!(extract.matches("return Some(").count(), 0);
+        for probe in direct_nominal_probes {
+            assert!(
+                !extract.contains(probe),
+                "extract_type_argument regained {probe}"
+            );
+        }
+
+        let hint = source_item(GENERATE_SOURCE, "fn infer_type_hint(");
+        let named_start = hint
+            .find("RirTypeSyntaxNode::Named(symbol) => {")
+            .expect("named type-hint arm is present");
+        let named_end = hint[named_start..]
+            .find("RirTypeSyntaxNode::Unit")
+            .map(|offset| named_start + offset)
+            .expect("unit arm follows the named arm");
+        let named_hint = &hint[named_start..named_end];
+        assert_eq!(
+            named_hint
+                .matches("self.unqualified_nominal_type_with_substitution(")
+                .count(),
+            1
+        );
+        assert!(!named_hint.contains(".or_else("));
+        assert!(!named_hint.contains("return "));
+        for probe in direct_nominal_probes {
+            assert!(
+                !named_hint.contains(probe),
+                "infer_type_hint regained {probe}"
+            );
+        }
+        assert_eq!(
+            hint.matches(".or_else(").count(),
+            1,
+            "infer_type_hint's sole non-nominal fallback is named array-length lookup"
+        );
+        assert_eq!(hint.matches("self.scoped_const_value(").count(), 1);
+
+        let named_helper = source_item(GENERATE_SOURCE, "fn infer_named_type_hint(");
+        assert_eq!(
+            named_helper
+                .matches("self.unqualified_nominal_type(")
+                .count(),
+            1
+        );
+        assert!(!named_helper.contains(".or_else("));
+        assert!(!named_helper.contains("return "));
+        for probe in direct_nominal_probes {
+            assert!(
+                !named_helper.contains(probe),
+                "infer_named_type_hint regained {probe}"
+            );
+        }
+
+        let aggregate_adapter = source_item(
+            AGGREGATE_RESOLUTION_SOURCE,
+            "fn select_unqualified_aggregate_type<",
+        );
+        assert!(
+            aggregate_adapter.contains(
+                "UnqualifiedNominalTier::Primitive => facts.aggregate_primitive_type(name)"
+            )
+        );
+        for marker in ["fn struct_type_for(", "fn enum_type_for("] {
+            let consumer = source_item(GENERATE_SOURCE, marker);
+            assert!(consumer.contains("self.unqualified_nominal_type("));
+            for forbidden in [
+                "type_subst",
+                "comptime_alias_types",
+                "const_type_alias",
+                "struct_type_by_file",
+                "enum_type_by_file",
+                "builtin_struct_type",
+                "builtin_enum_type",
+                ".or_else",
+            ] {
+                assert!(
+                    !consumer.contains(forbidden),
+                    "{marker} regained peer arm {forbidden}"
+                );
+            }
+        }
+        for marker in [
+            "pub(crate) fn resolve_enum_type_name<",
+            "pub(crate) fn resolve_struct_type_name<",
+            "pub(crate) fn select_struct_literal_head<",
+        ] {
+            let consumer = source_item(AGGREGATE_RESOLUTION_SOURCE, marker);
+            assert!(consumer.contains("select_unqualified_aggregate_type("));
+            assert!(
+                !consumer.contains("aggregate_builtin_")
+                    && !consumer.contains("aggregate_value_const")
+                    && !consumer.contains(".or_else"),
+                "{marker} regained a peer aggregate resolution chain"
+            );
+        }
+        let structured = source_item(
+            SEMANTIC_TYPE_RESOLUTION_SOURCE,
+            "fn resolve_unqualified_semantic_type<",
+        );
+        assert_eq!(structured.matches("select_unqualified_nominal(").count(), 1);
+        assert!(
+            !structured.contains("return Ok(Some"),
+            "structured semantic resolver regained an early-return arm chain"
+        );
+        let provider_nominal =
+            source_item(PROVIDER_BODY_HOST_SOURCE, "fn nominal_type_for_symbol(");
+        assert!(provider_nominal.contains("self.declared_nominal_type_for_symbol(file, symbol)"));
+        let declared = provider_nominal
+            .find("self.declared_nominal_type_for_symbol(file, symbol)")
+            .expect("provider nominal lookup includes its unified declaration tier");
+        for builtin in [
+            "endpoint_builtin_or_generated_struct(symbol)",
+            "endpoint_builtin_enum(symbol)",
+        ] {
+            assert!(
+                declared
+                    < provider_nominal
+                        .find(builtin)
+                        .expect("builtin tier is present"),
+                "provider nominal lookup must try unified user declarations before {builtin}"
+            );
+        }
+        let declared_nominal = source_item(
+            PROVIDER_BODY_HOST_SOURCE,
+            "fn declared_nominal_type_for_symbol(",
+        );
+        assert!(
+            !declared_nominal.contains("endpoint_builtin"),
+            "the declaration tier must not preselect a kind-specific builtin"
+        );
+        let struct_init = GENERATE_SOURCE
+            .split_once("// Struct initialization")
+            .expect("StructInit section starts")
+            .1
+            .split_once("// Field access")
+            .expect("StructInit section ends")
+            .0;
+        assert!(
+            struct_init.contains("self.struct_type_for(type_name, span.file_id)"),
+            "StructInit regained a peer unqualified nominal arm chain"
+        );
     }
 
     #[test]

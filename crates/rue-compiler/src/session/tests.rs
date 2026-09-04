@@ -1110,7 +1110,10 @@ fn provider_observation_counters_record_exact_production_work() {
         .rooted_cfg(&CompileOptions::default())
         .expect("the program analyzes");
     let metrics = crate::unstable::provider_observation_metrics(&session);
-    assert_eq!(metrics.name_lookups, 3);
+    assert_eq!(
+        metrics.name_lookups, 5,
+        "the two distinct named primitive signatures each perform their canonical file-alias probe: {metrics:?}"
+    );
     assert_eq!(metrics.import_lookups, 0);
     assert_eq!(metrics.method_candidates, 0);
     assert_eq!(metrics.operator_candidates, 0);
@@ -1172,8 +1175,8 @@ fn repeated_named_imports_register_their_identity_closure_once_per_body() {
 
     let metrics = crate::unstable::provider_observation_metrics(&session);
     assert_eq!(
-        metrics.name_lookups, 11,
-        "the first Item payload must serve type minting and endpoint installation without repeating candidate/destructor lookups: {metrics:?}"
+        metrics.name_lookups, 14,
+        "the first Item payload must serve type minting and endpoint installation without repeating candidate/destructor lookups; signature and struct-literal names also perform their canonical file-const alias probes: {metrics:?}"
     );
     assert_eq!(metrics.declaration_facts, 10, "{metrics:?}");
     assert_eq!(metrics.identity_facts, 5, "{metrics:?}");
