@@ -357,10 +357,25 @@ impl From<CompileError> for PipelineRequestControl {
 }
 
 pub(crate) fn pipeline_abort_errors(context: &str, abort: rue_query::QueryAbort) -> CompileErrors {
-    CompileError::without_span(ErrorKind::InternalError(format!(
-        "{context} query aborted: {abort:?}"
+    CompileError::without_span(ErrorKind::InternalError(abort_internal_message(
+        context, &abort,
     )))
     .into()
+}
+
+/// Renders one query abort as the message of an internal-error diagnostic.
+///
+/// A refused physical worker thread is a condition of the host the compiler is
+/// running on rather than a defect in the compiler or the program, so it keeps
+/// its own contracted sentence: it names the operating system's refusal and the
+/// worker budget that was live, and a driver or harness can recognize it
+/// without parsing a structural dump. Every other abort keeps the structural
+/// rendering, which is a compiler-internal condition worth reading as one.
+pub(crate) fn abort_internal_message(context: &str, abort: &rue_query::QueryAbort) -> String {
+    match abort {
+        rue_query::QueryAbort::WorkerSpawn(failure) => failure.to_string(),
+        abort => format!("{context} query aborted: {abort:?}"),
+    }
 }
 
 impl From<CompileErrors> for SemanticRequestControl {

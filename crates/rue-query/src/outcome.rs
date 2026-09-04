@@ -329,6 +329,13 @@ pub enum QueryAbort {
     UnpublishedRevision(Revision),
     /// A query requested a leaf absent from its pinned immutable revision.
     MissingInput(InputIdentity),
+    /// The host refused a physical worker thread for a registered batch.
+    ///
+    /// This is a condition of the machine the compiler is running on, not of
+    /// the program being compiled. It is reported rather than panicked so a
+    /// driver can publish it as an internal-error diagnostic and a harness can
+    /// tell a loaded host apart from a real compiler defect.
+    WorkerSpawn(WorkerSpawnFailure),
 }
 
 /// How one immutable request attempt reached its result.

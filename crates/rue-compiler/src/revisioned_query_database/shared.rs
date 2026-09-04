@@ -447,7 +447,8 @@ where
             Some(
                 QueryAbort::ForeignRuntime
                 | QueryAbort::MissingInput(_)
-                | QueryAbort::UnpublishedRevision(_),
+                | QueryAbort::UnpublishedRevision(_)
+                | QueryAbort::WorkerSpawn(_),
             )
             | None => AbortedQueryReason::Canceled,
         };

@@ -1271,6 +1271,17 @@ impl QueryRuntime {
         }
     }
 
+    /// Makes the next physical batch-worker creation fail with `error`.
+    ///
+    /// Tests reach the host-refusal path this way instead of shrinking a
+    /// process-wide thread limit, which no test could restore for its peers.
+    #[cfg(test)]
+    pub(crate) fn force_next_batch_worker_spawn_failure(&self, error: std::io::Error) {
+        self.core
+            .batch_executor
+            .force_next_worker_spawn_failure(error);
+    }
+
     /// Returns a point-in-time structural metrics snapshot.
     pub fn metrics(&self) -> RuntimeMetrics {
         let retention = self.core.retention_snapshot();

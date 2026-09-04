@@ -6340,3 +6340,39 @@ fn editing_one_candidate_rescans_only_that_candidate() {
         ]
     );
 }
+
+#[test]
+fn a_refused_query_worker_becomes_an_internal_error_diagnostic() {
+    let abort = rue_query::QueryAbort::WorkerSpawn(rue_query::WorkerSpawnFailure::new(
+        &std::io::Error::from_raw_os_error(35),
+        7,
+        8 * 1024 * 1024,
+    ));
+    let errors = pipeline_abort_errors("rooted CFG", abort);
+
+    let error = errors
+        .first()
+        .expect("a refusal must publish one diagnostic");
+    assert_eq!(error.kind.code(), crate::ErrorCode::INTERNAL_ERROR);
+    let crate::ErrorKind::InternalError(message) = &error.kind else {
+        panic!(
+            "a refused worker thread must be an internal error: {:?}",
+            error.kind
+        )
+    };
+    assert!(
+        message.starts_with(rue_query::WORKER_SPAWN_MESSAGE_PREFIX),
+        "the diagnostic must open with the contracted sentence: {message}"
+    );
+    assert!(
+        message.ends_with("; 7 workers of 8 MiB stack were live"),
+        "the diagnostic must name the live worker budget: {message}"
+    );
+    assert!(
+        message.contains("os error 35"),
+        "the diagnostic must name the host's own refusal: {message}"
+    );
+    // A resource condition is not a cancellation: it must not be rendered as
+    // the structural dump every other abort gets.
+    assert!(!message.contains("query aborted"), "{message}");
+}
