@@ -65,6 +65,11 @@ export_file(
     src = "src/lib.rs",
 )
 
+export_file(
+    name = "runtime-build-rule-source",
+    src = "runtime.bzl",
+)
+
 rue_sh_test(
     name = "runtime-archives-test",
     platform = "native",
@@ -74,6 +79,7 @@ rue_sh_test(
         "RUNTIME_X86_64_LINUX": "$(location :rue-runtime-x86_64-unknown-linux-gnu)",
         "RUNTIME_AARCH64_LINUX": "$(location :rue-runtime-aarch64-unknown-linux-gnu)",
         "RUNTIME_AARCH64_MACOS": "$(location :rue-runtime-aarch64-apple-darwin)",
+        "RUNTIME_BUILD_RULE_SOURCE": "$(location :runtime-build-rule-source)",
         "RUNTIME_STRING_SOURCE": "$(location :runtime-str-eq-source)",
     },
 )
@@ -83,6 +89,7 @@ rue_sh_test(
     test = "tests/test_validate_runtime_archives.py",
     resources = ["tests/validate_runtime_archives.py", "src/lib.rs"],
     env = {
+        "RUNTIME_BUILD_RULE_SOURCE": "$(location :runtime-build-rule-source)",
         "RUNTIME_LIB_SOURCE": "$(location :runtime-lib-source)",
     },
 )
