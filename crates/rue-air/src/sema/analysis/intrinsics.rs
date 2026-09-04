@@ -1329,7 +1329,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// operand with the same compiler-synthesized structural printer a test
     /// body's `?` uses (ADR-0083 §1), stages the intrinsic's own site, and
     /// calls the terminal comparison helper, which writes one frame carrying
-    /// `expected` and `actual` on the §5.1 channel and then takes the ordinary
+    /// `left` and `right` on the §5.1 channel and then takes the ordinary
     /// panic path.
     ///
     /// The lowering is the same in a test image and in an ordinary executable.

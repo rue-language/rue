@@ -7,14 +7,14 @@ operands as structured data. These run the whole path through the real binary �
 compiler, linked test image, dispatched process, `__rue_test_fail_comparison`,
 failure channel, runner — so what is pinned here is what a consumer of the event
 stream actually sees: kind `assert_eq` or `assert_ne`, the intrinsic's own line
-and column, `expected` and `actual` rendered by the synthesized structural
+and column, `left` and `right` rendered by the synthesized structural
 printer, and the `diff` the runner computes between them.
 
 `-j1` and `--format json` for the same reasons the sibling `cli.rue_test` cases
 give: whole-line interleaving is by design under parallel workers, and the event
 schema is a consumer contract (docs/process/test-events.md). Object keys are
-alphabetical, which is why `"actual"` precedes `"diff"` precedes `"expected"` in
-every expectation below.
+alphabetical, which is why `"diff"` precedes `"kind"` precedes `"left"`
+precedes `"message"` precedes `"right"` in every expectation below.
 
 The last two cases leave `rue test` behind on purpose. The family lowers the
 same way in an ordinary executable — there is simply no descriptor 3 there — and
@@ -56,7 +56,8 @@ driver_exit_code = 1
 compile_stdout_contains = [
     '"kind":"assert_eq"',
     '"message":"assertion failed: left == right"',
-    '"actual":"42","diff":[{"op":"equal","text":"4"},{"op":"delete","text":"1"},{"op":"insert","text":"2"}],"exit_code":101,"expected":"41"',
+    '"diff":[{"op":"equal","text":"4"},{"op":"delete","text":"1"},{"op":"insert","text":"2"}],"exit_code":101,"kind":"assert_eq","left":"41"',
+    '"message":"assertion failed: left == right","right":"42"',
     '"column":5,"file":',
     '"line":6}',
     '"verdict":"fail"',
@@ -95,8 +96,8 @@ args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j
 driver_exit_code = 1
 compile_stdout_contains = [
     '"kind":"assert_eq"',
-    '"actual":"alpine"',
-    '"expected":"alpha"',
+    '"left":"alpha"',
+    '"right":"alpine"',
     '{"op":"equal","text":"alp"}',
     '"verdict":"fail"',
 ]
@@ -131,8 +132,8 @@ test "compares two points" {
 args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
-    '"expected":"{ x: 41, y: true }"',
-    '"actual":"{ x: 42, y: false }"',
+    '"left":"{ x: 41, y: true }"',
+    '"right":"{ x: 42, y: false }"',
     '"kind":"assert_eq"',
 ]
 
@@ -165,8 +166,8 @@ test "compares two shapes" {
 args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
-    '"expected":"Line(3)"',
-    '"actual":"Dot"',
+    '"left":"Line(3)"',
+    '"right":"Dot"',
     '"kind":"assert_eq"',
 ]
 
@@ -200,7 +201,8 @@ driver_exit_code = 1
 compile_stdout_contains = [
     '"kind":"assert_ne"',
     '"message":"assertion failed: left != right"',
-    '"actual":"41","diff":[{"op":"equal","text":"41"}],"exit_code":101,"expected":"41"',
+    '"diff":[{"op":"equal","text":"41"}],"exit_code":101,"kind":"assert_ne","left":"41"',
+    '"message":"assertion failed: left != right","right":"41"',
 ]
 
 [[case]]
@@ -231,7 +233,7 @@ compile_stdout_contains = [
     '"verdict":"pass"',
     '"crash":0,"event":"run_finished","failed":0,"passed":1',
 ]
-compile_stdout_not_contains = ['"failure"', '"expected"', '"diff"']
+compile_stdout_not_contains = ['"failure"', '"left":', '"diff"']
 
 # =============================================================================
 # Borrowed operands (spec 4.13:5f, 4.3:3f).
@@ -250,7 +252,7 @@ name = "a_borrowed_strbuf_field_renders_on_the_failing_path"
 description = """
 The operand is `t.name`, where `t` is a `borrow` parameter and `name` is a
 `StrBuf`. The rendering has to reach the borrowed buffer's bytes, so the frame's
-`expected` is the real content rather than an empty or stale view.
+`left` is the real content rather than an empty or stale view.
 """
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
@@ -282,8 +284,8 @@ args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j
 driver_exit_code = 1
 compile_stdout_contains = [
     '"kind":"assert_eq"',
-    '"expected":"alpha"',
-    '"actual":"alpine"',
+    '"left":"alpha"',
+    '"right":"alpine"',
     '{"op":"equal","text":"alp"}',
 ]
 
@@ -377,7 +379,7 @@ args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j
 driver_exit_code = 1
 compile_stdout_contains = [
     "assert_eq: assertion failed: left == right",
-    "  expected: 41\n  actual:   42\n             ^\n",
+    "  left:  41\n  right: 42\n          ^\n",
 ]
 
 [[case]]
@@ -407,8 +409,8 @@ test "compares two documents" {
 args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1"]
 driver_exit_code = 1
 compile_stdout_contains = [
-    "  expected:\n    alpha\n    beta\n    gamma\n",
-    "  actual:\n    alpha\n    BETA\n    gamma\n",
+    "  left:\n    alpha\n    beta\n    gamma\n",
+    "  right:\n    alpha\n    BETA\n    gamma\n",
     "  diff:\n      alpha\n    - beta\n    + BETA\n      gamma\n",
 ]
 

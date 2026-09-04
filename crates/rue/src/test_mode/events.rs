@@ -161,7 +161,7 @@ pub(crate) struct FailureRecord {
     pub(crate) signal: Option<i32>,
     pub(crate) location: Option<Location>,
     /// The open, versioned payload ADR-0083 §5.1 reserves for assertion
-    /// libraries. A comparison failure uses `expected`/`actual` instead.
+    /// libraries. A comparison failure uses `left`/`right` instead.
     pub(crate) payload: Option<String>,
     /// A comparison failure's two rendered operands and the diff between them
     /// (ADR-0083 Phase 2.5). **Absent** on every other failure.
@@ -180,20 +180,16 @@ pub(crate) struct FailureRecord {
 #[derive(Debug, Clone)]
 pub(crate) struct Comparison {
     /// The left operand as the structural printer rendered it.
-    pub(crate) expected: String,
+    pub(crate) left: String,
     /// The right operand as the structural printer rendered it.
-    pub(crate) actual: String,
+    pub(crate) right: String,
     pub(crate) diff: Vec<diff::Hunk>,
 }
 
 impl Comparison {
-    pub(crate) fn new(expected: String, actual: String) -> Self {
-        let diff = diff::diff(&expected, &actual);
-        Self {
-            expected,
-            actual,
-            diff,
-        }
+    pub(crate) fn new(left: String, right: String) -> Self {
+        let diff = diff::diff(&left, &right);
+        Self { left, right, diff }
     }
 }
 
@@ -215,14 +211,8 @@ impl FailureRecord {
             object.insert("payload".to_owned(), Value::String(payload.clone()));
         }
         if let Some(comparison) = &self.comparison {
-            object.insert(
-                "expected".to_owned(),
-                Value::String(comparison.expected.clone()),
-            );
-            object.insert(
-                "actual".to_owned(),
-                Value::String(comparison.actual.clone()),
-            );
+            object.insert("left".to_owned(), Value::String(comparison.left.clone()));
+            object.insert("right".to_owned(), Value::String(comparison.right.clone()));
             object.insert(
                 "diff".to_owned(),
                 Value::Array(
@@ -582,11 +572,11 @@ mod tests {
         );
     }
 
-    /// A comparison failure publishes `expected`, `actual`, and the runner's
+    /// A comparison failure publishes `left`, `right`, and the runner's
     /// own `diff` — additive fields on the same `1.0` schema, in the same
     /// alphabetical key order every other object uses (ADR-0083 Phase 2.5).
     #[test]
-    fn a_comparison_failure_publishes_expected_actual_and_a_diff() {
+    fn a_comparison_failure_publishes_left_right_and_a_diff() {
         let line = Event::TestFinished(Box::new(TestFinished {
             id: "app/t.rue::bad".to_owned(),
             verdict: Verdict::Fail(FailureKind::AssertEq),
@@ -606,11 +596,11 @@ mod tests {
         .to_ndjson();
         assert!(
             line.contains(
-                "\"failure\":{\"actual\":\"42\",\
-                 \"diff\":[{\"op\":\"equal\",\"text\":\"4\"},\
+                "\"failure\":{\"diff\":[{\"op\":\"equal\",\"text\":\"4\"},\
                  {\"op\":\"delete\",\"text\":\"1\"},\
                  {\"op\":\"insert\",\"text\":\"2\"}],\
-                 \"exit_code\":101,\"expected\":\"41\",\"kind\":\"assert_eq\","
+                 \"exit_code\":101,\"kind\":\"assert_eq\",\"left\":\"41\",\
+                 \"message\":\"assertion failed: left == right\",\"right\":\"42\"}"
             ),
             "{line}"
         );
@@ -636,8 +626,8 @@ mod tests {
             repro: Vec::new(),
         }))
         .to_ndjson();
-        assert!(!line.contains("\"expected\""), "{line}");
-        assert!(!line.contains("\"actual\""), "{line}");
+        assert!(!line.contains("\"left\""), "{line}");
+        assert!(!line.contains("\"right\""), "{line}");
         assert!(!line.contains("\"diff\""), "{line}");
     }
 

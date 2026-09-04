@@ -618,14 +618,14 @@ fn failure_record(
 /// The comparison a failure frame carried, or `None` when it carried none
 /// (ADR-0083 Phase 2.5).
 ///
-/// `expected` and `actual` travel together or not at all: a frame with one and
+/// `left` and `right` travel together or not at all: a frame with one and
 /// not the other is a producer's mistake, and half a comparison is not a
 /// comparison. The diff between them is computed here, once, so the event
 /// stream and the human rendering read the same one.
 fn frame_comparison(frame: Option<&verdict::FailureFrame>) -> Option<Comparison> {
     let frame = frame?;
-    let (expected, actual) = frame.expected.clone().zip(frame.actual.clone())?;
-    Some(Comparison::new(expected, actual))
+    let (left, right) = frame.left.clone().zip(frame.right.clone())?;
+    Some(Comparison::new(left, right))
 }
 
 fn failure_message(
@@ -813,10 +813,10 @@ mod tests {
     /// would have to guess at.
     #[test]
     fn a_comparison_needs_both_of_its_operands() {
-        let frame = |expected: Option<&str>, actual: Option<&str>| verdict::FailureFrame {
+        let frame = |left: Option<&str>, right: Option<&str>| verdict::FailureFrame {
             kind: "assert_eq".to_owned(),
-            expected: expected.map(str::to_owned),
-            actual: actual.map(str::to_owned),
+            left: left.map(str::to_owned),
+            right: right.map(str::to_owned),
             ..verdict::FailureFrame::default()
         };
         assert!(frame_comparison(None).is_none());
@@ -824,8 +824,8 @@ mod tests {
         assert!(frame_comparison(Some(&frame(Some("41"), None))).is_none());
         assert!(frame_comparison(Some(&frame(None, Some("42")))).is_none());
         let both = frame_comparison(Some(&frame(Some("41"), Some("42")))).expect("a comparison");
-        assert_eq!(both.expected, "41");
-        assert_eq!(both.actual, "42");
+        assert_eq!(both.left, "41");
+        assert_eq!(both.right, "42");
         assert_eq!(both.diff.len(), 3, "{:?}", both.diff);
         // Two empty renderings are still a comparison: empty is a value.
         let empty = frame_comparison(Some(&frame(Some(""), Some("")))).expect("a comparison");

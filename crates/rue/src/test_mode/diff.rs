@@ -1,7 +1,7 @@
 //! The machine-computed diff between a comparison failure's two operands
 //! (ADR-0083 Phase 2.5).
 //!
-//! A `failure` frame carrying `expected` and `actual` says what the two values
+//! A `failure` frame carrying `left` and `right` says what the two values
 //! rendered to; it does not say where they differ. Computing that here — once,
 //! in the runner — is what lets the event stream and the human rendering agree,
 //! and what keeps a consumer from having to re-derive it from two strings.
@@ -13,8 +13,8 @@
 //!   is unreadable and enormous; anything else is diffed character by
 //!   character, because that is what locates the one digit that changed.
 //! - **Hunks are exact, in order, and reconstruct both sides.** Concatenating
-//!   every `equal` and `delete` hunk's text yields `expected` exactly;
-//!   concatenating every `equal` and `insert` hunk's text yields `actual`. A
+//!   every `equal` and `delete` hunk's text yields `left` exactly;
+//!   concatenating every `equal` and `insert` hunk's text yields `right`. A
 //!   line unit therefore carries its own terminator, and the two invariants are
 //!   what make the encoding lossless rather than a rendering.
 //! - **It is dependency-free and bounded.** The renderings a compiler-synthesized
@@ -42,9 +42,9 @@ const CELL_BUDGET: usize = 1 << 20;
 pub(crate) enum DiffOp {
     /// Present in both values.
     Equal,
-    /// Present in `expected` and absent from `actual`.
+    /// Present in `left` and absent from `right`.
     Delete,
-    /// Present in `actual` and absent from `expected`.
+    /// Present in `right` and absent from `left`.
     Insert,
 }
 
@@ -67,8 +67,8 @@ pub(crate) struct Hunk {
 }
 
 /// Whether a pair of values is diffed by line or by character.
-fn line_oriented(expected: &str, actual: &str) -> bool {
-    expected.contains('\n') || actual.contains('\n')
+fn line_oriented(left: &str, right: &str) -> bool {
+    left.contains('\n') || right.contains('\n')
 }
 
 /// Split one value into the units it is diffed by.
@@ -86,28 +86,28 @@ fn units(text: &str, by_line: bool) -> Vec<&str> {
     }
 }
 
-/// The diff from `expected` to `actual`.
-pub(crate) fn diff(expected: &str, actual: &str) -> Vec<Hunk> {
-    let by_line = line_oriented(expected, actual);
-    let left = units(expected, by_line);
-    let right = units(actual, by_line);
+/// The diff from `left` to `right`.
+pub(crate) fn diff(left: &str, right: &str) -> Vec<Hunk> {
+    let by_line = line_oriented(left, right);
+    let left_units = units(left, by_line);
+    let right_units = units(right, by_line);
 
-    let prefix = left
+    let prefix = left_units
         .iter()
-        .zip(right.iter())
+        .zip(right_units.iter())
         .take_while(|(left, right)| left == right)
         .count();
-    let suffix = left[prefix..]
+    let suffix = left_units[prefix..]
         .iter()
         .rev()
-        .zip(right[prefix..].iter().rev())
+        .zip(right_units[prefix..].iter().rev())
         .take_while(|(left, right)| left == right)
         .count();
 
     let mut hunks = Hunks::default();
-    hunks.extend(DiffOp::Equal, &left[..prefix]);
-    let left_middle = &left[prefix..left.len() - suffix];
-    let right_middle = &right[prefix..right.len() - suffix];
+    hunks.extend(DiffOp::Equal, &left_units[..prefix]);
+    let left_middle = &left_units[prefix..left_units.len() - suffix];
+    let right_middle = &right_units[prefix..right_units.len() - suffix];
     if left_middle.len().saturating_mul(right_middle.len()) > CELL_BUDGET {
         // Past the budget the exact answer is not worth its cost, and a
         // wholesale replacement is still a true diff: every unit of the middle
@@ -118,7 +118,7 @@ pub(crate) fn diff(expected: &str, actual: &str) -> Vec<Hunk> {
     } else {
         refine(&mut hunks, left_middle, right_middle);
     }
-    hunks.extend(DiffOp::Equal, &left[left.len() - suffix..]);
+    hunks.extend(DiffOp::Equal, &left_units[left_units.len() - suffix..]);
     hunks.0
 }
 
@@ -193,32 +193,32 @@ impl Hunks {
 mod tests {
     use super::*;
 
-    fn hunks(expected: &str, actual: &str) -> Vec<(&'static str, String)> {
-        diff(expected, actual)
+    fn hunks(left: &str, right: &str) -> Vec<(&'static str, String)> {
+        diff(left, right)
             .into_iter()
             .map(|hunk| (hunk.op.as_str(), hunk.text))
             .collect()
     }
 
     /// The two invariants the encoding rests on: the equal-and-delete hunks
-    /// rebuild `expected`, and the equal-and-insert hunks rebuild `actual`.
+    /// rebuild `left`, and the equal-and-insert hunks rebuild `right`.
     #[track_caller]
-    fn assert_reconstructs(expected: &str, actual: &str) {
-        let hunks = diff(expected, actual);
-        let mut left = String::new();
-        let mut right = String::new();
+    fn assert_reconstructs(left: &str, right: &str) {
+        let hunks = diff(left, right);
+        let mut rebuilt_left = String::new();
+        let mut rebuilt_right = String::new();
         for hunk in &hunks {
             match hunk.op {
                 DiffOp::Equal => {
-                    left.push_str(&hunk.text);
-                    right.push_str(&hunk.text);
+                    rebuilt_left.push_str(&hunk.text);
+                    rebuilt_right.push_str(&hunk.text);
                 }
-                DiffOp::Delete => left.push_str(&hunk.text),
-                DiffOp::Insert => right.push_str(&hunk.text),
+                DiffOp::Delete => rebuilt_left.push_str(&hunk.text),
+                DiffOp::Insert => rebuilt_right.push_str(&hunk.text),
             }
         }
-        assert_eq!(left, expected, "expected side of {hunks:?}");
-        assert_eq!(right, actual, "actual side of {hunks:?}");
+        assert_eq!(rebuilt_left, left, "left side of {hunks:?}");
+        assert_eq!(rebuilt_right, right, "right side of {hunks:?}");
         for pair in hunks.windows(2) {
             assert_ne!(pair[0].op, pair[1].op, "unmerged adjacent hunks: {hunks:?}");
         }
@@ -349,31 +349,31 @@ mod tests {
     /// reconstructs both sides.
     #[test]
     fn an_oversized_middle_falls_back_to_a_wholesale_replacement() {
-        let expected: String = std::iter::repeat_n("a\n", 2_000).collect();
-        let actual: String = std::iter::repeat_n("b\n", 2_000).collect();
-        let hunks = diff(&expected, &actual);
+        let left: String = std::iter::repeat_n("a\n", 2_000).collect();
+        let right: String = std::iter::repeat_n("b\n", 2_000).collect();
+        let hunks = diff(&left, &right);
         assert_eq!(
             hunks.iter().map(|hunk| hunk.op).collect::<Vec<_>>(),
             [DiffOp::Delete, DiffOp::Insert]
         );
-        assert_reconstructs(&expected, &actual);
+        assert_reconstructs(&left, &right);
     }
 
     /// The shared prefix and suffix are removed before any table is built, so
     /// two long values that differ in one line stay exact and cheap.
     #[test]
     fn a_long_pair_differing_in_one_line_stays_exact() {
-        let mut expected: String = std::iter::repeat_n("same\n", 3_000).collect();
-        let mut actual = expected.clone();
-        expected.push_str("left\n");
-        actual.push_str("right\n");
+        let mut left: String = std::iter::repeat_n("same\n", 3_000).collect();
+        let mut right = left.clone();
+        left.push_str("one\n");
+        right.push_str("two\n");
         assert_eq!(
-            hunks(&expected, &actual)
+            hunks(&left, &right)
                 .iter()
                 .map(|(op, _)| *op)
                 .collect::<Vec<_>>(),
             ["equal", "delete", "insert"]
         );
-        assert_reconstructs(&expected, &actual);
+        assert_reconstructs(&left, &right);
     }
 }

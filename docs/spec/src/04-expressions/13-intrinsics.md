@@ -171,7 +171,7 @@ and terminates with status 101, exactly as `@assert` does.
 
 Inside a test image the same failure is additionally reported as structured
 data: a record naming the failing kind, the intrinsic's source location, and
-both operands rendered as `expected` and `actual`. Ordinary builds are
+both operands rendered as `left` and `right`. Ordinary builds are
 unaffected — the report goes to a descriptor a test runner supplies, and its
 absence is not an error. See
 [docs/process/test-events.md](https://github.com/rue-language/rue/blob/trunk/docs/process/test-events.md)

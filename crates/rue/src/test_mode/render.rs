@@ -152,17 +152,17 @@ fn render_failure(finished: &TestFinished) -> String {
 /// a multi-line pair gets the `-`/`+` listing, because a caret into a wall of
 /// text locates nothing.
 fn push_comparison(out: &mut String, comparison: &Comparison) {
-    let multi_line = comparison.expected.contains('\n') || comparison.actual.contains('\n');
+    let multi_line = comparison.left.contains('\n') || comparison.right.contains('\n');
     if !multi_line {
-        let _ = write!(out, "\n  expected: {}", comparison.expected);
-        let _ = write!(out, "\n  actual:   {}", comparison.actual);
+        let _ = write!(out, "\n  left:  {}", comparison.left);
+        let _ = write!(out, "\n  right: {}", comparison.right);
         if let Some(column) = first_difference(&comparison.diff) {
             let _ = write!(out, "\n  {}^", " ".repeat(LABEL_WIDTH - 2 + column));
         }
         return;
     }
-    push_block(out, "expected", &comparison.expected);
-    push_block(out, "actual", &comparison.actual);
+    push_block(out, "left", &comparison.left);
+    push_block(out, "right", &comparison.right);
     out.push_str("\n  diff:");
     for hunk in &comparison.diff {
         let marker = match hunk.op {
@@ -176,9 +176,9 @@ fn push_comparison(out: &mut String, comparison: &Comparison) {
     }
 }
 
-/// Width of the `expected: ` / `actual:   ` labels, including the two-space
-/// indent every line of a failure carries.
-const LABEL_WIDTH: usize = 12;
+/// Width of the `left:  ` / `right: ` labels, including the two-space indent
+/// every line of a failure carries.
+const LABEL_WIDTH: usize = 9;
 
 /// The character offset of the first difference, or `None` when the two values
 /// are identical — which is exactly how an `@assert_ne` failure looks.
@@ -363,7 +363,7 @@ mod tests {
         ))
         .expect("a failure renders");
         assert!(
-            rendered.contains("\n  expected: 41\n  actual:   42\n             ^\n"),
+            rendered.contains("\n  left:  41\n  right: 42\n          ^\n"),
             "{rendered}"
         );
     }
@@ -383,7 +383,7 @@ mod tests {
         ))
         .expect("a failure renders");
         assert!(
-            rendered.contains("\n  expected: 41\n  actual:   41\n  --- stdout"),
+            rendered.contains("\n  left:  41\n  right: 41\n  --- stdout"),
             "{rendered}"
         );
     }
@@ -407,8 +407,8 @@ mod tests {
         .expect("a failure renders");
         assert!(
             rendered.contains(
-                "\n  expected:\n    alpha\n    beta\n    gamma\
-                 \n  actual:\n    alpha\n    BETA\n    gamma\
+                "\n  left:\n    alpha\n    beta\n    gamma\
+                 \n  right:\n    alpha\n    BETA\n    gamma\
                  \n  diff:\n      alpha\n    - beta\n    + BETA\n      gamma\n"
             ),
             "{rendered}"
