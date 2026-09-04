@@ -29,9 +29,23 @@ make_wrapper_sandbox() {
     cp "$SRC_ROOT/buck2-bin" "$sb/buck2-bin"
     chmod +x "$sb/buck2"
     # The first argument is the DotSlash manifest; the log holds Buck's argv.
+    # Retry tests provide numbered output/status fixtures and retain each
+    # invocation's argv separately.
     cat >"$sb/fakebin/dotslash" <<'EOF'
 #!/usr/bin/env bash
 shift
+if [[ -n "${DOTSLASH_ATTEMPT_PREFIX:-}" ]]; then
+    count=0
+    [[ -f "${DOTSLASH_ATTEMPT_PREFIX}.count" ]] && count="$(cat "${DOTSLASH_ATTEMPT_PREFIX}.count")"
+    count=$((count + 1))
+    printf '%s\n' "$count" >"${DOTSLASH_ATTEMPT_PREFIX}.count"
+    printf '%s\n' "$@" >"$DOTSLASH_ARGS.$count"
+    [[ ! -f "${DOTSLASH_ATTEMPT_PREFIX}.output.$count" ]] || cat "${DOTSLASH_ATTEMPT_PREFIX}.output.$count"
+    [[ ! -f "${DOTSLASH_ATTEMPT_PREFIX}.stderr.$count" ]] || cat "${DOTSLASH_ATTEMPT_PREFIX}.stderr.$count" >&2
+    status=0
+    [[ ! -f "${DOTSLASH_ATTEMPT_PREFIX}.status.$count" ]] || status="$(cat "${DOTSLASH_ATTEMPT_PREFIX}.status.$count")"
+    exit "$status"
+fi
 printf '%s\n' "$@" >"$DOTSLASH_ARGS"
 EOF
     cat >"$sb/fakebin/df" <<'EOF'
@@ -40,6 +54,45 @@ printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
 printf '/dev/fake 100000000 1000 50000000 1%% /\n'
 EOF
     chmod +x "$sb/fakebin/dotslash" "$sb/fakebin/df"
+}
+
+write_retry_attempt() {
+    local sb="$1" attempt="$2" status="$3" output="$4"
+    printf '%s\n' "$status" >"$sb/attempt.status.$attempt"
+    printf '%s\n' "$output" >"$sb/attempt.output.$attempt"
+}
+
+write_retry_stderr_attempt() {
+    local sb="$1" attempt="$2" output="$3"
+    printf '%s\n' "$output" >"$sb/attempt.stderr.$attempt"
+}
+
+write_retry_failure() {
+    local sb="$1" attempt="$2" status="$3" output="$4"
+    write_retry_attempt "$sb" "$attempt" "$status" ""
+    write_retry_stderr_attempt "$sb" "$attempt" "$output"
+}
+
+grpc_failure() {
+    cat <<'EOF'
+Internal error (stage: materialize_inputs_failed): Error materializing artifact at path `buck-out/v2/art/toolchains/01d1977e3655e393/zig/__dist-linux-x86_64__/dist-linux-x86_64/zig`
+Error: (Failed to make BatchReadBlobs request: code: 'Unknown error', message: "protocol error: missing grpc-status trailer, stream was terminated without a final status (possible truncation by a proxy or load balancer)")
+EOF
+}
+
+eof_failure() {
+    cat <<'EOF'
+Internal error (stage: materialize_inputs_failed): Error materializing artifact at path `buck-out/v2/art/toolchains/01d1977e3655e393/zig/__dist-linux-x86_64__/dist-linux-x86_64/zig`
+Error: (Failed to make BatchReadBlobs request: Unexpected EOF decoding stream)
+EOF
+}
+
+disjoint_grpc_failure() {
+    cat <<'EOF'
+Internal error (stage: materialize_inputs_failed): Error materializing artifact at path `buck-out/v2/art/toolchains/01d1977e3655e393/zig/__dist-linux-x86_64__/dist-linux-x86_64/zig`
+unrelated action output separates the two diagnostics
+Error: (Failed to make BatchReadBlobs request: code: 'Unknown error', message: "protocol error: missing grpc-status trailer, stream was terminated without a final status (possible truncation by a proxy or load balancer)")
+EOF
 }
 
 # run_wrapper <sandbox> <argv-log> [buck2 args...]. HOME and XDG_CONFIG_HOME
@@ -52,6 +105,14 @@ run_wrapper() {
     ( cd "$sb" && unset RUE_BUILDBUDDY_CONFIG RUE_NO_REMOTE_CACHE &&
       env HOME="$sb/home" XDG_CONFIG_HOME="$sb/config" DOTSLASH_ARGS="$sb/$log" \
           PATH="$sb/fakebin:$PATH" ${WRAPPER_ENV:-} ./buck2 "$@" ) >"$sb/$log.out" 2>&1
+}
+
+run_wrapper_split() {
+    local sb="$1" log="$2"
+    shift 2
+    ( cd "$sb" && unset RUE_BUILDBUDDY_CONFIG RUE_NO_REMOTE_CACHE &&
+      env HOME="$sb/home" XDG_CONFIG_HOME="$sb/config" DOTSLASH_ARGS="$sb/$log" \
+          PATH="$sb/fakebin:$PATH" ${WRAPPER_ENV:-} ./buck2 "$@" ) >"$sb/$log.stdout" 2>"$sb/$log.stderr"
 }
 
 write_central_config() {
@@ -215,6 +276,171 @@ test_buck_wrapper_links_installed_config() {
     rm -rf "$sb"
 }
 
+test_buck_wrapper_retries_only_truncated_zig_materialization() {
+    local sb out rc fixture variant missing preference_ok status_ok expected_output
+    sb="$(mktemp -d)"
+    make_wrapper_sandbox "$sb"
+    cat >"$sb/.buckconfig.local" <<'EOF'
+[build]
+execution_platforms = root//platforms:remote_cache
+EOF
+
+    # Both transport endings observed for this incident classify, and a clean
+    # replay returns success while retaining both attempts' output.
+    for variant in grpc eof; do
+        rm -f "$sb"/attempt.* "$sb"/retry.args.*
+        if [[ "$variant" == grpc ]]; then fixture="$(grpc_failure)"; else fixture="$(eof_failure)"; fi
+        write_retry_attempt "$sb" 1 41 "first attempt stdout ($variant)"
+        write_retry_stderr_attempt "$sb" 1 "$fixture"
+        write_retry_attempt "$sb" 2 0 "second attempt succeeded ($variant)"
+        rc=0
+        if [[ "$variant" == grpc ]]; then
+            WRAPPER_ENV="GITHUB_ACTIONS=true DOTSLASH_ATTEMPT_PREFIX=$sb/attempt" run_wrapper "$sb" retry.args build --prefer-remote //:probe --config cli.test=value || rc=$?
+        else
+            WRAPPER_ENV="GITHUB_ACTIONS=true DOTSLASH_ATTEMPT_PREFIX=$sb/attempt" run_wrapper "$sb" retry.args build //:probe --config cli.test=value || rc=$?
+        fi
+        out="$(cat "$sb/retry.args.out")"
+        check "buck wrapper: $variant truncation retries and succeeds" \
+            "$([ "$rc" -eq 0 ] && [ "$(cat "$sb/attempt.count")" -eq 2 ] && echo 0 || echo 1)"
+        check "buck wrapper: $variant retry keeps both attempts visible" \
+            "$([[ "$out" == *"materialize_inputs_failed"* ]] && [[ "$out" == *"second attempt succeeded ($variant)"* ]] && [[ "$out" == *"retrying Buck once"* ]] && echo 0 || echo 1)"
+        if [[ "$variant" == grpc ]]; then
+            preference_ok="$(grep -Fxq -- '--prefer-remote' "$sb/retry.args.1" && ! grep -Fxq -- '--prefer-local' "$sb/retry.args.1" && echo 0 || echo 1)"
+        else
+            preference_ok="$(grep -Fxq -- '--prefer-local' "$sb/retry.args.1" && echo 0 || echo 1)"
+        fi
+        check "buck wrapper: $variant retry replays exact post-wrapper argv" \
+            "$(cmp -s "$sb/retry.args.1" "$sb/retry.args.2" && [ "$preference_ok" -eq 0 ] && grep -Fxq -- '--config' "$sb/retry.args.1" && grep -Fxq -- 'cli.test=value' "$sb/retry.args.1" && echo 0 || echo 1)"
+    done
+
+    # Capturing eligible commands must not merge streams: rue-bin parses
+    # --show-output on stdout while forwarding Buck progress from stderr.
+    rm -f "$sb"/attempt.* "$sb"/split.args.*
+    write_retry_attempt "$sb" 1 0 "crates/rue:rue buck-out/v2/gen/root/rue"
+    write_retry_stderr_attempt "$sb" 1 "BUILD SUCCEEDED"
+    rc=0
+    WRAPPER_ENV="GITHUB_ACTIONS=true DOTSLASH_ATTEMPT_PREFIX=$sb/attempt" run_wrapper_split "$sb" split.args build //crates/rue:rue --show-output || rc=$?
+    check "buck wrapper: eligible capture preserves stdout and stderr channels" \
+        "$([ "$rc" -eq 0 ] && grep -Fxq 'crates/rue:rue buck-out/v2/gen/root/rue' "$sb/split.args.stdout" && grep -Fxq 'BUILD SUCCEEDED' "$sb/split.args.stderr" && ! grep -Fq 'BUILD SUCCEEDED' "$sb/split.args.stdout" && ! grep -Fq 'crates/rue:rue' "$sb/split.args.stderr" && echo 0 || echo 1)"
+
+    # Local commands retain direct exec behavior even with a cache config. A
+    # program cannot trigger the CI-only retry by printing the signature.
+    rm -f "$sb"/attempt.* "$sb"/local.args.*
+    write_retry_failure "$sb" 1 26 "$(grpc_failure)"
+    rc=0
+    WRAPPER_ENV="DOTSLASH_ATTEMPT_PREFIX=$sb/attempt" run_wrapper "$sb" local.args run //:probe || rc=$?
+    check "buck wrapper: configured local commands are never captured or retried" \
+        "$([ "$rc" -eq 26 ] && [ "$(cat "$sb/attempt.count")" -eq 1 ] && echo 0 || echo 1)"
+
+    # Classification is one adjacent Buck stderr diagnostic pair, not an
+    # order-independent bag of words from program output or unrelated lines.
+    for variant in stdout disjoint; do
+        rm -f "$sb"/attempt.* "$sb"/retry.args.*
+        if [[ "$variant" == stdout ]]; then
+            write_retry_attempt "$sb" 1 27 "$(grpc_failure)"
+        else
+            write_retry_failure "$sb" 1 28 "$(disjoint_grpc_failure)"
+        fi
+        rc=0
+        WRAPPER_ENV="GITHUB_ACTIONS=true DOTSLASH_ATTEMPT_PREFIX=$sb/attempt" run_wrapper "$sb" retry.args run //:probe || rc=$?
+        check "buck wrapper: $variant signature is not retried" \
+            "$([ "$(cat "$sb/attempt.count")" -eq 1 ] && { [ "$rc" -eq 27 ] || [ "$rc" -eq 28 ]; } && echo 0 || echo 1)"
+    done
+
+    # Program arguments after `--` are not Buck flags. They cannot disable the
+    # retry or suppress the wrapper's default --prefer-local insertion.
+    rm -f "$sb"/attempt.* "$sb"/separator.args.*
+    write_retry_failure "$sb" 1 29 "$(grpc_failure)"
+    write_retry_attempt "$sb" 2 0 "separator retry succeeded"
+    rc=0
+    WRAPPER_ENV="GITHUB_ACTIONS=true DOTSLASH_ATTEMPT_PREFIX=$sb/attempt" run_wrapper "$sb" separator.args run //:probe -- --no-remote-cache --local-only --prefer-remote || rc=$?
+    check "buck wrapper: program arguments after separator do not change retry policy" \
+        "$([ "$rc" -eq 0 ] && [ "$(cat "$sb/attempt.count")" -eq 2 ] && grep -Fxq -- '--prefer-local' "$sb/separator.args.1" && cmp -s "$sb/separator.args.1" "$sb/separator.args.2" && echo 0 || echo 1)"
+
+    # A matching second failure is returned directly, proving both failure
+    # propagation and the hard ceiling of one replay.
+    rm -f "$sb"/attempt.* "$sb"/retry.args.*
+    write_retry_failure "$sb" 1 42 "$(eof_failure)"
+    write_retry_failure "$sb" 2 73 "$(grpc_failure)"
+    rc=0
+    WRAPPER_ENV="GITHUB_ACTIONS=true DOTSLASH_ATTEMPT_PREFIX=$sb/attempt" run_wrapper "$sb" retry.args test //:probe || rc=$?
+    check "buck wrapper: retry failure preserves the original status" "$([ "$rc" -eq 42 ] && echo 0 || echo 1)"
+    check "buck wrapper: a matching retry is never retried again" \
+        "$([ "$(cat "$sb/attempt.count")" -eq 2 ] && [[ "$(cat "$sb/retry.args.out")" == *"Failed to make BatchReadBlobs request"* ]] && echo 0 || echo 1)"
+
+    # Success and ordinary compiler/test failures retain their original one-run
+    # behavior even while the remote cache is configured.
+    for variant in success compiler; do
+        rm -f "$sb"/attempt.* "$sb"/retry.args.*
+        if [[ "$variant" == success ]]; then
+            write_retry_attempt "$sb" 1 0 "BUILD SUCCEEDED"
+            expected_output="BUILD SUCCEEDED"
+        else
+            write_retry_attempt "$sb" 1 19 "Action failed: rustc\nerror[E0308]: mismatched types\ntest result: FAILED"
+            expected_output="error[E0308]"
+        fi
+        rc=0
+        WRAPPER_ENV="GITHUB_ACTIONS=true DOTSLASH_ATTEMPT_PREFIX=$sb/attempt" run_wrapper "$sb" retry.args build //:probe || rc=$?
+        if [[ "$variant" == success ]]; then status_ok="$([ "$rc" -eq 0 ] && echo 0 || echo 1)"; else status_ok="$([ "$rc" -eq 19 ] && echo 0 || echo 1)"; fi
+        check "buck wrapper: $variant output is not retried" \
+            "$([ "$status_ok" -eq 0 ] && [ "$(cat "$sb/attempt.count")" -eq 1 ] && grep -Fq "$expected_output" "$sb/retry.args.out" && echo 0 || echo 1)"
+    done
+
+    # Removing any one invariant from the conjunction fails closed.
+    for missing in stage zig batch transport; do
+        rm -f "$sb"/attempt.* "$sb"/retry.args.*
+        fixture="$(grpc_failure)"
+        case "$missing" in
+            stage) fixture="${fixture/materialize_inputs_failed/materialize_failed}" ;;
+            zig) fixture="${fixture/toolchains\/01d1977e3655e393\/zig/toolchains\/01d1977e3655e393\/rust}" ;;
+            batch) fixture="${fixture/BatchReadBlobs/ReadBlob}" ;;
+            transport) fixture="${fixture/missing grpc-status trailer, stream was terminated without a final status (possible truncation by a proxy or load balancer)/connection reset by peer}" ;;
+        esac
+        write_retry_failure "$sb" 1 31 "$fixture"
+        rc=0
+        WRAPPER_ENV="GITHUB_ACTIONS=true DOTSLASH_ATTEMPT_PREFIX=$sb/attempt" run_wrapper "$sb" retry.args build //:probe || rc=$?
+        check "buck wrapper: signature without $missing is not retried" \
+            "$([ "$rc" -eq 31 ] && [ "$(cat "$sb/attempt.count")" -eq 1 ] && echo 0 || echo 1)"
+    done
+
+    # The same diagnostic is not eligible without an active cache config or
+    # under the per-command cache opt-out.
+    rm "$sb/.buckconfig.local"
+    rm -f "$sb"/attempt.* "$sb"/retry.args.*
+    write_retry_failure "$sb" 1 51 "$(grpc_failure)"
+    rc=0
+    WRAPPER_ENV="GITHUB_ACTIONS=true DOTSLASH_ATTEMPT_PREFIX=$sb/attempt" run_wrapper "$sb" retry.args build //:probe || rc=$?
+    check "buck wrapper: matching output without cache configuration is not retried" \
+        "$([ "$rc" -eq 51 ] && [ "$(cat "$sb/attempt.count")" -eq 1 ] && echo 0 || echo 1)"
+
+    cat >"$sb/.buckconfig.local" <<'EOF'
+[build]
+execution_platforms = root//platforms:remote_cache
+EOF
+    rm -f "$sb"/attempt.* "$sb"/retry.args.*
+    write_retry_failure "$sb" 1 52 "$(eof_failure)"
+    rc=0
+    WRAPPER_ENV="GITHUB_ACTIONS=true RUE_NO_REMOTE_CACHE=1 DOTSLASH_ATTEMPT_PREFIX=$sb/attempt" run_wrapper "$sb" retry.args build //:probe || rc=$?
+    check "buck wrapper: cache opt-out is not retried" \
+        "$([ "$rc" -eq 52 ] && [ "$(cat "$sb/attempt.count")" -eq 1 ] && echo 0 || echo 1)"
+
+    rm -f "$sb"/attempt.* "$sb"/retry.args.*
+    write_retry_failure "$sb" 1 53 "$(grpc_failure)"
+    rc=0
+    WRAPPER_ENV="GITHUB_ACTIONS=true DOTSLASH_ATTEMPT_PREFIX=$sb/attempt" run_wrapper "$sb" retry.args build --no-remote-cache //:probe || rc=$?
+    check "buck wrapper: Buck's no-remote-cache flag is not retried" \
+        "$([ "$rc" -eq 53 ] && [ "$(cat "$sb/attempt.count")" -eq 1 ] && echo 0 || echo 1)"
+
+    rm -f "$sb"/attempt.* "$sb"/retry.args.*
+    write_retry_failure "$sb" 1 54 "$(eof_failure)"
+    rc=0
+    WRAPPER_ENV="GITHUB_ACTIONS=true DOTSLASH_ATTEMPT_PREFIX=$sb/attempt" run_wrapper "$sb" retry.args build --local-only //:probe || rc=$?
+    check "buck wrapper: local-only execution is not retried" \
+        "$([ "$rc" -eq 54 ] && [ "$(cat "$sb/attempt.count")" -eq 1 ] && echo 0 || echo 1)"
+
+    rm -rf "$sb"
+}
+
 test_full_suite_orchestration() {
     local sb out rc=0
     sb="$(mktemp -d)"
@@ -265,6 +491,7 @@ EOF
 test_cache_install
 test_buck_wrapper_prefers_local_cache_misses
 test_buck_wrapper_links_installed_config
+test_buck_wrapper_retries_only_truncated_zig_materialization
 test_full_suite_orchestration
 
 echo "--------------------------------------------------"
