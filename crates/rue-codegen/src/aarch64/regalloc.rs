@@ -16,8 +16,8 @@ use super::liveness;
 use super::mir;
 use super::mir::VReg;
 use super::mir::{
-    Aarch64Inst, Aarch64Mir, Operand, Reg, SCRATCH_SOURCE_A, SCRATCH_SOURCE_B, SCRATCH_SOURCE_C,
-    SCRATCH_VALUE,
+    Aarch64Inst, Aarch64Mir, Operand, Reg, SCRATCH_FP_SOURCE, SCRATCH_FP_VALUE, SCRATCH_SOURCE_A,
+    SCRATCH_SOURCE_B, SCRATCH_SOURCE_C, SCRATCH_VALUE,
 };
 use crate::alloc_dst;
 use crate::regalloc::{
@@ -33,6 +33,22 @@ use crate::regalloc::{
 /// X14. See [`mir::RESERVED_REGS`] for the per-register reasoning; the
 /// assertion below keeps the two in agreement.
 const CALLER_SAVED_REGS: &[Reg] = &[Reg::X13, Reg::X14];
+const FP_CALLER_SAVED_REGS: &[Reg] = &[
+    Reg::V18,
+    Reg::V19,
+    Reg::V20,
+    Reg::V21,
+    Reg::V22,
+    Reg::V23,
+    Reg::V24,
+    Reg::V25,
+    Reg::V26,
+    Reg::V27,
+    Reg::V28,
+    Reg::V29,
+    Reg::V30,
+    Reg::V31,
+];
 
 /// Callee-saved registers, the only home for a value that must survive a call.
 ///
@@ -165,6 +181,225 @@ impl RegAlloc {
         inst: Aarch64Inst,
     ) -> CompileResult<()> {
         match inst {
+            Aarch64Inst::FloatConst { dst, bits, width } => {
+                let (out, spill) = Self::float_output(context, dst, SCRATCH_FP_VALUE);
+                mir.push(Aarch64Inst::FloatConst {
+                    dst: out,
+                    bits,
+                    width,
+                });
+                if let Some(offset) = spill {
+                    mir.push_after(Aarch64Inst::FloatStore {
+                        base: Reg::Fp,
+                        offset,
+                        src: out,
+                        width,
+                    });
+                }
+            }
+            Aarch64Inst::FloatMov { dst, src, width }
+            | Aarch64Inst::FloatNeg { dst, src, width }
+            | Aarch64Inst::FloatSqrt { dst, src, width } => {
+                let is_neg = matches!(inst, Aarch64Inst::FloatNeg { .. });
+                let is_sqrt = matches!(inst, Aarch64Inst::FloatSqrt { .. });
+                let src = Self::load_float_operand(context, mir, src, SCRATCH_FP_SOURCE, width)?;
+                let (out, spill) = Self::float_output(context, dst, SCRATCH_FP_VALUE);
+                mir.push(if is_sqrt {
+                    Aarch64Inst::FloatSqrt {
+                        dst: out,
+                        src,
+                        width,
+                    }
+                } else if is_neg {
+                    Aarch64Inst::FloatNeg {
+                        dst: out,
+                        src,
+                        width,
+                    }
+                } else {
+                    Aarch64Inst::FloatMov {
+                        dst: out,
+                        src,
+                        width,
+                    }
+                });
+                if let Some(offset) = spill {
+                    mir.push_after(Aarch64Inst::FloatStore {
+                        base: Reg::Fp,
+                        offset,
+                        src: out,
+                        width,
+                    });
+                }
+            }
+            Aarch64Inst::FloatToBits { dst, src, width } => {
+                let src = Self::load_float_operand(context, mir, src, SCRATCH_FP_VALUE, width)?;
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
+                    emit |dst_op| {
+                        mir.push(Aarch64Inst::FloatToBits { dst: dst_op, src, width });
+                    },
+                    store |spill_offset| {
+                        mir.push_after(Aarch64Inst::Str {
+                            base: Reg::Fp,
+                            offset: spill_offset,
+                            src: Operand::Physical(SCRATCH_VALUE),
+                        });
+                    },
+                );
+            }
+            Aarch64Inst::BitsToFloat { dst, src, width } => {
+                let src = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
+                let (out, spill) = Self::float_output(context, dst, SCRATCH_FP_VALUE);
+                mir.push(Aarch64Inst::BitsToFloat {
+                    dst: out,
+                    src,
+                    width,
+                });
+                if let Some(offset) = spill {
+                    mir.push_after(Aarch64Inst::FloatStore {
+                        base: Reg::Fp,
+                        offset,
+                        src: out,
+                        width,
+                    });
+                }
+            }
+            Aarch64Inst::FloatBin {
+                op,
+                dst,
+                lhs,
+                rhs,
+                width,
+            } => {
+                let lhs = Self::load_float_operand(context, mir, lhs, SCRATCH_FP_VALUE, width)?;
+                let rhs = Self::load_float_operand(context, mir, rhs, SCRATCH_FP_SOURCE, width)?;
+                let (out, spill) = Self::float_output(context, dst, SCRATCH_FP_VALUE);
+                mir.push(Aarch64Inst::FloatBin {
+                    op,
+                    dst: out,
+                    lhs,
+                    rhs,
+                    width,
+                });
+                if let Some(offset) = spill {
+                    mir.push_after(Aarch64Inst::FloatStore {
+                        base: Reg::Fp,
+                        offset,
+                        src: out,
+                        width,
+                    });
+                }
+            }
+            Aarch64Inst::FloatCmp { lhs, rhs, width } => {
+                let lhs = Self::load_float_operand(context, mir, lhs, SCRATCH_FP_VALUE, width)?;
+                let rhs = Self::load_float_operand(context, mir, rhs, SCRATCH_FP_SOURCE, width)?;
+                mir.push(Aarch64Inst::FloatCmp { lhs, rhs, width });
+            }
+            Aarch64Inst::FloatLoad {
+                dst,
+                base,
+                offset,
+                width,
+            } => {
+                let (out, spill) = Self::float_output(context, dst, SCRATCH_FP_VALUE);
+                mir.push(Aarch64Inst::FloatLoad {
+                    dst: out,
+                    base,
+                    offset,
+                    width,
+                });
+                if let Some(spill_offset) = spill {
+                    mir.push_after(Aarch64Inst::FloatStore {
+                        base: Reg::Fp,
+                        offset: spill_offset,
+                        src: out,
+                        width,
+                    });
+                }
+            }
+            Aarch64Inst::FloatStore {
+                base,
+                offset,
+                src,
+                width,
+            } => {
+                let src = Self::load_float_operand(context, mir, src, SCRATCH_FP_VALUE, width)?;
+                mir.push(Aarch64Inst::FloatStore {
+                    base,
+                    offset,
+                    src,
+                    width,
+                });
+            }
+            Aarch64Inst::IntToFloat {
+                dst,
+                src,
+                int_bits,
+                width,
+            } => {
+                let src = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
+                let (out, spill) = Self::float_output(context, dst, SCRATCH_FP_VALUE);
+                mir.push(Aarch64Inst::IntToFloat {
+                    dst: out,
+                    src,
+                    int_bits,
+                    width,
+                });
+                if let Some(offset) = spill {
+                    mir.push_after(Aarch64Inst::FloatStore {
+                        base: Reg::Fp,
+                        offset,
+                        src: out,
+                        width,
+                    });
+                }
+            }
+            Aarch64Inst::FloatToInt {
+                dst,
+                src,
+                int_bits,
+                width,
+            } => {
+                let src = Self::load_float_operand(context, mir, src, SCRATCH_FP_VALUE, width)?;
+                let dst_alloc = Self::get_allocation(context, dst);
+                let out = match dst_alloc {
+                    Some(Allocation::Register(r)) => Operand::Physical(r),
+                    Some(Allocation::Spill(_)) => Operand::Physical(SCRATCH_VALUE),
+                    None => dst,
+                    Some(Allocation::Rematerialize(_)) => unreachable!(),
+                };
+                mir.push(Aarch64Inst::FloatToInt {
+                    dst: out,
+                    src,
+                    int_bits,
+                    width,
+                });
+                if let Some(Allocation::Spill(offset)) = dst_alloc {
+                    mir.push_after(Aarch64Inst::Str {
+                        src: out,
+                        base: Reg::Fp,
+                        offset,
+                    });
+                }
+            }
+            Aarch64Inst::FloatCast { dst, src, from, to } => {
+                let src = Self::load_float_operand(context, mir, src, SCRATCH_FP_SOURCE, from)?;
+                let (out, spill) = Self::float_output(context, dst, SCRATCH_FP_VALUE);
+                mir.push(Aarch64Inst::FloatCast {
+                    dst: out,
+                    src,
+                    from,
+                    to,
+                });
+                if let Some(offset) = spill {
+                    mir.push_after(Aarch64Inst::FloatStore {
+                        base: Reg::Fp,
+                        offset,
+                        src: out,
+                        width: to,
+                    });
+                }
+            }
             Aarch64Inst::MovImm { dst, imm } => {
                 alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
@@ -1109,6 +1344,49 @@ impl RegAlloc {
         }
     }
 
+    fn float_output(
+        context: &AllocationContext<'_, Reg>,
+        operand: Operand,
+        scratch: Reg,
+    ) -> (Operand, Option<i32>) {
+        match Self::get_allocation(context, operand) {
+            Some(Allocation::Register(reg)) => (Operand::Physical(reg), None),
+            Some(Allocation::Spill(offset)) => (Operand::Physical(scratch), Some(offset)),
+            Some(Allocation::Rematerialize(_)) => {
+                unreachable!("destination cannot be rematerializable")
+            }
+            None => (operand, None),
+        }
+    }
+
+    fn load_float_operand(
+        context: &AllocationContext<'_, Reg>,
+        mir: &mut RewriteBuffer<Aarch64Inst>,
+        operand: Operand,
+        scratch: Reg,
+        width: crate::value_plan::FloatWidth,
+    ) -> CompileResult<Operand> {
+        match operand {
+            Operand::Virtual(vreg) => match context.allocation(vreg) {
+                Some(Allocation::Register(reg)) => Ok(Operand::Physical(reg)),
+                Some(Allocation::Spill(offset)) => {
+                    mir.push_before(Aarch64Inst::FloatLoad {
+                        dst: Operand::Physical(scratch),
+                        base: Reg::Fp,
+                        offset,
+                        width,
+                    });
+                    Ok(Operand::Physical(scratch))
+                }
+                Some(Allocation::Rematerialize(_)) => {
+                    unreachable!("float values are not rematerialized")
+                }
+                None => Ok(operand),
+            },
+            Operand::Physical(_) => Ok(operand),
+        }
+    }
+
     /// Load an operand into a physical register, inserting a load if spilled
     /// or rematerializing if marked for rematerialization.
     /// Returns the operand to use (either the allocated register or the scratch register).
@@ -1358,19 +1636,19 @@ impl RegAllocBackend for Aarch64Backend {
     }
 
     fn register_file() -> RegisterFile<'static, Self::Reg> {
-        // General-purpose only: `Reg` names no floating-point register yet, so
-        // the `Fp` class of the file is empty and no interval can select it
-        // (RUE-1067). The floats series adds the V/D registers here.
-        RegisterFile::gp_only(SaveClasses {
-            caller_saved: CALLER_SAVED_REGS,
-            callee_saved: CALLEE_SAVED_REGS,
-            // AArch64 instructions are a fixed four bytes and encode every
-            // general register in the same five-bit field, so no allocatable
-            // register is cheaper to address than another and the RUE-1227
-            // preference has nothing to trade. Reusing a callee-saved register
-            // in place of a caller-saved one here would only add pressure.
-            compact_callee_saved: &[],
-        })
+        // Keep scalar floating-point values in a disjoint vector register class.
+        RegisterFile::new([
+            SaveClasses {
+                caller_saved: CALLER_SAVED_REGS,
+                callee_saved: CALLEE_SAVED_REGS,
+                compact_callee_saved: &[],
+            },
+            SaveClasses {
+                caller_saved: FP_CALLER_SAVED_REGS,
+                callee_saved: &[],
+                compact_callee_saved: &[],
+            },
+        ])
     }
 
     fn for_each_physical_operand<F>(inst: &Self::Inst, mut visit: F)
@@ -1419,20 +1697,15 @@ mod tests {
     use super::Aarch64Backend;
     use super::liveness;
     use super::{
-        ALLOCATABLE_REGS, Aarch64Inst, Aarch64Mir, CALLEE_SAVED_REGS, CALLER_SAVED_REGS, Operand,
-        Reg, RegAlloc, SCRATCH_SOURCE_A, SCRATCH_VALUE, VReg,
+        ALLOCATABLE_REGS, Aarch64Inst, Aarch64Mir, CALLEE_SAVED_REGS, CALLER_SAVED_REGS,
+        FP_CALLER_SAVED_REGS, Operand, Reg, RegAlloc, SCRATCH_SOURCE_A, SCRATCH_VALUE, VReg,
     };
     use crate::reg_class::RegClass;
     use crate::regalloc::{Allocation, RegAllocBackend, RematerializeOp};
     use ahash::AHashSet;
 
     #[test]
-    fn the_register_file_is_general_purpose_only() {
-        // The whole of RUE-1067's claim on this backend: the class dimension
-        // exists, and the floating-point half of it is empty. A change that
-        // populates `Fp` here without the rest of the floats series would make
-        // allocation hand out registers no instruction can encode, so this
-        // guard fails loudly instead.
+    fn the_register_file_keeps_gp_and_fp_registers_separate() {
         let file = <Aarch64Backend as RegAllocBackend>::register_file();
         let gp = file.class(RegClass::Gp);
         let fp = file.class(RegClass::Fp);
@@ -1440,12 +1713,16 @@ mod tests {
         assert_eq!(gp.caller_saved, CALLER_SAVED_REGS);
         assert_eq!(gp.callee_saved, CALLEE_SAVED_REGS);
         assert!(!gp.is_empty());
-        assert!(
-            fp.is_empty(),
-            "no floating-point register is allocatable yet"
+        assert_eq!(fp.caller_saved, FP_CALLER_SAVED_REGS);
+        assert!(fp.callee_saved.is_empty());
+        assert!(!fp.is_empty());
+        assert_eq!(
+            file.len(),
+            ALLOCATABLE_REGS.len() + FP_CALLER_SAVED_REGS.len()
         );
-        assert_eq!(file.len(), ALLOCATABLE_REGS.len());
-        assert_eq!(file.caller_saved_flattened(), CALLER_SAVED_REGS.to_vec());
+        let mut expected = CALLER_SAVED_REGS.to_vec();
+        expected.extend_from_slice(FP_CALLER_SAVED_REGS);
+        assert_eq!(file.caller_saved_flattened(), expected);
     }
 
     #[test]

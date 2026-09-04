@@ -155,6 +155,24 @@ pub fn uses(inst: &X86Inst) -> VRegList {
     };
 
     match inst {
+        X86Inst::FloatConst { .. } | X86Inst::FloatLoad { .. } => {}
+        X86Inst::FloatMov { src, .. }
+        | X86Inst::FloatToBits { src, .. }
+        | X86Inst::BitsToFloat { src, .. }
+        | X86Inst::FloatNeg { src, .. }
+        | X86Inst::FloatSqrt { src, .. }
+        | X86Inst::IntToFloat { src, .. }
+        | X86Inst::FloatToInt { src, .. }
+        | X86Inst::FloatCast { src, .. }
+        | X86Inst::FloatStore { src, .. } => add_if_virtual(src, &mut result),
+        X86Inst::FloatBin { dst, src, .. } => {
+            add_if_virtual(dst, &mut result);
+            add_if_virtual(src, &mut result);
+        }
+        X86Inst::FloatCmp { lhs, rhs, .. } => {
+            add_if_virtual(lhs, &mut result);
+            add_if_virtual(rhs, &mut result);
+        }
         X86Inst::MovRI32 { .. } | X86Inst::MovRI64 { .. } => {
             // Only defines, no uses
         }
@@ -243,6 +261,8 @@ pub fn uses(inst: &X86Inst) -> VRegList {
             add_if_virtual(src, &mut result);
         }
         X86Inst::Sete { .. }
+        | X86Inst::Setp { .. }
+        | X86Inst::Setnp { .. }
         | X86Inst::Setne { .. }
         | X86Inst::Setl { .. }
         | X86Inst::Setg { .. }
@@ -338,6 +358,18 @@ pub fn defs(inst: &X86Inst) -> VRegList {
     };
 
     match inst {
+        X86Inst::FloatConst { dst, .. }
+        | X86Inst::FloatMov { dst, .. }
+        | X86Inst::FloatToBits { dst, .. }
+        | X86Inst::BitsToFloat { dst, .. }
+        | X86Inst::FloatLoad { dst, .. }
+        | X86Inst::FloatBin { dst, .. }
+        | X86Inst::FloatNeg { dst, .. }
+        | X86Inst::FloatSqrt { dst, .. }
+        | X86Inst::IntToFloat { dst, .. }
+        | X86Inst::FloatToInt { dst, .. }
+        | X86Inst::FloatCast { dst, .. } => add_if_virtual(dst, &mut result),
+        X86Inst::FloatStore { .. } | X86Inst::FloatCmp { .. } => {}
         X86Inst::MovRI32 { dst, .. } | X86Inst::MovRI64 { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
@@ -402,6 +434,8 @@ pub fn defs(inst: &X86Inst) -> VRegList {
             // Only sets flags, no register def
         }
         X86Inst::Sete { dst }
+        | X86Inst::Setp { dst }
+        | X86Inst::Setnp { dst }
         | X86Inst::Setne { dst }
         | X86Inst::Setl { dst }
         | X86Inst::Setg { dst }
@@ -479,6 +513,21 @@ pub fn defs(inst: &X86Inst) -> VRegList {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vreg::VReg;
+
+    #[test]
+    fn scalar_float_binary_op_reads_both_operands_and_defines_destination() {
+        let dst = VReg::new(0);
+        let src = VReg::new(1);
+        let inst = X86Inst::FloatBin {
+            op: super::super::mir::FloatBinOp::Mul,
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(src),
+            width: crate::value_plan::FloatWidth::F64,
+        };
+        assert_eq!(uses(&inst).into_iter().collect::<Vec<_>>(), vec![dst, src]);
+        assert_eq!(defs(&inst).into_iter().collect::<Vec<_>>(), vec![dst]);
+    }
 
     #[test]
     fn clobbers_are_borrowed_static_slices() {
@@ -513,6 +562,22 @@ mod tests {
                 Reg::R9,
                 Reg::R10,
                 Reg::R11,
+                Reg::Xmm0,
+                Reg::Xmm1,
+                Reg::Xmm2,
+                Reg::Xmm3,
+                Reg::Xmm4,
+                Reg::Xmm5,
+                Reg::Xmm6,
+                Reg::Xmm7,
+                Reg::Xmm8,
+                Reg::Xmm9,
+                Reg::Xmm10,
+                Reg::Xmm11,
+                Reg::Xmm12,
+                Reg::Xmm13,
+                Reg::Xmm14,
+                Reg::Xmm15,
             ]
         );
         assert!(!call_clobbers.contains(&Reg::Rsp));

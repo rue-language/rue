@@ -30,8 +30,8 @@ use crate::frame_layout::{FrameLayout, FramePointer, SavedRegScheme};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ParamHoming {
     pub(crate) start_slot: u32,
-    pub(crate) reg_count: u32,
-    pub(crate) abi_start: u32,
+    pub(crate) class: crate::call_plan::AbiSlotClass,
+    pub(crate) location: crate::call_plan::AbiSlotLocation,
 }
 
 /// Decide whether the final frame needs a frame pointer and a slot region, or
@@ -222,8 +222,15 @@ pub(crate) fn prepare_mir_with_backend<B: crate::backend::Backend>(
         B::TARGET_C_FLAVOR,
         &|name| symbols.is_foreign(&symbols.resolve(interner.resolve(&name))),
     )?;
-    let param_storage =
-        crate::param_storage::ParamStoragePlan::plan(cfg, type_pool, has_sret, B::ARG_REG_COUNT);
+    let param_storage = crate::param_storage::ParamStoragePlan::plan(
+        cfg,
+        type_pool,
+        has_sret,
+        crate::call_plan::AbiRegisterBanks {
+            gp: B::ARG_REG_COUNT as usize,
+            fp: B::FP_ARG_REG_COUNT as usize,
+        },
+    );
     let param_homing = param_storage.homing().to_vec();
     let homed_param_slots = param_storage.homed_area_slots();
     let local_storage = crate::local_storage::LocalSlotPlan::plan(cfg, type_pool, interner);
@@ -380,6 +387,7 @@ mod tests {
 
         const ARCH: Arch = Arch::X86_64;
         const ARG_REG_COUNT: u32 = 6;
+        const FP_ARG_REG_COUNT: u32 = 8;
         const RETURN_REG_COUNT: u32 = 6;
         const SAVED_REG_SCHEME: SavedRegScheme = SavedRegScheme::X86_64;
         const TARGET_C_FLAVOR: rue_air::TargetCAbiFlavor = rue_air::TargetCAbiFlavor::SysVAmd64;

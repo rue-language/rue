@@ -43,11 +43,20 @@ pub(crate) trait SlotBackend: BoundsCheckBackend {
     /// Allocate a fresh virtual register.
     fn alloc_vreg(&mut self) -> VReg;
 
+    fn alloc_float_vreg(&mut self) -> VReg;
+
     /// Get (or lazily create) the primary vreg for a CFG value.
     fn get_vreg(&mut self, value: CfgValue) -> VReg;
 
     /// Emit a load of frame slot `slot` into `dst`.
     fn emit_load_slot(&mut self, dst: VReg, slot: u32);
+
+    fn emit_typed_float_load_slot(
+        &mut self,
+        dst: VReg,
+        slot: u32,
+        width: crate::value_plan::FloatWidth,
+    );
 
     /// Emit a register-to-register move.
     fn emit_reg_move(&mut self, dst: VReg, src: VReg);
@@ -55,11 +64,38 @@ pub(crate) trait SlotBackend: BoundsCheckBackend {
     /// Emit a store of `src` to frame slot `slot`.
     fn emit_store_slot(&mut self, src: VReg, slot: u32);
 
+    fn emit_typed_float_store_slot(
+        &mut self,
+        src: VReg,
+        slot: u32,
+        width: crate::value_plan::FloatWidth,
+    );
+
     /// Emit a store of `src` through pointer `ptr` at `byte_offset` from it.
     fn emit_store_through_ptr(&mut self, src: VReg, ptr: VReg, byte_offset: i32);
 
     /// Emit a load of the value at `byte_offset` from pointer `ptr` into `dst`.
     fn emit_load_through_ptr(&mut self, dst: VReg, ptr: VReg, byte_offset: i32);
+
+    fn emit_float_store_through_ptr(
+        &mut self,
+        src: VReg,
+        ptr: VReg,
+        byte_offset: i32,
+        width: crate::value_plan::FloatWidth,
+    );
+
+    fn emit_float_load_through_ptr(
+        &mut self,
+        dst: VReg,
+        ptr: VReg,
+        byte_offset: i32,
+        width: crate::value_plan::FloatWidth,
+    );
+
+    fn emit_float_to_bits(&mut self, dst: VReg, src: VReg, width: crate::value_plan::FloatWidth);
+
+    fn emit_bits_to_float(&mut self, dst: VReg, src: VReg, width: crate::value_plan::FloatWidth);
 
     /// Emit a narrow (1/2/4-byte) store of the low `access.width` bytes of `src`
     /// through pointer `ptr` at `byte_offset` from it (RUE-1000).
@@ -90,6 +126,8 @@ pub(crate) trait SlotBackend: BoundsCheckBackend {
     /// does not write, so the loaded value matches the zeroed decomposition of a
     /// shorter variant.
     fn emit_set_zero(&mut self, dst: VReg);
+
+    fn emit_set_float_zero(&mut self, dst: VReg, width: crate::value_plan::FloatWidth);
 
     /// Allocate a fresh label for a tag-dispatch marshalling edge (RUE-1037).
     fn alloc_marshal_label(&mut self) -> crate::vreg::LabelId;
@@ -177,9 +215,17 @@ pub(crate) fn store_enum_slots_through_ptr<B: SlotBackend>(
     // byte, so the whole image is initialized regardless of prior memory contents.
     zero_padding_through_ptr(b, ptr, padding);
     for (val, slot) in vals.iter().zip(map.iter()) {
-        match slot.access {
-            None => b.emit_store_through_ptr(*val, ptr, slot.byte_offset),
-            Some(access) => b.emit_narrow_store_through_ptr(*val, ptr, slot.byte_offset, access),
+        match (slot.float_width, slot.access) {
+            (Some(width), _) if slot.bit_carrier => {
+                let fp = b.alloc_float_vreg();
+                b.emit_bits_to_float(fp, *val, width);
+                b.emit_float_store_through_ptr(fp, ptr, slot.byte_offset, width);
+            }
+            (Some(width), _) => b.emit_float_store_through_ptr(*val, ptr, slot.byte_offset, width),
+            (None, None) => b.emit_store_through_ptr(*val, ptr, slot.byte_offset),
+            (None, Some(access)) => {
+                b.emit_narrow_store_through_ptr(*val, ptr, slot.byte_offset, access)
+            }
         }
     }
 }
@@ -196,10 +242,22 @@ pub(crate) fn load_enum_slots_through_ptr<B: SlotBackend>(
 ) -> Vec<VReg> {
     let mut vregs = Vec::with_capacity(map.len());
     for slot in map {
-        let dst = b.alloc_vreg();
-        match slot.access {
-            None => b.emit_load_through_ptr(dst, ptr, slot.byte_offset),
-            Some(access) => b.emit_narrow_load_through_ptr(dst, ptr, slot.byte_offset, access),
+        let dst = if slot.float_width.is_some() && !slot.bit_carrier {
+            b.alloc_float_vreg()
+        } else {
+            b.alloc_vreg()
+        };
+        match (slot.float_width, slot.access) {
+            (Some(width), _) if slot.bit_carrier => {
+                let fp = b.alloc_float_vreg();
+                b.emit_float_load_through_ptr(fp, ptr, slot.byte_offset, width);
+                b.emit_float_to_bits(dst, fp, width);
+            }
+            (Some(width), _) => b.emit_float_load_through_ptr(dst, ptr, slot.byte_offset, width),
+            (None, None) => b.emit_load_through_ptr(dst, ptr, slot.byte_offset),
+            (None, Some(access)) => {
+                b.emit_narrow_load_through_ptr(dst, ptr, slot.byte_offset, access)
+            }
         }
         vregs.push(dst);
     }
@@ -314,12 +372,19 @@ pub(crate) fn preallocate_block_param_slots<B: SlotBackend>(
     }
 
     let slot_count = b.ctx().type_slot_count(ty);
+    let leaf_types = crate::types::aggregate_leaf_types(b.ctx().type_pool, ty);
     let mut slot_vregs = Vec::with_capacity(slot_count as usize);
     if slot_count > 0 {
         slot_vregs.push(primary_vreg);
     }
-    for _ in 1..slot_count {
-        slot_vregs.push(b.alloc_vreg());
+    for slot in 1..slot_count {
+        slot_vregs.push(
+            if crate::value_plan::float_width(leaf_types[slot as usize]).is_some() {
+                b.alloc_float_vreg()
+            } else {
+                b.alloc_vreg()
+            },
+        );
     }
     b.slot_cache().insert(param_value, slot_vregs);
 }
@@ -343,6 +408,23 @@ pub(crate) fn store_slots<B: SlotBackend>(b: &mut B, vals: &[VReg], base_slot: u
 pub(crate) fn store_slots_at_low<B: SlotBackend>(b: &mut B, vals: &[VReg], low_slot: u32) {
     for (k, val) in vals.iter().enumerate() {
         b.emit_store_slot(*val, low_slot - k as u32);
+    }
+}
+
+pub(crate) fn store_slots_typed<B: SlotBackend>(
+    b: &mut B,
+    vals: &[VReg],
+    base_slot: u32,
+    leaf_types: &[Type],
+) {
+    assert_eq!(vals.len(), leaf_types.len());
+    let low_slot = base_slot + (vals.len() as u32).saturating_sub(1);
+    for (k, (val, ty)) in vals.iter().zip(leaf_types).enumerate() {
+        if let Some(width) = crate::value_plan::float_width(*ty) {
+            b.emit_typed_float_store_slot(*val, low_slot - k as u32, width);
+        } else {
+            b.emit_store_slot(*val, low_slot - k as u32);
+        }
     }
 }
 
@@ -430,7 +512,7 @@ pub(crate) fn store_dispatch_image<B: SlotBackend>(
             end: u64::from(image.image_size),
         }],
     );
-    store_image_segs(b, vals, ptr, &image.segs);
+    store_image_segs(b, vals, ptr, &image.segs, false);
 }
 
 fn store_image_segs<B: SlotBackend>(
@@ -438,11 +520,12 @@ fn store_image_segs<B: SlotBackend>(
     vals: &[VReg],
     ptr: VReg,
     segs: &[crate::types::ImageSeg],
+    carrier: bool,
 ) {
     for seg in segs {
         match seg {
             crate::types::ImageSeg::Leaf { slot, phys } => {
-                store_leaf(b, vals[*slot as usize], ptr, phys);
+                store_leaf(b, vals[*slot as usize], ptr, phys, carrier);
             }
             crate::types::ImageSeg::Switch(region) => {
                 let tag = vals[region.tag_slot as usize];
@@ -452,7 +535,7 @@ fn store_image_segs<B: SlotBackend>(
                 for arm in &region.arms {
                     let next = b.alloc_marshal_label();
                     b.emit_marshal_branch_if_tag_ne(tag, arm.discriminant, next);
-                    store_image_segs(b, vals, ptr, &arm.segs);
+                    store_image_segs(b, vals, ptr, &arm.segs, true);
                     b.emit_marshal_jump(end);
                     b.emit_marshal_label(next);
                 }
@@ -467,10 +550,17 @@ fn store_leaf<B: SlotBackend>(
     val: VReg,
     ptr: VReg,
     phys: &crate::types::PhysicalEnumSlot,
+    carrier: bool,
 ) {
-    match phys.access {
-        None => b.emit_store_through_ptr(val, ptr, phys.byte_offset),
-        Some(access) => b.emit_narrow_store_through_ptr(val, ptr, phys.byte_offset, access),
+    match (phys.float_width, phys.access) {
+        (Some(width), _) if carrier || phys.bit_carrier => {
+            let fp = b.alloc_float_vreg();
+            b.emit_bits_to_float(fp, val, width);
+            b.emit_float_store_through_ptr(fp, ptr, phys.byte_offset, width);
+        }
+        (Some(width), _) => b.emit_float_store_through_ptr(val, ptr, phys.byte_offset, width),
+        (None, None) => b.emit_store_through_ptr(val, ptr, phys.byte_offset),
+        (None, Some(access)) => b.emit_narrow_store_through_ptr(val, ptr, phys.byte_offset, access),
     }
 }
 
@@ -484,21 +574,60 @@ pub(crate) fn load_dispatch_image<B: SlotBackend>(
     ptr: VReg,
     image: &crate::types::DispatchImage,
 ) -> Vec<VReg> {
-    let result: Vec<VReg> = (0..image.total_slots).map(|_| b.alloc_vreg()).collect();
-    load_image_segs(b, ptr, &result, &image.segs);
+    let mut float_widths = vec![None; image.total_slots as usize];
+    collect_dispatch_float_widths(&image.segs, &mut float_widths);
+    let result: Vec<VReg> = float_widths
+        .iter()
+        .map(|width| {
+            if width.is_some() {
+                b.alloc_float_vreg()
+            } else {
+                b.alloc_vreg()
+            }
+        })
+        .collect();
+    load_image_segs(b, ptr, &result, &float_widths, &image.segs, false);
     result
+}
+
+fn collect_dispatch_float_widths(
+    segs: &[crate::types::ImageSeg],
+    widths: &mut [Option<crate::value_plan::FloatWidth>],
+) {
+    for seg in segs {
+        match seg {
+            crate::types::ImageSeg::Leaf { slot, phys } => {
+                if phys.bit_carrier {
+                    continue;
+                }
+                let entry = &mut widths[*slot as usize];
+                assert!(
+                    entry.is_none() || *entry == phys.float_width,
+                    "one aggregate slot cannot have conflicting FP widths"
+                );
+                if phys.float_width.is_some() {
+                    *entry = phys.float_width;
+                }
+            }
+            // Slots below a switch are enum union payload bit carriers, so their
+            // class cannot be inferred from any one variant's semantic type.
+            crate::types::ImageSeg::Switch(_) => {}
+        }
+    }
 }
 
 fn load_image_segs<B: SlotBackend>(
     b: &mut B,
     ptr: VReg,
     result: &[VReg],
+    float_widths: &[Option<crate::value_plan::FloatWidth>],
     segs: &[crate::types::ImageSeg],
+    carrier: bool,
 ) {
     for seg in segs {
         match seg {
             crate::types::ImageSeg::Leaf { slot, phys } => {
-                load_leaf(b, result[*slot as usize], ptr, phys);
+                load_leaf(b, result[*slot as usize], ptr, phys, carrier);
             }
             crate::types::ImageSeg::Switch(region) => {
                 let tag = result[region.tag_slot as usize];
@@ -507,13 +636,17 @@ fn load_image_segs<B: SlotBackend>(
                 // read back zero on every path (matching the value model, and
                 // giving every result slot a definition on all branches).
                 for slot in (region.tag_slot + 1)..(region.tag_slot + region.span) {
-                    b.emit_set_zero(result[slot as usize]);
+                    if let Some(width) = float_widths[slot as usize] {
+                        b.emit_set_float_zero(result[slot as usize], width);
+                    } else {
+                        b.emit_set_zero(result[slot as usize]);
+                    }
                 }
                 let end = b.alloc_marshal_label();
                 for arm in &region.arms {
                     let next = b.alloc_marshal_label();
                     b.emit_marshal_branch_if_tag_ne(tag, arm.discriminant, next);
-                    load_image_segs(b, ptr, result, &arm.segs);
+                    load_image_segs(b, ptr, result, float_widths, &arm.segs, true);
                     b.emit_marshal_jump(end);
                     b.emit_marshal_label(next);
                 }
@@ -528,10 +661,17 @@ fn load_leaf<B: SlotBackend>(
     dst: VReg,
     ptr: VReg,
     phys: &crate::types::PhysicalEnumSlot,
+    carrier: bool,
 ) {
-    match phys.access {
-        None => b.emit_load_through_ptr(dst, ptr, phys.byte_offset),
-        Some(access) => b.emit_narrow_load_through_ptr(dst, ptr, phys.byte_offset, access),
+    match (phys.float_width, phys.access) {
+        (Some(width), _) if carrier || phys.bit_carrier => {
+            let fp = b.alloc_float_vreg();
+            b.emit_float_load_through_ptr(fp, ptr, phys.byte_offset, width);
+            b.emit_float_to_bits(dst, fp, width);
+        }
+        (Some(width), _) => b.emit_float_load_through_ptr(dst, ptr, phys.byte_offset, width),
+        (None, None) => b.emit_load_through_ptr(dst, ptr, phys.byte_offset),
+        (None, Some(access)) => b.emit_narrow_load_through_ptr(dst, ptr, phys.byte_offset, access),
     }
 }
 
@@ -585,14 +725,26 @@ pub(crate) fn load_slots_through_ptr<B: SlotBackend>(
 /// Load `count` logical slots (slot 0 first) from the frame with the value's
 /// low-end (slot 0) at frame slot `low_slot`; logical slot `k` is read from
 /// frame slot `low_slot - k` (ascending, ADR-0040).
-pub(crate) fn load_slots_at_low<B: SlotBackend>(b: &mut B, low_slot: u32, count: u32) -> Vec<VReg> {
-    let mut vregs = Vec::with_capacity(count as usize);
-    for k in 0..count {
-        let vreg = b.alloc_vreg();
-        b.emit_load_slot(vreg, low_slot - k);
-        vregs.push(vreg);
-    }
-    vregs
+pub(crate) fn load_slots_at_low_typed<B: SlotBackend>(
+    b: &mut B,
+    low_slot: u32,
+    leaf_types: &[Type],
+) -> Vec<VReg> {
+    leaf_types
+        .iter()
+        .enumerate()
+        .map(|(k, ty)| {
+            if let Some(width) = crate::value_plan::float_width(*ty) {
+                let vreg = b.alloc_float_vreg();
+                b.emit_typed_float_load_slot(vreg, low_slot - k as u32, width);
+                vreg
+            } else {
+                let vreg = b.alloc_vreg();
+                b.emit_load_slot(vreg, low_slot - k as u32);
+                vreg
+            }
+        })
+        .collect()
 }
 
 /// Load `count` slots through `addr_vreg` at ASCENDING byte offsets (slot k at

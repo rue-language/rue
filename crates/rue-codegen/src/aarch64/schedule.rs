@@ -85,6 +85,23 @@ impl SchedulerAdapter for Aarch64Scheduler {
 /// They represent the number of cycles until the result is ready.
 fn get_latency(inst: &Aarch64Inst) -> u32 {
     match inst {
+        Aarch64Inst::FloatLoad { .. } => 4,
+        Aarch64Inst::FloatBin {
+            op: super::mir::FloatBinOp::Div,
+            ..
+        } => 12,
+        Aarch64Inst::FloatBin { .. }
+        | Aarch64Inst::FloatNeg { .. }
+        | Aarch64Inst::FloatSqrt { .. }
+        | Aarch64Inst::FloatCast { .. }
+        | Aarch64Inst::IntToFloat { .. }
+        | Aarch64Inst::FloatToInt { .. } => 4,
+        Aarch64Inst::FloatConst { .. }
+        | Aarch64Inst::FloatMov { .. }
+        | Aarch64Inst::FloatToBits { .. }
+        | Aarch64Inst::BitsToFloat { .. }
+        | Aarch64Inst::FloatStore { .. }
+        | Aarch64Inst::FloatCmp { .. } => 1,
         // Register moves: 1 cycle (may be eliminated by renaming)
         Aarch64Inst::MovRR { .. } | Aarch64Inst::MovImm { .. } => 1,
 
@@ -231,6 +248,8 @@ fn accesses_memory(inst: &Aarch64Inst) -> bool {
         inst,
         Aarch64Inst::Ldr { .. }
             | Aarch64Inst::Str { .. }
+            | Aarch64Inst::FloatLoad { .. }
+            | Aarch64Inst::FloatStore { .. }
             | Aarch64Inst::LdrIndexed { .. }
             | Aarch64Inst::StrIndexed { .. }
             | Aarch64Inst::LdrIndexedOffset { .. }
@@ -255,6 +274,24 @@ pub(super) fn regs_read(inst: &Aarch64Inst) -> RegList<Reg> {
     };
 
     match inst {
+        Aarch64Inst::FloatConst { .. } => {}
+        Aarch64Inst::FloatLoad { base, .. } => result.push(*base),
+        Aarch64Inst::FloatMov { src, .. }
+        | Aarch64Inst::FloatToBits { src, .. }
+        | Aarch64Inst::BitsToFloat { src, .. }
+        | Aarch64Inst::FloatNeg { src, .. }
+        | Aarch64Inst::FloatSqrt { src, .. }
+        | Aarch64Inst::IntToFloat { src, .. }
+        | Aarch64Inst::FloatToInt { src, .. }
+        | Aarch64Inst::FloatCast { src, .. } => add_if_phys(src, &mut result),
+        Aarch64Inst::FloatStore { base, src, .. } => {
+            result.push(*base);
+            add_if_phys(src, &mut result);
+        }
+        Aarch64Inst::FloatBin { lhs, rhs, .. } | Aarch64Inst::FloatCmp { lhs, rhs, .. } => {
+            add_if_phys(lhs, &mut result);
+            add_if_phys(rhs, &mut result);
+        }
         Aarch64Inst::MovImm { .. } => {}
         Aarch64Inst::MovRR { src, .. } => add_if_phys(src, &mut result),
         Aarch64Inst::Ldr { base, .. } | Aarch64Inst::NarrowLoad { base, .. } => result.push(*base),
@@ -385,6 +422,18 @@ pub(super) fn regs_written(inst: &Aarch64Inst) -> RegList<Reg> {
     };
 
     match inst {
+        Aarch64Inst::FloatConst { dst, .. }
+        | Aarch64Inst::FloatMov { dst, .. }
+        | Aarch64Inst::FloatToBits { dst, .. }
+        | Aarch64Inst::BitsToFloat { dst, .. }
+        | Aarch64Inst::FloatLoad { dst, .. }
+        | Aarch64Inst::FloatBin { dst, .. }
+        | Aarch64Inst::FloatNeg { dst, .. }
+        | Aarch64Inst::FloatSqrt { dst, .. }
+        | Aarch64Inst::IntToFloat { dst, .. }
+        | Aarch64Inst::FloatToInt { dst, .. }
+        | Aarch64Inst::FloatCast { dst, .. } => add_if_phys(dst, &mut result),
+        Aarch64Inst::FloatStore { .. } | Aarch64Inst::FloatCmp { .. } => {}
         Aarch64Inst::MovImm { dst, .. }
         | Aarch64Inst::MovRR { dst, .. }
         | Aarch64Inst::Ldr { dst, .. }
@@ -505,6 +554,7 @@ pub(super) fn writes_flags(inst: &Aarch64Inst) -> bool {
             | Aarch64Inst::Cmp64RR { .. }
             | Aarch64Inst::CmpImm { .. }
             | Aarch64Inst::TstRR { .. }
+            | Aarch64Inst::FloatCmp { .. }
     )
 }
 

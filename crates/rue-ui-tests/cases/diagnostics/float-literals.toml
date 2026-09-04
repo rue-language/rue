@@ -2,11 +2,11 @@
 id = "diagnostics.float-literals"
 name = "Float literal diagnostics"
 description = """
-ADR-0065 Phases 2-4 (RUE-1068 through RUE-1070). Two families live here: the spelling
+ADR-0065 Phases 2-6 (RUE-1068 through RUE-1072). Two families live here: the spelling
 rules for the literal itself (`.5` / `5.` / `1e`), which are lexical or
 grammatical and fire regardless of the preview flag, and the two-sided
-`floats` preview gate — E1100 without `--preview floats`, and the explicit
-Phase-4 E1109 lowering boundary after typed AIR.
+`floats` preview gate — E1100 without `--preview floats` — plus the Phase 8
+E1109 boundary for `@total_cmp`.
 """
 
 [[case]]
@@ -26,8 +26,8 @@ error_contains = [
 ]
 
 [[case]]
-name = "enabled_reaches_the_typed_lowering_boundary"
-description = "With the flag the literal is typed and stops at the explicit production-inert Phase-4 lowering boundary."
+name = "enabled_reaches_scalar_codegen"
+description = "With the flag the literal is typed and accepted by scalar code generation."
 source = """
 fn main() -> i32 {
     let x = 1.5;
@@ -35,12 +35,7 @@ fn main() -> i32 {
 }
 """
 preview = "floats"
-compile_fail = true
-error_contains = [
-    "E1109",
-    "floating-point lowering is not yet implemented after typed AIR",
-    "ADR-0065 Phase 4 boundary, RUE-1070",
-]
+exit_code = 0
 
 [[case]]
 name = "float_in_a_comptime_block_names_the_real_reason"
@@ -52,8 +47,7 @@ fn main() -> i32 {
 }
 """
 preview = "floats"
-compile_fail = true
-error_contains = ["E1109", "floating-point lowering is not yet implemented after typed AIR"]
+exit_code = 0
 
 [[case]]
 name = "float_as_a_call_argument"
@@ -77,8 +71,7 @@ fn value() -> f32 { 1.5 }
 fn main() -> i32 { @float_to_int(value()) }
 """
 preview = "floats"
-compile_fail = true
-error_contains = ["E1109", "typed AIR"]
+exit_code = 1
 
 [[case]]
 name = "unconstrained_literal_defaults_to_f64"
@@ -101,8 +94,7 @@ fn main() -> i32 {
 }
 """
 preview = "floats"
-compile_fail = true
-error_contains = ["E1109", "typed AIR"]
+exit_code = 1
 
 [[case]]
 name = "integer_literal_is_admitted_by_float_context"
@@ -111,8 +103,7 @@ fn value() -> f64 { 42 }
 fn main() -> i32 { @float_to_int(value()) }
 """
 preview = "floats"
-compile_fail = true
-error_contains = ["E1109", "typed AIR"]
+exit_code = 42
 
 [[case]]
 name = "integer_literals_are_admitted_by_each_direct_float_destination"
@@ -127,8 +118,7 @@ fn value() -> f64 {
 fn main() -> i32 { @float_to_int(value()) }
 """
 preview = "floats"
-compile_fail = true
-error_contains = ["E1109", "typed AIR"]
+exit_code = 6
 
 [[case]]
 name = "finite_range_overflow_is_rejected_before_lowering"
@@ -178,6 +168,20 @@ compile_fail = true
 error_contains = ["E0701", "float_to_int", "expects 1 argument"]
 
 [[case]]
+name = "unsigned_float_to_int_remains_fail_closed"
+source = "fn value() -> u32 { @float_to_int(1.0) }\nfn main() -> i32 { @intCast(value()) }"
+preview = "floats"
+compile_fail = true
+error_contains = ["E1109"]
+
+[[case]]
+name = "unsigned_int_to_float_remains_fail_closed"
+source = "fn value() -> f64 { let x: u32 = 1; @int_to_float(x) }\nfn main() -> i32 { @float_to_int(value()) }"
+preview = "floats"
+compile_fail = true
+error_contains = ["E1109"]
+
+[[case]]
 name = "total_cmp_requires_matching_float_widths"
 source = """
 fn a() -> f32 { 1.0 }
@@ -196,8 +200,7 @@ fn main() -> i32 { @float_to_int(dep.value()) }
 """
 aux_files = { "dep.rue" = "pub fn value() -> f64 { 1.25 }\n" }
 preview = "floats"
-compile_fail = true
-error_contains = ["E1109", "typed AIR"]
+exit_code = 1
 
 [[case]]
 name = "leading_dot_names_the_replacement"

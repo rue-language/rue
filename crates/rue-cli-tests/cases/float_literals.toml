@@ -2,12 +2,11 @@
 id = "cli.float_literals"
 name = "Float literal grammar and the floats preview gate"
 description = """
-ADR-0065 Phases 2-4 (RUE-1068 through RUE-1070): the lexer produces a float
+ADR-0065 Phases 2-6 (RUE-1068 through RUE-1072): the lexer produces a float
 literal token, the parser and RIR carry it untyped, and AIR gives it an exact
-comptime value plus contextual f32/f64 typing. The whole feature sits behind
-`--preview floats`; E1100 fires without the flag, while E1109 is the explicit
-fail-closed boundary before the Phase 5/6 backends. These cases pin both
-directions and the spelling rules.
+comptime value plus contextual f32/f64 typing. Scalar lowering now reaches both
+backends, while the whole feature remains behind `--preview floats`; E1100
+fires without the flag. These cases pin both directions and the spelling rules.
 """
 
 # ---------------------------------------------------------------------------
@@ -33,8 +32,8 @@ error_contains = [
 ]
 
 [[case]]
-name = "float_literal_with_preview_reaches_the_phase_marker"
-description = "With the flag the literal is typed and stops at the explicit pre-backend marker (E1109), not an ICE."
+name = "float_literal_with_preview_compiles"
+description = "With the flag a typed float literal reaches the scalar backends."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let x = 1.5;
@@ -42,13 +41,8 @@ fn main() -> i32 {
 }
 """ }]
 args = ["--preview", "floats", "main.rue", "-o", "prog"]
-compile_fail = true
-error_contains = [
-    "E1109",
-    "floating-point lowering is not yet implemented after typed AIR",
-    "ADR-0065 Phase 4 boundary, RUE-1070",
-]
-compile_stderr_not_contains = ["internal compiler error", "E1100"]
+exit_code = 0
+compile_stderr_not_contains = ["internal compiler error", "E1100", "E1109"]
 
 [[case]]
 name = "float_in_an_operand_position_is_gated_not_ignored"
@@ -66,8 +60,8 @@ error_contains = ["E0206", "expected comptime_float, found i32"]
 compile_stderr_not_contains = ["internal compiler error"]
 
 [[case]]
-name = "float_diagnostic_is_one_clean_json_diagnostic"
-description = "The typed literal produces one well-formed lowering-boundary diagnostic, not a cascade."
+name = "float_literal_compiles_with_json_diagnostics_enabled"
+description = "The diagnostic output mode does not disturb successful float lowering."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let x = 6.022e23;
@@ -75,10 +69,8 @@ fn main() -> i32 {
 }
 """ }]
 args = ["--error-format", "json", "--preview", "floats", "main.rue", "-o", "prog"]
-compile_fail = true
-error_contains = ["E1109"]
-json_diagnostics = true
-json_diagnostic_order = ["error E1109 main.rue:2:5"]
+exit_code = 0
+compile_stderr_not_contains = ["internal compiler error", "E1100", "E1109"]
 
 # ---------------------------------------------------------------------------
 # The literal reaches RIR untyped (Phase 3's actual deliverable).

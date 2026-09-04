@@ -809,7 +809,18 @@ impl RetainedCharge for rue_cfg::ValidatedCfg {
             .saturating_add(self.fn_name().len() as u64)
             .saturating_add((self.param_modes().len() * 2 * std::mem::size_of::<bool>()) as u64)
             .saturating_add(std::mem::size_of_val(self.source_param_abi()) as u64)
+            .saturating_add(source_param_abi_nested_retained_charge(
+                self.source_param_abi(),
+            ))
     }
+}
+
+fn source_param_abi_nested_retained_charge(params: &[rue_air::SourceParamAbi]) -> u64 {
+    params.iter().fold(0u64, |charge, param| {
+        charge.saturating_add(
+            (param.crossing_classes.len() * std::mem::size_of::<rue_air::NativeArgClass>()) as u64,
+        )
+    })
 }
 
 impl RetainedCharge for rue_air::FrozenTypeInternPool {
@@ -3639,6 +3650,30 @@ fn resolve_splice_block(
 #[cfg(test)]
 mod accessor_graph_tests {
     use super::*;
+
+    #[test]
+    fn source_param_abi_charges_nested_crossing_class_vectors() {
+        let params = vec![
+            rue_air::SourceParamAbi {
+                start_slot: 0,
+                slot_count: 2,
+                crossing_regs: 2,
+                crossing_classes: vec![rue_air::NativeArgClass::Gp, rue_air::NativeArgClass::Fp64],
+                ty: None,
+            },
+            rue_air::SourceParamAbi {
+                start_slot: 2,
+                slot_count: 1,
+                crossing_regs: 1,
+                crossing_classes: vec![rue_air::NativeArgClass::Fp32],
+                ty: None,
+            },
+        ];
+        assert_eq!(
+            source_param_abi_nested_retained_charge(&params),
+            (3 * std::mem::size_of::<rue_air::NativeArgClass>()) as u64
+        );
+    }
 
     #[test]
     fn accessor_interner_copy_preserves_ordinals_without_mutating_the_source() {

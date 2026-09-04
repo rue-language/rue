@@ -85,6 +85,23 @@ impl SchedulerAdapter for X86Scheduler {
 /// They represent the number of cycles until the result is ready.
 fn get_latency(inst: &X86Inst) -> u32 {
     match inst {
+        X86Inst::FloatLoad { .. } => 4,
+        X86Inst::FloatBin {
+            op: super::mir::FloatBinOp::Div,
+            ..
+        } => 12,
+        X86Inst::FloatBin { .. }
+        | X86Inst::FloatNeg { .. }
+        | X86Inst::FloatSqrt { .. }
+        | X86Inst::FloatCast { .. }
+        | X86Inst::IntToFloat { .. }
+        | X86Inst::FloatToInt { .. } => 4,
+        X86Inst::FloatConst { .. }
+        | X86Inst::FloatMov { .. }
+        | X86Inst::FloatToBits { .. }
+        | X86Inst::BitsToFloat { .. }
+        | X86Inst::FloatStore { .. }
+        | X86Inst::FloatCmp { .. } => 1,
         // Register moves: 0-1 cycle (often eliminated by renaming)
         X86Inst::MovRR { .. } => 1,
         X86Inst::MovRI32 { .. } | X86Inst::MovRI64 { .. } => 1,
@@ -162,6 +179,8 @@ fn get_latency(inst: &X86Inst) -> u32 {
 
         // Setcc: 1 cycle
         X86Inst::Sete { .. }
+        | X86Inst::Setp { .. }
+        | X86Inst::Setnp { .. }
         | X86Inst::Setne { .. }
         | X86Inst::Setl { .. }
         | X86Inst::Setg { .. }
@@ -249,6 +268,8 @@ fn accesses_memory(inst: &X86Inst) -> bool {
         inst,
         X86Inst::MovRM { .. }
             | X86Inst::MovMR { .. }
+            | X86Inst::FloatLoad { .. }
+            | X86Inst::FloatStore { .. }
             | X86Inst::MovRMIndexed { .. }
             | X86Inst::MovMRIndexed { .. }
             | X86Inst::MovRMSib { .. }
@@ -273,6 +294,28 @@ pub(super) fn regs_read(inst: &X86Inst) -> RegList<Reg> {
     };
 
     match inst {
+        X86Inst::FloatConst { .. } => {}
+        X86Inst::FloatLoad { base, .. } => result.push(*base),
+        X86Inst::FloatMov { src, .. }
+        | X86Inst::FloatToBits { src, .. }
+        | X86Inst::BitsToFloat { src, .. }
+        | X86Inst::FloatNeg { src, .. }
+        | X86Inst::FloatSqrt { src, .. }
+        | X86Inst::IntToFloat { src, .. }
+        | X86Inst::FloatToInt { src, .. }
+        | X86Inst::FloatCast { src, .. } => add_if_phys(src, &mut result),
+        X86Inst::FloatStore { base, src, .. } => {
+            result.push(*base);
+            add_if_phys(src, &mut result);
+        }
+        X86Inst::FloatBin { dst, src, .. } => {
+            add_if_phys(dst, &mut result);
+            add_if_phys(src, &mut result);
+        }
+        X86Inst::FloatCmp { lhs, rhs, .. } => {
+            add_if_phys(lhs, &mut result);
+            add_if_phys(rhs, &mut result);
+        }
         X86Inst::MovRI32 { .. } | X86Inst::MovRI64 { .. } => {}
         X86Inst::MovRR { src, .. } => add_if_phys(src, &mut result),
         X86Inst::MovRM { base, .. } | X86Inst::NarrowLoadRM { base, .. } => result.push(*base),
@@ -346,6 +389,8 @@ pub(super) fn regs_read(inst: &X86Inst) -> RegList<Reg> {
             add_if_phys(src, &mut result);
         }
         X86Inst::Sete { .. }
+        | X86Inst::Setp { .. }
+        | X86Inst::Setnp { .. }
         | X86Inst::Setne { .. }
         | X86Inst::Setl { .. }
         | X86Inst::Setg { .. }
@@ -434,6 +479,18 @@ pub(super) fn regs_written(inst: &X86Inst) -> RegList<Reg> {
     };
 
     match inst {
+        X86Inst::FloatConst { dst, .. }
+        | X86Inst::FloatMov { dst, .. }
+        | X86Inst::FloatToBits { dst, .. }
+        | X86Inst::BitsToFloat { dst, .. }
+        | X86Inst::FloatLoad { dst, .. }
+        | X86Inst::FloatBin { dst, .. }
+        | X86Inst::FloatNeg { dst, .. }
+        | X86Inst::FloatSqrt { dst, .. }
+        | X86Inst::IntToFloat { dst, .. }
+        | X86Inst::FloatToInt { dst, .. }
+        | X86Inst::FloatCast { dst, .. } => add_if_phys(dst, &mut result),
+        X86Inst::FloatStore { .. } | X86Inst::FloatCmp { .. } => {}
         X86Inst::MovRI32 { dst, .. }
         | X86Inst::MovRI64 { dst, .. }
         | X86Inst::MovRR { dst, .. }
@@ -487,6 +544,8 @@ pub(super) fn regs_written(inst: &X86Inst) -> RegList<Reg> {
         }
         X86Inst::Cdq | X86Inst::Cqo => result.push(Reg::Rdx),
         X86Inst::Sete { dst }
+        | X86Inst::Setp { dst }
+        | X86Inst::Setnp { dst }
         | X86Inst::Setne { dst }
         | X86Inst::Setl { dst }
         | X86Inst::Setg { dst }
@@ -606,6 +665,7 @@ pub(super) fn writes_flags(inst: &X86Inst) -> bool {
             | X86Inst::Cmp64RI { .. }
             | X86Inst::TestRR { .. }
             | X86Inst::Test64RR { .. }
+            | X86Inst::FloatCmp { .. }
     )
 }
 
@@ -636,6 +696,8 @@ pub(super) fn reads_flags(inst: &X86Inst) -> bool {
             | X86Inst::Seta { .. }
             | X86Inst::Setbe { .. }
             | X86Inst::Setae { .. }
+            | X86Inst::Setp { .. }
+            | X86Inst::Setnp { .. }
             // Conditional jumps
             | X86Inst::Jz { .. }
             | X86Inst::Jnz { .. }

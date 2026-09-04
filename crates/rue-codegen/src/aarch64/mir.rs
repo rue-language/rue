@@ -40,8 +40,17 @@ pub use rue_runtime_abi::ReturnBehavior;
 const _: () = assert!(std::mem::size_of::<Aarch64Inst>() <= 48);
 
 pub use crate::reg_class::{RegClass, VRegClasses};
+pub use crate::value_plan::FloatWidth;
 use crate::vreg::MirState;
 pub use crate::vreg::{BLOCK_LABEL_BASE, LabelId, VReg};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatBinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
 
 /// A physical AArch64 register.
 ///
@@ -96,6 +105,38 @@ pub enum Reg {
     Sp = 31,
     /// Zero register (reads as zero, writes discarded)
     Xzr = 32,
+    V0 = 33,
+    V1,
+    V2,
+    V3,
+    V4,
+    V5,
+    V6,
+    V7,
+    V8,
+    V9,
+    V10,
+    V11,
+    V12,
+    V13,
+    V14,
+    V15,
+    V16,
+    V17,
+    V18,
+    V19,
+    V20,
+    V21,
+    V22,
+    V23,
+    V24,
+    V25,
+    V26,
+    V27,
+    V28,
+    V29,
+    V30,
+    V31,
 }
 
 // ============================================================================
@@ -155,6 +196,16 @@ pub(crate) const RESERVED_REGS: &[Reg] = &[
     Reg::Lr,  // link register (x30)
     Reg::Sp,  // stack pointer
     Reg::Xzr, // zero register
+    Reg::V0,
+    Reg::V1,
+    Reg::V2,
+    Reg::V3,
+    Reg::V4,
+    Reg::V5,
+    Reg::V6,
+    Reg::V7,
+    Reg::V16,
+    Reg::V17,
 ];
 
 /// Scratch register for a rewritten instruction's value: the destination when
@@ -177,6 +228,8 @@ pub(crate) const SCRATCH_SOURCE_C: Reg = Reg::X12;
 /// Distinct from every allocation scratch because emission happens after
 /// rewriting, with allocated values already live in registers.
 pub(crate) const SCRATCH_ADDRESS: Reg = Reg::X15;
+pub(crate) const SCRATCH_FP_VALUE: Reg = Reg::V16;
+pub(crate) const SCRATCH_FP_SOURCE: Reg = Reg::V17;
 
 /// Largest immediate encoded by the two-instruction ADD/SUB immediate form.
 /// Values above this limit are materialized by the emitter.
@@ -214,7 +267,11 @@ impl Reg {
     /// without special-casing a target that has only one class (RUE-1067).
     #[inline]
     pub const fn class(self) -> RegClass {
-        RegClass::Gp
+        if (self as u8) >= Reg::V0 as u8 {
+            RegClass::Fp
+        } else {
+            RegClass::Gp
+        }
     }
 
     /// Get the register encoding for instruction fields (0-30 for X0-X30, 31 for SP/XZR).
@@ -254,6 +311,7 @@ impl Reg {
             Reg::Lr => 30,
             Reg::Sp => 31,
             Reg::Xzr => 31, // Same encoding as SP, context determines meaning
+            _ => (self as u8) - (Reg::V0 as u8),
         }
     }
 
@@ -274,6 +332,14 @@ impl Reg {
                 | Reg::X28
                 | Reg::Fp
                 | Reg::Lr
+                | Reg::V8
+                | Reg::V9
+                | Reg::V10
+                | Reg::V11
+                | Reg::V12
+                | Reg::V13
+                | Reg::V14
+                | Reg::V15
         )
     }
 
@@ -313,6 +379,38 @@ impl Reg {
             Reg::Lr => "lr",
             Reg::Sp => "sp",
             Reg::Xzr => "xzr",
+            Reg::V0 => "v0",
+            Reg::V1 => "v1",
+            Reg::V2 => "v2",
+            Reg::V3 => "v3",
+            Reg::V4 => "v4",
+            Reg::V5 => "v5",
+            Reg::V6 => "v6",
+            Reg::V7 => "v7",
+            Reg::V8 => "v8",
+            Reg::V9 => "v9",
+            Reg::V10 => "v10",
+            Reg::V11 => "v11",
+            Reg::V12 => "v12",
+            Reg::V13 => "v13",
+            Reg::V14 => "v14",
+            Reg::V15 => "v15",
+            Reg::V16 => "v16",
+            Reg::V17 => "v17",
+            Reg::V18 => "v18",
+            Reg::V19 => "v19",
+            Reg::V20 => "v20",
+            Reg::V21 => "v21",
+            Reg::V22 => "v22",
+            Reg::V23 => "v23",
+            Reg::V24 => "v24",
+            Reg::V25 => "v25",
+            Reg::V26 => "v26",
+            Reg::V27 => "v27",
+            Reg::V28 => "v28",
+            Reg::V29 => "v29",
+            Reg::V30 => "v30",
+            Reg::V31 => "v31",
         }
     }
 
@@ -352,6 +450,7 @@ impl Reg {
             Reg::Lr => "w30",
             Reg::Sp => "wsp",
             Reg::Xzr => "wzr",
+            _ => self.name64(),
         }
     }
 
@@ -529,6 +628,78 @@ impl fmt::Display for Cond {
 /// An AArch64 MIR instruction.
 #[derive(Debug, Clone)]
 pub enum Aarch64Inst {
+    FloatConst {
+        dst: Operand,
+        bits: u64,
+        width: FloatWidth,
+    },
+    FloatMov {
+        dst: Operand,
+        src: Operand,
+        width: FloatWidth,
+    },
+    FloatToBits {
+        dst: Operand,
+        src: Operand,
+        width: FloatWidth,
+    },
+    BitsToFloat {
+        dst: Operand,
+        src: Operand,
+        width: FloatWidth,
+    },
+    FloatLoad {
+        dst: Operand,
+        base: Reg,
+        offset: i32,
+        width: FloatWidth,
+    },
+    FloatStore {
+        base: Reg,
+        offset: i32,
+        src: Operand,
+        width: FloatWidth,
+    },
+    FloatBin {
+        op: FloatBinOp,
+        dst: Operand,
+        lhs: Operand,
+        rhs: Operand,
+        width: FloatWidth,
+    },
+    FloatNeg {
+        dst: Operand,
+        src: Operand,
+        width: FloatWidth,
+    },
+    FloatSqrt {
+        dst: Operand,
+        src: Operand,
+        width: FloatWidth,
+    },
+    FloatCmp {
+        lhs: Operand,
+        rhs: Operand,
+        width: FloatWidth,
+    },
+    IntToFloat {
+        dst: Operand,
+        src: Operand,
+        int_bits: u32,
+        width: FloatWidth,
+    },
+    FloatToInt {
+        dst: Operand,
+        src: Operand,
+        int_bits: u32,
+        width: FloatWidth,
+    },
+    FloatCast {
+        dst: Operand,
+        src: Operand,
+        from: FloatWidth,
+        to: FloatWidth,
+    },
     // === Move instructions ===
     /// `mov dst, #imm` - Move immediate to register (MOVZ/MOVN/MOVK sequence).
     MovImm { dst: Operand, imm: i64 },
@@ -1011,6 +1182,7 @@ impl Aarch64Inst {
     /// virtual registers to physical registers that would be clobbered.
     pub fn clobbers(&self) -> &'static [Reg] {
         match self {
+            Aarch64Inst::FloatConst { .. } => &[Reg::X9],
             // Function calls clobber all caller-saved registers per AAPCS64
             Aarch64Inst::Bl { .. } => &[
                 Reg::X0,
@@ -1032,6 +1204,30 @@ impl Aarch64Inst {
                 Reg::X16,
                 Reg::X17,
                 Reg::Lr,
+                Reg::V0,
+                Reg::V1,
+                Reg::V2,
+                Reg::V3,
+                Reg::V4,
+                Reg::V5,
+                Reg::V6,
+                Reg::V7,
+                Reg::V16,
+                Reg::V17,
+                Reg::V18,
+                Reg::V19,
+                Reg::V20,
+                Reg::V21,
+                Reg::V22,
+                Reg::V23,
+                Reg::V24,
+                Reg::V25,
+                Reg::V26,
+                Reg::V27,
+                Reg::V28,
+                Reg::V29,
+                Reg::V30,
+                Reg::V31,
             ],
             // Syscall returns in X0. On macOS, X16 carries the syscall
             // number; on Linux, X8 does — clobber both to cover either target.
@@ -1099,6 +1295,62 @@ pub(crate) fn narrow_store_mnemonic(width: u8) -> &'static str {
 impl fmt::Display for Aarch64Inst {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Aarch64Inst::FloatConst { dst, bits, width } => {
+                write!(f, "fconst.{width:?} {dst}, 0x{bits:x}")
+            }
+            Aarch64Inst::FloatMov { dst, src, width } => write!(f, "fmov.{width:?} {dst}, {src}"),
+            Aarch64Inst::FloatToBits { dst, src, width } => {
+                write!(f, "fmov.bits.{width:?} {dst}, {src}")
+            }
+            Aarch64Inst::BitsToFloat { dst, src, width } => {
+                write!(f, "fmov.float.{width:?} {dst}, {src}")
+            }
+            Aarch64Inst::FloatLoad {
+                dst,
+                base,
+                offset,
+                width,
+            } => write!(f, "ldr.{width:?} {dst}, [{base}, #{offset}]"),
+            Aarch64Inst::FloatStore {
+                base,
+                offset,
+                src,
+                width,
+            } => write!(f, "str.{width:?} {src}, [{base}, #{offset}]"),
+            Aarch64Inst::FloatBin {
+                op,
+                dst,
+                lhs,
+                rhs,
+                width,
+            } => write!(
+                f,
+                "{}.{width:?} {dst}, {lhs}, {rhs}",
+                match op {
+                    FloatBinOp::Add => "fadd",
+                    FloatBinOp::Sub => "fsub",
+                    FloatBinOp::Mul => "fmul",
+                    FloatBinOp::Div => "fdiv",
+                }
+            ),
+            Aarch64Inst::FloatNeg { dst, src, width } => write!(f, "fneg.{width:?} {dst}, {src}"),
+            Aarch64Inst::FloatSqrt { dst, src, width } => write!(f, "fsqrt.{width:?} {dst}, {src}"),
+            Aarch64Inst::FloatCmp { lhs, rhs, width } => write!(f, "fcmp.{width:?} {lhs}, {rhs}"),
+            Aarch64Inst::IntToFloat {
+                dst,
+                src,
+                int_bits,
+                width,
+            } => write!(f, "scvtf.{width:?}.{int_bits} {dst}, {src}"),
+            Aarch64Inst::FloatToInt {
+                dst,
+                src,
+                int_bits,
+                width,
+            } => write!(f, "fcvtzs.{int_bits}.{width:?} {dst}, {src}"),
+            Aarch64Inst::FloatCast { dst, src, from, to } => {
+                write!(f, "fcvt.{to:?}.{from:?} {dst}, {src}")
+            }
             Aarch64Inst::MovImm { dst, imm } => write!(f, "mov {}, #{}", dst, imm),
             Aarch64Inst::MovRR { dst, src } => write!(f, "mov {}, {}", dst, src),
             Aarch64Inst::Ldr { dst, base, offset } => {
@@ -1408,10 +1660,8 @@ impl Aarch64Mir {
 
     /// Allocate a new general-purpose virtual register.
     ///
-    /// This is the whole of lowering today: no Rue type lowers to a
-    /// floating-point value yet, so every value a function computes lives in a
-    /// general-purpose register. Sites that later hold a floating-point value
-    /// call [`Aarch64Mir::alloc_vreg_in`] with [`RegClass::Fp`] instead (RUE-1067).
+    /// Integer values and addresses use this default. Scalar float lowering
+    /// calls [`Aarch64Mir::alloc_vreg_in`] with [`RegClass::Fp`].
     pub fn alloc_vreg(&mut self) -> VReg {
         self.alloc_vreg_in(RegClass::Gp)
     }
@@ -1605,8 +1855,10 @@ mod tests {
     }
 
     #[test]
-    fn every_physical_register_is_general_purpose() {
+    fn physical_registers_report_their_register_class() {
         assert_eq!(Reg::X19.class(), RegClass::Gp);
+        assert_eq!(Reg::V0.class(), RegClass::Fp);
+        assert_eq!(Reg::V31.class(), RegClass::Fp);
     }
 
     #[test]
@@ -1617,6 +1869,8 @@ mod tests {
         assert_eq!(Reg::Lr.encoding(), 30);
         assert_eq!(Reg::Sp.encoding(), 31);
         assert_eq!(Reg::Xzr.encoding(), 31);
+        assert_eq!(Reg::V0.encoding(), 0);
+        assert_eq!(Reg::V31.encoding(), 31);
     }
 
     #[test]

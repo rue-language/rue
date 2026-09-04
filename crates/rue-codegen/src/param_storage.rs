@@ -43,7 +43,10 @@ pub(crate) enum ParamSlotStorage {
     Frame { area_slot: u32 },
     /// Register-only: the slot arrives in incoming ABI argument register
     /// `abi_index` (sret shift included) and has no frame home.
-    Register { abi_index: u32 },
+    Register {
+        class: crate::call_plan::AbiSlotClass,
+        location: crate::call_plan::AbiSlotLocation,
+    },
 }
 
 /// The complete per-function parameter storage decision.
@@ -66,8 +69,21 @@ impl ParamStoragePlan {
     /// index and every slot is treated as used. This is both the fallback
     /// for synthetic CFGs without source-parameter descriptors and the
     /// baseline the planned path must shrink from.
-    pub(crate) fn all_homed(num_params: u32, has_sret: bool) -> Self {
-        let abi_shift = has_sret as u32;
+    pub(crate) fn all_homed(
+        num_params: u32,
+        has_sret: bool,
+        register_banks: crate::call_plan::AbiRegisterBanks,
+    ) -> Self {
+        let mut classes = Vec::with_capacity(num_params as usize + has_sret as usize);
+        if has_sret {
+            classes.push(crate::call_plan::AbiSlotClass::Gp);
+        }
+        classes.extend(std::iter::repeat_n(
+            crate::call_plan::AbiSlotClass::Gp,
+            num_params as usize,
+        ));
+        let locations = crate::call_plan::assign_abi_slots(classes, register_banks);
+        let abi_shift = has_sret as usize;
         Self {
             slots: (0..num_params)
                 .map(|slot| ParamSlotStorage::Frame { area_slot: slot })
@@ -77,8 +93,8 @@ impl ParamStoragePlan {
             homing: (0..num_params)
                 .map(|slot| ParamHoming {
                     start_slot: slot,
-                    reg_count: 1,
-                    abi_start: slot + abi_shift,
+                    class: crate::call_plan::AbiSlotClass::Gp,
+                    location: locations[slot as usize + abi_shift],
                 })
                 .collect(),
         }
@@ -90,13 +106,20 @@ impl ParamStoragePlan {
         cfg: &Cfg,
         type_pool: &FrozenTypeInternPool,
         has_sret: bool,
-        arg_reg_count: u32,
+        register_banks: impl Into<crate::call_plan::AbiRegisterBanks>,
     ) -> Self {
+        let register_banks = register_banks.into();
         let num_params = cfg.num_params();
         let descriptors = cfg.source_param_abi();
         if descriptors.is_empty() {
-            return Self::all_homed(num_params, has_sret);
+            return Self::all_homed(num_params, has_sret, register_banks);
         }
+        assert!(
+            descriptors
+                .iter()
+                .all(|d| d.crossing_classes.len() == d.crossing_regs as usize),
+            "parameter ABI class metadata must classify every crossing slot"
+        );
         // Defensive: the descriptors must tile the parameter area exactly;
         // anything else falls back to the historical all-homed plan rather
         // than planning against inconsistent metadata.
@@ -108,13 +131,26 @@ impl ParamStoragePlan {
                 .any(|(a, b)| a.start_slot + a.slot_count != b.start_slot)
             || descriptors.first().is_some_and(|d| d.start_slot != 0)
         {
-            return Self::all_homed(num_params, has_sret);
+            return Self::all_homed(num_params, has_sret, register_banks);
         }
 
         let scan = scan_param_references(cfg, type_pool);
         let mut slots = Vec::with_capacity(num_params as usize);
         let mut homing = Vec::new();
-        let mut abi = has_sret as u32;
+        let mut classes = Vec::new();
+        if has_sret {
+            classes.push(crate::call_plan::AbiSlotClass::Gp);
+        }
+        for d in descriptors {
+            classes.extend(
+                d.crossing_classes
+                    .iter()
+                    .copied()
+                    .map(crate::call_plan::AbiSlotClass::from),
+            );
+        }
+        let locations = crate::call_plan::assign_abi_slots(classes.iter().copied(), register_banks);
+        let mut crossing_index = has_sret as usize;
         let mut area = 0u32;
         for d in descriptors {
             let slot = d.start_slot;
@@ -124,28 +160,40 @@ impl ParamStoragePlan {
             // pointer, which nothing may address (every consumer goes through
             // `ensure_by_ref_param_ptr`); a by-value slot must additionally
             // be immutable and never addressed.
+            let parameter_locations =
+                &locations[crossing_index..crossing_index + d.crossing_regs as usize];
+            let parameter_classes =
+                &classes[crossing_index..crossing_index + d.crossing_regs as usize];
             let eligible = d.slot_count == 1
                 && d.crossing_regs == 1
-                && abi < arg_reg_count
+                && !matches!(
+                    parameter_locations[0],
+                    crate::call_plan::AbiSlotLocation::Stack(_)
+                )
                 && !scan.needs_home[slot as usize]
                 && (cfg.is_param_by_ref(slot)
                     || (!cfg.is_param_writable(slot) && !cfg.is_param_address_taken(slot)));
             if eligible {
-                slots.push(ParamSlotStorage::Register { abi_index: abi });
+                slots.push(ParamSlotStorage::Register {
+                    class: parameter_classes[0],
+                    location: parameter_locations[0],
+                });
             } else {
                 for j in 0..d.slot_count {
                     slots.push(ParamSlotStorage::Frame {
                         area_slot: area + j,
                     });
                 }
-                homing.push(ParamHoming {
-                    start_slot: area,
-                    reg_count: d.crossing_regs,
-                    abi_start: abi,
-                });
+                for j in 0..d.crossing_regs {
+                    homing.push(ParamHoming {
+                        start_slot: area + j,
+                        class: parameter_classes[j as usize],
+                        location: parameter_locations[j as usize],
+                    });
+                }
                 area += d.slot_count;
             }
-            abi += d.crossing_regs;
+            crossing_index += d.crossing_regs as usize;
         }
         Self {
             slots,
@@ -194,17 +242,23 @@ impl ParamStoragePlan {
     pub(crate) fn entry_copies<'a>(
         &'a self,
         cfg: &'a Cfg,
-    ) -> impl Iterator<Item = (u32, u32)> + 'a {
+    ) -> impl Iterator<
+        Item = (
+            u32,
+            crate::call_plan::AbiSlotClass,
+            crate::call_plan::AbiSlotLocation,
+        ),
+    > + 'a {
         self.slots
             .iter()
             .enumerate()
             .filter_map(move |(slot, storage)| {
                 let slot = slot as u32;
                 match storage {
-                    ParamSlotStorage::Register { abi_index }
+                    ParamSlotStorage::Register { class, location }
                         if cfg.is_param_by_ref(slot) || self.used[slot as usize] =>
                     {
-                        Some((slot, *abi_index))
+                        Some((slot, *class, *location))
                     }
                     _ => None,
                 }
@@ -385,6 +439,7 @@ mod tests {
                 start_slot: slot,
                 slot_count: 1,
                 crossing_regs: 1,
+                crossing_classes: vec![rue_air::NativeArgClass::Gp],
                 ty: None,
             })
             .collect()
@@ -409,7 +464,45 @@ mod tests {
         assert_eq!(plan.slot(0), ParamSlotStorage::Frame { area_slot: 0 });
         assert_eq!(plan.slot(1), ParamSlotStorage::Frame { area_slot: 1 });
         assert_eq!(plan.homing().len(), 2);
-        assert_eq!(plan.homing()[1].abi_start, 1);
+        assert_eq!(
+            plan.homing()[1].location,
+            crate::call_plan::AbiSlotLocation::GpReg(1)
+        );
+    }
+
+    #[test]
+    fn descriptorless_fallback_uses_target_gp_bank_width() {
+        let cfg = Cfg::new(Type::UNIT, 1, 8, "synthetic-arm".into(), vec![false; 8]);
+        let arm = ParamStoragePlan::plan(
+            &cfg,
+            &pool(),
+            false,
+            crate::call_plan::AbiRegisterBanks { gp: 8, fp: 8 },
+        );
+        assert_eq!(arm.homing().len(), 8);
+        assert_eq!(
+            arm.homing()[6].location,
+            crate::call_plan::AbiSlotLocation::GpReg(6)
+        );
+        assert_eq!(
+            arm.homing()[7].location,
+            crate::call_plan::AbiSlotLocation::GpReg(7)
+        );
+
+        let x86 = ParamStoragePlan::plan(
+            &cfg,
+            &pool(),
+            false,
+            crate::call_plan::AbiRegisterBanks { gp: 6, fp: 8 },
+        );
+        assert_eq!(
+            x86.homing()[6].location,
+            crate::call_plan::AbiSlotLocation::Stack(0)
+        );
+        assert_eq!(
+            x86.homing()[7].location,
+            crate::call_plan::AbiSlotLocation::Stack(1)
+        );
     }
 
     #[test]
@@ -422,13 +515,16 @@ mod tests {
         push_param(&mut cfg, entry, 0);
 
         let plan = ParamStoragePlan::plan(&cfg, &pool(), false, 6);
-        assert_eq!(plan.slot(0), ParamSlotStorage::Register { abi_index: 0 });
-        assert_eq!(plan.slot(1), ParamSlotStorage::Register { abi_index: 1 });
+        assert!(matches!(plan.slot(0), ParamSlotStorage::Register { .. }));
+        assert!(matches!(plan.slot(1), ParamSlotStorage::Register { .. }));
         assert!(plan.is_used(0));
         assert!(!plan.is_used(1));
         assert_eq!(plan.homed_area_slots(), 0);
         assert!(plan.homing().is_empty());
-        assert_eq!(plan.entry_copies(&cfg).collect::<Vec<_>>(), [(0, 0)]);
+        assert_eq!(
+            plan.entry_copies(&cfg).next().unwrap().2,
+            crate::call_plan::AbiSlotLocation::GpReg(0)
+        );
     }
 
     #[test]
@@ -440,7 +536,13 @@ mod tests {
         push_param(&mut cfg, entry, 0);
 
         let plan = ParamStoragePlan::plan(&cfg, &pool(), true, 6);
-        assert_eq!(plan.slot(0), ParamSlotStorage::Register { abi_index: 1 });
+        assert!(matches!(
+            plan.slot(0),
+            ParamSlotStorage::Register {
+                location: crate::call_plan::AbiSlotLocation::GpReg(1),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -469,8 +571,14 @@ mod tests {
         assert_eq!(plan.slot(7), ParamSlotStorage::Frame { area_slot: 1 });
         assert_eq!(plan.homed_area_slots(), 2);
         // The homed entries still name their original incoming ABI indices.
-        assert_eq!(plan.homing()[0].abi_start, 6);
-        assert_eq!(plan.homing()[1].abi_start, 7);
+        assert_eq!(
+            plan.homing()[0].location,
+            crate::call_plan::AbiSlotLocation::Stack(0)
+        );
+        assert_eq!(
+            plan.homing()[1].location,
+            crate::call_plan::AbiSlotLocation::Stack(1)
+        );
 
         // With eight argument registers (AArch64) everything is register-only.
         let plan = ParamStoragePlan::plan(&cfg, &pool(), false, 8);
@@ -523,7 +631,13 @@ mod tests {
         let plan = ParamStoragePlan::plan(&cfg, &pool(), false, 6);
         assert_eq!(plan.slot(0), ParamSlotStorage::Frame { area_slot: 0 });
         assert_eq!(plan.slot(1), ParamSlotStorage::Frame { area_slot: 1 });
-        assert_eq!(plan.slot(2), ParamSlotStorage::Register { abi_index: 2 });
+        assert!(matches!(
+            plan.slot(2),
+            ParamSlotStorage::Register {
+                location: crate::call_plan::AbiSlotLocation::GpReg(2),
+                ..
+            }
+        ));
         assert_eq!(plan.homed_area_slots(), 2);
     }
 
@@ -583,9 +697,18 @@ mod tests {
         );
 
         let plan = ParamStoragePlan::plan(&cfg, &pool(), false, 6);
-        assert_eq!(plan.slot(0), ParamSlotStorage::Register { abi_index: 0 });
+        assert!(matches!(
+            plan.slot(0),
+            ParamSlotStorage::Register {
+                location: crate::call_plan::AbiSlotLocation::GpReg(0),
+                ..
+            }
+        ));
         // The pointer is copied at entry whether or not a Param inst exists.
-        assert_eq!(plan.entry_copies(&cfg).collect::<Vec<_>>(), [(0, 0)]);
+        assert_eq!(
+            plan.entry_copies(&cfg).next().unwrap().2,
+            crate::call_plan::AbiSlotLocation::GpReg(0)
+        );
     }
 
     /// The direct-slot cleanup convention (destructors, drop glue) describes
@@ -660,12 +783,14 @@ mod tests {
                 start_slot: 0,
                 slot_count: 2,
                 crossing_regs: 2,
+                crossing_classes: vec![rue_air::NativeArgClass::Gp; 2],
                 ty: None,
             },
             SourceParamAbi {
                 start_slot: 2,
                 slot_count: 1,
                 crossing_regs: 1,
+                crossing_classes: vec![rue_air::NativeArgClass::Gp],
                 ty: None,
             },
         ]);
@@ -685,6 +810,6 @@ mod tests {
         assert_eq!(plan.slot(1), ParamSlotStorage::Frame { area_slot: 1 });
         assert_eq!(plan.slot(2), ParamSlotStorage::Frame { area_slot: 2 });
         assert_eq!(plan.homed_area_slots(), 3);
-        assert_eq!(plan.homing().len(), 2);
+        assert_eq!(plan.homing().len(), 3);
     }
 }

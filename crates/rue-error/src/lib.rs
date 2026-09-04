@@ -1857,8 +1857,8 @@ define_error_codes! {
     /// beside the other `extern "C"` rules, and is the import-side mirror of
     /// E1106's rejection of a `pub extern "C" fn` export named `main`.
     FOREIGN_ENTRY_POINT_DECLARATION = 1108;
-    /// A typed float reached the explicit ADR-0065 Phase 4 lowering boundary.
-    /// The source feature is enabled, but architecture lowering is not yet.
+    /// A typed float operation reached an ADR-0065 phase that remains outside
+    /// the currently implemented scalar backend subset.
     FLOAT_NOT_YET_IMPLEMENTED = 1109;
 
     // ========================================================================
@@ -2149,8 +2149,9 @@ pub enum PreviewFeature {
     /// literals (ADR-0065, RUE-714). Gated until every phase of the M9 rollout
     /// — types and inference, both backends, the dtoa runtime — is complete
     /// (ADR-0065 Phase 10). The lexer and parser accept a float literal only
-    /// with this flag; Phase 4 types it, while executable builds still stop at
-    /// [`ErrorKind::FloatNotYetImplemented`] until backend phases land.
+    /// with this flag; Phases 5-6 lower scalar arithmetic and signed integer
+    /// conversions, while later-phase operations still stop at
+    /// [`ErrorKind::FloatNotYetImplemented`].
     Floats,
     /// Public enums may promise that importing matches include a wildcard.
     NonExhaustiveEnums,
@@ -3502,12 +3503,11 @@ pub enum ErrorKind {
     #[error("`@repr(c)` struct `{}` is not FFI-eligible: {}", .0.struct_name, .0.reason)]
     ReprCStructIneligible(Box<ReprCIneligibleError>),
 
-    /// A typed float reached CFG construction before architecture-specific
-    /// lowering exists. Rejecting here prevents integer-oriented lowering from
-    /// silently reinterpreting its bits.
+    /// A typed float operation is assigned to a later ADR-0065 phase. Rejecting
+    /// it here prevents integer-oriented lowering from reinterpreting its bits.
     #[error(
-        "floating-point lowering is not yet implemented after typed AIR \
-         (ADR-0065 Phase 4 boundary, RUE-1070)"
+        "this floating-point operation is reserved for a later ADR-0065 phase \
+         and is not yet supported after typed AIR"
     )]
     FloatNotYetImplemented,
 
@@ -5382,9 +5382,8 @@ mod tests {
 
     #[test]
     fn test_float_literal_error_codes() {
-        // The two halves of the float gate: E1100 without `--preview floats`
-        // (the shared preview-gate kind), E1109 with it, plus the E0011
-        // spelling rule from ADR-0065 §3.
+        // E1100 is the preview gate, E1109 marks float operations assigned to
+        // later ADR-0065 phases, and E0011 covers the spelling rules in §3.
         assert_eq!(
             ErrorKind::FloatNotYetImplemented.code(),
             ErrorCode::FLOAT_NOT_YET_IMPLEMENTED

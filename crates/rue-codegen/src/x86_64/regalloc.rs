@@ -17,8 +17,8 @@ use super::liveness;
 use super::mir;
 use super::mir::VReg;
 use super::mir::{
-    Operand, Reg, SCRATCH_ADDR_BASE, SCRATCH_ADDR_INDEX, SCRATCH_SOURCE, SCRATCH_VALUE,
-    SHIFT_COUNT, X86Inst, X86Mir,
+    Operand, Reg, SCRATCH_ADDR_BASE, SCRATCH_ADDR_INDEX, SCRATCH_FP_SOURCE, SCRATCH_FP_VALUE,
+    SCRATCH_SOURCE, SCRATCH_VALUE, SHIFT_COUNT, X86Inst, X86Mir,
 };
 use crate::alloc_dst;
 use crate::regalloc::{
@@ -68,6 +68,16 @@ const CALLEE_SAVED_REGS: &[Reg] = &[Reg::Rbx, Reg::R13, Reg::R14, Reg::R15, Reg:
 /// would give up a register and buy nothing. See
 /// [`RegisterClasses::compact_callee_saved`].
 const COMPACT_CALLEE_SAVED_REGS: &[Reg] = &[Reg::Rbx];
+const FP_CALLER_SAVED_REGS: &[Reg] = &[
+    Reg::Xmm8,
+    Reg::Xmm9,
+    Reg::Xmm10,
+    Reg::Xmm11,
+    Reg::Xmm12,
+    Reg::Xmm13,
+    Reg::Xmm14,
+    Reg::Xmm15,
+];
 
 /// Every allocatable register, in preference order: caller-saved first.
 ///
@@ -196,6 +206,230 @@ impl RegAlloc {
         inst: X86Inst,
     ) -> CompileResult<()> {
         match inst {
+            X86Inst::FloatConst { dst, bits, width } => {
+                let (out, spill) = Self::float_output(context, dst, SCRATCH_FP_VALUE);
+                mir.push(X86Inst::FloatConst {
+                    dst: out,
+                    bits,
+                    width,
+                });
+                if let Some(offset) = spill {
+                    mir.push_after(X86Inst::FloatStore {
+                        base: Reg::Rbp,
+                        offset,
+                        src: out,
+                        width,
+                    });
+                }
+            }
+            X86Inst::FloatMov { dst, src, width } => {
+                let src = Self::load_float_operand(context, mir, src, SCRATCH_FP_VALUE, width)?;
+                let (out, spill) = Self::float_output(context, dst, SCRATCH_FP_VALUE);
+                mir.push(X86Inst::FloatMov {
+                    dst: out,
+                    src,
+                    width,
+                });
+                if let Some(offset) = spill {
+                    mir.push_after(X86Inst::FloatStore {
+                        base: Reg::Rbp,
+                        offset,
+                        src: out,
+                        width,
+                    });
+                }
+            }
+            X86Inst::FloatToBits { dst, src, width } => {
+                let src = Self::load_float_operand(context, mir, src, SCRATCH_FP_VALUE, width)?;
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
+                    emit |dst_op| {
+                        mir.push(X86Inst::FloatToBits { dst: dst_op, src, width });
+                    },
+                    store |spill_offset| {
+                        mir.push_after(X86Inst::MovMR {
+                            base: Reg::Rbp,
+                            offset: spill_offset,
+                            src: Operand::Physical(SCRATCH_VALUE),
+                        });
+                    },
+                );
+            }
+            X86Inst::BitsToFloat { dst, src, width } => {
+                let src = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
+                let (out, spill) = Self::float_output(context, dst, SCRATCH_FP_VALUE);
+                mir.push(X86Inst::BitsToFloat {
+                    dst: out,
+                    src,
+                    width,
+                });
+                if let Some(offset) = spill {
+                    mir.push_after(X86Inst::FloatStore {
+                        base: Reg::Rbp,
+                        offset,
+                        src: out,
+                        width,
+                    });
+                }
+            }
+            X86Inst::FloatBin {
+                op,
+                dst,
+                src,
+                width,
+            } => {
+                let out = Self::load_float_operand(context, mir, dst, SCRATCH_FP_VALUE, width)?;
+                let src = Self::load_float_operand(context, mir, src, SCRATCH_FP_SOURCE, width)?;
+                mir.push(X86Inst::FloatBin {
+                    op,
+                    dst: out,
+                    src,
+                    width,
+                });
+                if let Some(Allocation::Spill(offset)) = Self::get_allocation(context, dst) {
+                    mir.push_after(X86Inst::FloatStore {
+                        base: Reg::Rbp,
+                        offset,
+                        src: out,
+                        width,
+                    });
+                }
+            }
+            X86Inst::FloatNeg { dst, src, width } | X86Inst::FloatSqrt { dst, src, width } => {
+                let is_sqrt = matches!(inst, X86Inst::FloatSqrt { .. });
+                let src = Self::load_float_operand(context, mir, src, SCRATCH_FP_SOURCE, width)?;
+                let (out, spill) = Self::float_output(context, dst, SCRATCH_FP_VALUE);
+                mir.push(if is_sqrt {
+                    X86Inst::FloatSqrt {
+                        dst: out,
+                        src,
+                        width,
+                    }
+                } else {
+                    X86Inst::FloatNeg {
+                        dst: out,
+                        src,
+                        width,
+                    }
+                });
+                if let Some(offset) = spill {
+                    mir.push_after(X86Inst::FloatStore {
+                        base: Reg::Rbp,
+                        offset,
+                        src: out,
+                        width,
+                    });
+                }
+            }
+            X86Inst::FloatCmp { lhs, rhs, width } => {
+                let lhs = Self::load_float_operand(context, mir, lhs, SCRATCH_FP_VALUE, width)?;
+                let rhs = Self::load_float_operand(context, mir, rhs, SCRATCH_FP_SOURCE, width)?;
+                mir.push(X86Inst::FloatCmp { lhs, rhs, width });
+            }
+            X86Inst::FloatLoad {
+                dst,
+                base,
+                offset,
+                width,
+            } => {
+                let (out, spill) = Self::float_output(context, dst, SCRATCH_FP_VALUE);
+                mir.push(X86Inst::FloatLoad {
+                    dst: out,
+                    base,
+                    offset,
+                    width,
+                });
+                if let Some(spill_offset) = spill {
+                    mir.push_after(X86Inst::FloatStore {
+                        base: Reg::Rbp,
+                        offset: spill_offset,
+                        src: out,
+                        width,
+                    });
+                }
+            }
+            X86Inst::FloatStore {
+                base,
+                offset,
+                src,
+                width,
+            } => {
+                let src = Self::load_float_operand(context, mir, src, SCRATCH_FP_VALUE, width)?;
+                mir.push(X86Inst::FloatStore {
+                    base,
+                    offset,
+                    src,
+                    width,
+                });
+            }
+            X86Inst::IntToFloat {
+                dst,
+                src,
+                int_bits,
+                width,
+            } => {
+                let src = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
+                let (out, spill) = Self::float_output(context, dst, SCRATCH_FP_VALUE);
+                mir.push(X86Inst::IntToFloat {
+                    dst: out,
+                    src,
+                    int_bits,
+                    width,
+                });
+                if let Some(offset) = spill {
+                    mir.push_after(X86Inst::FloatStore {
+                        base: Reg::Rbp,
+                        offset,
+                        src: out,
+                        width,
+                    });
+                }
+            }
+            X86Inst::FloatToInt {
+                dst,
+                src,
+                int_bits,
+                width,
+            } => {
+                let src = Self::load_float_operand(context, mir, src, SCRATCH_FP_VALUE, width)?;
+                let dst_alloc = Self::get_allocation(context, dst);
+                let out = match dst_alloc {
+                    Some(Allocation::Register(r)) => Operand::Physical(r),
+                    Some(Allocation::Spill(_)) => Operand::Physical(SCRATCH_VALUE),
+                    None => dst,
+                    Some(Allocation::Rematerialize(_)) => unreachable!(),
+                };
+                mir.push(X86Inst::FloatToInt {
+                    dst: out,
+                    src,
+                    int_bits,
+                    width,
+                });
+                if let Some(Allocation::Spill(offset)) = dst_alloc {
+                    mir.push_after(X86Inst::MovMR {
+                        base: Reg::Rbp,
+                        offset,
+                        src: out,
+                    });
+                }
+            }
+            X86Inst::FloatCast { dst, src, from, to } => {
+                let src = Self::load_float_operand(context, mir, src, SCRATCH_FP_SOURCE, from)?;
+                let (out, spill) = Self::float_output(context, dst, SCRATCH_FP_VALUE);
+                mir.push(X86Inst::FloatCast {
+                    dst: out,
+                    src,
+                    from,
+                    to,
+                });
+                if let Some(offset) = spill {
+                    mir.push_after(X86Inst::FloatStore {
+                        base: Reg::Rbp,
+                        offset,
+                        src: out,
+                        width: to,
+                    });
+                }
+            }
             X86Inst::MovRI32 { dst, imm } => {
                 alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
@@ -542,6 +776,12 @@ impl RegAlloc {
 
             X86Inst::Sete { dst } => {
                 Self::emit_setcc(context, mir, dst, |d| X86Inst::Sete { dst: d });
+            }
+            X86Inst::Setp { dst } => {
+                Self::emit_setcc(context, mir, dst, |d| X86Inst::Setp { dst: d })
+            }
+            X86Inst::Setnp { dst } => {
+                Self::emit_setcc(context, mir, dst, |d| X86Inst::Setnp { dst: d })
             }
 
             X86Inst::Setne { dst } => {
@@ -1075,6 +1315,49 @@ impl RegAlloc {
         }
     }
 
+    fn float_output(
+        context: &AllocationContext<'_, Reg>,
+        operand: Operand,
+        scratch: Reg,
+    ) -> (Operand, Option<i32>) {
+        match Self::get_allocation(context, operand) {
+            Some(Allocation::Register(reg)) => (Operand::Physical(reg), None),
+            Some(Allocation::Spill(offset)) => (Operand::Physical(scratch), Some(offset)),
+            Some(Allocation::Rematerialize(_)) => {
+                unreachable!("destination cannot be rematerializable")
+            }
+            None => (operand, None),
+        }
+    }
+
+    fn load_float_operand(
+        context: &AllocationContext<'_, Reg>,
+        mir: &mut RewriteBuffer<X86Inst>,
+        operand: Operand,
+        scratch: Reg,
+        width: crate::value_plan::FloatWidth,
+    ) -> CompileResult<Operand> {
+        match operand {
+            Operand::Virtual(vreg) => match context.allocation(vreg) {
+                Some(Allocation::Register(reg)) => Ok(Operand::Physical(reg)),
+                Some(Allocation::Spill(offset)) => {
+                    mir.push_before(X86Inst::FloatLoad {
+                        dst: Operand::Physical(scratch),
+                        base: Reg::Rbp,
+                        offset,
+                        width,
+                    });
+                    Ok(Operand::Physical(scratch))
+                }
+                Some(Allocation::Rematerialize(_)) => {
+                    unreachable!("float values are not rematerialized")
+                }
+                None => Ok(operand),
+            },
+            Operand::Physical(_) => Ok(operand),
+        }
+    }
+
     /// Load an operand into a physical register, inserting a load if spilled
     /// or rematerializing if marked for rematerialization.
     /// Returns the operand to use (either the allocated register or the scratch register).
@@ -1408,14 +1691,19 @@ impl RegAllocBackend for X86Backend {
     }
 
     fn register_file() -> RegisterFile<'static, Self::Reg> {
-        // General-purpose only: `Reg` names no XMM register yet, so the `Fp`
-        // class of the file is empty and no interval can select it
-        // (RUE-1067). The floats series adds the XMM registers here.
-        RegisterFile::gp_only(SaveClasses {
-            caller_saved: CALLER_SAVED_REGS,
-            callee_saved: CALLEE_SAVED_REGS,
-            compact_callee_saved: COMPACT_CALLEE_SAVED_REGS,
-        })
+        // Keep scalar floating-point values in a disjoint XMM register class.
+        RegisterFile::new([
+            SaveClasses {
+                caller_saved: CALLER_SAVED_REGS,
+                callee_saved: CALLEE_SAVED_REGS,
+                compact_callee_saved: COMPACT_CALLEE_SAVED_REGS,
+            },
+            SaveClasses {
+                caller_saved: FP_CALLER_SAVED_REGS,
+                callee_saved: &[],
+                compact_callee_saved: &[],
+            },
+        ])
     }
 
     fn for_each_physical_operand<F>(inst: &Self::Inst, mut visit: F)
@@ -1464,20 +1752,15 @@ mod tests {
     use super::X86Backend;
     use super::liveness;
     use super::{
-        ALLOCATABLE_REGS, CALLEE_SAVED_REGS, CALLER_SAVED_REGS, COMPACT_CALLEE_SAVED_REGS, Operand,
-        Reg, RegAlloc, SCRATCH_VALUE, VReg, X86Inst, X86Mir,
+        ALLOCATABLE_REGS, CALLEE_SAVED_REGS, CALLER_SAVED_REGS, COMPACT_CALLEE_SAVED_REGS,
+        FP_CALLER_SAVED_REGS, Operand, Reg, RegAlloc, SCRATCH_VALUE, VReg, X86Inst, X86Mir,
     };
     use crate::reg_class::RegClass;
     use crate::regalloc::{Allocation, RegAllocBackend, RematerializeOp};
     use ahash::AHashSet;
 
     #[test]
-    fn the_register_file_is_general_purpose_only() {
-        // The whole of RUE-1067's claim on this backend: the class dimension
-        // exists, and the floating-point half of it is empty. A change that
-        // populates `Fp` here without the rest of the floats series would make
-        // allocation hand out registers no instruction can encode, so this
-        // guard fails loudly instead.
+    fn the_register_file_keeps_gp_and_fp_registers_separate() {
         let file = <X86Backend as RegAllocBackend>::register_file();
         let gp = file.class(RegClass::Gp);
         let fp = file.class(RegClass::Fp);
@@ -1485,12 +1768,16 @@ mod tests {
         assert_eq!(gp.caller_saved, CALLER_SAVED_REGS);
         assert_eq!(gp.callee_saved, CALLEE_SAVED_REGS);
         assert!(!gp.is_empty());
-        assert!(
-            fp.is_empty(),
-            "no floating-point register is allocatable yet"
+        assert_eq!(fp.caller_saved, FP_CALLER_SAVED_REGS);
+        assert!(fp.callee_saved.is_empty());
+        assert!(!fp.is_empty());
+        assert_eq!(
+            file.len(),
+            ALLOCATABLE_REGS.len() + FP_CALLER_SAVED_REGS.len()
         );
-        assert_eq!(file.len(), ALLOCATABLE_REGS.len());
-        assert_eq!(file.caller_saved_flattened(), CALLER_SAVED_REGS.to_vec());
+        let mut expected = CALLER_SAVED_REGS.to_vec();
+        expected.extend_from_slice(FP_CALLER_SAVED_REGS);
+        assert_eq!(file.caller_saved_flattened(), expected);
     }
 
     #[test]

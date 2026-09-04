@@ -245,6 +245,13 @@ pub struct ImplicitNamedDestructorDependencyEvent {
 /// `arg_class.crossing_slots() == slot_count`, so the plumbing is behaviourally
 /// inert and the emitted prologue is byte-identical.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeArgClass {
+    Gp,
+    Fp32,
+    Fp64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceParamAbi {
     /// First parameter ABI slot this source parameter occupies.
     pub start_slot: u32,
@@ -258,6 +265,9 @@ pub struct SourceParamAbi {
     /// `crossing_regs < slot_count` distinguishes exactly the by-value indirect
     /// aggregate the callee must unmarshal.
     pub crossing_regs: u32,
+    /// Register-bank class of each crossing slot, in source order. Pointer
+    /// transports are GP; direct scalar float leaves retain their width.
+    pub crossing_classes: Vec<NativeArgClass>,
     /// The aggregate type — carried *only* for a by-value indirect parameter, so
     /// code generation can build its compact memory image; `None` for every
     /// direct parameter and every by-reference pointer. Withholding the type

@@ -379,7 +379,13 @@ impl<'a> CfgLowerContext<'a> {
     /// Register-only parameters needing an entry copy, as
     /// `(param ABI slot, incoming ABI index)` (RUE-1170). Empty without a
     /// pipeline plan: the historical layout homes everything.
-    pub(crate) fn param_entry_copies(&self) -> Vec<(u32, u32)> {
+    pub(crate) fn param_entry_copies(
+        &self,
+    ) -> Vec<(
+        u32,
+        crate::call_plan::AbiSlotClass,
+        crate::call_plan::AbiSlotLocation,
+    )> {
         match self.param_storage {
             None => Vec::new(),
             Some(plan) => plan.entry_copies(self.cfg).collect(),

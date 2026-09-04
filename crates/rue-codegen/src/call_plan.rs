@@ -127,6 +127,96 @@ pub struct UserArgPlan {
     pub slots: Vec<VReg>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AbiRegisterBanks {
+    pub gp: usize,
+    pub fp: usize,
+}
+
+impl From<usize> for AbiRegisterBanks {
+    fn from(gp: usize) -> Self {
+        Self { gp, fp: 0 }
+    }
+}
+
+impl From<u32> for AbiRegisterBanks {
+    fn from(gp: u32) -> Self {
+        Self {
+            gp: gp as usize,
+            fp: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+impl From<i32> for AbiRegisterBanks {
+    fn from(gp: i32) -> Self {
+        Self {
+            gp: gp as usize,
+            fp: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiSlotClass {
+    Gp,
+    Fp(crate::value_plan::FloatWidth),
+}
+
+impl From<rue_air::NativeArgClass> for AbiSlotClass {
+    fn from(value: rue_air::NativeArgClass) -> Self {
+        match value {
+            rue_air::NativeArgClass::Gp => Self::Gp,
+            rue_air::NativeArgClass::Fp32 => Self::Fp(crate::value_plan::FloatWidth::F32),
+            rue_air::NativeArgClass::Fp64 => Self::Fp(crate::value_plan::FloatWidth::F64),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiSlotLocation {
+    GpReg(usize),
+    FpReg(usize),
+    Stack(usize),
+}
+
+pub fn assign_abi_slots(
+    classes: impl IntoIterator<Item = AbiSlotClass>,
+    banks: AbiRegisterBanks,
+) -> Vec<AbiSlotLocation> {
+    let mut gp = 0usize;
+    let mut fp = 0usize;
+    let mut stack = 0usize;
+    classes
+        .into_iter()
+        .map(|class| match class {
+            AbiSlotClass::Gp if gp < banks.gp => {
+                let index = gp;
+                gp += 1;
+                AbiSlotLocation::GpReg(index)
+            }
+            AbiSlotClass::Fp(_) if fp < banks.fp => {
+                let index = fp;
+                fp += 1;
+                AbiSlotLocation::FpReg(index)
+            }
+            AbiSlotClass::Gp => {
+                gp += 1;
+                let index = stack;
+                stack += 1;
+                AbiSlotLocation::Stack(index)
+            }
+            AbiSlotClass::Fp(_) => {
+                fp += 1;
+                let index = stack;
+                stack += 1;
+                AbiSlotLocation::Stack(index)
+            }
+        })
+        .collect()
+}
+
 /// The hidden caller-provided return storage, when the return uses sret.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HiddenSretPlan {
@@ -178,6 +268,8 @@ pub struct CallPlan {
     /// Complete logical ABI slots, including the hidden sret pointer when
     /// present.  This is the only slot vector the adapters may marshal.
     pub abi_slots: Vec<VReg>,
+    pub abi_classes: Vec<AbiSlotClass>,
+    pub abi_locations: Vec<AbiSlotLocation>,
     pub return_plan: ReturnPlan,
     /// For a compact aggregate returned via sret under `aggregate_layout`
     /// (ADR-0052 phase 5.7, RUE-1004), the internal-slot → physical-byte image
@@ -193,6 +285,7 @@ pub struct CallPlan {
     /// Result vreg reserved by the shared dispatcher before argument leaves
     /// materialize, preserving the canonical event allocation order.
     pub result: Option<VReg>,
+    pub result_float_width: Option<crate::value_plan::FloatWidth>,
     pub stack_slot_count: usize,
     pub stack_bytes: u32,
     /// Total bytes of caller-owned compact-image buffers reserved for by-value
@@ -221,6 +314,7 @@ pub enum CallArgInput {
         value: rue_cfg::CfgValue,
         slot_count: u32,
         is_multislot_aggregate: bool,
+        slot_types: Vec<Type>,
     },
     /// A by-value non-slot-identical compact aggregate the classifier forces
     /// indirect under `aggregate_layout` (RUE-976/RUE-1005): the caller writes
@@ -329,6 +423,11 @@ impl CallInputs {
                     arg.value,
                     types::type_slot_count(type_pool, arg_ty),
                     types::is_multislot_aggregate(type_pool, arg_ty),
+                    if types::is_multislot_aggregate(type_pool, arg_ty) {
+                        types::aggregate_leaf_types(type_pool, arg_ty)
+                    } else {
+                        vec![arg_ty]
+                    },
                     by_ref_plan.clone(),
                 )
                 .unwrap_or_else(|message| panic!("{message}"))
@@ -363,6 +462,7 @@ fn normalize_call_arg(
     value: rue_cfg::CfgValue,
     slot_count: u32,
     is_multislot_aggregate: bool,
+    slot_types: Vec<Type>,
     by_ref_plan: Option<crate::value_plan::ByRefAddressPlan>,
 ) -> Result<CallArgInput, &'static str> {
     match (mode, by_ref_plan) {
@@ -370,6 +470,7 @@ fn normalize_call_arg(
             value,
             slot_count,
             is_multislot_aggregate,
+            slot_types,
         }),
         (CfgArgMode::Inout, Some(address)) => Ok(CallArgInput::ByRef {
             mode: ByRefMode::Inout,
@@ -429,7 +530,7 @@ impl CallPlan {
         target: CallTarget,
         return_plan: ReturnPlan,
         args: &[CallArgInput],
-        arg_reg_budget: usize,
+        arg_register_banks: impl Into<AbiRegisterBanks>,
         materializer: &mut M,
     ) -> Self {
         Self::from_inputs_with_result(
@@ -438,7 +539,7 @@ impl CallPlan {
             None,
             None,
             args,
-            arg_reg_budget,
+            arg_register_banks.into(),
             materializer,
             None,
         )
@@ -450,13 +551,14 @@ impl CallPlan {
         compact_return_image: Option<Vec<crate::types::PhysicalEnumSlot>>,
         compact_return_dispatch: Option<crate::types::DispatchImage>,
         args: &[CallArgInput],
-        arg_reg_budget: usize,
+        arg_register_banks: impl Into<AbiRegisterBanks>,
         materializer: &mut M,
         result: Option<VReg>,
     ) -> Self {
         let callee_abi = CalleeAbi::for_target(&target);
         let mut hidden_sret = None;
         let mut abi_slots = Vec::new();
+        let mut abi_classes = Vec::new();
 
         if let ReturnPlan::Sret {
             slot_count,
@@ -471,17 +573,19 @@ impl CallPlan {
                 storage_bytes,
             });
             abi_slots.push(pointer);
+            abi_classes.push(AbiSlotClass::Gp);
         }
 
         let mut user_args = Vec::with_capacity(args.len());
         let mut caller_indirect_bytes = 0u32;
         for arg in args {
-            let (mode, slots) = match arg {
+            let (mode, slots, classes) = match arg {
                 CallArgInput::ByRef { mode, address } => (
                     (*mode).into(),
                     // A reference is an ABI pointer even when the pointee has
                     // no storage slots. This branch precedes ZST omission.
                     vec![materializer.materialize_by_ref(address)],
+                    vec![AbiSlotClass::Gp],
                 ),
                 CallArgInput::IndirectValue {
                     value,
@@ -502,7 +606,7 @@ impl CallPlan {
                         padding,
                         *storage_bytes,
                     );
-                    (UserArgMode::Value, vec![pointer])
+                    (UserArgMode::Value, vec![pointer], vec![AbiSlotClass::Gp])
                 }
                 CallArgInput::IndirectValueDispatch {
                     value,
@@ -519,12 +623,13 @@ impl CallPlan {
                         image,
                         *storage_bytes,
                     );
-                    (UserArgMode::Value, vec![pointer])
+                    (UserArgMode::Value, vec![pointer], vec![AbiSlotClass::Gp])
                 }
                 CallArgInput::Value {
                     value,
                     slot_count,
                     is_multislot_aggregate,
+                    slot_types,
                 } => {
                     let slots = if *slot_count == 0 {
                         Vec::new()
@@ -543,15 +648,31 @@ impl CallPlan {
                     } else {
                         vec![materializer.materialize_scalar(*value)]
                     };
-                    (UserArgMode::Value, slots)
+                    let mut classes = slot_types
+                        .iter()
+                        .map(|ty| match crate::value_plan::float_width(*ty) {
+                            Some(width) => AbiSlotClass::Fp(width),
+                            None => AbiSlotClass::Gp,
+                        })
+                        .collect::<Vec<_>>();
+                    if *is_multislot_aggregate && callee_abi == CalleeAbi::Rue {
+                        classes.reverse();
+                    }
+                    (UserArgMode::Value, slots, classes)
                 }
             };
 
             abi_slots.extend(slots.iter().copied());
+            abi_classes.extend(classes);
             user_args.push(UserArgPlan { mode, slots });
         }
 
-        let stack_slot_count = abi_slots.len().saturating_sub(arg_reg_budget);
+        let abi_locations =
+            assign_abi_slots(abi_classes.iter().copied(), arg_register_banks.into());
+        let stack_slot_count = abi_locations
+            .iter()
+            .filter(|location| matches!(location, AbiSlotLocation::Stack(_)))
+            .count();
         let stack_bytes = checked_aligned_cell_region_bytes(
             u64::try_from(stack_slot_count).expect("call stack slot count must fit u64"),
         )
@@ -563,10 +684,13 @@ impl CallPlan {
             hidden_sret,
             user_args,
             abi_slots,
+            abi_classes,
+            abi_locations,
             return_plan,
             compact_return_image,
             compact_return_dispatch,
             result,
+            result_float_width: None,
             stack_slot_count,
             stack_bytes,
             caller_indirect_bytes,
@@ -578,8 +702,18 @@ impl CallPlan {
 
     /// Build the same normalized shape for drop/glue calls whose slots have
     /// already been materialized by the canonical aggregate leaves.
-    pub fn from_slot_values(target: CallTarget, slots: &[VReg], arg_reg_budget: usize) -> Self {
-        let stack_slot_count = slots.len().saturating_sub(arg_reg_budget);
+    pub fn from_slot_values(
+        target: CallTarget,
+        slots: &[VReg],
+        arg_register_banks: impl Into<AbiRegisterBanks>,
+    ) -> Self {
+        let abi_classes = vec![AbiSlotClass::Gp; slots.len()];
+        let abi_locations =
+            assign_abi_slots(abi_classes.iter().copied(), arg_register_banks.into());
+        let stack_slot_count = abi_locations
+            .iter()
+            .filter(|location| matches!(location, AbiSlotLocation::Stack(_)))
+            .count();
         Self {
             callee_abi: CalleeAbi::for_target(&target),
             target,
@@ -589,10 +723,13 @@ impl CallPlan {
                 slots: slots.to_vec(),
             }],
             abi_slots: slots.to_vec(),
+            abi_classes,
+            abi_locations,
             return_plan: ReturnPlan::ZeroSized,
             compact_return_image: None,
             compact_return_dispatch: None,
             result: None,
+            result_float_width: None,
             stack_slot_count,
             stack_bytes: checked_aligned_cell_region_bytes(
                 u64::try_from(stack_slot_count).expect("call stack slot count must fit u64"),
@@ -677,6 +814,7 @@ mod tests {
             rue_cfg::CfgValue::from_raw(1),
             1,
             false,
+            vec![Type::I32],
             None,
         )
         .expect("normal values should normalize without an address plan");
@@ -687,6 +825,7 @@ mod tests {
             rue_cfg::CfgValue::from_raw(2),
             1,
             false,
+            vec![Type::I32],
             Some(address.clone()),
         )
         .expect("borrow arguments should normalize with an address plan");
@@ -704,6 +843,7 @@ mod tests {
                 rue_cfg::CfgValue::from_raw(3),
                 1,
                 false,
+                vec![Type::I32],
                 Some(address.clone()),
             )
             .is_err()
@@ -714,6 +854,7 @@ mod tests {
                 rue_cfg::CfgValue::from_raw(4),
                 1,
                 false,
+                vec![Type::I32],
                 None,
             )
             .is_err()
@@ -729,6 +870,29 @@ mod tests {
         assert_eq!(plan.stack_slot_count, 3);
         assert_eq!(plan.stack_bytes, 32);
         assert_eq!(plan.return_plan, ReturnPlan::ZeroSized);
+    }
+
+    #[test]
+    fn abi_register_banks_fill_independently_and_share_stack_order() {
+        let classes = [
+            AbiSlotClass::Fp(crate::value_plan::FloatWidth::F32),
+            AbiSlotClass::Gp,
+            AbiSlotClass::Gp,
+            AbiSlotClass::Fp(crate::value_plan::FloatWidth::F64),
+            AbiSlotClass::Gp,
+            AbiSlotClass::Fp(crate::value_plan::FloatWidth::F32),
+        ];
+        assert_eq!(
+            assign_abi_slots(classes, AbiRegisterBanks { gp: 2, fp: 2 }),
+            vec![
+                AbiSlotLocation::FpReg(0),
+                AbiSlotLocation::GpReg(0),
+                AbiSlotLocation::GpReg(1),
+                AbiSlotLocation::FpReg(1),
+                AbiSlotLocation::Stack(0),
+                AbiSlotLocation::Stack(1),
+            ]
+        );
     }
 
     #[test]
@@ -749,10 +913,13 @@ mod tests {
                 },
             ],
             abi_slots: slots.clone(),
+            abi_classes: vec![AbiSlotClass::Gp],
+            abi_locations: vec![AbiSlotLocation::GpReg(0)],
             return_plan: ReturnPlan::ZeroSized,
             compact_return_image: None,
             compact_return_dispatch: None,
             result: None,
+            result_float_width: None,
             stack_slot_count: 0,
             stack_bytes: 0,
             caller_indirect_bytes: 0,
@@ -787,6 +954,7 @@ mod tests {
                 value: rue_cfg::CfgValue::from_raw(1),
                 slot_count: 2,
                 is_multislot_aggregate: true,
+                slot_types: vec![Type::I32, Type::I32],
             },
             CallArgInput::ByRef {
                 mode: ByRefMode::Borrow,
@@ -799,6 +967,7 @@ mod tests {
                 value: rue_cfg::CfgValue::from_raw(3),
                 slot_count: 0,
                 is_multislot_aggregate: false,
+                slot_types: Vec::new(),
             },
         ];
         let mut materializer = TestMaterializer;
@@ -830,6 +999,7 @@ mod tests {
             value: rue_cfg::CfgValue::from_raw(1),
             slot_count: 2,
             is_multislot_aggregate: true,
+            slot_types: vec![Type::I32, Type::I32],
         }];
 
         let mut materializer = TestMaterializer;
