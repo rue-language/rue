@@ -1,6 +1,33 @@
-// std.collections — Grid2D(T): a row-major dynamic 2D grid over a single
-// ArrayBuf(T). Reads return elements BY COPY, so `get` is usable for
-// trivially-droppable (`Copy`) `T` only (RUE-651); `set` works for any `T`.
+// std.collections — Grid2D(T): a row-major dynamic 2D grid laid out in a
+// single ArrayBuf(T), for a Copy element type.
+//
+// COPY-`T` ONLY. `new(rows, cols, fill)` is the only constructor and it
+// initialises every cell from one `fill` value, so a use of `fill` must
+// duplicate it rather than consume it — that is what a Copy type does (3.8:1).
+// The Copy types are the primitives, `str` and `Str(N)`, discriminant-only
+// (C-like) enums, Copy arrays, structs marked `@copy`, and anonymous structs
+// whose fields are all Copy — `std.tuple.Pair(i64, i64)` among them (3.8:2,
+// 3.8:16). A payload-carrying enum is Copy when every payload is
+// (`Option(i64)` qualifies). `Deque` and `IntMap` take a filler value and
+// restrict their element type the same way (RUE-651).
+//
+// Rue has no intrinsic that gates on Copy, so `new` states the half it can:
+// `@require_trivially_droppable(T)` (E0711) rejects a `T` with drop glue — an
+// owning element such as `StrBuf`, or a struct with a `drop fn` — and names
+// that type. The remaining Copy requirement is unstated and surfaces later. A
+// move-only `T` with no drop glue is exactly a struct not marked `@copy`
+// (3.8:3, 3.8:19): it passes the gate and is then rejected at the fill loop
+// with E0205 against `fill`, inside this module. Mark such a struct `@copy` —
+// legal whenever its fields are all Copy (3.8:18) — and the grid works.
+//
+// A `T` that is neither Copy nor markable `@copy` has no constructor here, and
+// giving it one needs a language feature Rue does not have. Duplicating an
+// owning `fill` per cell needs a generic clone, which needs traits (RUE-246);
+// a `new_with(rows, cols, f)` that computes each cell instead needs function
+// values (RUE-643).
+//
+// `get` reads a cell by copy and `set` overwrites one; `get_ref` borrows a
+// cell in place.
 //
 //     const std = @import("std");
 //     let G = std.grid.Grid2D(i64);
@@ -19,7 +46,19 @@ pub fn Grid2D(comptime T: type) -> type {
         cols: u64,
 
         // A `rows`x`cols` grid with every cell initialised to `fill`.
+        //
+        // COPY-`T` ONLY: the loop below pushes `fill` once per cell, so each
+        // use of `fill` has to duplicate it (3.8:1). The gate here checks the
+        // drop-glue half of that — there is no Copy gate to call — and it is
+        // stated ahead of the loop so an owning `T` gets E0711 naming its
+        // element type rather than a moved-value error against `fill`
+        // (RUE-2014). A move-only `T` with no drop glue, i.e. a struct not
+        // marked `@copy`, still reaches the loop and fails there with E0205;
+        // marking the struct `@copy` is the fix. The gate lives in the method
+        // body, so demand-driven analysis (ADR-0045) applies it only when a
+        // program actually constructs a grid.
         fn new(rows: u64, cols: u64, fill: T) -> Self {
+            @require_trivially_droppable(T);
             let b = arraybuf.ArrayBuf(T);
             let mut cells = b.new();
             if cols > 0 && rows > 18446744073709551615 / cols {
@@ -45,7 +84,7 @@ pub fn Grid2D(comptime T: type) -> type {
             r < self.rows && c < self.cols
         }
 
-        // Cell `(r, c)` by copy, or `None` when out of bounds. COPY-`T` ONLY.
+        // Cell `(r, c)` by copy, or `None` when out of bounds.
         fn get(borrow self, r: u64, c: u64) -> option.Option(T) {
             let O = option.Option(T);
             if r < self.rows && c < self.cols {
