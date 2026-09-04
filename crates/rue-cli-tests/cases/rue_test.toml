@@ -443,7 +443,9 @@ compile_stdout_contains = [
     "output_overflow",
     "omitted here; --format json carries the whole capture",
     "further bytes were not retained",
-    "repro: rue test main.rue --filter",
+    "repro: /",
+    "/rue test /",
+    "/main.rue --filter",
     "0 passed, 1 failed",
 ]
 
@@ -705,6 +707,11 @@ ADR-0083 §3: every non-pass carries the exact argv that reproduces that one
 test — selected by the full stable id, never the bare name, and carrying the
 seed and the compile flags so the same image is rebuilt. Running that argv is
 the round trip the repro promises.
+
+RUE-2020: the compiler and the root are named by absolute path, because a
+reproduction is pasted into another shell from another directory, where `rue`
+is not on PATH and a relative root resolves to nothing. Those paths are
+per-machine, so the case pins the structure rather than the bytes.
 """
 files = [
     { path = "main.rue", source = """
@@ -726,18 +733,151 @@ args = [
 ]
 driver_exit_code = 1
 compile_stdout_contains = [
-    '"repro":["rue","test","main.rue","--filter","tests.rue::fails on purpose","--seed","9",',
+    # Absolute paths are per-machine, so the case pins the structure around
+    # them: argv[0] and the root are absolute (they start at the root
+    # directory), and everything after the root is the fixed repro tail.
+    '"repro":["/',
+    '"--filter","tests.rue::fails on purpose","--seed","9",',
     '"-O0","--timeout-ms","9000"]',
+    '/main.rue","--filter"',
     '"stderr":{"bytes_total":17,"data":"assertion failed\n","encoding":"utf8"}',
     '"scratch_dir":"',
+]
+# Nothing in this run's environment decided it -- the harness clears
+# RUE_STD_PATH unless a case sets it -- so `repro_env` is absent, not empty.
+compile_stdout_not_contains = ['"repro_env"']
+
+[[case]]
+name = "a_symlinked_root_keeps_its_own_spelling_in_the_repro"
+description = """
+RUE-2020: the root is absolutized lexically, never canonicalized. The
+compiler's project root and module identities are lexical — `source_loader`
+takes the root's parent from `normalize_lexical_path` and retains the lexical
+project spelling — so resolving a symlinked root FILE to its target hands the
+repro a different `@import` closure. Here `link/main.rue` points at
+`real/main.rue` and each directory holds its own `tests.rue`: the run selects
+`link/tests.rue`, and a canonicalizing repro named `real/main.rue` and selected
+nothing at all (exit 3).
+"""
+files = [
+    { path = "real/main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "real/tests.rue", source = """
+test "real passes" {
+    @assert(1 == 1);
+}
+""" },
+    { path = "link/tests.rue", source = """
+test "link fails" {
+    @assert(1 == 2);
+}
+""" },
+]
+symlinks = [{ link = "link/main.rue", target = "../real/main.rue" }]
+args = ["test", "link/main.rue", "--seed", "3", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    # The failing test is the LINK directory's, and the repro root is the link
+    # spelling that reaches it.
+    '"id":"tests.rue::link fails"',
+    '/link/main.rue","--filter","tests.rue::link fails"',
+]
+# The target's spelling would name a project whose closure holds `real passes`
+# instead, so the repro would select nothing.
+compile_stdout_not_contains = ['/real/main.rue"']
+
+[[case]]
+name = "the_repro_absolutizes_the_build_system_inputs_it_repeats"
+description = """
+RUE-2020: `--source-manifest` used to be repeated verbatim, and the `rue_test`
+rule spells its manifest as a project-relative buck-out path — so every
+Buck-produced repro died with "Error reading source manifest" anywhere but the
+directory that produced it. The manifest is absolutized the same lexical way
+the root is. `--link-archive` travels the same path; no case here links one.
+"""
+files = [
+    { path = "sources.manifest", source = """
+main.rue
+tests.rue
+""" },
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "fails on purpose" {
+    @assert(1 == 2);
+}
+""" },
+]
+args = [
+    "test", "main.rue", "--source-manifest", "sources.manifest",
+    "--seed", "9", "-j1", "--format", "json",
+]
+driver_exit_code = 1
+compile_stdout_contains = [
+    # Absolute (it starts at the root directory) and still naming the file the
+    # command line named.
+    '"--source-manifest","/',
+    '/sources.manifest"]',
+]
+# The relative spelling the command line used must not survive into the repro.
+compile_stdout_not_contains = ['"--source-manifest","sources.manifest"']
+
+[[case]]
+name = "a_run_that_found_its_std_through_the_environment_publishes_repro_env"
+description = """
+RUE-2020: `RUE_STD_PATH` is not argv, so a repro that carried only the argv
+died with E0705 in any shell that did not happen to have the variable set. The
+environment that decided the run travels with it, absolute, in an object that
+is present only when it has something to say — the same convention `shard`
+follows.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+
+test "fails on purpose" {
+    @assert(1 == 2, @to_string(9));
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "9", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    # The value is the repo's own std/, absolute; the key order is the
+    # alphabetical one every object in this stream uses, so `repro_env`
+    # follows `repro`.
+    '"repro_env":{"RUE_STD_PATH":"/',
+    '/std"}',
+    '"kind":"assert"',
 ]
 
 [[case]]
 name = "the_repro_argv_reproduces_the_same_verdict_alone"
 description = """
-The repro from the previous case, run as its own invocation: the same one test,
+The repro from the earlier case, run as its own invocation: the same one test,
 the same `assert` verdict, and no other test in the run. A repro that selected
-by the bare name would also re-run the passing homonym below it.
+by the bare name would also re-run the passing homonym below it. The published
+repro spells the root absolutely; a case's argv has to be machine-independent,
+so this one spells it relative to the fixture directory the harness runs in —
+the selection is what the case is about.
 """
 files = [
     { path = "main.rue", source = """

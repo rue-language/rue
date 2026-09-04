@@ -108,7 +108,17 @@ def describe_failure(test):
             lines.append("    {}: {}".format(stream, data.rstrip("\n")))
     repro = test.get("repro")
     if repro:
-        lines.append("    repro: {}".format(shlex.join(repro)))
+        # The environment leads, the way a shell wants it: `repro` is argv
+        # alone, and `repro_env` carries what the run owed to the environment
+        # (RUE-2020). Only the value is quoted -- quoting the name half would
+        # stop the shell reading the word as an assignment.
+        assignments = [
+            "{}={}".format(name, shlex.quote(value))
+            for name, value in sorted((test.get("repro_env") or {}).items())
+        ]
+        lines.append(
+            "    repro: {}".format(" ".join(assignments + [shlex.join(repro)]))
+        )
     return lines
 
 

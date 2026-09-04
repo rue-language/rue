@@ -25,7 +25,7 @@ pub(crate) mod selection;
 pub(crate) mod verdict;
 
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -127,11 +127,17 @@ pub(crate) struct TestRequest<'a, 'diagnostics> {
     pub(crate) compile_options: CompileOptions,
     pub(crate) options: TestOptions,
     pub(crate) diagnostics: &'a crate::DiagnosticOutput<'diagnostics>,
-    /// The root source exactly as the command line spelled it, which is what a
-    /// repro argv must repeat.
+    /// The root source exactly as the command line spelled it, which is what
+    /// `run_started` publishes.
     pub(crate) root: String,
     /// The compile-mode flags a repro argv repeats after the filter and seed.
     pub(crate) repro_flags: Vec<String>,
+    /// The environment assignments a repro must be run under, sorted by name.
+    ///
+    /// Environment is not argv, so a variable that decided the run — the
+    /// standard library `RUE_STD_PATH` names — would otherwise be silently
+    /// missing from a pasted reproduction (RUE-2020).
+    pub(crate) repro_env: Vec<(String, String)>,
     pub(crate) jobs: usize,
     pub(crate) target: Target,
     pub(crate) opt_level: OptLevel,
@@ -208,6 +214,7 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
         diagnostics,
         root,
         repro_flags,
+        repro_env,
         jobs,
         target,
         opt_level,
@@ -292,6 +299,12 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
         }
     };
 
+    // A repro is pasted into some other shell, from some other directory, so it
+    // names the compiler and the root by absolute path rather than by whatever
+    // spelling this invocation happened to use (RUE-2020).
+    let repro_program = repro_program();
+    let repro_root = absolute_spelling(Path::new(&root));
+
     let outcome = execute_plan(ExecutionRequest {
         plan: &plan,
         image: &image_path,
@@ -299,8 +312,10 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
         seed,
         timeout: Duration::from_millis(options.timeout_ms),
         jobs,
-        root: &root,
+        repro_program: &repro_program,
+        repro_root: &repro_root,
         repro_flags: &repro_flags,
+        repro_env: &repro_env,
         reporter: &reporter,
     });
     // The image is the runner's own artifact and is never retained; the run
@@ -451,8 +466,10 @@ struct ExecutionRequest<'a> {
     seed: u64,
     timeout: Duration,
     jobs: usize,
-    root: &'a str,
+    repro_program: &'a str,
+    repro_root: &'a str,
     repro_flags: &'a [String],
+    repro_env: &'a [(String, String)],
     reporter: &'a Reporter,
 }
 
@@ -533,8 +550,12 @@ fn execute_plan(request: ExecutionRequest<'_>) -> ExecutionOutcome {
                     let event = finish_event(
                         entry,
                         execution,
-                        request.root,
-                        request.repro_flags,
+                        &Repro {
+                            program: request.repro_program,
+                            root: request.repro_root,
+                            flags: request.repro_flags,
+                            env: request.repro_env,
+                        },
                         request.seed,
                         request.timeout,
                     );
@@ -564,8 +585,7 @@ fn execute_plan(request: ExecutionRequest<'_>) -> ExecutionOutcome {
 fn finish_event(
     entry: &TestInventoryEntry,
     execution: exec::Execution,
-    root: &str,
-    repro_flags: &[String],
+    repro: &Repro<'_>,
     seed: u64,
     timeout: Duration,
 ) -> Event {
@@ -583,7 +603,8 @@ fn finish_event(
         stdout: Capture::new(execution.stdout, execution.stdout_total, passed),
         stderr: Capture::new(execution.stderr, execution.stderr_total, passed),
         scratch_dir: (!passed).then(|| execution.scratch_dir.display().to_string()),
-        repro: repro_argv(root, &entry.id, seed, repro_flags),
+        repro: repro.argv(&entry.id, seed),
+        repro_env: repro.env.to_vec(),
     }))
 }
 
@@ -695,23 +716,100 @@ fn last_message_line(stderr: &[u8]) -> String {
         .to_owned()
 }
 
-/// The argv that reproduces exactly this one test (ADR-0083 §3).
+/// Everything a reproduction of one test is assembled from (ADR-0083 §3).
 ///
-/// It selects by the full stable ID, never the bare name: two modules may
-/// declare tests with the same name, and a repro that re-runs both is not a
-/// repro. The seed travels with it so a shuffle-dependent failure comes back.
-fn repro_argv(root: &str, id: &str, seed: u64, flags: &[String]) -> Vec<String> {
-    let mut argv = vec![
-        "rue".to_owned(),
-        "test".to_owned(),
-        root.to_owned(),
-        "--filter".to_owned(),
-        id.to_owned(),
-        "--seed".to_owned(),
-        seed.to_string(),
-    ];
-    argv.extend(flags.iter().cloned());
-    argv
+/// The whole point of the promise is a line that runs without thought, so the
+/// program and the root are already absolute here and the environment that
+/// decided the run travels alongside the argv (RUE-2020).
+struct Repro<'a> {
+    program: &'a str,
+    root: &'a str,
+    flags: &'a [String],
+    env: &'a [(String, String)],
+}
+
+impl Repro<'_> {
+    /// The argv that reproduces exactly this one test.
+    ///
+    /// It selects by the full stable ID, never the bare name: two modules may
+    /// declare tests with the same name, and a repro that re-runs both is not
+    /// a repro. The seed travels with it so a shuffle-dependent failure comes
+    /// back.
+    fn argv(&self, id: &str, seed: u64) -> Vec<String> {
+        let mut argv = vec![
+            self.program.to_owned(),
+            "test".to_owned(),
+            self.root.to_owned(),
+            "--filter".to_owned(),
+            id.to_owned(),
+            "--seed".to_owned(),
+            seed.to_string(),
+        ];
+        argv.extend(self.flags.iter().cloned());
+        argv
+    }
+}
+
+/// The running compiler, as a path another shell can execute.
+///
+/// `rue` is rarely on `PATH` while a compiler is being worked on, and the
+/// binary a repro must re-run is *this* one, not whichever the reader's
+/// installation would resolve. This one is an installed artifact rather than a
+/// project input, so it is canonicalized: the identity that matters is the file
+/// on disk, and a launcher symlink may be replaced under it. The literal `rue`
+/// remains the fallback for a platform that cannot answer `current_exe` at all
+/// — a bare name is a worse repro than an absolute path, but a better one than
+/// nothing.
+fn repro_program() -> String {
+    match std::env::current_exe() {
+        Ok(exe) => canonical_spelling(&exe),
+        Err(_) => "rue".to_owned(),
+    }
+}
+
+/// A project input spelled so it resolves from any working directory, and
+/// names the same project it named here.
+///
+/// Lexical and cwd-joined, never canonicalized. The compiler's project root
+/// and module identities are lexical — `source_loader` takes the root's parent
+/// from `normalize_lexical_path` and "retains the lexical project spelling for
+/// durable caller identities" — so resolving a symlinked root file to its
+/// target hands the repro a *different* `@import` closure. A run rooted at
+/// `link/main.rue -> real/main.rue` selects `link/tests.rue`, and a repro
+/// naming `real/main.rue` selects nothing at all (RUE-2020).
+///
+/// `std::path::absolute` is exactly that operation: absolute, symlink- and
+/// `..`-preserving, resolving only against the current directory.
+pub(crate) fn absolute_spelling(path: &Path) -> String {
+    match std::path::absolute(path) {
+        Ok(absolute) => absolute.display().to_string(),
+        Err(_) => path.display().to_string(),
+    }
+}
+
+/// An installed artifact spelled by the identity the filesystem gives it.
+///
+/// The counterpart to [`absolute_spelling`], for paths that are toolchain
+/// locations rather than project inputs: the compiler binary, and the
+/// standard-library root, which `source_loader::capture_std_root`
+/// canonicalizes for the same reason — on macOS a `/var/folders` prefix is a
+/// symlink to `/private/var/folders`, and only the resolved spelling compares
+/// against the paths discovery actually reads. Falls back to the lexical
+/// absolute spelling when the filesystem cannot answer, which is the
+/// missing-or-unreadable-toolchain case.
+fn canonical_spelling(path: &Path) -> String {
+    match std::fs::canonicalize(path) {
+        Ok(canonical) => canonical.display().to_string(),
+        Err(_) => absolute_spelling(path),
+    }
+}
+
+/// The standard-library root as a repro must name it.
+///
+/// Exposed for the driver, which captures `RUE_STD_PATH` and owns the empty
+/// spelling's meaning.
+pub(crate) fn std_root_spelling(path: &Path) -> String {
+    canonical_spelling(path)
 }
 
 /// Render the unimported-test-file warnings and collect them for the event.
@@ -793,29 +891,32 @@ mod tests {
     }
 
     /// The repro selects by the full stable ID and repeats the run's seed and
-    /// compile flags, so re-running it lands on the same one test.
+    /// compile flags, so re-running it lands on the same one test. The program
+    /// and the root are the absolute spellings the run resolved, so the line
+    /// runs from any directory (RUE-2020).
     #[test]
-    fn a_repro_argv_names_the_stable_id_the_seed_and_the_flags() {
-        let argv = repro_argv(
-            "app/main.rue",
-            "app/t.rue::parses a port",
-            417,
-            &[
-                "--target".to_owned(),
-                "x86-64-linux".to_owned(),
-                "-O1".to_owned(),
-                "--preview".to_owned(),
-                "test_infra".to_owned(),
-                "--timeout-ms".to_owned(),
-                "500".to_owned(),
-            ],
-        );
+    fn a_repro_argv_names_the_program_the_root_the_stable_id_and_the_flags() {
+        let flags = [
+            "--target".to_owned(),
+            "x86-64-linux".to_owned(),
+            "-O1".to_owned(),
+            "--preview".to_owned(),
+            "test_infra".to_owned(),
+            "--timeout-ms".to_owned(),
+            "500".to_owned(),
+        ];
+        let repro = Repro {
+            program: "/opt/rue/bin/rue",
+            root: "/work/app/main.rue",
+            flags: &flags,
+            env: &[],
+        };
         assert_eq!(
-            argv,
+            repro.argv("app/t.rue::parses a port", 417),
             vec![
-                "rue",
+                "/opt/rue/bin/rue",
                 "test",
-                "app/main.rue",
+                "/work/app/main.rue",
                 "--filter",
                 "app/t.rue::parses a port",
                 "--seed",
@@ -828,6 +929,84 @@ mod tests {
                 "--timeout-ms",
                 "500",
             ]
+        );
+    }
+
+    /// A relative spelling is resolved against the current directory rather
+    /// than repeated, because a repro is pasted somewhere else.
+    #[test]
+    fn an_absolute_spelling_resolves_from_any_directory() {
+        let directory = std::env::current_dir().expect("a test process has a working directory");
+        let resolved = absolute_spelling(Path::new("no/such/file.rue"));
+        assert_eq!(
+            resolved,
+            directory.join("no/such/file.rue").display().to_string()
+        );
+        assert!(Path::new(&resolved).is_absolute());
+
+        // An absolute path that does not exist is already its own answer.
+        assert_eq!(
+            absolute_spelling(Path::new("/no/such/root.rue")),
+            "/no/such/root.rue"
+        );
+
+        // `..` is preserved rather than resolved: this is a lexical operation,
+        // and the compiler's own project identity is lexical too.
+        assert_eq!(
+            absolute_spelling(Path::new("/a/b/../c/root.rue")),
+            "/a/b/../c/root.rue"
+        );
+    }
+
+    /// The root keeps the spelling the run resolved it by, symlink and all.
+    ///
+    /// Canonicalizing it would resolve a symlinked root FILE to its target,
+    /// whose directory is a different project root with a different `@import`
+    /// closure — the run selects `link/tests.rue` and the repro would select
+    /// `real/tests.rue`, which is to say nothing at all (RUE-2020).
+    #[test]
+    fn a_symlinked_root_keeps_its_own_spelling() {
+        let temporary = tempfile::tempdir().expect("a temp directory");
+        let real = temporary.path().join("real");
+        let link = temporary.path().join("link");
+        std::fs::create_dir_all(&real).expect("create real/");
+        std::fs::create_dir_all(&link).expect("create link/");
+        std::fs::write(real.join("main.rue"), "fn main() -> i32 { 0 }\n").expect("write root");
+        let linked_root = link.join("main.rue");
+        std::os::unix::fs::symlink(real.join("main.rue"), &linked_root).expect("symlink the root");
+
+        // The link is a real, resolvable file, so a canonicalizing spelling
+        // would silently answer with the target's directory.
+        assert_eq!(
+            absolute_spelling(&linked_root),
+            linked_root.display().to_string()
+        );
+        assert_ne!(
+            absolute_spelling(&linked_root),
+            canonical_spelling(&linked_root)
+        );
+        assert_eq!(
+            canonical_spelling(&linked_root),
+            std::fs::canonicalize(real.join("main.rue"))
+                .expect("the target canonicalizes")
+                .display()
+                .to_string()
+        );
+    }
+
+    /// `argv[0]` is this compiler, by absolute path: `rue` is rarely on `PATH`
+    /// while one is being worked on. The binary is an installed artifact
+    /// rather than a project input, so it is canonicalized.
+    #[test]
+    fn the_repro_program_is_an_absolute_path_to_the_running_binary() {
+        let program = repro_program();
+        assert!(
+            Path::new(&program).is_absolute(),
+            "expected an absolute program path, got {program}"
+        );
+        assert_eq!(
+            program,
+            canonical_spelling(&std::env::current_exe().expect("this platform has a current_exe"))
         );
     }
 

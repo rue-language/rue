@@ -71,6 +71,9 @@ rue_binary(
     ],
     test_deps = [
         "//crates/rue-query:rue-query",
+        # The repro-path unit tests build a real symlinked project root: the
+        # lexical-vs-canonical distinction only exists on a filesystem.
+        "//third-party:tempfile",
     ],
     rustc_flags = [
         "--check-cfg=cfg(rue_benchmark_allocations)",

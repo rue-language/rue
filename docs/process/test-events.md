@@ -168,6 +168,13 @@ alphabetical order**; consumers must not depend on key order, but the ordering
 is fixed so two runs over the same inputs produce byte-identical output — the
 same determinism stance [diagnostics.md](diagnostics.md) takes.
 
+That promise is scoped to one invocation repeated from one working directory on
+one installation. `repro`, `repro_env`, and `scratch_dir` carry absolute paths,
+so the same source run from a different directory, or against a compiler
+installed elsewhere, prints different bytes on those fields. That is deliberate
+rather than a lapse: a reproduction is consumed somewhere else, and a spelling
+that only resolves where it was produced is not one (RUE-2020).
+
 Under `--jobs N` with `N > 1`, whole lines from concurrent tests interleave. The
 schema promises the content of each line, not an order across concurrent tests;
 `test_started` always precedes its own `test_finished`.
@@ -208,7 +215,8 @@ The head event, and the only one carrying the schema version for a run.
 | `stdout` | object | Capture record. |
 | `stderr` | object | Capture record. |
 | `scratch_dir` | string | The retained scratch directory. **Absent** on a pass, whose directory is deleted. |
-| `repro` | array of strings | The argv that reproduces this one test. Always present. |
+| `repro` | array of strings | The argv that reproduces this one test, naming the compiler and the root by absolute path. Always present. |
+| `repro_env` | object | The environment assignments that argv must be run under, as `name` → `value`. **Absent** when the run owed the environment nothing. |
 
 `capability_summary` is present from v1.0 with an explicit `unavailable` status
 rather than omitted. The MVP verifies no hermeticity claim for any test and says
@@ -484,11 +492,14 @@ an inventory, and stable-ID order is what makes two listings comparable.
 
 ## Reproduction as data
 
-Every `test_finished` carries the exact argv that reproduces that one test:
+Every `test_finished` carries the exact argv that reproduces that one test, and
+the environment it has to be run under:
 
 ```json
-["rue","test","app/main.rue","--filter","app/t.rue::parses a port","--seed","417",
- "--target","x86-64-linux","-O0","--timeout-ms","10000"]
+"repro":["/opt/rue/bin/rue","test","/work/app/main.rue",
+ "--filter","app/t.rue::parses a port","--seed","417",
+ "--target","x86-64-linux","-O0","--timeout-ms","10000"],
+"repro_env":{"RUE_STD_PATH":"/opt/rue/std"}
 ```
 
 It selects by the **full stable ID, never the bare name** — two modules may
@@ -499,9 +510,59 @@ per-test budget travel with it so the same image is rebuilt, and `--source-manif
 level are emitted even when they were defaulted: a repro is run later, possibly
 elsewhere, and "whatever the host was" is not a reproduction.
 
-The argv array is the authoritative form. The human renderer's `repro:` line is
-the same argv shell-quoted for pasting; a consumer should re-execute the array
-rather than parse the line.
+For the same reason nothing in it is spelled relative to the run that produced
+it (RUE-2020) — not the root, and not the build-system inputs
+(`--source-manifest`, `--link-archive`) it repeats, which the `rue_test` rule
+spells as project-relative buck-out paths.
+
+`argv[0]` is the **absolute path of the running compiler** — `rue` is rarely on
+`PATH` while one is being worked on, and the binary to re-run is that one
+rather than whichever an installation would resolve; the literal `rue` survives
+only as the fallback for a platform that cannot answer `current_exe` at all.
+
+Two spellings of "absolute" are in play here, and which one a path gets follows
+what the path *is*.
+
+- **Project inputs — the root and the build-system inputs — are absolutized
+  lexically**: joined onto the working directory, with symlinks and `..` left
+  alone. This is the operation the loader itself performs, which is why the
+  repro has to match it: the compiler's project root and module identities are
+  lexical, so canonicalizing a symlinked root **file** would resolve it to a
+  target in a different directory with a different `@import` closure. A run
+  rooted at `link/main.rue -> real/main.rue` selects `link/tests.rue`; a repro
+  naming `real/main.rue` selects nothing at all and exits `3`.
+- **Toolchain locations — the compiler binary and the standard-library root —
+  are canonicalized**, the way the loader canonicalizes a configured std root.
+  These are installed artifacts rather than project inputs: the identity that
+  matters is the file on disk, and on macOS a `/var/folders` prefix is a
+  symlink whose unresolved spelling would not compare against the paths
+  discovery reads.
+
+`repro_env` closes the last gap: environment is not argv, so a run that found
+its standard library through `RUE_STD_PATH` published a reproduction that died
+with `E0705: standard library not found` in any shell that did not happen to
+have the variable set. The object carries that variable, absolute, and is
+**absent rather than empty** when the run owed the environment nothing — the
+same convention `run_started.shard` follows. The empty spelling, which means
+"no toolchain standard library is configured", travels verbatim: absolutizing
+it would silently name the current directory instead.
+
+A repro is a snapshot, not a permanent address. One produced by the `rue_test`
+rule names buck-out artifacts — the compiler, the standard library, the source
+manifest — that the next build may replace or remove; it reproduces the run it
+came from, on the tree it came from, for as long as those artifacts are there.
+
+The argv array and the `repro_env` object are the authoritative forms. The
+human renderer's `repro:` line is the assignments followed by the argv, all
+shell-quoted for pasting —
+
+```text
+repro: RUE_STD_PATH=/opt/rue/std /opt/rue/bin/rue test /work/app/main.rue --filter 'app/t.rue::parses a port' --seed 417 --target x86-64-linux -O0 --timeout-ms 10000
+```
+
+— and a consumer should re-execute the array under the object rather than parse
+the line. Each assignment quotes only its value: a shell stops reading a word as
+an assignment once the name half is quoted.
 
 ## Scratch directories and isolation
 
@@ -537,6 +598,11 @@ event of a run and in each `--list --format json` record.
   failure record's `left`, `right`, and `diff` and the `assert_eq` /
   `assert_ne` kinds arrived this way (ADR-0083 Phase 2.5): the version stays
   `1.0` because nothing a `1.0` consumer already read changed.
+- `repro_env` arrived the same way (RUE-2020), alongside a `repro` whose
+  `argv[0]` and root became absolute. The version stays `1.0`: the field is new
+  and optional, and `repro` still holds what it always did — the argv that
+  reproduces this one test — in a spelling that resolves from more places than
+  the old one, not a different kind of value.
 - The comparison operands were briefly named `expected`/`actual` and were
   renamed to `left`/`right` in place, still at `1.0` (RUE-1954): the rename
   landed before any consumer outside this repository existed, so it is the one

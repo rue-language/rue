@@ -119,6 +119,7 @@ fn render_failure(finished: &TestFinished) -> String {
         stderr,
         scratch_dir,
         repro,
+        repro_env,
         ..
     } = finished;
     let banner = match verdict {
@@ -158,7 +159,7 @@ fn render_failure(finished: &TestFinished) -> String {
     if let Some(scratch) = scratch_dir {
         let _ = write!(out, "\n  scratch: {scratch}");
     }
-    let _ = write!(out, "\n  repro: {}", shell_command(repro));
+    let _ = write!(out, "\n  repro: {}", shell_command(repro_env, repro));
     out
 }
 
@@ -313,25 +314,35 @@ fn whole_lines_within<'a>(
     taken
 }
 
-/// The repro argv as a line a person can paste.
+/// The repro as a line a person can paste: the environment the run depended
+/// on, then the argv.
 ///
-/// Quoting is presentation only: the argv the event stream publishes is the
-/// authoritative form, because a test name may contain any byte a shell would
-/// argue about and a consumer should never have to unquote to re-execute.
-fn shell_command(argv: &[String]) -> String {
-    argv.iter()
-        .map(|argument| {
-            let safe = argument.bytes().all(|byte| {
-                matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'/' | b'=' | b':')
-            });
-            if argument.is_empty() || !safe {
-                format!("'{}'", argument.replace('\'', "'\\''"))
-            } else {
-                argument.clone()
-            }
-        })
+/// The assignments lead because that is where a shell accepts them, and each
+/// one quotes only its value — quoting the name half would stop the shell from
+/// reading the word as an assignment at all.
+///
+/// Quoting is presentation only: the argv and the `repro_env` object the event
+/// stream publishes are the authoritative forms, because a test name may
+/// contain any byte a shell would argue about and a consumer should never have
+/// to unquote to re-execute.
+fn shell_command(env: &[(String, String)], argv: &[String]) -> String {
+    env.iter()
+        .map(|(name, value)| format!("{name}={}", shell_word(value)))
+        .chain(argv.iter().map(|argument| shell_word(argument)))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// One argument, quoted only when a shell would read it as more than itself.
+fn shell_word(argument: &str) -> String {
+    let safe = argument.bytes().all(|byte| {
+        matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'/' | b'=' | b':')
+    });
+    if argument.is_empty() || !safe {
+        format!("'{}'", argument.replace('\'', "'\\''"))
+    } else {
+        argument.to_owned()
+    }
 }
 
 #[cfg(test)]
@@ -361,12 +372,13 @@ mod tests {
             stderr: Capture::new(b"assertion failed\n".to_vec(), 17, false),
             scratch_dir: Some("/tmp/rue-test-417-2".to_owned()),
             repro: vec![
-                "rue".to_owned(),
+                "/opt/rue/bin/rue".to_owned(),
                 "test".to_owned(),
-                "app/main.rue".to_owned(),
+                "/work/app/main.rue".to_owned(),
                 "--filter".to_owned(),
                 "app/t.rue::parses a port".to_owned(),
             ],
+            repro_env: vec![("RUE_STD_PATH".to_owned(), "/opt/rue/std".to_owned())],
         }))
     }
 
@@ -444,8 +456,13 @@ mod tests {
             rendered.contains("scratch: /tmp/rue-test-417-2"),
             "{rendered}"
         );
+        // The environment leads and every path is absolute, so the line runs
+        // in a clean shell from any directory (RUE-2020).
         assert!(
-            rendered.contains("repro: rue test app/main.rue --filter 'app/t.rue::parses a port'"),
+            rendered.contains(
+                "repro: RUE_STD_PATH=/opt/rue/std /opt/rue/bin/rue test /work/app/main.rue \
+                 --filter 'app/t.rue::parses a port'"
+            ),
             "{rendered}"
         );
     }
@@ -674,12 +691,33 @@ mod tests {
     #[test]
     fn repro_quoting_survives_a_name_with_a_quote_in_it() {
         assert_eq!(
-            shell_command(&["rue".to_owned(), "it's fine".to_owned()]),
+            shell_command(&[], &["rue".to_owned(), "it's fine".to_owned()]),
             "rue 'it'\\''s fine'"
         );
         assert_eq!(
-            shell_command(&["--seed".to_owned(), "417".to_owned()]),
+            shell_command(&[], &["--seed".to_owned(), "417".to_owned()]),
             "--seed 417"
+        );
+    }
+
+    /// An assignment quotes only its value: quoting the name half would stop
+    /// the shell from reading the word as an assignment at all.
+    #[test]
+    fn an_environment_assignment_leads_and_quotes_only_its_value() {
+        assert_eq!(
+            shell_command(
+                &[("RUE_STD_PATH".to_owned(), "/a std/lib".to_owned())],
+                &["/opt/rue/bin/rue".to_owned(), "test".to_owned()]
+            ),
+            "RUE_STD_PATH='/a std/lib' /opt/rue/bin/rue test"
+        );
+        // The empty spelling means "no toolchain std", and survives as such.
+        assert_eq!(
+            shell_command(
+                &[("RUE_STD_PATH".to_owned(), String::new())],
+                &["rue".to_owned()]
+            ),
+            "RUE_STD_PATH='' rue"
         );
     }
 
