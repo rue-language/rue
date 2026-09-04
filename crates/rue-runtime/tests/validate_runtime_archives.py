@@ -232,6 +232,23 @@ def validate_float_format_source(path: Path):
         raise AssertionError(f"{path}: width-specific float formatter authority is forbidden")
 
 
+def validate_zmij_action_source(path: Path):
+    """Require the custom rustc action to carry zmij's complete module tree."""
+    code = _strip_rust_comments(path.read_text())
+    required = (
+        r'"lib\.rs"\s*:\s*ctx\.attrs\.zmij_crate_root',
+        r'"traits\.rs"\s*:\s*ctx\.attrs\.zmij_traits_source',
+        r"zmij_args\.add\s*\(\s*cmd_args\s*\(\s*zmij_crate_root\s*,"
+        r"\s*hidden\s*=\s*\[\s*zmij_source_dir\s*\]\s*\)\s*\)",
+    )
+    for pattern in required:
+        if not re.search(pattern, code, re.DOTALL):
+            raise AssertionError(
+                f"{path}: runtime_zmij_rlib does not hermetically stage required source "
+                f"shape {pattern}"
+            )
+
+
 def parse_elf_object(payload: bytes):
     """Parse the ELF64 sections, symbols, and relocations needed by the guard."""
     if len(payload) < 64 or not payload.startswith(ELF_MAGIC) or payload[4] != 2:
@@ -903,6 +920,9 @@ def validate_archive(path: Path, expected_format: str, expected_machine: int):
 
 
 def main():
+    build_rule = os.environ.get("RUNTIME_BUILD_RULE_SOURCE")
+    if build_rule:
+        validate_zmij_action_source(Path(build_rule))
     source = os.environ.get("RUNTIME_STRING_SOURCE")
     if source:
         validate_str_eq_source(Path(source))

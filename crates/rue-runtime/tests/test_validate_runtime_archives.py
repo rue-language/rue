@@ -145,6 +145,36 @@ class BodyValidationTests(unittest.TestCase):
 
 
 class TestConfigurationTests(unittest.TestCase):
+    def test_zmij_action_hermetically_materializes_its_module_tree(self):
+        declared_source = os.environ.get("RUNTIME_BUILD_RULE_SOURCE")
+        source_path = Path(declared_source) if declared_source else None
+        if source_path is None or not source_path.is_file():
+            source_path = Path(__file__).parents[1] / "runtime.bzl"
+        validator.validate_zmij_action_source(source_path)
+
+    def test_zmij_action_guard_rejects_a_projected_root_without_hidden_tree(self):
+        import tempfile
+
+        incomplete = """
+        zmij_source_dir = ctx.actions.symlinked_dir(
+            "zmij-src",
+            {
+                "lib.rs": ctx.attrs.zmij_crate_root,
+                "traits.rs": ctx.attrs.zmij_traits_source,
+            },
+        )
+        zmij_crate_root = zmij_source_dir.project("lib.rs")
+        zmij_args.add(zmij_crate_root)
+        """
+        with tempfile.NamedTemporaryFile("w", delete=False) as file:
+            file.write(incomplete)
+            path = Path(file.name)
+        try:
+            with self.assertRaisesRegex(AssertionError, "hermetically stage"):
+                validator.validate_zmij_action_source(path)
+        finally:
+            path.unlink()
+
     def test_libtest_disables_libc_shaped_reserved_exports(self):
         declared_source = os.environ.get("RUNTIME_LIB_SOURCE")
         source_path = Path(declared_source) if declared_source else None

@@ -35,7 +35,7 @@ def _runtime_staticlib_impl(ctx: AnalysisContext) -> list[Provider]:
         "zmij-src-{}".format(target),
         {
             "lib.rs": ctx.attrs.zmij_crate_root,
-            "traits.rs": ctx.attrs.zmij_srcs[0],
+            "traits.rs": ctx.attrs.zmij_traits_source,
         },
     )
     zmij_crate_root = zmij_source_dir.project("lib.rs")
@@ -121,7 +121,10 @@ def _runtime_staticlib_impl(ctx: AnalysisContext) -> list[Provider]:
             format = "{}=/rue/third-party/vendor/zmij-0.1.7/src/lib.rs",
         ),
     )
-    zmij_args.add(zmij_crate_root)
+    # `project("lib.rs")` alone lets remote execution materialize only that
+    # projection. Keep the complete module-relative source tree as an explicit
+    # action input so rustc can resolve `mod traits` in a clean sandbox.
+    zmij_args.add(cmd_args(zmij_crate_root, hidden = [zmij_source_dir]))
     zmij_args.add("-o", zmij_rlib.as_output())
 
     ctx.actions.run(
@@ -178,7 +181,7 @@ _runtime_staticlib = rule(
         "target_triple": attrs.string(),
         "rustc_flags": attrs.list(attrs.arg()),
         "zmij_crate_root": attrs.source(),
-        "zmij_srcs": attrs.list(attrs.source()),
+        "zmij_traits_source": attrs.source(),
         "_rust_toolchain": attrs.toolchain_dep(default = "toolchains//:rust"),
     },
 )
@@ -199,8 +202,6 @@ def runtime_staticlib(name: str, target_triple: str, target_std: str, visibility
         target_triple = target_triple,
         rustc_flags = flags,
         zmij_crate_root = "//third-party:zmij-0.1.7-lib.rs",
-        zmij_srcs = [
-            "//third-party:zmij-0.1.7-traits.rs",
-        ],
+        zmij_traits_source = "//third-party:zmij-0.1.7-traits.rs",
         visibility = visibility,
     )
