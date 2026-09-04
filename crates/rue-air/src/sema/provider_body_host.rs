@@ -2141,7 +2141,7 @@ where
         // Request-local RIR remains authoritative when the owner declaration
         // is present, preserving parity for bodies materialized from a slice.
         let mut info = self.calls.method_signature_info(&key)?;
-        if let Some(method_ref) = self.rir_struct_method_decl(struct_id, symbol)
+        if let Some(method_ref) = self.named_method_declaration(struct_id, symbol)
             && let InstData::FnDecl {
                 returns_borrow,
                 returns_inout,
@@ -2172,20 +2172,23 @@ where
         Some(info)
     }
 
-    /// Locate a named method's `FnDecl` by walking the request-local RIR's
-    /// struct declarations. The provider's request RIR carries the owning
-    /// `StructDecl` (types are part of every consumer's inputs) even when the
-    /// method's own body query is a different request, so this is the one
-    /// resolution path that can recover declaration-level facts — like the
-    /// `-> borrow T` accessor flag (ADR-0062) — that the durable signature
-    /// subset does not carry.
-    fn rir_struct_method_decl(&self, struct_id: StructId, method: Spur) -> Option<InstRef> {
+    /// The declaration index's key preimage for a named struct owner: the
+    /// `(owner_file, owner_type_name)` half of the key
+    /// `BodyRirIndex::named_method_declaration` takes.
+    ///
+    /// The index owns the fact "which `FnDecl` is `S.m`". Reaching that
+    /// `FnDecl` is what recovers declaration-level facts the durable signature
+    /// subset does not carry — like the `-> borrow T` accessor flag (ADR-0062)
+    /// — from the request RIR, which holds the owning `StructDecl` (types are
+    /// part of every consumer's inputs) even when the method's own body query
+    /// is a different request.
+    ///
+    /// The RIR names structs by their source name, so the declaring file
+    /// qualifies the key and same-named structs in sibling files cannot
+    /// collide. The lookup goes through strings because a distinct semantic
+    /// interner cannot be allowed to skew the Spurs.
+    fn named_method_owner_key(&self, struct_id: StructId) -> Option<(FileId, Spur)> {
         let struct_def = self.type_pool.struct_def(struct_id);
-        // The RIR names structs by their source name; qualify by declaring
-        // file below so same-named structs in sibling files cannot collide.
-        // Translate lookups through strings so a distinct semantic interner
-        // cannot skew the Spurs.
-        let owner_file = struct_def.file_id;
         // A cross-file-unique pool name is `Source$escaped_file`; the RIR
         // declaration carries the bare source name ('$' cannot appear in a
         // source identifier).
@@ -2195,27 +2198,23 @@ where
             .next()
             .expect("split yields at least one segment");
         let owner_sym = self.rir.rir_interner().get(source_name)?;
+        Some((struct_def.file_id, owner_sym))
+    }
+
+    /// The request RIR's `FnDecl` for the named method `S.m`, answered by the
+    /// declaration index so the cost is one map probe regardless of RIR size.
+    /// `None` when the owner or method name is not interned in the RIR or the
+    /// index holds no such method, which is also the answer for anonymous and
+    /// comptime-produced owners that have no `StructDecl`.
+    fn named_method_declaration(&self, struct_id: StructId, method: Spur) -> Option<InstRef> {
+        let (owner_file, owner_sym) = self.named_method_owner_key(struct_id)?;
         let method_sym = self
             .rir
             .rir_interner()
             .get(self.interner.resolve(&method))?;
-        let rir = self.rir.rir();
-        for index in 0..rir.len() {
-            let inst_ref = InstRef::from_raw(index as u32);
-            if let InstData::StructDecl { name, methods, .. } = &rir.get(inst_ref).data
-                && *name == owner_sym
-                && rir.get(inst_ref).span.file_id == owner_file
-            {
-                for method_ref in rir.struct_methods(methods) {
-                    if let InstData::FnDecl { name, .. } = &rir.get(method_ref).data
-                        && *name == method_sym
-                    {
-                        return Some(method_ref);
-                    }
-                }
-            }
-        }
-        None
+        self.rir
+            .rir_index()
+            .named_method_declaration(owner_file, owner_sym, method_sym)
     }
 
     fn named_method_definition(&self, struct_id: StructId, symbol: Spur) -> Option<K> {
@@ -2309,8 +2308,7 @@ where
                 return info;
             }
         }
-        let definition = self.rir_struct_method_decl(struct_id, name);
-        let Some(definition) = definition else {
+        let Some(definition) = self.named_method_declaration(struct_id, name) else {
             return info;
         };
         let trusted = self.endpoint_file_is_trusted_standard_library(
