@@ -28,7 +28,10 @@ pattern_binding = IDENT | "_" ;
 
 An enum variant is a `path_pattern`: its `pattern_head` may be a qualified
 identifier (such as `module.Enum`) or an inline type-constructor call (such as
-`Result(i32, i32)`), followed by `.` and the variant name. A bare variant
+`Result(i32, i32)`), followed by `.` and the variant name. A head segment names
+its enum however that enum is reachable there — as a declaration, as a
+comptime-bound type, or as a `const` type alias, including one named through a
+module binding (`module.Alias.Variant`, 10.4:21). A bare variant
 pattern omits the optional binding list and is the all-wildcard form. An
 explicit binding list contains one or more names or `_` wildcards and may have
 a trailing comma; an empty list such as `Enum.Variant()` is not a pattern.

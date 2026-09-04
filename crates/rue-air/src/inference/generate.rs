@@ -11,7 +11,7 @@ use super::types::{InferType, TypeVarAllocator, TypeVarId};
 use crate::Type;
 use crate::intern_pool::TypeInternPool;
 use crate::scope::ScopedContext;
-use crate::sema::{ComptimeSelection, ConstValue};
+use crate::sema::{ComptimeSelection, ConstValue, select_module_nominal};
 #[cfg(test)]
 use crate::types::ArrayLen;
 use crate::types::{ModuleId, StructId, TypeKind};
@@ -4615,16 +4615,29 @@ impl<'a> ConstraintGenerator<'a> {
             .or_else(|| self.builtin_enum_type(*type_name))
     }
 
-    fn enum_type_for_module(&self, module: InstRef, type_name: &Spur) -> Option<Type> {
+    /// The type `module.Name` names, over the one source order semantic
+    /// analysis uses for the same spelling (`select_module_nominal`): a
+    /// declaration in the module's defining file, then a type-valued `const`
+    /// alias bound there. A type-valued const member (`pub const Opt =
+    /// Option(i64)`) is as good as a declaration (RUE-630/RUE-633): without it
+    /// the qualified alias head left the whole chain unconstrained.
+    ///
+    /// Inference cannot call sema's `select_module_type_member` itself — that
+    /// selector hands back the alias's whole `ConstInfo` so the semantic pass
+    /// can apply E0706, and this fact source exposes types only — so the two
+    /// share the order and not the selector (RUE-1956).
+    fn nominal_type_for_module(&self, module: InstRef, type_name: &Spur) -> Option<Type> {
         let file_id = self.module_member_file(module)?;
-        self.enum_type_by_file((file_id, *type_name)).or_else(|| {
-            // A type-valued const member (`pub const Opt = Option(i64)`)
-            // is as good as a declaration here (RUE-630/RUE-633): without
-            // it the qualified alias head left the whole chain
-            // unconstrained.
-            self.const_type_alias((file_id, *type_name))
-                .filter(|ty| ty.is_enum())
-        })
+        select_module_nominal(
+            || self.struct_type_by_file((file_id, *type_name)),
+            || self.enum_type_by_file((file_id, *type_name)),
+            || self.const_type_alias((file_id, *type_name)),
+        )
+    }
+
+    fn enum_type_for_module(&self, module: InstRef, type_name: &Spur) -> Option<Type> {
+        self.nominal_type_for_module(module, type_name)
+            .filter(|ty| ty.is_enum())
     }
 
     /// Struct analogue of [`Self::enum_type_for_module`], for
@@ -4634,13 +4647,8 @@ impl<'a> ConstraintGenerator<'a> {
     /// defaulted to i32 — zero-extended against the callee's real 64-bit
     /// value at run time (the RUE-633 miscompile family).
     fn struct_type_for_module(&self, module: InstRef, type_name: &Spur) -> Option<Type> {
-        let file_id = self.module_member_file(module)?;
-        self.struct_type_by_file((file_id, *type_name)).or_else(|| {
-            // Type-valued const members participate like declarations —
-            // see `enum_type_for_module` (RUE-630/RUE-633).
-            self.const_type_alias((file_id, *type_name))
-                .filter(|ty| ty.as_struct().is_some())
-        })
+        self.nominal_type_for_module(module, type_name)
+            .filter(|ty| ty.as_struct().is_some())
     }
 
     /// The defining file of `module`'s target: a `VarRef` naming an imported

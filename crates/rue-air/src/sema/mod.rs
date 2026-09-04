@@ -63,6 +63,7 @@ pub use binding_manifest::{
 // RUE-1831: the comptime module tree as one string, for the structural
 // guards in `api_inventory` and `consistency_tests`. `comptime` itself
 // stays private; only the guard source crosses this boundary.
+pub(crate) use aggregate_resolution::select_module_nominal;
 pub use comptime::ComptimeMethodReceiverPolicy;
 #[cfg(test)]
 pub(crate) use comptime::{COMPTIME_PRODUCTION_SOURCE, COMPTIME_SOURCE};
@@ -114,9 +115,7 @@ pub(crate) use semantic_body_export::SemanticBodyExportHost;
 // RUE-1091 slice r4b-1 provider surface: the durable source vocabulary the
 // rue-compiler provider adapter supplies to the body identity pool, and the
 // call-resolution ProviderFacts driver that composes pool + provider answers.
-pub use aggregate_resolution::{
-    ProviderAggregateFacts, ProviderModuleMember, ProviderQualifiedType, ProviderStructHead,
-};
+pub use aggregate_resolution::{ProviderAggregateFacts, ProviderModuleMember, ProviderStructHead};
 pub use body_endpoint::ProviderEndpointFacts;
 pub use body_identity::{
     BodyRirBundle, BodyRirIndexAttribution, BodyRirView, DurableAnonymousMethod,

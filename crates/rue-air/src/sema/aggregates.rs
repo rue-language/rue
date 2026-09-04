@@ -14,9 +14,8 @@ use rue_rir::{InstData, InstRef, RirParamMode};
 use rue_span::Span;
 
 use super::aggregate_resolution::{
-    ModuleTypeMember, QualifiedType, StructLiteralHead, resolve_aggregate_module_ref,
-    resolve_enum_type_name, resolve_struct_type_name, select_module_type_member,
-    select_qualified_enum, select_qualified_type, select_struct_literal_head,
+    ModuleTypeMember, StructLiteralHead, resolve_aggregate_module_ref, resolve_enum_type_name,
+    resolve_struct_type_name, select_module_type_member, select_struct_literal_head,
 };
 use super::analysis::FirstClassStrSite;
 use super::context::{AnalysisContext, AnalysisResult, ConstValue};
@@ -409,25 +408,27 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     span,
                 ));
             };
-            let struct_id = {
+            let module_file = self.aggregate_facts().aggregate_module(module_id).file;
+            let member = {
                 let facts = self.aggregate_facts();
-                facts.aggregate_struct_in_file(facts.aggregate_module(module_id).file, type_name)
-            }
-            .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?;
+                select_module_type_member(facts, module_file, type_name)
+            };
+            let nominal = member
+                .as_struct()
+                .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?;
             // Module-qualified visibility is E0706 (RUE-525), uniform with
             // enum members and associated-function calls through a module;
             // E0460 is the diagnostic for unqualified naming forms.
-            let def = self.body_type_pool().struct_def(struct_id);
-            if !self.is_accessible(span.file_id, def.file_id, def.is_pub) {
-                return Err(CompileError::new(
-                    ErrorKind::PrivateMemberAccess {
-                        item_kind: "struct".to_string(),
-                        name: type_name_str.to_string(),
-                    },
-                    span,
-                ));
-            }
-            struct_id
+            let def = self.body_type_pool().struct_def(nominal.id);
+            self.check_module_qualified_visibility(
+                nominal.alias,
+                module_file,
+                (def.file_id, def.is_pub),
+                "struct",
+                &type_name_str,
+                span,
+            )?;
+            nominal.id
         } else {
             let head = {
                 let facts = self.aggregate_facts();
@@ -654,6 +655,42 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             air_ref,
             struct_type,
             continues,
+        ))
+    }
+
+    /// Apply module-qualified visibility (E0706) to a nominal reached through
+    /// `m.Name`, whichever of the two ways it was named.
+    ///
+    /// A declaration is governed by its own `pub` and defining file. A `const`
+    /// type alias is governed by the binding instead: `m.Alias` names the
+    /// binding, not the declaration behind it, so the binding's `pub` and the
+    /// module's file decide — the same rule
+    /// [`Self::analyze_module_type_member_access`] applies when the alias is
+    /// read as an ordinary module member, and the same one the unqualified
+    /// paths apply when they report a const-bound type's privacy as already
+    /// handled (RUE-1956).
+    pub(crate) fn check_module_qualified_visibility(
+        &self,
+        alias: Option<&super::ConstInfo>,
+        module_file: rue_span::FileId,
+        declared: (rue_span::FileId, bool),
+        item_kind: &'static str,
+        name: &str,
+        span: Span,
+    ) -> CompileResult<()> {
+        let (file, is_pub, item_kind) = match alias {
+            Some(binding) => (module_file, binding.is_pub, "const"),
+            None => (declared.0, declared.1, item_kind),
+        };
+        if self.is_accessible(span.file_id, file, is_pub) {
+            return Ok(());
+        }
+        Err(CompileError::new(
+            ErrorKind::PrivateMemberAccess {
+                item_kind: item_kind.to_string(),
+                name: name.to_string(),
+            },
+            span,
         ))
     }
 
@@ -963,26 +1000,26 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let Some(module_id) = self.try_module_id_of(module_ref, span, ctx) else {
             return Ok(None);
         };
+        let module_file = self.aggregate_facts().aggregate_module(module_id).file;
         let selected = {
             let facts = self.aggregate_facts();
-            let file = facts.aggregate_module(module_id).file;
-            select_qualified_type(facts, file, type_name)
+            select_module_type_member(facts, module_file, type_name)
         };
 
         // Enum member: `module.Enum.Variant(payload)` is tuple-variant
         // construction. Resolve the enum in the receiver module's defining
         // file and apply module-qualified visibility (E0706).
-        if let QualifiedType::Enum(enum_id) = selected {
+        if let Some(nominal) = selected.as_enum() {
+            let enum_id = nominal.id;
             let enum_def = self.body_type_pool().enum_def(enum_id);
-            if !self.is_accessible(span.file_id, enum_def.file_id, enum_def.is_pub) {
-                return Err(CompileError::new(
-                    ErrorKind::PrivateMemberAccess {
-                        item_kind: "enum".to_string(),
-                        name: self.body_interner().resolve(&type_name).to_string(),
-                    },
-                    span,
-                ));
-            }
+            self.check_module_qualified_visibility(
+                nominal.alias,
+                module_file,
+                (enum_def.file_id, enum_def.is_pub),
+                "enum",
+                self.body_interner().resolve(&type_name),
+                span,
+            )?;
             let variant_name = self.body_interner().resolve(&method);
             let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
                 ErrorKind::UnknownVariant {
@@ -1012,17 +1049,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // pass it through (RUE-525): dispatching on the bare name would
         // re-resolve in the caller's file (module-local rules) and miss.
         // Module-qualified visibility is E0706, mirroring the enum branch.
-        if let QualifiedType::Struct(struct_id) = selected {
+        if let Some(nominal) = selected.as_struct() {
+            let struct_id = nominal.id;
             let struct_def = self.body_type_pool().struct_def(struct_id);
-            if !self.is_accessible(span.file_id, struct_def.file_id, struct_def.is_pub) {
-                return Err(CompileError::new(
-                    ErrorKind::PrivateMemberAccess {
-                        item_kind: "struct".to_string(),
-                        name: self.body_interner().resolve(&type_name).to_string(),
-                    },
-                    span,
-                ));
-            }
+            self.check_module_qualified_visibility(
+                nominal.alias,
+                module_file,
+                (struct_def.file_id, struct_def.is_pub),
+                "struct",
+                self.body_interner().resolve(&type_name),
+                span,
+            )?;
             return self
                 .analyze_assoc_fn_call_impl(
                     air,
@@ -1059,30 +1096,31 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let Some(module_id) = self.try_module_id_of(module_ref, span, ctx) else {
             return Ok(None);
         };
-        let Some(enum_id) = ({
+        let module_file = self.aggregate_facts().aggregate_module(module_id).file;
+        let member = {
             let facts = self.aggregate_facts();
-            let file = facts.aggregate_module(module_id).file;
-            select_qualified_enum(facts, file, type_name)
-        }) else {
+            select_module_type_member(facts, module_file, type_name)
+        };
+        let Some(nominal) = member.as_enum() else {
             // `type_name` is not an enum in this module: this is const/field
             // access through the module, not a variant path. Fall through.
             return Ok(None);
         };
+        let enum_id = nominal.id;
 
         let enum_def = self.body_type_pool().enum_def(enum_id);
         let type_name_str = self.body_interner().resolve(&type_name).to_string();
 
         // Module-qualified visibility (E0706): a private enum is reachable only
         // from its defining directory.
-        if !self.is_accessible(span.file_id, enum_def.file_id, enum_def.is_pub) {
-            return Err(CompileError::new(
-                ErrorKind::PrivateMemberAccess {
-                    item_kind: "enum".to_string(),
-                    name: type_name_str,
-                },
-                span,
-            ));
-        }
+        self.check_module_qualified_visibility(
+            nominal.alias,
+            module_file,
+            (enum_def.file_id, enum_def.is_pub),
+            "enum",
+            &type_name_str,
+            span,
+        )?;
 
         let variant_name = self.body_interner().resolve(&variant);
         let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(

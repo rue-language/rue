@@ -65,11 +65,67 @@ pub(crate) enum ModuleTypeMember {
     Absent,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum QualifiedType {
-    Enum(EnumId),
-    Struct(StructId),
-    Absent,
+/// A nominal type named through a module (`m.Name`), plus the `const` binding
+/// it arrived through when the module spells that name as a type alias rather
+/// than as a declaration.
+pub(crate) struct ModuleNominal<'a, Id> {
+    pub(crate) id: Id,
+    /// `Some` when `m.Name` selected a type-valued `const` bound in the
+    /// module's defining file. The binding's own visibility then governs the
+    /// access and the aliased declaration's does not — naming an alias is not
+    /// naming the declaration behind it, the rule [`resolve_enum_type_name`]
+    /// already reports as "privacy handled" for a const-bound type.
+    pub(crate) alias: Option<&'a ConstInfo>,
+}
+
+impl ModuleTypeMember {
+    /// The enum `m.Name` names: an enum declared in the module's defining file,
+    /// or a type-valued `const` alias bound there that resolves to one. `None`
+    /// when the member is not an enum at all, which every consumer reads as
+    /// "this is not a qualified enum path" rather than as an error.
+    pub(crate) fn as_enum(&self) -> Option<ModuleNominal<'_, EnumId>> {
+        match self {
+            ModuleTypeMember::Enum(id) => Some(ModuleNominal {
+                id: *id,
+                alias: None,
+            }),
+            ModuleTypeMember::Const(info) => {
+                Self::alias_type(info)?.as_enum().map(|id| ModuleNominal {
+                    id,
+                    alias: Some(info),
+                })
+            }
+            ModuleTypeMember::Struct(_) | ModuleTypeMember::Absent => None,
+        }
+    }
+
+    /// Struct analogue of [`Self::as_enum`].
+    pub(crate) fn as_struct(&self) -> Option<ModuleNominal<'_, StructId>> {
+        match self {
+            ModuleTypeMember::Struct(id) => Some(ModuleNominal {
+                id: *id,
+                alias: None,
+            }),
+            ModuleTypeMember::Const(info) => {
+                Self::alias_type(info)?.as_struct().map(|id| ModuleNominal {
+                    id,
+                    alias: Some(info),
+                })
+            }
+            ModuleTypeMember::Enum(_) | ModuleTypeMember::Absent => None,
+        }
+    }
+
+    /// The type a `const` member binds, when it binds one at all. A module
+    /// binding (`pub const sub = @import(...)`) also stores a `ConstValue::Type`
+    /// — of a module type, which names no nominal — so the nominal accessors
+    /// filter it out rather than this helper.
+    fn alias_type(info: &ConstInfo) -> Option<Type> {
+        match info.value {
+            ConstValue::Type(ty) => Some(ty),
+            _ => None,
+        }
+    }
 }
 
 pub(crate) fn resolve_enum_type_name<P: AggregateFacts>(
@@ -132,45 +188,53 @@ pub(crate) fn select_struct_literal_head<P: AggregateFacts>(
         .map_or(StructLiteralHead::Absent, StructLiteralHead::Named)
 }
 
+/// The one source order for a type named through a module (`m.Name`): a struct
+/// declared in the module's defining file, then an enum declared there, then a
+/// type-valued `const` alias bound there.
+///
+/// Semantic analysis and inference both drive this order but cannot share one
+/// selector: sema needs the alias's whole [`ConstInfo`] to apply E0706, while
+/// inference's fact source only exposes types. The order therefore lives here
+/// once and each side supplies its own three lookups (RUE-1956).
+pub(crate) fn select_module_nominal<T>(
+    declared_struct: impl FnOnce() -> Option<T>,
+    declared_enum: impl FnOnce() -> Option<T>,
+    const_alias: impl FnOnce() -> Option<T>,
+) -> Option<T> {
+    declared_struct()
+        .or_else(declared_enum)
+        .or_else(const_alias)
+}
+
+/// The canonical selector for a type member named through a module. Every
+/// consumer of `m.Name` in type position — qualified enum-variant paths and
+/// match-pattern heads, associated-function receivers, module-qualified struct
+/// literals, and reading the member as a value — resolves it here, so a `const`
+/// type alias is a type member wherever a declaration is (RUE-1956).
 pub(crate) fn select_module_type_member<P: AggregateFacts>(
     facts: &P,
     file: FileId,
     name: Spur,
 ) -> ModuleTypeMember {
-    if let Some(id) = facts.aggregate_struct_in_file(file, name) {
-        return ModuleTypeMember::Struct(id);
-    }
-    if let Some(id) = facts.aggregate_enum_in_file(file, name) {
-        return ModuleTypeMember::Enum(id);
-    }
-    if let Some(info) = facts
-        .aggregate_module_binding(file, name)
-        .or_else(|| facts.aggregate_value_const(file, name))
-    {
-        return ModuleTypeMember::Const(info);
-    }
-    ModuleTypeMember::Absent
-}
-
-pub(crate) fn select_qualified_type<P: AggregateFacts>(
-    facts: &P,
-    file: FileId,
-    name: Spur,
-) -> QualifiedType {
-    if let Some(id) = facts.aggregate_enum_in_file(file, name) {
-        return QualifiedType::Enum(id);
-    }
-    facts
-        .aggregate_struct_in_file(file, name)
-        .map_or(QualifiedType::Absent, QualifiedType::Struct)
-}
-
-pub(crate) fn select_qualified_enum<P: AggregateFacts>(
-    facts: &P,
-    file: FileId,
-    name: Spur,
-) -> Option<EnumId> {
-    facts.aggregate_enum_in_file(file, name)
+    select_module_nominal(
+        || {
+            facts
+                .aggregate_struct_in_file(file, name)
+                .map(ModuleTypeMember::Struct)
+        },
+        || {
+            facts
+                .aggregate_enum_in_file(file, name)
+                .map(ModuleTypeMember::Enum)
+        },
+        || {
+            facts
+                .aggregate_module_binding(file, name)
+                .or_else(|| facts.aggregate_value_const(file, name))
+                .map(ModuleTypeMember::Const)
+        },
+    )
+    .unwrap_or(ModuleTypeMember::Absent)
 }
 
 pub(crate) fn resolve_aggregate_module_ref<P: AggregateFacts>(
@@ -249,12 +313,11 @@ pub(crate) fn is_accessible<P: AggregateFacts>(
 //
 // The selection ORDER is not this driver's concern: it lives in the
 // provider-generic free functions above ([`select_module_type_member`]'s
-// struct→enum→const short-circuit, [`select_qualified_type`]'s enum→struct,
-// [`select_struct_literal_head`]'s bound→const→struct→builtin) which this driver
-// merely supplies facts to, so every consumer replays the same candidate order
-// and short-circuits. The driver's
-// inherent `select_*` wrappers run those free functions over itself and hand back
-// the winner as a pool [`Type`].
+// struct→enum→const short-circuit and [`select_struct_literal_head`]'s
+// bound→const→struct→builtin) which this driver merely supplies facts to, so
+// every consumer replays the same candidate order and short-circuits. The
+// driver's inherent `select_*` wrappers run those free functions over itself
+// and hand back the winner as a pool [`Type`].
 //
 // This surface is public because rue-compiler supplies the concrete durable
 // signature source behind the opaque provider boundary. No aggregate op consults the live
@@ -266,19 +329,13 @@ pub(crate) fn is_accessible<P: AggregateFacts>(
 
 /// The winner [`select_module_type_member`] selects, projected to a pool
 /// [`Type`] a differential renders index-independently. `Const` reports the
-/// installed value-constant or module-binding arm.
+/// installed value-constant or module-binding arm, carrying the nominal the
+/// binding aliases when it binds one — the arm through which `m.Alias` is a
+/// type member (RUE-1956).
 pub enum ProviderModuleMember {
     Struct(Type),
     Enum(Type),
-    Const,
-    Absent,
-}
-
-/// The winner [`select_qualified_type`] selects (enum→struct order), as a pool
-/// [`Type`].
-pub enum ProviderQualifiedType {
-    Enum(Type),
-    Struct(Type),
+    Const(Option<Type>),
     Absent,
 }
 
@@ -487,33 +544,22 @@ where
         let Ok(symbol) = self.identity.pool().intern_name(name) else {
             return ProviderModuleMember::Absent;
         };
-        match select_module_type_member(self, file, symbol) {
-            ModuleTypeMember::Struct(id) => ProviderModuleMember::Struct(Type::new_struct(id)),
-            ModuleTypeMember::Enum(id) => ProviderModuleMember::Enum(Type::new_enum(id)),
-            ModuleTypeMember::Const(_) => ProviderModuleMember::Const,
+        let member = select_module_type_member(self, file, symbol);
+        match &member {
+            ModuleTypeMember::Struct(id) => ProviderModuleMember::Struct(Type::new_struct(*id)),
+            ModuleTypeMember::Enum(id) => ProviderModuleMember::Enum(Type::new_enum(*id)),
+            ModuleTypeMember::Const(_) => ProviderModuleMember::Const(
+                member
+                    .as_enum()
+                    .map(|nominal| Type::new_enum(nominal.id))
+                    .or_else(|| {
+                        member
+                            .as_struct()
+                            .map(|nominal| Type::new_struct(nominal.id))
+                    }),
+            ),
             ModuleTypeMember::Absent => ProviderModuleMember::Absent,
         }
-    }
-
-    /// Run the provider-generic [`select_qualified_type`] over this driver: the
-    /// r1c enum→struct order.
-    pub fn select_qualified_type(&self, file: FileId, name: &str) -> ProviderQualifiedType {
-        let Ok(symbol) = self.identity.pool().intern_name(name) else {
-            return ProviderQualifiedType::Absent;
-        };
-        match select_qualified_type(self, file, symbol) {
-            QualifiedType::Enum(id) => ProviderQualifiedType::Enum(Type::new_enum(id)),
-            QualifiedType::Struct(id) => ProviderQualifiedType::Struct(Type::new_struct(id)),
-            QualifiedType::Absent => ProviderQualifiedType::Absent,
-        }
-    }
-
-    /// Run the provider-generic [`select_qualified_enum`] over this driver.
-    pub fn select_qualified_enum(&self, file: FileId, name: &str) -> Option<Type> {
-        let Ok(symbol) = self.identity.pool().intern_name(name) else {
-            return None;
-        };
-        select_qualified_enum(self, file, symbol).map(Type::new_enum)
     }
 
     /// Run the provider-generic [`select_struct_literal_head`] over this driver

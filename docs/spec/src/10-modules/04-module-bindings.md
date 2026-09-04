@@ -226,6 +226,49 @@ fn main() -> i32 {
 }
 ```
 
+{{ rule(id="10.4:21", cat="normative") }}
+
+A top-level `const` whose initializer evaluates to a type — a **type alias**,
+such as `pub const R = Result(u64, E);` — is a type member of its module. It is
+named through a module binding in every form of 10.4:15 and 10.4:16, wherever
+the aliased type itself may be named: as a qualified struct literal, an
+associated-function receiver, a variant expression, a match-pattern head, and a
+type annotation. The alias denotes the type its initializer evaluated to and
+introduces no new nominal type (10.5:2), so `m.Alias.Variant` and
+`m.Declared.Variant` name the same variant of the same enum.
+
+{{ rule(id="10.4:22", cat="legality-rule") }}
+
+A module-qualified reference to a type alias names the constant, not the
+declaration behind it, so the constant's own visibility governs the access
+(10.4:13): a `pub` alias of a private type is accessible from another directory
+and re-exports that type, while a private alias named from another directory is
+a compile-time error E0706 reporting the constant. This does not weaken 10.4:19:
+naming the private declaration itself (`lib.Secret`, including through a
+client-side binding `let P = lib.Secret;`) remains E0706, because that reference
+does name the declaration.
+
+{{ rule(id="10.4:23", cat="example") }}
+
+```rue
+// sub/lib.rue
+enum Hidden { A, B, }
+pub const H = Hidden;                   // pub alias re-exports a private enum
+pub struct Point { x: i32, y: i32, }
+pub const P = Point;
+
+// main.rue - a different directory
+const lib = @import("sub/lib.rue");
+fn main() -> i32 {
+    let p = lib.P { x: 40, y: 2 };      // alias as a struct-literal head
+    let h = lib.H.A;                    // alias as a variant expression
+    match h {
+        lib.H.A => p.x + p.y,           // alias as a match-pattern head: 42
+        lib.H.B => 0,
+    }
+}
+```
+
 ## Modules Are Not Runtime Values
 
 {{ rule(id="10.4:6", cat="legality-rule") }}
