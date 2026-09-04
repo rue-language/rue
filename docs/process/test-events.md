@@ -282,6 +282,13 @@ truncate its own failure record. Exceeding a *stream* budget kills the process
 group and yields `fail` with kind `output_overflow`, retained prefix attached.
 Reading continues past the budget so `bytes_total` is the true count.
 
+That window is sized for a machine, so the human renderer bounds what it prints
+of it: at most 64 lines or 8 KiB per stream, as a 48-line head and a 16-line
+tail with one line naming the lines and bytes skipped between them. Lines are
+never cut through, the `bytes_total` header is unchanged, and `--format json`
+still carries the retained window whole — the bound is a display bound, not a
+second retention limit.
+
 ### `run_finished`
 
 | Key | Type | Meaning |

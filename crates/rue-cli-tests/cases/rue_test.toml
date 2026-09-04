@@ -222,6 +222,47 @@ test "floods its own stdout" {
 args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = ['"kind":"output_overflow"', '"verdict":"fail"']
+# RUE-1958 bounds the *human* rendering only. The event stream carries the
+# retained window whole, so its `data` is never elided.
+compile_stdout_not_contains = ["omitted here"]
+
+[[case]]
+name = "a_flood_is_elided_in_the_human_rendering_so_the_repro_survives"
+description = """
+RUE-1958: the retained window is a megabyte, which is thirteen thousand lines
+in a terminal. The human renderer prints a head and a tail with one line saying
+what it skipped, so the `scratch:` and `repro:` lines below the capture are
+still on screen. `--format json` remains the lossless copy.
+"""
+contract = "heavyweight_long"
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "floods its own stdout" {
+    let mut i: u64 = 0;
+    while i < 4096 {
+        @dbg("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+        i = i + 1;
+    }
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "human"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    "FAIL tests.rue::floods its own stdout",
+    "output_overflow",
+    "omitted here; --format json carries the whole capture",
+    "further bytes were not retained",
+    "repro: rue test main.rue --filter",
+    "0 passed, 1 failed",
+]
 
 # ========================= listing and selection =========================
 
