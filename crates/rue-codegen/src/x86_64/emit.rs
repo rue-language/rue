@@ -975,6 +975,16 @@ impl<'a> Emitter<'a> {
                 );
                 end_inst!(self, "{}", inst);
             }
+            X86Inst::FloatRound {
+                dst,
+                src,
+                width,
+                mode,
+            } => {
+                self.begin_inst();
+                self.emit_sse4_round(dst.as_physical(), src.as_physical(), *width, *mode);
+                end_inst!(self, "{}", inst);
+            }
             X86Inst::FloatCmp { lhs, rhs, width } => {
                 self.begin_inst();
                 self.emit_sse_rr(
@@ -1485,6 +1495,11 @@ impl<'a> Emitter<'a> {
                 self.emit_jcc(0x76, *label);
                 end_inst!(self, "jbe {}", label);
             }
+            X86Inst::Ja { label } => {
+                self.begin_inst();
+                self.emit_jcc(0x77, *label);
+                end_inst!(self, "ja {}", label);
+            }
             X86Inst::Jge { label } => {
                 self.begin_inst();
                 self.emit_jcc(0x7D, *label);
@@ -1683,6 +1698,7 @@ impl<'a> Emitter<'a> {
             X86Inst::FloatMov { dst, src, .. }
             | X86Inst::FloatNeg { dst, src, .. }
             | X86Inst::FloatSqrt { dst, src, .. }
+            | X86Inst::FloatRound { dst, src, .. }
             | X86Inst::FloatCast { dst, src, .. } => {
                 fp(dst);
                 fp(src);
@@ -1880,6 +1896,43 @@ impl<'a> Emitter<'a> {
         }
         self.code.extend_from_slice(&[0x0f, opcode]);
         self.emit_modrm_memory(reg.encoding(), base.encoding(), offset);
+    }
+
+    /// `roundsd`/`roundss xmm, xmm, imm8`: `66 [REX] 0F 3A 0B|0A /r ib`. The
+    /// immediate selects the rounding direction and suppresses the precision
+    /// exception (bit 3), so the operation is silent like every other Rue
+    /// float operation.
+    fn emit_sse4_round(
+        &mut self,
+        dst: Reg,
+        src: Reg,
+        width: crate::value_plan::FloatWidth,
+        mode: crate::value_plan::FloatRounding,
+    ) {
+        let imm: u8 = match mode {
+            crate::value_plan::FloatRounding::Floor => 0x9,
+            crate::value_plan::FloatRounding::Ceil => 0xa,
+            crate::value_plan::FloatRounding::Trunc => 0xb,
+            crate::value_plan::FloatRounding::NearestTiesAway => {
+                unreachable!("x86-64 lowers ties-away rounding as a sequence around trunc")
+            }
+        };
+        self.code.push(0x66);
+        let rex = 0x40 | if dst.needs_rex() { 4 } else { 0 } | if src.needs_rex() { 1 } else { 0 };
+        if rex != 0x40 {
+            self.code.push(rex);
+        }
+        self.code.extend_from_slice(&[
+            0x0f,
+            0x3a,
+            if width == crate::value_plan::FloatWidth::F64 {
+                0x0b
+            } else {
+                0x0a
+            },
+            0xc0 | ((dst.encoding() & 7) << 3) | (src.encoding() & 7),
+            imm,
+        ]);
     }
 
     fn emit_float_const(&mut self, dst: Reg, bits: u64, width: crate::value_plan::FloatWidth) {
@@ -3466,6 +3519,51 @@ mod tests {
     }
 
     #[test]
+    fn scalar_float_rounding_encodings_are_sse4_1_round() {
+        // roundsd xmm0, xmm1, 0xb (trunc): 66 0F 3A 0B C1 0B
+        assert_eq!(
+            emit_single(X86Inst::FloatRound {
+                dst: Operand::Physical(Reg::Xmm0),
+                src: Operand::Physical(Reg::Xmm1),
+                width: FloatWidth::F64,
+                mode: crate::value_plan::FloatRounding::Trunc,
+            }),
+            vec![0x66, 0x0f, 0x3a, 0x0b, 0xc1, 0x0b]
+        );
+        // roundss xmm8, xmm9, 0x9 (floor): 66 45 0F 3A 0A C1 09
+        assert_eq!(
+            emit_single(X86Inst::FloatRound {
+                dst: Operand::Physical(Reg::Xmm8),
+                src: Operand::Physical(Reg::Xmm9),
+                width: FloatWidth::F32,
+                mode: crate::value_plan::FloatRounding::Floor,
+            }),
+            vec![0x66, 0x45, 0x0f, 0x3a, 0x0a, 0xc1, 0x09]
+        );
+        // roundsd xmm2, xmm10, 0xa (ceil): 66 41 0F 3A 0B D2 0A
+        assert_eq!(
+            emit_single(X86Inst::FloatRound {
+                dst: Operand::Physical(Reg::Xmm2),
+                src: Operand::Physical(Reg::Xmm10),
+                width: FloatWidth::F64,
+                mode: crate::value_plan::FloatRounding::Ceil,
+            }),
+            vec![0x66, 0x41, 0x0f, 0x3a, 0x0b, 0xd2, 0x0a]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "ties-away")]
+    fn scalar_float_ties_away_rounding_is_not_a_single_x86_instruction() {
+        emit_single(X86Inst::FloatRound {
+            dst: Operand::Physical(Reg::Xmm0),
+            src: Operand::Physical(Reg::Xmm1),
+            width: FloatWidth::F64,
+            mode: crate::value_plan::FloatRounding::NearestTiesAway,
+        });
+    }
+
+    #[test]
     fn scalar_float_bit_carrier_moves_cover_both_widths_and_classes() {
         assert_eq!(
             emit_single(X86Inst::FloatToBits {
@@ -4978,6 +5076,25 @@ mod tests {
 
         // jbe rel32 -> 0F 86 00 00 00 00
         assert_eq!(&code[0..6], &[0x0F, 0x86, 0x00, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_ja_forward() {
+        let mut mir = X86Mir::new();
+        mir.push(X86Inst::Ja {
+            label: LabelId::new(0),
+        });
+        mir.push(X86Inst::Label {
+            id: LabelId::new(0),
+        });
+
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
+
+        // ja rel32 -> 0F 87 00 00 00 00
+        assert_eq!(&code[0..6], &[0x0F, 0x87, 0x00, 0x00, 0x00, 0x00]);
     }
 
     // --- LEA instruction ---

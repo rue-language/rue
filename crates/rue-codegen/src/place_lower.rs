@@ -268,7 +268,13 @@ pub(crate) fn lower_place_read_plan<B: PlaceLowerBackend>(
     place: &ResolvedPlace,
     ty: Type,
 ) {
-    let float_width = crate::value_plan::float_width(ty);
+    // A place read reaches this leaf only for a value of at most one ABI slot,
+    // and that slot's class follows its LEAF: a `struct P { field: f64 }` read
+    // out of a frame slot is a float load into a float vreg, not a
+    // general-purpose one.
+    let float_width = crate::value_plan::primary_slot_float_width(
+        &crate::types::aggregate_leaf_types(b.ctx().type_pool, ty),
+    );
     if b.ctx().type_slot_count(ty) == 0 {
         resolved_offsets(b, place, true);
         b.emit_zero_sized_place(dst);
@@ -319,11 +325,18 @@ pub(crate) fn lower_place_read_plan<B: PlaceLowerBackend>(
     }
 }
 
+/// Write `vals` — one vreg per logical slot of the stored value — into `place`.
+///
+/// `float_width` covers the one-slot forms (it is the width of logical slot 0);
+/// `leaf_types` names every slot's leaf so a multi-slot write stores each slot
+/// at its leaf's width and register class. The two agree by
+/// construction: both come from the stored value's type.
 pub(crate) fn lower_place_write_plan<B: PlaceLowerBackend>(
     b: &mut B,
     place: &ResolvedPlace,
     vals: &[VReg],
     float_width: Option<crate::value_plan::FloatWidth>,
+    leaf_types: &[Type],
 ) {
     if vals.is_empty() {
         resolved_offsets(b, place, true);
@@ -336,7 +349,9 @@ pub(crate) fn lower_place_write_plan<B: PlaceLowerBackend>(
             {
                 b.emit_float_store_slot(vals[0], slot, float_width.unwrap())
             }
-            crate::value_plan::PlaceBasePlan::Local(slot) => agg_slots::store_slots(b, vals, slot),
+            crate::value_plan::PlaceBasePlan::Local(slot) => {
+                agg_slots::store_slots_typed(b, vals, slot, leaf_types)
+            }
             crate::value_plan::PlaceBasePlan::Param { slot, by_ref: true } => {
                 let ptr = b.ensure_by_ref_param_ptr(slot);
                 if vals.len() == 1
@@ -344,7 +359,7 @@ pub(crate) fn lower_place_write_plan<B: PlaceLowerBackend>(
                 {
                     b.emit_float_store_through_ptr(vals[0], ptr, 0, width);
                 } else {
-                    agg_slots::store_slots_through_ptr(b, vals, ptr, 0);
+                    agg_slots::store_slots_through_ptr_typed(b, vals, ptr, 0, leaf_types);
                 }
             }
             crate::value_plan::PlaceBasePlan::Param {
@@ -358,14 +373,14 @@ pub(crate) fn lower_place_write_plan<B: PlaceLowerBackend>(
             crate::value_plan::PlaceBasePlan::Param {
                 slot,
                 by_ref: false,
-            } => agg_slots::store_slots(b, vals, b.ctx().param_frame_slot(slot)),
+            } => agg_slots::store_slots_typed(b, vals, b.ctx().param_frame_slot(slot), leaf_types),
             crate::value_plan::PlaceBasePlan::Pointer(ptr) => {
                 if vals.len() == 1
                     && let Some(width) = float_width
                 {
                     b.emit_float_store_through_ptr(vals[0], ptr, 0, width)
                 } else {
-                    agg_slots::store_slots_through_ptr(b, vals, ptr, 0)
+                    agg_slots::store_slots_through_ptr_typed(b, vals, ptr, 0, leaf_types)
                 }
             }
         }
@@ -376,18 +391,22 @@ pub(crate) fn lower_place_write_plan<B: PlaceLowerBackend>(
         ProjectedAccess::FrameSlot(slot) if vals.len() == 1 && float_width.is_some() => {
             b.emit_float_store_slot(vals[0], slot, float_width.unwrap())
         }
-        ProjectedAccess::FrameSlot(slot) => agg_slots::store_slots_at_low(b, vals, slot),
+        ProjectedAccess::FrameSlot(slot) => {
+            agg_slots::store_slots_at_low_typed(b, vals, slot, leaf_types)
+        }
         ProjectedAccess::PointerAddr(ptr) if vals.len() == 1 && float_width.is_some() => {
             b.emit_float_store_through_ptr(vals[0], ptr, 0, float_width.unwrap())
         }
-        ProjectedAccess::PointerAddr(ptr) => agg_slots::store_slots_through_ptr(b, vals, ptr, 0),
+        ProjectedAccess::PointerAddr(ptr) => {
+            agg_slots::store_slots_through_ptr_typed(b, vals, ptr, 0, leaf_types)
+        }
         ProjectedAccess::PointerOffset { ptr, byte_offset } => {
             if vals.len() == 1
                 && let Some(width) = float_width
             {
                 b.emit_float_store_through_ptr(vals[0], ptr, byte_offset, width)
             } else {
-                agg_slots::store_slots_through_ptr(b, vals, ptr, byte_offset)
+                agg_slots::store_slots_through_ptr_typed(b, vals, ptr, byte_offset, leaf_types)
             }
         }
     }

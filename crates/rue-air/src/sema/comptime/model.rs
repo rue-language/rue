@@ -40,6 +40,34 @@ pub trait ComptimeValue: Clone {
     fn integer_typed(value: i128, _ty: Option<Self::Type>) -> Self {
         Self::integer(value)
     }
+
+    /// Recover the concrete float type (`f32`/`f64`) a host float value
+    /// carries, if the domain records one. The ordinary body value domain
+    /// keeps its floats as exact untyped decimals and returns `None`; the
+    /// durable domain retains a declared or computed width.
+    fn as_float_type(&self) -> Option<Self::Type> {
+        None
+    }
+}
+
+/// The width of a floating-point type as the compile-time engine sees it.
+/// Compile-time float arithmetic is performed at exactly this width so that a
+/// `const` and the same expression evaluated at run time agree bit for bit
+/// (ADR-0065 §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ComptimeFloatWidth {
+    F32,
+    F64,
+}
+
+impl ComptimeFloatWidth {
+    /// The AIR type carrying values of this width.
+    pub const fn air_type(self) -> crate::Type {
+        match self {
+            Self::F32 => crate::Type::F32,
+            Self::F64 => crate::Type::F64,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -1,22 +1,30 @@
 [section]
 id = "cli.float_literals"
-name = "Float literal grammar and the floats preview gate"
+name = "Float literal grammar"
 description = """
-ADR-0065 Phases 2-6 (RUE-1068 through RUE-1072): the lexer produces a float
-literal token, the parser and RIR carry it untyped, and AIR gives it an exact
-comptime value plus contextual f32/f64 typing. Scalar lowering now reaches both
-backends, while the whole feature remains behind `--preview floats`; E1100
-fires without the flag. These cases pin both directions and the spelling rules.
+ADR-0065 (RUE-1068 through RUE-1072): the lexer produces a float literal
+token, the parser and RIR carry it untyped, and AIR gives it an exact comptime
+value plus contextual f32/f64 typing. Floats are stable as of ADR-0065 Phase
+10, so no `--preview` flag is involved; these cases pin the driver behavior and
+the spelling rules of ADR-0065 §3.
 """
 
-# ---------------------------------------------------------------------------
-# The gate, both directions (spec 8.4:1: a gated feature must error without
-# its flag).
-# ---------------------------------------------------------------------------
+[[case]]
+name = "floats_preview_name_is_unknown"
+description = "The retired floats preview spelling is rejected and the active feature list omits it (ADR-0065 Phase 10)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "floats", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "unknown preview feature 'floats'",
+    "Available features: test_infra, c_ffi, non_exhaustive_enums",
+]
 
 [[case]]
-name = "float_literal_without_preview_is_gated"
-description = "Without --preview floats a float literal is the standard gated-feature error."
+name = "float_literal_compiles"
+description = "A typed float literal reaches the scalar backends."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let x = 1.5;
@@ -24,25 +32,8 @@ fn main() -> i32 {
 }
 """ }]
 args = ["main.rue", "-o", "prog"]
-compile_fail = true
-error_contains = [
-    "E1100",
-    "a floating-point literal requires preview feature `floats`",
-    "use --preview floats to enable this feature (ADR-0065)",
-]
-
-[[case]]
-name = "float_literal_with_preview_compiles"
-description = "With the flag a typed float literal reaches the scalar backends."
-files = [{ path = "main.rue", source = """
-fn main() -> i32 {
-    let x = 1.5;
-    0
-}
-""" }]
-args = ["--preview", "floats", "main.rue", "-o", "prog"]
 exit_code = 0
-compile_stderr_not_contains = ["internal compiler error", "E1100", "E1109"]
+compile_stderr_not_contains = ["internal compiler error"]
 
 [[case]]
 name = "float_in_an_operand_position_is_gated_not_ignored"
@@ -54,7 +45,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0206", "expected comptime_float, found i32"]
 compile_stderr_not_contains = ["internal compiler error"]
@@ -68,9 +59,9 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["--error-format", "json", "--preview", "floats", "main.rue", "-o", "prog"]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
 exit_code = 0
-compile_stderr_not_contains = ["internal compiler error", "E1100", "E1109"]
+compile_stderr_not_contains = ["internal compiler error"]
 
 # ---------------------------------------------------------------------------
 # The literal reaches RIR untyped (Phase 3's actual deliverable).
@@ -88,7 +79,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["--preview", "floats", "--emit", "rir", "main.rue"]
+args = ["--emit", "rir", "main.rue"]
 compile_only = true
 compile_stdout_contains = [
     "const float 1.5",
@@ -134,34 +125,12 @@ pub fn scale() -> i32 {
 }
 """ },
 ]
-args = ["--preview", "floats", "--emit", "rir", "main.rue"]
+args = ["--emit", "rir", "main.rue"]
 compile_only = true
 compile_stdout_contains = ["const float 6.022e23"]
 
-[[case]]
-name = "float_literal_in_an_imported_module_is_still_gated"
-description = "The gate follows the literal across the module boundary and reports in the module that wrote it."
-files = [
-    { path = "main.rue", source = """
-fn main() -> i32 {
-    let h = @import("helper.rue");
-    h.scale()
-}
-""" },
-    { path = "helper.rue", source = """
-pub fn scale() -> i32 {
-    let factor = 6.022e23;
-    0
-}
-""" },
-]
-args = ["main.rue", "-o", "prog"]
-compile_fail = true
-error_contains = ["E1100", "helper.rue", "requires preview feature `floats`"]
-
 # ---------------------------------------------------------------------------
-# Spelling rules (ADR-0065 §3). These are lexical/grammatical, so they fire
-# with or without the preview flag.
+# Spelling rules (ADR-0065 §3), reported by the lexer and the parser.
 # ---------------------------------------------------------------------------
 
 [[case]]
@@ -173,7 +142,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = [
     "E0011",
@@ -189,7 +158,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["--error-format", "json", "--preview", "floats", "main.rue", "-o", "prog"]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = [
     "E0011",
@@ -207,7 +176,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["--error-format", "json", "--preview", "floats", "main.rue", "-o", "prog"]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = [
     "E0011",
@@ -225,7 +194,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = [
     "E0011",
@@ -248,7 +217,7 @@ fn main() -> i32 {
 args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0413", "no method named 'to_string'"]
-compile_stderr_not_contains = ["E0011", "E1100", "E1109"]
+compile_stderr_not_contains = ["E0011"]
 
 [[case]]
 name = "based_and_separated_integer_literals_are_unaffected"

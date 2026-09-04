@@ -686,7 +686,24 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         // string value never occurs (RUE-957); skip rather than
                         // fabricate a type for it.
                         ConstValue::String(_) => continue,
-                        ConstValue::Float(_) => Type::COMPTIME_FLOAT,
+                        // A captured float value carries only its decimal
+                        // spelling — the capture does not thread the declared
+                        // width through either — so it is typed as a fresh
+                        // float-literal variable and takes its width from use,
+                        // the exact mirror of the captured integer above. The
+                        // width-less `comptime_float` must not be seeded here:
+                        // it has no runtime representation (spec 3.12:3), and
+                        // as a concrete type it would satisfy an `f64` context
+                        // without ever acquiring a width, leaving the zero
+                        // placeholder of `materialize_const_value` to reach
+                        // codegen as the value (RUE-1076).
+                        ConstValue::Float(_) => {
+                            param_vars.entry(*name).or_insert(ParamVarInfo {
+                                ty: InferType::Var(cgen.fresh_float_literal_var()),
+                                is_inout: false,
+                            });
+                            continue;
+                        }
                         ConstValue::Unit => Type::UNIT,
                     };
                     param_vars.entry(*name).or_insert(ParamVarInfo {

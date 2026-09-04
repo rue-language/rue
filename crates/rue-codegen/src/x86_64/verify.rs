@@ -115,6 +115,7 @@ impl StackVerifyAdapter for X86StackVerifyAdapter<'_> {
             | X86Inst::Jb { label }
             | X86Inst::Jae { label }
             | X86Inst::Jbe { label }
+            | X86Inst::Ja { label }
             | X86Inst::Jge { label }
             | X86Inst::Jle { label }
             | X86Inst::Jmp { label } => std::slice::from_ref(label),

@@ -2516,6 +2516,16 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
     fn type_integer_semantics(&self, ty: &Type) -> Option<crate::integer_semantics::IntegerType> {
         ty.integer_semantics()
     }
+    fn type_float_width(&self, ty: &Type) -> Option<super::comptime::ComptimeFloatWidth> {
+        match *ty {
+            Type::F32 => Some(super::comptime::ComptimeFloatWidth::F32),
+            Type::F64 => Some(super::comptime::ComptimeFloatWidth::F64),
+            _ => None,
+        }
+    }
+    fn float_type(&self, width: super::comptime::ComptimeFloatWidth) -> Option<Type> {
+        Some(width.air_type())
+    }
     fn const_expr_type(
         &self,
         _program: &Self::ProgramKey,
@@ -2672,6 +2682,25 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeValueAlgebra for OrdinaryBodyEngin
         };
         let symbol = self.body_interner().get_or_intern(canonical);
         ComptimeOutcome::Known(ConstValue::Float(rue_rir::SymbolHandle::new(symbol)))
+    }
+    fn float_value_text(&self, value: &ConstValue) -> Option<String> {
+        match value {
+            ConstValue::Float(content) => {
+                Some(self.body_interner().resolve(&content.spur()).to_owned())
+            }
+            _ => None,
+        }
+    }
+    fn float_value_from_text(
+        &mut self,
+        text: &str,
+        _ty: Option<Type>,
+    ) -> ComptimeHostResult<Option<ConstValue>, Self::Failure> {
+        // The ordinary domain keeps floats as untyped text: the use site
+        // materializes the value at its inferred type, which is the width the
+        // text was rendered at.
+        let symbol = self.body_interner().get_or_intern(text);
+        Ok(Some(ConstValue::Float(rue_rir::SymbolHandle::new(symbol))))
     }
 }
 
@@ -2962,12 +2991,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeRejections for OrdinaryBodyEngine<
             },
             site.span(),
         )
-    }
-    fn float_not_implemented(
-        &self,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure {
-        CompileError::new(ErrorKind::FloatNotYetImplemented, site.span())
     }
     fn cannot_negate(
         &self,

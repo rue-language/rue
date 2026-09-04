@@ -74,17 +74,24 @@ pub(super) fn fold_instruction(cfg: &mut Cfg, value: CfgValue) -> bool {
         }
         CfgInstData::Sub(lhs, rhs) => {
             fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| checked_sub(a, b, ty))
-                // x - x is 0 with no possible overflow, for any x (RUE-912).
-                .or_else(|| (lhs == rhs).then_some(CfgInstData::Const(0)))
+                // x - x is 0 with no possible overflow, for any integer x
+                // (RUE-912). Not for a float: `inf - inf` and `NaN - NaN` are
+                // both NaN (spec 3.12:21).
+                .or_else(|| (!ty.is_float() && lhs == rhs).then_some(CfgInstData::Const(0)))
         }
         CfgInstData::Mul(lhs, rhs) => {
             fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| checked_mul(a, b, ty))
                 // x * 0 is 0 with no possible overflow, even for non-constant
-                // x; x's own instruction stays behind for DCE's trap-aware
-                // liveness rules (RUE-912).
+                // integer x; x's own instruction stays behind for DCE's
+                // trap-aware liveness rules (RUE-912). Not for a float:
+                // `inf * 0.0` and `NaN * 0.0` are NaN, and a negative operand
+                // gives `-0.0`, none of which is the all-zero pattern this
+                // rule substitutes (spec 3.12:21).
                 .or_else(|| {
-                    (get_const_int(cfg, *lhs) == Some(0) || get_const_int(cfg, *rhs) == Some(0))
-                        .then_some(CfgInstData::Const(0))
+                    (!ty.is_float()
+                        && (get_const_int(cfg, *lhs) == Some(0)
+                            || get_const_int(cfg, *rhs) == Some(0)))
+                    .then_some(CfgInstData::Const(0))
                 })
         }
         CfgInstData::WrappingAdd(lhs, rhs) => fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| {
@@ -131,6 +138,8 @@ pub(super) fn fold_instruction(cfg: &mut Cfg, value: CfgValue) -> bool {
             fold_comparison(cfg, *lhs, *rhs, |a, b| a != b)
                 .or_else(|| fold_enum_comparison(cfg, *lhs, *rhs, |v1, v2| v1 != v2))
         }
+        // NOTE: Lt/Gt/Le/Ge below reach `integer_semantics()`, which is `None`
+        // for a float, so the ordered comparisons need no separate guard.
         CfgInstData::Lt(lhs, rhs) => {
             let lhs_ty = cfg.get_inst(*lhs).ty;
             fold_comparison_ordered(cfg, *lhs, *rhs, lhs_ty, |ordering| {
@@ -217,10 +226,22 @@ where
 }
 
 /// Try to fold a comparison on two constant operands.
+///
+/// The operands are compared as raw stored bits, which is the equality an
+/// integer, boolean, or pointer constant has. It is **not** float equality:
+/// a float constant is stored as its IEEE bit pattern, where `NaN` equals
+/// itself bitwise but must compare unequal, and `-0.0` and `+0.0` have
+/// different bits but must compare equal (spec 3.12:27, 3.12:28). Folding a
+/// float `==`/`!=` here would answer both backwards, so a float operand
+/// declines the fold and the comparison survives to the backend's IEEE
+/// compare instruction.
 fn fold_comparison<F>(cfg: &Cfg, lhs: CfgValue, rhs: CfgValue, op: F) -> Option<CfgInstData>
 where
     F: FnOnce(u64, u64) -> bool,
 {
+    if cfg.get_inst(lhs).ty.is_float() || cfg.get_inst(rhs).ty.is_float() {
+        return None;
+    }
     let lhs_val = get_const_int(cfg, lhs)?;
     let rhs_val = get_const_int(cfg, rhs)?;
     let result = op(lhs_val, rhs_val);
@@ -920,5 +941,172 @@ mod tests {
             Some(i32::MAX as u64)
         );
         assert_eq!(checked_mod(min, 2, Type::I32), Some(0));
+    }
+
+    // Float constants are stored as IEEE bit patterns, so the bitwise folds
+    // that are correct for integers answer float questions backwards: a NaN
+    // is bitwise equal to itself but must compare unequal, `-0.0` and `+0.0`
+    // differ bitwise but must compare equal (spec 3.12:27, 3.12:28), and
+    // `inf * 0.0` is a NaN rather than the zero `x * 0` substitutes
+    // (spec 3.12:21). Each of these must decline the fold and leave the
+    // instruction for the backend's IEEE hardware operation.
+
+    /// Build `op(lhs_bits, rhs_bits)` at `ty`, run the fold driver, and report
+    /// whether the surviving instruction still satisfies `check`.
+    fn folds_to(
+        op: fn(CfgValue, CfgValue) -> CfgInstData,
+        result_ty: Type,
+        ty: Type,
+        lhs_bits: u64,
+        rhs_bits: u64,
+        check: fn(&CfgInstData) -> bool,
+    ) -> bool {
+        let mut cfg = make_cfg();
+        let lhs = add_const(&mut cfg, lhs_bits, ty);
+        let rhs = add_const(&mut cfg, rhs_bits, ty);
+        let entry = cfg.entry;
+        let value = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: op(lhs, rhs),
+                ty: result_ty,
+                span: Span::new(0, 0),
+            },
+        );
+        finalize_cfg(&mut cfg, value);
+        crate::opt::constopt::run(&mut cfg);
+        check(&cfg.get_inst(value).data)
+    }
+
+    #[test]
+    fn float_equality_is_never_constant_folded_bitwise() {
+        let nan = f64::NAN.to_bits();
+        let neg_zero = (-0.0f64).to_bits();
+        let pos_zero = 0.0f64.to_bits();
+        let one = 1.0f64.to_bits();
+
+        for (lhs, rhs, what) in [
+            (nan, nan, "NaN == NaN"),
+            (neg_zero, pos_zero, "-0.0 == 0.0"),
+            (one, one, "1.0 == 1.0"),
+        ] {
+            assert!(
+                folds_to(CfgInstData::Eq, Type::BOOL, Type::F64, lhs, rhs, |data| {
+                    matches!(data, CfgInstData::Eq(..))
+                }),
+                "{what} must not fold"
+            );
+            assert!(
+                folds_to(CfgInstData::Ne, Type::BOOL, Type::F64, lhs, rhs, |data| {
+                    matches!(data, CfgInstData::Ne(..))
+                }),
+                "{what} (as !=) must not fold"
+            );
+        }
+
+        // An f32 pattern lives in the low 32 bits of the same Const payload.
+        assert!(
+            folds_to(
+                CfgInstData::Eq,
+                Type::BOOL,
+                Type::F32,
+                u64::from(f32::NAN.to_bits()),
+                u64::from(f32::NAN.to_bits()),
+                |data| matches!(data, CfgInstData::Eq(..)),
+            ),
+            "f32 NaN == NaN must not fold"
+        );
+
+        // The integer comparison this guard sits in front of still folds.
+        assert!(folds_to(
+            CfgInstData::Eq,
+            Type::BOOL,
+            Type::I32,
+            5,
+            5,
+            |data| { matches!(data, CfgInstData::BoolConst(true)) }
+        ));
+        assert!(folds_to(
+            CfgInstData::Ne,
+            Type::BOOL,
+            Type::I32,
+            5,
+            3,
+            |data| { matches!(data, CfgInstData::BoolConst(true)) }
+        ));
+    }
+
+    #[test]
+    fn float_multiply_by_zero_is_not_folded_to_zero() {
+        let inf = f64::INFINITY.to_bits();
+        let zero = 0.0f64.to_bits();
+        let minus_one = (-1.0f64).to_bits();
+
+        assert!(
+            folds_to(CfgInstData::Mul, Type::F64, Type::F64, inf, zero, |data| {
+                matches!(data, CfgInstData::Mul(..))
+            }),
+            "inf * 0.0 is NaN, not zero"
+        );
+        assert!(
+            folds_to(
+                CfgInstData::Mul,
+                Type::F64,
+                Type::F64,
+                minus_one,
+                zero,
+                |data| matches!(data, CfgInstData::Mul(..)),
+            ),
+            "-1.0 * 0.0 is -0.0, not +0.0"
+        );
+
+        // Integer x * 0 still folds.
+        assert!(folds_to(
+            CfgInstData::Mul,
+            Type::I32,
+            Type::I32,
+            7,
+            0,
+            |data| { matches!(data, CfgInstData::Const(0)) }
+        ));
+    }
+
+    #[test]
+    fn float_self_subtraction_is_not_folded_to_zero() {
+        // `inf - inf` is NaN, so the identity `x - x == 0` does not hold.
+        let mut cfg = make_cfg();
+        let x = add_const(&mut cfg, f64::INFINITY.to_bits(), Type::F64);
+        let entry = cfg.entry;
+        let value = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Sub(x, x),
+                ty: Type::F64,
+                span: Span::new(0, 0),
+            },
+        );
+        finalize_cfg(&mut cfg, value);
+        crate::opt::constopt::run(&mut cfg);
+        assert!(
+            matches!(cfg.get_inst(value).data, CfgInstData::Sub(..)),
+            "inf - inf is NaN, not zero: {:?}",
+            cfg.get_inst(value).data
+        );
+
+        // Integer x - x still folds.
+        let mut cfg = make_cfg();
+        let x = add_const(&mut cfg, 9, Type::I32);
+        let entry = cfg.entry;
+        let value = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Sub(x, x),
+                ty: Type::I32,
+                span: Span::new(0, 0),
+            },
+        );
+        finalize_cfg(&mut cfg, value);
+        crate::opt::constopt::run(&mut cfg);
+        assert!(matches!(cfg.get_inst(value).data, CfgInstData::Const(0)));
     }
 }

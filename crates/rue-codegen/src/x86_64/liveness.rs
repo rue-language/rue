@@ -126,6 +126,7 @@ fn get_successors(
         | X86Inst::Jb { label }
         | X86Inst::Jae { label }
         | X86Inst::Jbe { label }
+        | X86Inst::Ja { label }
         | X86Inst::Jge { label }
         | X86Inst::Jle { label } => conditional_successors(idx, *label, label_to_idx, num_insts),
         // Return and trap have no successors
@@ -161,6 +162,7 @@ pub fn uses(inst: &X86Inst) -> VRegList {
         | X86Inst::BitsToFloat { src, .. }
         | X86Inst::FloatNeg { src, .. }
         | X86Inst::FloatSqrt { src, .. }
+        | X86Inst::FloatRound { src, .. }
         | X86Inst::IntToFloat { src, .. }
         | X86Inst::FloatToInt { src, .. }
         | X86Inst::FloatCast { src, .. }
@@ -332,6 +334,7 @@ pub fn uses(inst: &X86Inst) -> VRegList {
         | X86Inst::Jb { .. }
         | X86Inst::Jae { .. }
         | X86Inst::Jbe { .. }
+        | X86Inst::Ja { .. }
         | X86Inst::Jge { .. }
         | X86Inst::Jle { .. }
         | X86Inst::Jmp { .. }
@@ -366,6 +369,7 @@ pub fn defs(inst: &X86Inst) -> VRegList {
         | X86Inst::FloatBin { dst, .. }
         | X86Inst::FloatNeg { dst, .. }
         | X86Inst::FloatSqrt { dst, .. }
+        | X86Inst::FloatRound { dst, .. }
         | X86Inst::IntToFloat { dst, .. }
         | X86Inst::FloatToInt { dst, .. }
         | X86Inst::FloatCast { dst, .. } => add_if_virtual(dst, &mut result),
@@ -495,6 +499,7 @@ pub fn defs(inst: &X86Inst) -> VRegList {
         | X86Inst::Jb { .. }
         | X86Inst::Jae { .. }
         | X86Inst::Jbe { .. }
+        | X86Inst::Ja { .. }
         | X86Inst::Jge { .. }
         | X86Inst::Jle { .. }
         | X86Inst::Jmp { .. }

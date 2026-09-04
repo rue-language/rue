@@ -62,6 +62,44 @@ crate::define_runtime_implementation! {
 }
 
 crate::define_runtime_implementation! {
+    /// Debug intrinsic: print an `f32` or `f64`.
+    ///
+    /// Called by `@dbg(expr)` when the expression is a floating-point value.
+    /// The value arrives as its IEEE-754 bit pattern in an integer register
+    /// beside an explicit width discriminator (ADR-0065 §6), the same shape
+    /// `__rue_to_string_float` takes. This helper formats *through* that one
+    /// float-to-text authority — so `@dbg` and `@to_string` cannot drift, and
+    /// an invalid width traps there rather than selecting a width here — then
+    /// writes the text and a newline and releases the temporary buffer.
+    ///
+    /// # ABI
+    ///
+    /// ```text
+    /// extern "C" fn __rue_dbg_float(bits: u64, width: u32)
+    /// ```
+    pub extern "C" fn __rue_dbg_float(bits: u64, width: u32) {
+        let mut formatted = crate::string::StrBufResult {
+            ptr: core::ptr::null_mut(),
+            cap: 0,
+            len: 0,
+        };
+        // SAFETY: `formatted` is live, aligned, exclusive result storage that
+        // nothing else observes. The formatter either traps or publishes an
+        // owned allocation of exactly `cap` bytes at alignment 1, which is
+        // what is read and then released here.
+        unsafe {
+            crate::string::__rue_to_string_float(&mut formatted, bits, width);
+            platform::write_stdout(core::slice::from_raw_parts(
+                formatted.ptr,
+                formatted.len as usize,
+            ));
+            platform::write_stdout(b"\n");
+            crate::heap::free(formatted.ptr, formatted.cap, 1);
+        }
+    }
+}
+
+crate::define_runtime_implementation! {
     /// Debug intrinsic: print a string.
     ///
     /// Called by `@dbg(expr)` when the expression is a String type.

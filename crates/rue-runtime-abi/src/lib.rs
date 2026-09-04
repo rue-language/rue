@@ -49,7 +49,8 @@ pub enum AbiType {
     Usize,
 }
 
-/// Width discriminants accepted by `__rue_to_string_float`.
+/// Width discriminants accepted by the float-consuming helpers,
+/// `__rue_to_string_float` and `__rue_dbg_float`.
 ///
 /// The value travels as a `u32`, not as a Rust or C enum, so an invalid caller
 /// value cannot create undefined behavior at the boundary. The runtime traps
@@ -632,6 +633,13 @@ macro_rules! for_each_runtime_helper {
         DebugBool => safe __rue_dbg_bool(value: i64) {
             symbol: "__rue_dbg_bool",
             parameters: params![BOOL_WORD_VALUE],
+            result: VOID,
+            safety: SafetyContract::NONE,
+            returns: RETURNS
+        },
+        DebugFloat => safe __rue_dbg_float(bits: u64, width: u32) {
+            symbol: "__rue_dbg_float",
+            parameters: params![U64_VALUE, U32_VALUE],
             result: VOID,
             safety: SafetyContract::NONE,
             returns: RETURNS
@@ -1485,7 +1493,7 @@ mod tests {
     #[test]
     fn manifest_is_const_valid_and_exhaustive() {
         assert_eq!(validate_manifest(), Ok(()));
-        assert_eq!(RuntimeHelperId::ALL.len(), 54);
+        assert_eq!(RuntimeHelperId::ALL.len(), 55);
         assert_eq!(RuntimeHelperId::ALL.len(), RUNTIME_HELPERS.len());
         for (index, id) in RuntimeHelperId::ALL.iter().copied().enumerate() {
             assert_eq!(id as usize, index);
@@ -1523,6 +1531,7 @@ mod tests {
             "__rue_dbg_i64",
             "__rue_dbg_u64",
             "__rue_dbg_bool",
+            "__rue_dbg_float",
             "__rue_dbg_str",
             "__rue_str_eq",
             "__rue_str_byte_at",
@@ -1572,7 +1581,7 @@ mod tests {
     #[test]
     fn every_helper_has_the_exact_accepted_signature_and_contract() {
         fn check(
-            visited: &mut [bool; 54],
+            visited: &mut [bool; 55],
             ids: &[RuntimeHelperId],
             parameters: &[AbiParameter],
             result: AbiResult,
@@ -1593,7 +1602,7 @@ mod tests {
             }
         }
 
-        let mut visited = [false; 54];
+        let mut visited = [false; 55];
         check(
             &mut visited,
             &[RuntimeHelperId::Exit],
@@ -1670,6 +1679,14 @@ mod tests {
             &mut visited,
             &[RuntimeHelperId::DebugU64],
             &[U64_VALUE],
+            VOID,
+            SafetyContract::NONE,
+            RETURNS,
+        );
+        check(
+            &mut visited,
+            &[RuntimeHelperId::DebugFloat],
+            &[U64_VALUE, U32_VALUE],
             VOID,
             SafetyContract::NONE,
             RETURNS,

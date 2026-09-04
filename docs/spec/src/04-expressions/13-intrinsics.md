@@ -55,7 +55,7 @@ Expression intrinsics (usable in any expression position):
 
 | Intrinsic | Purpose | Arguments | Return Type |
 |-----------|---------|-----------|-------------|
-| `@dbg` | Print debug output | 1 expression (int, bool, or string) | `()` |
+| `@dbg` | Print debug output | 1 expression (int, float, bool, or string) | `()` |
 | `@panic` | Abort with a message (§4.13:5c) | 0–1 expressions (text message) | `!` |
 | `@assert` | Abort unless a condition holds (§4.13:5d) | 1 expression (`bool`), 1 optional expression (text message) | `()` |
 | `@assert_eq` | Abort unless two values are equal, reporting both (§4.13:5f) | 2 expressions (one type, comparable with `==`) | `()` |
@@ -72,7 +72,7 @@ Expression intrinsics (usable in any expression position):
 | `@wrapping_add` | Wrapping (modular) addition (§4.13:97) | 2 expressions (same integer type) | that integer type |
 | `@wrapping_sub` | Wrapping (modular) subtraction (§4.13:97) | 2 expressions (same integer type) | that integer type |
 | `@wrapping_mul` | Wrapping (modular) multiplication (§4.13:97) | 2 expressions (same integer type) | that integer type |
-| `@to_string` | Format an integer as its decimal `StrBuf` (requires a lexical `@import("std")` in the file; §3.7:22) | 1 expression (any integer) | `StrBuf` |
+| `@to_string` | Format an integer or float as its decimal `StrBuf` (requires a lexical `@import("std")` in the file; §3.7:22) | 1 expression (any integer or float) | `StrBuf` |
 | `@drop` | Run a value's drop glue (skipping moved-out sub-places) and consume it (RUE-187) | 1 expression (any type) | `()` |
 | `@read_line` | Read line from stdin | none | `Option(StrBuf)` |
 | `@parse_i32` | Parse text to i32 | 1 expression (any text rung) | `Option(i32)` |
@@ -88,6 +88,15 @@ Expression intrinsics (usable in any expression position):
 | `@target_arch` | Get target architecture | none | `Arch` |
 | `@target_os` | Get target OS | none | `Os` |
 | `@target_data_model` | Get target C data model | none | `DataModel` |
+| `@int_to_float` | Integer to float, round to nearest (§4.13:139) | 1 expression (any integer) | inferred float type |
+| `@float_to_int` | Float to integer, truncating toward zero; traps out of range (§4.13:140) | 1 expression (float) | inferred integer type |
+| `@float_cast` | Convert between `f32` and `f64` (§4.13:141) | 1 expression (float) | the other float type, inferred |
+| `@total_cmp` | IEEE `totalOrder` three-way comparison (§4.13:142) | 2 expressions (same float type) | `i32` |
+| `@sqrt` | Correctly rounded square root (§4.13:143) | 1 expression (float) | that float type |
+| `@floor` | Round toward negative infinity (§4.13:143) | 1 expression (float) | that float type |
+| `@ceil` | Round toward positive infinity (§4.13:143) | 1 expression (float) | that float type |
+| `@trunc` | Round toward zero (§4.13:143) | 1 expression (float) | that float type |
+| `@round` | Round to nearest, ties away from zero (§4.13:143) | 1 expression (float) | that float type |
 | `@import` | Import module | 1 expression (string literal) | module type |
 
 Unchecked intrinsics (only valid inside a `checked` block; see §9.2 for their
@@ -202,7 +211,7 @@ not occurred.
 
 {{ rule(id="4.13:7", cat="normative") }}
 
-`@dbg` accepts exactly one argument of integer, boolean, or string type.
+`@dbg` accepts exactly one argument of integer, floating-point, boolean, or string type.
 
 {{ rule(id="4.13:8", cat="normative") }}
 
@@ -212,9 +221,11 @@ not occurred.
 
 The textual form `@dbg` prints for its argument is determined by the argument's
 type: an integer is printed in base 10, with a leading `-` when a signed integer
-is negative and no sign otherwise; a boolean is printed as `true` or `false`; a
-`StrBuf` is printed as its exact bytes, byte-for-byte, with no quoting or
-escaping (mirroring `print`, 3.7). The newline of 4.13:8 follows this text.
+is negative and no sign otherwise; a floating-point value is printed by the
+shortest-round-trip rules of 3.12:40–3.12:42; a boolean is printed as `true` or
+`false`; a `StrBuf` is printed as its exact bytes, byte-for-byte, with no
+quoting or escaping (mirroring `print`, 3.7). The newline of 4.13:8 follows this
+text.
 
 {{ rule(id="4.13:9", cat="normative") }}
 
@@ -1246,5 +1257,54 @@ fn main() -> i32 {
     @dbg(@wrapping_mul(hash, prime));  // 12638153115695167455
 
     0
+}
+```
+
+## Floating-Point Conversion Intrinsics
+
+{{ rule(id="4.13:139", cat="normative") }}
+
+`@int_to_float(x)` accepts exactly one integer expression and produces a
+floating-point value of the type its context supplies. Its result and its
+rounding are specified by 3.12:16.
+
+{{ rule(id="4.13:140", cat="normative") }}
+
+`@float_to_int(x)` accepts exactly one floating-point expression and produces
+an integer of the type its context supplies, signed or unsigned. Its
+truncation, and the trap it takes on a NaN or an out-of-range value, are
+specified by 3.12:17 and 3.12:18.
+
+{{ rule(id="4.13:141", cat="normative") }}
+
+`@float_cast(x)` accepts exactly one floating-point expression and produces the
+other floating-point type, taken from context, as specified by 3.12:19.
+
+{{ rule(id="4.13:142", cat="normative") }}
+
+`@total_cmp(a, b)` accepts exactly two floating-point expressions of the same
+type and has type `i32`. Its result is the IEEE `totalOrder` three-way
+comparison specified by 3.12:31 and 3.12:32.
+
+## Floating-Point Rounding Intrinsics
+
+{{ rule(id="4.13:143", cat="normative") }}
+
+`@sqrt`, `@floor`, `@ceil`, `@trunc`, and `@round` each accept exactly one
+floating-point expression and produce a value of that same type, as specified
+by 3.12:34 through 3.12:37. None of them traps.
+
+{{ rule(id="4.13:144", cat="example") }}
+
+```rue
+fn main() -> i32 {
+    let n: i32 = 9;
+    let f: f64 = @int_to_float(n);
+    let g: f32 = @float_cast(f);
+    @dbg(@sqrt(f));                    // 3.0
+    @dbg(@round(-2.5));                // -3.0
+    @dbg(@total_cmp(g, 9.0));          // 0
+    let back: i32 = @float_to_int(f);  // 9
+    back - 9
 }
 ```

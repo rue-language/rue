@@ -93,6 +93,7 @@ fn get_latency(inst: &X86Inst) -> u32 {
         X86Inst::FloatBin { .. }
         | X86Inst::FloatNeg { .. }
         | X86Inst::FloatSqrt { .. }
+        | X86Inst::FloatRound { .. }
         | X86Inst::FloatCast { .. }
         | X86Inst::IntToFloat { .. }
         | X86Inst::FloatToInt { .. } => 4,
@@ -219,6 +220,7 @@ fn get_latency(inst: &X86Inst) -> u32 {
         | X86Inst::Jb { .. }
         | X86Inst::Jae { .. }
         | X86Inst::Jbe { .. }
+        | X86Inst::Ja { .. }
         | X86Inst::Jge { .. }
         | X86Inst::Jle { .. }
         | X86Inst::Jmp { .. }
@@ -251,6 +253,7 @@ fn is_barrier(inst: &X86Inst) -> bool {
             | X86Inst::Jb { .. }
             | X86Inst::Jae { .. }
             | X86Inst::Jbe { .. }
+            | X86Inst::Ja { .. }
             | X86Inst::Jge { .. }
             | X86Inst::Jle { .. }
             | X86Inst::Jmp { .. }
@@ -301,6 +304,7 @@ pub(super) fn regs_read(inst: &X86Inst) -> RegList<Reg> {
         | X86Inst::BitsToFloat { src, .. }
         | X86Inst::FloatNeg { src, .. }
         | X86Inst::FloatSqrt { src, .. }
+        | X86Inst::FloatRound { src, .. }
         | X86Inst::IntToFloat { src, .. }
         | X86Inst::FloatToInt { src, .. }
         | X86Inst::FloatCast { src, .. } => add_if_phys(src, &mut result),
@@ -457,6 +461,7 @@ pub(super) fn regs_read(inst: &X86Inst) -> RegList<Reg> {
         | X86Inst::Jb { .. }
         | X86Inst::Jae { .. }
         | X86Inst::Jbe { .. }
+        | X86Inst::Ja { .. }
         | X86Inst::Jge { .. }
         | X86Inst::Jle { .. }
         | X86Inst::Jmp { .. }
@@ -487,6 +492,7 @@ pub(super) fn regs_written(inst: &X86Inst) -> RegList<Reg> {
         | X86Inst::FloatBin { dst, .. }
         | X86Inst::FloatNeg { dst, .. }
         | X86Inst::FloatSqrt { dst, .. }
+        | X86Inst::FloatRound { dst, .. }
         | X86Inst::IntToFloat { dst, .. }
         | X86Inst::FloatToInt { dst, .. }
         | X86Inst::FloatCast { dst, .. } => add_if_phys(dst, &mut result),
@@ -602,6 +608,7 @@ pub(super) fn regs_written(inst: &X86Inst) -> RegList<Reg> {
         | X86Inst::Jb { .. }
         | X86Inst::Jae { .. }
         | X86Inst::Jbe { .. }
+        | X86Inst::Ja { .. }
         | X86Inst::Jge { .. }
         | X86Inst::Jle { .. }
         | X86Inst::Jmp { .. }
@@ -706,6 +713,7 @@ pub(super) fn reads_flags(inst: &X86Inst) -> bool {
             | X86Inst::Jb { .. }
             | X86Inst::Jae { .. }
             | X86Inst::Jbe { .. }
+            | X86Inst::Ja { .. }
             | X86Inst::Jge { .. }
             | X86Inst::Jle { .. }
     )

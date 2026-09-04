@@ -53,6 +53,13 @@ pub struct KnownSymbols {
     pub float_to_int: Spur,
     pub float_cast: Spur,
     pub total_cmp: Spur,
+    /// The unary float intrinsics of ADR-0065 §7: `@sqrt`, `@floor`,
+    /// `@ceil`, `@trunc`, `@round`.
+    pub sqrt: Spur,
+    pub floor: Spur,
+    pub ceil: Spur,
+    pub trunc: Spur,
+    pub round: Spur,
     /// The `cast` intrinsic symbol.
     pub cast: Spur,
     /// The `panic` intrinsic symbol.
@@ -212,6 +219,24 @@ impl KnownSymbols {
         Self::with_intern(|text| space.try_intern(text))
     }
 
+    /// Map a unary float intrinsic name to its semantic operation.
+    pub fn get_float_unary_operation(&self, name: Spur) -> Option<crate::IntrinsicOperation> {
+        use crate::IntrinsicOperation as Op;
+        if name == self.sqrt {
+            Some(Op::FloatSqrt)
+        } else if name == self.floor {
+            Some(Op::FloatFloor)
+        } else if name == self.ceil {
+            Some(Op::FloatCeil)
+        } else if name == self.trunc {
+            Some(Op::FloatTrunc)
+        } else if name == self.round {
+            Some(Op::FloatRound)
+        } else {
+            None
+        }
+    }
+
     fn with_intern(
         mut intern: impl FnMut(&'static str) -> Result<Spur, lasso::LassoErrorKind>,
     ) -> Result<Self, lasso::LassoErrorKind> {
@@ -225,6 +250,12 @@ impl KnownSymbols {
             float_to_int: intern("float_to_int")?,
             float_cast: intern("float_cast")?,
             total_cmp: intern("total_cmp")?,
+            sqrt: intern("sqrt")?,
+            floor: intern("floor")?,
+            ceil: intern("ceil")?,
+            trunc: intern("trunc")?,
+            round: intern("round")?,
+
             cast: intern("cast")?,
             panic: intern("panic")?,
             assert: intern("assert")?,

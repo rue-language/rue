@@ -3,8 +3,9 @@
 // Implements the lexical grammar of Rue from the language specification
 // (docs/spec/src/02-lexical-structure and appendix A): whitespace and line
 // comments, identifiers, keywords, primitive type names, integer literals
-// (decimal / 0x / 0o / 0b with `_` separators), string literals with escape
-// sequences, and all operators and punctuation with maximal munch.
+// (decimal / 0x / 0o / 0b with `_` separators), float literals (fraction,
+// exponent, or both), string literals with escape sequences, and all operators
+// and punctuation with maximal munch.
 //
 // Output format reproduces the compiler's own `--emit tokens` dump so the two
 // can be diffed byte-for-byte:  `{start:>4}..{end:<3}  KIND`  where start/end
@@ -268,9 +269,82 @@ pub struct Lexer {
                 break;
             }
         }
+        // Float continuation (2.1:29). A `.` only opens a fraction when a digit
+        // follows, so `42.to_string()` still lexes as INT DOT IDENT and a
+        // trailing dot (`5.`) is left for the parser to diagnose (2.1:30). An
+        // exponent may follow the digit run directly (`1e9`) or the fraction.
+        let mut is_float = false;
+        if self.peek(0) == 46 && is_digit(self.peek(1)) {
+            self.advance(); // '.'
+            self.skip_digits();
+            is_float = true;
+        }
+        if self.exponent_follows() {
+            self.advance(); // 'e' or 'E'
+            let sign = self.peek(0);
+            if sign == 43 || sign == 45 {
+                self.advance();
+            }
+            self.skip_digits();
+            is_float = true;
+        }
+        if is_float {
+            return self.finish_float(start);
+        }
+
         self.last_kind = token.INT;
         self.last_value = val;
         fmtutil.kn("INT(", val, ")")
+    }
+
+    // Consume a decimal digit run with `_` separators (2.1:29).
+    fn skip_digits(inout self) {
+        loop {
+            let d = self.peek(0);
+            if is_digit(d) || d == 95 {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+    }
+
+    // Whether an exponent starts at the cursor: `e`/`E`, an optional sign, and
+    // at least one digit. Without that digit the marker is not part of the
+    // literal, so the cursor stays put and the digits already scanned stay an
+    // integer.
+    fn exponent_follows(borrow self) -> bool {
+        let e = self.peek(0);
+        if e != 101 && e != 69 {
+            return false;
+        }
+        let next = self.peek(1);
+        if next == 43 || next == 45 {
+            is_digit(self.peek(2))
+        } else {
+            is_digit(next)
+        }
+    }
+
+    // Finish a float literal spanning [start, pos). Its interned text is the
+    // literal with `_` separators removed — the compiler interns exactly that,
+    // in the one symbol table it shares with identifiers and string values,
+    // because a `comptime_float` keeps full precision until context picks a
+    // width (2.1:29, 3.12).
+    fn finish_float(inout self, start: u64) -> StrBuf {
+        let mut key = StrBuf.new();
+        let mut i = start;
+        while i < self.pos {
+            let b = self.at(i);
+            if b != 95 {
+                key.push(b);
+            }
+            i += 1;
+        }
+        let sym = self.interner.intern(borrow key);
+        self.last_kind = token.FLOAT;
+        self.last_value = sym;
+        fmtutil.kn("FLOAT(sym:", sym, ")")
     }
 
     // A based literal (`0x`/`0o`/`0b`). `base` is 16, 8, or 2; the cursor is on

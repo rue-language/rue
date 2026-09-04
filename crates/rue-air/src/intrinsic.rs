@@ -337,6 +337,9 @@ pub enum IntrinsicOperation {
     DebugI64,
     DebugU64,
     DebugBool,
+    /// `@dbg` of an `f32`/`f64`: the arguments are the value's bit pattern as
+    /// `u64` and its `u32` width discriminator (ADR-0065 §6).
+    DebugFloat,
     DebugStr,
     ReadLine,
     ParseI32,
@@ -375,12 +378,36 @@ pub enum IntrinsicOperation {
     FloatToInt,
     FloatCast,
     TotalCmp,
+    /// `@sqrt(x)`: IEEE-754 correctly rounded square root of an `f32`/`f64`.
+    FloatSqrt,
+    /// `@floor(x)`: round toward negative infinity to an integral float.
+    FloatFloor,
+    /// `@ceil(x)`: round toward positive infinity to an integral float.
+    FloatCeil,
+    /// `@trunc(x)`: round toward zero to an integral float.
+    FloatTrunc,
+    /// `@round(x)`: round to the nearest integral float, ties away from zero.
+    FloatRound,
+}
+
+/// The register width of an integer or float scalar, for same-width
+/// reinterpretation checks; `None` for every other type.
+fn scalar_bits(ty: Type) -> Option<u32> {
+    if let Some(integer) = ty.integer_semantics() {
+        Some(integer.bits())
+    } else if ty == Type::F32 {
+        Some(32)
+    } else if ty == Type::F64 {
+        Some(64)
+    } else {
+        None
+    }
 }
 
 impl IntrinsicOperation {
     /// Every semantic identity, kept in one place so consumers and tests can
     /// prove that dispatch remains exhaustive when a new intrinsic is added.
-    pub const ALL: [Self; 45] = [
+    pub const ALL: [Self; 51] = [
         Self::PanicNoMessage,
         Self::Panic,
         Self::AssertFailed,
@@ -388,6 +415,7 @@ impl IntrinsicOperation {
         Self::DebugI64,
         Self::DebugU64,
         Self::DebugBool,
+        Self::DebugFloat,
         Self::DebugStr,
         Self::ReadLine,
         Self::ParseI32,
@@ -426,6 +454,11 @@ impl IntrinsicOperation {
         Self::FloatToInt,
         Self::FloatCast,
         Self::TotalCmp,
+        Self::FloatSqrt,
+        Self::FloatFloor,
+        Self::FloatCeil,
+        Self::FloatTrunc,
+        Self::FloatRound,
     ];
 
     /// The canonical spelling used for diagnostics and display. This is not
@@ -435,7 +468,11 @@ impl IntrinsicOperation {
         match self {
             Self::PanicNoMessage | Self::Panic => "panic",
             Self::AssertFailed | Self::BoundsCheck => "assert",
-            Self::DebugI64 | Self::DebugU64 | Self::DebugBool | Self::DebugStr => "dbg",
+            Self::DebugI64
+            | Self::DebugU64
+            | Self::DebugBool
+            | Self::DebugFloat
+            | Self::DebugStr => "dbg",
             Self::ReadLine => "read_line",
             Self::ParseI32 => "parse_i32",
             Self::ParseI64 => "parse_i64",
@@ -473,7 +510,25 @@ impl IntrinsicOperation {
             Self::FloatToInt => "float_to_int",
             Self::FloatCast => "float_cast",
             Self::TotalCmp => "total_cmp",
+            Self::FloatSqrt => "sqrt",
+            Self::FloatFloor => "floor",
+            Self::FloatCeil => "ceil",
+            Self::FloatTrunc => "trunc",
+            Self::FloatRound => "round",
         }
+    }
+
+    /// Whether this is one of the unary float-to-same-float operations
+    /// (`@sqrt`, `@floor`, `@ceil`, `@trunc`, `@round`).
+    pub const fn is_float_unary(self) -> bool {
+        matches!(
+            self,
+            Self::FloatSqrt
+                | Self::FloatFloor
+                | Self::FloatCeil
+                | Self::FloatTrunc
+                | Self::FloatRound
+        )
     }
 
     pub fn from_runtime_call(runtime: RuntimeCallKind) -> Option<Self> {
@@ -485,6 +540,7 @@ impl IntrinsicOperation {
             RuntimeCallKind::DebugI64 => Self::DebugI64,
             RuntimeCallKind::DebugU64 => Self::DebugU64,
             RuntimeCallKind::DebugBool => Self::DebugBool,
+            RuntimeCallKind::DebugFloat => Self::DebugFloat,
             RuntimeCallKind::DebugStr => Self::DebugStr,
             RuntimeCallKind::ReadLine => Self::ReadLine,
             RuntimeCallKind::ParseI32 => Self::ParseI32,
@@ -514,6 +570,7 @@ impl IntrinsicOperation {
             | RuntimeCallKind::StrCharNextLossy
             | RuntimeCallKind::ToString
             | RuntimeCallKind::ToStringUnsigned
+            | RuntimeCallKind::ToStringFloat
             | RuntimeCallKind::StrPrintAggregate
             | RuntimeCallKind::StrPrintProjected
             | RuntimeCallKind::StrPrintlnAggregate
@@ -571,6 +628,7 @@ impl IntrinsicOperation {
             Self::DebugI64 => RuntimeCallKind::DebugI64,
             Self::DebugU64 => RuntimeCallKind::DebugU64,
             Self::DebugBool => RuntimeCallKind::DebugBool,
+            Self::DebugFloat => RuntimeCallKind::DebugFloat,
             Self::DebugStr => RuntimeCallKind::DebugStr,
             Self::PtrToInt
             | Self::IntToPtr
@@ -584,7 +642,15 @@ impl IntrinsicOperation {
             | Self::FieldPtr
             | Self::Syscall
             | Self::BitCast => return None,
-            Self::IntToFloat | Self::FloatToInt | Self::FloatCast | Self::TotalCmp => return None,
+            Self::IntToFloat
+            | Self::FloatToInt
+            | Self::FloatCast
+            | Self::TotalCmp
+            | Self::FloatSqrt
+            | Self::FloatFloor
+            | Self::FloatCeil
+            | Self::FloatTrunc
+            | Self::FloatRound => return None,
         })
     }
 
@@ -656,6 +722,15 @@ impl IntrinsicOperation {
                         || (first.ty == Type::NEVER
                             && (args[1].ty.is_float() || args[1].ty == Type::NEVER)))
                     && result == Type::I32
+            }
+            Self::FloatSqrt
+            | Self::FloatFloor
+            | Self::FloatCeil
+            | Self::FloatTrunc
+            | Self::FloatRound => {
+                args.len() == 1
+                    && result.is_float()
+                    && (first.ty == result || first.ty == Type::NEVER)
             }
             Self::IntToPtr => {
                 args.len() == 1
@@ -736,11 +811,16 @@ impl IntrinsicOperation {
                         .all(|arg| arg.ty == Type::U64 || arg.ty == Type::NEVER)
                     && result == Type::I64
             }
+            // A same-width reinterpretation between integers, or between an
+            // integer and a float of the same width. Source-level `@bitCast`
+            // admits only the integer form (E0950); the float form is how sema
+            // moves a float's bit pattern into the integer runtime ABI
+            // (ADR-0065 §6).
             Self::BitCast => {
                 args.len() == 1
-                    && first.ty.is_integer()
-                    && first.ty.integer_semantics().map(|integer| integer.bits())
-                        == result.integer_semantics().map(|integer| integer.bits())
+                    && (first.ty.is_integer() || first.ty.is_float())
+                    && (result.is_integer() || result.is_float())
+                    && scalar_bits(first.ty) == scalar_bits(result)
             }
             Self::PanicNoMessage
             | Self::Panic
@@ -749,6 +829,7 @@ impl IntrinsicOperation {
             | Self::DebugI64
             | Self::DebugU64
             | Self::DebugBool
+            | Self::DebugFloat
             | Self::DebugStr
             | Self::ReadLine
             | Self::ParseI32
@@ -784,7 +865,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::sync::Arc;
 
-    const EXACT_OPERATIONS: [(IntrinsicOperation, &str); 45] = [
+    const EXACT_OPERATIONS: [(IntrinsicOperation, &str); 51] = [
         (IntrinsicOperation::PanicNoMessage, "panic"),
         (IntrinsicOperation::Panic, "panic"),
         (IntrinsicOperation::AssertFailed, "assert"),
@@ -792,6 +873,7 @@ mod tests {
         (IntrinsicOperation::DebugI64, "dbg"),
         (IntrinsicOperation::DebugU64, "dbg"),
         (IntrinsicOperation::DebugBool, "dbg"),
+        (IntrinsicOperation::DebugFloat, "dbg"),
         (IntrinsicOperation::DebugStr, "dbg"),
         (IntrinsicOperation::ReadLine, "read_line"),
         (IntrinsicOperation::ParseI32, "parse_i32"),
@@ -830,9 +912,14 @@ mod tests {
         (IntrinsicOperation::FloatToInt, "float_to_int"),
         (IntrinsicOperation::FloatCast, "float_cast"),
         (IntrinsicOperation::TotalCmp, "total_cmp"),
+        (IntrinsicOperation::FloatSqrt, "sqrt"),
+        (IntrinsicOperation::FloatFloor, "floor"),
+        (IntrinsicOperation::FloatCeil, "ceil"),
+        (IntrinsicOperation::FloatTrunc, "trunc"),
+        (IntrinsicOperation::FloatRound, "round"),
     ];
 
-    const EXACT_RUNTIME_MAPPINGS: [(IntrinsicOperation, RuntimeCallKind); 29] = [
+    const EXACT_RUNTIME_MAPPINGS: [(IntrinsicOperation, RuntimeCallKind); 30] = [
         (
             IntrinsicOperation::PanicNoMessage,
             RuntimeCallKind::PanicNoMessage,
@@ -849,6 +936,7 @@ mod tests {
         (IntrinsicOperation::DebugI64, RuntimeCallKind::DebugI64),
         (IntrinsicOperation::DebugU64, RuntimeCallKind::DebugU64),
         (IntrinsicOperation::DebugBool, RuntimeCallKind::DebugBool),
+        (IntrinsicOperation::DebugFloat, RuntimeCallKind::DebugFloat),
         (IntrinsicOperation::DebugStr, RuntimeCallKind::DebugStr),
         (IntrinsicOperation::ReadLine, RuntimeCallKind::ReadLine),
         (IntrinsicOperation::ParseI32, RuntimeCallKind::ParseI32),
@@ -880,7 +968,7 @@ mod tests {
     // family, which sema selects from ordinary method calls, and the ADR-0083
     // test channel, which the synthesized dispatcher and the assertion sugar
     // emit as direct calls rather than through an `IntrinsicOperation`.
-    const ORDINARY_CALL_ONLY: [RuntimeCallKind; 18] = [
+    const ORDINARY_CALL_ONLY: [RuntimeCallKind; 19] = [
         RuntimeCallKind::StrByteAt,
         RuntimeCallKind::StrCharScalar,
         RuntimeCallKind::StrCharNext,
@@ -888,6 +976,7 @@ mod tests {
         RuntimeCallKind::StrCharNextLossy,
         RuntimeCallKind::ToString,
         RuntimeCallKind::ToStringUnsigned,
+        RuntimeCallKind::ToStringFloat,
         RuntimeCallKind::StrPrintAggregate,
         RuntimeCallKind::StrPrintProjected,
         RuntimeCallKind::StrPrintlnAggregate,
@@ -903,7 +992,8 @@ mod tests {
 
     #[test]
     fn all_operations_are_unique_and_runtime_mapping_is_symmetric() {
-        assert_eq!(IntrinsicOperation::ALL.len(), 45);
+        assert_eq!(IntrinsicOperation::ALL.len(), 51);
+
         assert_eq!(
             IntrinsicOperation::ALL,
             EXACT_OPERATIONS.map(|(operation, _)| operation)
@@ -933,7 +1023,7 @@ mod tests {
 
     #[test]
     fn inventory_and_runtime_partition_are_exact() {
-        const SPELLINGS: [&str; 40] = [
+        const SPELLINGS: [&str; 45] = [
             "panic",
             "assert",
             "dbg",
@@ -974,6 +1064,11 @@ mod tests {
             "float_to_int",
             "float_cast",
             "total_cmp",
+            "sqrt",
+            "floor",
+            "ceil",
+            "trunc",
+            "round",
         ];
         let spellings = IntrinsicOperation::ALL
             .iter()
@@ -986,13 +1081,13 @@ mod tests {
             .iter()
             .filter_map(|operation| operation.runtime_call_kind())
             .collect::<Vec<_>>();
-        assert_eq!(runtime.len(), 29);
+        assert_eq!(runtime.len(), 30);
         assert_eq!(
             IntrinsicOperation::ALL
                 .iter()
                 .filter(|operation| operation.runtime_call_kind().is_none())
                 .count(),
-            16
+            21
         );
         assert_eq!(
             runtime
@@ -1000,14 +1095,15 @@ mod tests {
                 .enumerate()
                 .filter(|(index, kind)| !runtime[..*index].contains(kind))
                 .count(),
-            29
+            30
         );
         assert_eq!(
             runtime,
             EXACT_RUNTIME_MAPPINGS.map(|(_, runtime)| runtime),
             "the exact intrinsic-to-runtime map drifted"
         );
-        assert_eq!(RuntimeCallKind::ALL.len(), 47);
+        assert_eq!(RuntimeCallKind::ALL.len(), 49);
+
         for kind in RuntimeCallKind::ALL {
             assert_eq!(
                 IntrinsicOperation::from_runtime_call(kind).is_some(),
@@ -1145,6 +1241,16 @@ mod tests {
                 vec![(Type::F32, normal), (Type::F32, normal)],
                 Type::I32,
             ),
+            (
+                IntrinsicOperation::FloatSqrt,
+                vec![(Type::F64, normal)],
+                Type::F64,
+            ),
+            (
+                IntrinsicOperation::FloatRound,
+                vec![(Type::F32, normal)],
+                Type::F32,
+            ),
         ] {
             let args = describe(operation, args);
             assert!(
@@ -1258,6 +1364,16 @@ mod tests {
                 vec![(Type::F32, normal), (Type::F64, normal)],
                 Type::I32,
             ),
+            (
+                IntrinsicOperation::FloatFloor,
+                vec![(Type::F32, normal)],
+                Type::F64,
+            ),
+            (
+                IntrinsicOperation::FloatTrunc,
+                vec![(Type::I32, normal)],
+                Type::I32,
+            ),
         ];
         for (operation, args, result) in invalid {
             let args = describe(operation, args);
@@ -1313,6 +1429,11 @@ mod tests {
                 IntrinsicOperation::TotalCmp,
                 vec![value(Type::F64), value(Type::NEVER)],
                 Type::I32,
+            ),
+            (
+                IntrinsicOperation::FloatCeil,
+                vec![value(Type::NEVER)],
+                Type::F32,
             ),
             (
                 IntrinsicOperation::PtrToInt,
@@ -1701,6 +1822,11 @@ mod tests {
             (
                 IntrinsicOperation::DebugBool,
                 vec![(Type::BOOL, n)],
+                Type::UNIT,
+            ),
+            (
+                IntrinsicOperation::DebugFloat,
+                vec![(Type::U64, n), (Type::U32, n)],
                 Type::UNIT,
             ),
             (IntrinsicOperation::DebugStr, vec![(text, n)], Type::UNIT),

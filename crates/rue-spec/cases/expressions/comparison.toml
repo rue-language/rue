@@ -693,7 +693,7 @@ pub fn make() -> F { F { s: "hello" } }
 exit_code = 5
 
 # =============================================================================
-# Aggregates carrying a float (`floats` preview, RUE-2001)
+# Aggregates carrying a float (RUE-2001)
 #
 # A float is an ordinary scalar leaf of the structural recursion, so a float
 # field, element, or payload compares exactly the way a top-level `f64 == f64`
@@ -706,8 +706,6 @@ exit_code = 5
 [[case]]
 name = "struct_float_field_equality_{variant}"
 spec = ["4.3:2", "4.3:3b"]
-preview = "floats"
-preview_should_pass = true
 description = "Float fields compare field-by-field under IEEE equality, at both widths."
 source = """
 struct Sample { wide: f64, small: f32 }
@@ -732,8 +730,6 @@ params = [
 [[case]]
 name = "struct_single_float_field_equality_{width}"
 spec = ["4.3:2", "4.3:3b"]
-preview = "floats"
-preview_should_pass = true
 description = "A struct whose only field is a float compares on that field's value."
 source = """
 struct Wrapper { value: {width} }
@@ -753,8 +749,6 @@ params = [
 [[case]]
 name = "struct_float_field_negative_zero_equals_positive_zero"
 spec = ["4.3:2", "4.3:3b"]
-preview = "floats"
-preview_should_pass = true
 description = "`-0.0 == 0.0` inside an aggregate, as it is for a bare float: IEEE equality, not a bit comparison."
 source = """
 struct Sample { wide: f64, small: f32 }
@@ -770,8 +764,6 @@ exit_code = 1
 [[case]]
 name = "array_of_floats_equality_{variant}"
 spec = ["4.3:2", "4.3:3c"]
-preview = "floats"
-preview_should_pass = true
 description = "Float array elements compare index-by-index under IEEE equality."
 source = """
 fn main() -> i32 {
@@ -790,8 +782,6 @@ params = [
 [[case]]
 name = "single_element_float_array_equality_{width}"
 spec = ["4.3:2", "4.3:3c"]
-preview = "floats"
-preview_should_pass = true
 description = "A one-element float array is one storage slot and still compares on its element's value."
 source = """
 fn main() -> i32 {
@@ -809,8 +799,6 @@ params = [
 [[case]]
 name = "enum_float_payload_equality_{variant}"
 spec = ["4.3:2", "4.3:3d"]
-preview = "floats"
-preview_should_pass = true
 description = "A float enum payload compares under IEEE equality once the variants agree."
 source = """
 enum Reading { Value(f64), Missing }
@@ -838,8 +826,6 @@ params = [
 [[case]]
 name = "aggregate_holding_nan_is_not_equal_to_itself"
 spec = ["4.3:2", "4.3:3b", "4.3:3c", "4.3:3d"]
-preview = "floats"
-preview_should_pass = true
 description = "Observed NaN behaviour inside an aggregate, the measured baseline for RUE-2007's partial-equality decision."
 source = """
 struct Sample { wide: f64 }

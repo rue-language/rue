@@ -411,6 +411,27 @@ pub(crate) fn store_slots_at_low<B: SlotBackend>(b: &mut B, vals: &[VReg], low_s
     }
 }
 
+/// [`store_slots_at_low`] with each slot written at its LEAF's width and
+/// register class, so a float leaf is stored from the float vreg that carries
+/// it. This is the frame counterpart of [`load_slots_at_low_typed`], and
+/// the two must stay the same shape or a float aggregate reads back the bytes of
+/// a differently sized store.
+pub(crate) fn store_slots_at_low_typed<B: SlotBackend>(
+    b: &mut B,
+    vals: &[VReg],
+    low_slot: u32,
+    leaf_types: &[Type],
+) {
+    assert_eq!(vals.len(), leaf_types.len());
+    for (k, (val, ty)) in vals.iter().zip(leaf_types).enumerate() {
+        if let Some(width) = crate::value_plan::float_width(*ty) {
+            b.emit_typed_float_store_slot(*val, low_slot - k as u32, width);
+        } else {
+            b.emit_store_slot(*val, low_slot - k as u32);
+        }
+    }
+}
+
 pub(crate) fn store_slots_typed<B: SlotBackend>(
     b: &mut B,
     vals: &[VReg],
@@ -445,6 +466,29 @@ pub(crate) fn store_slots_through_ptr<B: SlotBackend>(
             ptr,
             static_byte_offset + (i as i32) * SLOT_BYTES as i32,
         );
+    }
+}
+
+/// [`store_slots_through_ptr`] with each slot written at its LEAF's width from a
+/// vreg of that leaf's register class. The untyped form emits a
+/// general-purpose store whatever the source vreg holds, which silently wrote an
+/// integer register's bytes when the slot was carried in an XMM/V register — the
+/// counterpart of [`load_slots_through_ptr_typed`] keeps the two ends the same
+/// shape.
+pub(crate) fn store_slots_through_ptr_typed<B: SlotBackend>(
+    b: &mut B,
+    vals: &[VReg],
+    ptr: VReg,
+    static_byte_offset: i32,
+    leaf_types: &[Type],
+) {
+    assert_eq!(vals.len(), leaf_types.len());
+    for (i, (val, ty)) in vals.iter().zip(leaf_types).enumerate() {
+        let byte_offset = static_byte_offset + (i as i32) * SLOT_BYTES as i32;
+        match crate::value_plan::float_width(*ty) {
+            Some(width) => b.emit_float_store_through_ptr(*val, ptr, byte_offset, width),
+            None => b.emit_store_through_ptr(*val, ptr, byte_offset),
+        }
     }
 }
 
@@ -716,6 +760,37 @@ pub(crate) fn load_slots_through_ptr<B: SlotBackend>(
     count: u32,
 ) -> Vec<VReg> {
     load_through_ptr(b, ptr, count)
+}
+
+/// [`load_slots_through_ptr`] with each slot read at its LEAF's width into a
+/// vreg of that leaf's register class, so a float leaf lands in a float vreg.
+/// The counterpart of [`store_slots_through_ptr_typed`]; the untyped
+/// form stays for the foreign eightbyte path, whose slots are integer-class bit
+/// carriers by the target-C ABI's own classification rather than by leaf type.
+pub(crate) fn load_slots_through_ptr_typed<B: SlotBackend>(
+    b: &mut B,
+    ptr: VReg,
+    leaf_types: &[Type],
+) -> Vec<VReg> {
+    leaf_types
+        .iter()
+        .enumerate()
+        .map(|(k, ty)| {
+            let byte_offset = (k as i32) * SLOT_BYTES as i32;
+            match crate::value_plan::float_width(*ty) {
+                Some(width) => {
+                    let vreg = b.alloc_float_vreg();
+                    b.emit_float_load_through_ptr(vreg, ptr, byte_offset, width);
+                    vreg
+                }
+                None => {
+                    let vreg = b.alloc_vreg();
+                    b.emit_load_through_ptr(vreg, ptr, byte_offset);
+                    vreg
+                }
+            }
+        })
+        .collect()
 }
 
 /// Load a whole aggregate value's `count` logical slots from the frame region

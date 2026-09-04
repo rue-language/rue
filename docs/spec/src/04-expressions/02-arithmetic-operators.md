@@ -18,7 +18,9 @@ exactly over the mathematical integers: when that exact result lies within the
 operand type's range it is the value produced, and when it does not the
 operation traps at runtime rather than wrapping (§6.4, rules
 `(D-Arith)`/`(D-Arith-Trap)`; see 4.2:9). Division and remainder additionally
-trap on a zero divisor (4.2:11).
+trap on a zero divisor (4.2:11). This rule and 4.2:9 and 4.2:11 govern integer
+operands only; `+`, `-`, `*`, and `/` on floating-point operands are specified
+by 3.12:21, and `%` is rejected on them by 3.12:25.
 
 | Operator | Name | Description |
 |----------|------|-------------|
@@ -77,10 +79,11 @@ traps at runtime (4.2:16), except for the compile-time literal case of 4.2:15.
 
 {{ rule(id="4.2:14", cat="legality-rule") }}
 
-A compiler **MUST** reject unary negation whose operand is not a signed integer
-type. Unsigned integer types have no negative range, and non-numeric types
-(such as `bool` or `()`) are not negatable at all; applying `-` to any of them
-is a compile-time error.
+A compiler **MUST** reject unary negation whose operand is neither a signed
+integer type nor a floating-point type. Unsigned integer types have no negative
+range, and non-numeric types (such as `bool` or `()`) are not negatable at all;
+applying `-` to any of them is a compile-time error. Floating-point negation is
+specified by 3.12:24.
 
 {{ rule(id="4.2:7", cat="normative") }}
 
@@ -121,9 +124,11 @@ fn main() -> i32 {
 
 {{ rule(id="4.2:9", cat="dynamic-semantics") }}
 
-Arithmetic operations that overflow the range of their type **MUST** cause a
-runtime panic; the result is never silently wrapped or truncated (core calculus
-`docs/formal/01-core-calculus.md` §6.4, rule `(D-Arith-Trap)`).
+Integer arithmetic operations that overflow the range of their type **MUST**
+cause a runtime panic; the result is never silently wrapped or truncated (core
+calculus `docs/formal/01-core-calculus.md` §6.4, rule `(D-Arith-Trap)`).
+Floating-point arithmetic has no such trap: an out-of-range result becomes an
+infinity (3.12:23).
 
 {{ rule(id="4.2:10") }}
 
@@ -137,11 +142,12 @@ fn main() -> i32 {
 
 {{ rule(id="4.2:11", cat="dynamic-semantics") }}
 
-Division or remainder by zero **MUST** cause a runtime panic (core calculus
-`docs/formal/01-core-calculus.md` §6.4, rules `(D-Div-Zero)` and the
+Integer division or remainder by zero **MUST** cause a runtime panic (core
+calculus `docs/formal/01-core-calculus.md` §6.4, rules `(D-Div-Zero)` and the
 corresponding `↯rem-zero` trap for `%`). Signed division or remainder of a
 type's minimum value by `-1` likewise traps as an overflow (§6.4,
-`(D-Div-Overflow)`).
+`(D-Div-Overflow)`). The rule is integer-only: floating-point division by zero
+is defined and does not trap (3.12:22).
 
 {{ rule(id="4.2:12") }}
 
@@ -151,3 +157,13 @@ fn main() -> i32 {
     10 % 0  // Runtime error: division by zero
 }
 ```
+
+## Floating-Point Operands
+
+{{ rule(id="4.2:18", cat="informative") }}
+
+`+`, `-`, `*`, `/`, and unary `-` are also defined on the floating-point types
+`f32` and `f64`, where they follow IEEE 754 and never trap; `%` is not defined
+on them. Those rules are stated together in
+[Floating-Point Types](@/03-types/12-floating-point-types.md): arithmetic in
+3.12:21–3.12:23, negation in 3.12:24, and the rejection of `%` in 3.12:25.

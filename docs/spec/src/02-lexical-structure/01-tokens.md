@@ -21,6 +21,7 @@ Rue tokens fall into the following categories:
 | Keywords | `fn`, `let`, `mut`, `if`, `else`, `while`, `match`, `return`, `break`, `continue`, `true`, `false` |
 | Identifiers | `main`, `x`, `my_var`, `_unused` |
 | Integer literals | `0`, `42`, `1_000_000`, `0xFF`, `0o17`, `0b1010` |
+| Float literals | `1.0`, `2.5`, `1e9`, `1.5e-3`, `6.022e23` |
 | Byte literals | `b'a'`, `b'0'`, `b'\n'`, `b'\''` |
 | String literals | `"hello"`, `"world"`, `"with \"escapes\""` |
 | Operators | `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `>`, `<=`, `>=`, `&&`, `\|\|`, `!`, `&`, `\|`, `^`, `~`, `<<`, `>>` |
@@ -77,6 +78,44 @@ fn main() -> i32 {
     @dbg(0x_FF_);       // underscores legal after the prefix and trailing
     @dbg(0o17);         // octal, value 15
     @dbg(0b1010);       // binary, value 10
+    0
+}
+```
+
+## Float Literals
+
+{{ rule(id="2.1:29", cat="normative") }}
+
+A float literal is a decimal digit run followed by a fraction (a `.` and at
+least one further digit), an exponent (`e` or `E`, an optional sign, and at
+least one digit), or both. Underscores may separate digits inside any of its
+digit runs and do not affect the value; there are no floating-point suffixes.
+A float literal has type `comptime_float` and takes a concrete floating-point
+type from its context (§3.12).
+
+```ebnf
+float_literal = dec_literal ( float_fraction [ float_exponent ]
+                            | float_exponent ) ;
+float_fraction = "." dec_literal ;
+float_exponent = ( "e" | "E" ) [ "+" | "-" ] dec_literal ;
+```
+
+{{ rule(id="2.1:30", cat="legality-rule") }}
+
+A float literal **MUST NOT** begin or end with `.`, and an exponent marker
+**MUST** be followed by at least one digit: `.5`, `5.`, and `1e` are
+compile-time errors. `42.method()` is not affected — a `.` not followed by a
+digit ends the integer literal, so the longest float match does not reach it.
+
+{{ rule(id="2.1:31") }}
+
+```rue
+fn main() -> i32 {
+    @dbg(1.0);         // fraction form
+    @dbg(1e9);         // exponent form
+    @dbg(1.5e-3);      // both
+    @dbg(1_000.5);     // separators are ignored
+    @dbg(2.5E+7);      // uppercase exponent marker, explicit sign
     0
 }
 ```

@@ -191,6 +191,34 @@ pub(super) fn inferred_const_type_name(
     crate::durable_comptime::inferred_durable_const_type_name(value)
 }
 
+pub(super) fn suggested_const_type_name(
+    value: &crate::durable_semantics::DurableConstValue,
+) -> &'static str {
+    crate::durable_comptime::suggested_durable_const_type_name(value)
+}
+
+/// The bit pattern a `const` initializer of float type denotes, or `None` when
+/// the initializer is not a value of that type at all.
+///
+/// `literal` distinguishes the two forms a float const initializer takes.
+/// A source float literal still carries its exact written decimal, and spec
+/// 3.12:10 rejects one that rounds to an infinity in the const's type — the
+/// same rule the body path applies to `let x: f32 = 1e39;`. A value the
+/// compile-time engine computed already carries the width it was evaluated at
+/// and may legitimately be `inf` or `NaN` (`1.0 / 0.0`), so it is read with
+/// the permissive value parser.
+pub(super) fn float_const_initializer_bits(
+    text: &str,
+    ty: rue_air::Type,
+    literal: bool,
+) -> Option<u64> {
+    if literal {
+        rue_air::finite_float_literal_bits(text, ty)
+    } else {
+        rue_air::float_value_bits(text, ty)
+    }
+}
+
 pub(super) fn substitute_durable_generics(
     ty: &crate::durable_semantics::DurableType,
     type_arguments: &[crate::durable_semantics::DurableType],

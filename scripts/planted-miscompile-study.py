@@ -28,9 +28,9 @@ PATCH_TARGETS = {
     "RUE-1758": "crates/rue-codegen/src/terminator_plan.rs",
 }
 PATCH_PREIMAGE_SHA256 = {
-    "RUE-348": "3d680149390b5dbd19d71ab1bc3fcff5cfc0a65525684ca8fafbc357f81004d2",
+    "RUE-348": "1d5d9990b397c5ff39c95178dbb8f24a7e82fd303aa934d466d331b98c1e6b26",
     "RUE-914": "cc00b46e5840e02b80095ae9e121a39ab66bcf6b25d17e9bc37d7fe996b72fb1",
-    "RUE-1758": "e77acda1180060fdb48bf17c644a822fac86030997161042de06404b623efb88",
+    "RUE-1758": "a093afb95a27540ca01a3aabd20b721b1b8bdb4e60a464942a4c717b7f0a03d5",
 }
 FOCUSED_CLI = {
     "RUE-348": "enum_payload_equality_across_opt_levels",

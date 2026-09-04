@@ -1698,23 +1698,6 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         crate::semantic_query_nucleus::SemanticNucleusFailure,
     > {
         use crate::durable_semantics::DurableType as T;
-        if matches!(name, "f32" | "f64" | "comptime_float")
-            && !self
-                .configuration
-                .preview_features
-                .contains(rue_error::PreviewFeature::Floats)
-        {
-            let feature = rue_error::PreviewFeature::Floats;
-            return Self::provider_domain_failure(
-                crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticWithHelp {
-                    kind: rue_error::ErrorKind::PreviewFeatureRequired {
-                        feature,
-                        what: format!("floating-point type `{name}`"),
-                    },
-                    help: feature.enable_help().into(),
-                },
-            );
-        }
         Ok(Some(match name {
             "i8" => T::I8,
             "i16" => T::I16,
@@ -1732,7 +1715,10 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
             "type" => T::ComptimeType,
             "f32" => T::F32,
             "f64" => T::F64,
-            "comptime_float" => T::ComptimeFloat,
+            // `comptime_float` is absent for the same reason `comptime_int`
+            // is: a comptime-only type is inferred, never named (spec 3.12:3).
+            // This table mirrors `rue_air::Type::from_primitive_name` and must
+            // keep mirroring it (RUE-1076).
             _ => return Ok(None),
         }))
     }

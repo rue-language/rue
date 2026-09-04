@@ -172,12 +172,18 @@ pub enum ResidualValuePlan {
     },
     PlaceRead {
         place: PlacePlan,
+        /// One leaf type per logical slot of the value being read, so a
+        /// multi-slot read loads each slot at its leaf's width and class.
+        leaf_types: Vec<Type>,
     },
     PlaceWrite {
         place: PlacePlan,
         value: MaterializedValue,
         value_shape: ValueShape,
         float_width: Option<FloatWidth>,
+        /// One leaf type per logical slot of the stored value; see
+        /// [`crate::place_lower::lower_place_write_plan`].
+        leaf_types: Vec<Type>,
     },
 }
 
@@ -434,7 +440,9 @@ pub trait ValueLowerAdapter:
 {
     fn value_is_lowered(&self, value: CfgValue) -> bool;
     fn reserve_value_result(&mut self) -> VReg;
-    fn reserve_typed_value_result(&mut self, ty: Type) -> VReg;
+    /// Reserve the vreg a call result lands in, in the register class its
+    /// single ABI slot names: floating-point when `float_width` is `Some`.
+    fn reserve_typed_value_result(&mut self, float_width: Option<FloatWidth>) -> VReg;
     fn resolve_symbol(&self, symbol: Spur) -> String;
     /// Whether `machine_symbol` (already resolved via
     /// [`resolve_symbol`](Self::resolve_symbol)) names an `extern "C"` foreign
@@ -445,7 +453,11 @@ pub trait ValueLowerAdapter:
     fn target_c_flavor(&self) -> rue_air::TargetCAbiFlavor;
     fn resolve_named_symbol(&self, symbol: &str) -> String;
     fn call_arg_register_banks(&self) -> crate::call_plan::AbiRegisterBanks;
-    fn return_register_budget(&self) -> u32;
+    /// The target's RETURN register file, one bank per register class. Its
+    /// general-purpose width is the return-register budget the native return
+    /// classifier spends; its floating-point width places a float-leaf return
+    /// slot (see [`crate::call_plan::return_slot_regs`]).
+    fn return_register_banks(&self) -> crate::call_plan::AbiRegisterBanks;
     fn emit_value(&mut self, plan: ValueEmissionPlan) -> ValueResult;
     fn emit_call(&mut self, plan: CallPlan) -> ValueResult;
     /// Emit an `extern "C"` foreign call that crosses one or more aggregates by
@@ -517,32 +529,75 @@ pub fn float_width(ty: Type) -> Option<FloatWidth> {
     }
 }
 
-/// The float width of a value whose whole representation is one storage slot,
-/// given that value's [`crate::types::aggregate_leaf_types`].
+/// The float width of a value's LOGICAL SLOT 0 — the slot its primary vreg
+/// carries — given that value's [`crate::types::aggregate_leaf_types`].
 ///
-/// A slot-addressed plan (`Alloc`, `Load`, `Store`, `ParamStore`) reaches a
-/// single-slot value through its primary vreg rather than through the typed
-/// slot walk, so that vreg's register class has to come from the leaf the slot
-/// actually holds. A bare `f64` and a `struct Q { f: f64 }` hold the same thing
+/// A slot's register class follows its LEAF, not the type wrapped around it.
+/// Every other authority already classifies slots that way: the call ABI reads
+/// `types::aggregate_leaf_types` (`call_plan::CallPlan::from_inputs`), parameter
+/// metadata reads `native_arg_leaf_classes` (`rue_cfg::build`), and multi-slot
+/// frame traffic reads the leaf types (`agg_slots::load_slots_at_low_typed`).
+/// A bare `f64`, a `struct Q { f: f64 }`, and a `[f64; 1]` hold the same thing
 /// in the same one slot; reading the width off the value's own type answers
-/// `None` for the wrapper and loads the float into a general-purpose register,
-/// which every float-typed consumer of that slot then rejects — the
-/// aggregate-equality walk's float compare most visibly (RUE-2001). Reading it
-/// off the leaf instead gives the wrapper the float register class its content
-/// already had, so `Q == Q` compares the same way `f64 == f64` does.
+/// `None` for the wrappers, so that slot is loaded with an integer load into a
+/// general-purpose register and every float-typed consumer of it then rejects
+/// the operand — the aggregate-equality walk's float compare most visibly
+/// (RUE-2001), and a wrapper-typed frame load feeding an FP argument register
+/// beside it. Reading it off the leaf gives the wrapper the float register
+/// class its content already had, so `Q == Q` compares the same way
+/// `f64 == f64` does.
 ///
-/// Multi-slot values answer `None`: their per-slot classes are not one width,
-/// and the typed slot walk selects each slot's own from `leaf_types`.
-fn single_slot_float_width(leaf_types: &[Type]) -> Option<FloatWidth> {
-    match leaf_types {
-        [leaf] => float_width(*leaf),
+/// A scalar's only leaf is itself, so this agrees with [`float_width`] for
+/// every scalar type. For a multi-slot aggregate it describes slot 0 alone:
+/// a plan that reaches a value through its primary vreg does so only when that
+/// vreg is the whole value, and every other slot takes its own class from
+/// `leaf_types` through the typed slot walk.
+pub fn primary_slot_float_width(leaf_types: &[Type]) -> Option<FloatWidth> {
+    leaf_types.first().copied().and_then(float_width)
+}
+
+/// The rounding direction of an integral-rounding float intrinsic
+/// (ADR-0065 §7). Every variant maps to one hardware instruction on AArch64
+/// (`frintm`/`frintp`/`frintz`/`frinta`); on x86-64 the first three are one
+/// SSE4.1 `roundsd`/`roundss` and `NearestTiesAway` is a short compare-and-
+/// adjust sequence around a truncating round, because SSE has no ties-away
+/// mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FloatRounding {
+    Floor,
+    Ceil,
+    Trunc,
+    NearestTiesAway,
+}
+
+/// Select the rounding direction spelled by an integral-rounding intrinsic;
+/// `None` for every other operation.
+pub fn float_rounding(operation: IntrinsicOperation) -> Option<FloatRounding> {
+    match operation {
+        IntrinsicOperation::FloatFloor => Some(FloatRounding::Floor),
+        IntrinsicOperation::FloatCeil => Some(FloatRounding::Ceil),
+        IntrinsicOperation::FloatTrunc => Some(FloatRounding::Trunc),
+        IntrinsicOperation::FloatRound => Some(FloatRounding::NearestTiesAway),
         _ => None,
     }
 }
 
+/// The bit pattern of `value` at `width`, for materializing a float constant
+/// in a lowering sequence.
+pub fn float_const_bits(width: FloatWidth, value: f64) -> u64 {
+    match width {
+        FloatWidth::F32 => u64::from((value as f32).to_bits()),
+        FloatWidth::F64 => value.to_bits(),
+    }
+}
+
+/// How a float-to-integer guard compares the operand against its bound. Every
+/// relation is *ordered*: a NaN operand fails it, so the lower guard alone
+/// rejects NaN on both targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FloatToIntGuardRelation {
     OrderedGreaterEqual,
+    OrderedGreater,
     OrderedLess,
 }
 
@@ -559,34 +614,45 @@ pub struct CheckedFloatToIntPlan {
 }
 
 /// Plan the ordered guard sequence required before a truncating float-to-int
-/// instruction. The lower guard rejects NaN and values below the inclusive
-/// minimum; the upper guard rejects NaN and values at or above the exclusive
-/// maximum. Targets only select their branch spelling for these relations.
+/// instruction (`@float_to_int`, ADR-0065 §4).
+///
+/// The conversion traps exactly when the operand is NaN or its truncation
+/// toward zero is not representable in the integer type, i.e. it succeeds iff
+/// `MIN - 1 < x < MAX + 1`. The lower guard is spelled as `x > MIN - 1` when
+/// `MIN - 1` is exactly representable at `width` and as `x >= MIN` otherwise —
+/// the two are equivalent precisely when no float of that width lies strictly
+/// between them, which is the case that makes `MIN - 1` round to `MIN`. Both
+/// guards are ordered comparisons, so the lower one also rejects NaN. Targets
+/// only select their branch spelling for these relations.
 pub fn checked_float_to_int_plan(
     width: FloatWidth,
     integer: IntegerWidth,
 ) -> CheckedFloatToIntPlan {
-    assert!(
-        integer.signed,
-        "ADR-0065 phases 5-6 support signed integer conversion"
-    );
-    let lower = -(2.0f64).powi((integer.bits - 1) as i32);
-    let upper = (2.0f64).powi((integer.bits - 1) as i32);
-    let bounds = match width {
-        FloatWidth::F32 => (
-            (lower as f32).to_bits() as u64,
-            (upper as f32).to_bits() as u64,
-        ),
-        FloatWidth::F64 => (lower.to_bits(), upper.to_bits()),
+    let (lower, upper) = if integer.signed {
+        (
+            -(2.0f64).powi((integer.bits - 1) as i32),
+            (2.0f64).powi((integer.bits - 1) as i32),
+        )
+    } else {
+        (0.0, (2.0f64).powi(integer.bits as i32))
+    };
+    let below = lower - 1.0;
+    let lower_guard = if float_const_bits(width, below) == float_const_bits(width, lower) {
+        FloatToIntGuard {
+            bound_bits: float_const_bits(width, lower),
+            success: FloatToIntGuardRelation::OrderedGreaterEqual,
+        }
+    } else {
+        FloatToIntGuard {
+            bound_bits: float_const_bits(width, below),
+            success: FloatToIntGuardRelation::OrderedGreater,
+        }
     };
     CheckedFloatToIntPlan {
         guards: [
+            lower_guard,
             FloatToIntGuard {
-                bound_bits: bounds.0,
-                success: FloatToIntGuardRelation::OrderedGreaterEqual,
-            },
-            FloatToIntGuard {
-                bound_bits: bounds.1,
+                bound_bits: float_const_bits(width, upper),
                 success: FloatToIntGuardRelation::OrderedLess,
             },
         ],
@@ -694,6 +760,12 @@ pub enum StoragePolicy {
 pub struct ValuePlan {
     pub shape: ValueShape,
     pub requirement: MaterializationRequirement,
+    /// Float width of the value's LOGICAL SLOT 0, i.e. of the vreg that carries
+    /// the primary. `None` when that slot is general-purpose. This is what a
+    /// primary vreg's register class must follow, including for an aggregate
+    /// whose first leaf is a float but whose own type is not
+    /// (see [`primary_slot_float_width`]).
+    pub primary_float_width: Option<FloatWidth>,
     pub integer_width: Option<IntegerWidth>,
     /// The source width selected for an integer cast, when this value is a
     /// cast. Keeping both sides here prevents an adapter from re-deriving
@@ -720,6 +792,10 @@ impl ValuePlan {
             } else {
                 MaterializationRequirement::Primary
             },
+            primary_float_width: primary_slot_float_width(&crate::types::aggregate_leaf_types(
+                ctx.type_pool,
+                ty,
+            )),
             integer_width: value_width,
             source_integer_width: match &inst.data {
                 CfgInstData::IntCast { from_ty, .. } => integer_width(*from_ty),
@@ -1199,7 +1275,7 @@ fn residual_plan<A: ValueLowerAdapter>(
                 slot: ctx.frame_slot(slot),
                 init: operand(ctx, adapter, init),
                 init_shape: ValuePlan::for_value(ctx, init).shape,
-                float_width: single_slot_float_width(&leaf_types),
+                float_width: primary_slot_float_width(&leaf_types),
                 leaf_types,
             }
         }
@@ -1208,7 +1284,7 @@ fn residual_plan<A: ValueLowerAdapter>(
                 crate::types::aggregate_leaf_types(ctx.type_pool, ctx.cfg.get_inst(value).ty);
             ResidualValuePlan::Load {
                 slot: ctx.frame_slot(slot),
-                float_width: single_slot_float_width(&leaf_types),
+                float_width: primary_slot_float_width(&leaf_types),
                 leaf_types,
             }
         }
@@ -1219,7 +1295,7 @@ fn residual_plan<A: ValueLowerAdapter>(
                 destination: store_destination(ctx, slot),
                 value: operand(ctx, adapter, value),
                 value_shape: ValuePlan::for_value(ctx, value).shape,
-                float_width: single_slot_float_width(&leaf_types),
+                float_width: primary_slot_float_width(&leaf_types),
                 leaf_types,
             }
         }
@@ -1230,7 +1306,7 @@ fn residual_plan<A: ValueLowerAdapter>(
                 param_slot,
                 value: operand(ctx, adapter, value),
                 value_shape: ValuePlan::for_value(ctx, value).shape,
-                float_width: single_slot_float_width(&leaf_types),
+                float_width: primary_slot_float_width(&leaf_types),
                 leaf_types,
             }
         }
@@ -1337,16 +1413,25 @@ fn residual_plan<A: ValueLowerAdapter>(
                 CfgInstData::PlaceRead { place } => place_plan(ctx, adapter, place),
                 _ => unreachable!("residual place-read input changed kind"),
             },
+            leaf_types: crate::types::aggregate_leaf_types(
+                ctx.type_pool,
+                ctx.cfg.get_inst(value).ty,
+            ),
         },
-        ResidualInput::PlaceWrite { value: stored } => ResidualValuePlan::PlaceWrite {
-            place: match &ctx.cfg.get_inst(value).data {
-                CfgInstData::PlaceWrite { place, .. } => place_plan(ctx, adapter, place),
-                _ => unreachable!("residual place-write input changed kind"),
-            },
-            value: operand(ctx, adapter, stored),
-            value_shape: ValuePlan::for_value(ctx, stored).shape,
-            float_width: float_width(ctx.cfg.get_inst(stored).ty),
-        },
+        ResidualInput::PlaceWrite { value: stored } => {
+            let leaf_types =
+                crate::types::aggregate_leaf_types(ctx.type_pool, ctx.cfg.get_inst(stored).ty);
+            ResidualValuePlan::PlaceWrite {
+                place: match &ctx.cfg.get_inst(value).data {
+                    CfgInstData::PlaceWrite { place, .. } => place_plan(ctx, adapter, place),
+                    _ => unreachable!("residual place-write input changed kind"),
+                },
+                value: operand(ctx, adapter, stored),
+                value_shape: ValuePlan::for_value(ctx, stored).shape,
+                float_width: primary_slot_float_width(&leaf_types),
+                leaf_types,
+            }
+        }
     }
 }
 
@@ -1667,7 +1752,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                 inst.ty,
                 call_args,
                 &by_ref_plans,
-                adapter.return_register_budget(),
+                adapter.return_register_banks().gp as u32,
             );
             let result = if let Some(runtime) = *runtime {
                 let helper = runtime.helper();
@@ -1703,7 +1788,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                         call_args,
                         adapter.target_c_flavor(),
                     );
-                    let result_vreg = adapter.reserve_typed_value_result(inst.ty);
+                    let result_vreg = adapter.reserve_typed_value_result(float_width(inst.ty));
                     adapter.emit_foreign_call(foreign_inputs, result_vreg)
                 } else {
                     // An `extern "C"` scalar/pointer call (ADR-0064 P2): a scalar
@@ -1720,7 +1805,14 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     } else {
                         None
                     };
-                    let result_vreg = adapter.reserve_typed_value_result(inst.ty);
+                    // The result vreg mirrors the return's logical slot 0, so its
+                    // class follows that slot's LEAF: a float-leaf aggregate
+                    // result lands in an FP vreg, not a general-purpose one, and
+                    // the move that syncs it is an FP move.
+                    let result_float_width = primary_slot_float_width(
+                        &crate::types::aggregate_leaf_types(ctx.type_pool, inst.ty),
+                    );
+                    let result_vreg = adapter.reserve_typed_value_result(result_float_width);
                     let mut plan = crate::call_plan::CallPlan::from_inputs_with_result(
                         crate::call_plan::CallTarget::rue(symbol),
                         inputs.return_plan,
@@ -1731,7 +1823,20 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                         adapter,
                         Some(result_vreg),
                     );
-                    plan.result_float_width = float_width(inst.ty);
+                    plan.result_float_width = result_float_width;
+                    // A register-returned aggregate reads each slot back from the
+                    // return register its LEAF class names, so a one-slot float
+                    // struct comes back in the FP bank the callee wrote.
+                    if matches!(
+                        inputs.return_plan,
+                        crate::call_plan::ReturnPlan::Registers { .. }
+                    ) {
+                        plan.return_slot_regs = crate::call_plan::return_slot_regs(
+                            ctx.type_pool,
+                            inst.ty,
+                            adapter.return_register_banks(),
+                        );
+                    }
                     plan.foreign_return_extension = foreign_return_extension;
                     adapter.emit_call(plan)
                 }
@@ -2123,6 +2228,7 @@ fn intrinsic_runtime_call(
         IntrinsicOperation::DebugI64
         | IntrinsicOperation::DebugU64
         | IntrinsicOperation::DebugBool
+        | IntrinsicOperation::DebugFloat
         | IntrinsicOperation::DebugStr => {
             let arg = args
                 .first()
@@ -2132,6 +2238,19 @@ fn intrinsic_runtime_call(
                     RuntimeCallArg::const_pointer(arg.slots[0], AbiType::Byte),
                     RuntimeCallArg::value(arg.slots[1], AbiType::U64),
                 ],
+                // The float's bit pattern already arrives as a `u64` and its
+                // width discriminator as a `u32` (ADR-0065 §6); nothing to
+                // extend on either.
+                IntrinsicOperation::DebugFloat => vec![
+                    RuntimeCallArg::value(arg.primary, AbiType::U64),
+                    RuntimeCallArg::value(
+                        args.get(1)
+                            .expect("validated float debug intrinsic carries its width")
+                            .primary,
+                        AbiType::U32,
+                    ),
+                ],
+
                 IntrinsicOperation::DebugI64 => vec![RuntimeCallArg::extended(
                     arg.primary,
                     arg.integer_extension,
@@ -2171,6 +2290,11 @@ fn intrinsic_runtime_call(
         | IntrinsicOperation::FloatToInt
         | IntrinsicOperation::FloatCast
         | IntrinsicOperation::TotalCmp
+        | IntrinsicOperation::FloatSqrt
+        | IntrinsicOperation::FloatFloor
+        | IntrinsicOperation::FloatCeil
+        | IntrinsicOperation::FloatTrunc
+        | IntrinsicOperation::FloatRound
         | IntrinsicOperation::Syscall => {
             unreachable!("pure intrinsic cannot have a runtime-call mapping")
         }
@@ -2396,7 +2520,75 @@ pub fn assert_slot_policy(plan: ValuePlan, actual: usize) {
 }
 
 #[cfg(test)]
+mod float_to_int_guard_tests {
+    use super::*;
+
+    fn plan(width: FloatWidth, bits: u32, signed: bool) -> [FloatToIntGuard; 2] {
+        checked_float_to_int_plan(width, IntegerWidth { bits, signed }).guards
+    }
+
+    #[test]
+    fn signed_lower_guard_is_exclusive_below_min_when_representable() {
+        // f64 -> i32: -2^31 - 1 is exact, so the guard is `x > -2147483649`.
+        let [lower, upper] = plan(FloatWidth::F64, 32, true);
+        assert_eq!(lower.success, FloatToIntGuardRelation::OrderedGreater);
+        assert_eq!(lower.bound_bits, (-2147483649.0f64).to_bits());
+        assert_eq!(upper.success, FloatToIntGuardRelation::OrderedLess);
+        assert_eq!(upper.bound_bits, 2147483648.0f64.to_bits());
+    }
+
+    #[test]
+    fn signed_lower_guard_is_inclusive_min_when_min_minus_one_rounds_to_min() {
+        // f64 -> i64 and f32 -> i32: no float lies strictly between MIN - 1 and
+        // MIN, so `x >= MIN` is the same predicate and the one the target spells.
+        let [lower, _] = plan(FloatWidth::F64, 64, true);
+        assert_eq!(lower.success, FloatToIntGuardRelation::OrderedGreaterEqual);
+        assert_eq!(lower.bound_bits, (-9223372036854775808.0f64).to_bits());
+        let [lower, upper] = plan(FloatWidth::F32, 32, true);
+        assert_eq!(lower.success, FloatToIntGuardRelation::OrderedGreaterEqual);
+        assert_eq!(lower.bound_bits, u64::from((-2147483648.0f32).to_bits()));
+        assert_eq!(upper.bound_bits, u64::from(2147483648.0f32.to_bits()));
+    }
+
+    #[test]
+    fn unsigned_guards_admit_the_truncating_open_interval() {
+        // u32: -1 < x < 2^32, in both widths.
+        for width in [FloatWidth::F32, FloatWidth::F64] {
+            let [lower, upper] = plan(width, 32, false);
+            assert_eq!(lower.success, FloatToIntGuardRelation::OrderedGreater);
+            assert_eq!(lower.bound_bits, float_const_bits(width, -1.0));
+            assert_eq!(upper.success, FloatToIntGuardRelation::OrderedLess);
+            assert_eq!(upper.bound_bits, float_const_bits(width, 4294967296.0));
+        }
+        let [_, upper] = plan(FloatWidth::F64, 64, false);
+        assert_eq!(upper.bound_bits, 18446744073709551616.0f64.to_bits());
+    }
+
+    #[test]
+    fn rounding_selection_covers_exactly_the_rounding_intrinsics() {
+        assert_eq!(
+            float_rounding(IntrinsicOperation::FloatFloor),
+            Some(FloatRounding::Floor)
+        );
+        assert_eq!(
+            float_rounding(IntrinsicOperation::FloatCeil),
+            Some(FloatRounding::Ceil)
+        );
+        assert_eq!(
+            float_rounding(IntrinsicOperation::FloatTrunc),
+            Some(FloatRounding::Trunc)
+        );
+        assert_eq!(
+            float_rounding(IntrinsicOperation::FloatRound),
+            Some(FloatRounding::NearestTiesAway)
+        );
+        assert_eq!(float_rounding(IntrinsicOperation::FloatSqrt), None);
+    }
+}
+
+#[cfg(test)]
 mod tests {
+
     use std::sync::Arc;
 
     use super::{
@@ -2829,6 +3021,7 @@ mod tests {
             ValuePlan {
                 shape: ValueShape::Scalar,
                 requirement: MaterializationRequirement::Primary,
+                primary_float_width: None,
                 integer_width: Some(IntegerWidth {
                     bits: 32,
                     signed: true,
@@ -3514,23 +3707,28 @@ mod tests {
         }
     }
 
-    /// The width a slot-addressed plan gives one storage slot comes from the
-    /// leaf that slot holds, so a wrapper around a float is a float slot and a
-    /// multi-slot aggregate has no single width (RUE-2001).
+    /// The width a primary vreg takes comes from the leaf its slot holds, so a
+    /// wrapper around a float is a float slot (RUE-2001) and a multi-slot
+    /// aggregate's primary follows its FIRST leaf — the slot that vreg carries
+    /// — while its remaining slots take their own classes from `leaf_types`.
     #[test]
     fn a_single_slot_float_leaf_selects_the_float_class_for_its_wrapper() {
         assert_eq!(
-            super::single_slot_float_width(&[Type::F64]),
+            super::primary_slot_float_width(&[Type::F64]),
             Some(FloatWidth::F64)
         );
         assert_eq!(
-            super::single_slot_float_width(&[Type::F32]),
+            super::primary_slot_float_width(&[Type::F32]),
             Some(FloatWidth::F32)
         );
-        assert_eq!(super::single_slot_float_width(&[Type::I64]), None);
-        assert_eq!(super::single_slot_float_width(&[]), None);
+        assert_eq!(super::primary_slot_float_width(&[Type::I64]), None);
+        assert_eq!(super::primary_slot_float_width(&[]), None);
         assert_eq!(
-            super::single_slot_float_width(&[Type::F64, Type::F64]),
+            super::primary_slot_float_width(&[Type::F64, Type::I64]),
+            Some(FloatWidth::F64)
+        );
+        assert_eq!(
+            super::primary_slot_float_width(&[Type::I64, Type::F64]),
             None
         );
     }

@@ -1,0 +1,95 @@
+// Floating point: f32, f64, and the std.math surface.
+//
+// Rue's floating-point types are IEEE 754-2019 exactly (specification 3.12):
+// `f32` is binary32, `f64` is binary64, and a float literal takes its type
+// from context rather than from a suffix. There are no implicit conversions in
+// either direction, so every width or domain change is written out with one of
+// the three conversion intrinsics. `@dbg` prints the shortest decimal that
+// reads back as the same value, so the output below is exact rather than
+// rounded for display.
+//
+// Returns 42 when every check passes.
+
+const std = @import("std");
+const math = std.math;
+
+// `a`, `b`, and the literals inside are all f64: a float literal takes its
+// type from the context it appears in (3.12:7).
+fn hypot(a: f64, b: f64) -> f64 {
+    math.sqrt(f64, a * a + b * b)
+}
+
+// Newton's method for a cube root, iterated a fixed number of times so the
+// result is bit-for-bit identical on every target.
+fn cbrt(x: f64) -> f64 {
+    let mut guess: f64 = x;
+    let mut step: i32 = 0;
+    while step < 40 {
+        guess = (2.0 * guess + x / (guess * guess)) / 3.0;
+        step = step + 1;
+    }
+    guess
+}
+
+// The arithmetic mean of a fixed-size array. `@int_to_float` is required for
+// the count: an integer never becomes a float on its own.
+fn mean(samples: [f64; 4]) -> f64 {
+    let mut total: f64 = 0.0;
+    let mut i: i32 = 0;
+    while i < 4 {
+        total = total + samples[i];
+        i = i + 1;
+    }
+    total / @int_to_float(4)
+}
+
+fn main() -> i32 {
+    // Exact arithmetic: 3-4-5 is representable, so the hypotenuse is exact.
+    @dbg(hypot(3.0, 4.0));
+
+    // A tenth is not representable in binary, so a tenth plus two tenths is
+    // not three tenths — and Rue prints the value it actually holds.
+    @dbg(0.1 + 0.2);
+
+    // The same literal keeps about seven digits in f32 and more in f64.
+    // Widening is explicit, and it shows what the f32 really held.
+    let narrow: f32 = 0.1;
+    let wide: f64 = 0.1;
+    @dbg(narrow);
+    @dbg(wide);
+    @dbg(@float_cast(narrow));
+
+    @dbg(cbrt(27.0));
+    @dbg(mean([1.5, 2.25, 3.0, 4.75]));
+
+    // Rounding: floor, ceil, trunc, and round disagree on a negative half.
+    let half: f64 = -2.5;
+    @dbg(math.floor(f64, half));
+    @dbg(math.ceil(f64, half));
+    @dbg(math.trunc(f64, half));
+    @dbg(math.round(f64, half));
+
+    // `%` has no floating-point meaning; std.math.rem is the truncated
+    // remainder C spells `fmod`.
+    @dbg(math.rem(f64, 5.5, 2.0));
+
+    // The IEEE specials print as themselves, and division never traps.
+    let zero: f64 = 0.0;
+    @dbg(1.0 / zero);
+    @dbg(zero / zero);
+
+    // NaN is unordered — unequal even to itself — while `@total_cmp` supplies
+    // the total order that sorting and hashing need.
+    let nan = zero / zero;
+    @assert(nan != nan, "NaN is unordered");
+    @assert(math.is_nan(f64, nan), "is_nan agrees");
+    @assert(math.is_inf(f64, 1.0 / zero), "and one over zero is an infinity");
+    @assert(-0.0 == 0.0, "the two zeros compare equal");
+    @assert(math.total_cmp(f64, -0.0, 0.0) == -1, "but -0.0 sorts first in the total order");
+
+    // Truncation toward zero, and back again.
+    @assert(@float_to_int(hypot(3.0, 4.0)) == 5, "5.0 truncates to 5");
+    @assert(@float_to_int(math.trunc(f64, half)) == -2, "-2.5 truncates to -2");
+
+    42
+}

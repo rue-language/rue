@@ -2864,14 +2864,14 @@ exit_code = 0
 [[case]]
 name = "preview_may_fail"
 spec = ["1.1:4"]
-preview = "floats"
+preview = "test_infra"
 source = "fn main() -> i32 { 0 }"
 exit_code = 0
 
 [[case]]
 name = "preview_must_pass"
 spec = ["1.1:5"]
-preview = "floats"
+preview = "test_infra"
 preview_should_pass = true
 source = "fn main() -> i32 { 0 }"
 exit_code = 0
@@ -2977,14 +2977,14 @@ exit_code = 0
 [[case]]
 name = "preview_may_fail"
 spec = ["1.1:3"]
-preview = "floats"
+preview = "test_infra"
 source = "fn main() -> i32 { 0 }"
 exit_code = 0
 
 [[case]]
 name = "preview_must_pass"
 spec = ["1.1:4"]
-preview = "floats"
+preview = "test_infra"
 preview_should_pass = true
 source = "fn main() -> i32 { 0 }"
 exit_code = 0

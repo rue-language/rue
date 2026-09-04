@@ -111,6 +111,7 @@ rue_rust_test(
     ],
 )
 
+
 # The x86-64 Linux entry point is raw process-entry code and cannot be exercised
 # by libtest. Inspect the optimized staticlib and link a real Rue program through
 # a register probe at the kernel, helper, and generated-main boundaries.

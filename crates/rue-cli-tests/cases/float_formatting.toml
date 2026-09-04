@@ -1,0 +1,197 @@
+[section]
+id = "cli.float_formatting"
+name = "Float formatting through the runtime"
+description = """
+ADR-0065 §6: `@dbg` and `@to_string` on `f32`/`f64` route through the runtime's
+shortest-round-trip formatter (`zmij`). The value crosses as its IEEE-754 bit
+pattern in an integer register, so both backends share one helper ABI. Digits
+are the shortest string that parses back to the same value; the notation is
+positional for decimal exponents in -5..=15 (`f64`) / -6..=12 (`f32`) and
+`d.ddde±XX` beyond that; non-finite values print as `NaN`, `inf`, `-inf`.
+"""
+
+[[case]]
+name = "x86-64-linux_dbg_prints_shortest_round_trip"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let zero: f64 = 0.0;
+    let narrow: f32 = 0.1;
+    @dbg(1.5);
+    @dbg(narrow);
+    @dbg(@float_cast(narrow));
+    @dbg(-0.0);
+    @dbg(zero / zero);
+    @dbg(1.0 / zero);
+    @dbg(-1.0 / zero);
+    @dbg(123456789.0);
+    @dbg(1000000000000000.0);
+    @dbg(10000000000000000.0);
+    @dbg(0.00001);
+    @dbg(0.000001);
+    @dbg(1e300 * 10.0);
+    @dbg(5e-324);
+    let narrow_big: f32 = 16777217.0;
+    @dbg(narrow_big);
+    let narrow_small: f32 = 1e-45;
+    @dbg(narrow_small);
+    0
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = """1.5
+0.1
+0.10000000149011612
+-0.0
+NaN
+inf
+-inf
+123456789.0
+1000000000000000.0
+1e+16
+0.00001
+1e-6
+1e+301
+5e-324
+16777216.0
+1e-45
+"""
+exit_code = 0
+
+[[case]]
+name = "aarch64-linux_dbg_prints_shortest_round_trip"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let zero: f64 = 0.0;
+    let narrow: f32 = 0.1;
+    @dbg(1.5);
+    @dbg(narrow);
+    @dbg(@float_cast(narrow));
+    @dbg(-0.0);
+    @dbg(zero / zero);
+    @dbg(1.0 / zero);
+    @dbg(-1.0 / zero);
+    @dbg(123456789.0);
+    @dbg(1000000000000000.0);
+    @dbg(10000000000000000.0);
+    @dbg(0.00001);
+    @dbg(0.000001);
+    @dbg(1e300 * 10.0);
+    @dbg(5e-324);
+    let narrow_big: f32 = 16777217.0;
+    @dbg(narrow_big);
+    let narrow_small: f32 = 1e-45;
+    @dbg(narrow_small);
+    0
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = """1.5
+0.1
+0.10000000149011612
+-0.0
+NaN
+inf
+-inf
+123456789.0
+1000000000000000.0
+1e+16
+0.00001
+1e-6
+1e+301
+5e-324
+16777216.0
+1e-45
+"""
+exit_code = 0
+
+[[case]]
+name = "x86-64-linux_to_string_matches_dbg_and_widths"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 {
+    let a: f64 = 1.5;
+    let b: f32 = 0.1;
+    let zero: f64 = 0.0;
+    let s = @to_string(a);
+    let t = @to_string(b);
+    let u = @to_string(1e300 * 10.0);
+    let v = @to_string(zero / zero);
+    let w = @to_string(-0.0);
+    let x = @to_string(@float_cast(b));
+    @dbg(s);
+    @dbg(t);
+    @dbg(u);
+    @dbg(v);
+    @dbg(w);
+    @dbg(x);
+    if s == "1.5" && t == "0.1" && u == "1e+301" && v == "NaN" && w == "-0.0"
+        && x == "0.10000000149011612" { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = """1.5
+0.1
+1e+301
+NaN
+-0.0
+0.10000000149011612
+"""
+exit_code = 0
+
+[[case]]
+name = "aarch64-linux_to_string_matches_dbg_and_widths"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 {
+    let a: f64 = 1.5;
+    let b: f32 = 0.1;
+    let zero: f64 = 0.0;
+    let s = @to_string(a);
+    let t = @to_string(b);
+    let u = @to_string(1e300 * 10.0);
+    let v = @to_string(zero / zero);
+    let w = @to_string(-0.0);
+    let x = @to_string(@float_cast(b));
+    @dbg(s);
+    @dbg(t);
+    @dbg(u);
+    @dbg(v);
+    @dbg(w);
+    @dbg(x);
+    if s == "1.5" && t == "0.1" && u == "1e+301" && v == "NaN" && w == "-0.0"
+        && x == "0.10000000149011612" { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = """1.5
+0.1
+1e+301
+NaN
+-0.0
+0.10000000149011612
+"""
+exit_code = 0
+
+[[case]]
+name = "dbg_rejects_aggregates_still"
+files = [{ path = "main.rue", source = """
+struct P { x: f64 }
+fn main() -> i32 {
+    let p = P { x: 1.0 };
+    @dbg(p);
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0702", "expects integer, float, bool, or String, found P"]

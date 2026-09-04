@@ -58,7 +58,7 @@ It is a compile-time error if an expression inside a comptime block cannot be ev
   any non-`comptime` parameter is never comptime-evaluable, because that
   function's body runs at runtime, and a call to an all-`comptime` function is
   comptime-evaluable only when every argument is itself comptime-evaluable
-- Operations that would panic at runtime: integer overflow at the operands' type (including in intermediate results), division by zero, and remainder by zero
+- Operations that would panic at runtime: integer overflow at the operands' type (including in intermediate results), division by zero, and remainder by zero. These are integer conditions: a floating-point division by zero is an ordinary comptime-evaluable operation yielding an infinity or a NaN (3.12:22, 3.12:46)
 
 ```rue
 fn main() -> i32 {
@@ -646,8 +646,8 @@ closes the set — nothing outside these clauses is comptime-evaluable.
 An expression is **comptime-evaluable** in a given scope in each of the
 following base cases:
 
-- an integer literal, a boolean literal (`true`, `false`), or the unit value
-  (`()`);
+- an integer literal, a float literal, a boolean literal (`true`, `false`), or
+  the unit value (`()`);
 - a reference to a `const` item (Chapter 6), whose initializer is itself
   comptime-evaluable — every `const` initializer is required to be
   comptime-evaluable, so every `const` reference qualifies. This includes a
@@ -692,7 +692,10 @@ comptime-evaluable, and is otherwise not:
 Evaluation of these forms follows runtime semantics exactly, subject to the
 comptime overflow and division restrictions of 4.14:4. If any operand is not
 comptime-evaluable (for example, a runtime `let` reference), the whole
-expression is not comptime-evaluable.
+expression is not comptime-evaluable. On floating-point operands there is
+nothing to restrict — no float operation traps (3.12:21) — and the width at
+which each operation is evaluated, the canonical NaN it produces, and the
+rejection of mixed float widths are specified by 3.12:46 through 3.12:49.
 
 ```rue
 const K: i32 = 3;

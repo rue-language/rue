@@ -102,6 +102,9 @@ Signed or unsigned integer arithmetic that overflows the representable range
   not representable; the remainder operation overflows in the same case even
   though its mathematical result would be `0`). This is distinct from division
   by zero (B.2:3).
+- `@float_to_int(x)`, exactly when the operand is a NaN or its value truncated
+  toward zero does not fit the result integer type (§3.12:18, §8.1:7). The
+  floating-point *operators* never trap (§3.12:21).
 
 **Runtime behavior:** Panic with exit code 101.
 

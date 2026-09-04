@@ -2217,7 +2217,7 @@ fn comptime_host_is_an_empty_umbrella_over_its_capabilities() {
             owner.push((rest.split('(').next().unwrap_or_default(), current));
         }
     }
-    assert_eq!(owner.len(), 65, "the host contract lost or gained a method");
+    assert_eq!(owner.len(), 68, "the host contract lost or gained a method");
     for (method, trait_name) in &owner {
         assert!(
             capabilities.contains(trait_name),
@@ -2240,7 +2240,6 @@ fn diagnostic_hooks_are_keyed_by_the_engine_program() {
         "fn require_preview(",
         "fn depth_exceeded(",
         "fn literal_out_of_range(",
-        "fn float_not_implemented(",
         "fn cannot_negate(",
         "fn unsupported_anon_method_type_param(",
         "fn non_function_anon_method(",
@@ -2598,7 +2597,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         .and_then(|source| source.split("// Comparison operations").next())
         .expect("bounded division/remainder dispatch arm");
     assert!(div_mod_arm.contains(
-        "if is_div {\n                        ComptimeIntegerOperation::Div\n                    } else {\n                        ComptimeIntegerOperation::Mod\n                    }"
+        "if is_div {\n                    ComptimeIntegerOperation::Div\n                } else {\n                    ComptimeIntegerOperation::Mod\n                }"
     ));
     let shift_arm = production
         .split("InstData::Shl { lhs, rhs } | InstData::Shr { lhs, rhs } => {")
@@ -2613,6 +2612,8 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         "ArithmeticOperandNotInteger",
         "UnaryOperandNotInteger",
         "UnaryTypeNotInteger",
+        "FloatOperandWidthMismatch",
+        "FloatRemainder",
         "Assignment",
         "AggregateExpression",
         "EmptyBlock",

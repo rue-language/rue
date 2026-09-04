@@ -102,7 +102,7 @@ args = ["main.rue", "--preview", "borrow_accessors", "-o", "prog"]
 compile_fail = true
 error_contains = [
     "unknown preview feature 'borrow_accessors'",
-    "Available features: test_infra, c_ffi, floats",
+    "Available features: test_infra, c_ffi, non_exhaustive_enums",
 ]
 
 [[case]]

@@ -687,6 +687,15 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
         stdout: "selftest checks=23\nfailures=0\nentities=8\nticks=4\naudit_passes=256\nsystems=192\nbehaviors=128\nrules=96\nreport_documents=64\nvm_steps=30\noracle_mismatches=0\ndeterministic_mismatches=0\ndigest=4530453528088162116\nvalid=true\n",
         stdin: None,
     },
+    // Floating point (ADR-0065): the printed values are the shortest decimal
+    // that reads back as the same IEEE-754 value, so any change in rounding,
+    // formatting, or std.math lowering shows up here as an exact-output diff.
+    ExampleExpectation {
+        path: "floats.rue",
+        exit_code: 42,
+        stdout: "5.0\n0.30000000000000004\n0.1\n0.1\n0.10000000149011612\n3.0\n2.875\n-3.0\n-2.0\n-2.0\n-3.0\n1.5\ninf\nNaN\n",
+        stdin: None,
+    },
     ExampleExpectation {
         path: "arrays.rue",
         exit_code: 157,

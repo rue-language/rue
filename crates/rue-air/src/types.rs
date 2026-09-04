@@ -769,7 +769,15 @@ impl Type {
             "type" => Type::COMPTIME_TYPE,
             "f32" => Type::F32,
             "f64" => Type::F64,
-            "comptime_float" => Type::COMPTIME_FLOAT,
+            // `comptime_float` is deliberately absent, exactly as
+            // `comptime_int` is: a comptime-only type has no runtime
+            // representation (spec 3.12:3), so it is the *inferred* type of a
+            // float literal and never a type a program may name. Resolving the
+            // name here would let `const B: comptime_float = 1.5;` and
+            // `fn f(v: comptime_float)` past the frontend and carry a
+            // width-less float into layout, ABI, and codegen. An unresolved
+            // name is reported as E0204 `unknown type 'comptime_float'`, the
+            // same diagnostic `comptime_int` gets (RUE-1076).
             _ => return None,
         })
     }
@@ -1369,6 +1377,18 @@ mod tests {
         assert_eq!(Type::from_primitive_name("()"), Some(Type::UNIT));
         assert_eq!(Type::from_primitive_name("!"), Some(Type::NEVER));
         assert_eq!(Type::from_primitive_name("type"), Some(Type::COMPTIME_TYPE));
+        assert_eq!(Type::from_primitive_name("f32"), Some(Type::F32));
+        assert_eq!(Type::from_primitive_name("f64"), Some(Type::F64));
+    }
+
+    #[test]
+    fn test_from_primitive_name_rejects_the_comptime_only_float_and_int() {
+        // A comptime-only type is inferred, never named (spec 3.12:3). Both
+        // spellings must miss the table so a program that writes one is
+        // rejected as an unknown type instead of carrying a width-less value
+        // into layout and codegen (RUE-1076).
+        assert_eq!(Type::from_primitive_name("comptime_float"), None);
+        assert_eq!(Type::from_primitive_name("comptime_int"), None);
     }
 
     #[test]

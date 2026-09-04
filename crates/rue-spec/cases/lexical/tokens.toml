@@ -809,3 +809,63 @@ fn main() -> i32 { letx: i32 = 42; x }
 """
 compile_fail = true
 error_contains = ["E0102", "expected semicolon after expression"]
+
+# =============================================================================
+# Float Literals (syntax; § 3.12, ADR-0065)
+# =============================================================================
+
+[[case]]
+name = "float_literal_accepted_forms"
+spec = ["2.1:29"]
+description = "A digit run with a fraction, an exponent, or both; separators inside any digit run; either exponent marker"
+source = """
+fn main() -> i32 {
+    @dbg(1.0);
+    @dbg(1e9);
+    @dbg(1.5e-3);
+    @dbg(6.022e23);
+    @dbg(1_000.000_1);
+    @dbg(2.5E+7);
+    0
+}
+"""
+expected_stdout = """
+1.0
+1000000000.0
+0.0015
+6.022e+23
+1000.0001
+25000000.0
+"""
+exit_code = 0
+
+[[case]]
+name = "float_literal_rejects_{case_name}"
+spec = ["2.1:30"]
+description = "A leading dot, a trailing dot, and an exponent marker without digits are lexical errors"
+source = """
+fn main() -> i32 {
+    let x: f64 = {literal};
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0011"
+params = [
+  { case_name = "a_leading_dot", literal = ".5" },
+  { case_name = "a_trailing_dot", literal = "5." },
+  { case_name = "an_empty_exponent", literal = "1e" },
+]
+
+[[case]]
+name = "integer_literal_postfix_dot_is_not_a_float_literal"
+spec = ["2.1:30"]
+description = "A `.` not followed by a digit ends the integer literal: `1.max(2)` lexes as int-dot-identifier and is rejected by name resolution, not by the float-literal rule"
+source = """
+fn main() -> i32 {
+    @dbg(1.max(2));
+    0
+}
+"""
+compile_fail = true
+error_contains = ["no method named 'max' on type 'i32'"]

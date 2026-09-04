@@ -112,8 +112,14 @@ instead of selecting a width implicitly.
 The helper delegates both widths to the vendored no-std `zmij` formatter and
 then copies the shortest-round-trip spelling into a fresh runtime allocation.
 The ordinary `StrBufResult` out-pointer contract transfers that allocation to
-the caller. Language-level formatting and debug exposure are separate compiler
-and standard-library concerns.
+the caller.
+
+`@dbg` of a float reaches the same authority. `__rue_dbg_float(bits, width)`
+takes the identical pair, formats *through* `__rue_to_string_float`, writes the
+text and a newline, and releases the temporary buffer — so debug output and
+`@to_string` cannot drift, and an invalid width traps in one place. Beyond
+those two symbols, language-level formatting is a compiler and
+standard-library concern.
 
 ## Safety and termination
 

@@ -1,4 +1,4 @@
-// std.math — integer math utilities.
+// std.math — integer and floating-point math utilities.
 //
 // The legacy `abs`/`min`/`max`/`clamp` remain `i32` for backward compatibility;
 // the GENERIC (comptime-`T`) min/max/clamp live in `std.cmp`. The extended
@@ -6,6 +6,12 @@
 // `+ - * / % < &` all work on a type parameter), including `checked_*`, whose
 // overflow pre-checks use the integer-bounds intrinsics `@int_max(T)`/
 // `@int_min(T)` (RUE-694).
+//
+// The floating-point section at the end (ADR-0065 §7) is generic over a
+// comptime FLOAT type `T` (`f32` or `f64`): the single-instruction operations
+// `sqrt`/`floor`/`ceil`/`trunc`/`round`, the `inf`/`nan` values and their
+// predicates, the exact remainder `rem` that stands in for the undefined float
+// `%`, and the IEEE total order `total_cmp`.
 //
 // NOTE: calling a generic (`comptime T`) helper here from another module with a
 // bare integer literal currently fails to coerce the literal (RUE-693); bind a
@@ -283,4 +289,125 @@ pub fn checked_mul(comptime T: type, a: T, b: T) -> option.Option(T) {
         }
     }
     O.Some(a * b)
+}
+
+// --- floating-point functions (ADR-0065 §7; FLOAT `T` only: f32 or f64) ---
+//
+// Every function here follows IEEE-754 exactly and never traps: an infinity
+// or NaN operand flows through the way the hardware operation propagates it.
+
+// Correctly rounded square root. `sqrt(-x)` for `x > 0` is NaN.
+pub fn sqrt(comptime T: type, x: T) -> T {
+    @sqrt(x)
+}
+
+// The largest integral value not greater than `x`.
+pub fn floor(comptime T: type, x: T) -> T {
+    @floor(x)
+}
+
+// The smallest integral value not less than `x`.
+pub fn ceil(comptime T: type, x: T) -> T {
+    @ceil(x)
+}
+
+// `x` with its fractional part discarded (rounded toward zero).
+pub fn trunc(comptime T: type, x: T) -> T {
+    @trunc(x)
+}
+
+// The integral value nearest to `x`, with ties rounded away from zero:
+// `round(2.5) == 3.0` and `round(-2.5) == -3.0`.
+pub fn round(comptime T: type, x: T) -> T {
+    @round(x)
+}
+
+// Absolute value. `fabs(-0.0)` is `+0.0`; a NaN stays a NaN.
+//
+// Written as `0.0 - x` rather than `-x` so that a negative zero comes out
+// positive: negation flips the sign bit, subtraction from zero does not keep it.
+pub fn fabs(comptime T: type, x: T) -> T {
+    if x <= 0.0 {
+        let zero: T = 0.0;
+        zero - x
+    } else {
+        x
+    }
+}
+
+// Positive infinity.
+pub fn inf(comptime T: type) -> T {
+    let zero: T = 0.0;
+    let one: T = 1.0;
+    one / zero
+}
+
+// A quiet NaN. Its sign bit is target-defined (spec 3.12), so compare NaNs
+// with `is_nan`, never with `==`.
+pub fn nan(comptime T: type) -> T {
+    let zero: T = 0.0;
+    zero / zero
+}
+
+// Whether `x` is a NaN: the one value that is unequal to itself.
+pub fn is_nan(comptime T: type, x: T) -> bool {
+    x != x
+}
+
+// Whether `x` is positive or negative infinity.
+pub fn is_inf(comptime T: type, x: T) -> bool {
+    x == inf(T) || x == 0.0 - inf(T)
+}
+
+// Whether `x` is neither infinite nor NaN.
+pub fn is_finite(comptime T: type, x: T) -> bool {
+    !is_nan(T, x) && !is_inf(T, x)
+}
+
+// The remainder of `x / y` with the sign of `x`, truncated toward zero: C's
+// `fmod`, the explicit path the language points to for the undefined float
+// `%` (ADR-0065 §9). The result is EXACT — it is `x - trunc(x / y) * y`
+// computed without rounding — and never traps:
+//
+//   rem(NaN, y) == rem(x, NaN) == rem(inf, y) == rem(x, 0.0) == NaN
+//   rem(x, inf) == x            rem(-0.0, y) == -0.0
+//
+// The exactness comes from the classic shift-and-subtract: each step subtracts
+// the largest power-of-two multiple of `|y|` that fits under the running
+// remainder. That multiple is a pure exponent change of `|y|` (exact unless it
+// overflows to infinity, which only ends the doubling early), and the
+// subtraction is exact because the two operands lie within a factor of two of
+// each other (Sterbenz). Work is proportional to the exponent gap between
+// `x` and `y`, at most a couple of thousand steps for `f64`.
+pub fn rem(comptime T: type, x: T, y: T) -> T {
+    if is_nan(T, x) || is_nan(T, y) || is_inf(T, x) || y == 0.0 {
+        return nan(T);
+    }
+    if is_inf(T, y) || x == 0.0 {
+        return x;
+    }
+    let ay = fabs(T, y);
+    let mut r = fabs(T, x);
+    while r >= ay {
+        let mut d = ay;
+        while d + d <= r {
+            d = d + d;
+        }
+        r = r - d;
+    }
+    if x < 0.0 {
+        let zero: T = 0.0;
+        zero - r
+    } else {
+        r
+    }
+}
+
+// IEEE-754 `totalOrder` as a three-way result: negative when `a` sorts before
+// `b`, zero when they are the same value, positive otherwise. Unlike `<`, this
+// is a TOTAL order: `-0.0` sorts before `+0.0`, and a NaN sorts after every
+// number (a negative NaN before every number), so float keys can be sorted and
+// deduplicated (ADR-0065 §8).
+pub fn total_cmp(comptime T: type, a: T, b: T) -> i32 {
+    @total_cmp(a, b)
 }

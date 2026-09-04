@@ -1,7 +1,7 @@
 // std.fmt — scalar-to-string formatting for the builtin types.
 //
-// This is the low-level formatting surface: turning individual `i*`/`u*`/`bool`
-// values into `StrBuf`. Multi-argument `format("n={}", n)` / interpolation is a
+// This is the low-level formatting surface: turning individual `i*`/`u*`/
+// `f32`/`f64`/`bool` values into `StrBuf`. Multi-argument `format("n={}", n)` / interpolation is a
 // separate design (RUE-350) tracked in M5; this module is what it will build on.
 //
 //     const std = @import("std");
@@ -15,6 +15,15 @@ const StrBuf = strbuf.StrBuf;
 // Decimal string of any integer value (wraps the `@to_string` intrinsic, which
 // already handles every integer width).
 pub fn int_to_string(comptime T: type, x: T) -> StrBuf {
+    @to_string(x)
+}
+
+// Shortest decimal string that reads back as exactly the same `f32`/`f64`
+// (wraps the `@to_string` intrinsic; ADR-0065 §6). Positional notation for
+// moderate magnitudes (`1.5`, `123456789.0`, `0.00001`), `d.ddde±XX` beyond
+// them (`1e+21`, `1e-6`), and `NaN`, `inf`, `-inf` for the non-finite values.
+// An `f32` formats at its own precision, so `0.1` prints as `0.1`.
+pub fn float_to_string(comptime T: type, x: T) -> StrBuf {
     @to_string(x)
 }
 

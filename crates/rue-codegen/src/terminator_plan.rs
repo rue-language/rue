@@ -55,6 +55,11 @@ pub enum ReturnValuePlan {
     Aggregate {
         slots: Vec<VReg>,
         return_plan: ReturnPlan,
+        /// For a [`ReturnPlan::Registers`] return, the return register each
+        /// logical slot is written to (see
+        /// [`crate::call_plan::return_slot_regs`]). Empty for an sret return,
+        /// which writes the caller's buffer instead of registers.
+        slot_regs: Vec<crate::call_plan::ReturnSlotReg>,
     },
 }
 
@@ -383,7 +388,7 @@ fn return_value<A: TerminatorAdapter>(
     ctx: &CfgLowerContext<'_>,
     adapter: &mut A,
     value: CfgValue,
-    ret_reg_budget: u32,
+    ret_reg_banks: crate::call_plan::AbiRegisterBanks,
 ) -> ReturnValuePlan {
     let value_plan = ValuePlan::for_value(ctx, value);
     let materialized = adapter.materialize_value(value, value_plan);
@@ -395,12 +400,22 @@ fn return_value<A: TerminatorAdapter>(
         },
         ValueShape::CompleteAggregate { slot_count } => {
             assert_eq!(materialized.slots.len(), slot_count as usize);
+            let return_ty = ctx.cfg.return_type();
             let return_plan =
-                call_plan::return_plan(ctx.type_pool, ctx.cfg.return_type(), ret_reg_budget);
+                call_plan::return_plan(ctx.type_pool, return_ty, ret_reg_banks.gp as u32);
             assert_eq!(return_plan.slot_count(), slot_count);
+            // A register-returned aggregate writes each slot to the return
+            // register its LEAF class names, so a one-slot float struct leaves
+            // in the FP bank the caller reads.
+            let slot_regs = if matches!(return_plan, ReturnPlan::Registers { .. }) {
+                call_plan::return_slot_regs(ctx.type_pool, return_ty, ret_reg_banks)
+            } else {
+                Vec::new()
+            };
             ReturnValuePlan::Aggregate {
                 slots: materialized.slots,
                 return_plan,
+                slot_regs,
             }
         }
     }
@@ -413,7 +428,7 @@ pub(crate) fn plan_terminator<A: TerminatorAdapter>(
     adapter: &mut A,
     block: &BasicBlock,
     fn_name: &str,
-    ret_reg_budget: u32,
+    ret_reg_banks: crate::call_plan::AbiRegisterBanks,
 ) -> TerminatorPlan {
     match &block.terminator {
         Terminator::Goto { target, .. } => TerminatorPlan::Goto {
@@ -512,7 +527,7 @@ pub(crate) fn plan_terminator<A: TerminatorAdapter>(
             } else {
                 ReturnMode::Function {
                     value: (*value).map_or(ReturnValuePlan::ZeroSized, |value| {
-                        return_value(ctx, adapter, value, ret_reg_budget)
+                        return_value(ctx, adapter, value, ret_reg_banks)
                     }),
                 }
             };
@@ -534,7 +549,7 @@ pub(crate) fn lower_cfg<A: CfgLowerAdapter>(
     ctx: &CfgLowerContext<'_>,
     adapter: &mut A,
     mut debug_info: Option<&mut crate::LoweringDebugInfo>,
-    ret_reg_budget: u32,
+    ret_reg_banks: crate::call_plan::AbiRegisterBanks,
     cancellation: crate::GenerationCancellation<'_>,
 ) -> rue_error::CompileResult<()> {
     adapter.preload_by_ref_params();
@@ -602,7 +617,7 @@ pub(crate) fn lower_cfg<A: CfgLowerAdapter>(
             adapter,
             block,
             ctx.cfg.fn_name(),
-            ret_reg_budget,
+            ret_reg_banks,
         );
         let term_start = adapter.instruction_count();
         adapter.emit_terminator(plan.clone());

@@ -173,6 +173,7 @@ macro_rules! call_runtime_helper_implementation {
     (__rue_dbg_i64($($argument:expr),*)) => { crate::debug::__rue_dbg_i64($($argument),*) };
     (__rue_dbg_u64($($argument:expr),*)) => { crate::debug::__rue_dbg_u64($($argument),*) };
     (__rue_dbg_bool($($argument:expr),*)) => { crate::debug::__rue_dbg_bool($($argument),*) };
+    (__rue_dbg_float($($argument:expr),*)) => { crate::debug::__rue_dbg_float($($argument),*) };
     (__rue_dbg_str($($argument:expr),*)) => { crate::debug::__rue_dbg_str($($argument),*) };
     (__rue_str_eq($($argument:expr),*)) => { crate::string::__rue_str_eq($($argument),*) };
     (__rue_str_byte_at($($argument:expr),*)) => { crate::string::__rue_str_byte_at($($argument),*) };

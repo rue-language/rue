@@ -949,8 +949,14 @@ fn every_known_unsupported_intrinsic_has_a_closed_kind() {
         Operation::DebugI64,
         Operation::DebugU64,
         Operation::DebugBool,
+        Operation::DebugFloat,
         Operation::DebugStr,
         Operation::TotalCmp,
+        Operation::FloatSqrt,
+        Operation::FloatFloor,
+        Operation::FloatCeil,
+        Operation::FloatTrunc,
+        Operation::FloatRound,
         Operation::BitCast,
     ] {
         assert_eq!(
@@ -960,50 +966,137 @@ fn every_known_unsupported_intrinsic_has_a_closed_kind() {
         );
     }
 
-    assert_eq!(Operation::ALL.len(), 45);
+    assert_eq!(Operation::ALL.len(), 51);
 }
 
 #[test]
-fn float_arithmetic_is_a_typed_model_gap() {
-    let unsupported = expect_unsupported_with_preview(
+fn float_arithmetic_and_ieee_comparison_are_modeled() {
+    let outcome = run_source(
         r#"fn main() -> i32 {
             let zero: f64 = 0.0;
-            if zero / zero == zero { 0 } else { 1 }
+            let nan = zero / zero;
+            let inf = 1.0 / zero;
+            let mut score: i32 = 0;
+            if nan != nan { score += 1; }
+            if !(nan == nan) && !(nan < zero) && !(nan >= zero) { score += 2; }
+            if inf > 1e308 && -inf < -1e308 { score += 4; }
+            if 0.0 == -0.0 { score += 8; }
+            let narrow: f32 = 0.1;
+            let sum: f32 = narrow + 0.2;
+            if sum == 0.3 { score += 16; }
+            let product: f64 = 1.5 * 4.0;
+            if product - 6.0 == 0.0 { score += 32; }
+            score
         }"#,
-        &PreviewFeatures::from([PreviewFeature::Floats]),
-    );
-    assert_eq!(
-        unsupported.kind(),
-        UnsupportedKind::SemanticGap(SemanticGapKind::FloatArithmetic)
-    );
+    )
+    .expect("float arithmetic is modeled");
+    assert_eq!(outcome.exit_code, 63);
 }
 
 #[test]
-fn scalar_float_comparison_is_a_typed_model_gap() {
-    let unsupported = expect_unsupported_with_preview(
+fn scalar_float_comparison_is_modeled() {
+    let outcome = run_source(
         "fn main() -> i32 { let left: f64 = 1.0; let right: f64 = 2.0; if left < right { 0 } else { 1 } }",
-        &PreviewFeatures::from([PreviewFeature::Floats]),
-    );
-    assert_eq!(
-        unsupported.kind(),
-        UnsupportedKind::SemanticGap(SemanticGapKind::FloatArithmetic)
-    );
+    )
+    .expect("float ordering is modeled");
+    assert_eq!(outcome.exit_code, 0);
 }
 
 #[test]
-fn aggregate_float_equality_is_a_typed_model_gap() {
-    let unsupported = expect_unsupported_with_preview(
+fn aggregate_float_equality_is_ieee() {
+    let outcome = run_source(
         r#"struct Outer { nested: [f64; 1] }
         fn main() -> i32 {
             let left = Outer { nested: [1.0] };
             let right = Outer { nested: [1.0] };
-            if left == right { 0 } else { 1 }
+            let zero: f64 = 0.0;
+            let poisoned = Outer { nested: [zero / zero] };
+            let signed_zero = Outer { nested: [-0.0] };
+            let unsigned_zero = Outer { nested: [0.0] };
+            let mut score: i32 = 0;
+            if left == right { score += 1; }
+            if poisoned != poisoned { score += 2; }
+            if signed_zero == unsigned_zero { score += 4; }
+            score
         }"#,
-        &PreviewFeatures::from([PreviewFeature::Floats]),
-    );
+    )
+    .expect("aggregate float equality is modeled");
+    assert_eq!(outcome.exit_code, 7);
+}
+
+#[test]
+fn float_conversions_rounding_and_total_order_are_modeled() {
+    let outcome = run_source(
+        r#"fn main() -> i32 {
+            let mut score: i32 = 0;
+            let all_ones: u64 = 18446744073709551615;
+            let widened: f64 = @int_to_float(all_ones);
+            if widened == 18446744073709551616.0 { score += 1; }
+            let sticky: u64 = 9223372036854777857;
+            let rounded: f64 = @int_to_float(sticky);
+            if rounded == 9223372036854777856.0 { score += 2; }
+            let neg_half: f64 = -0.5;
+            let z: u32 = @float_to_int(neg_half);
+            if z == 0 { score += 4; }
+            let low: f64 = -2147483648.5;
+            let li: i32 = @float_to_int(low);
+            if li == -2147483648 { score += 8; }
+            let narrow: f32 = @float_cast(0.1);
+            let back: f64 = @float_cast(narrow);
+            if back == 0.10000000149011612 { score += 16; }
+            if @floor(-2.5) == -3.0 && @ceil(-2.5) == -2.0 && @trunc(-2.5) == -2.0
+                && @round(-2.5) == -3.0 && @round(2.5) == 3.0 && @sqrt(9.0) == 3.0 { score += 32; }
+            let pz: f64 = 0.0;
+            let nz: f64 = -0.0;
+            if @total_cmp(nz, pz) == -1 && @total_cmp(pz, nz) == 1 && @total_cmp(pz, pz) == 0 { score += 64; }
+            let zero: f64 = 0.0;
+            let nan = zero / zero;
+            if @total_cmp(nan, nan) == 0 && @total_cmp(nan, 1.0) != 0 { score += 128; }
+            score
+        }"#,
+    )
+    .expect("float intrinsics are modeled");
+    assert_eq!(outcome.exit_code, 255);
+}
+
+#[test]
+fn float_to_int_traps_on_nan_and_out_of_range() {
+    for source in [
+        "fn main() -> i32 { let zero: f64 = 0.0; @float_to_int(zero / zero) }",
+        "fn main() -> i32 { let big: f64 = 2147483648.0; @float_to_int(big) }",
+        "fn main() -> i32 { let f: f64 = -1.0; let u: u32 = @float_to_int(f); @intCast(u) }",
+        "fn main() -> i32 { let f: f64 = 18446744073709551616.0; let u: u64 = @float_to_int(f); @intCast(u) }",
+    ] {
+        let outcome = run_source(source).expect("trapping conversion is modeled");
+        assert_eq!(
+            outcome.panic,
+            Some(TrapKind::ArithmeticOverflow),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn float_debug_and_to_string_use_the_runtime_formatter() {
+    let outcome = run_source(
+        r#"fn main() -> i32 {
+            let zero: f64 = 0.0;
+            let narrow: f32 = 0.1;
+            @dbg(1.5);
+            @dbg(narrow);
+            @dbg(@float_cast(narrow));
+            @dbg(-0.0);
+            @dbg(zero / zero);
+            @dbg(1.0 / zero);
+            @dbg(1e300 * 10.0);
+            @dbg(123456789.0);
+            0
+        }"#,
+    )
+    .expect("float debug output is modeled");
     assert_eq!(
-        unsupported.kind(),
-        UnsupportedKind::SemanticGap(SemanticGapKind::FloatArithmetic)
+        outcome.stdout,
+        "1.5\n0.1\n0.10000000149011612\n-0.0\nNaN\ninf\n1e+301\n123456789.0\n"
     );
 }
 
@@ -1016,8 +1109,7 @@ fn zero_length_float_array_equality_remains_modeled() {
             if left == right { 0 } else { 1 }
         }"#;
     let outcome =
-        run_source_with_preview_features(source, &PreviewFeatures::from([PreviewFeature::Floats]))
-            .expect("zero-length arrays have no reachable float value to compare");
+        run_source(source).expect("zero-length arrays have no reachable float value to compare");
     assert_eq!(outcome.exit_code, 0);
 }
 
@@ -1070,14 +1162,12 @@ fn malformed_float_arithmetic_shape_is_a_contract_violation() {
 
 #[test]
 fn malformed_float_aggregate_ordering_is_a_contract_violation() {
-    let previews = PreviewFeatures::from([PreviewFeature::Floats]);
-    let state = query_cfg_state_with_preview_features(
+    let state = query_cfg_state(
         r#"struct Boxed { value: f64 }
         fn equal(left: Boxed, right: Boxed) -> bool { left == right }
         fn main() -> i32 {
             if equal(Boxed { value: 1.0 }, Boxed { value: 1.0 }) { 0 } else { 1 }
         }"#,
-        &previews,
     )
     .expect("aggregate equality probe compiles");
     let cfg = &state

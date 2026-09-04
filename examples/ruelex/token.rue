@@ -2,7 +2,7 @@
 //
 // Token kinds are integers rather than a payload enum so a whole token stream
 // can live in ArrayBuf(Token) and be indexed repeatedly while parsing. `value`
-// is the interned symbol for IDENT/STRING and the decoded value for INT.
+// is the interned symbol for IDENT/STRING/FLOAT and the decoded value for INT.
 
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
@@ -13,6 +13,9 @@ pub const IDENT: u64 = 2;
 pub const INT: u64 = 3;
 pub const STRING: u64 = 4;
 pub const YIELD: u64 = 5;
+// A float literal carries its interned text, not a decoded value: a
+// `comptime_float` keeps full precision until context picks a width (2.1:29).
+pub const FLOAT: u64 = 6;
 
 pub const BORROW: u64 = 10;
 pub const FN: u64 = 11;
@@ -135,7 +138,7 @@ fn eq(borrow name: StrBuf, expected: StrBuf) -> bool {
 }
 
 // Map the stable text used by `--emit tokens` to the compact parser tag.
-// IDENT/INT/STRING are set directly by the recognizer because their labels
+// IDENT/INT/STRING/FLOAT are set directly by the recognizer because their labels
 // include payload text and therefore are not exact static names.
 pub fn kind_from_name(borrow name: StrBuf) -> u64 {
     if eq(borrow name, "EOF") { return EOF; }

@@ -7,12 +7,19 @@
 //! that reasons about "which register can hold this value" therefore needs to
 //! know which half of the file a value belongs to.
 //!
-//! Rue has no floating-point type yet, so today every virtual and physical
-//! register in both backends is [`RegClass::Gp`] and [`RegClass::Fp`] is an
-//! empty partition everywhere. The dimension is introduced first, on its own,
-//! so that adding `f32`/`f64` later is a matter of *populating* the `Fp`
-//! partition rather than of widening single-class data structures under a
-//! working allocator (RUE-1067, first step of RUE-1067..1076).
+//! Both partitions are populated: `f32`/`f64` values live in [`RegClass::Fp`]
+//! (x86-64 XMM, AArch64 V) and everything else in [`RegClass::Gp`]. The
+//! dimension was introduced on its own first, so that adding floats became a
+//! matter of *populating* the `Fp` partition rather than of widening
+//! single-class data structures under a working allocator (RUE-1067, first step
+//! of RUE-1067..1076).
+//!
+//! A value's class follows its own type, and an aggregate SLOT's class follows
+//! that slot's LEAF type — not the aggregate's. `struct P { field: f64 }` is one
+//! ABI slot in the `Fp` partition even though `P` is not a float type; asking
+//! the wrapper instead of the leaf is what put an FP-classed slot in a
+//! general-purpose register. See
+//! [`crate::value_plan::primary_slot_float_width`].
 //!
 //! ## What the class dimension is for
 //!
@@ -45,11 +52,9 @@ use crate::vreg::VReg;
 pub enum RegClass {
     /// General-purpose (integer, pointer, and boolean) registers.
     Gp = 0,
-    /// Floating-point / SIMD registers.
-    ///
-    /// Nothing selects this class yet: no Rue type lowers to a floating-point
-    /// value, and neither backend lists a register in it. It exists so the
-    /// passes below are written against the general shape from the start.
+    /// Floating-point / SIMD registers: x86-64 `xmm0..15`, AArch64 `v0..31`.
+    /// Selected by every `f32`/`f64` value and by every aggregate slot whose
+    /// leaf is one.
     Fp = 1,
 }
 

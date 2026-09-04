@@ -8,5 +8,7 @@ rue_crate(
         "//crates/rue-air:rue-air",
         "//crates/rue-runtime-abi:rue-runtime-abi",
         "//third-party:lasso",
+        "//third-party:zmij",
     ],
+
 )

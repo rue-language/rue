@@ -39,3 +39,7 @@ proptest = "1.5"
 smallvec = "1.15"
 syn = { version = "2.0.111", features = ["full", "visit", "extra-traits"] }
 sha2 = { version = "0.10.9", default-features = false }
+# Shortest-round-trip float formatting for the Rue runtime (`@to_string` and
+# `@dbg` on f32/f64, ADR-0065 §6) and the oracle's matching model.
+zmij = "0.1.7"
+
