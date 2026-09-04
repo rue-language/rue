@@ -291,8 +291,10 @@ Commands:
   --test-candidates <path>
                        Report declared test files nothing imports
   Test mode reuses --target, -O<n>, --preview, --jobs, --source-manifest,
-  --link-archive, --error-format, and the logging options. It cannot be
-  combined with --emit, --watch, --benchmark-json, --time-passes, or -o.
+  --link-archive, --error-format, and the logging options. There --jobs bounds
+  concurrent test processes only; compilation uses auto-detected parallelism.
+  It cannot be combined with --emit, --watch, --benchmark-json, --time-passes,
+  or -o.
   Exit codes: 0 all passed, 1 failures, 2 compilation or runner error,
   3 empty selection.
   A root module actually named `test` is spelled `./test`.
@@ -500,6 +502,23 @@ enum DriverMode {
     Compile,
     /// `rue test`: build the test image and run its tests (ADR-0083 §2).
     Test,
+}
+
+/// The exit status a driver failure reports when it stops the run before it
+/// began.
+///
+/// `rue test` gives every "the run did not happen" reason one status — a bad
+/// flag combination, an unreadable root or candidate inventory, a program that
+/// will not compile — so an agent branching on the exit code never has to also
+/// parse stderr to tell them apart (ADR-0083 §2). Compile mode's own failure
+/// status is `1` and stays that way. Every such site maps through here rather
+/// than repeating the match, so the two modes cannot drift apart one site at a
+/// time.
+fn driver_failure_exit_code(mode: &DriverMode) -> i32 {
+    match mode {
+        DriverMode::Test => test_mode::TestExitCode::RunnerError.code(),
+        DriverMode::Compile => 1,
+    }
 }
 
 /// Parse arguments from a slice of strings (for testing).
@@ -1020,6 +1039,21 @@ fn test_mode_jobs(jobs: usize) -> usize {
     std::thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)
         .unwrap_or(1)
+}
+
+/// The worker count the compiler's shared query pool is configured with.
+///
+/// Compile mode reads `--jobs` as that pool's budget. Test mode does not:
+/// ADR-0083 §3 defines `--jobs` there as a bound on concurrent test processes
+/// alone, so the compilation that builds the image keeps the pool's own
+/// auto-detection. Without this, `rue test --jobs 1` — the way to isolate a
+/// test that interferes with its neighbors — would also single-thread a
+/// compilation the isolation question says nothing about.
+fn compile_pool_jobs(mode: &DriverMode, jobs: usize) -> usize {
+    match mode {
+        DriverMode::Test => 0,
+        DriverMode::Compile => jobs,
+    }
 }
 
 /// The compile-mode flags a repro argv repeats (ADR-0083 §3).
@@ -2142,9 +2176,13 @@ fn render_internal_error(format: ErrorFormat, message: impl Into<String>) -> Str
 /// a hermetic build-configuration denial (distinct from a broken toolchain — the
 /// remedy is the source manifest, not the installation); and program diagnostics
 /// rendered against the failing snapshot's source views.
-fn report_source_load_error(error: SourceLoadError, error_format: ErrorFormat) -> ! {
+fn report_source_load_error(
+    error: SourceLoadError,
+    error_format: ErrorFormat,
+    mode: &DriverMode,
+) -> ! {
     eprintln!("{}", render_source_load_error(error, error_format));
-    std::process::exit(1);
+    std::process::exit(driver_failure_exit_code(mode));
 }
 
 /// Diagnostic format the ICE panic hook renders with.
@@ -2306,10 +2344,7 @@ fn main() {
     // (ADR-0083 §2). Compile mode's own argument errors keep exiting `1`.
     if let Err(message) = validate_mode_combinations(&options) {
         eprintln!("{message}");
-        std::process::exit(match options.mode {
-            DriverMode::Test => test_mode::TestExitCode::RunnerError.code(),
-            DriverMode::Compile => 1,
-        });
+        std::process::exit(driver_failure_exit_code(&options.mode));
     }
 
     // Initialize tracing based on CLI options
@@ -2338,7 +2373,7 @@ fn main() {
             }
             Err(message) => {
                 eprintln!("{message}");
-                std::process::exit(1);
+                std::process::exit(driver_failure_exit_code(&options.mode));
             }
         },
         None => None,
@@ -2346,8 +2381,9 @@ fn main() {
 
     // Configure the compiler's shared structured-query budget before
     // dispatching to either the `--emit` path or the normal compile path, so
-    // every driver path honors `-j`/`--jobs` (RUE-352).
-    let resolved_workers = configure_thread_pool(options.jobs);
+    // every compile-mode driver path honors `-j`/`--jobs` (RUE-352). In test
+    // mode `--jobs` bounds test processes instead, so the pool auto-detects.
+    let resolved_workers = configure_thread_pool(compile_pool_jobs(&options.mode, options.jobs));
 
     // Discover and load @import-ed modules from disk, transitively. Sema
     // resolves imports only against already-loaded files, so without this
@@ -2375,7 +2411,7 @@ fn main() {
             std_root: captured_std_root.as_deref(),
         }) {
             Ok(result) => result,
-            Err(error) => report_source_load_error(error, options.error_format),
+            Err(error) => report_source_load_error(error, options.error_format, &options.mode),
         }
     };
 
@@ -2415,7 +2451,7 @@ fn main() {
     if options.emit_stages.is_empty() || emit::emit_requires_semantic(&options.emit_stages) {
         let _compile = compile_span.enter();
         if let Err(error) = compiler_host.acquire_reached_toolchain_modules(&compile_options) {
-            report_source_load_error(error, options.error_format);
+            report_source_load_error(error, options.error_format, &options.mode);
         }
     }
 
@@ -2467,7 +2503,7 @@ fn main() {
             }
             Err(errors) => {
                 diagnostics.print_errors(&errors);
-                std::process::exit(1);
+                std::process::exit(driver_failure_exit_code(&options.mode));
             }
         },
         None => None,
@@ -2513,10 +2549,7 @@ fn main() {
         // a link failure or a runner error — the run could not be performed —
         // and ADR-0083 §2 gives that one code, so an agent branching on the
         // exit status never has to also parse stderr to tell them apart.
-        std::process::exit(match options.mode {
-            DriverMode::Test => test_mode::TestExitCode::RunnerError.code(),
-            DriverMode::Compile => 1,
-        });
+        std::process::exit(driver_failure_exit_code(&options.mode));
     }
 
     // `rue test` owns the rest of this process: it links the test image, runs
@@ -3623,6 +3656,30 @@ mod tests {
     fn test_mode_jobs_resolves_auto_to_available_parallelism() {
         assert_eq!(test_mode_jobs(4), 4);
         assert!(test_mode_jobs(0) >= 1);
+    }
+
+    /// ADR-0083 §3 scopes test mode's `--jobs` to concurrent test processes, so
+    /// it must not also shrink the compile that builds the image: `rue test
+    /// --jobs 1` is how a suite isolates an interfering test, not a request to
+    /// compile single-threaded. Compile mode still passes the value through.
+    #[test]
+    fn test_mode_leaves_the_compile_pool_on_auto_detection() {
+        assert_eq!(compile_pool_jobs(&DriverMode::Test, 1), 0);
+        assert_eq!(compile_pool_jobs(&DriverMode::Test, 0), 0);
+        assert_eq!(compile_pool_jobs(&DriverMode::Compile, 1), 1);
+        assert_eq!(compile_pool_jobs(&DriverMode::Compile, 0), 0);
+    }
+
+    /// Every reason a run never happened reports one status per mode, and the
+    /// two modes disagree: compile mode's argument/IO failure is `1`, and
+    /// `rue test` reports the runner-error code (ADR-0083 §2).
+    #[test]
+    fn a_stopped_run_reports_the_mode_s_failure_status() {
+        assert_eq!(driver_failure_exit_code(&DriverMode::Compile), 1);
+        assert_eq!(
+            driver_failure_exit_code(&DriverMode::Test),
+            test_mode::TestExitCode::RunnerError.code()
+        );
     }
 
     // ========== Positional source acceptance tests ==========

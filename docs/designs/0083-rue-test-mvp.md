@@ -358,9 +358,10 @@ $ rue test app/main.rue --filter parse_port      # run a subset
   `rue-test-runner` limited-drain mechanics); exceeding a stream's limit
   kills the process group and yields `fail` with kind `output_overflow`,
   retained prefix attached. Failing tests carry retained capture inline;
-  passing tests carry digests and byte counts, with a flag to opt passes
-  into inline capture. The §5.1 failure channel is budgeted separately, so
-  a test that floods its streams cannot truncate its own failure record.
+  passing tests carry digests and byte counts. A flag to opt passes into
+  inline capture is deferred and not part of the MVP. The §5.1 failure
+  channel is budgeted separately, so a test that floods its streams cannot
+  truncate its own failure record.
 - **Asymmetric verbosity**: the human renderer prints failures in full —
   structure, captured output, repro line — and passes as a count. No wall
   of green.
@@ -457,11 +458,14 @@ The MVP mechanism:
   determinism boundary. These exact values participate in the deferred
   verdict-cache key (§6); their stability is what will keep routine runs
   cache-hittable.
-- **Parallelism**: up to `--jobs` concurrent test processes. In the MVP
-  every test runs in parallel by default — a pragmatic default, not a
-  guarantee: unverified tests *can* interfere through the OS, and a suite
-  that observes it reaches for `--jobs 1` today, declared serial groups in
-  the deferred scheduling work (§6), and a platform sandbox eventually.
+- **Parallelism**: up to `--jobs` concurrent test processes, and only
+  those — the compilation that builds the image keeps auto-detected
+  parallelism, so isolating a test with `--jobs 1` does not also serialize
+  the build. In the MVP every test runs in parallel by default — a
+  pragmatic default, not a guarantee: unverified tests *can* interfere
+  through the OS, and a suite that observes it reaches for `--jobs 1`
+  today, declared serial groups in the deferred scheduling work (§6), and a
+  platform sandbox eventually.
   When capability inference lands, verified-hermetic parallelism becomes
   unconditional. The runner never silently serializes; scheduling changes
   are always visible policy.
@@ -516,6 +520,9 @@ runtime protocol. `@assert`, the comparison family `@assert_eq`/`@assert_ne`
 (Phase 2.5), and the test-body `?` failure arm (§1) are sugar over the same
 channel any Rue function can invoke before aborting; user libraries emit the
 same records, and the stream carries them without knowing who produced them.
+As of Phase 3 those compiler-synthesized producers are the only ones — no
+user-callable way to write a record has shipped — and the classification and
+reserved shapes below stand for when one does.
 
 The mechanism — **ruled 2026-08-23** — is a **dedicated inherited pipe**:
 its own file descriptor, pinned in the §3 exec contract, written through a

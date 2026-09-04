@@ -1244,3 +1244,71 @@ compile_stdout_contains = [
     '"verdict":"fail"',
     '"crash":0,"event":"run_finished","failed":1,"passed":0',
 ]
+
+# ==================== the stopped-run exit-code contract ====================
+#
+# ADR-0083 §2 gives `rue test` one status for every reason the run did not
+# happen, so an agent branching on the exit code never has to also parse stderr
+# to tell a bad flag from an unreadable input. These cases pin the inputs the
+# driver reads before the image exists — the root and the declared candidate
+# inventory — which reported compile mode's `1` until RUE-2025.
+
+[[case]]
+name = "a_missing_root_stops_the_run_with_the_runner_error_status"
+description = "ADR-0083 §2: an unreadable root is a run that did not happen, not a compile-mode argument error."
+files = []
+args = ["test", "missing.rue"]
+driver_exit_code = 2
+compile_stderr_contains = ["Error reading ", "missing.rue:"]
+
+[[case]]
+name = "an_unreadable_candidate_inventory_stops_the_run_with_the_runner_error_status"
+description = "ADR-0083 §2: the declared inventory is read before the image exists, so a missing list stops the run."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+
+test "the run never reaches this" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--test-candidates", "absent-candidates.list"]
+driver_exit_code = 2
+compile_stderr_contains = ["Error reading test candidates", "absent-candidates.list"]
+
+[[case]]
+name = "a_candidate_escaping_the_project_root_stops_the_run_with_the_runner_error_status"
+description = """
+ADR-0083 §2: acquisition rejects a declared path that escapes the project root.
+The list is readable and the root compiles, so this refusal comes later than the
+missing-list case above and must still report the same stopped-run status.
+"""
+files = [
+    { path = "test-candidates.list", source = """
+main.rue
+../outside.rue
+""" },
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+
+test "the run never reaches this" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--test-candidates", "test-candidates.list"]
+driver_exit_code = 2
+compile_stderr_contains = ["escapes the project root", "../outside.rue"]
+
+[[case]]
+name = "compile_mode_keeps_its_own_status_for_the_same_unreadable_root"
+description = "Control: the mapping is per mode. An ordinary build's source-load failure stays `1`."
+files = []
+args = ["missing.rue", "-o", "prog"]
+driver_exit_code = 1
+compile_stderr_contains = ["Error reading ", "missing.rue:"]

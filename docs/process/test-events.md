@@ -43,7 +43,7 @@ for an ordinary build of the same closure.
 |------|---------|
 | `0` | Every selected test passed. |
 | `1` | At least one selected test failed, timed out, or crashed. |
-| `2` | The run could not be performed: a compile failure, a failing image link, an ICE, a bad flag combination, or a runner error. |
+| `2` | The run could not be performed: a compile failure, a failing image link, an ICE, a bad flag combination, an unreadable root or candidate inventory, or a runner error. |
 | `3` | The selection was empty. |
 
 `3` is a distinct outcome rather than a vacuous success because an empty
@@ -140,6 +140,15 @@ Writes are best-effort by design: an image run by hand has no descriptor 3, and
 security boundary** — it prevents accidental collision with a test's own stdout,
 which is all its consumers are promised.
 
+**Producers in this version.** Every record on this channel is
+compiler-synthesized: `@assert`, `@assert_eq`, `@assert_ne`, the test-body `?`
+failure arm, and the dispatcher's `complete` epilogue. Nothing in the language
+can call `__rue_test_failure_site` or `__rue_test_fail`, so the user assertion
+library of ADR-0083 §5.1 is what the open `kind` and the reserved payload shapes
+are *for* rather than something that exists yet — a line naming an unknown
+`record` is recorded as malformed, which fails the test. A user-callable
+intrinsic is tracked as RUE-2027.
+
 Reserved by ADR-0083 §5.1 and §5.2, and produced by nothing in this version:
 `promotion` payloads (a machine-applicable suggested fix, for a future
 `rue test --accept`) and `sub_result` records (named child results attributed as
@@ -184,7 +193,7 @@ The head event, and the only one carrying the schema version for a run.
 | `target` | string | The Rue target the image was built for. |
 | `opt_level` | string | The optimization level's digit: `"0"`–`"3"`. |
 | `seed` | integer | The run's shuffle seed (see `--seed`). |
-| `jobs` | integer | Concurrent test processes. |
+| `jobs` | integer | Concurrent test processes, which is all `--jobs` bounds in test mode; compilation uses auto-detected parallelism. |
 | `shard` | string | `"K/N"`. **Absent** when `--shard` was not given. |
 | `plan` | object | `{"selected": integer, "total": integer}` — tests selected, and tests in the closure. |
 
@@ -296,7 +305,8 @@ otherwise.
 The asymmetry is deliberate (ADR-0083 §2): a failing test's output is what a
 reader needs, and inlining every passing test's output is the wall of green the
 design rejects. A pass can never have overflowed its budget — an overflow is a
-failure verdict — so a pass's digest always covers the whole stream.
+failure verdict — so a pass's digest always covers the whole stream. This
+version has no flag to inline a passing test's output; the opt-in is deferred.
 
 **Budgets.** 1 MiB retained per stream for stdout and stderr; 256 KiB for the
 failure channel, deliberately separate so a test that floods its streams cannot
