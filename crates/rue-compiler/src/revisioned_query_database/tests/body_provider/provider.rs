@@ -220,17 +220,21 @@ fn provider_type_facts_resolve_primitive_and_structural_shapes() {
 }
 
 #[test]
-fn durable_copy_facts_match_the_air_composite_policy() {
+fn durable_copy_and_drop_facts_match_the_air_composite_policy() {
     use crate::DurableType as T;
     use crate::StableDefinitionKind as K;
 
     let source = "struct Owner { value: i32 }\n\
+                  drop fn Owner(self) {}\n\
                   @copy struct CopyLeaf { value: i32 }\n\
                   enum MoveChoice { Some(Owner), None }\n\
                   enum CopyChoice { Some(CopyLeaf), None }\n\
+                  struct CycleA { next: ptr mut CycleB }\n\
+                  struct CycleB { next: ptr mut CycleA }\n\
                   fn CopyAnonStruct() -> type { struct { value: i32 } }\n\
                   fn MoveAnonStruct() -> type { struct { value: Owner } }\n\
                   fn DropAnonStruct() -> type { struct { value: i32, drop fn(self) {} } }\n\
+                  fn CounterfeitAnonStruct() -> type { struct { value: i32, fn __drop() {} } }\n\
                   fn CopyAnonEnum() -> type { enum { Some(i32), None } }\n\
                   fn MoveAnonEnum() -> type { enum { Some(Owner), None } }\n\
                   struct Holder {\n\
@@ -239,19 +243,27 @@ fn durable_copy_facts_match_the_air_composite_policy() {
                       copy_anon_struct: CopyAnonStruct(),\n\
                       move_anon_struct: MoveAnonStruct(),\n\
                       drop_anon_struct: DropAnonStruct(),\n\
+                      counterfeit_anon_struct: CounterfeitAnonStruct(),\n\
                       copy_anon_enum: CopyAnonEnum(),\n\
                       move_anon_enum: MoveAnonEnum(),\n\
                       zero_owner_array: [Owner; 0],\n\
+                      owner_array: [Owner; 1],\n\
                       copy_array: [CopyLeaf; 2],\n\
+                      owner_const_pointer: ptr const Owner,\n\
                       owner_pointer: ptr mut Owner,\n\
+                      cycle: CycleA,\n\
                   }\n\
                   fn make() -> Holder {\n\
                       let CopyStruct = CopyAnonStruct();\n\
                       let MoveStruct = MoveAnonStruct();\n\
                       let DropStruct = DropAnonStruct();\n\
+                      let CounterfeitStruct = CounterfeitAnonStruct();\n\
                       let CopyEnum = CopyAnonEnum();\n\
                       let MoveEnum = MoveAnonEnum();\n\
                       let zero: u64 = 0;\n\
+                      let owner_pointer: ptr mut Owner = checked { @int_to_ptr(zero) };\n\
+                      let const_owner = Owner { value: 10 };\n\
+                      let owner_const_pointer: ptr const Owner = checked { @raw(const_owner) };\n\
                       Holder {\n\
                           owner: Owner { value: 1 },\n\
                           copy_leaf: CopyLeaf { value: 2 },\n\
@@ -259,10 +271,14 @@ fn durable_copy_facts_match_the_air_composite_policy() {
                           copy_anon_struct: CopyStruct { value: 3 },\n\
                           move_anon_struct: MoveStruct { value: Owner { value: 4 } },\n\
                           drop_anon_struct: DropStruct { value: 5 },\n\
+                          counterfeit_anon_struct: CounterfeitStruct { value: 8 },\n\
                           copy_anon_enum: CopyEnum.None, move_anon_enum: MoveEnum.None,\n\
                           zero_owner_array: [],\n\
+                          owner_array: [Owner { value: 9 }],\n\
                           copy_array: [CopyLeaf { value: 6 }, CopyLeaf { value: 7 }],\n\
-                          owner_pointer: checked { @int_to_ptr(zero) },\n\
+                          owner_const_pointer,\n\
+                          owner_pointer,\n\
+                          cycle: CycleA { next: checked { @int_to_ptr(zero) } },\n\
                       }\n\
                   }\n\
                   fn consume(value: Holder) -> i32 { value.copy_leaf.value }\n\
@@ -308,7 +324,7 @@ fn durable_copy_facts_match_the_air_composite_policy() {
     let mut database = RevisionedQueryDatabase::default();
     let revision = revision_for(&mut database, &snapshot);
 
-    let durable_is_copy = |ty: &T| {
+    let durable_facts = |ty: &T| {
         let attempt = database.runtime.request_registered(
             &database.type_facts,
             revision,
@@ -326,7 +342,7 @@ fn durable_copy_facts_match_the_air_composite_policy() {
         else {
             panic!("type-facts query did not produce available facts")
         };
-        facts.is_copy
+        (facts.is_copy, facts.needs_drop)
     };
 
     let expected = AHashMap::from([
@@ -337,18 +353,23 @@ fn durable_copy_facts_match_the_air_composite_policy() {
         ("copy_anon_struct", true),
         ("move_anon_struct", false),
         ("drop_anon_struct", false),
+        ("counterfeit_anon_struct", true),
         ("copy_anon_enum", true),
         ("move_anon_enum", false),
         ("zero_owner_array", false),
+        ("owner_array", false),
         ("copy_array", true),
+        ("owner_const_pointer", true),
         ("owner_pointer", true),
+        ("cycle", false),
     ]);
     for ((durable_name, durable_ty), air_field) in
         durable_fields.iter().zip(air_holder.fields.iter())
     {
         assert_eq!(durable_name.as_ref(), air_field.name);
-        let durable_copy = durable_is_copy(durable_ty);
+        let (durable_copy, durable_needs_drop) = durable_facts(durable_ty);
         let air_copy = air_field.ty.is_copy_in_frozen_pool(pool);
+        let air_needs_drop = pool.type_needs_drop(air_field.ty);
         assert_eq!(
             durable_copy,
             air_copy,
@@ -363,6 +384,23 @@ fn durable_copy_facts_match_the_air_composite_policy() {
             durable_copy,
             expected[durable_name.as_ref()],
             "unexpected Copy classification for `{durable_name}`"
+        );
+        assert_eq!(
+            durable_needs_drop, air_needs_drop,
+            "durable TypeFacts and ordinary AIR disagree on drop glue for `{durable_name}`"
+        );
+        assert_eq!(
+            durable_needs_drop,
+            matches!(
+                durable_name.as_ref(),
+                "owner"
+                    | "move_choice"
+                    | "move_anon_struct"
+                    | "drop_anon_struct"
+                    | "move_anon_enum"
+                    | "owner_array"
+            ),
+            "unexpected drop-glue classification for `{durable_name}`"
         );
         if durable_name.contains("anon") {
             assert!(
@@ -2059,7 +2097,10 @@ fn provider_endpoint_facts_anonymous_arm_mints_after_registration() {
     // comptime type function `Pair` at declaration bind, minting the anonymous
     // `struct { a: i32 }` whose producer roots at the INSTALLED function `Pair`
     // (an installed-endpoint producer — the pool's byte-equal minting scope).
-    let source = "fn Pair() -> type { struct { a: i32 } }\n\
+    // The associated `__drop` lookalike deliberately has no receiver. Its
+    // receiver bit must survive the durable projection and keep the minted
+    // AIR nominal trivially droppable.
+    let source = "fn Pair() -> type { struct { a: i32, fn __drop() {} } }\n\
                       struct Holder { p: Pair() }\n\
                       fn main() -> i32 { 0 }\n";
     let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
@@ -2176,8 +2217,26 @@ fn provider_endpoint_facts_anonymous_arm_mints_after_registration() {
     assert!(!pool_render.is_pub, "an anonymous nominal is not `pub`");
     assert!(
         pool_render.is_copy,
-        "a single-`i32` anonymous struct is copyable"
+        "an associated `__drop` function is not a destructor"
     );
+    let facts_attempt = database.runtime.request_registered(
+        &database.type_facts,
+        revision,
+        crate::type_queries::TypeQueryKey {
+            ty: crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(Node::new(
+                durable_identity,
+            ))),
+            configuration: semantic_configuration(),
+        },
+        CancellationToken::new(),
+    );
+    let rue_query::QueryOutcome::Success(crate::type_queries::TypeFactsValue::Available(facts)) =
+        facts_attempt.terminal().unwrap().outcome()
+    else {
+        panic!("counterfeit anonymous nominal TypeFacts are available")
+    };
+    assert!(facts.is_copy);
+    assert!(!facts.needs_drop);
 }
 
 // RUE-1091 r6b: the ENUM analog of the anonymous mint. The pool mints

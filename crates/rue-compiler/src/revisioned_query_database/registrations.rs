@@ -586,6 +586,10 @@ impl RevisionedQueryDatabase {
             transactions_for_produced_anonymous
         );
         let produced_anonymous_for_semantic_nucleus = body_produced_anonymous.clone();
+        let type_facts_family = Arc::new(std::sync::OnceLock::<
+            QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::TypeFactsValue>,
+        >::new());
+        let type_facts_for_semantic_nucleus = type_facts_family.clone();
         let semantic_nucleus = register_semantic_semantic_nucleus!(
             artifacts_for_semantic_nucleus,
             declaration_memo_retention,
@@ -594,7 +598,8 @@ impl RevisionedQueryDatabase {
             parse_for_semantic_nucleus,
             produced_anonymous_for_semantic_nucleus,
             runtime,
-            shells_for_semantic_nucleus
+            shells_for_semantic_nucleus,
+            type_facts_for_semantic_nucleus
         );
         assert!(
             semantic_nucleus_for_produced_anonymous
@@ -636,9 +641,6 @@ impl RevisionedQueryDatabase {
             runtime,
             semantic_nucleus_for_type_shape
         );
-        let type_facts_family = Arc::new(std::sync::OnceLock::<
-            QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::TypeFactsValue>,
-        >::new());
         let type_facts_family_for_evaluator = type_facts_family.clone();
         let semantic_nucleus_for_type_facts = semantic_nucleus.clone();
         let lookup_names_for_type_facts = lookup_names.clone();

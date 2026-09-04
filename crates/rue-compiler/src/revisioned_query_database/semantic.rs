@@ -23,16 +23,16 @@ pub(super) struct SemanticNucleusTypeProvider<'a> {
 
 /// One nominal type's recursive ownership answers, memoized per provider.
 ///
-/// `type_carries_linear`, `type_has_drop_glue`, and `type_is_copy` each walk
-/// the durable type graph independently, and a body that mentions the same
+/// `type_carries_linear` and `type_is_copy` walk the durable type graph, and a
+/// body that mentions the same
 /// aggregate repeatedly re-walked it and re-resolved its signature every
-/// time. The three stay separate fields rather than one computed bundle
-/// because they are asked for independently and each costs its own traversal;
-/// filling one must not force the other two.
+/// time. The two stay separate fields rather than one computed bundle because
+/// they are asked for independently and each costs its own traversal;
+/// filling one must not force the other.
 ///
 /// Only answers that did not depend on cycle-breaking are stored. Each walker
-/// breaks a recursive type by answering provisionally — `DoesNotCarry`,
-/// `false`, `true` respectively — for a key already on its own stack, so a
+/// breaks a recursive type by answering provisionally — `DoesNotCarry` for
+/// linear containment and `true` for Copy — for a key already on its own stack, so a
 /// result reached through such an answer is a property of that stack and not
 /// of the type. [`OwnershipWalk::tainted`] carries that condition back up, and
 /// a tainted result is returned without being stored. `Deferred` and every
@@ -41,7 +41,6 @@ pub(super) struct SemanticNucleusTypeProvider<'a> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct OwnershipProperties {
     pub(super) carries_linear: Option<LinearOwnershipFact>,
-    pub(super) has_drop_glue: Option<bool>,
     pub(super) is_copy: Option<bool>,
 }
 
@@ -840,7 +839,7 @@ pub(super) fn evaluate_type_facts(
             direct(rue_builtins::get_builtin_enum(name).is_some())
         }
         T::BuiltinNominal { .. } | T::Nominal(N::Builtin { .. }) => direct(false),
-        T::Array { element, .. } => {
+        T::Array { element, len } => {
             let child = context.query_registered(
                 family,
                 crate::type_queries::TypeQueryKey {
@@ -852,7 +851,10 @@ pub(super) fn evaluate_type_facts(
                 Ok(child) => TypeFactsValue::Available(Box::new(TypeFacts {
                     is_copy: child.is_copy,
                     carries_linear: child.carries_linear,
-                    needs_drop: child.needs_drop,
+                    needs_drop: rue_air::drop_glue::requires_drop_glue(
+                        rue_air::drop_glue::DropGlueShape::Array { len: *len },
+                        [child.needs_drop],
+                    ),
                     destructor: None,
                     shape: canonical_shape.clone(),
                 })),
@@ -928,7 +930,7 @@ pub(super) fn evaluate_type_facts(
                 .collect::<Vec<_>>();
             let child_terminals = context.query_registered_adaptive_batch(family, child_keys)?;
             let mut carries_linear = is_linear;
-            let mut needs_drop = false;
+            let mut child_needs_drop = Vec::with_capacity(child_terminals.len());
             for child in &child_terminals {
                 match type_facts_from_terminal(child) {
                     Ok(child) => {
@@ -936,7 +938,7 @@ pub(super) fn evaluate_type_facts(
                             is_copy &= child.is_copy;
                         }
                         carries_linear |= child.carries_linear;
-                        needs_drop |= child.needs_drop;
+                        child_needs_drop.push(child.needs_drop);
                     }
                     Err(failure) => {
                         return Ok(QueryOutput::success(TypeFactsValue::Failure(failure))
@@ -968,7 +970,12 @@ pub(super) fn evaluate_type_facts(
                 }
                 _ => None,
             };
-            needs_drop |= destructor.is_some();
+            let needs_drop = rue_air::drop_glue::requires_drop_glue(
+                rue_air::drop_glue::DropGlueShape::Aggregate {
+                    has_destructor: destructor.is_some(),
+                },
+                child_needs_drop,
+            );
             TypeFactsValue::Available(Box::new(TypeFacts {
                 is_copy,
                 carries_linear,
@@ -995,7 +1002,12 @@ pub(super) fn evaluate_type_facts(
             let destructor = match &nominal.shape {
                 S::Struct { methods, .. } => methods
                     .iter()
-                    .find(|method| method.has_self && method.name.as_ref() == "__drop")
+                    .find(|method| {
+                        rue_air::drop_glue::is_anonymous_destructor(
+                            method.name.as_ref(),
+                            method.has_self,
+                        )
+                    })
                     .map(|_| crate::FunctionInstanceKey::AnonymousMember {
                         owner: Node::new(key.ty.clone()),
                         member: crate::AnonymousMemberKey {
@@ -1033,13 +1045,13 @@ pub(super) fn evaluate_type_facts(
             // every by-value child is Copy.
             let mut is_copy = destructor.is_none();
             let mut carries_linear = false;
-            let mut needs_drop = destructor.is_some();
+            let mut child_needs_drop = Vec::with_capacity(child_terminals.len());
             for child in &child_terminals {
                 match type_facts_from_terminal(child) {
                     Ok(child) => {
                         is_copy &= child.is_copy;
                         carries_linear |= child.carries_linear;
-                        needs_drop |= child.needs_drop;
+                        child_needs_drop.push(child.needs_drop);
                     }
                     Err(failure) => {
                         return Ok(QueryOutput::success(TypeFactsValue::Failure(failure))
@@ -1047,6 +1059,12 @@ pub(super) fn evaluate_type_facts(
                     }
                 }
             }
+            let needs_drop = rue_air::drop_glue::requires_drop_glue(
+                rue_air::drop_glue::DropGlueShape::Aggregate {
+                    has_destructor: destructor.is_some(),
+                },
+                child_needs_drop,
+            );
             TypeFactsValue::Available(Box::new(TypeFacts {
                 is_copy,
                 carries_linear,
@@ -1614,7 +1632,10 @@ pub(super) fn query_callable_signature(
                 signature.name == member.name
                     && match member.kind {
                         crate::AnonymousMemberKind::Destructor => {
-                            signature.has_self && signature.name.as_ref() == "__drop"
+                            rue_air::drop_glue::is_anonymous_destructor(
+                                signature.name.as_ref(),
+                                signature.has_self,
+                            )
                         }
                         crate::AnonymousMemberKind::Method => signature.has_self,
                         crate::AnonymousMemberKind::AssociatedFunction => !signature.has_self,

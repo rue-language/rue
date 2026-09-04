@@ -1977,7 +1977,7 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
     (753, 3_150_885_663_910_159_936),
     (2_598, 10_270_973_964_375_394_836),
     (11653, 15_769_724_788_918_086_723),
-    (104_883, 1_964_666_036_826_678_610),
+    (105_228, 8_704_248_387_304_091_575),
     (3_254, 11_949_940_325_034_004_149),
     (5_552, 14_658_861_127_087_730_967),
     (872, 14_092_162_116_261_787_003),
@@ -2026,13 +2026,13 @@ const FRONTEND_DATABASE_CONSTRUCTION_IDENTITY: (usize, u64) = (268, 967_740_565_
 const DATABASE_INHERENT_CONSTRUCTOR_IDENTITY: (usize, u64) = (148, 15_840_470_727_822_522_148);
 const DATABASE_CANONICAL_CONSTRUCTOR_IDENTITY: (usize, u64) = (224, 1_314_571_707_455_964_487);
 const TEST_DEFAULT_DATABASE_ADAPTER_IDENTITY: (usize, u64) = (120, 3_163_599_038_660_274_771);
-const REGISTRATION_DATABASE_IMPL_IDENTITY: (usize, u64) = (35_354, 9_236_865_163_121_593_081);
+const REGISTRATION_DATABASE_IMPL_IDENTITY: (usize, u64) = (35_472, 4_725_960_964_094_195_289);
 const SHARED_FAMILY_FORWARDING_IDENTITY: (usize, u64) = (2_609, 9_595_658_320_490_175_466);
-const ORDERED_REGISTRATION_COMPOSER_IDENTITY: (usize, u64) = (33_871, 17_019_997_086_940_479_461);
+const ORDERED_REGISTRATION_COMPOSER_IDENTITY: (usize, u64) = (33_989, 17_677_990_640_358_315_577);
 // Macro imports, definitions, re-exports, and lexical ordering participate in
 // macro resolution. Seal the complete registrations authority and each wrapper
 // aggregate in addition to the executable identities inside them.
-const REGISTRATION_AUTHORITY_MODULE_IDENTITY: (usize, u64) = (45_324, 8_202_842_852_626_878_117);
+const REGISTRATION_AUTHORITY_MODULE_IDENTITY: (usize, u64) = (45_442, 8_995_470_390_836_206_189);
 const REGISTRATION_WRAPPER_MODULE_IDENTITIES: [(usize, u64); 5] = [
     (842, 17_134_465_730_999_135_202),
     (1_146, 9_973_452_843_887_101_603),
@@ -4275,7 +4275,7 @@ pub(super) use register_parse_import_parse;"#;
             (
                 "revisioned_database::tests::backend".to_owned(),
                 "RevisionedQueryDatabase:call".to_owned(),
-                15
+                16
             ),
             (
                 "revisioned_database::tests::body_provider::body".to_owned(),
@@ -4295,7 +4295,7 @@ pub(super) use register_parse_import_parse;"#;
             (
                 "revisioned_database::tests::semantic_declaration".to_owned(),
                 "RevisionedQueryDatabase:call".to_owned(),
-                49
+                50
             ),
         ],
         "independent test databases have a separate exact construction inventory",
@@ -4683,7 +4683,7 @@ pub(super) use register_parse_import_parse;"#;
         (
             "revisioned_database::body_provider_body".to_owned(),
             "family".to_owned(),
-            2,
+            3,
         ),
         (
             "revisioned_database::parse_import".to_owned(),
@@ -5156,7 +5156,7 @@ fn revisioned_body_and_program_assembly_have_exact_source_owners() {
             });
     assert_eq!(
         (shared_declarations.len(), shared_fingerprint),
-        (54, 18_319_594_177_463_541_342),
+        (55, 420_575_141_232_741_378),
         "database-tree shared body/program API changed"
     );
 }
@@ -9191,9 +9191,62 @@ fn durable_copy_policy_projections_have_an_exact_inventory() {
         provider.contains("T::Array { element, .. } => self.type_is_copy_inner(element, walk)")
     );
     assert!(provider.contains("P::Enum { variants, .. }"));
-    assert!(provider.contains("method.name.as_ref() == \"__drop\""));
+    assert!(provider.contains("rue_air::drop_glue::is_anonymous_destructor("));
     assert_eq!(semantic.matches("is_copy &= child.is_copy;").count(), 2);
-    assert!(semantic.contains("T::Array { element, .. }"));
+    assert!(semantic.contains("T::Array { element, len }"));
     assert!(semantic.contains("S::Enum { .. } => (true, true, false)"));
     assert!(semantic.contains("let mut is_copy = destructor.is_none();"));
+}
+
+#[test]
+fn durable_drop_glue_policy_has_one_kernel_projection_and_one_query_consumer() {
+    let semantic = REVISIONED_DATABASE_PHASES
+        .iter()
+        .find(|(name, _)| *name == "semantic")
+        .map(|(_, source)| *source)
+        .unwrap();
+    let provider = REVISIONED_DATABASE_PHASES
+        .iter()
+        .find(|(name, _)| *name == "body_provider_body")
+        .map(|(_, source)| *source)
+        .unwrap();
+    let cfg = include_str!("cfg_query.rs");
+    let durable_provider = include_str!("revisioned_query_database/provider.rs");
+    let test_support = include_str!("revisioned_query_database/test_support.rs");
+
+    assert_eq!(
+        semantic.matches("drop_glue::requires_drop_glue(").count(),
+        3
+    );
+    assert!(provider.contains("fn type_has_drop_glue("));
+    assert!(provider.contains(".query_registered("));
+    assert!(provider.contains("TypeFactsValue::Available(facts) => Ok(facts.needs_drop)"));
+    assert!(provider.contains("fn is_recursive_type_facts_cycle("));
+    assert!(provider.contains("node.family() == \"compiler.type-facts\""));
+    for forbidden in [
+        "fn type_has_drop_glue_inner(",
+        "fn type_has_drop_glue_walk(",
+        "has_drop_glue: Option<bool>",
+    ] {
+        assert!(
+            !provider.contains(forbidden),
+            "duplicate drop policy returned: {forbidden}"
+        );
+        assert!(
+            !semantic.contains(forbidden),
+            "duplicate drop policy returned: {forbidden}"
+        );
+    }
+    assert_eq!(cfg.matches("fn type_may_need_drop_glue<").count(), 1);
+    assert!(cfg.contains("drop_glue::may_require_drop_glue("));
+    for (name, source) in [
+        ("production durable projection", durable_provider),
+        ("test durable projection", test_support),
+    ] {
+        assert!(
+            source.contains("(method.name.clone(), method.has_self)"),
+            "{name} must preserve receiver presence into AIR materialization"
+        );
+        assert!(!source.contains("struct_method_names:"), "{name}");
+    }
 }

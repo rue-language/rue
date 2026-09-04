@@ -15,6 +15,7 @@ mod api_inventory;
 mod builtin_universe;
 pub mod call_abi;
 pub mod declaration_validation;
+pub mod drop_glue;
 pub mod drop_glue_names;
 mod exact_decimal;
 pub mod ffi_predicates;

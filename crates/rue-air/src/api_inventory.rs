@@ -1438,6 +1438,7 @@ fn comptime_instdata_evaluation_has_one_production_authority() {
             "declaration_validation",
             include_str!("declaration_validation.rs"),
         ),
+        ("drop_glue", include_str!("drop_glue.rs")),
         ("drop_glue_names", include_str!("drop_glue_names.rs")),
         ("exact_decimal", include_str!("exact_decimal.rs")),
         ("ffi_predicates", include_str!("ffi_predicates.rs")),
@@ -4097,4 +4098,46 @@ fn copy_semantics_have_one_air_policy_owner() {
         1,
         "ordinary ownership must retain only its thin pool delegate"
     );
+}
+
+#[test]
+fn drop_glue_semantics_have_one_air_policy_owner() {
+    let policy = include_str!("drop_glue.rs");
+    let pool = include_str!("intern_pool.rs");
+    let provider_host = include_str!("sema/provider_body_host.rs");
+    let ordinary = include_str!("sema/ordinary_engine.rs");
+    let identity = include_str!("sema/body_identity.rs");
+
+    assert_eq!(policy.matches("pub fn requires_drop_glue(").count(), 1);
+    assert_eq!(policy.matches("pub fn is_anonymous_destructor(").count(), 1);
+    assert_eq!(pool.matches("drop_glue::requires_drop_glue(").count(), 2);
+    assert!(!pool.contains("needs_drop |= facts[child].needs_drop"));
+    assert_eq!(
+        provider_host
+            .matches("drop_glue::is_anonymous_destructor(")
+            .count(),
+        4
+    );
+    assert!(!provider_host.contains("name.as_ref() == \"__drop\""));
+    assert!(!provider_host.contains("resolve(name) == \"__drop\""));
+    assert_eq!(
+        ordinary
+            .matches("drop_glue::is_anonymous_destructor(")
+            .count(),
+        1,
+        "ordinary anonymous materialization must use the canonical predicate"
+    );
+    assert_eq!(
+        identity
+            .matches("drop_glue::is_anonymous_destructor(")
+            .count(),
+        1,
+        "durable anonymous materialization must use the canonical predicate"
+    );
+    assert!(identity.contains("struct_methods: Vec<(Arc<str>, bool)>,"));
+    for (name, source) in [("ordinary engine", ordinary), ("body identity", identity)] {
+        assert!(!source.contains("== ANON_DROP_METHOD"), "{name}");
+        assert!(!source.contains("== drop_marker"), "{name}");
+        assert!(!source.contains("== \"__drop\""), "{name}");
+    }
 }

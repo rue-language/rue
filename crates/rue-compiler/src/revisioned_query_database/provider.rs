@@ -1899,7 +1899,10 @@ pub(super) fn project_provider_anonymous_shape(
                     .iter()
                     .map(|(name, ty)| (name.clone(), ty.clone()))
                     .collect(),
-                struct_method_names: methods.iter().map(|method| method.name.clone()).collect(),
+                struct_methods: methods
+                    .iter()
+                    .map(|method| (method.name.clone(), method.has_self))
+                    .collect(),
             }
         }
         crate::durable_semantics::DurableAnonymousNominalShape::Enum { variants } => {

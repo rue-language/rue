@@ -1296,10 +1296,25 @@ impl TypeInternPoolInner {
         let mut facts = vec![TypeContainmentFacts::default(); entry_count];
         let mut facts_available = vec![false; entry_count];
         for &index in &postorder {
+            let shape = match self.entry(index) {
+                TypeData::Struct(data) => crate::drop_glue::DropGlueShape::Aggregate {
+                    has_destructor: data.def.destructor.is_some(),
+                },
+                TypeData::Enum(_) => crate::drop_glue::DropGlueShape::Aggregate {
+                    has_destructor: false,
+                },
+                TypeData::Array { len, .. } => crate::drop_glue::DropGlueShape::Array { len: *len },
+                TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => {
+                    crate::drop_glue::DropGlueShape::Trivial
+                }
+                TypeData::ReservedStruct
+                | TypeData::DeclaredStruct(_)
+                | TypeData::DeclaredEnum(_) => continue,
+            };
             let mut value = match self.entry(index) {
                 TypeData::Struct(data) => TypeContainmentFacts {
                     carries_linear: data.def.is_linear,
-                    needs_drop: data.def.destructor.is_some(),
+                    needs_drop: false,
                 },
                 TypeData::Enum(_)
                 | TypeData::Array { .. }
@@ -1318,10 +1333,13 @@ impl TypeInternPoolInner {
                         break;
                     }
                     value.carries_linear |= facts[child].carries_linear;
-                    value.needs_drop |= facts[child].needs_drop;
                 }
             }
             if available {
+                value.needs_drop = crate::drop_glue::requires_drop_glue(
+                    shape,
+                    edges[index].iter().map(|&child| facts[child].needs_drop),
+                );
                 facts[index] = value;
                 facts_available[index] = true;
             }
@@ -1563,11 +1581,27 @@ impl TypeInternPoolInner {
         if self.facts_stale {
             return None;
         }
+        let shape = match entry {
+            TypeData::Struct(data) => crate::drop_glue::DropGlueShape::Aggregate {
+                has_destructor: data.def.destructor.is_some(),
+            },
+            TypeData::Enum(_) => crate::drop_glue::DropGlueShape::Aggregate {
+                has_destructor: false,
+            },
+            TypeData::Array { len, .. } => crate::drop_glue::DropGlueShape::Array { len: *len },
+            TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => {
+                crate::drop_glue::DropGlueShape::Trivial
+            }
+            TypeData::ReservedStruct | TypeData::DeclaredStruct(_) | TypeData::DeclaredEnum(_) => {
+                return None;
+            }
+        };
+        let mut child_drop_facts = Vec::new();
         let mut facts = match entry {
             TypeData::Struct(data) => TypeDerivedFacts {
                 containment: TypeContainmentFacts {
                     carries_linear: data.def.is_linear,
-                    needs_drop: data.def.destructor.is_some(),
+                    needs_drop: false,
                 },
                 abi_slots: 0,
             },
@@ -1589,7 +1623,7 @@ impl TypeInternPoolInner {
                 for field in &data.def.fields {
                     let child = self.derived_facts_for_type(field.ty)?;
                     facts.containment.carries_linear |= child.containment.carries_linear;
-                    facts.containment.needs_drop |= child.containment.needs_drop;
+                    child_drop_facts.push(child.containment.needs_drop);
                     facts.abi_slots = facts.abi_slots.saturating_add(child.abi_slots);
                 }
             }
@@ -1600,7 +1634,7 @@ impl TypeInternPoolInner {
                     for &ty in variant {
                         let child = self.derived_facts_for_type(ty)?;
                         facts.containment.carries_linear |= child.containment.carries_linear;
-                        facts.containment.needs_drop |= child.containment.needs_drop;
+                        child_drop_facts.push(child.containment.needs_drop);
                         payload_slots = payload_slots.saturating_add(child.abi_slots);
                     }
                     max_payload_slots = max_payload_slots.max(payload_slots);
@@ -1610,6 +1644,7 @@ impl TypeInternPoolInner {
             TypeData::Array { element, len, .. } if *len != 0 => {
                 let child = self.derived_facts_for_type(*element)?;
                 facts.containment = child.containment;
+                child_drop_facts.push(child.containment.needs_drop);
                 facts.abi_slots = u32::try_from(u64::from(child.abi_slots).saturating_mul(*len))
                     .unwrap_or(u32::MAX);
             }
@@ -1619,6 +1654,8 @@ impl TypeInternPoolInner {
                 unreachable!()
             }
         }
+        facts.containment.needs_drop =
+            crate::drop_glue::requires_drop_glue(shape, child_drop_facts);
         Some(facts)
     }
 

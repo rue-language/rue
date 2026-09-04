@@ -1,5 +1,5 @@
 macro_rules! register_semantic_semantic_nucleus {
-    ($artifacts_for_semantic_nucleus:ident, $declaration_memo_retention:ident, $imports_for_semantic_nucleus:ident, $names_for_semantic_nucleus:ident, $parse_for_semantic_nucleus:ident, $produced_anonymous_for_semantic_nucleus:ident, $runtime:ident, $shells_for_semantic_nucleus:ident) => {{
+    ($artifacts_for_semantic_nucleus:ident, $declaration_memo_retention:ident, $imports_for_semantic_nucleus:ident, $names_for_semantic_nucleus:ident, $parse_for_semantic_nucleus:ident, $produced_anonymous_for_semantic_nucleus:ident, $runtime:ident, $shells_for_semantic_nucleus:ident, $type_facts_for_semantic_nucleus:ident) => {{
 $runtime
             .family_with_equality_and_evaluator(
                 "compiler.semantic-nucleus",
@@ -468,7 +468,12 @@ $runtime
                                         }
                                     })),
                                 crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireTriviallyDroppable => provider
-                                    .type_has_drop_glue(&query.gate.ty)
+                                    .type_has_drop_glue(
+                                        $type_facts_for_semantic_nucleus
+                                            .get()
+                                            .expect("TypeFacts family is installed before requests"),
+                                        &query.gate.ty,
+                                    )
                                     .map(|rejected| rejected.then(|| {
                                         rue_error::ErrorKind::ContainerElementNotTriviallyDroppable {
                                             ty: gate_type_name.clone(),

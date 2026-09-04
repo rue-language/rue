@@ -110,7 +110,10 @@ fn durable_anonymous_shape(
     match shape {
         S::Struct { fields, methods } => rue_air::DurableAnonymousShape::Struct {
             fields: fields.iter().map(|(n, t)| (n.clone(), t.clone())).collect(),
-            struct_method_names: methods.iter().map(|m| m.name.clone()).collect(),
+            struct_methods: methods
+                .iter()
+                .map(|method| (method.name.clone(), method.has_self))
+                .collect(),
         },
         S::Enum { variants } => rue_air::DurableAnonymousShape::Enum {
             variants: variants

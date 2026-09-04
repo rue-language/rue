@@ -1420,6 +1420,148 @@ fn ownership_property_memo_preserves_decisions_across_repeats_and_recursion() {
 }
 
 #[test]
+fn drop_glue_provider_preserves_exceptional_query_semantics() {
+    use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+    use crate::semantic_query_nucleus::{
+        DeferredOwnershipGate, DeferredOwnershipGateKind, DeferredOwnershipGateSource,
+        DeferredOwnershipQueryKey, SemanticNucleusKey as Key, SemanticNucleusValue as V,
+    };
+    use crate::{DurableType as T, StableDefinitionKind as Kind};
+
+    let cycle_key = crate::type_queries::TypeQueryKey {
+        ty: crate::TypeInstanceKey::I32,
+        configuration: semantic_configuration(),
+    };
+    let type_facts_node =
+        rue_query::NodeIdentity::from_typed_key("compiler.type-facts", &cycle_key);
+    let downstream_node =
+        rue_query::NodeIdentity::from_typed_key("compiler.semantic-nucleus", &cycle_key);
+    assert!(is_recursive_type_facts_cycle(std::slice::from_ref(
+        &type_facts_node
+    )));
+    assert!(!is_recursive_type_facts_cycle(&[]));
+    assert!(!is_recursive_type_facts_cycle(std::slice::from_ref(
+        &downstream_node
+    )));
+    assert!(!is_recursive_type_facts_cycle(&[
+        type_facts_node,
+        downstream_node,
+    ]));
+
+    let source = source_snapshot(
+        &[((
+            1,
+            "/main.rue",
+            "main.rue",
+            "struct A { b: B } struct B { a: A } fn producer() {}",
+        ))],
+        1,
+    );
+    let module = ModuleId::from_logical_path("main.rue").unwrap();
+    let mut database = RevisionedQueryDatabase::default();
+    let revision =
+        database.source_revision(&crate::session::ExactSourceInput::new(&source), &source);
+    let declaration =
+        declaration_candidate(&database, revision, &module, Category::Function, "producer");
+    let producer = crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+        declaration: declaration.clone(),
+        configuration: semantic_configuration(),
+    };
+    let named = |name: &str| {
+        crate::StableDefinitionKey::from_stable_parts(
+            module.clone(),
+            crate::StableDefinitionNamespace::Type,
+            Kind::Struct,
+            name,
+            None,
+        )
+    };
+    let key = |ty: T| {
+        Key::DeferredOwnership(DeferredOwnershipQueryKey {
+            producer: producer.clone(),
+            gate: DeferredOwnershipGate {
+                kind: DeferredOwnershipGateKind::RequireTriviallyDroppable,
+                ty,
+                source: Arc::new(DeferredOwnershipGateSource {
+                    declaration: declaration.clone(),
+                    start: 0,
+                    end: 0,
+                }),
+                application: None,
+            },
+        })
+    };
+
+    let malformed = T::Nominal(named("Missing"));
+    let malformed_value = request_semantic_nucleus(&database, revision, key(malformed.clone()));
+    assert!(matches!(malformed_value, V::Failure(_)));
+
+    let zero_malformed = T::Array {
+        element: Arc::new(malformed),
+        len: 0,
+    };
+    let (zero_value, zero_attempt) =
+        request_semantic_nucleus_observed(&database, revision, key(zero_malformed));
+    assert_eq!(
+        zero_value,
+        V::DeferredOwnership,
+        "zero multiplicity must not consult an unavailable element"
+    );
+    assert!(
+        zero_attempt
+            .terminal()
+            .unwrap()
+            .dependencies()
+            .iter()
+            .all(|dependency| dependency.node.family() != "compiler.type-facts"),
+        "zero multiplicity must not request TypeFacts for itself or its malformed element"
+    );
+
+    let generic = request_semantic_nucleus(&database, revision, key(T::GenericParameter(0)));
+    assert!(
+        matches!(
+            generic,
+            V::Failure(crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(
+                ref message
+            )) if message.contains("generic parameter remained unresolved")
+        ),
+        "unsubstituted generic must remain a typed provider failure: {generic:?}"
+    );
+
+    assert_eq!(
+        request_semantic_nucleus(&database, revision, key(T::Nominal(named("A")))),
+        V::DeferredOwnership,
+        "a genuine by-value cycle must use the provisional least fixed point"
+    );
+
+    let retry_key = key(T::I32);
+    let canceled = CancellationToken::new();
+    canceled.cancel();
+    let aborted = database.runtime.request_registered(
+        &database.semantic_nucleus,
+        revision,
+        retry_key.clone(),
+        canceled,
+    );
+    assert_eq!(aborted.execution(), RequestExecution::Aborted);
+    assert!(aborted.terminal().is_none());
+    let recovered = database.runtime.request_registered(
+        &database.semantic_nucleus,
+        revision,
+        retry_key.clone(),
+        CancellationToken::new(),
+    );
+    assert_eq!(recovered.execution(), RequestExecution::Computed);
+    let warm = database.runtime.request_registered(
+        &database.semantic_nucleus,
+        revision,
+        retry_key,
+        CancellationToken::new(),
+    );
+    assert_eq!(warm.execution(), RequestExecution::Reused);
+}
+
+#[test]
 fn direct_family_failures_are_deterministic_without_root_prevalidation() {
     use crate::declaration_candidate::DeclarationCandidateCategory as Category;
     use crate::semantic_query_nucleus::{SemanticNucleusKey as Key, SemanticNucleusValue as V};

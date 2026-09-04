@@ -137,3 +137,156 @@ fn main() -> i32 { 0 }
 """
 compile_fail = false
 exit_code = 0
+
+[[case]]
+name = "reachable_named_outer_is_rejected_during_binding"
+description = "Binding-time ownership uses transitive drop facts for a named outer aggregate."
+source = """
+struct D { v: i32 }
+drop fn D(self) {}
+struct Outer { d: D }
+fn Reader(comptime T: type) -> type {
+    struct { x: T, fn first(borrow self) -> T { @require_trivially_droppable(T); self.x } }
+}
+fn main() -> i32 {
+    let R = Reader(Outer);
+    let r = R { x: Outer { d: D { v: 1 } } };
+    let _ = r.first();
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0711", "Outer"]
+
+[[case]]
+name = "reachable_anonymous_explicit_destructor_is_rejected_during_binding"
+description = "Binding-time ownership recognizes an anonymous destructor even without droppable fields."
+source = """
+fn Owner() -> type { struct { drop fn(self) {} } }
+fn Reader(comptime T: type) -> type {
+    struct { x: T, fn first(borrow self) -> T { @require_trivially_droppable(T); self.x } }
+}
+fn main() {
+    let O = Owner();
+    let R = Reader(O);
+    let r = R { x: O {} };
+    let _ = r.first();
+}
+"""
+compile_fail = true
+error_contains = ["E0711", "Owner"]
+
+[[case]]
+name = "deferred_anonymous_explicit_destructor_is_rejected"
+description = "The TypeFacts-backed provider recognizes the same anonymous destructor."
+source = """
+fn Owner() -> type { struct { drop fn(self) {} } }
+fn Gated(comptime T: type) -> type { @require_trivially_droppable(T); struct { x: T } }
+const O = Owner();
+const G = Gated(O);
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0711", "Owner"]
+
+[[case]]
+name = "anonymous_associated_drop_lookalike_is_trivial"
+description = "An associated function named __drop has no receiver and cannot counterfeit a destructor."
+source = """
+fn Plain() -> type { struct { fn __drop() {} } }
+fn Gated(comptime T: type) -> type { @require_trivially_droppable(T); struct { x: T } }
+const P = Plain();
+const G = Gated(P);
+fn main() {}
+"""
+compile_fail = false
+exit_code = 0
+
+[[case]]
+name = "unreached_named_outer_reader_compiles"
+description = "The same named binding-time gate remains dormant when its method is unreached."
+source = """
+struct D { v: i32 }
+drop fn D(self) {}
+struct Outer { d: D }
+fn Reader(comptime T: type) -> type {
+    struct { x: T, fn first(borrow self) -> T { @require_trivially_droppable(T); self.x } }
+}
+fn main() -> i32 {
+    let R = Reader(Outer);
+    let _ = R { x: Outer { d: D { v: 1 } } };
+    7
+}
+"""
+compile_fail = false
+exit_code = 7
+
+[[case]]
+name = "reachable_anonymous_outer_is_rejected_during_binding"
+description = "Binding-time ownership uses transitive drop facts for an anonymous outer aggregate."
+source = """
+struct D { v: i32 }
+drop fn D(self) {}
+fn Outer() -> type { struct { d: D } }
+fn Reader(comptime T: type) -> type {
+    struct { x: T, fn first(borrow self) -> T { @require_trivially_droppable(T); self.x } }
+}
+fn main() -> i32 {
+    let O = Outer();
+    let R = Reader(O);
+    let r = R { x: O { d: D { v: 1 } } };
+    let _ = r.first();
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0711", "Outer"]
+
+[[case]]
+name = "unreached_anonymous_outer_reader_compiles"
+description = "The same anonymous binding-time gate remains dormant when its method is unreached."
+source = """
+struct D { v: i32 }
+drop fn D(self) {}
+fn Outer() -> type { struct { d: D } }
+fn Reader(comptime T: type) -> type {
+    struct { x: T, fn first(borrow self) -> T { @require_trivially_droppable(T); self.x } }
+}
+fn main() -> i32 {
+    let O = Outer();
+    let R = Reader(O);
+    let _ = R { x: O { d: D { v: 1 } } };
+    9
+}
+"""
+compile_fail = false
+exit_code = 9
+
+[[case]]
+name = "deferred_named_outer_is_rejected"
+description = "The durable/provider gate agrees with binding-time facts for a named outer aggregate."
+source = """
+struct D { v: i32 }
+drop fn D(self) {}
+struct Outer { d: D }
+fn Gated(comptime T: type) -> type { @require_trivially_droppable(T); struct { x: T } }
+const G = Gated(Outer);
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0711", "Outer"]
+
+[[case]]
+name = "deferred_anonymous_outer_is_rejected"
+description = "The durable/provider gate agrees with binding-time facts for an anonymous outer aggregate."
+source = """
+struct D { v: i32 }
+drop fn D(self) {}
+fn Outer() -> type { struct { d: D } }
+fn Gated(comptime T: type) -> type { @require_trivially_droppable(T); struct { x: T } }
+const O = Outer();
+const G = Gated(O);
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0711", "Outer"]
