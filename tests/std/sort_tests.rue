@@ -1,0 +1,110 @@
+const std = @import("std");
+const sort = std.sort;
+const Buf = std.arraybuf.ArrayBuf(i64);
+const OptU64 = std.option.Option(u64);
+
+fn of(a: i64, b: i64, c: i64, d: i64, e: i64) -> Buf {
+    let mut xs = Buf.new();
+    xs.push(a); xs.push(b); xs.push(c); xs.push(d); xs.push(e);
+    xs
+}
+
+fn ramp(n: u64, down: bool) -> Buf {
+    let mut xs = Buf.new();
+    let mut i: u64 = 0;
+    while i < n {
+        let v: i64 = @intCast(i);
+        if down { xs.push(@intCast(n - 1 - i)); } else { xs.push(v); }
+        i += 1;
+    }
+    xs
+}
+
+test "quicksort sorts a small shuffled buffer" {
+    let mut xs = of(5, -1, 3, 3, 0);
+    sort.quicksort(i64, inout xs);
+    @assert(sort.is_sorted(i64, borrow xs));
+    let first: i64 = xs.get_or(0, 99);
+    let last: i64 = xs.get_or(4, 99);
+    @assert_eq(first, -1);
+    @assert_eq(last, 5);
+}
+
+test "quicksort handles empty, single, sorted, reversed, and all-equal inputs" {
+    let mut empty = Buf.new();
+    sort.quicksort(i64, inout empty);
+    @assert_eq(empty.len(), 0);
+    let mut one = Buf.new();
+    one.push(7);
+    sort.quicksort(i64, inout one);
+    @assert(sort.is_sorted(i64, borrow one));
+    let mut up = ramp(500, false);
+    sort.quicksort(i64, inout up);
+    @assert(sort.is_sorted(i64, borrow up));
+    let mut down = ramp(500, true);
+    sort.quicksort(i64, inout down);
+    @assert(sort.is_sorted(i64, borrow down));
+    @assert_eq(down.get_or(0, -1), 0);
+    @assert_eq(down.get_or(499, -1), 499);
+    let mut same = of(4, 4, 4, 4, 4);
+    sort.quicksort(i64, inout same);
+    @assert(sort.is_sorted(i64, borrow same));
+}
+
+test "quicksort of a pseudo-random buffer agrees with insertion_sort" {
+    let mut rng = std.rand.Lcg.new(7);
+    let mut a = Buf.new();
+    let mut b = Buf.new();
+    let mut i: u64 = 0;
+    while i < 300 {
+        let v: i64 = @intCast(rng.next_below(50));
+        a.push(v - 25);
+        b.push(v - 25);
+        i += 1;
+    }
+    sort.quicksort(i64, inout a);
+    sort.insertion_sort(i64, inout b);
+    @assert(sort.is_sorted(i64, borrow a));
+    @assert(sort.is_sorted(i64, borrow b));
+    let mut j: u64 = 0;
+    while j < 300 {
+        @assert_eq(a.get_or(j, 0), b.get_or(j, 0));
+        j += 1;
+    }
+}
+
+test "insertion_sort sorts and is_sorted detects a single inversion" {
+    let mut xs = of(2, 1, 4, 3, 5);
+    @assert(!sort.is_sorted(i64, borrow xs));
+    sort.insertion_sort(i64, inout xs);
+    @assert(sort.is_sorted(i64, borrow xs));
+    xs.set(2, -100);
+    @assert(!sort.is_sorted(i64, borrow xs));
+}
+
+test "is_sorted is true for short buffers and allows duplicates" {
+    let empty = Buf.new();
+    @assert(sort.is_sorted(i64, borrow empty));
+    let dup = of(1, 1, 2, 2, 2);
+    @assert(sort.is_sorted(i64, borrow dup));
+}
+
+test "binary_search finds present values and reports absent ones" {
+    let xs = of(-3, 0, 4, 9, 20);
+    @assert_eq(sort.binary_search(i64, borrow xs, -3), OptU64.Some(0));
+    @assert_eq(sort.binary_search(i64, borrow xs, 20), OptU64.Some(4));
+    @assert_eq(sort.binary_search(i64, borrow xs, 4), OptU64.Some(2));
+    @assert_eq(sort.binary_search(i64, borrow xs, 5), OptU64.None);
+    @assert_eq(sort.binary_search(i64, borrow xs, -10), OptU64.None);
+    @assert_eq(sort.binary_search(i64, borrow xs, 100), OptU64.None);
+    let empty = Buf.new();
+    @assert_eq(sort.binary_search(i64, borrow empty, 1), OptU64.None);
+}
+
+test "binary_search over a u8 buffer" {
+    let B8 = std.arraybuf.ArrayBuf(u8);
+    let mut xs = B8.new();
+    xs.push(1); xs.push(2); xs.push(200);
+    @assert_eq(sort.binary_search(u8, borrow xs, 200), OptU64.Some(2));
+    @assert_eq(sort.binary_search(u8, borrow xs, 3), OptU64.None);
+}

@@ -1,0 +1,175 @@
+const std = @import("std");
+const strings = std.strings;
+const StrBuf = std.strbuf.StrBuf;
+const OptI64 = std.option.Option(i64);
+const OptU64 = std.option.Option(u64);
+const Parts = std.arraybuf.ArrayBuf(StrBuf);
+
+test "parse_int accepts decimal with an optional leading minus" {
+    @assert_eq(strings.parse_int("0"), OptI64.Some(0));
+    @assert_eq(strings.parse_int("42"), OptI64.Some(42));
+    @assert_eq(strings.parse_int("-42"), OptI64.Some(-42));
+    @assert_eq(strings.parse_int("007"), OptI64.Some(7));
+    @assert_eq(strings.parse_int("9223372036854775807"), OptI64.Some(@int_max(i64)));
+}
+
+test "parse_int rejects empty, lone minus, plus sign, junk, and spaces" {
+    @assert_eq(strings.parse_int(""), OptI64.None);
+    @assert_eq(strings.parse_int("-"), OptI64.None);
+    @assert_eq(strings.parse_int("+5"), OptI64.None);
+    @assert_eq(strings.parse_int("12a"), OptI64.None);
+    @assert_eq(strings.parse_int(" 12"), OptI64.None);
+    @assert_eq(strings.parse_int("1 2"), OptI64.None);
+    @assert_eq(strings.parse_int("--1"), OptI64.None);
+}
+
+test "parse_int reports overflow as None, including i64::MIN by documented limitation" {
+    @assert_eq(strings.parse_int("9223372036854775808"), OptI64.None);
+    @assert_eq(strings.parse_int("99999999999999999999"), OptI64.None);
+    // Documented: the magnitude is accumulated positively, so MIN is None.
+    @assert_eq(strings.parse_int("-9223372036854775808"), OptI64.None);
+    @assert_eq(strings.parse_int("-9223372036854775807"), OptI64.Some(-@int_max(i64)));
+}
+
+test "find and rfind locate the first and last byte" {
+    @assert_eq(strings.find("hello", 108), OptU64.Some(2));
+    @assert_eq(strings.rfind("hello", 108), OptU64.Some(3));
+    @assert_eq(strings.find("hello", 122), OptU64.None);
+    @assert_eq(strings.rfind("", 104), OptU64.None);
+    @assert_eq(strings.find("h", 104), OptU64.Some(0));
+}
+
+test "find_str and rfind_str with empty, missing, and repeated needles" {
+    let s: StrBuf = "hello world";
+    @assert_eq(strings.find_str(borrow s, borrow "o w"), OptU64.Some(4));
+    @assert_eq(strings.find_str(borrow s, borrow "o"), OptU64.Some(4));
+    @assert_eq(strings.rfind_str(borrow s, borrow "o"), OptU64.Some(7));
+    @assert_eq(strings.find_str(borrow s, borrow ""), OptU64.Some(0));
+    @assert_eq(strings.rfind_str(borrow s, borrow ""), OptU64.Some(11));
+    @assert_eq(strings.find_str(borrow s, borrow "hello world!"), OptU64.None);
+    @assert_eq(strings.find_str(borrow s, borrow "xyz"), OptU64.None);
+}
+
+test "count and starts_with_byte" {
+    @assert_eq(strings.count("banana", 97), 3);
+    @assert_eq(strings.count("banana", 122), 0);
+    @assert_eq(strings.count("", 97), 0);
+    @assert(strings.starts_with_byte("banana", 98));
+    @assert(!strings.starts_with_byte("banana", 97));
+    @assert(!strings.starts_with_byte("", 97));
+}
+
+test "trim family strips only ASCII whitespace at the ends" {
+    @assert_eq(strings.trim("  hi  "), "hi");
+    @assert_eq(strings.trim_start("  hi  "), "hi  ");
+    @assert_eq(strings.trim_end("  hi  "), "  hi");
+    @assert_eq(strings.trim("\t\r\n x y \n"), "x y");
+    @assert_eq(strings.trim("     "), "");
+    @assert_eq(strings.trim(""), "");
+    @assert_eq(strings.trim("nospace"), "nospace");
+}
+
+test "repeat" {
+    @assert_eq(strings.repeat("ab", 3), "ababab");
+    @assert_eq(strings.repeat("ab", 0), "");
+    @assert_eq(strings.repeat("", 5), "");
+    @assert_eq(strings.repeat("x", 1), "x");
+}
+
+test "split on a byte keeps empty pieces at both ends" {
+    let s: StrBuf = ",a,,b,";
+    let mut parts = strings.split(borrow s, 44);
+    @assert_eq(parts.len(), 5);
+    @assert_eq(parts.get_ref(0), "");
+    @assert_eq(parts.get_ref(1), "a");
+    @assert_eq(parts.get_ref(2), "");
+    @assert_eq(parts.get_ref(3), "b");
+    @assert_eq(parts.get_ref(4), "");
+}
+
+test "split of the empty string is one empty piece" {
+    let s: StrBuf = "";
+    let parts = strings.split(borrow s, 44);
+    @assert_eq(parts.len(), 1);
+    @assert_eq(parts.get_ref(0), "");
+}
+
+test "split_str with a multi-byte separator and an empty separator" {
+    let s: StrBuf = "a::b::::c";
+    let parts = strings.split_str(borrow s, borrow "::");
+    @assert_eq(parts.len(), 4);
+    @assert_eq(parts.get_ref(0), "a");
+    @assert_eq(parts.get_ref(1), "b");
+    @assert_eq(parts.get_ref(2), "");
+    @assert_eq(parts.get_ref(3), "c");
+    let abc: StrBuf = "abc";
+    let bytes = strings.split_str(borrow abc, borrow "");
+    @assert_eq(bytes.len(), 5);
+    @assert_eq(bytes.get_ref(0), "");
+    @assert_eq(bytes.get_ref(1), "a");
+    @assert_eq(bytes.get_ref(3), "c");
+    @assert_eq(bytes.get_ref(4), "");
+}
+
+test "replace is non-overlapping, left to right, and never rescans its output" {
+    let aaa: StrBuf = "aaa";
+    @assert_eq(strings.replace(borrow aaa, borrow "aa", borrow "b"), "ba");
+    let aa: StrBuf = "aa";
+    @assert_eq(strings.replace(borrow aa, borrow "a", borrow "aa"), "aaaa");
+    let ab: StrBuf = "ab";
+    @assert_eq(strings.replace(borrow ab, borrow "", borrow "-"), "-a-b-");
+    let none: StrBuf = "hello";
+    @assert_eq(strings.replace(borrow none, borrow "z", borrow "y"), "hello");
+    @assert_eq(strings.replace(borrow none, borrow "l", borrow ""), "heo");
+}
+
+test "join is the inverse of split_str for a non-empty separator" {
+    let s: StrBuf = "a, b, c";
+    let parts = strings.split_str(borrow s, borrow ", ");
+    @assert_eq(parts.len(), 3);
+    @assert_eq(strings.join(parts, borrow ", "), "a, b, c");
+}
+
+test "join of zero and one parts" {
+    let empty = Parts.new();
+    @assert_eq(strings.join(empty, borrow "-"), "");
+    let mut one = Parts.new();
+    let only: StrBuf = "solo";
+    one.push(only);
+    @assert_eq(strings.join(one, borrow "-"), "solo");
+}
+
+test "lines terminates rather than separates and strips a CR before LF" {
+    let s: StrBuf = "a\r\nb\n\nc";
+    let ls = strings.lines(borrow s);
+    @assert_eq(ls.len(), 4);
+    @assert_eq(ls.get_ref(0), "a");
+    @assert_eq(ls.get_ref(1), "b");
+    @assert_eq(ls.get_ref(2), "");
+    @assert_eq(ls.get_ref(3), "c");
+    let trailing: StrBuf = "a\nb\n";
+    let t = strings.lines(borrow trailing);
+    @assert_eq(t.len(), 2);
+    let empty: StrBuf = "";
+    let e = strings.lines(borrow empty);
+    @assert_eq(e.len(), 0);
+    let lone_cr: StrBuf = "a\r";
+    let l2 = strings.lines(borrow lone_cr);
+    @assert_eq(l2.len(), 1);
+    @assert_eq(l2.get_ref(0), "a\r");
+}
+
+test "count_chars counts scalars, not bytes" {
+    @assert_eq(strings.count_chars("café"), 4);
+    @assert_eq(strings.count_chars(""), 0);
+    @assert_eq(strings.count_chars("日本語"), 3);
+    @assert_eq(strings.count_chars_lossy("café"), 4);
+}
+
+test "count_chars_lossy folds a malformed sequence into one replacement" {
+    let mut s = StrBuf.new();
+    s.push(97);
+    s.push(255);
+    s.push(98);
+    @assert_eq(strings.count_chars_lossy(s), 3);
+}

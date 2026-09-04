@@ -1,0 +1,53 @@
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const OptI = std.option.Option(i32);
+const OptS = std.option.Option(StrBuf);
+const Res = std.result.Result(i64, StrBuf);
+const Unit = std.result.Result((), u8);
+
+fn halve(n: i64) -> Res {
+    if n % 2 == 0 { Res.Ok(n / 2) } else { Res.Err("odd") }
+}
+
+fn lookup(present: bool) -> OptI {
+    if present { OptI.Some(42) } else { OptI.None }
+}
+
+test "Option variants compare structurally" {
+    @assert_eq(lookup(true), OptI.Some(42));
+    @assert_eq(lookup(false), OptI.None);
+    @assert_ne(OptI.Some(1), OptI.Some(2));
+    @assert_ne(OptI.Some(0), OptI.None);
+}
+
+test "Option can carry an owned StrBuf" {
+    let s: OptS = OptS.Some("hello");
+    match s {
+        OptS.Some(v) => @assert_eq(v, "hello"),
+        OptS.None => @assert(false, "expected Some"),
+    }
+}
+
+test "? on Some unwraps in a test body" {
+    let v = lookup(true)?;
+    @assert_eq(v, 42);
+}
+
+test "Result variants compare structurally" {
+    @assert_eq(halve(10), Res.Ok(5));
+    @assert_eq(halve(7), Res.Err("odd"));
+    @assert_ne(halve(10), halve(12));
+}
+
+test "? on Ok unwraps in a test body" {
+    let half = halve(84)?;
+    @assert_eq(half, 42);
+    @assert_eq(half + 1, 43);
+}
+
+test "a unit Result is expressible" {
+    let ok: Unit = Unit.Ok(());
+    let err: Unit = Unit.Err(7);
+    @assert_eq(ok, Unit.Ok(()));
+    @assert_ne(ok, err);
+}

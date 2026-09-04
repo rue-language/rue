@@ -1,0 +1,56 @@
+const std = @import("std");
+const binary = std.binary;
+
+test "u16 big-endian puts the high byte first" {
+    let b = binary.u16_to_be_bytes(8080);
+    @assert_eq(b[0], 0x1f);
+    @assert_eq(b[1], 0x90);
+    @assert_eq(binary.u16_from_be_bytes(b), 8080);
+}
+
+test "u16 little-endian puts the low byte first" {
+    let b = binary.u16_to_le_bytes(8080);
+    @assert_eq(b[0], 0x90);
+    @assert_eq(b[1], 0x1f);
+    @assert_eq(binary.u16_from_le_bytes(b), 8080);
+}
+
+test "u16 endian forms are byte reversals of each other" {
+    let be = binary.u16_to_be_bytes(0xabcd);
+    let le = binary.u16_to_le_bytes(0xabcd);
+    @assert_eq(be[0], le[1]);
+    @assert_eq(be[1], le[0]);
+    @assert_eq(binary.u16_from_le_bytes(be), 0xcdab);
+}
+
+test "u32 round trips and byte order" {
+    let v: u32 = 0x01020304;
+    let be = binary.u32_to_be_bytes(v);
+    @assert_eq(be[0], 1);
+    @assert_eq(be[3], 4);
+    @assert_eq(binary.u32_from_be_bytes(be), v);
+    let le = binary.u32_to_le_bytes(v);
+    @assert_eq(le[0], 4);
+    @assert_eq(le[3], 1);
+    @assert_eq(binary.u32_from_le_bytes(le), v);
+    @assert_eq(binary.u32_from_be_bytes(le), 0x04030201);
+}
+
+test "u64 round trips at the extremes" {
+    let be = binary.u64_to_be_bytes(@int_max(u64));
+    @assert_eq(be[0], 255);
+    @assert_eq(be[7], 255);
+    @assert_eq(binary.u64_from_be_bytes(be), @int_max(u64));
+    let one = binary.u64_to_le_bytes(1);
+    @assert_eq(one[0], 1);
+    @assert_eq(one[7], 0);
+    @assert_eq(binary.u64_from_le_bytes(one), 1);
+    let top = binary.u64_to_be_bytes(0x8000000000000000);
+    @assert_eq(top[0], 0x80);
+    @assert_eq(binary.u64_from_le_bytes(top), 0x80);
+}
+
+test "array equality compares whole encodings" {
+    @assert_eq(binary.u32_to_be_bytes(0xdeadbeef), [0xde, 0xad, 0xbe, 0xef]);
+    @assert_ne(binary.u32_to_be_bytes(1), binary.u32_to_le_bytes(1));
+}

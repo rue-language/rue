@@ -1,0 +1,24 @@
+// Test root for the Rue standard library. Not a program: `rue test
+// tests/std/main.rue` roots every `test` item in this import closure.
+//
+// The tree lives beside std/, not inside it, because a test root may not sit
+// inside the configured standard-library tree. So these tests see exactly the
+// public API a user program sees and prove its sufficiency (ADR-0083 §1,
+// "placement is the visibility model").
+const cmp_tests = @import("cmp_tests.rue");
+const math_tests = @import("math_tests.rue");
+const ascii_tests = @import("ascii_tests.rue");
+const tuple_mem_tests = @import("tuple_mem_tests.rue");
+const fmt_tests = @import("fmt_tests.rue");
+const binary_tests = @import("binary_tests.rue");
+const option_result_tests = @import("option_result_tests.rue");
+const strings_tests = @import("strings_tests.rue");
+const sort_tests = @import("sort_tests.rue");
+const hash_rand_tests = @import("hash_rand_tests.rue");
+const collections_tests = @import("collections_tests.rue");
+const maps_tests = @import("maps_tests.rue");
+const json_tests = @import("json_tests.rue");
+const buffers_tests = @import("buffers_tests.rue");
+const env_tests = @import("env_tests.rue");
+const fs_tests = @import("fs_tests.rue");
+const net_c_tests = @import("net_c_tests.rue");

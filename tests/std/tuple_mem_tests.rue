@@ -1,0 +1,72 @@
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const Pair = std.tuple.Pair(i64, i64);
+const Triple = std.tuple.Triple(u8, bool, i64);
+const Named = std.tuple.Pair(StrBuf, u64);
+
+test "Pair.new stores its fields in order" {
+    let p = Pair.new(40, 2);
+    @assert_eq(p.first, 40);
+    @assert_eq(p.second, 2);
+    @assert_eq(p.first + p.second, 42);
+}
+
+test "Pair compares structurally" {
+    @assert_eq(Pair.new(1, 2), Pair.new(1, 2));
+    @assert_ne(Pair.new(1, 2), Pair.new(2, 1));
+}
+
+test "Triple mixes element types" {
+    let t = Triple.new(7, true, -1);
+    @assert_eq(t.first, 7);
+    @assert(t.second);
+    @assert_eq(t.third, -1);
+}
+
+test "a Pair may own a StrBuf" {
+    let p = Named.new("answer", 42);
+    @assert_eq(p.first, "answer");
+    @assert_eq(p.second, 42);
+}
+
+test "mem.swap exchanges two integers" {
+    let mut a: i64 = 1;
+    let mut b: i64 = 2;
+    std.mem.swap(i64, inout a, inout b);
+    @assert_eq(a, 2);
+    @assert_eq(b, 1);
+}
+
+test "mem.swap exchanges two owned StrBufs without a double free" {
+    let mut a: StrBuf = "left";
+    let mut b: StrBuf = "right side";
+    std.mem.swap(StrBuf, inout a, inout b);
+    @assert_eq(a, "right side");
+    @assert_eq(b, "left");
+}
+
+test "mem.swap a value with itself is a no-op" {
+    let mut a: i64 = 9;
+    let mut b: i64 = 9;
+    std.mem.swap(i64, inout a, inout b);
+    @assert_eq(a, 9);
+    @assert_eq(b, 9);
+}
+
+test "mem.replace stores the new value and returns the old" {
+    let mut x: i64 = 5;
+    let old = std.mem.replace(i64, inout x, 6);
+    @assert_eq(old, 5);
+    @assert_eq(x, 6);
+}
+
+// RUE-2013: `std.mem.replace(StrBuf, ...)` does not compile — `let old = dst;`
+// in std/mem.rue is E0437 (move out of an inout parameter) for any drop-glue
+// `T`, so `replace` only works for Copy types despite its doc. There is no
+// per-test xfail yet (RUE-2018), and a compile error fails the whole run, so
+// the case is recorded here until RUE-2013 lands:
+//
+//     let mut s: StrBuf = "before";
+//     let old = std.mem.replace(StrBuf, inout s, "after");
+//     @assert_eq(old, "before");
+//     @assert_eq(s, "after");

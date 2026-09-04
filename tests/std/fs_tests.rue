@@ -1,0 +1,230 @@
+// std.fs against the runner's private scratch directory: every test starts in
+// a fresh empty directory (`.`), so relative paths are isolated per test.
+const std = @import("std");
+const fs = std.fs;
+const StrBuf = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+const CountR = std.result.Result(u64, fs.FileError);
+const MetaR = std.result.Result(fs.Metadata, fs.FileError);
+const UnitR = std.result.Result((), fs.FileError);
+
+fn read_all(inout f: fs.File) -> StrBuf {
+    let mut buf = Bytes.new();
+    let mut reading = true;
+    while reading {
+        buf.reserve(64);
+        match f.read(inout buf) {
+            CountR.Ok(n) => { if n == 0 { reading = false; } },
+            CountR.Err(e) => @panic("read failed"),
+        }
+    }
+    StrBuf.from_bytes(borrow buf)
+}
+
+test "create, write_all, close, open, read round-trips bytes" {
+    let path: StrBuf = "hello.txt";
+    let mut f = fs.File.create(borrow path)?;
+    let bytes = Bytes.from_str(borrow "hello, scratch\n");
+    f.write_all(borrow bytes)?;
+    f.close()?;
+    let mut g = fs.File.open(borrow path)?;
+    @assert_eq(read_all(inout g), "hello, scratch\n");
+    g.close()?;
+}
+
+test "write returns the count and an empty write is Ok(0)" {
+    let path: StrBuf = "count.txt";
+    let mut f = fs.File.create(borrow path)?;
+    let bytes = Bytes.from_str(borrow "12345");
+    let n: u64 = f.write(borrow bytes)?;
+    @assert_eq(n, 5);
+    let none = Bytes.new();
+    let zero: u64 = f.write(borrow none)?;
+    @assert_eq(zero, 0);
+    f.close()?;
+}
+
+test "read into a buffer with no spare capacity is InvalidInput, not Ok(0)" {
+    let path: StrBuf = "full.txt";
+    let mut f = fs.File.create(borrow path)?;
+    f.write_all(borrow Bytes.from_str(borrow "abc"))?;
+    f.close()?;
+    let mut g = fs.File.open(borrow path)?;
+    let mut buf = Bytes.new();
+    match g.read(inout buf) {
+        CountR.Ok(n) => @assert(false, "expected an error for a full buffer"),
+        CountR.Err(e) => @assert_eq(e, fs.FileError.InvalidInput),
+    }
+    g.close()?;
+}
+
+test "append adds to the end of an existing file" {
+    let path: StrBuf = "log.txt";
+    let mut f = fs.File.create(borrow path)?;
+    f.write_all(borrow Bytes.from_str(borrow "one\n"))?;
+    f.close()?;
+    let mut a = fs.File.append(borrow path)?;
+    a.write_all(borrow Bytes.from_str(borrow "two\n"))?;
+    a.close()?;
+    let mut g = fs.File.open(borrow path)?;
+    @assert_eq(read_all(inout g), "one\ntwo\n");
+    g.close()?;
+}
+
+test "create truncates an existing file" {
+    let path: StrBuf = "trunc.txt";
+    let mut f = fs.File.create(borrow path)?;
+    f.write_all(borrow Bytes.from_str(borrow "a much longer first version"))?;
+    f.close()?;
+    let mut g = fs.File.create(borrow path)?;
+    g.write_all(borrow Bytes.from_str(borrow "short"))?;
+    g.close()?;
+    let mut h = fs.File.open(borrow path)?;
+    @assert_eq(read_all(inout h), "short");
+    h.close()?;
+}
+
+test "seek and tell move the cursor" {
+    let path: StrBuf = "seek.txt";
+    let mut f = fs.File.create(borrow path)?;
+    f.write_all(borrow Bytes.from_str(borrow "0123456789"))?;
+    f.close()?;
+    let mut g = fs.File.open(borrow path)?;
+    let start: u64 = g.tell()?;
+    @assert_eq(start, 0);
+    let at: u64 = g.seek(7, fs.Whence.Set)?;
+    @assert_eq(at, 7);
+    @assert_eq(read_all(inout g), "789");
+    let back: u64 = g.seek(-4, fs.Whence.End)?;
+    @assert_eq(back, 6);
+    let now: u64 = g.tell()?;
+    @assert_eq(now, 6);
+    g.close()?;
+}
+
+test "metadata reports size and kind" {
+    let path: StrBuf = "meta.txt";
+    let mut f = fs.File.create(borrow path)?;
+    f.write_all(borrow Bytes.from_str(borrow "sized"))?;
+    f.close()?;
+    let m = fs.metadata(borrow path)?;
+    @assert_eq(m.size(), 5);
+    @assert(m.is_file());
+    @assert(!m.is_dir());
+    let dot: StrBuf = ".";
+    let d = fs.metadata(borrow dot)?;
+    @assert(d.is_dir());
+    @assert(!d.is_file());
+}
+
+test "metadata of a missing path is NotFound" {
+    let missing: StrBuf = "does-not-exist";
+    match fs.metadata(borrow missing) {
+        MetaR.Ok(m) => @assert(false, "expected NotFound"),
+        MetaR.Err(e) => @assert_eq(e, fs.FileError.NotFound),
+    }
+}
+
+test "rename moves a file and remove deletes it" {
+    let from: StrBuf = "from.txt";
+    let to: StrBuf = "to.txt";
+    let mut f = fs.File.create(borrow from)?;
+    f.write_all(borrow Bytes.from_str(borrow "moved"))?;
+    f.close()?;
+    fs.rename(borrow from, borrow to)?;
+    match fs.metadata(borrow from) {
+        MetaR.Ok(m) => @assert(false, "source should be gone"),
+        MetaR.Err(e) => @assert_eq(e, fs.FileError.NotFound),
+    }
+    let mut g = fs.File.open(borrow to)?;
+    @assert_eq(read_all(inout g), "moved");
+    g.close()?;
+    fs.remove(borrow to)?;
+    match fs.remove(borrow to) {
+        UnitR.Ok(u) => @assert(false, "second remove should fail"),
+        UnitR.Err(e) => @assert_eq(e, fs.FileError.NotFound),
+    }
+}
+
+test "create_dir, create_dir_all, remove_dir, remove_dir_all" {
+    let d: StrBuf = "d";
+    fs.create_dir(borrow d)?;
+    let m = fs.metadata(borrow d)?;
+    @assert(m.is_dir());
+    match fs.create_dir(borrow d) {
+        UnitR.Ok(u) => @assert(false, "creating an existing dir should fail"),
+        UnitR.Err(e) => @assert_eq(e, fs.FileError.AlreadyExists),
+    }
+    let deep: StrBuf = "x/y/z";
+    fs.create_dir_all(borrow deep)?;
+    fs.create_dir_all(borrow deep)?;
+    let leaf: StrBuf = "x/y/z/leaf.txt";
+    let mut f = fs.File.create(borrow leaf)?;
+    f.close()?;
+    fs.remove_dir(borrow d)?;
+    let x: StrBuf = "x";
+    match fs.remove_dir(borrow x) {
+        UnitR.Ok(u) => @assert(false, "non-empty dir should not remove"),
+        UnitR.Err(e) => @assert_ne(e, fs.FileError.NotFound),
+    }
+    fs.remove_dir_all(borrow x)?;
+    match fs.metadata(borrow x) {
+        MetaR.Ok(m) => @assert(false, "tree should be gone"),
+        MetaR.Err(e) => @assert_eq(e, fs.FileError.NotFound),
+    }
+}
+
+test "read_dir lists entries in a deterministic name order with kinds" {
+    let b: StrBuf = "b.txt";
+    let a: StrBuf = "a.txt";
+    let sub: StrBuf = "sub";
+    let mut fb = fs.File.create(borrow b)?;
+    fb.close()?;
+    let mut fa = fs.File.create(borrow a)?;
+    fa.close()?;
+    fs.create_dir(borrow sub)?;
+    let dot: StrBuf = ".";
+    let entries = fs.read_dir(borrow dot)?;
+    @assert_eq(entries.len(), 3);
+    @assert_eq(entries.name(0), "a.txt");
+    @assert_eq(entries.name(1), "b.txt");
+    @assert_eq(entries.name(2), "sub");
+    @assert(entries.is_file(0));
+    @assert(!entries.is_dir(0));
+    @assert(entries.is_dir(2));
+    @assert_eq(entries.kind(2), fs.FileKind.Dir);
+    @assert(entries.path(0).ends_with(borrow "a.txt"));
+}
+
+test "walk descends into subdirectories" {
+    let sub: StrBuf = "sub";
+    fs.create_dir(borrow sub)?;
+    let inner: StrBuf = "sub/inner.txt";
+    let mut f = fs.File.create(borrow inner)?;
+    f.close()?;
+    let top: StrBuf = "top.txt";
+    let mut t = fs.File.create(borrow top)?;
+    t.close()?;
+    let dot: StrBuf = ".";
+    let entries = fs.walk(borrow dot)?;
+    @assert_eq(entries.len(), 3);
+    let mut saw_inner = false;
+    let mut i: u64 = 0;
+    while i < entries.len() {
+        if entries.name(i) == "inner.txt" {
+            saw_inner = true;
+            @assert(entries.path(i).ends_with(borrow "sub/inner.txt"));
+        }
+        i += 1;
+    }
+    @assert(saw_inner);
+}
+
+test "opening a missing file fails with NotFound" {
+    let FileR = std.result.Result(fs.File, fs.FileError);
+    let missing: StrBuf = "nope.txt";
+    match fs.File.open(borrow missing) {
+        FileR.Ok(f) => @assert(false, "expected NotFound"),
+        FileR.Err(e) => @assert_eq(e, fs.FileError.NotFound),
+    }
+}
