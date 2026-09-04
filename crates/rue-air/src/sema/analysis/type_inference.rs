@@ -1584,9 +1584,33 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // indexing without checking if the element type is Copy. This enables
         // accessing Copy fields of non-Copy array elements.
         if let InstData::IndexGet { base, index } = &inst.data {
+            let base_root = self.extract_root_variable(*base);
+
+            // A *whole element* of an array place is read through that array's
+            // own place, exactly as the field arm above reads a whole field
+            // through its struct's place. The spill below is for a computed
+            // base; applying it to a place copies the entire array into an
+            // owning temporary and projects that, so every non-Copy element's
+            // heap buffer is freed when the temporary drops at the end of the
+            // expression while the array still owns it (RUE-1997).
+            //
+            // Projection mode exists because its consumers borrow what they
+            // read — the operands of `==` (4.3:3f), `@dbg`, `@assert`, string
+            // concatenation. Marking the array's root as a by-reference use is
+            // what says so: `analyze_index_get` then reads the element in
+            // place, with its bounds and use-after-move checks intact, instead
+            // of taking the by-value path that moves a non-Copy element out of
+            // the array.
+            if let Some(root) = base_root
+                && self
+                    .peek_place_type(*base, ctx)
+                    .is_some_and(|ty| ty.as_array().is_some())
+            {
+                return self.analyze_with_borrow_root(air, inst_ref, Some(root), ctx);
+            }
+
             // Snapshot the base root's move state before analysis, in case this
             // is a String/str/slice byte index in projection mode (RUE-700).
-            let base_root = self.extract_root_variable(*base);
             let base_move_state_before = self.snapshot_move_state_value(base_root, ctx);
 
             // Recursively analyze the base in projection mode
