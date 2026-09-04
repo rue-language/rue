@@ -2767,7 +2767,6 @@ impl<'a> CfgLower<'a> {
             rue_air::IntrinsicOperation::PanicNoMessage
             | rue_air::IntrinsicOperation::Panic
             | rue_air::IntrinsicOperation::AssertFailed
-            | rue_air::IntrinsicOperation::AssertWithMessage
             | rue_air::IntrinsicOperation::BoundsCheck => {
                 unreachable!("trap handled above")
             }

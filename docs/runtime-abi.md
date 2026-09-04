@@ -129,10 +129,10 @@ diagnostic and terminate the process with the runtime-error status.
 
 ## The test failure channel
 
-Six helpers implement the ADR-0083 §3 and §5.1 channel. Three are dispatcher
+Seven helpers implement the ADR-0083 §3 and §5.1 channel. Three are dispatcher
 plumbing no source spelling selects; the reporting helpers are what a test
-body's `?` and the comparison assertions lower to, in an ordinary executable as
-well as in a test image.
+body's `?` and the assertion family lower to, in an ordinary executable as well
+as in a test image.
 
 - `__rue_test_normalize_process` narrows the captured argument count to one, so
   a test observes the pinned inventory rather than the selector it was
@@ -152,15 +152,30 @@ well as in a test image.
   `assertion failed: left != right` for `assert_ne` — which is what keeps a
   six-register call able to carry both operands. It pairs with
   `__rue_test_failure_site` under the same adjacency rule.
+- `__rue_test_fail_assert` is the same terminal call for `@assert`
+  (spec 4.13:5d, ABI version 5). It writes a record of kind `assert` that ends
+  at the location — no `payload`, and no operands — and then writes the one
+  stderr line the assertion has always written. `@assert` has two pinned stderr
+  forms rather than one, so the form is a parameter instead of a second symbol:
+  with `with_message` zero the message is not read at all and both the record
+  and stderr carry the pinned `assertion failed`; otherwise the caller's text is
+  the record's message and `panic: {message}` is the stderr line. An empty
+  message is still the message form, so `@assert(c, "")` keeps printing
+  `panic: `. It pairs with `__rue_test_failure_site` under the same adjacency
+  rule.
 - `__rue_test_usage_error` writes one pinned diagnostic for a malformed
   selector and *returns*, unlike every other stderr-writing runtime path,
   because the dispatcher owns that case's exit status.
 
 `@assert_eq(l, r)` and `@assert_ne(l, r)` compile to the ordinary equality
-lowering plus, on the failing branch, the two rendering calls and this pair. The
-lowering does not depend on whether the request is a test one: an ordinary
-process simply has no descriptor 3, so the frame write fails with `EBADF` as
-designed and the pinned stderr message plus exit 101 is the whole report.
+lowering plus, on the failing branch, the two rendering calls and this pair.
+`@assert(cond)` and `@assert(cond, msg)` compile to a branch on the negated
+condition whose only arm is `__rue_test_failure_site` and
+`__rue_test_fail_assert`; the message is materialized before the branch, so it
+is still evaluated when the condition holds. The lowering does not depend on
+whether the request is a test one: an ordinary process simply has no descriptor
+3, so the frame write fails with `EBADF` as designed and the pinned stderr
+message plus exit 101 is the whole report.
 
 The completion and failure records go to a dedicated inherited descriptor,
 number 3, one JSON object per line. Writes are best-effort: a test image run by

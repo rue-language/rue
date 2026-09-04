@@ -16,7 +16,7 @@ use core::fmt;
 #[macro_export]
 macro_rules! runtime_abi_version {
     ($callback:ident) => {
-        $callback!(4, __rue_runtime_abi_v4);
+        $callback!(5, __rue_runtime_abi_v5);
     };
 }
 
@@ -1012,6 +1012,24 @@ macro_rules! for_each_runtime_helper {
             safety: READABLE.union(TERMINATES),
             returns: NEVER
         },
+        // The `@assert` form of the same terminal call (spec 4.13:5d). Its
+        // two stderr messages are two different pinned strings rather than one
+        // string built from the kind, so the form travels as a parameter:
+        // `with_message` selects the user's text and `@panic`'s `panic: `
+        // prefix over the bare `assertion failed` that is both the frame's
+        // message and the whole stderr line. Neither form carries a `payload`;
+        // a bare assertion has nothing structured to put in one.
+        TestFailAssert => unsafe __rue_test_fail_assert(
+            message_ptr: *const u8,
+            message_len: u64,
+            with_message: u32,
+        ) -> ! {
+            symbol: "__rue_test_fail_assert",
+            parameters: params![BYTE_VIEW, U64_VALUE, U32_VALUE],
+            result: VOID,
+            safety: READABLE.union(TERMINATES),
+            returns: NEVER
+        },
         TestUsageError => safe __rue_test_usage_error() {
             symbol: "__rue_test_usage_error",
             parameters: params![],
@@ -1377,10 +1395,11 @@ const fn starts_with(value: &str, prefix: &str) -> bool {
 
 const fn ends_with_decimal_version(symbol: &str, version: u32) -> bool {
     // Version 3 added the ADR-0083 §5.1 comparison failure channel; version 4
-    // added width-explicit float formatting. This explicit check makes an ABI
-    // bump update both metadata values rather than silently retaining a stale
-    // symbol.
-    version == 4 && string_eq(symbol, "__rue_runtime_abi_v4")
+    // added width-explicit float formatting; version 5 added the channel's
+    // `@assert` form, `__rue_test_fail_assert`. This explicit check makes an
+    // ABI bump update both metadata values rather than silently retaining a
+    // stale symbol.
+    version == 5 && string_eq(symbol, "__rue_runtime_abi_v5")
 }
 
 /// Validate all table ordering, uniqueness, classification, and layout invariants.
@@ -1466,7 +1485,7 @@ mod tests {
     #[test]
     fn manifest_is_const_valid_and_exhaustive() {
         assert_eq!(validate_manifest(), Ok(()));
-        assert_eq!(RuntimeHelperId::ALL.len(), 53);
+        assert_eq!(RuntimeHelperId::ALL.len(), 54);
         assert_eq!(RuntimeHelperId::ALL.len(), RUNTIME_HELPERS.len());
         for (index, id) in RuntimeHelperId::ALL.iter().copied().enumerate() {
             assert_eq!(id as usize, index);
@@ -1540,6 +1559,7 @@ mod tests {
             "__rue_test_failure_site",
             "__rue_test_fail",
             "__rue_test_fail_comparison",
+            "__rue_test_fail_assert",
             "__rue_test_usage_error",
         ];
         assert_eq!(
@@ -1552,7 +1572,7 @@ mod tests {
     #[test]
     fn every_helper_has_the_exact_accepted_signature_and_contract() {
         fn check(
-            visited: &mut [bool; 53],
+            visited: &mut [bool; 54],
             ids: &[RuntimeHelperId],
             parameters: &[AbiParameter],
             result: AbiResult,
@@ -1573,7 +1593,7 @@ mod tests {
             }
         }
 
-        let mut visited = [false; 53];
+        let mut visited = [false; 54];
         check(
             &mut visited,
             &[RuntimeHelperId::Exit],
@@ -1842,6 +1862,14 @@ mod tests {
             READABLE.union(TERMINATES),
             NEVER,
         );
+        check(
+            &mut visited,
+            &[RuntimeHelperId::TestFailAssert],
+            &[BYTE_VIEW, U64_VALUE, U32_VALUE],
+            VOID,
+            READABLE.union(TERMINATES),
+            NEVER,
+        );
         assert!(visited.into_iter().all(|was_visited| was_visited));
     }
 
@@ -2031,7 +2059,7 @@ mod tests {
 
     #[test]
     fn abi_version_metadata_is_a_one_byte_data_export() {
-        assert_eq!(RUNTIME_ABI_VERSION, 4);
+        assert_eq!(RUNTIME_ABI_VERSION, 5);
         assert_eq!(
             RUNTIME_ABI_VERSION_SYMBOL,
             format!("__rue_runtime_abi_v{RUNTIME_ABI_VERSION}")

@@ -123,7 +123,6 @@ pub enum RuntimeCallKind {
     Panic,
     PanicNoMessage,
     AssertFailed,
-    AssertWithMessage,
     /// Typed identity for compiler-inserted slice bounds traps. This shares
     /// the `assert` intrinsic's conditional shape while selecting the
     /// dedicated `__rue_bounds_check` runtime helper in codegen.
@@ -161,6 +160,9 @@ pub enum RuntimeCallKind {
     /// `expected` and `actual` — on the §5.1 channel, then abort. What
     /// `@assert_eq` and `@assert_ne` lower to (ADR-0083 Phase 2.5).
     TestFailComparison,
+    /// Report a failed `@assert` — the pinned or user-supplied message — on
+    /// the §5.1 channel, then abort. What `@assert` lowers to (spec 4.13:5d).
+    TestFailAssert,
     /// Write the pinned malformed-selector diagnostic and return.
     TestUsageError,
 }
@@ -320,6 +322,18 @@ const TEST_FAILURE_SITE: &[RuntimeOperandOrigin] = &[
         ty: AbiType::U32,
     },
 ];
+// `__rue_test_fail_assert(message, with_message)`. The site is staged by the
+// same first call the other reporting helpers use; what differs is the second
+// operand, which states which of `@assert`'s two pinned stderr forms this is
+// rather than leaving the helper to infer it from an empty message.
+const TEST_FAIL_ASSERT: &[RuntimeOperandOrigin] = &[
+    RuntimeOperandOrigin::TextPointer(0),
+    RuntimeOperandOrigin::TextLength(0),
+    RuntimeOperandOrigin::ValueArgument {
+        index: 1,
+        ty: AbiType::U32,
+    },
+];
 const TEST_FAIL: &[RuntimeOperandOrigin] = &[
     RuntimeOperandOrigin::TextPointer(0),
     RuntimeOperandOrigin::TextLength(0),
@@ -349,7 +363,6 @@ impl RuntimeCallKind {
         Self::Panic,
         Self::PanicNoMessage,
         Self::AssertFailed,
-        Self::AssertWithMessage,
         Self::BoundsCheck,
         Self::ReadLine,
         Self::ParseI32,
@@ -377,6 +390,7 @@ impl RuntimeCallKind {
         Self::TestFailureSite,
         Self::TestFail,
         Self::TestFailComparison,
+        Self::TestFailAssert,
         Self::TestUsageError,
     ];
 
@@ -398,7 +412,6 @@ impl RuntimeCallKind {
             Self::Panic => RuntimeHelperId::Panic,
             Self::PanicNoMessage => RuntimeHelperId::PanicNoMessage,
             Self::AssertFailed => RuntimeHelperId::AssertFailed,
-            Self::AssertWithMessage => RuntimeHelperId::Panic,
             Self::BoundsCheck => RuntimeHelperId::BoundsCheck,
             Self::ReadLine => RuntimeHelperId::ReadLine,
             Self::ParseI32 => RuntimeHelperId::ParseI32,
@@ -426,6 +439,7 @@ impl RuntimeCallKind {
             Self::TestFailureSite => RuntimeHelperId::TestFailureSite,
             Self::TestFail => RuntimeHelperId::TestFail,
             Self::TestFailComparison => RuntimeHelperId::TestFailComparison,
+            Self::TestFailAssert => RuntimeHelperId::TestFailAssert,
             Self::TestUsageError => RuntimeHelperId::TestUsageError,
         }
     }
@@ -443,10 +457,6 @@ impl RuntimeCallKind {
                 TEXT
             }
             Self::StrPrintProjected | Self::StrPrintlnProjected => PROJECTED_TEXT,
-            Self::AssertWithMessage => &[
-                RuntimeOperandOrigin::TextPointer(1),
-                RuntimeOperandOrigin::TextLength(1),
-            ],
             Self::DebugI64 => SIGNED_SCALAR,
             Self::DebugU64 => UNSIGNED_SCALAR,
             Self::DebugBool => BOOL_SCALAR,
@@ -473,14 +483,13 @@ impl RuntimeCallKind {
             // open form carries `kind`, `message`, and `payload`: three byte
             // views either way, so one operand plan serves both.
             Self::TestFail | Self::TestFailComparison => TEST_FAIL,
+            Self::TestFailAssert => TEST_FAIL_ASSERT,
         }
     }
 
     pub const fn activation(self) -> RuntimeCallActivation {
         match self {
-            Self::AssertFailed | Self::AssertWithMessage | Self::BoundsCheck => {
-                RuntimeCallActivation::WhenArgumentIsFalse(0)
-            }
+            Self::AssertFailed | Self::BoundsCheck => RuntimeCallActivation::WhenArgumentIsFalse(0),
             _ => RuntimeCallActivation::Always,
         }
     }
@@ -721,10 +730,6 @@ mod tests {
         for kind in RuntimeCallKind::ALL {
             assert!(kind.validate(), "{kind:?}");
         }
-        assert_eq!(
-            RuntimeCallKind::AssertWithMessage.activation(),
-            RuntimeCallActivation::WhenArgumentIsFalse(0)
-        );
         assert_eq!(
             RuntimeCallKind::Panic.activation(),
             RuntimeCallActivation::Always

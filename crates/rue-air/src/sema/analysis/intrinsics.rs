@@ -1261,8 +1261,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
-        // Build args for AIR
-        let mut extra_data = vec![cond_result.air_ref];
+        // The two operands the assertion evaluates, in source order, before it
+        // tests anything.
+        let mut message = None;
         let mut temp_scope = Vec::new();
         if args.len() > 1 {
             let reachable_edges_before_message = ctx.ownership.loop_break_stack.clone();
@@ -1277,45 +1278,126 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 msg_result.ty,
                 self.body_rir_ref().get(args[1].value).span,
             )?;
-            let source_strbuf = msg_result.ty.as_struct().is_some_and(|struct_id| {
-                self.body_type_pool().struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
-            });
+            let source_strbuf = self.is_strbuf(msg_result.ty);
+            // Narrow a StrBuf message to a layout-stable `{ptr, len}` str view,
+            // exactly as `@panic` does (RUE-1066): the report helper reads a
+            // `str`, not the StrBuf header, and the view is a borrow the arm can
+            // carry without owning anything the enclosing block would drop.
             let msg_ref = if source_strbuf {
-                let (msg_ref, scope) = self.materialize_borrow_argument(
-                    air,
-                    msg_result.air_ref,
-                    msg_result.ty,
-                    span,
-                    ctx,
-                )?;
+                let (msg_ref, scope) =
+                    self.strbuf_text_view(air, msg_result.air_ref, msg_result.ty, span, ctx)?;
                 temp_scope = scope;
                 msg_ref
             } else {
                 msg_result.air_ref
             };
-            extra_data.push(msg_ref);
+            message = Some(msg_ref);
             if !temp_scope.is_empty() {
                 // The message's hoisted owner scope must not jump ahead of the
-                // condition. Lower it first; the intrinsic reuses the cached
+                // condition. Lower it first; the branch below reuses the cached
                 // value after the message has been evaluated.
                 temp_scope.insert(0, cond_result.air_ref);
             }
         }
 
-        let intrinsic_ref = air.add_intrinsic(
-            if args.len() > 1 {
-                crate::IntrinsicOperation::AssertWithMessage
-            } else {
-                crate::IntrinsicOperation::AssertFailed
+        // The failing arm is the then-arm of a branch with no else, the same
+        // shape `@assert_eq` reports through: the arm ends in a `-> !` call, so
+        // nothing after the report is reachable from it.
+        //
+        // `@assert(cond, msg)` evaluates its message whether or not the
+        // condition holds, and that stays true of the lowering: both operands
+        // are statements of the enclosing block, so both are evaluated before
+        // the condition is tested rather than inside the arm. Neither owns
+        // anything — the message is a text view by this point — so listing them
+        // schedules no drop.
+        let mut statements = vec![cond_result.air_ref];
+        statements.extend(message);
+        let report = self.build_assert_report(air, message, span, ctx)?;
+        let failed = air.add_inst(AirInst {
+            data: AirInstData::Not(cond_result.air_ref),
+            ty: Type::BOOL,
+            span,
+        });
+        let branch = air.add_inst(AirInst {
+            data: AirInstData::Branch {
+                cond: failed,
+                then_value: report,
+                else_value: None,
             },
-            self.known_symbols().assert,
-            &extra_data,
+            ty: Type::UNIT,
+            span,
+        });
+        let assertion = air.add_block(&statements, branch, Type::UNIT, span)?;
+        let air_ref =
+            self.wrap_value_with_temp_scope(air, assertion, Type::UNIT, span, temp_scope)?;
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+    }
+
+    /// The failing arm of an `@assert`: stage the site, report, abort.
+    ///
+    /// The two channel calls are a pair by ABI — a failure record is more
+    /// arguments than a register-only helper can take — and the second adopts
+    /// whatever site the first staged, so nothing may run between them. The
+    /// message is not one of them: it was materialized before the branch, and
+    /// the arm only hands the terminal call the view it already has.
+    ///
+    /// The lowering is the same in a test image and in an ordinary executable
+    /// (ADR-0083's rule for the assertion family). Only the outcome differs,
+    /// and only because the channel is a descriptor an ordinary process does
+    /// not have: the frame write fails with `EBADF` and the pinned stderr
+    /// message spec 4.13:5d fixes is the whole report.
+    fn build_assert_report(
+        &mut self,
+        air: &mut Air,
+        message: Option<AirRef>,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AirRef> {
+        let str_ty = self.get_or_create_str_struct(span)?;
+        // A site the host cannot resolve is reported as the empty file at 0:0
+        // rather than as a compile error: the ABI accepts an absent location,
+        // and a report that cannot name its line is still a better failure than
+        // no report.
+        let (path, line, column) = self
+            .body_source_coordinate(span)
+            .unwrap_or_else(|| (std::sync::Arc::from(""), 0, 0));
+        let file = self.synthesized_string(air, ctx, &path, str_ty, span);
+        let line = air.add_inst(AirInst {
+            data: AirInstData::Const(u64::from(line)),
+            ty: Type::U32,
+            span,
+        });
+        let column = air.add_inst(AirInst {
+            data: AirInstData::Const(u64::from(column)),
+            ty: Type::U32,
+            span,
+        });
+        let site = self.runtime_channel_call(
+            air,
+            crate::RuntimeCallKind::TestFailureSite,
+            &[file, line, column],
             Type::UNIT,
             span,
         )?;
-        let air_ref =
-            self.wrap_value_with_temp_scope(air, intrinsic_ref, Type::UNIT, span, temp_scope)?;
-        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+
+        // Which of the two pinned stderr forms this is, stated rather than
+        // inferred from the message's length: `@assert(cond, "")` is the
+        // message form and keeps printing `panic: `.
+        let with_message = air.add_inst(AirInst {
+            data: AirInstData::Const(u64::from(message.is_some())),
+            ty: Type::U32,
+            span,
+        });
+        let message =
+            message.unwrap_or_else(|| self.synthesized_string(air, ctx, "", str_ty, span));
+        let report = self.runtime_channel_call(
+            air,
+            crate::RuntimeCallKind::TestFailAssert,
+            &[message, with_message],
+            Type::NEVER,
+            span,
+        )?;
+        Ok(air.add_block(&[with_message, site], report, Type::NEVER, span)?)
     }
 
     /// Analyze `@assert_eq(left, right)` and `@assert_ne(left, right)`

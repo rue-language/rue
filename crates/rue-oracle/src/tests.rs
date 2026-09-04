@@ -945,7 +945,6 @@ fn every_known_unsupported_intrinsic_has_a_closed_kind() {
         Operation::PanicNoMessage,
         Operation::Panic,
         Operation::AssertFailed,
-        Operation::AssertWithMessage,
         Operation::BoundsCheck,
         Operation::DebugI64,
         Operation::DebugU64,
@@ -961,7 +960,7 @@ fn every_known_unsupported_intrinsic_has_a_closed_kind() {
         );
     }
 
-    assert_eq!(Operation::ALL.len(), 46);
+    assert_eq!(Operation::ALL.len(), 45);
 }
 
 #[test]
@@ -1410,6 +1409,39 @@ fn slice_bounds_check_uses_index_trap_category_without_changing_assertions() {
     let assertion = run("fn main() -> i32 { @assert(false); 0 }");
     assert_eq!(assertion.stderr, "assertion failed\n");
     assert_eq!(assertion.panic, Some(TrapKind::AssertionFailure));
+}
+
+/// `@assert` reports on the ADR-0083 §5.1 channel in every build (RUE-1953),
+/// so a failing assertion in an ordinary program is a branch around two channel
+/// calls rather than one conditional intrinsic. The interpreter models both —
+/// the staged site has no observable effect where there is no descriptor 3, and
+/// the terminal call aborts — and what it must agree with the native runtime
+/// about is exactly what spec 4.13:5d pins: the two messages and the trap
+/// category each takes.
+#[test]
+fn assert_reports_through_the_channel_and_keeps_its_pinned_messages() {
+    let bare = run("fn main() -> i32 { @assert(1 + 1 == 3); 0 }");
+    assert_eq!(bare.exit_code, 101);
+    assert_eq!(bare.stderr, "assertion failed\n");
+    assert_eq!(bare.panic, Some(TrapKind::AssertionFailure));
+
+    let message = run(r#"fn main() -> i32 { @assert(1 + 1 == 3, "why"); 0 }"#);
+    assert_eq!(message.exit_code, 101);
+    assert_eq!(message.stderr, "panic: why\n");
+    assert_eq!(message.panic, Some(TrapKind::UserPanic));
+
+    // An empty message is still the message form: the runtime is told which
+    // form it is rather than inferring it from the message's length.
+    let empty = run(r#"fn main() -> i32 { @assert(1 + 1 == 3, ""); 0 }"#);
+    assert_eq!(empty.exit_code, 101);
+    assert_eq!(empty.stderr, "panic: \n");
+    assert_eq!(empty.panic, Some(TrapKind::UserPanic));
+
+    // A holding assertion never enters the arm, so no channel call is reached
+    // and the message it would have carried is still evaluated for its effects.
+    let holds = run(r#"fn main() -> i32 { @assert(1 + 1 == 2, "unused"); 7 }"#);
+    assert_eq!(holds.exit_code, 7);
+    assert_eq!(holds.panic, None);
 }
 
 #[test]
