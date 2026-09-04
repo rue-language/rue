@@ -1899,7 +1899,16 @@ pub(crate) fn exact_import_diagnostics(
             Some([_, _, ..]) => unreachable!("candidate groups hold one candidate"),
             Some([]) => unreachable!(),
             None if site.specifier() == "std" => {
-                errors.push(CompileError::new(ErrorKind::StdLibNotFound, span));
+                // The message names what failed; the help names the one knob
+                // that fixes it. Without this line the driver prints the span
+                // and nothing else, which tells a user running the binary
+                // outside a build system nothing about how to supply a std.
+                // `rue explain E0705` already names the same variable, so this
+                // is the short form of an explanation that already exists.
+                errors.push(
+                    CompileError::new(ErrorKind::StdLibNotFound, span)
+                        .with_help(rue_error::ErrorKind::STD_LIB_NOT_FOUND_HELP),
+                );
             }
             None => errors.push(CompileError::new(
                 ErrorKind::ModuleNotFound {

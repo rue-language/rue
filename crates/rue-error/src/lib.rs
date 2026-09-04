@@ -3656,6 +3656,19 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
+    /// The `help:` line E0705 carries: the one setting that supplies a
+    /// standard library.
+    ///
+    /// The message itself says only that std was not found, which is the whole
+    /// diagnostic a user sees when running the compiler directly outside a
+    /// build system — the case where nothing else has configured a std root.
+    /// `rue explain E0705` already names this variable in its likely-cause
+    /// text; this is the same fact in the one-line form the diagnostic can
+    /// carry, kept here so the two spellings sit next to each other rather
+    /// than drifting apart in the compiler crate that raises the error.
+    pub const STD_LIB_NOT_FOUND_HELP: &'static str =
+        "set RUE_STD_PATH to the toolchain's standard-library directory";
+
     /// Get the error code for this error kind.
     ///
     /// Every error kind has a unique, stable error code that can be used
