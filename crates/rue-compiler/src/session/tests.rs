@@ -5869,6 +5869,53 @@ fn the_test_dispatcher_is_the_test_image_entry_point() {
     assert_eq!(defined_symbols(&executable_again), executable_symbols);
 }
 
+/// The dispatcher is a root of a test request, so whole-program reachability
+/// keeps it (RUE-1995).
+///
+/// General inlining runs only at -O2/-O3, and it publishes only what the
+/// request's roots reach. Nothing calls the dispatcher — it is the entry point
+/// the loader calls — so a root set holding only the test declarations left it
+/// unreachable and dropped the test image's `main`.
+///
+/// The bodies are deliberately call-free. A test body that calls anything the
+/// batch cannot resolve makes dependency discovery incomplete, and an
+/// incomplete graph removes nothing at all, so a call-heavy image hid this.
+#[test]
+fn the_test_dispatcher_survives_general_inlining() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        "fn main() -> i32 { 0 }\ntest \"empty\" { }\ntest \"trivial\" { let _x = 1; }",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+
+    for opt_level in [OptLevel::O0, OptLevel::O1, OptLevel::O2, OptLevel::O3] {
+        session.update(&source).into_result().unwrap();
+        let tests = session
+            .rooted_cfg(&CompileOptions {
+                opt_level,
+                ..test_declaration_options(crate::RootSelection::Tests)
+            })
+            .unwrap_or_else(|errors| {
+                panic!("the test image compiles at {opt_level:?}: {errors:?}")
+            });
+        assert!(
+            tests
+                .functions()
+                .iter()
+                .any(|unit| unit.function == crate::FunctionInstanceKey::TestDispatcher),
+            "the dispatcher must reach the backend at {opt_level:?}"
+        );
+        assert!(
+            defined_symbols(&tests)
+                .iter()
+                .any(|symbol| symbol == "main"),
+            "the image keeps its entry symbol at {opt_level:?}"
+        );
+        assert_eq!(test_units(&tests), ["empty", "trivial"], "at {opt_level:?}");
+    }
+}
+
 /// `extern "C"` exports are executable-only (ADR-0083 §1). A test image links
 /// no export thunk, because a test request roots no c-export.
 #[test]
