@@ -1564,6 +1564,62 @@ impl<'a> ConstraintGenerator<'a> {
         }
     }
 
+    /// The published type of a join point — an `if`/`else` result or a
+    /// `match` result — given the types of the branches that reach it
+    /// (diverging branches are already filtered out by the caller).
+    ///
+    /// When every surviving branch already agrees on one concrete type, that
+    /// type is the join's type. Otherwise the join is a fresh variable, and
+    /// the caller's per-branch equality constraints solve it.
+    ///
+    /// Publishing the agreed concrete type rather than a variable matters
+    /// because parts of constraint generation read a subexpression's type
+    /// structurally, while it is being generated, instead of waiting for
+    /// unification: a field access needs a concrete struct to name the
+    /// field's declared type, and a method call needs a concrete receiver.
+    /// Those lookups fall back to a free variable, so a join that stayed a
+    /// variable made `v.f` in `let v = if c { .. } else { .. }; v.f == 1`
+    /// unconstrained and defaulted the literal to `i32` against a `u64`
+    /// field (RUE-1952, and the second producer named in RUE-1654).
+    fn join_type(&mut self, branch_types: &[InferType]) -> InferType {
+        match branch_types.split_first() {
+            Some((first @ InferType::Concrete(_), rest)) if rest.iter().all(|ty| ty == first) => {
+                first.clone()
+            }
+            _ => InferType::Var(self.fresh_var()),
+        }
+    }
+
+    /// The type `?` yields for an enum with the shape of a std success/failure
+    /// producer: the `Some(T)` payload of the `Option` shape, or the `Ok(T)`
+    /// payload of the `Result` shape (4.15, ADR-0038).
+    ///
+    /// Both shapes are exactly two variants with a single-field success
+    /// payload, differing only in whether the failure variant carries one
+    /// (`Err(E)`) or none (`None`). This is a structural pre-check, not the
+    /// legality rule: sema decides `?` legality by trusted-producer identity
+    /// (RUE-1112) and rejects a same-shape lookalike, so a payload published
+    /// here for a lookalike never reaches a successful compilation.
+    fn try_success_payload(def: &crate::intern_pool::EnumDefEntry) -> Option<Type> {
+        if def.variant_count() != 2 {
+            return None;
+        }
+        let (success, failure_arity) = match def.find_variant("Some") {
+            Some(some_idx) => (some_idx, 0),
+            None => (def.find_variant("Ok")?, 1),
+        };
+        let failure = match failure_arity {
+            0 => def.find_variant("None")?,
+            _ => def.find_variant("Err")?,
+        };
+        let success_payload = def.variant_payload(success);
+        if success_payload.len() == 1 && def.variant_payload(failure).len() == failure_arity {
+            success_payload.first().copied()
+        } else {
+            None
+        }
+    }
+
     /// Generate constraints for an expression.
     ///
     /// Returns the inferred type of the expression. Records the type in
@@ -1727,11 +1783,18 @@ impl<'a> ConstraintGenerator<'a> {
                 result_ty
             }
 
-            // Try/`?`: unwraps `Option(T)` to `T` (RUE-6, ADR-0038). When the
-            // operand's type is already a concrete `Option`-shaped enum, the
-            // result is its `Some` payload; otherwise a fresh variable that
-            // sema types authoritatively from the operand's enum. Sema does the
-            // full checking (operand is Option, enclosing fn returns Option).
+            // Try/`?`: unwraps `Option(T)` to `T` and `Result(T, E)` to `T`
+            // (RUE-6, ADR-0038, 4.15). When the operand's type is already a
+            // concrete success-carrying enum, the result is that success
+            // payload — `Some(T)` for the `Option` shape, `Ok(T)` for the
+            // `Result` shape; otherwise a fresh variable that sema types
+            // authoritatively from the operand's enum. Sema does the full
+            // checking (trusted producer identity, enclosing return type).
+            //
+            // Publishing the payload here is what anchors a `?` result that is
+            // used with an integer literal: `let n = f()?; @assert_eq(n, 1)`
+            // unifies the literal with `n`, and only a concrete `n` keeps the
+            // literal from falling back to the `i32` default (RUE-1952).
             InstData::Try { operand } => {
                 let operand_info = self.generate(*operand, ctx);
                 continues &= operand_info.continues;
@@ -1739,10 +1802,7 @@ impl<'a> ConstraintGenerator<'a> {
                     InferType::Concrete(ty) => ty
                         .as_enum()
                         .map(|enum_id| self.type_pool.enum_def(enum_id))
-                        .and_then(|def| {
-                            def.find_variant("Some")
-                                .and_then(|si| def.variant_payload(si).first().copied())
-                        })
+                        .and_then(|def| Self::try_success_payload(&def))
                         .map(InferType::Concrete)
                         .unwrap_or_else(|| InferType::Var(self.fresh_var())),
                     _ => InferType::Var(self.fresh_var()),
@@ -3030,8 +3090,8 @@ impl<'a> ConstraintGenerator<'a> {
                         }
                         (false, false) => {
                             // Neither diverges - both must have the same type
-                            let result_var = self.fresh_var();
-                            let result_ty = InferType::Var(result_var);
+                            let result_ty =
+                                self.join_type(&[then_info.ty.clone(), else_info.ty.clone()]);
                             self.add_constraint(Constraint::equal(
                                 then_info.ty,
                                 result_ty.clone(),
@@ -3254,9 +3314,10 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                     InferType::Concrete(Type::NEVER)
                 } else {
-                    // Create constraints for non-Never arms to have the same type
-                    let result_var = self.fresh_var();
-                    let result_ty = InferType::Var(result_var);
+                    // Constrain the non-Never arms to one common type.
+                    let arm_tys: Vec<InferType> =
+                        non_never_arms.iter().map(|info| info.ty.clone()).collect();
+                    let result_ty = self.join_type(&arm_tys);
                     for arm_info in non_never_arms {
                         self.add_constraint(Constraint::equal(
                             arm_info.ty.clone(),
@@ -5029,6 +5090,105 @@ mod tests {
         let interner = ThreadedRodeo::new();
         let type_pool = TypeInternPool::new();
         (rir, interner, type_pool)
+    }
+
+    /// Build an enum in `pool` from `(variant name, payload types)` pairs and
+    /// return the payload `?` would publish for it.
+    fn try_payload_of(
+        pool: &TypeInternPool,
+        interner: &ThreadedRodeo,
+        name: &str,
+        variants: &[(&str, &[Type])],
+    ) -> Option<Type> {
+        let (enum_id, _) = pool.register_enum(
+            interner.get_or_intern(name),
+            crate::types::EnumDef {
+                name: name.into(),
+                variants: variants.iter().map(|(v, _)| Arc::from(*v)).collect(),
+                variant_payloads: variants.iter().map(|(_, p)| p.to_vec()).collect(),
+                is_pub: false,
+                is_non_exhaustive: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        ConstraintGenerator::try_success_payload(&pool.enum_def(enum_id))
+    }
+
+    /// `?` publishes the success payload of BOTH std producer shapes, not just
+    /// `Option`'s. A `Result` payload left as a fresh variable defaulted the
+    /// integer literal it was compared against to `i32` (RUE-1952).
+    #[test]
+    fn try_publishes_the_success_payload_of_option_and_result_shapes() {
+        let (_rir, interner, pool) = make_test_rir_interner_and_type_pool();
+
+        assert_eq!(
+            try_payload_of(
+                &pool,
+                &interner,
+                "OptionShape",
+                &[("Some", &[Type::U64]), ("None", &[])],
+            ),
+            Some(Type::U64),
+            "the `Option` shape yields its `Some` payload"
+        );
+        assert_eq!(
+            try_payload_of(
+                &pool,
+                &interner,
+                "ResultShape",
+                &[("Ok", &[Type::U64]), ("Err", &[Type::I32])],
+            ),
+            Some(Type::U64),
+            "the `Result` shape yields its `Ok` payload, not a fresh variable"
+        );
+        assert_eq!(
+            try_payload_of(
+                &pool,
+                &interner,
+                "ReversedResultShape",
+                &[("Err", &[Type::I32]), ("Ok", &[Type::U64])],
+            ),
+            Some(Type::U64),
+            "variant declaration order does not matter"
+        );
+
+        // Shapes that are neither producer stay unresolved here; sema types
+        // them (and rejects the `?`) authoritatively.
+        assert_eq!(
+            try_payload_of(&pool, &interner, "PlainEnum", &[("A", &[]), ("B", &[])]),
+            None,
+            "a payload-free enum has no success payload"
+        );
+        assert_eq!(
+            try_payload_of(
+                &pool,
+                &interner,
+                "ThreeVariants",
+                &[("Ok", &[Type::U64]), ("Err", &[Type::I32]), ("Other", &[])],
+            ),
+            None,
+            "a third variant is neither producer's shape"
+        );
+        assert_eq!(
+            try_payload_of(
+                &pool,
+                &interner,
+                "OkWithoutErr",
+                &[("Ok", &[Type::U64]), ("Nope", &[Type::I32])],
+            ),
+            None,
+            "an `Ok` without a matching `Err` is not the `Result` shape"
+        );
+        assert_eq!(
+            try_payload_of(
+                &pool,
+                &interner,
+                "PayloadCarryingNone",
+                &[("Some", &[Type::U64]), ("None", &[Type::I32])],
+            ),
+            None,
+            "the `Option` shape's `None` carries no payload"
+        );
     }
 
     #[test]

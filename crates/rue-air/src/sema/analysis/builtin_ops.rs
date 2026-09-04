@@ -330,6 +330,26 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             ));
         }
+        // An arithmetic/bitwise operator's operands must agree with each
+        // other, and the result takes the left operand's type. `Air::validate`
+        // enforces exactly that invariant at the AIR boundary, so operands
+        // that disagree here would surface as an E9000 naming an instruction
+        // number rather than the `+` the programmer wrote (RUE-1654,
+        // RUE-1952). Report it as the type error it is, in source terms.
+        // `can_coerce_to` supplies the same `!`/`<error>` exemption the
+        // validator uses: a diverging operand produces no value and an
+        // erroneous one is already reported.
+        if !lhs_result.ty.can_coerce_to(&rhs_result.ty)
+            && !rhs_result.ty.can_coerce_to(&lhs_result.ty)
+        {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: self.format_type_name(lhs_result.ty),
+                    found: self.format_type_name(rhs_result.ty),
+                },
+                span,
+            ));
+        }
         let air_ref = air.add_inst(AirInst {
             data: make_data(lhs_result.air_ref, rhs_result.air_ref),
             ty: lhs_result.ty,

@@ -331,3 +331,105 @@ fn main() -> i32 {
 """
 real_std = true
 exit_code = 42
+
+# =============================================================================
+# `?` on a `Result` yields the `Ok` payload, and that payload type is known
+# early enough to type an integer literal used with it (4.15:5). The payload
+# here is `u64` and the module declaring it is a different one, so a `?` result
+# that reached the defaulting point unconstrained would take the `i32` default
+# (3.1:15) and disagree with the literal's other use — which is exactly what
+# these three cases pin down (RUE-1952).
+# =============================================================================
+
+[[case]]
+# `@assert_eq` unifies its two operands, so the literal's only type source is
+# the `?` payload (4.13:5f). A `u64` payload must reach it.
+name = "try_result_payload_types_assert_eq_literal"
+spec = ["4.15:1", "4.15:3", "4.15:5", "4.13:5f", "3.1:14", "3.1:15"]
+description = "A cross-module `Result(u64, E)` unwrapped by `?` types an integer literal in `@assert_eq` as u64."
+aux_files = { "lib.rue" = """
+const std = @import("std");
+pub enum E { Bad }
+pub const R = std.result.Result(u64, E);
+pub fn answer() -> R { R.Ok(42) }
+""" }
+source = """
+const std = @import("std");
+const lib = @import("lib.rue");
+const R = lib.R;
+fn check() -> R {
+    let n = lib.answer()?;
+    @assert_eq(n, 42);
+    R.Ok(1)
+}
+fn main() -> i32 {
+    match check() {
+        R.Ok(_v) => 42,
+        R.Err(_e) => 0,
+    }
+}
+"""
+real_std = true
+exit_code = 42
+
+[[case]]
+# The same for `@assert_ne`, whose operands unify identically (4.13:5f).
+name = "try_result_payload_types_assert_ne_literal"
+spec = ["4.15:1", "4.15:3", "4.15:5", "4.13:5f", "3.1:14", "3.1:15"]
+description = "A cross-module `Result(u64, E)` unwrapped by `?` types an integer literal in `@assert_ne` as u64."
+aux_files = { "lib.rue" = """
+const std = @import("std");
+pub enum E { Bad }
+pub const R = std.result.Result(u64, E);
+pub fn answer() -> R { R.Ok(42) }
+""" }
+source = """
+const std = @import("std");
+const lib = @import("lib.rue");
+const R = lib.R;
+fn check() -> R {
+    let n = lib.answer()?;
+    @assert_ne(n, 41);
+    R.Ok(1)
+}
+fn main() -> i32 {
+    match check() {
+        R.Ok(_v) => 42,
+        R.Err(_e) => 0,
+    }
+}
+"""
+real_std = true
+exit_code = 42
+
+[[case]]
+# Arithmetic on the payload: `+` requires both operands to have one type, so
+# the literal takes the `Ok` payload's `u64` (3.1:14) rather than defaulting.
+name = "try_result_payload_types_arithmetic_literal"
+spec = ["4.15:1", "4.15:3", "4.15:5", "3.1:14", "3.1:15"]
+description = "A cross-module `Result(u64, E)` payload unwrapped by `?` types the literal in `n + 1` as u64."
+aux_files = { "lib.rue" = """
+const std = @import("std");
+pub enum E { Bad }
+pub const R = std.result.Result(u64, E);
+pub fn answer() -> R { R.Ok(41) }
+""" }
+source = """
+const std = @import("std");
+const lib = @import("lib.rue");
+const R = lib.R;
+fn check() -> R {
+    let n = lib.answer()?;
+    let y = n + 1;
+    @assert(y == 42);
+    R.Ok(1)
+}
+fn main() -> i32 {
+    match check() {
+        R.Ok(_v) => 42,
+        R.Err(_e) => 0,
+    }
+}
+"""
+real_std = true
+exit_code = 42
