@@ -48,29 +48,14 @@ pub(crate) fn render(event: &Event, context: Context) -> Option<String> {
             timeout,
             crash,
             wall_ms,
-            unimported_test_files,
+            // The unimported-test-file warnings are the runner's own, and
+            // stderr carries them once in every format (test-events.md,
+            // "Streams"). Rendering them here too would print a second copy
+            // on stdout whenever a terminal joins the streams.
+            unimported_test_files: _,
             test_candidates,
         } => {
-            let mut out = String::new();
-            if let Some(files) = unimported_test_files {
-                for file in files {
-                    if file.parse_failed {
-                        let _ = writeln!(
-                            out,
-                            "warning: test file '{}' is outside the compiled closure and could not be parsed",
-                            file.path
-                        );
-                    } else {
-                        let plural = if file.tests == 1 { "" } else { "s" };
-                        let _ = writeln!(
-                            out,
-                            "warning: test file '{}' declares {} test{plural} but no module in the compiled closure imports it",
-                            file.path, file.tests
-                        );
-                    }
-                }
-            }
-            out.push_str(&summary(*passed, *failed, *timeout, *crash, *wall_ms));
+            let mut out = summary(*passed, *failed, *timeout, *crash, *wall_ms);
             if *test_candidates == CandidateSource::None && context.multi_module_closure {
                 out.push('\n');
                 out.push_str(
@@ -611,8 +596,11 @@ mod tests {
         assert_eq!(rendered, "0 passed (0.1s)");
     }
 
+    /// The runner already warns about these on stderr, in both formats. The
+    /// human renderer writes to stdout, so repeating them here would show a
+    /// person two copies of one warning on a terminal that joins the streams.
     #[test]
-    fn orphaned_test_files_are_rendered_as_warnings() {
+    fn orphaned_test_files_are_left_to_the_stderr_warning() {
         let rendered = render_multi(&Event::RunFinished {
             passed: 1,
             failed: 0,
@@ -634,11 +622,10 @@ mod tests {
             test_candidates: CandidateSource::Declared,
         })
         .expect("a summary renders");
-        assert!(
-            rendered.contains("declares 1 test but no module in the compiled closure imports it"),
-            "{rendered}"
-        );
-        assert!(rendered.contains("could not be parsed"), "{rendered}");
+        assert_eq!(rendered, "1 passed (0.0s)");
+        assert!(!rendered.contains("warning:"), "{rendered}");
+        assert!(!rendered.contains("app/orphan.rue"), "{rendered}");
+        assert!(!rendered.contains("could not be parsed"), "{rendered}");
         assert!(
             !rendered.contains("note: no --test-candidates"),
             "{rendered}"
