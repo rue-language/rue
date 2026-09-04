@@ -351,6 +351,9 @@ pub enum UnsupportedIntrinsicKind {
     ByteCopy,
     ByteMove,
     ByteSet,
+    IntToFloat,
+    FloatToInt,
+    FloatCast,
 }
 
 /// A compiler-emitted runtime call whose deterministic semantics are not
@@ -368,6 +371,7 @@ pub enum SemanticGapKind {
     RuntimeCall(UnsupportedRuntimeCallKind),
     FlattenedParameterSlot,
     TextProjectionRead,
+    FloatArithmetic,
 }
 
 /// A dependency whose value comes from outside deterministic Rue semantics.
@@ -1156,6 +1160,15 @@ fn unsupported_intrinsic_kind_for_operation(
         rue_air::IntrinsicOperation::ByteSet => {
             UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteSet))
         }
+        rue_air::IntrinsicOperation::IntToFloat => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::IntToFloat))
+        }
+        rue_air::IntrinsicOperation::FloatToInt => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::FloatToInt))
+        }
+        rue_air::IntrinsicOperation::FloatCast => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::FloatCast))
+        }
         rue_air::IntrinsicOperation::ReadLine => {
             UnsupportedKind::ExternalDependency(External::StandardInput)
         }
@@ -1198,9 +1211,6 @@ fn unsupported_intrinsic_kind_for_operation(
         | rue_air::IntrinsicOperation::DebugU64
         | rue_air::IntrinsicOperation::DebugBool
         | rue_air::IntrinsicOperation::DebugStr
-        | rue_air::IntrinsicOperation::IntToFloat
-        | rue_air::IntrinsicOperation::FloatToInt
-        | rue_air::IntrinsicOperation::FloatCast
         | rue_air::IntrinsicOperation::TotalCmp
         | rue_air::IntrinsicOperation::BitCast => {
             UnsupportedKind::ContractViolation(ContractViolationKind::UnexpectedIntrinsic)
@@ -2260,6 +2270,16 @@ impl<'a> Interp<'a> {
                     ty == Type::U64 || ty == Type::NEVER
                 }) && result_ty == Type::I64
             }
+            rue_air::IntrinsicOperation::IntToFloat => {
+                (ty(0).is_integer() || ty(0) == Type::NEVER) && result_ty.is_float()
+            }
+            rue_air::IntrinsicOperation::FloatToInt => {
+                (ty(0).is_float() || ty(0) == Type::NEVER) && result_ty.is_integer()
+            }
+            rue_air::IntrinsicOperation::FloatCast => {
+                (ty(0) == Type::NEVER && result_ty.is_float())
+                    || (ty(0).is_float() && result_ty.is_float() && ty(0) != result_ty)
+            }
             rue_air::IntrinsicOperation::PanicNoMessage
             | rue_air::IntrinsicOperation::Panic
             | rue_air::IntrinsicOperation::AssertFailed
@@ -2269,9 +2289,6 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::DebugU64
             | rue_air::IntrinsicOperation::DebugBool
             | rue_air::IntrinsicOperation::DebugStr
-            | rue_air::IntrinsicOperation::IntToFloat
-            | rue_air::IntrinsicOperation::FloatToInt
-            | rue_air::IntrinsicOperation::FloatCast
             | rue_air::IntrinsicOperation::TotalCmp
             | rue_air::IntrinsicOperation::BitCast => false,
         };
@@ -3390,6 +3407,109 @@ impl<'a> Interp<'a> {
         self.type_pool().abi_slot_count(ty) == 0
     }
 
+    /// Whether equality for `ty` would eventually compare a float leaf.
+    ///
+    /// The oracle stores scalar values as integer bit patterns, so letting a
+    /// float-bearing comparison reach `cmp` would silently model bit equality
+    /// instead of IEEE equality. Detect the complete aggregate shape before
+    /// evaluating either operand and report the same typed float semantic gap
+    /// as scalar float operations.
+    fn type_contains_float(&self, ty: Type) -> bool {
+        if ty.is_float() {
+            return true;
+        }
+        match ty.kind() {
+            TypeKind::Struct(id) => self
+                .type_pool()
+                .struct_def(id)
+                .fields
+                .iter()
+                .any(|field| self.type_contains_float(field.ty)),
+            TypeKind::Array(id) => {
+                let (element, len) = self.type_pool().array_def(id);
+                len != 0 && self.type_contains_float(element)
+            }
+            TypeKind::Enum(id) => self
+                .type_pool()
+                .enum_def(id)
+                .variant_payloads
+                .iter()
+                .flatten()
+                .copied()
+                .any(|payload| self.type_contains_float(payload)),
+            _ => false,
+        }
+    }
+
+    /// Classify a CFG operation as a well-typed float operation without
+    /// evaluating its operands. Any instruction shape involving a float must
+    /// satisfy the CFG typing contract before it can become registrable model
+    /// debt; malformed mixed-class or result shapes remain hard failures.
+    fn is_well_typed_float_operation(
+        &self,
+        cfg: &Cfg,
+        data: &CfgInstData,
+        result_ty: Type,
+    ) -> Step<bool> {
+        let binary_arithmetic = match data {
+            CfgInstData::Add(a, b)
+            | CfgInstData::Sub(a, b)
+            | CfgInstData::Mul(a, b)
+            | CfgInstData::Div(a, b) => Some((*a, *b)),
+            _ => None,
+        };
+        let (involves_float, valid) = if let Some((a, b)) = binary_arithmetic {
+            let a_ty = cfg.get_inst(a).ty;
+            let b_ty = cfg.get_inst(b).ty;
+            (
+                result_ty.is_float() || a_ty.is_float() || b_ty.is_float(),
+                result_ty.is_float() && a_ty == result_ty && b_ty == result_ty,
+            )
+        } else if let CfgInstData::Neg(value) = data {
+            let value_ty = cfg.get_inst(*value).ty;
+            (
+                result_ty.is_float() || value_ty.is_float(),
+                result_ty.is_float() && value_ty == result_ty,
+            )
+        } else {
+            let comparison = match data {
+                CfgInstData::Eq(a, b)
+                | CfgInstData::Ne(a, b)
+                | CfgInstData::Lt(a, b)
+                | CfgInstData::Gt(a, b)
+                | CfgInstData::Le(a, b)
+                | CfgInstData::Ge(a, b) => Some((*a, *b)),
+                _ => None,
+            };
+            let Some((a, b)) = comparison else {
+                return Ok(false);
+            };
+            let a_ty = cfg.get_inst(a).ty;
+            let b_ty = cfg.get_inst(b).ty;
+            let equality = matches!(data, CfgInstData::Eq(..) | CfgInstData::Ne(..));
+            let operand_has_float =
+                self.type_contains_float(a_ty) || self.type_contains_float(b_ty);
+            (
+                result_ty.is_float() || operand_has_float,
+                result_ty == Type::BOOL
+                    && a_ty == b_ty
+                    && if equality {
+                        self.type_contains_float(a_ty)
+                    } else {
+                        a_ty.is_float()
+                    },
+            )
+        };
+
+        if involves_float && !valid {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::NonIntegerOperationType),
+                "malformed float operation signature",
+            ));
+        }
+        Ok(involves_float)
+    }
+
     /// Materialize the (unique) value of a zero-sized type, preserving the
     /// aggregate shape so field/element projections still line up.
     fn zero_sized_value(&self, ty: Type) -> Value {
@@ -3421,6 +3541,12 @@ impl<'a> Interp<'a> {
         }
         let inst = cfg.get_inst(v);
         let ty = inst.ty;
+        if self.is_well_typed_float_operation(cfg, &inst.data, ty)? {
+            return Err(unsupported(
+                UnsupportedKind::SemanticGap(SemanticGapKind::FloatArithmetic),
+                "scalar or aggregate float operation",
+            ));
+        }
         let result = match &inst.data {
             CfgInstData::Const(n) => {
                 if *n == 0 && ty.is_ptr_const() && self.is_empty_slice_pointer(cfg, v) {

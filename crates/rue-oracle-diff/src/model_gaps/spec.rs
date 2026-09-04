@@ -390,6 +390,9 @@ fn render_kind(kind: ModelGapKind) -> String {
         ModelGapKind::Semantic(SemanticGapKind::TextProjectionRead) => {
             "semantic(SemanticGapKind::TextProjectionRead)".to_string()
         }
+        ModelGapKind::Semantic(SemanticGapKind::FloatArithmetic) => {
+            "semantic(SemanticGapKind::FloatArithmetic)".to_string()
+        }
         ModelGapKind::ExternalDependency(kind) => {
             format!("external(ExternalDependencyKind::{kind:?})")
         }

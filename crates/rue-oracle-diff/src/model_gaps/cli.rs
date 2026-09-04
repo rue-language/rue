@@ -74,6 +74,63 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::PointerWrite),
         &[],
     ),
+    // ADR-0065 phases 5 and 6 expose scalar float operations that the CFG
+    // oracle does not model yet. Keep each accepted gap tied to the first
+    // exact semantic boundary reached by that case.
+    Entry::new(
+        "cli.float_codegen",
+        "native_width_conversions_and_arithmetic",
+        intrinsic(UnsupportedIntrinsicKind::IntToFloat),
+        &[],
+    ),
+    Entry::new(
+        "cli.float_codegen",
+        "native_float_value_survives_a_call_via_spill",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "cli.float_codegen",
+        "native_nan_comparisons_are_unordered",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "cli.float_codegen",
+        "native_nan_to_int_traps",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
+    Entry::new(
+        "cli.float_codegen",
+        "native_float_to_i32_upper_boundary_traps",
+        intrinsic(UnsupportedIntrinsicKind::FloatToInt),
+        &[],
+    ),
+    Entry::new(
+        "cli.float_codegen",
+        "native_float_to_i32_lower_boundary_is_inclusive",
+        intrinsic(UnsupportedIntrinsicKind::FloatToInt),
+        &[],
+    ),
+    Entry::new(
+        "cli.float_codegen",
+        "native_float_pointer_widths_preserve_neighbor_bytes",
+        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
+        &[],
+    ),
+    Entry::new(
+        "cli.float_codegen",
+        "native_float_fields_arrays_and_inout",
+        intrinsic(UnsupportedIntrinsicKind::FloatCast),
+        &[],
+    ),
+    Entry::new(
+        "cli.float_codegen",
+        "native_aggregate_float_equality_is_ieee",
+        semantic(SemanticGapKind::FloatArithmetic),
+        &[],
+    ),
     // std.fs File IO v0 (RUE-712, ADR-0057): pure-Rue fs over @syscall. The
     // oracle models the StrBuf/ArrayBuf and raw-pointer representation setup;
     // these cases remain debt because the host syscall effect is external.
@@ -563,6 +620,9 @@ fn render_kind(kind: ModelGapKind) -> String {
         ModelGapKind::Semantic(SemanticGapKind::TextProjectionRead) => {
             "semantic(SemanticGapKind::TextProjectionRead)".to_string()
         }
+        ModelGapKind::Semantic(SemanticGapKind::FloatArithmetic) => {
+            "semantic(SemanticGapKind::FloatArithmetic)".to_string()
+        }
         ModelGapKind::ExternalDependency(kind) => {
             format!("external(ExternalDependencyKind::{kind:?})")
         }
@@ -574,6 +634,10 @@ fn render_kind(kind: ModelGapKind) -> String {
 
 const fn intrinsic(kind: UnsupportedIntrinsicKind) -> ModelGapKind {
     ModelGapKind::Semantic(SemanticGapKind::Intrinsic(kind))
+}
+
+const fn semantic(kind: SemanticGapKind) -> ModelGapKind {
+    ModelGapKind::Semantic(kind)
 }
 
 const fn external(kind: ExternalDependencyKind) -> ModelGapKind {

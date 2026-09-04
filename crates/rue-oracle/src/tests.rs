@@ -98,7 +98,11 @@ fn run_test_preview(src: &str) -> Outcome {
 }
 
 fn expect_unsupported(src: &str) -> Unsupported {
-    match run_source(src) {
+    expect_unsupported_with_preview(src, &PreviewFeatures::new())
+}
+
+fn expect_unsupported_with_preview(src: &str, preview_features: &PreviewFeatures) -> Unsupported {
+    match run_source_with_preview_features(src, preview_features) {
         Err(RunSourceError::Unsupported(unsupported)) => unsupported,
         Err(RunSourceError::Compile(errors)) => {
             panic!("expected oracle-unsupported source, but it failed to compile: {errors:#?}")
@@ -902,6 +906,9 @@ fn every_known_unsupported_intrinsic_has_a_closed_kind() {
         (Operation::ByteMove, Intrinsic::ByteMove),
         (Operation::ByteCopy, Intrinsic::ByteCopy),
         (Operation::ByteSet, Intrinsic::ByteSet),
+        (Operation::IntToFloat, Intrinsic::IntToFloat),
+        (Operation::FloatToInt, Intrinsic::FloatToInt),
+        (Operation::FloatCast, Intrinsic::FloatCast),
     ] {
         let expected = UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(intrinsic));
         assert_eq!(
@@ -944,9 +951,6 @@ fn every_known_unsupported_intrinsic_has_a_closed_kind() {
         Operation::DebugU64,
         Operation::DebugBool,
         Operation::DebugStr,
-        Operation::IntToFloat,
-        Operation::FloatToInt,
-        Operation::FloatCast,
         Operation::TotalCmp,
         Operation::BitCast,
     ] {
@@ -958,6 +962,164 @@ fn every_known_unsupported_intrinsic_has_a_closed_kind() {
     }
 
     assert_eq!(Operation::ALL.len(), 46);
+}
+
+#[test]
+fn float_arithmetic_is_a_typed_model_gap() {
+    let unsupported = expect_unsupported_with_preview(
+        r#"fn main() -> i32 {
+            let zero: f64 = 0.0;
+            if zero / zero == zero { 0 } else { 1 }
+        }"#,
+        &PreviewFeatures::from([PreviewFeature::Floats]),
+    );
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::FloatArithmetic)
+    );
+}
+
+#[test]
+fn scalar_float_comparison_is_a_typed_model_gap() {
+    let unsupported = expect_unsupported_with_preview(
+        "fn main() -> i32 { let left: f64 = 1.0; let right: f64 = 2.0; if left < right { 0 } else { 1 } }",
+        &PreviewFeatures::from([PreviewFeature::Floats]),
+    );
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::FloatArithmetic)
+    );
+}
+
+#[test]
+fn aggregate_float_equality_is_a_typed_model_gap() {
+    let unsupported = expect_unsupported_with_preview(
+        r#"struct Outer { nested: [f64; 1] }
+        fn main() -> i32 {
+            let left = Outer { nested: [1.0] };
+            let right = Outer { nested: [1.0] };
+            if left == right { 0 } else { 1 }
+        }"#,
+        &PreviewFeatures::from([PreviewFeature::Floats]),
+    );
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::FloatArithmetic)
+    );
+}
+
+#[test]
+fn zero_length_float_array_equality_remains_modeled() {
+    let source = r#"struct EmptyFloats { values: [f64; 0] }
+        fn main() -> i32 {
+            let left = EmptyFloats { values: [] };
+            let right = EmptyFloats { values: [] };
+            if left == right { 0 } else { 1 }
+        }"#;
+    let outcome =
+        run_source_with_preview_features(source, &PreviewFeatures::from([PreviewFeature::Floats]))
+            .expect("zero-length arrays have no reachable float value to compare");
+    assert_eq!(outcome.exit_code, 0);
+}
+
+#[test]
+fn malformed_float_arithmetic_shape_is_a_contract_violation() {
+    let state = query_cfg_state(
+        "fn add(left: i32, right: i32) -> i32 { left + right } fn main() -> i32 { add(1, 2) }",
+    )
+    .expect("integer addition probe compiles");
+    let cfg = &state
+        .functions
+        .iter()
+        .find(|function| function.is_source_named("add"))
+        .expect("add function remains reachable")
+        .cfg;
+    let (left, right) = cfg
+        .blocks()
+        .iter()
+        .flat_map(|block| block.insts.iter().copied())
+        .find_map(|value| match cfg.get_inst(value).data {
+            CfgInstData::Add(left, right) => Some((left, right)),
+            _ => None,
+        })
+        .expect("integer Add remains in the parameterized function");
+    let interp = Interp {
+        state: &state,
+        stdout_trace: Vec::new(),
+        stdout_bytes: 0,
+        stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
+        budget: STEP_BUDGET,
+        depth: 0,
+        heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
+        heap_metadata_bytes: 0,
+    };
+    let error = interp
+        .is_well_typed_float_operation(cfg, &CfgInstData::Add(left, right), Type::F64)
+        .expect_err("integer operands with a float result violate the CFG contract");
+    assert!(matches!(
+        error,
+        Flow::Unsupported(Unsupported {
+            kind: UnsupportedKind::ContractViolation(
+                ContractViolationKind::NonIntegerOperationType
+            ),
+            ..
+        })
+    ));
+}
+
+#[test]
+fn malformed_float_aggregate_ordering_is_a_contract_violation() {
+    let previews = PreviewFeatures::from([PreviewFeature::Floats]);
+    let state = query_cfg_state_with_preview_features(
+        r#"struct Boxed { value: f64 }
+        fn equal(left: Boxed, right: Boxed) -> bool { left == right }
+        fn main() -> i32 {
+            if equal(Boxed { value: 1.0 }, Boxed { value: 1.0 }) { 0 } else { 1 }
+        }"#,
+        &previews,
+    )
+    .expect("aggregate equality probe compiles");
+    let cfg = &state
+        .functions
+        .iter()
+        .find(|function| function.is_source_named("equal"))
+        .expect("equal function remains reachable")
+        .cfg;
+    let (left, right) = cfg
+        .blocks()
+        .iter()
+        .flat_map(|block| block.insts.iter().copied())
+        .find_map(|value| match cfg.get_inst(value).data {
+            CfgInstData::Eq(left, right) => Some((left, right)),
+            _ => None,
+        })
+        .expect("aggregate Eq remains in the parameterized function");
+    let interp = Interp {
+        state: &state,
+        stdout_trace: Vec::new(),
+        stdout_bytes: 0,
+        stdout_cap: MAX_STDOUT_BYTES,
+        stderr_cap: MAX_STDERR_BYTES,
+        budget: STEP_BUDGET,
+        depth: 0,
+        heap: Vec::new(),
+        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
+        heap_metadata_bytes: 0,
+    };
+    let error = interp
+        .is_well_typed_float_operation(cfg, &CfgInstData::Lt(left, right), Type::BOOL)
+        .expect_err("ordering a float-bearing aggregate violates the CFG contract");
+    assert!(matches!(
+        error,
+        Flow::Unsupported(Unsupported {
+            kind: UnsupportedKind::ContractViolation(
+                ContractViolationKind::NonIntegerOperationType
+            ),
+            ..
+        })
+    ));
 }
 
 #[test]
