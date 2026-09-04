@@ -314,6 +314,9 @@ pub(crate) struct TestFinished {
     pub(crate) stderr: Capture,
     pub(crate) scratch_dir: Option<String>,
     pub(crate) repro: Vec<String>,
+    /// The environment assignments the repro argv must be run under, sorted by
+    /// name. Empty when nothing in the environment decided the run.
+    pub(crate) repro_env: Vec<(String, String)>,
 }
 
 impl Event {
@@ -367,6 +370,7 @@ impl Event {
                     stderr,
                     scratch_dir,
                     repro,
+                    repro_env,
                 } = finished.as_ref();
                 object.insert(
                     "event".to_owned(),
@@ -396,6 +400,19 @@ impl Event {
                     "repro".to_owned(),
                     Value::Array(repro.iter().cloned().map(Value::String).collect()),
                 );
+                // Absent rather than empty, the way `shard` is: a consumer that
+                // finds the key knows the run depended on what it names.
+                if !repro_env.is_empty() {
+                    object.insert(
+                        "repro_env".to_owned(),
+                        Value::Object(
+                            repro_env
+                                .iter()
+                                .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+                                .collect(),
+                        ),
+                    );
+                }
             }
             Self::RunFinished {
                 passed,
@@ -519,7 +536,8 @@ mod tests {
             stdout: Capture::new(b"hi\n".to_vec(), 3, true),
             stderr: Capture::new(Vec::new(), 0, true),
             scratch_dir: None,
-            repro: vec!["rue".to_owned(), "test".to_owned()],
+            repro: vec!["/opt/rue/bin/rue".to_owned(), "test".to_owned()],
+            repro_env: Vec::new(),
         }))
         .to_ndjson();
         assert!(line.contains("\"verdict\":\"pass\""), "{line}");
@@ -553,10 +571,11 @@ mod tests {
             stderr: Capture::new(b"assertion failed\n".to_vec(), 17, false),
             scratch_dir: Some("/tmp/rue-test-1-0".to_owned()),
             repro: vec![
-                "rue".to_owned(),
+                "/opt/rue/bin/rue".to_owned(),
                 "test".to_owned(),
-                "app/main.rue".to_owned(),
+                "/work/app/main.rue".to_owned(),
             ],
+            repro_env: vec![("RUE_STD_PATH".to_owned(), "/opt/rue/std".to_owned())],
         }))
         .to_ndjson();
         assert!(line.contains("\"verdict\":\"fail\""), "{line}");
@@ -570,6 +589,34 @@ mod tests {
             line.contains("\"scratch_dir\":\"/tmp/rue-test-1-0\""),
             "{line}"
         );
+        // The repro names the compiler and the root absolutely, and the
+        // environment that decided the run travels beside it (RUE-2020).
+        assert!(
+            line.contains(
+                "\"repro\":[\"/opt/rue/bin/rue\",\"test\",\"/work/app/main.rue\"],\
+                 \"repro_env\":{\"RUE_STD_PATH\":\"/opt/rue/std\"}"
+            ),
+            "{line}"
+        );
+    }
+
+    /// `repro_env` is absent rather than empty when nothing in the environment
+    /// decided the run, the way `shard` is absent without `--shard`.
+    #[test]
+    fn a_run_that_owed_nothing_to_the_environment_publishes_no_repro_env() {
+        let line = Event::TestFinished(Box::new(TestFinished {
+            id: "app/t.rue::bad".to_owned(),
+            verdict: Verdict::Fail(FailureKind::Assert),
+            duration_ms: 1,
+            failure: None,
+            stdout: Capture::new(Vec::new(), 0, false),
+            stderr: Capture::new(Vec::new(), 0, false),
+            scratch_dir: None,
+            repro: vec!["/opt/rue/bin/rue".to_owned(), "test".to_owned()],
+            repro_env: Vec::new(),
+        }))
+        .to_ndjson();
+        assert!(!line.contains("repro_env"), "{line}");
     }
 
     /// A comparison failure publishes `left`, `right`, and the runner's
@@ -592,6 +639,7 @@ mod tests {
             stderr: Capture::new(Vec::new(), 0, false),
             scratch_dir: None,
             repro: Vec::new(),
+            repro_env: Vec::new(),
         }))
         .to_ndjson();
         assert!(
@@ -624,6 +672,7 @@ mod tests {
             stderr: Capture::new(Vec::new(), 0, false),
             scratch_dir: None,
             repro: Vec::new(),
+            repro_env: Vec::new(),
         }))
         .to_ndjson();
         assert!(!line.contains("\"left\""), "{line}");

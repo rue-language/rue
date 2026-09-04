@@ -1077,15 +1077,45 @@ fn test_repro_flags(options: &Options) -> Vec<String> {
     }
     flags.push("--timeout-ms".to_string());
     flags.push(options.test.timeout_ms.to_string());
+    // The build-system inputs are absolutized like the root, and for the same
+    // reason: the `rue_test` rule spells its manifest as a project-relative
+    // buck-out path, so a repro that repeated it verbatim died with "Error
+    // reading source manifest" anywhere but the directory it was produced in
+    // (RUE-2020).
     if let Some(manifest) = &options.source_manifest_path {
         flags.push("--source-manifest".to_string());
-        flags.push(manifest.clone());
+        flags.push(test_mode::absolute_spelling(Path::new(manifest)));
     }
     for archive in &options.link_archives {
         flags.push("--link-archive".to_string());
-        flags.push(archive.display().to_string());
+        flags.push(test_mode::absolute_spelling(archive));
     }
     flags
+}
+
+/// The environment a repro must be run under (ADR-0083 §3).
+///
+/// Environment is not argv, so a run whose standard library was found through
+/// `RUE_STD_PATH` would otherwise publish a reproduction that dies with E0705
+/// in any shell that does not happen to have the variable set (RUE-2020). It
+/// travels absolute for the same reason the root does: a repro is run later,
+/// possibly from somewhere else.
+///
+/// The CLI's empty spelling means "no toolchain std is configured" and is
+/// carried verbatim — absolutizing it would silently turn that into the
+/// current directory, which is a different run.
+fn test_repro_env(std_root: Option<&Path>) -> Vec<(String, String)> {
+    let Some(std_root) = std_root else {
+        return Vec::new();
+    };
+    let value = if std_root.as_os_str().is_empty() {
+        String::new()
+    } else {
+        // Canonical, not lexical: this is a toolchain location, and
+        // `source_loader::capture_std_root` resolves it the same way.
+        test_mode::std_root_spelling(std_root)
+    };
+    vec![("RUE_STD_PATH".to_string(), value)]
 }
 
 fn parse_args() -> ParseResult {
@@ -2594,6 +2624,7 @@ fn main() {
                 diagnostics: &diagnostics,
                 root: options.source_path.clone(),
                 repro_flags: test_repro_flags(&options),
+                repro_env: test_repro_env(captured_std_root.as_deref()),
                 jobs: test_mode_jobs(options.jobs),
                 target: options.target,
                 opt_level: options.opt_level,
@@ -3622,6 +3653,12 @@ mod tests {
             "sources.manifest",
         ]));
         let flags = test_repro_flags(&options);
+        // The manifest is absolutized rather than repeated: the `rue_test`
+        // rule spells it as a project-relative buck-out path, and a repro is
+        // run from somewhere else (RUE-2020).
+        let manifest = test_mode::absolute_spelling(Path::new("sources.manifest"));
+        assert!(Path::new(&manifest).is_absolute(), "{manifest}");
+        assert!(manifest.ends_with("/sources.manifest"), "{manifest}");
         assert_eq!(
             flags,
             vec![
@@ -3633,8 +3670,54 @@ mod tests {
                 "--timeout-ms",
                 "500",
                 "--source-manifest",
-                "sources.manifest",
+                manifest.as_str(),
             ]
+        );
+    }
+
+    /// The standard library reached a run through the environment, so it
+    /// travels with the repro — absolute, since a repro is run from somewhere
+    /// else (RUE-2020).
+    #[test]
+    fn the_repro_environment_carries_an_absolute_std_path() {
+        assert_eq!(test_repro_env(None), Vec::new());
+
+        // The std root is a toolchain location, so it is canonicalized the way
+        // `source_loader::capture_std_root` canonicalizes it: a real symlinked
+        // prefix resolves to its target, which is the spelling that compares
+        // against the paths discovery actually reads.
+        let temporary = tempfile::tempdir().expect("a temp directory");
+        let real = temporary.path().join("real-std");
+        let linked = temporary.path().join("linked-std");
+        std::fs::create_dir_all(&real).expect("create real-std/");
+        std::os::unix::fs::symlink(&real, &linked).expect("symlink the std root");
+        assert_eq!(
+            test_repro_env(Some(&linked)),
+            vec![(
+                "RUE_STD_PATH".to_string(),
+                std::fs::canonicalize(&real)
+                    .expect("the std root canonicalizes")
+                    .display()
+                    .to_string()
+            )]
+        );
+
+        // A root the filesystem cannot answer for keeps the lexical absolute
+        // spelling rather than becoming relative again.
+        let directory = std::env::current_dir().expect("a test process has a working directory");
+        assert_eq!(
+            test_repro_env(Some(Path::new("no-such-std-root"))),
+            vec![(
+                "RUE_STD_PATH".to_string(),
+                directory.join("no-such-std-root").display().to_string()
+            )]
+        );
+
+        // The empty spelling means "no toolchain std is configured";
+        // absolutizing it would silently name the current directory instead.
+        assert_eq!(
+            test_repro_env(Some(Path::new(""))),
+            vec![("RUE_STD_PATH".to_string(), String::new())]
         );
     }
 
