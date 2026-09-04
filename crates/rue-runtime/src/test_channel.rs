@@ -63,8 +63,8 @@ const LOCATION_FIELD: [u8; 22] = *b"\",\"location\":{\"file\":\"";
 const LINE_FIELD: [u8; 9] = *b"\",\"line\":";
 const COLUMN_FIELD: [u8; 10] = *b",\"column\":";
 const PAYLOAD_FIELD: [u8; 13] = *b"},\"payload\":\"";
-const EXPECTED_FIELD: [u8; 14] = *b"},\"expected\":\"";
-const ACTUAL_FIELD: [u8; 12] = *b"\",\"actual\":\"";
+const LEFT_FIELD: [u8; 10] = *b"},\"left\":\"";
+const RIGHT_FIELD: [u8; 11] = *b"\",\"right\":\"";
 const FRAME_TAIL: [u8; 3] = *b"\"}\n";
 
 /// The pinned message each comparison kind reports.
@@ -235,11 +235,11 @@ fn failure_frame(
 
 /// Write one comparison failure frame (ADR-0083 Phase 2.5).
 ///
-/// It carries `expected` and `actual` where [`failure_frame`] carries the open
+/// It carries `left` and `right` where [`failure_frame`] carries the open
 /// `payload`, and no `payload` at all: two rendered operands are not one string
 /// a consumer has to split, and the runner computes the diff between them.
-/// `expected` is the left operand and `actual` the right — the order the source
-/// wrote them in, so `@assert_eq(want, got)` reads the way it is spelled.
+/// `left` and `right` are the operands in the order the source wrote them, so
+/// `@assert_eq(want, got)` reads the way it is spelled.
 ///
 /// The message is not a parameter: it is pinned by the kind, which is what
 /// keeps this call to the six registers a runtime helper is limited to while
@@ -262,9 +262,9 @@ fn comparison_frame(
         line,
         column,
     );
-    writer.raw(&EXPECTED_FIELD);
+    writer.raw(&LEFT_FIELD);
     writer.escaped(left);
-    writer.raw(&ACTUAL_FIELD);
+    writer.raw(&RIGHT_FIELD);
     writer.escaped(right);
     writer.raw(&FRAME_TAIL);
 }
@@ -429,7 +429,7 @@ crate::define_runtime_implementation! {
     ///
     /// The comparison form of [`__rue_test_fail`] (ADR-0083 Phase 2.5). It
     /// writes a `failure` frame carrying the two rendered operands as
-    /// `expected` and `actual` — and no open `payload` — then takes the
+    /// `left` and `right` — and no open `payload` — then takes the
     /// ordinary panic path with the message its `kind` pins: `panic: assertion
     /// failed: left == right` on stderr and exit 101.
     ///
@@ -556,10 +556,10 @@ mod tests {
     }
 
     /// The comparison frame's field order, and the two fields that make it a
-    /// different shape rather than a payload convention: `expected` and
-    /// `actual` in place of `payload`, which is absent entirely.
+    /// different shape rather than a payload convention: `left` and
+    /// `right` in place of `payload`, which is absent entirely.
     #[test]
-    fn comparison_frame_carries_expected_and_actual_instead_of_a_payload() {
+    fn comparison_frame_carries_left_and_right_instead_of_a_payload() {
         let bytes = frame_bytes(|emit| {
             comparison_frame(
                 emit,
@@ -576,7 +576,7 @@ mod tests {
             "{\"record\":\"failure\",\"schema\":\"1.0\",\"kind\":\"assert_eq\",\
              \"message\":\"assertion failed: left == right\",\
              \"location\":{\"file\":\"app/parser_tests.rue\",\"line\":7,\"column\":5},\
-             \"expected\":\"41\",\"actual\":\"42\"}\n"
+             \"left\":\"41\",\"right\":\"42\"}\n"
         );
     }
 
@@ -623,11 +623,11 @@ mod tests {
         });
         let rendered = std::str::from_utf8(&bytes).unwrap();
         assert!(
-            rendered.contains("\"expected\":\"line one\\u000aline two\""),
+            rendered.contains("\"left\":\"line one\\u000aline two\""),
             "{rendered}"
         );
         assert!(
-            rendered.contains("\"actual\":\"say \\\"hi\\\"\\\\\"}"),
+            rendered.contains("\"right\":\"say \\\"hi\\\"\\\\\"}"),
             "{rendered}"
         );
     }
@@ -642,7 +642,7 @@ mod tests {
             "{\"record\":\"failure\",\"schema\":\"1.0\",\"kind\":\"assert_eq\",\
              \"message\":\"assertion failed: left == right\",\
              \"location\":{\"file\":\"\",\"line\":0,\"column\":0},\
-             \"expected\":\"\",\"actual\":\"\"}\n"
+             \"left\":\"\",\"right\":\"\"}\n"
         );
     }
 

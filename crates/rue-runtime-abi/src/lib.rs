@@ -967,8 +967,8 @@ macro_rules! for_each_runtime_helper {
         },
         // The comparison form of the same terminal call (ADR-0083 Phase 2.5).
         // It carries the two rendered operands where `__rue_test_fail` carries
-        // one message and one open payload, so a consumer reads `expected` and
-        // `actual` as separate fields instead of parsing them back out of one
+        // one message and one open payload, so a consumer reads `left` and
+        // `right` as separate fields instead of parsing them back out of one
         // string. The message is pinned by the kind rather than passed, which
         // is what keeps this to the same six registers.
         TestFailComparison => unsafe __rue_test_fail_comparison(

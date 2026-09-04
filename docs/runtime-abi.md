@@ -131,7 +131,7 @@ well as in a test image.
   between them, and the staged file bytes must stay readable across both.
 - `__rue_test_fail_comparison` is the same terminal call for a comparison
   assertion (Phase 2.5, ABI version 3): it carries the two rendered operands as
-  the record's `expected` and `actual` where `__rue_test_fail` carries a message
+  the record's `left` and `right` where `__rue_test_fail` carries a message
   and the open payload. Its message is not a parameter — it is pinned by the
   kind, `assertion failed: left == right` for `assert_eq` and
   `assertion failed: left != right` for `assert_ne` — which is what keeps a

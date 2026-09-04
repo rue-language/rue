@@ -51,7 +51,7 @@ image per target plus one process per test, with the process's visible
 inventory pinned to exact values. Failures are structured data from day one:
 a documented failure channel that user assertion libraries share with the
 built-ins, `?` in test bodies with unwrap-and-report semantics, and
-structured assertion payloads (expected/actual with machine-computed diffs).
+structured assertion payloads (left/right with machine-computed diffs).
 
 The MVP claims nothing it cannot verify: it ships zero hermeticity claims,
 every test simply runs, and the event schema carries an explicit
@@ -336,7 +336,7 @@ $ rue test app/main.rue --filter parse_port      # run a subset
   location — the test declaration's span, except `unhandled_error` and the
   comparison kinds, which carry their own site (§1). Payload and location
   fields are extension points, and Phase 2.5 used them: a comparison failure
-  carries `expected`, `actual`, and the runner's `diff` of the two as
+  carries `left`, `right`, and the runner's `diff` of the two as
   additive minors on the same `1.0` schema, never as prose to be parsed.
   `capability_summary` is present
   from v1.0 as `{"status": "unavailable"}` — zero claims, stated in-band —
@@ -502,7 +502,7 @@ eject-don't-degrade soundness posture the deferred capability ADR ratifies
 #### 5.1 Assertion libraries are first-class by protocol, not by blessing
 
 The channel through which a failing test reports structure — kind, message,
-expected/actual payload, failing-call-site location — is a documented
+left/right payload, failing-call-site location — is a documented
 runtime protocol. `@assert`, the comparison family `@assert_eq`/`@assert_ne`
 (Phase 2.5), and the test-body `?` failure arm (§1) are sugar over the same
 channel any Rue function can invoke before aborting; user libraries emit the
@@ -667,7 +667,7 @@ companion project "rue test follow-ups" (§6).
       warning), RUE-1920 (the `rue test` subcommand, runner, and event stream),
       RUE-1921 (`?` in test bodies with unwrap-and-report semantics).
 - [x] **Phase 2.5: structured assertion payloads** - RUE-1620. `@assert_eq`
-      and `@assert_ne` as intrinsics producing expected/actual through the
+      and `@assert_ne` as intrinsics producing left/right through the
       §5.1 channel — one new runtime helper,
       `__rue_test_fail_comparison` (ABI version 3), whose record carries the
       two rendered operands where the open form carries a message and a

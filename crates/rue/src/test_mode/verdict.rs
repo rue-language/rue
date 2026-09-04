@@ -62,7 +62,7 @@ pub(crate) enum FailureKind {
     /// A failed `@assert(cond)`.
     Assert,
     /// A failed `@assert_eq(left, right)` (ADR-0083 Phase 2.5). Its frame is
-    /// the one that carries `expected` and `actual`.
+    /// the one that carries `left` and `right`.
     AssertEq,
     /// A failed `@assert_ne(left, right)`, whose frame carries the two values
     /// the assertion demanded be different.
@@ -145,15 +145,15 @@ pub(crate) struct FailureFrame {
     pub(crate) column: u32,
     pub(crate) payload: String,
     /// The left operand of a comparison assertion, rendered (ADR-0083 Phase
-    /// 2.5). `None` when the frame carried no `expected` field at all, which is
+    /// 2.5). `None` when the frame carried no `left` field at all, which is
     /// what every non-comparison producer writes.
     ///
     /// Empty is a value, not an absence: `@assert_eq` over two empty strings
     /// fails with two empty renderings, and dropping them would leave a
     /// consumer unable to tell that case from an `@assert`.
-    pub(crate) expected: Option<String>,
-    /// The right operand, rendered. Present exactly when `expected` is.
-    pub(crate) actual: Option<String>,
+    pub(crate) left: Option<String>,
+    /// The right operand, rendered. Present exactly when `left` is.
+    pub(crate) right: Option<String>,
 }
 
 /// What the channel carried, as the classifier needs it.
@@ -213,8 +213,8 @@ pub(crate) fn parse_channel(bytes: &[u8]) -> ChannelFrames {
                         line: location_number(&value, "line"),
                         column: location_number(&value, "column"),
                         payload: string_field(&value, "payload"),
-                        expected: optional_string_field(&value, "expected"),
-                        actual: optional_string_field(&value, "actual"),
+                        left: optional_string_field(&value, "left"),
+                        right: optional_string_field(&value, "right"),
                     });
                 }
             }
@@ -519,8 +519,8 @@ mod tests {
                 line: 7,
                 column: 5,
                 payload: String::new(),
-                expected: None,
-                actual: None,
+                left: None,
+                right: None,
             }),
             ..ChannelFrames::default()
         };
@@ -615,11 +615,11 @@ mod tests {
         assert_eq!(failure.file, "a.rue");
         assert_eq!(failure.line, 3);
         assert_eq!(failure.column, 9);
-        assert_eq!(failure.expected, None);
-        assert_eq!(failure.actual, None);
+        assert_eq!(failure.left, None);
+        assert_eq!(failure.right, None);
     }
 
-    /// A comparison frame carries `expected` and `actual` and no payload
+    /// A comparison frame carries `left` and `right` and no payload
     /// (ADR-0083 Phase 2.5), and its kind is one the taxonomy names rather than
     /// a verbatim one.
     #[test]
@@ -628,13 +628,13 @@ mod tests {
             "{\"record\":\"failure\",\"schema\":\"1.0\",\"kind\":\"assert_eq\",",
             "\"message\":\"assertion failed: left == right\",",
             "\"location\":{\"file\":\"a.rue\",\"line\":3,\"column\":5},",
-            "\"expected\":\"41\",\"actual\":\"42\"}\n",
+            "\"left\":\"41\",\"right\":\"42\"}\n",
         );
         let frames = parse_channel(bytes.as_bytes());
         assert!(frames.malformed.is_none());
         let failure = frames.failure.expect("a failure frame");
-        assert_eq!(failure.expected.as_deref(), Some("41"));
-        assert_eq!(failure.actual.as_deref(), Some("42"));
+        assert_eq!(failure.left.as_deref(), Some("41"));
+        assert_eq!(failure.right.as_deref(), Some("42"));
         assert_eq!(failure.payload, "");
         assert_eq!(
             FailureKind::reported(&failure.kind),
@@ -652,13 +652,13 @@ mod tests {
             "{\"record\":\"failure\",\"schema\":\"1.0\",\"kind\":\"assert_ne\",",
             "\"message\":\"assertion failed: left != right\",",
             "\"location\":{\"file\":\"a.rue\",\"line\":1,\"column\":1},",
-            "\"expected\":\"\",\"actual\":\"\"}\n",
+            "\"left\":\"\",\"right\":\"\"}\n",
         );
         let failure = parse_channel(bytes.as_bytes())
             .failure
             .expect("a failure frame");
-        assert_eq!(failure.expected.as_deref(), Some(""));
-        assert_eq!(failure.actual.as_deref(), Some(""));
+        assert_eq!(failure.left.as_deref(), Some(""));
+        assert_eq!(failure.right.as_deref(), Some(""));
     }
 
     /// A rendering that is not valid UTF-8 never becomes a frame at all: the
@@ -667,9 +667,9 @@ mod tests {
     /// diff's inputs `str` all the way down, with no second encoding tag.
     #[test]
     fn a_non_utf8_channel_line_is_malformed_rather_than_re_encoded() {
-        let mut bytes = b"{\"record\":\"failure\",\"kind\":\"assert_eq\",\"expected\":\"".to_vec();
+        let mut bytes = b"{\"record\":\"failure\",\"kind\":\"assert_eq\",\"left\":\"".to_vec();
         bytes.extend_from_slice(&[0xff, 0xfe]);
-        bytes.extend_from_slice(b"\",\"actual\":\"\"}\n");
+        bytes.extend_from_slice(b"\",\"right\":\"\"}\n");
         let frames = parse_channel(&bytes);
         assert!(frames.failure.is_none());
         assert_eq!(

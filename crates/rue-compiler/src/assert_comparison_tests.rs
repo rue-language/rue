@@ -3,7 +3,7 @@
 //! These are the session-level half of the family's coverage: the lowered shape
 //! the runtime contract depends on, and the identity rule that makes the
 //! structural printer shared rather than per-site. What a failing comparison
-//! actually reports — the frame's `expected` and `actual`, the runner's diff,
+//! actually reports — the frame's `left` and `right`, the runner's diff,
 //! and the human rendering — is covered end to end by the `cli.rue_test_assert`
 //! cases, and the ordinary-build trap by `cli.rue_test_assert`'s executable
 //! case and the `4.13:5f` spec cases.
