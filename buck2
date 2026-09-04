@@ -7,11 +7,15 @@ args=("$@")
 
 execution_command=0
 explicit_preference=0
+remote_cache_disabled=0
 if [[ "${#args[@]}" -gt 0 ]]; then
     for arg in "${args[@]}"; do
+        [[ "$arg" == "--" ]] && break
         case "$arg" in
             build|test|run|install) execution_command=1 ;;
-            --prefer-local|--prefer-remote|--local-only|--remote-only) explicit_preference=1 ;;
+            --prefer-local|--prefer-remote|--remote-only) explicit_preference=1 ;;
+            --local-only) explicit_preference=1; remote_cache_disabled=1 ;;
+            --no-remote-cache) remote_cache_disabled=1 ;;
         esac
     done
 fi
@@ -96,7 +100,91 @@ if [[ "$uses_remote_cache" -eq 1 ]] && [[ "$execution_command" -eq 1 ]] && [[ "$
     [[ "$inserted" -eq 1 ]] || args+=(--prefer-local)
 fi
 
+# BuildBuddy occasionally terminates a large BatchReadBlobs response while
+# Buck is materializing the Zig executable. The failure happens before the
+# requested action runs, and immediately replaying the same command has proved
+# sufficient. Keep the exception deliberately narrower than a general remote
+# cache retry: every observed invariant must be present in the first attempt's
+# stderr, and the replay calls DotSlash directly so there can only be one retry.
+is_truncated_zig_materialization() {
+    local line previous_is_zig_failure=0
+    local zig_failure_re='Internal error \(stage: materialize_inputs_failed\): Error materializing artifact at path `buck-out/[^[:space:]`]+/toolchains/[^[:space:]`]+/zig/[^[:space:]`]+/zig`'
+
+    # Buck emits the materialization failure and its transport cause as two
+    # adjacent stderr diagnostics. Requiring that structure prevents ordinary
+    # action/program output from assembling the classifier out of unrelated
+    # lines after the requested action has already run.
+    while IFS= read -r line; do
+        if [[ "$previous_is_zig_failure" -eq 1 ]] &&
+           [[ "$line" == *'Error: (Failed to make BatchReadBlobs request:'* ]] &&
+           { [[ "$line" == *'missing grpc-status trailer, stream was terminated without a final status (possible truncation by a proxy or load balancer)'* ]] ||
+             [[ "$line" == *'Unexpected EOF decoding stream'* ]]; }; then
+            return 0
+        fi
+        if [[ "$line" =~ $zig_failure_re ]]; then
+            previous_is_zig_failure=1
+        else
+            previous_is_zig_failure=0
+        fi
+    done <"$1"
+    return 1
+}
+
 if [[ "${#args[@]}" -gt 0 ]]; then
+    if [[ "${GITHUB_ACTIONS:-}" == true ]] &&
+       [[ "$uses_remote_cache" -eq 1 ]] && [[ "$execution_command" -eq 1 ]] &&
+       [[ "$remote_cache_disabled" -eq 0 ]] && [[ "${RUE_NO_REMOTE_CACHE:-}" != 1 ]]; then
+        retry_dir="$(mktemp -d "${TMPDIR:-/tmp}/rue-buck2-materialization.XXXXXX")"
+        retry_stdout="$retry_dir/stdout"
+        retry_stderr="$retry_dir/stderr"
+        retry_stdout_pipe="$retry_dir/stdout.pipe"
+        retry_stderr_pipe="$retry_dir/stderr.pipe"
+        cleanup_retry_capture() {
+            rm -f "$retry_stdout" "$retry_stderr" "$retry_stdout_pipe" "$retry_stderr_pipe"
+            rmdir "$retry_dir" 2>/dev/null || true
+        }
+        trap cleanup_retry_capture EXIT
+        mkfifo "$retry_stdout_pipe" "$retry_stderr_pipe"
+
+        # Required GitHub CI is non-interactive. Preserve stdout and stderr as
+        # separate streaming channels because rue-bin and other callers parse
+        # Buck's stdout; only stderr is classified.
+        tee "$retry_stdout" <"$retry_stdout_pipe" &
+        stdout_tee_pid=$!
+        tee "$retry_stderr" <"$retry_stderr_pipe" >&2 &
+        stderr_tee_pid=$!
+        set +e
+        dotslash "$repo_root/buck2-bin" "${args[@]}" >"$retry_stdout_pipe" 2>"$retry_stderr_pipe"
+        first_status=$?
+        wait "$stdout_tee_pid"
+        stdout_tee_status=$?
+        wait "$stderr_tee_pid"
+        stderr_tee_status=$?
+        set -e
+
+        if [[ "$first_status" -ne 0 ]] && [[ "$stdout_tee_status" -eq 0 ]] &&
+           [[ "$stderr_tee_status" -eq 0 ]] &&
+           is_truncated_zig_materialization "$retry_stderr"; then
+            echo "note: retrying Buck once after a truncated BuildBuddy Zig materialization" >&2
+            cleanup_retry_capture
+            trap - EXIT
+            set +e
+            dotslash "$repo_root/buck2-bin" "${args[@]}"
+            retry_status=$?
+            set -e
+            if [[ "$retry_status" -eq 0 ]]; then
+                exit 0
+            fi
+            # The retry is mitigation for one transport incident, not a new
+            # authority over the command's failure contract. If it also fails,
+            # keep the first attempt's status as well as both attempts' output.
+            exit "$first_status"
+        fi
+
+        cleanup_retry_capture
+        trap - EXIT
+        exit "$first_status"
+    fi
     exec dotslash "$repo_root/buck2-bin" "${args[@]}"
 else
     exec dotslash "$repo_root/buck2-bin"

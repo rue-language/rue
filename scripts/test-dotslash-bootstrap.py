@@ -146,6 +146,20 @@ class DotslashBootstrapTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("later.yaml:4", errors[0])
 
+    def test_rejects_direct_buck_manifest_in_a_second_workflow(self) -> None:
+        errors = self.validate(
+            {
+                "ci.yml": CALLER,
+                "release.yml": (
+                    "jobs:\n  release:\n    steps:\n"
+                    "      - run: dotslash ./buck2-bin build //crates/rue:rue\n"
+                ),
+            }
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("release.yml:4", errors[0])
+        self.assertIn("must reach Buck through repository `./buck2`", errors[0])
+
     def test_reports_every_offending_site(self) -> None:
         errors = self.validate(
             {

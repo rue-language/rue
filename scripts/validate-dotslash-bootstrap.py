@@ -28,6 +28,11 @@ and never saves the freshly downloaded one back -- every job re-downloads tens
 of megabytes, indefinitely and silently, because dotslash succeeds either
 way. So every `dotslash-` key in the action must hash `buck2-bin` and must
 not hash `buck2`.
+
+The wrapper also owns the bounded GitHub-Actions-only remote-cache retry from
+RUE-1949. Every workflow must therefore invoke Buck through `./buck2`, never
+run the `buck2-bin` manifest directly; otherwise the pin is correct but the
+repository's cache failure policy is silently absent.
 """
 
 from __future__ import annotations
@@ -51,6 +56,9 @@ HASH_FILES = re.compile(r"hashFiles\((?P<arguments>[^)]*)\)")
 QUOTED = re.compile(r"""['"](?P<name>[^'"]*)['"]""")
 PINNED_MANIFEST = "buck2-bin"
 WRAPPER = "buck2"
+DIRECT_PINNED_MANIFEST = re.compile(
+    r"(?:^|\s)(?:dotslash\s+)?(?:\./)?buck2-bin(?:\s|$)"
+)
 
 
 def workflows_in(directory: Path) -> list[Path]:
@@ -80,6 +88,15 @@ def check_workflows(workflows: list[Path]) -> tuple[list[str], int]:
                 errors.append(
                     f"{path}:{number}: declares its own dotslash cache key; "
                     f"{ACTION_REFERENCE} owns the store paths and key policy"
+                )
+            if (
+                not line.lstrip().startswith("#")
+                and DIRECT_PINNED_MANIFEST.search(line)
+            ):
+                errors.append(
+                    f"{path}:{number}: invokes {PINNED_MANIFEST} directly; "
+                    "CI must reach Buck through repository `./buck2` so "
+                    "centralized wrapper policy cannot be bypassed"
                 )
     return errors, callers
 

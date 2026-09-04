@@ -97,6 +97,44 @@ intended experiment. The checked-in `.buckconfig.local.example` documents the
 same knobs for a hand-written per-checkout config; the installed user config
 is the recommended setup.
 
+### Bounded Zig materialization retry
+
+On 2026-09-03 and 2026-09-04 UTC, first attempts of CI runs
+33814662565 and 33824226528 intermittently failed before their requested tests
+ran. Buck reported `materialize_inputs_failed` for the Zig executable under
+`buck-out/.../toolchains/.../zig/.../zig`; BuildBuddy's `BatchReadBlobs`
+response ended without its final `grpc-status` trailer and the diagnostic
+called out possible proxy/load-balancer truncation. The same incident record
+also includes one `BatchReadBlobs` `Unexpected EOF decoding stream` failure for
+that stage and artifact. Plain failed-job reruns passed.
+
+The repository `./buck2` wrapper therefore makes one bounded replay of the
+exact same DotSlash/Buck argv only in GitHub Actions, when those facts occur as
+an adjacent pair of Buck stderr diagnostics on a failed execution command using
+the configured remote-cache platform. The first attempt remains in the log and
+the replay streams normally. A successful replay returns success; a failed
+replay preserves the first failure's status and both attempts' output. A
+matching second failure is not retried again. Successful
+commands, compiler/test/semantic failures, other remote errors, non-Zig
+materialization failures, ordinary local configurations, and
+`RUE_NO_REMOTE_CACHE=1`, `--no-remote-cache`, and `--local-only` retain
+fail-fast behavior. Other explicit local/remote preferences are replayed
+unchanged, so this applies equally to cache-only and intentionally remote
+execution without changing either mode's semantics.
+
+This policy is centralized in the wrapper used by CI rather than duplicated in
+workflow jobs. Interactive and other local commands still directly `exec`
+DotSlash without capture. Fork jobs without the secret never acquire the
+installed config and remain ineligible. The wrapper does not read config
+contents into the capture or print argv, configuration, or credentials; the
+temporary captures hold only the first attempt's output that was already
+streamed to the caller.
+Hermetic synthetic tests pin the exact classifier, argv replay, one-retry
+ceiling, and exit propagation. Those tests prove the repository policy, not
+that the intermittent service-side truncation has disappeared; that conclusion
+requires continued operational evidence from ordinary pull-request and
+merge-group runs.
+
 ## Full-suite host coordination
 
 `scripts/rue test` with no filter takes a user-scoped lock under `/tmp`, shared by
