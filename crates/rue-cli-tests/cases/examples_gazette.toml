@@ -456,3 +456,21 @@ title = "Missing"
 program_args = ["render", "page.md"]
 exit_code = 1
 stdout_contains = ["shortcode:5: unknown shortcode (gallery)"]
+
+# ADR-0083 / RUE-2000. The example's own `test` declarations, run through the
+# real `rue test` driver. The three `*_tests.rue` files are reachable only
+# because `main.rue` imports them, so this case is also what keeps the
+# aggregator imports honest: drop one and the count falls.
+#
+# It is the runner's in-tree dogfood — the self-test above is a hand-rolled
+# harness inside `main()`, while this is the language's own test subcommand
+# over the same libraries — so the count is asserted rather than the
+# individual names, which the runner deliberately does not print on a pass.
+[[case]]
+name = "gazette_test_declarations_run_under_rue_test"
+description = "`rue test` over the example's root discovers and passes all 35 test declarations in its three test modules"
+source_path = "examples/gazette/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["test", "${SOURCE}", "--seed", "1"]
+driver_exit_code = 0
+compile_stdout_contains = ["35 passed ("]

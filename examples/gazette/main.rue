@@ -49,6 +49,9 @@ const text = @import("text.rue");
 const tmpl_eval = @import("tmpl_eval.rue");
 const tmpl_parse = @import("tmpl_parse.rue");
 const value = @import("value.rue");
+const tests_text = @import("text_tests.rue");
+const tests_frontmatter = @import("frontmatter_tests.rue");
+const tests_markdown = @import("markdown_tests.rue");
 const StrBuf = std.strbuf.StrBuf;
 const OptStr = std.option.Option(StrBuf);
 
