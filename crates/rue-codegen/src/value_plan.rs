@@ -517,6 +517,29 @@ pub fn float_width(ty: Type) -> Option<FloatWidth> {
     }
 }
 
+/// The float width of a value whose whole representation is one storage slot,
+/// given that value's [`crate::types::aggregate_leaf_types`].
+///
+/// A slot-addressed plan (`Alloc`, `Load`, `Store`, `ParamStore`) reaches a
+/// single-slot value through its primary vreg rather than through the typed
+/// slot walk, so that vreg's register class has to come from the leaf the slot
+/// actually holds. A bare `f64` and a `struct Q { f: f64 }` hold the same thing
+/// in the same one slot; reading the width off the value's own type answers
+/// `None` for the wrapper and loads the float into a general-purpose register,
+/// which every float-typed consumer of that slot then rejects — the
+/// aggregate-equality walk's float compare most visibly (RUE-2001). Reading it
+/// off the leaf instead gives the wrapper the float register class its content
+/// already had, so `Q == Q` compares the same way `f64 == f64` does.
+///
+/// Multi-slot values answer `None`: their per-slot classes are not one width,
+/// and the typed slot walk selects each slot's own from `leaf_types`.
+fn single_slot_float_width(leaf_types: &[Type]) -> Option<FloatWidth> {
+    match leaf_types {
+        [leaf] => float_width(*leaf),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FloatToIntGuardRelation {
     OrderedGreaterEqual,
@@ -1169,44 +1192,48 @@ fn residual_plan<A: ValueLowerAdapter>(
         // Slot-addressed plans carry emitted-frame slot numbers: the CFG's
         // slot numbering assumes every parameter is homed, while the emitted
         // frame compacts register-only parameters away (RUE-1170).
-        ResidualInput::Alloc { slot, init } => ResidualValuePlan::Alloc {
-            slot: ctx.frame_slot(slot),
-            init: operand(ctx, adapter, init),
-            init_shape: ValuePlan::for_value(ctx, init).shape,
-            float_width: float_width(ctx.cfg.get_inst(init).ty),
-            leaf_types: crate::types::aggregate_leaf_types(
-                ctx.type_pool,
-                ctx.cfg.get_inst(init).ty,
-            ),
-        },
-        ResidualInput::Load { slot } => ResidualValuePlan::Load {
-            slot: ctx.frame_slot(slot),
-            float_width: float_width(ctx.cfg.get_inst(value).ty),
-            leaf_types: crate::types::aggregate_leaf_types(
-                ctx.type_pool,
-                ctx.cfg.get_inst(value).ty,
-            ),
-        },
-        ResidualInput::Store { slot, value } => ResidualValuePlan::Store {
-            destination: store_destination(ctx, slot),
-            value: operand(ctx, adapter, value),
-            value_shape: ValuePlan::for_value(ctx, value).shape,
-            float_width: float_width(ctx.cfg.get_inst(value).ty),
-            leaf_types: crate::types::aggregate_leaf_types(
-                ctx.type_pool,
-                ctx.cfg.get_inst(value).ty,
-            ),
-        },
-        ResidualInput::ParamStore { param_slot, value } => ResidualValuePlan::ParamStore {
-            param_slot,
-            value: operand(ctx, adapter, value),
-            value_shape: ValuePlan::for_value(ctx, value).shape,
-            float_width: float_width(ctx.cfg.get_inst(value).ty),
-            leaf_types: crate::types::aggregate_leaf_types(
-                ctx.type_pool,
-                ctx.cfg.get_inst(value).ty,
-            ),
-        },
+        ResidualInput::Alloc { slot, init } => {
+            let leaf_types =
+                crate::types::aggregate_leaf_types(ctx.type_pool, ctx.cfg.get_inst(init).ty);
+            ResidualValuePlan::Alloc {
+                slot: ctx.frame_slot(slot),
+                init: operand(ctx, adapter, init),
+                init_shape: ValuePlan::for_value(ctx, init).shape,
+                float_width: single_slot_float_width(&leaf_types),
+                leaf_types,
+            }
+        }
+        ResidualInput::Load { slot } => {
+            let leaf_types =
+                crate::types::aggregate_leaf_types(ctx.type_pool, ctx.cfg.get_inst(value).ty);
+            ResidualValuePlan::Load {
+                slot: ctx.frame_slot(slot),
+                float_width: single_slot_float_width(&leaf_types),
+                leaf_types,
+            }
+        }
+        ResidualInput::Store { slot, value } => {
+            let leaf_types =
+                crate::types::aggregate_leaf_types(ctx.type_pool, ctx.cfg.get_inst(value).ty);
+            ResidualValuePlan::Store {
+                destination: store_destination(ctx, slot),
+                value: operand(ctx, adapter, value),
+                value_shape: ValuePlan::for_value(ctx, value).shape,
+                float_width: single_slot_float_width(&leaf_types),
+                leaf_types,
+            }
+        }
+        ResidualInput::ParamStore { param_slot, value } => {
+            let leaf_types =
+                crate::types::aggregate_leaf_types(ctx.type_pool, ctx.cfg.get_inst(value).ty);
+            ResidualValuePlan::ParamStore {
+                param_slot,
+                value: operand(ctx, adapter, value),
+                value_shape: ValuePlan::for_value(ctx, value).shape,
+                float_width: single_slot_float_width(&leaf_types),
+                leaf_types,
+            }
+        }
         ResidualInput::StructInit { struct_id } => ResidualValuePlan::StructInit {
             struct_id,
             fields: ctx
@@ -2373,10 +2400,10 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        ComparisonPreparation, DebugValuePlan, IntegerExtension, IntegerWidth, IntrinsicArgPlan,
-        MaterializationRequirement, PointerAccessPlan, StoragePolicy, StoreDestination, ValuePlan,
-        ValueShape, assert_slot_policy, comparison_integer_width, integer_range,
-        pointer_access_plan, type_bits, type_range,
+        ComparisonPreparation, DebugValuePlan, FloatWidth, IntegerExtension, IntegerWidth,
+        IntrinsicArgPlan, MaterializationRequirement, PointerAccessPlan, StoragePolicy,
+        StoreDestination, ValuePlan, ValueShape, assert_slot_policy, comparison_integer_width,
+        integer_range, pointer_access_plan, type_bits, type_range,
     };
     use lasso::ThreadedRodeo;
     use rue_air::{
@@ -3357,6 +3384,155 @@ mod tests {
         assert_eq!(arm_actions.len(), 1);
         assert_eq!(arm_actions[0].symbol, "DropAggregate::__drop");
         assert_eq!(arm_actions[0].slots, arm_value.slots);
+    }
+
+    /// A float leaf reached through an aggregate is compared the way a
+    /// top-level `f64 == f64` is: in the floating-point register class
+    /// (RUE-2001).
+    ///
+    /// A single-slot aggregate travels through its primary vreg rather than the
+    /// typed slot walk, so the wrapper's own type — not a float — used to pick
+    /// that vreg's class. The slot then held float bits in a general-purpose
+    /// register, and the aggregate-equality walk handed it to the float
+    /// compare; both backends assert their float operand classes while
+    /// encoding, so the mismatch was an internal compiler error rather than a
+    /// wrong answer.
+    #[test]
+    fn a_single_slot_float_aggregate_is_loaded_and_compared_in_the_float_class() {
+        for (leaf, width, bits) in [
+            (Type::F64, FloatWidth::F64, 0x3ff8_0000_0000_0000u64),
+            (Type::F32, FloatWidth::F32, 0x3fc0_0000u64),
+        ] {
+            let pool = TypeInternPool::new();
+            let interner = ThreadedRodeo::new();
+            let name = interner.get_or_intern("Wrapper");
+            let (struct_id, _) = pool.register_struct(
+                name,
+                StructDef {
+                    name: "Wrapper".into(),
+                    fields: vec![StructField {
+                        name: "value".to_string(),
+                        ty: leaf,
+                    }],
+                    is_copy: true,
+                    is_linear: false,
+                    declared_linear: false,
+                    destructor: None,
+                    is_builtin: false,
+                    is_pub: false,
+                    file_id: FileId::DEFAULT,
+                },
+            );
+            let pool = pool.freeze();
+            let wrapper_ty = Type::new_struct(struct_id);
+
+            let mut cfg = Cfg::new(
+                Type::BOOL,
+                2,
+                0,
+                "single_slot_float_aggregate_equality".to_string(),
+                vec![],
+            );
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            for slot in 0..2 {
+                let field = cfg.append_inst(entry, inst(CfgInstData::Const(bits), leaf));
+                let value = cfg
+                    .append_struct_init(entry, struct_id, [field], wrapper_ty, Span::new(0, 0))
+                    .expect("wrapper initializer");
+                cfg.append_inst(
+                    entry,
+                    inst(CfgInstData::Alloc { slot, init: value }, Type::UNIT),
+                );
+            }
+            let lhs = cfg.append_inst(entry, inst(CfgInstData::Load { slot: 0 }, wrapper_ty));
+            let rhs = cfg.append_inst(entry, inst(CfgInstData::Load { slot: 1 }, wrapper_ty));
+            let equal = cfg.append_inst(entry, inst(CfgInstData::Eq(lhs, rhs), Type::BOOL));
+            cfg.set_return(entry, Some(equal));
+
+            let x86 = X86CfgLower::new_unchecked(&cfg, &pool, &interner)
+                .lower()
+                .expect("x86 single-slot float aggregate equality should lower");
+            let x86_compares: Vec<_> = x86
+                .instructions()
+                .iter()
+                .filter_map(|inst| match inst {
+                    X86Inst::FloatCmp {
+                        lhs: crate::x86_64::Operand::Virtual(lhs),
+                        rhs: crate::x86_64::Operand::Virtual(rhs),
+                        width: compare_width,
+                    } => Some((*lhs, *rhs, *compare_width)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                x86_compares.len(),
+                1,
+                "the float leaf is compared exactly once ({leaf:?})"
+            );
+            let (x86_lhs, x86_rhs, x86_width) = x86_compares[0];
+            assert_eq!(x86_width, width);
+            assert_eq!(x86.vreg_class(x86_lhs), crate::reg_class::RegClass::Fp);
+            assert_eq!(x86.vreg_class(x86_rhs), crate::reg_class::RegClass::Fp);
+            assert!(
+                x86.instructions()
+                    .iter()
+                    .any(|inst| matches!(inst, X86Inst::FloatLoad { .. })),
+                "the wrapper's one slot is loaded as a float ({leaf:?})"
+            );
+
+            let arm = Aarch64CfgLower::new_unchecked(&cfg, &pool, &interner, Target::Aarch64Linux)
+                .lower()
+                .expect("AArch64 single-slot float aggregate equality should lower");
+            let arm_compares: Vec<_> = arm
+                .instructions()
+                .iter()
+                .filter_map(|inst| match inst {
+                    Aarch64Inst::FloatCmp {
+                        lhs: crate::aarch64::Operand::Virtual(lhs),
+                        rhs: crate::aarch64::Operand::Virtual(rhs),
+                        width: compare_width,
+                    } => Some((*lhs, *rhs, *compare_width)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                arm_compares.len(),
+                1,
+                "the float leaf is compared exactly once ({leaf:?})"
+            );
+            let (arm_lhs, arm_rhs, arm_width) = arm_compares[0];
+            assert_eq!(arm_width, width);
+            assert_eq!(arm.vreg_class(arm_lhs), crate::reg_class::RegClass::Fp);
+            assert_eq!(arm.vreg_class(arm_rhs), crate::reg_class::RegClass::Fp);
+            assert!(
+                arm.instructions()
+                    .iter()
+                    .any(|inst| matches!(inst, Aarch64Inst::FloatLoad { .. })),
+                "the wrapper's one slot is loaded as a float ({leaf:?})"
+            );
+        }
+    }
+
+    /// The width a slot-addressed plan gives one storage slot comes from the
+    /// leaf that slot holds, so a wrapper around a float is a float slot and a
+    /// multi-slot aggregate has no single width (RUE-2001).
+    #[test]
+    fn a_single_slot_float_leaf_selects_the_float_class_for_its_wrapper() {
+        assert_eq!(
+            super::single_slot_float_width(&[Type::F64]),
+            Some(FloatWidth::F64)
+        );
+        assert_eq!(
+            super::single_slot_float_width(&[Type::F32]),
+            Some(FloatWidth::F32)
+        );
+        assert_eq!(super::single_slot_float_width(&[Type::I64]), None);
+        assert_eq!(super::single_slot_float_width(&[]), None);
+        assert_eq!(
+            super::single_slot_float_width(&[Type::F64, Type::F64]),
+            None
+        );
     }
 
     #[test]
