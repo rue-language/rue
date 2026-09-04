@@ -122,6 +122,24 @@ pub(crate) fn matches_filters(id: &str, filters: &[String]) -> bool {
     filters.is_empty() || filters.iter().any(|filter| id.contains(filter.as_str()))
 }
 
+/// Which tests an invocation acts on: filter, then shard, in inventory order.
+///
+/// The membership half of the pipeline, shared by `plan` and `--list` so the
+/// listing cannot answer a different question from the run it previews. Order
+/// is left alone here because the two consumers want different orders — a run
+/// shuffles, a listing must not — and order is not membership.
+pub(crate) fn select<'a>(
+    entries: &'a [TestInventoryEntry],
+    filters: &[String],
+    shard: Option<Shard>,
+) -> Vec<&'a TestInventoryEntry> {
+    entries
+        .iter()
+        .filter(|entry| matches_filters(&entry.id, filters))
+        .filter(|entry| shard.is_none_or(|shard| shard.owns(&entry.id)))
+        .collect()
+}
+
 /// Filter, shard, and shuffle one inventory into the order tests will run in.
 pub(crate) fn plan(
     entries: &[TestInventoryEntry],
@@ -129,10 +147,8 @@ pub(crate) fn plan(
     shard: Option<Shard>,
     seed: u64,
 ) -> Vec<TestInventoryEntry> {
-    let mut selected: Vec<TestInventoryEntry> = entries
-        .iter()
-        .filter(|entry| matches_filters(&entry.id, filters))
-        .filter(|entry| shard.is_none_or(|shard| shard.owns(&entry.id)))
+    let mut selected: Vec<TestInventoryEntry> = select(entries, filters, shard)
+        .into_iter()
         .cloned()
         .collect();
     shuffle(&mut selected, seed);
@@ -279,6 +295,42 @@ mod tests {
                 .unwrap_err()
                 .contains("positive integer")
         );
+    }
+
+    /// What `--list` publishes: the same membership a run would have, in
+    /// inventory order. A listing is compared against another listing, so the
+    /// shuffle belongs to `plan` alone.
+    #[test]
+    fn a_selection_keeps_inventory_order_while_a_plan_shuffles_it() {
+        let entries = inventory(24);
+        let selected: Vec<String> = select(&entries, &[], None)
+            .into_iter()
+            .map(|entry| entry.id.clone())
+            .collect();
+        assert_eq!(selected, ids(&entries));
+        assert_ne!(
+            selected,
+            ids(&plan(&entries, &[], None, 417)),
+            "a run's order is shuffled; a listing's is not"
+        );
+    }
+
+    /// The listing and the run answer the same membership question, filters and
+    /// shard included — one computation, two consumers.
+    #[test]
+    fn a_selection_and_a_plan_agree_on_membership() {
+        let entries = inventory(40);
+        let filters = vec!["test 1".to_owned()];
+        let shard = Some(Shard { index: 2, count: 3 });
+        let mut selected: Vec<String> = select(&entries, &filters, shard)
+            .into_iter()
+            .map(|entry| entry.id.clone())
+            .collect();
+        let mut planned = ids(&plan(&entries, &filters, shard, 417));
+        assert!(!selected.is_empty(), "the fixture must select something");
+        selected.sort();
+        planned.sort();
+        assert_eq!(selected, planned);
     }
 
     #[test]

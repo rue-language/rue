@@ -310,9 +310,14 @@ version has no flag to inline a passing test's output; the opt-in is deferred.
 
 **Budgets.** 1 MiB retained per stream for stdout and stderr; 256 KiB for the
 failure channel, deliberately separate so a test that floods its streams cannot
-truncate its own failure record. Exceeding a *stream* budget kills the process
-group and yields `fail` with kind `output_overflow`, retained prefix attached.
-Reading continues past the budget so `bytes_total` is the true count.
+truncate its own failure record. Exceeding any of the three kills the process
+group and yields `fail` with kind `output_overflow`, retained prefix attached;
+the failure message names the capture that overflowed and the budget it
+exceeded, because the channel's is a quarter of a stream's. A channel past its
+budget is a supervision outcome for the same reason a stream is: truncating it
+mid-line would otherwise surface as an unreadable frame and a bare `exit`,
+describing the symptom rather than the flood. Reading continues past the budget
+so `bytes_total` is the true count.
 
 That window is sized for a machine, so the human renderer bounds what it prints
 of it: at most 64 lines or 8 KiB per stream, as a 48-line head and a 16-line
@@ -526,6 +531,20 @@ process id, and are themselves named `rue-test-<seed>-<ordinal>`. The run
 directory is what keeps two runs that share an explicit `--seed` — a repro next
 to the run that produced it, or two suites in parallel — from deleting each
 other's live working directories.
+
+**Retention is the user's to undo.** The run directory and every scratch
+directory it holds sit under the OS temp directory. A retained one is evidence,
+so no later run sweeps it: a run removes only paths inside its own run
+directory — the scratch of each of its passing tests, its image, and the run
+directory itself once that is empty — and its process id is what makes that
+directory its own. The runner has no expiry, so deleting what is left is the
+user's call, and the OS temp directory's own policy is the only other thing that
+will do it. A run interrupted by SIGINT, SIGTERM, or SIGHUP kills its
+live tests before it dies, so nothing is left running, but it dies of that
+signal without a chance to clean up: its run directory and its image stay behind
+under the temp directory. A runner killed by SIGKILL runs nothing at all; on
+Linux its children still die, because each is asked at exec time for a SIGKILL
+when its parent goes.
 
 **What isolation does and does not promise.** Each test observes fresh process
 state, has an independent lifecycle the runner enforces, gets its output

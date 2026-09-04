@@ -1312,3 +1312,55 @@ files = []
 args = ["missing.rue", "-o", "prog"]
 driver_exit_code = 1
 compile_stderr_contains = ["Error reading ", "missing.rue:"]
+
+[[case]]
+name = "a_flooded_failure_channel_is_killed_with_kind_output_overflow"
+description = """
+RUE-2025: the channel's 256 KiB budget is enforced the way a stream's is. It was
+checked nowhere before, so a test that wrote past it had its last frame cut in
+half and reported as a bare `exit` with a runner note about an unreadable
+channel — the symptom, not the cause. The message names the capture that
+overflowed and the budget it exceeded, which for the channel is a quarter of a
+stream's.
+
+Descriptor 3 is written raw, because the built-in producers write one frame per
+failure and no Rue-level program reaches a quarter of a megabyte through them.
+Linux only: the write syscall's number is per-platform, and what this pins is
+the runner's supervision rather than any portable language behavior.
+"""
+only_on = ["x86-64-linux", "aarch64-linux"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+
+test "floods its own failure channel" {
+    let write_nr: u64 = match @target_arch() {
+        Arch.X86_64 => 1,
+        Arch.Aarch64 => 64,
+    };
+    let buf: ptr mut u8 = checked { @alloc(4096, 1) };
+    let mut i: u64 = 0;
+    while i < 4096 {
+        checked { @ptr_write(@ptr_offset(buf, i), 120); };
+        i = i + 1;
+    }
+    let addr: u64 = checked { @ptr_to_int(buf) };
+    let mut writes: u64 = 0;
+    while writes < 160 {
+        checked { @syscall(write_nr, 3, addr, 4096); };
+        writes = writes + 1;
+    }
+    checked { @free(buf, 4096, 1); };
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"kind":"output_overflow"',
+    '"message":"the failure channel exceeded its 262144-byte retention budget; the process group was killed"',
+    '"verdict":"fail"',
+    '"crash":0,"event":"run_finished","failed":1,"passed":0',
+]
