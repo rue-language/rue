@@ -1671,14 +1671,99 @@ define_error_codes! {
     // ========================================================================
     // Intrinsic errors (E0700-E0799)
     // ========================================================================
-    UNKNOWN_INTRINSIC = 700;
-    INTRINSIC_WRONG_ARG_COUNT = 701;
-    INTRINSIC_TYPE_MISMATCH = 702;
-    IMPORT_REQUIRES_STRING_LITERAL = 703;
-    MODULE_NOT_FOUND = 704;
-    STD_LIB_NOT_FOUND = 705;
-    PRIVATE_MEMBER_ACCESS = 706;
-    UNKNOWN_MODULE_MEMBER = 707;
+    UNKNOWN_INTRINSIC = 700 => {
+        explanation: "Rue rejects an `@` call when its name is not available as an intrinsic in that source context. Besides unknown names, this includes reserved spellings such as `@cast` that are intentionally rejected and internal intrinsics such as `@place` used outside their permitted compiler-defined context.",
+        likely_cause: "The intrinsic name is misspelled or obsolete, belongs to another language, names a reserved spelling that directs callers to another intrinsic, or is restricted to an internal context. Check the intrinsic quick reference and use an available, case-sensitive source spelling.",
+        examples: [
+            ErrorCodeExample { title: "Call an unknown intrinsic", source: "fn main() -> i32 {\n    @maximum(i32)\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use a recognized intrinsic", source: "fn main() -> i32 {\n    @int_max(i32)\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Unknown intrinsic names", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:5") },
+            ErrorCodeReference { title: "Source intrinsic inventory", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:5a") },
+        ],
+    };
+    INTRINSIC_WRONG_ARG_COUNT = 701 => {
+        explanation: "Each intrinsic declares an accepted argument count or range. Rue checks the number of supplied arguments against that arity contract before applying its type and behavior rules.",
+        likely_cause: "An argument is missing, an extra comma-separated argument was supplied, or the call was written for a different version of the intrinsic's signature.",
+        examples: [
+            ErrorCodeExample { title: "Omit a required intrinsic argument", source: "fn main() -> i32 {\n    @dbg();\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Supply the declared argument count", source: "fn main() -> i32 {\n    @dbg(42);\n    0\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Declared intrinsic signatures", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:3") },
+            ErrorCodeReference { title: "Intrinsic argument counts", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:4") },
+        ],
+    };
+    INTRINSIC_TYPE_MISMATCH = 702 => {
+        explanation: "An intrinsic argument has the wrong kind or type for the selected intrinsic. Intrinsic signatures distinguish type arguments from expression arguments and may further restrict accepted value types.",
+        likely_cause: "A value was supplied where a type is required, a type was supplied where an expression is required, or the argument's type is outside the intrinsic's documented domain.",
+        examples: [
+            ErrorCodeExample { title: "Use a non-integer type with an integer-bound intrinsic", source: "fn main() -> i32 {\n    @int_max(bool)\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use an integer type", source: "fn main() -> i32 {\n    @int_max(i32)\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Expression and type intrinsic arguments", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:2a") },
+            ErrorCodeReference { title: "Integer-bound intrinsic operand types", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:129") },
+        ],
+    };
+    IMPORT_REQUIRES_STRING_LITERAL = 703 => {
+        explanation: "`@import` requires its module specifier to appear directly as a string literal. Rue resolves the source graph before general expression evaluation, so a variable or computed string cannot select a module.",
+        likely_cause: "The import path was stored in a local or constant, constructed by an expression, or supplied as a non-string value instead of being written literally inside `@import(...)`.",
+        examples: [
+            ErrorCodeExample { title: "Import through a string variable", source: "// --- main.rue\nfn main() -> i32 {\n    let path = \"helper.rue\";\n    let helper = @import(path);\n    helper.answer()\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Write the import path as a literal", source: "// --- main.rue\nconst helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.answer() }\n// --- helper.rue\npub fn answer() -> i32 { 42 }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Import argument form", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:80") },
+            ErrorCodeReference { title: "Import string literal requirement", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:84") },
+        ],
+    };
+    MODULE_NOT_FOUND = 704 => {
+        explanation: "The one candidate file selected by an `@import` specifier was not present in the compilation's source graph. Extensioned paths name that exact file; extensionless paths name only a directory facade.",
+        likely_cause: "The path is misspelled, the file was not supplied to the compiler, the path is relative to a different importing file than expected, or `.rue` was omitted when a file module rather than a directory facade was intended.",
+        examples: [
+            ErrorCodeExample { title: "Import a missing file module", source: "// --- main.rue\nfn main() -> i32 {\n    let helper = @import(\"helper.rue\");\n    helper.answer()\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Provide the file at the selected path", source: "// --- main.rue\nconst helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.answer() }\n// --- helper.rue\npub fn answer() -> i32 { 42 }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Missing imported modules", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:83") },
+            ErrorCodeReference { title: "Import candidate selection", path: "docs/spec/src/10-modules/02-import-resolution.md", rule: Some("10.2:1") },
+        ],
+    };
+    STD_LIB_NOT_FOUND = 705 => {
+        explanation: "`@import(\"std\")` requested the trusted standard-library facade, but neither the project's vendored standard library nor the configured toolchain standard library supplied it.",
+        likely_cause: "The Rue installation is incomplete, `RUE_STD_PATH` does not name a valid standard-library directory, or a source-only compiler embedding requested `std` without supplying trusted standard-library sources.",
+        examples: [
+            ErrorCodeExample { title: "Import std when no standard library is available", source: "// --- main.rue\nconst std = @import(\"std\");\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Remove an unnecessary standard-library import", source: "// --- main.rue\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Standard-library resolution", path: "docs/spec/src/10-modules/02-import-resolution.md", rule: Some("10.2:6") }],
+    };
+    PRIVATE_MEMBER_ACCESS = 706 => {
+        explanation: "A module-qualified access crossed a directory boundary to a private member. The top-level item, or the enclosing type for an enum variant or associated function, was not declared `pub`. Rue privacy is directory-based: private members remain usable by files in their defining directory but are hidden from importers in other directories.",
+        likely_cause: "A function, constant, type, enum, or module re-export needed by an external importer is missing `pub`; an associated function or variant belongs to a private enclosing type; or the caller was moved outside the defining directory.",
+        examples: [
+            ErrorCodeExample { title: "Access a private function across directories", source: "// --- main.rue\nconst lib = @import(\"sub/lib.rue\");\nfn main() -> i32 { lib.secret() }\n// --- sub/lib.rue\nfn secret() -> i32 { 42 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Export the cross-directory member", source: "// --- main.rue\nconst lib = @import(\"sub/lib.rue\");\nfn main() -> i32 { lib.answer() }\n// --- sub/lib.rue\npub fn answer() -> i32 { 42 }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Private cross-directory access", path: "docs/spec/src/10-modules/03-visibility.md", rule: Some("10.3:3") },
+            ErrorCodeReference { title: "Uniform module-member privacy", path: "docs/spec/src/10-modules/04-module-bindings.md", rule: Some("10.4:18") },
+        ],
+    };
+    UNKNOWN_MODULE_MEMBER = 707 => {
+        explanation: "A qualified name was not declared as a member of the module named on its left. Module membership is per file; loading another file with a same-named declaration does not add that declaration to this module.",
+        likely_cause: "The member name is misspelled, the wrong module binding is used, the declaration lives in another file, or a needed member was removed or renamed.",
+        examples: [
+            ErrorCodeExample { title: "Name a member absent from the imported module", source: "// --- main.rue\nconst helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.missing() }\n// --- helper.rue\npub fn answer() -> i32 { 42 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Use a member declared by that module", source: "// --- main.rue\nconst helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.answer() }\n// --- helper.rue\npub fn answer() -> i32 { 42 }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Unknown imported module members", path: "docs/spec/src/04-expressions/13-intrinsics.md", rule: Some("4.13:90") },
+            ErrorCodeReference { title: "Per-file module membership", path: "docs/spec/src/10-modules/04-module-bindings.md", rule: Some("10.4:17") },
+        ],
+    };
     // 708 (AMBIGUOUS_MODULE) is retired (ADR-0078): an extensionless import
     // names the directory facade alone and a file module is spelled with its
     // extension, so the file/facade ambiguity no longer exists. Keep the
@@ -4261,6 +4346,51 @@ mod tests {
             expected
                 .into_iter()
                 .all(|code| error_code_explanation(code).is_some())
+        );
+    }
+
+    #[test]
+    fn active_intrinsic_and_module_explanation_band_is_complete_and_bounded() {
+        let expected = [
+            ErrorCode::UNKNOWN_INTRINSIC,
+            ErrorCode::INTRINSIC_WRONG_ARG_COUNT,
+            ErrorCode::INTRINSIC_TYPE_MISMATCH,
+            ErrorCode::IMPORT_REQUIRES_STRING_LITERAL,
+            ErrorCode::MODULE_NOT_FOUND,
+            ErrorCode::STD_LIB_NOT_FOUND,
+            ErrorCode::PRIVATE_MEMBER_ACCESS,
+            ErrorCode::UNKNOWN_MODULE_MEMBER,
+        ];
+        let active = error_code_metadata()
+            .iter()
+            .filter(|metadata| (700..=708).contains(&metadata.code.0))
+            .map(|metadata| {
+                assert_eq!(metadata.source_path, "crates/rue-error/src/lib.rs");
+                metadata.code
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(active, expected);
+        let explained = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (700..=708)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(explained, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
+        );
+
+        let retired = ErrorCode(708);
+        assert!(RETIRED_ERROR_CODES.contains(&retired));
+        assert_eq!(error_code_explanation(retired), None);
+        assert_eq!(
+            retired.to_string().parse::<ErrorCode>(),
+            Err(ParseErrorCodeError::Unknown(retired))
         );
     }
 
