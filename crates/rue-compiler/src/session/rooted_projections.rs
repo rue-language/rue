@@ -657,9 +657,25 @@ impl CompilerSession {
             .map(|test| test.identity.clone())
             .collect::<Vec<_>>()
             .into();
+        // Whole-program CFG reachability at O2/O3 publishes only what the
+        // request's roots reach, so the dispatcher has to be one of them.
+        // `graph.roots` is the semantic root set, and it can only name
+        // declarations the body closure was analyzed from; the dispatcher has
+        // no declaration and is synthesized here. Nothing calls it, so a test
+        // image built from the semantic roots alone classified the entry point
+        // itself as unreachable and general inlining dropped its unit, leaving
+        // the image with an undefined `main` (RUE-1995). It is a root of the
+        // request exactly as `main` and the `extern "C"` exports are for an
+        // executable one; this is where it becomes nameable, so this is where
+        // it joins the root set.
+        let mut cfg_roots = graph.roots.to_vec();
         if dispatches_tests {
             identities.insert(crate::FunctionInstanceKey::TestDispatcher);
+            cfg_roots.push(crate::FunctionInstanceKey::TestDispatcher);
+            cfg_roots.sort();
+            cfg_roots.dedup();
         }
+        let cfg_roots: Arc<[crate::FunctionInstanceKey]> = cfg_roots.into();
         // Only an executable request has a `main`, and only its symbol is
         // spelled unmangled (ADR-0083 §1: a test request has no entry point).
         let main_identity = graph
@@ -1216,7 +1232,7 @@ impl CompilerSession {
         let (cfg_batch_key, attempt) = self.queries.revisioned.optimized_cfg_batch(
             graph.revision,
             optimized_keys,
-            Arc::clone(&graph.roots),
+            Arc::clone(&cfg_roots),
             cancellation,
         );
         let batch_execution = attempt.execution();

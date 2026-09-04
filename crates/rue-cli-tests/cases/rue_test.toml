@@ -923,3 +923,83 @@ fn other() -> i32 {
 args = ["test", "main.rue", "other.rue"]
 compile_fail = true
 error_contains = ["unexpected extra source file 'other.rue'"]
+
+# ========================= optimization levels =========================
+
+[[case]]
+name = "trivial_test_bodies_link_at_o2"
+description = """
+RUE-1995: whole-program reachability runs only at -O2/-O3, and the synthesized
+dispatcher is the test image's entry point that nothing calls. When no test body
+makes a call, dependency discovery is complete and the pruner is free to act, so
+a dispatcher missing from the root set was dropped and the image failed to link.
+Call-free bodies are the shape that reproduces it; a body that calls anything
+unresolved leaves the graph incomplete and nothing is pruned at all.
+"""
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+
+test "empty" {
+}
+
+test "trivial" {
+    let _x = 1;
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "-O2"]
+driver_exit_code = 0
+compile_stdout_contains = ["2 passed ("]
+compile_stdout_not_contains = ["FAIL"]
+
+[[case]]
+name = "trivial_test_bodies_link_at_o3"
+description = "RUE-1995: the same reachability pass runs at -O3."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+
+test "empty" {
+}
+
+test "trivial" {
+    let _x = 1;
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "-O3"]
+driver_exit_code = 0
+compile_stdout_contains = ["2 passed ("]
+compile_stdout_not_contains = ["FAIL"]
+
+[[case]]
+name = "a_failed_assert_is_classified_at_o2"
+description = """
+RUE-1995: an optimized test image must reach the same verdict as an unoptimized
+one, so the failing path is pinned at -O2 too — the runtime trap still classifies
+as `assert` rather than disappearing into a link error.
+"""
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+
+test "two plus two is five" {
+    @assert(2 + 2 == 5);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "-O2", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"failure":{"exit_code":101,"kind":"assert"',
+    '"message":"assertion failed"',
+    '"verdict":"fail"',
+    '"crash":0,"event":"run_finished","failed":1,"passed":0',
+]
