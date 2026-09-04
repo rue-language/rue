@@ -1771,37 +1771,16 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                 Some(ValueKind::Intrinsic)
             } else if matches!(
                 operation,
-                IntrinsicOperation::AssertFailed
-                    | IntrinsicOperation::AssertWithMessage
-                    | IntrinsicOperation::BoundsCheck
+                IntrinsicOperation::AssertFailed | IntrinsicOperation::BoundsCheck
             ) {
+                // Both take no runtime arguments: the condition is tested here
+                // and the helper it guards is a bare abort. `@assert`'s own
+                // failure is not one of these — it is a branch around the
+                // ADR-0083 §5.1 report, planned as ordinary runtime calls.
                 let runtime = operation
                     .runtime_call_kind()
                     .expect("assert operation must be runtime-backed");
-                let call = match operation {
-                    IntrinsicOperation::AssertFailed | IntrinsicOperation::BoundsCheck => {
-                        crate::runtime_call_plan::RuntimeCallPlan::no_args(runtime.helper())
-                    }
-                    IntrinsicOperation::AssertWithMessage => {
-                        let message = values
-                            .get(1)
-                            .expect("validated message assertion must carry text");
-                        crate::runtime_call_plan::RuntimeCallPlan::expect_manifest(
-                            runtime.helper(),
-                            [
-                                crate::runtime_call_plan::RuntimeCallArg::const_pointer(
-                                    message.slots[0],
-                                    rue_runtime_abi::AbiType::Byte,
-                                ),
-                                crate::runtime_call_plan::RuntimeCallArg::value(
-                                    message.slots[1],
-                                    rue_runtime_abi::AbiType::U64,
-                                ),
-                            ],
-                        )
-                    }
-                    _ => unreachable!("non-assert operation in assert dispatch"),
-                };
+                let call = crate::runtime_call_plan::RuntimeCallPlan::no_args(runtime.helper());
                 let result = adapter.emit_trap(TrapPlan::Assert {
                     condition: values[0].primary,
                     call,
@@ -2147,7 +2126,6 @@ fn intrinsic_runtime_call(
         IntrinsicOperation::Panic
         | IntrinsicOperation::PanicNoMessage
         | IntrinsicOperation::AssertFailed
-        | IntrinsicOperation::AssertWithMessage
         | IntrinsicOperation::BoundsCheck => {
             unreachable!("trap runtime calls are planned by exact operation above")
         }
@@ -3421,10 +3399,6 @@ mod tests {
             (
                 IntrinsicOperation::AssertFailed,
                 RuntimeHelperId::AssertFailed,
-            ),
-            (
-                IntrinsicOperation::AssertWithMessage,
-                RuntimeHelperId::Panic,
             ),
             (
                 IntrinsicOperation::BoundsCheck,

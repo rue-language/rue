@@ -66,6 +66,14 @@ const PAYLOAD_FIELD: [u8; 13] = *b"},\"payload\":\"";
 const LEFT_FIELD: [u8; 10] = *b"},\"left\":\"";
 const RIGHT_FIELD: [u8; 11] = *b"\",\"right\":\"";
 const FRAME_TAIL: [u8; 3] = *b"\"}\n";
+/// Closes the location object and the record with no field after it: the shape
+/// a bare assertion writes, which has neither an open `payload` nor a pair of
+/// operands to report.
+const LOCATION_TAIL: [u8; 3] = *b"}}\n";
+
+/// The kind `@assert` reports under, both spellings alike, so a consumer never
+/// has to know which one failed.
+const ASSERT_KIND: [u8; 6] = *b"assert";
 
 /// The pinned message each comparison kind reports.
 ///
@@ -285,6 +293,18 @@ fn comparison_message(kind: &[u8]) -> &'static [u8] {
     }
 }
 
+/// Write one `@assert` failure frame (spec 4.13:5d).
+///
+/// The kind is pinned rather than passed — `@assert` is the only producer — and
+/// the record ends at the location object: a bare assertion has no operands to
+/// report and nothing structured to put in the open `payload`, and an empty
+/// `payload` would claim otherwise.
+fn assert_frame(emit: &mut dyn FnMut(&[u8]), message: &[u8], file: &[u8], line: u32, column: u32) {
+    let mut writer = FrameWriter::new(emit);
+    failure_head(&mut writer, &ASSERT_KIND, message, file, line, column);
+    writer.raw(&LOCATION_TAIL);
+}
+
 /// Best-effort write of already-framed bytes to the inherited channel.
 fn emit_to_channel(bytes: &[u8]) {
     // Discarded deliberately: `EBADF` when the program was run by hand without
@@ -494,6 +514,79 @@ crate::define_runtime_implementation! {
 }
 
 crate::define_runtime_implementation! {
+    /// Report a failed `@assert`, then abort like any other trap.
+    ///
+    /// The `@assert` form of [`__rue_test_fail`] (spec 4.13:5d). It writes a
+    /// `failure` frame of kind `assert` carrying whatever location
+    /// [`__rue_test_failure_site`] staged, and then writes the pinned stderr
+    /// line the assertion has always written and exits 101.
+    ///
+    /// `@assert` has two pinned stderr forms rather than one, which is why the
+    /// form is a parameter instead of a second symbol. With `with_message`
+    /// zero, the message is not read at all: the frame carries the pinned
+    /// `assertion failed`, and so does stderr, through the same
+    /// [`crate::error::__rue_assert_failed`] the assertion used before it
+    /// reported anything. Otherwise the caller's text is both the frame's
+    /// message and `@panic`'s: `panic: {message}`. An empty message is
+    /// therefore still the message form — `@assert(c, "")` keeps printing
+    /// `panic: ` — because the form is stated, not inferred from the length.
+    ///
+    /// Both halves matter in different builds. Inside a test image the frame is
+    /// what the runner reads; in an ordinary executable there is no descriptor
+    /// 3, the frame write fails with `EBADF` as designed, and the pinned stderr
+    /// message is the whole report. `@assert` therefore lowers the same way
+    /// wherever it is written.
+    ///
+    /// # ABI
+    ///
+    /// ```text
+    /// extern "C" fn __rue_test_fail_assert(
+    ///     message_ptr: *const u8, message_len: u64, with_message: u32,
+    /// ) -> !
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// `message_ptr`/`message_len` must describe initialized bytes valid for
+    /// the call, or be null with a zero length.
+    pub unsafe extern "C" fn __rue_test_fail_assert(
+        message_ptr: *const u8,
+        message_len: u64,
+        with_message: u32,
+    ) -> ! {
+        // SAFETY: the caller guarantees the pair describes readable bytes.
+        let message = unsafe { view(message_ptr, message_len) };
+        let position = SITE_POSITION.load(Ordering::Relaxed);
+        // SAFETY: a staged site's bytes stay readable across the pair, and an
+        // unstaged one is the null-with-zero-length form `view` accepts.
+        let file = unsafe {
+            view(
+                SITE_FILE.load(Ordering::Relaxed) as *const u8,
+                SITE_FILE_LEN.load(Ordering::Relaxed),
+            )
+        };
+        let framed = if with_message == 0 {
+            &ASSERT_MESSAGE[..]
+        } else {
+            message
+        };
+        assert_frame(
+            &mut emit_to_channel,
+            framed,
+            file,
+            (position >> 32) as u32,
+            position as u32,
+        );
+        if with_message == 0 {
+            crate::error::__rue_assert_failed()
+        } else {
+            // SAFETY: `message` is a live borrow of the caller's bytes.
+            unsafe { crate::error::__rue_panic(message.as_ptr(), message.len() as u64) }
+        }
+    }
+}
+
+crate::define_runtime_implementation! {
     /// Write the pinned malformed-selector diagnostic to stderr and return.
     ///
     /// The dispatcher, not the runtime, owns the exit status for this case, so
@@ -643,6 +736,49 @@ mod tests {
              \"message\":\"assertion failed: left == right\",\
              \"location\":{\"file\":\"\",\"line\":0,\"column\":0},\
              \"left\":\"\",\"right\":\"\"}\n"
+        );
+    }
+
+    /// The `@assert` frame's field order, and the field it does not have: the
+    /// record ends at the location object, so a consumer reading `payload`
+    /// sees an absent field rather than an empty one that would claim the
+    /// assertion had something structured to say.
+    #[test]
+    fn assert_frame_ends_at_the_location_and_carries_no_payload() {
+        let bytes =
+            frame_bytes(|emit| assert_frame(emit, &ASSERT_MESSAGE, b"app/parser_tests.rue", 7, 3));
+        assert_eq!(
+            std::str::from_utf8(&bytes).unwrap(),
+            "{\"record\":\"failure\",\"schema\":\"1.0\",\"kind\":\"assert\",\
+             \"message\":\"assertion failed\",\
+             \"location\":{\"file\":\"app/parser_tests.rue\",\"line\":7,\"column\":3}}\n"
+        );
+    }
+
+    /// `@assert(cond, msg)` reports the user's text as the frame's message and
+    /// keeps the same shape: one kind for both forms, so a consumer never has
+    /// to know which spelling failed.
+    #[test]
+    fn an_assert_message_replaces_the_pinned_one_in_the_same_shape() {
+        let bytes = frame_bytes(|emit| assert_frame(emit, b"port must be free", b"a.rue", 12, 5));
+        assert_eq!(
+            std::str::from_utf8(&bytes).unwrap(),
+            "{\"record\":\"failure\",\"schema\":\"1.0\",\"kind\":\"assert\",\
+             \"message\":\"port must be free\",\
+             \"location\":{\"file\":\"a.rue\",\"line\":12,\"column\":5}}\n"
+        );
+    }
+
+    /// An assertion message is escaped by the same rule every other string is,
+    /// so user text containing a quote or a newline cannot break its frame.
+    #[test]
+    fn an_assert_message_is_escaped_like_every_other_string() {
+        let bytes = frame_bytes(|emit| assert_frame(emit, b"say \"hi\"\n", b"a.rue", 1, 1));
+        assert_eq!(
+            std::str::from_utf8(&bytes).unwrap(),
+            "{\"record\":\"failure\",\"schema\":\"1.0\",\"kind\":\"assert\",\
+             \"message\":\"say \\\"hi\\\"\\u000a\",\
+             \"location\":{\"file\":\"a.rue\",\"line\":1,\"column\":1}}\n"
         );
     }
 

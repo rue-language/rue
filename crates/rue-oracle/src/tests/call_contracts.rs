@@ -772,9 +772,14 @@ fn user_call_layout_is_rejected_before_unmodeled_operands_run() {
 
 #[test]
 fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
+    // A comptime-decidable `@assert_eq` is what still lowers to the conditional
+    // `assert` intrinsic: source `@assert` reports on the ADR-0083 §5.1 channel
+    // instead (RUE-1953), so it is a branch around two runtime calls and no
+    // longer an abort intrinsic to preflight. The intrinsic that remains takes
+    // its condition and nothing else.
     let source = r#"fn main() -> i32 {
         let entropy: u32 = @random_u32();
-        @assert(true, "ok");
+        @assert_eq(1, 1);
         @panic("stop");
         if entropy == 0 { 0 } else { 1 }
     }"#;
@@ -815,13 +820,13 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
             ),
             2 => (
                 assertion,
-                vec![assert_args[0], assert_args[1], random],
+                vec![assert_args[0], random],
                 Type::UNIT,
                 ContractViolationKind::IntrinsicArity,
             ),
             3 => (
                 assertion,
-                vec![random, assert_args[1]],
+                vec![random],
                 Type::UNIT,
                 ContractViolationKind::IntrinsicSignature,
             ),
@@ -872,15 +877,18 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
 
 #[test]
 fn abort_intrinsics_require_exact_runtime_value_shapes() {
+    // As above: the surviving `assert` intrinsic is the comptime-decidable
+    // comparison's, whose only operand is the condition. `@panic` is the one
+    // abort intrinsic that still carries text.
     let source = r#"fn main() -> i32 {
-        @assert(true, "ok");
+        @assert_eq(1, 1);
         @panic("stop");
         0
     }"#;
 
-    for name in ["panic", "assert"] {
+    {
         let state = query_cfg_state(source).expect("abort value-shape probe must compile");
-        let (cfg, intrinsic, args, _) = find_intrinsic_in_function(&state, "main", name);
+        let (cfg, intrinsic, args, _) = find_intrinsic_in_function(&state, "main", "panic");
         let mut interp = Interp {
             state: &state,
             stdout_trace: Vec::new(),
@@ -901,14 +909,13 @@ fn abort_intrinsics_require_exact_runtime_value_shapes() {
             param_places: HashMap::new(),
             place_return: false,
         };
-        let corrupted = if name == "panic" { args[0] } else { args[1] };
-        frame.cache.insert(corrupted.as_u32(), Value::Int(7));
+        frame.cache.insert(args[0].as_u32(), Value::Int(7));
 
         let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, intrinsic));
         assert_eq!(
             unsupported.kind(),
             UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
-            "@{name} must reject a non-text runtime value"
+            "@panic must reject a non-text runtime value"
         );
     }
 
@@ -1369,8 +1376,7 @@ fn every_source_intrinsic_operation_survives_semantic_export_import_and_cfg_buil
             let unsigned: u32 = 1;
             let wide_signed: i64 = -2;
             let wide_unsigned: u64 = 2;
-            @assert(true);
-            @assert(true, "ok");
+            @assert_eq(1, 1);
             @dbg(wide_signed);
             @dbg(wide_unsigned);
             @dbg(true);
@@ -1439,7 +1445,7 @@ fn every_source_intrinsic_operation_survives_semantic_export_import_and_cfg_buil
             }
         }
     }
-    assert_eq!(rue_air::IntrinsicOperation::ALL.len(), 46);
+    assert_eq!(rue_air::IntrinsicOperation::ALL.len(), 45);
     for operation in rue_air::IntrinsicOperation::ALL {
         if matches!(
             operation,

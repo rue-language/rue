@@ -113,8 +113,13 @@ fn provider_body_keeps_reserved_looking_source_intrinsics_unknown() {
 
 // Migrated from `tests::panic_is_never_and_assert_is_unit_in_air`: `@panic`
 // diverges (`!` result), `@assert` stays unit; the message operand's type
-// never changes the intrinsic result, and only unit trailing intrinsics
-// synthesize a return. The `diverge` callee crosses as a durable fact.
+// never changes that result, and only unit trailing assertions synthesize a
+// return. The `diverge` callee crosses as a durable fact.
+//
+// The two are different AIR shapes. `@panic` is one intrinsic. `@assert` is a
+// branch with no else whose then-arm reports the failure on the ADR-0083 §5.1
+// channel and aborts, so its result type is the branch's — and its failing arm
+// is a pair of runtime calls, not an intrinsic.
 #[test]
 fn provider_body_panic_is_never_and_assert_is_unit() {
     for (name, body_source, expected) in [
@@ -133,6 +138,7 @@ fn provider_body_panic_is_never_and_assert_is_unit() {
         ),
         ("never panic message", "@panic(diverge())", Type::NEVER),
     ] {
+        let asserts = expected == Type::UNIT;
         let mut fixture = ProviderFixture::new();
         fixture.declare_function("diverge", Vec::new(), SemanticImportType::Never);
         fixture.declare_function("probe", Vec::new(), SemanticImportType::Unit);
@@ -141,18 +147,23 @@ fn provider_body_panic_is_never_and_assert_is_unit() {
             .analyze(&source, "probe")
             .unwrap_or_else(|error| panic!("{name} must analyze: {error:?}"));
 
-        let intrinsic_types: Vec<_> = body
+        let result_types: Vec<_> = body
             .function
             .air
             .iter()
             .filter_map(|(_, inst)| {
-                matches!(inst.data, AirInstData::Intrinsic { .. }).then_some(inst.ty)
+                let selected = if asserts {
+                    matches!(inst.data, AirInstData::Branch { .. })
+                } else {
+                    matches!(inst.data, AirInstData::Intrinsic { .. })
+                };
+                selected.then_some(inst.ty)
             })
             .collect();
         assert_eq!(
-            intrinsic_types,
+            result_types,
             vec![expected],
-            "{name} intrinsic result must agree with HM"
+            "{name} result must agree with HM"
         );
         // A unit-valued trailing `@assert` still needs an implicit return; a
         // never-valued trailing `@panic` diverges, so no return is synthesized.
@@ -161,7 +172,7 @@ fn provider_body_panic_is_never_and_assert_is_unit() {
             .air
             .iter()
             .any(|(_, inst)| matches!(inst.data, AirInstData::Ret(_)));
-        if expected == Type::UNIT {
+        if asserts {
             assert!(has_ret, "{name}: a unit trailing intrinsic needs a return");
         } else {
             assert!(

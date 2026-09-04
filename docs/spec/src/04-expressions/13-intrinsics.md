@@ -171,9 +171,12 @@ and terminates with status 101, exactly as `@assert` does.
 
 Inside a test image the same failure is additionally reported as structured
 data: a record naming the failing kind, the intrinsic's source location, and
-both operands rendered as `left` and `right`. Ordinary builds are
-unaffected — the report goes to a descriptor a test runner supplies, and its
-absence is not an error. See
+both operands rendered as `left` and `right`. A failed `@assert` (4.13:5d) is
+reported the same way, naming the kind `assert`, the intrinsic's source
+location, and the message it wrote to standard error — the pinned
+`assertion failed`, or the supplied one. Ordinary builds are unaffected — the
+report goes to a descriptor a test runner supplies, and its absence is not an
+error. See
 [docs/process/test-events.md](https://github.com/rue-language/rue/blob/trunk/docs/process/test-events.md)
 for that surface, which is a tooling contract rather than a language rule.
 

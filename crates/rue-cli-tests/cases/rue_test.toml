@@ -50,8 +50,12 @@ compile_stdout_not_contains = ["FAIL", "PASS "]
 [[case]]
 name = "a_failed_assert_is_kind_assert_and_exits_one"
 description = """
-The pinned `assertion failed` message from `__rue_assert_failed` is what the
-`assert` kind is classified from; this case runs the real runtime path.
+`@assert` writes its own `failure` frame on the §5.1 channel (RUE-1953), so the
+`assert` kind comes from the frame rather than from the pinned `assertion
+failed` stderr line, and the location is the intrinsic's own — line 2, column 5
+— rather than the declaration header on line 1. This case runs the real runtime
+path; the stderr byte count pins that the message itself did not change. Object
+keys are alphabetical, so `location` follows `kind`.
 """
 files = [
     { path = "main.rue", source = """
@@ -70,11 +74,190 @@ test "two plus two is five" {
 args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
 compile_stdout_contains = [
-    '"failure":{"exit_code":101,"kind":"assert"',
-    '"message":"assertion failed"',
+    '"failure":{"exit_code":101,"kind":"assert","location":{"column":5,"file":"tests.rue","line":2}',
+    '"message":"assertion failed"}',
+    '"stderr":{"bytes_total":17,"data":"assertion failed\n","encoding":"utf8"}',
     '"verdict":"fail"',
     '"crash":0,"event":"run_finished","failed":1,"passed":0',
 ]
+
+[[case]]
+name = "an_assert_message_is_the_frames_message_under_the_same_kind"
+description = """
+`@assert(cond, "msg")` publishes the programmer's text as the frame's message
+under the same `assert` kind, so a consumer never has to know which spelling
+failed. Its stderr is unchanged and is `@panic`'s: `panic: <msg>` — which the
+sibling case above shows would classify as `trap:panic` on stderr alone. The
+frame is what makes it an assertion, and it carries the intrinsic's site.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "checks the port" {
+    let port: i32 = 0;
+    @assert(port != 0, "port must be assigned");
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"failure":{"exit_code":101,"kind":"assert","location":{"column":5,"file":"tests.rue","line":3}',
+    '"message":"port must be assigned"}',
+    '"stderr":{"bytes_total":29,"data":"panic: port must be assigned\n","encoding":"utf8"}',
+    '"verdict":"fail"',
+]
+
+[[case]]
+name = "each_bare_assert_in_one_body_names_its_own_line"
+description = """
+The gap RUE-1953 closed: several bare assertions in one body used to report the
+declaration header, because the kind was classified from stderr and stderr
+carries no site. The second assertion is the one that fails, and the record says
+so.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "several checks" {
+    @assert(1 + 1 == 2);
+    @assert(2 + 2 == 5);
+    @assert(3 + 3 == 6);
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"failure":{"exit_code":101,"kind":"assert","location":{"column":5,"file":"tests.rue","line":3}',
+    '"message":"assertion failed"}',
+]
+
+[[case]]
+name = "an_owned_assert_message_reports_its_own_length"
+description = """
+A `StrBuf` message is narrowed to a `{ptr, len}` view before it reaches the
+report, the same narrowing `@panic` performs (RUE-1066). The assertion used to
+hand the runtime the StrBuf header's first two slots — `buf` and `cap` — so
+`@assert(false, @to_string(8))` wrote `panic: 8` followed by the uninitialized
+remainder of a 16-byte buffer, while `@panic` on the same value was always
+correct. The captured stderr's byte count is what pins that the two now agree.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+
+test "formats its message" {
+    @assert(1 + 1 == 3, @to_string(8));
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"failure":{"exit_code":101,"kind":"assert","location":{"column":5,"file":"tests.rue","line":4}',
+    '"message":"8"}',
+    '"stderr":{"bytes_total":9,"data":"panic: 8\n","encoding":"utf8"}',
+]
+
+[[case]]
+name = "the_human_rendering_of_an_assert_names_its_message_and_site"
+description = """
+The default renderer reads the same record the event stream does, so a bare
+assertion prints `assert: assertion failed  (file:line:col)` and a message one
+prints its own text in the same shape.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "bare" {
+    @assert(2 + 2 == 5);
+}
+
+test "with a message" {
+    @assert(2 + 2 == 5, "arithmetic is broken");
+}
+""" },
+]
+args = ["test", "main.rue", "--preview", "test_declarations", "--seed", "1", "-j1"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    "assert: assertion failed  (tests.rue:2:5)",
+    "assert: arithmetic is broken  (tests.rue:6:5)",
+]
+
+[[case]]
+name = "an_ordinary_build_keeps_both_pinned_assert_messages"
+description = """
+`@assert` lowers the same way outside a test image (spec 4.13:5d): there is no
+descriptor 3, the frame write fails with `EBADF` as designed, and the pinned
+stderr message plus status 101 is the whole report. Adding the report changed
+neither message.
+"""
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @assert(1 + 1 == 3);
+    0
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["assertion failed"]
+
+[[case]]
+name = "an_ordinary_build_prints_an_assert_message_as_a_panic"
+description = "The message form's stderr is `@panic`'s, unchanged (spec 4.13:5d)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @assert(1 + 1 == 3, "why");
+    0
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["panic: why"]
+
+[[case]]
+name = "an_empty_assert_message_stays_the_message_form"
+description = """
+`@assert(cond, "")` is the message form with nothing in it, and still writes
+`@panic`'s bare `panic: ` line rather than collapsing into `assertion failed`.
+The runtime is told which form it is rather than inferring it from the message's
+length, and this is the case that would notice if that changed: the substring
+here is not one the bare form can produce.
+"""
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @assert(1 + 1 == 3, "");
+    0
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["panic: "]
 
 [[case]]
 name = "a_panicking_test_is_kind_trap_panic"

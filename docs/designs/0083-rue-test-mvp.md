@@ -684,6 +684,16 @@ companion project "rue test follow-ups" (§6).
       Pulled ahead of all deferred work deliberately: unstructured failure
       output is the primary agent token sink, and a runner that is
       agent-first in transport but prose in content has not met the bar.
+- [x] **Phase 2.6: `@assert` reports its own site** - RUE-1953. `@assert`
+      joins the family on the §5.1 channel through one further helper,
+      `__rue_test_fail_assert` (ABI version 5), so a test with several bare
+      assertions names the one that failed instead of the declaration
+      header. It lowers to a branch around the staging and terminal calls,
+      the same shape the comparison family uses and identically inside and
+      outside a test image; both pinned stderr forms and exit 101 are
+      unchanged (spec 4.13:5d). The dedicated message-carrying `@assert`
+      lowering retires with it: the conditional `assert` intrinsic now has
+      exactly one producer, a comptime-decidable comparison.
 
 ## Consequences
 

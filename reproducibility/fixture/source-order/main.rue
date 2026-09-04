@@ -18,6 +18,14 @@ fn identity(comptime T: type, value: T) -> T {
 
 fn main() -> i32 {
     let result = finish(rotate(identity(i32, 10)));
-    @assert(result == 11);
+    // `@bitCast` is the intrinsic witness for the stable-IR assertion in
+    // scripts/test-reproducible-output.sh: an intrinsic resolves to its own
+    // name where an ordinary call resolves to a module-qualified one. `@assert`
+    // used to serve that role and no longer belongs to the class — since
+    // RUE-1953 it resolves to the two ADR-0083 §5.1 channel helpers, which the
+    // same assertion pins as their own resolved class.
+    let bits: u32 = @bitCast(result);
+    let round_trip: i32 = @bitCast(bits);
+    @assert(round_trip == 11);
     result
 }

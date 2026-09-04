@@ -333,7 +333,6 @@ pub enum IntrinsicOperation {
     PanicNoMessage,
     Panic,
     AssertFailed,
-    AssertWithMessage,
     BoundsCheck,
     DebugI64,
     DebugU64,
@@ -381,11 +380,10 @@ pub enum IntrinsicOperation {
 impl IntrinsicOperation {
     /// Every semantic identity, kept in one place so consumers and tests can
     /// prove that dispatch remains exhaustive when a new intrinsic is added.
-    pub const ALL: [Self; 46] = [
+    pub const ALL: [Self; 45] = [
         Self::PanicNoMessage,
         Self::Panic,
         Self::AssertFailed,
-        Self::AssertWithMessage,
         Self::BoundsCheck,
         Self::DebugI64,
         Self::DebugU64,
@@ -436,8 +434,7 @@ impl IntrinsicOperation {
     pub const fn expected_spelling(self) -> &'static str {
         match self {
             Self::PanicNoMessage | Self::Panic => "panic",
-            Self::AssertFailed | Self::AssertWithMessage => "assert",
-            Self::BoundsCheck => "assert",
+            Self::AssertFailed | Self::BoundsCheck => "assert",
             Self::DebugI64 | Self::DebugU64 | Self::DebugBool | Self::DebugStr => "dbg",
             Self::ReadLine => "read_line",
             Self::ParseI32 => "parse_i32",
@@ -484,7 +481,6 @@ impl IntrinsicOperation {
             RuntimeCallKind::PanicNoMessage => Self::PanicNoMessage,
             RuntimeCallKind::Panic => Self::Panic,
             RuntimeCallKind::AssertFailed => Self::AssertFailed,
-            RuntimeCallKind::AssertWithMessage => Self::AssertWithMessage,
             RuntimeCallKind::BoundsCheck => Self::BoundsCheck,
             RuntimeCallKind::DebugI64 => Self::DebugI64,
             RuntimeCallKind::DebugU64 => Self::DebugU64,
@@ -525,14 +521,15 @@ impl IntrinsicOperation {
             // The ADR-0083 test channel has no intrinsic identity. The
             // dispatcher's own helpers are runner plumbing no source spelling
             // selects; the reporting helpers are reached by a test body's `?`
-            // and by `@assert_eq`/`@assert_ne`, which emit the calls directly
-            // rather than through an `IntrinsicOperation` — a comparison is a
-            // branch around a pair of calls, not one conditional runtime call.
+            // and by the assertion family, which emit the calls directly rather
+            // than through an `IntrinsicOperation` — an assertion is a branch
+            // around a pair of calls, not one conditional runtime call.
             | RuntimeCallKind::TestNormalizeProcess
             | RuntimeCallKind::TestComplete
             | RuntimeCallKind::TestFailureSite
             | RuntimeCallKind::TestFail
             | RuntimeCallKind::TestFailComparison
+            | RuntimeCallKind::TestFailAssert
             | RuntimeCallKind::TestUsageError => return None,
         })
     }
@@ -549,7 +546,6 @@ impl IntrinsicOperation {
             Self::PanicNoMessage => RuntimeCallKind::PanicNoMessage,
             Self::Panic => RuntimeCallKind::Panic,
             Self::AssertFailed => RuntimeCallKind::AssertFailed,
-            Self::AssertWithMessage => RuntimeCallKind::AssertWithMessage,
             Self::BoundsCheck => RuntimeCallKind::BoundsCheck,
             Self::ReadLine => RuntimeCallKind::ReadLine,
             Self::ParseI32 => RuntimeCallKind::ParseI32,
@@ -749,7 +745,6 @@ impl IntrinsicOperation {
             Self::PanicNoMessage
             | Self::Panic
             | Self::AssertFailed
-            | Self::AssertWithMessage
             | Self::BoundsCheck
             | Self::DebugI64
             | Self::DebugU64
@@ -789,11 +784,10 @@ mod tests {
     use std::collections::BTreeSet;
     use std::sync::Arc;
 
-    const EXACT_OPERATIONS: [(IntrinsicOperation, &str); 46] = [
+    const EXACT_OPERATIONS: [(IntrinsicOperation, &str); 45] = [
         (IntrinsicOperation::PanicNoMessage, "panic"),
         (IntrinsicOperation::Panic, "panic"),
         (IntrinsicOperation::AssertFailed, "assert"),
-        (IntrinsicOperation::AssertWithMessage, "assert"),
         (IntrinsicOperation::BoundsCheck, "assert"),
         (IntrinsicOperation::DebugI64, "dbg"),
         (IntrinsicOperation::DebugU64, "dbg"),
@@ -838,7 +832,7 @@ mod tests {
         (IntrinsicOperation::TotalCmp, "total_cmp"),
     ];
 
-    const EXACT_RUNTIME_MAPPINGS: [(IntrinsicOperation, RuntimeCallKind); 30] = [
+    const EXACT_RUNTIME_MAPPINGS: [(IntrinsicOperation, RuntimeCallKind); 29] = [
         (
             IntrinsicOperation::PanicNoMessage,
             RuntimeCallKind::PanicNoMessage,
@@ -847,10 +841,6 @@ mod tests {
         (
             IntrinsicOperation::AssertFailed,
             RuntimeCallKind::AssertFailed,
-        ),
-        (
-            IntrinsicOperation::AssertWithMessage,
-            RuntimeCallKind::AssertWithMessage,
         ),
         (
             IntrinsicOperation::BoundsCheck,
@@ -890,7 +880,7 @@ mod tests {
     // family, which sema selects from ordinary method calls, and the ADR-0083
     // test channel, which the synthesized dispatcher and the assertion sugar
     // emit as direct calls rather than through an `IntrinsicOperation`.
-    const ORDINARY_CALL_ONLY: [RuntimeCallKind; 17] = [
+    const ORDINARY_CALL_ONLY: [RuntimeCallKind; 18] = [
         RuntimeCallKind::StrByteAt,
         RuntimeCallKind::StrCharScalar,
         RuntimeCallKind::StrCharNext,
@@ -907,12 +897,13 @@ mod tests {
         RuntimeCallKind::TestFailureSite,
         RuntimeCallKind::TestFail,
         RuntimeCallKind::TestFailComparison,
+        RuntimeCallKind::TestFailAssert,
         RuntimeCallKind::TestUsageError,
     ];
 
     #[test]
     fn all_operations_are_unique_and_runtime_mapping_is_symmetric() {
-        assert_eq!(IntrinsicOperation::ALL.len(), 46);
+        assert_eq!(IntrinsicOperation::ALL.len(), 45);
         assert_eq!(
             IntrinsicOperation::ALL,
             EXACT_OPERATIONS.map(|(operation, _)| operation)
@@ -995,7 +986,7 @@ mod tests {
             .iter()
             .filter_map(|operation| operation.runtime_call_kind())
             .collect::<Vec<_>>();
-        assert_eq!(runtime.len(), 30);
+        assert_eq!(runtime.len(), 29);
         assert_eq!(
             IntrinsicOperation::ALL
                 .iter()
@@ -1009,7 +1000,7 @@ mod tests {
                 .enumerate()
                 .filter(|(index, kind)| !runtime[..*index].contains(kind))
                 .count(),
-            30
+            29
         );
         assert_eq!(
             runtime,
@@ -1690,11 +1681,6 @@ mod tests {
             (
                 IntrinsicOperation::AssertFailed,
                 vec![(Type::BOOL, n)],
-                Type::UNIT,
-            ),
-            (
-                IntrinsicOperation::AssertWithMessage,
-                vec![(Type::BOOL, n), (text, n)],
                 Type::UNIT,
             ),
             (

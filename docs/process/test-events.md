@@ -89,6 +89,7 @@ budget. Two record kinds exist in this version, and `failure` has two shapes:
 {"record":"complete","schema":"1.0"}
 {"record":"failure","schema":"1.0","kind":"...","message":"...","location":{"file":"...","line":0,"column":0},"payload":"..."}
 {"record":"failure","schema":"1.0","kind":"...","message":"...","location":{"file":"...","line":0,"column":0},"left":"...","right":"..."}
+{"record":"failure","schema":"1.0","kind":"assert","message":"...","location":{"file":"...","line":0,"column":0}}
 ```
 
 The `complete` record is written by the dispatcher's epilogue alone, after the
@@ -97,8 +98,11 @@ sugar and by the test-body `?` failure arm before aborting; `kind` is an open
 field, so a user assertion library's own kind is published verbatim rather than
 flattened (ADR-0083 §5.1).
 
-A `failure` record carries **either** `payload` or the pair `left`/`right`,
-never both. `payload` is the open, versioned extension point §5.1 reserves for
+A `failure` record carries **at most one of** `payload` and the pair
+`left`/`right`, and a bare `@assert` carries neither: its record ends at the
+location object, because it has no operands to report and nothing structured to
+put in the open field. `payload` is the open, versioned extension point §5.1
+reserves for
 an assertion library with something structured to say in one string.
 `left`/`right` is the shape a **comparison** assertion writes: they are the two
 operands in the order the source spelled them, so `@assert_eq(want, got)` reads
@@ -107,12 +111,20 @@ printer under the same rules and the same 4 KiB bound the test-body `?` payload
 uses. An empty rendering is a value and stays present as an empty string; a
 comparison is recognized by the fields' presence, not by parsing `kind`.
 
-`@assert_eq` and `@assert_ne` are the producers in this version, through the
-`__rue_test_fail_comparison` helper ([runtime-abi.md](../runtime-abi.md)). They
-are ordinary intrinsics, usable anywhere `@assert` is, and they lower the same
-way in a test image and in an ordinary executable — the only difference is that
-an ordinary process has no descriptor 3, so the frame write fails with `EBADF`
-as designed and the pinned stderr message is the whole report.
+`@assert_eq` and `@assert_ne` are the producers of that pair in this version,
+through the `__rue_test_fail_comparison` helper
+([runtime-abi.md](../runtime-abi.md)). They are ordinary intrinsics, usable
+anywhere `@assert` is, and they lower the same way in a test image and in an
+ordinary executable — the only difference is that an ordinary process has no
+descriptor 3, so the frame write fails with `EBADF` as designed and the pinned
+stderr message is the whole report.
+
+`@assert` reports through the same channel, with `__rue_test_fail_assert`, and
+under the same build-independent rule. Its record's `message` is the pinned
+`assertion failed` for `@assert(cond)` and the programmer's text for
+`@assert(cond, msg)`, so both spellings publish one kind and a consumer never
+has to know which was written. Both stderr forms are unchanged: `assertion
+failed` and `panic: {msg}` respectively, with status 101 (spec 4.13:5d).
 
 Writes are best-effort by design: an image run by hand has no descriptor 3, and
 `EBADF` there is expected rather than exceptional. The channel is **not a
@@ -203,7 +215,7 @@ consumers already handle instead of adding one.
 | `exit_code` | integer | The process's exit status. **Absent** when it did not exit normally. |
 | `signal` | integer | The signal that killed it. **Absent** otherwise. |
 | `location` | object | `{"file","line","column"}` — the test declaration's header, unless a failure frame carried its own site. |
-| `payload` | string | The channel's open payload. **Absent** when empty. |
+| `payload` | string | The channel's open payload. **Absent** when empty, and a bare `@assert` writes none. |
 | `left` | string | A comparison assertion's left operand, rendered. **Absent** on every other failure. |
 | `right` | string | Its right operand, rendered. Present exactly when `left` is. |
 | `diff` | array | The runner's diff from `left` to `right`. Present exactly when `left` is. |
@@ -340,7 +352,7 @@ of stderr, and the frames read from the failure channel.
 |---------|--------------|---------------|
 | `pass` | — | Exit `0` **and** a `complete` frame was read. |
 | `fail` | `incomplete` | Exit `0` with no `complete` frame. |
-| `fail` | `assert` | The last stderr line is exactly `assertion failed`. |
+| `fail` | `assert` | A `failure` frame from a failed `@assert`, carrying the intrinsic's own site and its message. Falls back to the last stderr line being exactly `assertion failed` — which is what a comptime-decidable `@assert_eq` still reports as, and what an older image writes. |
 | `fail` | `assert_eq` | A `failure` frame from a failed `@assert_eq`, carrying `left` and `right`. |
 | `fail` | `assert_ne` | The same, from a failed `@assert_ne`. |
 | `fail` | `trap:<class>` | The last stderr line is another pinned runtime message. |

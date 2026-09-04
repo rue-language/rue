@@ -836,10 +836,6 @@ mod tests {
             IntrinsicOperation::AssertFailed | IntrinsicOperation::BoundsCheck => {
                 vec![append(CfgInstData::BoolConst(false), Type::BOOL)]
             }
-            IntrinsicOperation::AssertWithMessage => vec![
-                append(CfgInstData::BoolConst(false), Type::BOOL),
-                append(CfgInstData::StringConst(0), str_ty),
-            ],
             IntrinsicOperation::DebugI64 => vec![append(CfgInstData::Const(7), Type::I64)],
             IntrinsicOperation::DebugU64 => vec![append(CfgInstData::Const(7), Type::U64)],
             IntrinsicOperation::DebugBool => {
@@ -1153,7 +1149,6 @@ mod tests {
             IntrinsicOperation::PanicNoMessage,
             IntrinsicOperation::Panic,
             IntrinsicOperation::AssertFailed,
-            IntrinsicOperation::AssertWithMessage,
             IntrinsicOperation::BoundsCheck,
             IntrinsicOperation::DebugI64,
             IntrinsicOperation::DebugU64,

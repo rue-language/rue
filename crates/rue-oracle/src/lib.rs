@@ -1205,7 +1205,6 @@ fn unsupported_intrinsic_kind_for_operation(
         rue_air::IntrinsicOperation::PanicNoMessage
         | rue_air::IntrinsicOperation::Panic
         | rue_air::IntrinsicOperation::AssertFailed
-        | rue_air::IntrinsicOperation::AssertWithMessage
         | rue_air::IntrinsicOperation::BoundsCheck
         | rue_air::IntrinsicOperation::DebugI64
         | rue_air::IntrinsicOperation::DebugU64
@@ -1240,7 +1239,6 @@ fn unsupported_runtime_call_kind(kind: RuntimeCallKind) -> Option<UnsupportedRun
         | RuntimeCallKind::Panic
         | RuntimeCallKind::PanicNoMessage
         | RuntimeCallKind::AssertFailed
-        | RuntimeCallKind::AssertWithMessage
         | RuntimeCallKind::BoundsCheck
         | RuntimeCallKind::ReadLine
         | RuntimeCallKind::ParseI32
@@ -1264,17 +1262,19 @@ fn unsupported_runtime_call_kind(kind: RuntimeCallKind) -> Option<UnsupportedRun
         | RuntimeCallKind::ByteMove
         | RuntimeCallKind::ByteSet
         // The ADR-0083 test channel. The dispatcher's own helpers belong to a
-        // test image, which the oracle never compiles. The reporting helpers
-        // are reachable in an ordinary program — `@assert_eq` lowers to them —
-        // but only after the rendering that precedes them, and that rendering
-        // opens with the allocation helper below, so the interpreter has
-        // already stopped at a registered gap by the time a channel call is
-        // evaluated.
+        // test image, which the oracle never compiles. Of the reporting helpers
+        // reachable in an ordinary program, the two `@assert` lowers to are
+        // modeled outright (`preflight_test_channel_call`), because nothing
+        // precedes them to stop at. `__rue_test_fail` and its comparison form
+        // are reached only after a rendering that opens with the allocation
+        // helper above, so the interpreter has already stopped at a registered
+        // gap by the time either is evaluated.
         | RuntimeCallKind::TestNormalizeProcess
         | RuntimeCallKind::TestComplete
         | RuntimeCallKind::TestFailureSite
         | RuntimeCallKind::TestFail
         | RuntimeCallKind::TestFailComparison
+        | RuntimeCallKind::TestFailAssert
         | RuntimeCallKind::TestUsageError => None,
     }
 }
@@ -1584,6 +1584,88 @@ impl<'a> Interp<'a> {
             generation: self.heap[alloc].generation,
             byte_offset: 0,
         }))
+    }
+
+    /// Whether `kind` is a §5.1 failure-channel call the interpreter models,
+    /// validating its whole static shape before an operand is evaluated.
+    ///
+    /// `@assert` lowers to the staging call and the terminal report in every
+    /// build, not only in a test image (spec 4.13:5d, ADR-0083), so an ordinary
+    /// corpus program reaches both — and, unlike the comparison family, with no
+    /// rendering in front of them to stop at. The channel itself is invisible
+    /// here: an ordinary process has no descriptor 3, so the frame write fails
+    /// with `EBADF` by design and what is left to model is the staging call's
+    /// absence of effect and the terminal call's pinned abort.
+    fn preflight_test_channel_call(
+        &self,
+        kind: RuntimeCallKind,
+        arg_types: &[Type],
+        arg_modes: &[CfgArgMode],
+        result_ty: Type,
+    ) -> Step<bool> {
+        let expected = match kind {
+            RuntimeCallKind::TestFailureSite => 3,
+            RuntimeCallKind::TestFailAssert => 2,
+            _ => return Ok(false),
+        };
+        let name = kind.helper().symbol();
+        if arg_types.len() != expected || arg_modes.len() != expected {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallArity),
+                format!("runtime call '{name}' arity"),
+            ));
+        }
+        if !arg_modes.iter().all(|mode| *mode == CfgArgMode::Normal) {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
+                format!("runtime call '{name}' argument mode"),
+            ));
+        }
+        let signature_matches = match kind {
+            RuntimeCallKind::TestFailureSite => {
+                self.is_str_like_type(arg_types[0])
+                    && arg_types[1] == Type::U32
+                    && arg_types[2] == Type::U32
+                    && result_ty == Type::UNIT
+            }
+            _ => {
+                self.is_str_like_type(arg_types[0])
+                    && arg_types[1] == Type::U32
+                    && result_ty == PANIC_CFG_RESULT_TYPE
+            }
+        };
+        if !signature_matches {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
+                format!("runtime call '{name}' signature"),
+            ));
+        }
+        Ok(true)
+    }
+
+    /// Execute one modeled failure-channel call.
+    ///
+    /// The staging call has no observable effect in an ordinary program, and
+    /// the terminal one writes exactly what spec 4.13:5d pins — the same two
+    /// messages, and the same two trap categories, the conditional `@assert`
+    /// intrinsic wrote before the report was added.
+    fn eval_test_channel_call(&mut self, kind: RuntimeCallKind, args: &[Value]) -> Step<Value> {
+        if kind == RuntimeCallKind::TestFailureSite {
+            return Ok(Value::Unit);
+        }
+        match args {
+            [_, Value::Int(0)] => {
+                self.abort_with_stderr(TrapKind::AssertionFailure, &[b"assertion failed\n"])
+            }
+            [message, Value::Int(_)] if Self::text_ptr_len(message).is_some() => {
+                let bytes = self.text_bytes(message)?;
+                self.abort_with_stderr(TrapKind::UserPanic, &[b"panic: ", &bytes, b"\n"])
+            }
+            _ => Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
+                "runtime call '__rue_test_fail_assert' runtime value shape",
+            )),
+        }
     }
 
     fn classify_unsupported_runtime_call_static(
@@ -2146,7 +2228,6 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::BitCast => args.len() == 1,
             rue_air::IntrinsicOperation::TotalCmp => args.len() == 2,
             rue_air::IntrinsicOperation::PanicNoMessage => args.is_empty(),
-            rue_air::IntrinsicOperation::AssertWithMessage => args.len() == 2,
         };
         if !arity_matches {
             return UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicArity);
@@ -2288,7 +2369,6 @@ impl<'a> Interp<'a> {
             rue_air::IntrinsicOperation::PanicNoMessage
             | rue_air::IntrinsicOperation::Panic
             | rue_air::IntrinsicOperation::AssertFailed
-            | rue_air::IntrinsicOperation::AssertWithMessage
             | rue_air::IntrinsicOperation::BoundsCheck
             | rue_air::IntrinsicOperation::DebugI64
             | rue_air::IntrinsicOperation::DebugU64
@@ -2319,8 +2399,7 @@ impl<'a> Interp<'a> {
             rue_air::IntrinsicOperation::PanicNoMessage | rue_air::IntrinsicOperation::Panic => {
                 AbortIntrinsic::Panic
             }
-            rue_air::IntrinsicOperation::AssertFailed
-            | rue_air::IntrinsicOperation::AssertWithMessage => AbortIntrinsic::Assert,
+            rue_air::IntrinsicOperation::AssertFailed => AbortIntrinsic::Assert,
             rue_air::IntrinsicOperation::BoundsCheck
             | rue_air::IntrinsicOperation::DebugI64
             | rue_air::IntrinsicOperation::DebugU64
@@ -2368,7 +2447,6 @@ impl<'a> Interp<'a> {
             rue_air::IntrinsicOperation::PanicNoMessage => args.is_empty(),
             rue_air::IntrinsicOperation::Panic => args.len() == 1,
             rue_air::IntrinsicOperation::AssertFailed => args.len() == 1,
-            rue_air::IntrinsicOperation::AssertWithMessage => args.len() == 2,
             rue_air::IntrinsicOperation::BoundsCheck
             | rue_air::IntrinsicOperation::DebugI64
             | rue_air::IntrinsicOperation::DebugU64
@@ -2427,13 +2505,11 @@ impl<'a> Interp<'a> {
                         || self.is_str_like_type(ty(0))
                         || self.is_owned_string_type(ty(0)))
             }
-            AbortIntrinsic::Assert => {
-                result_ty == Type::UNIT
-                    && ty(0) == Type::BOOL
-                    && (args.len() == 1
-                        || self.is_str_like_type(ty(1))
-                        || self.is_owned_string_type(ty(1)))
-            }
+            // The conditional `assert` intrinsic carries its condition and
+            // nothing else since `@assert` moved to the §5.1 report
+            // (RUE-1953); a comptime-decidable `@assert_eq` is what still
+            // produces it.
+            AbortIntrinsic::Assert => result_ty == Type::UNIT && ty(0) == Type::BOOL,
         };
         if !signature_matches {
             return Err(unsupported(
@@ -2508,26 +2584,16 @@ impl<'a> Interp<'a> {
                 _ => unreachable!("@panic arity was preflighted"),
             },
             AbortIntrinsic::Assert => {
-                let (condition, message) = match values.as_slice() {
-                    [Value::Bool(condition)] => (*condition, None),
-                    [Value::Bool(condition), message] if Self::text_ptr_len(message).is_some() => {
-                        (*condition, Some(self.text_bytes(message)?))
-                    }
-                    _ => {
-                        return Err(unsupported(
-                            UnsupportedKind::ContractViolation(
-                                ContractViolationKind::IntrinsicSignature,
-                            ),
-                            "intrinsic @assert runtime value shape",
-                        ));
-                    }
+                let [Value::Bool(condition)] = values.as_slice() else {
+                    return Err(unsupported(
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::IntrinsicSignature,
+                        ),
+                        "intrinsic @assert runtime value shape",
+                    ));
                 };
-                if condition {
+                if *condition {
                     Ok(Value::Unit)
-                } else if let Some(message) = message {
-                    // The message-carrying assertion uses the same runtime path
-                    // and trap category as `@panic(message)`.
-                    self.abort_with_stderr(TrapKind::UserPanic, &[b"panic: ", &message, b"\n"])
                 } else {
                     self.abort_with_stderr(TrapKind::AssertionFailure, &[b"assertion failed\n"])
                 }
@@ -2619,7 +2685,6 @@ impl<'a> Interp<'a> {
             rue_air::IntrinsicOperation::PanicNoMessage
             | rue_air::IntrinsicOperation::Panic
             | rue_air::IntrinsicOperation::AssertFailed
-            | rue_air::IntrinsicOperation::AssertWithMessage
             | rue_air::IntrinsicOperation::BoundsCheck
             | rue_air::IntrinsicOperation::ReadLine
             | rue_air::IntrinsicOperation::ParseI32
@@ -3892,45 +3957,56 @@ impl<'a> Interp<'a> {
                 } else {
                     false
                 };
-                let missing_call_kind = if !is_string_builtin && runtime.is_some() {
-                    let runtime = runtime.expect("checked above");
-                    // A compiler-synthesized body reaches the memory helpers as
-                    // runtime calls rather than through the `@alloc` /
-                    // `@byte_copy` intrinsics that name them: drop glue and the
-                    // ADR-0083 §1 structural printer are written directly in
-                    // semantic-body form, and the printer is what a failing
-                    // `@assert_eq` calls before it reports. The interpreter's
-                    // gap is the same one either way, so it is reported as that
-                    // intrinsic's gap — which a corpus case can register —
-                    // rather than as a missing function body, which is a
-                    // harness failure. It stops here rather than joining the
-                    // output calls below, which are unmodeled *and* executable;
-                    // there is nothing to execute for an unmodeled allocation.
-                    if let Some(operation) = rue_air::IntrinsicOperation::from_runtime_call(runtime)
-                    {
-                        let borrowed = unsupported_intrinsic_kind_for_operation(operation);
-                        if borrowed.model_gap().is_some() {
-                            return Err(unsupported(borrowed, format!("call to '{fname}'")));
-                        }
-                    }
-                    let kind = self.classify_unsupported_runtime_call_static(
-                        runtime, &arg_types, &arg_modes, ty,
-                    );
-                    if kind.model_gap().is_none() {
-                        return Err(unsupported(kind, format!("call to '{fname}'")));
-                    }
-                    Some(kind)
-                } else if !is_string_builtin && self.find_function(&fname).is_none() {
-                    return Err(unsupported(
-                        UnsupportedKind::ContractViolation(
-                            ContractViolationKind::MissingFunctionBody,
-                        ),
-                        format!("call to '{fname}'"),
-                    ));
+                let is_channel_call = if let Some(runtime) = runtime {
+                    !is_string_builtin
+                        && self.preflight_test_channel_call(*runtime, &arg_types, &arg_modes, ty)?
                 } else {
-                    None
+                    false
                 };
-                if !is_string_builtin && missing_call_kind.is_none() {
+                let missing_call_kind =
+                    if !is_string_builtin && !is_channel_call && runtime.is_some() {
+                        let runtime = runtime.expect("checked above");
+                        // A compiler-synthesized body reaches the memory helpers as
+                        // runtime calls rather than through the `@alloc` /
+                        // `@byte_copy` intrinsics that name them: drop glue and the
+                        // ADR-0083 §1 structural printer are written directly in
+                        // semantic-body form, and the printer is what a failing
+                        // `@assert_eq` calls before it reports. The interpreter's
+                        // gap is the same one either way, so it is reported as that
+                        // intrinsic's gap — which a corpus case can register —
+                        // rather than as a missing function body, which is a
+                        // harness failure. It stops here rather than joining the
+                        // output calls below, which are unmodeled *and* executable;
+                        // there is nothing to execute for an unmodeled allocation.
+                        if let Some(operation) =
+                            rue_air::IntrinsicOperation::from_runtime_call(runtime)
+                        {
+                            let borrowed = unsupported_intrinsic_kind_for_operation(operation);
+                            if borrowed.model_gap().is_some() {
+                                return Err(unsupported(borrowed, format!("call to '{fname}'")));
+                            }
+                        }
+                        let kind = self.classify_unsupported_runtime_call_static(
+                            runtime, &arg_types, &arg_modes, ty,
+                        );
+                        if kind.model_gap().is_none() {
+                            return Err(unsupported(kind, format!("call to '{fname}'")));
+                        }
+                        Some(kind)
+                    } else if !is_string_builtin
+                        && !is_channel_call
+                        && self.find_function(&fname).is_none()
+                    {
+                        return Err(unsupported(
+                            UnsupportedKind::ContractViolation(
+                                ContractViolationKind::MissingFunctionBody,
+                            ),
+                            format!("call to '{fname}'"),
+                        ));
+                    } else {
+                        None
+                    };
+                if !is_string_builtin && !is_channel_call && missing_call_kind.is_none() {
                     let callee = &*self.state.functions[self
                         .find_function(&fname)
                         .expect("a present user call has a CFG body")]
@@ -3977,6 +4053,11 @@ impl<'a> Interp<'a> {
                         ty,
                     )?
                     .expect("preflight recognized this String builtin")
+                } else if is_channel_call {
+                    self.eval_test_channel_call(
+                        runtime.expect("typed runtime channel call"),
+                        &argvals,
+                    )?
                 } else if missing_call_kind.is_some() {
                     let runtime = runtime.expect("typed runtime output call");
                     // Static validation above establishes the compiler/runtime
@@ -4043,8 +4124,7 @@ impl<'a> Interp<'a> {
                     }
                     rue_air::IntrinsicOperation::PanicNoMessage
                     | rue_air::IntrinsicOperation::Panic
-                    | rue_air::IntrinsicOperation::AssertFailed
-                    | rue_air::IntrinsicOperation::AssertWithMessage => {
+                    | rue_air::IntrinsicOperation::AssertFailed => {
                         let Some(intrinsic) =
                             self.preflight_abort_intrinsic(cfg, *operation, &args, ty)?
                         else {
@@ -6515,7 +6595,6 @@ impl<'a> Interp<'a> {
             rue_air::IntrinsicOperation::PanicNoMessage
             | rue_air::IntrinsicOperation::Panic
             | rue_air::IntrinsicOperation::AssertFailed
-            | rue_air::IntrinsicOperation::AssertWithMessage
             | rue_air::IntrinsicOperation::BoundsCheck
             | rue_air::IntrinsicOperation::DebugI64
             | rue_air::IntrinsicOperation::DebugU64
