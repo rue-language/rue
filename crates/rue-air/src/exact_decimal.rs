@@ -22,7 +22,58 @@ pub fn finite_float_literal_bits(text: &str, ty: Type) -> Option<u64> {
     }
 }
 
+/// Convert the text of a compile-time float *value* to its bit pattern at `ty`.
+///
+/// Unlike [`finite_float_literal_bits`], which guards a source literal, this
+/// accepts the non-finite spellings a compile-time operation can legitimately
+/// produce (`inf`, `-inf`, `NaN`) and a leading sign, because a computed
+/// value carries whatever IEEE-754 arithmetic yielded. The text is the
+/// shortest round-trip rendering at `ty` (see [`render_float_bits`]), so
+/// parsing it back at the same width is exact.
+#[must_use]
+pub fn float_value_bits(text: &str, ty: Type) -> Option<u64> {
+    match ty {
+        Type::F32 => text
+            .parse::<f32>()
+            .ok()
+            .map(|value| u64::from(value.to_bits())),
+        Type::F64 => text.parse::<f64>().ok().map(f64::to_bits),
+        _ => None,
+    }
+}
+
+/// Render a float bit pattern at `ty` as its shortest round-trip decimal text,
+/// the value form compile-time evaluation stores for a computed float.
+///
+/// A NaN renders as the canonical `NaN` regardless of sign or payload:
+/// compile-time evaluation runs on the build host, whose NaN sign bit is an
+/// accident of that host's hardware, and a compiler must produce the same
+/// program everywhere. At run time the same operation's NaN sign is
+/// target-defined (spec 3.12).
+#[must_use]
+pub fn render_float_bits(bits: u64, ty: Type) -> String {
+    let mut buffer = zmij::Buffer::new();
+    match ty {
+        Type::F32 => {
+            let value = f32::from_bits(bits as u32);
+            if value.is_nan() {
+                return "NaN".to_owned();
+            }
+            buffer.format(value).to_owned()
+        }
+        Type::F64 => {
+            let value = f64::from_bits(bits);
+            if value.is_nan() {
+                return "NaN".to_owned();
+            }
+            buffer.format(value).to_owned()
+        }
+        _ => unreachable!("render_float_bits requires a float type"),
+    }
+}
+
 /// Convert a lexer-owned unsigned literal while applying a source unary sign.
+
 #[must_use]
 pub fn finite_float_literal_bits_with_sign(text: &str, ty: Type, negative: bool) -> Option<u64> {
     let bits = finite_float_literal_bits(text, ty)?;

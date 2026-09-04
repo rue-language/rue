@@ -13,7 +13,7 @@ fn main() -> i32 {
     @float_to_int(sum9(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0))
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "--target", "x86-64-linux", "-o", "prog"]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
 executable_target = "x86-64-linux"
 execute_if_native = true
 exit_code = 45
@@ -28,7 +28,7 @@ fn main() -> i32 {
     @float_to_int(sum9(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0))
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "--target", "aarch64-linux", "-o", "prog"]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
 executable_target = "aarch64-linux"
 execute_if_native = true
 exit_code = 45
@@ -43,7 +43,7 @@ fn main() -> i32 {
     @float_to_int(narrowed)
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 3
 
 [[case]]
@@ -56,7 +56,7 @@ fn main() -> i32 {
     @float_to_int(across_call + returned)
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 4
 
 [[case]]
@@ -69,7 +69,7 @@ fn main() -> i32 {
         && !(nan > zero) && !(nan >= zero) { 7 } else { 99 }
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 7
 
 [[case]]
@@ -80,21 +80,21 @@ fn main() -> i32 {
     @float_to_int(zero / zero)
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 runtime_error_contains = ["integer overflow"]
 exit_code = 101
 
 [[case]]
 name = "native_float_to_i32_upper_boundary_traps"
 files = [{ path = "main.rue", source = "fn main() -> i32 { @float_to_int(2147483648.0) }" }]
-args = ["--preview", "floats", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 runtime_error_contains = ["integer overflow"]
 exit_code = 101
 
 [[case]]
 name = "native_float_to_i32_lower_boundary_is_inclusive"
 files = [{ path = "main.rue", source = "fn main() -> i32 { @float_to_int(-2147483648.0) }" }]
-args = ["--preview", "floats", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 0
 
 [[case]]
@@ -103,7 +103,7 @@ files = [{ path = "main.rue", source = """
 fn choose(flag: bool) -> f64 { if flag { 3.0 } else { 9.0 } }
 fn main() -> i32 { @float_to_int(choose(true)) }
 """ }]
-args = ["--preview", "floats", "main.rue", "--target", "x86-64-linux", "-o", "prog"]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
 executable_target = "x86-64-linux"
 execute_if_native = true
 exit_code = 3
@@ -114,7 +114,7 @@ files = [{ path = "main.rue", source = """
 fn choose(flag: bool) -> f64 { if flag { 3.0 } else { 9.0 } }
 fn main() -> i32 { @float_to_int(choose(true)) }
 """ }]
-args = ["--preview", "floats", "main.rue", "--target", "aarch64-linux", "-o", "prog"]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
 executable_target = "aarch64-linux"
 execute_if_native = true
 exit_code = 3
@@ -127,7 +127,7 @@ fn pick(_left: f64, right: i32, a: f32, b: i32, c: f64) -> i32 {
 }
 fn main() -> i32 { pick(1.0, 32, 2.0, 3, 5.0) }
 """ }]
-args = ["--preview", "floats", "main.rue", "--target", "x86-64-linux", "-o", "prog"]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
 executable_target = "x86-64-linux"
 execute_if_native = true
 exit_code = 42
@@ -140,7 +140,7 @@ fn pick(_left: f64, right: i32, a: f32, b: i32, c: f64) -> i32 {
 }
 fn main() -> i32 { pick(1.0, 32, 2.0, 3, 5.0) }
 """ }]
-args = ["--preview", "floats", "main.rue", "--target", "aarch64-linux", "-o", "prog"]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
 executable_target = "aarch64-linux"
 execute_if_native = true
 exit_code = 42
@@ -163,7 +163,7 @@ fn main() -> i32 {
     }
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 9
 
 [[case]]
@@ -177,7 +177,7 @@ fn main() -> i32 {
     tail(1,1.0,2,2.0,3,3.0,4,4.0,5,5.0,6,6.0,7,7.0,8,8.0,19,23.0)
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "--target", "x86-64-linux", "-o", "prog"]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
 executable_target = "x86-64-linux"
 execute_if_native = true
 exit_code = 42
@@ -193,7 +193,7 @@ fn main() -> i32 {
     tail(1,1.0,2,2.0,3,3.0,4,4.0,5,5.0,6,6.0,7,7.0,8,8.0,19,23.0)
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "--target", "aarch64-linux", "-o", "prog"]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
 executable_target = "aarch64-linux"
 execute_if_native = true
 exit_code = 42
@@ -212,7 +212,7 @@ fn main() -> i32 {
     @float_to_int(@float_cast(pair.small) + pair.wide + values[0] + values[1])
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 17
 
 [[case]]
@@ -228,7 +228,7 @@ fn main() -> i32 {
     @float_to_int(values[0])
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "--target", "aarch64-linux", "-o", "prog"]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
 executable_target = "aarch64-linux"
 execute_if_native = true
 exit_code = 7
@@ -247,7 +247,7 @@ fn main() -> i32 {
     if a == b && !(a != b) && n != n && !(n == n) { 11 } else { 99 }
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 11
 
 [[case]]
@@ -267,7 +267,7 @@ fn main() -> i32 {
     @float_to_int(sum) + if nan != nan { 1 } else { 90 }
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "--target", "x86-64-linux", "-o", "prog"]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
 executable_target = "x86-64-linux"
 execute_if_native = true
 exit_code = 8
@@ -289,7 +289,7 @@ fn main() -> i32 {
     @float_to_int(sum) + if nan != nan { 1 } else { 90 }
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "--target", "aarch64-linux", "-o", "prog"]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
 executable_target = "aarch64-linux"
 execute_if_native = true
 exit_code = 8
@@ -310,7 +310,7 @@ fn main() -> i32 {
     @float_to_int(before + @float_cast(small) + wide)
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "--target", "x86-64-linux", "-o", "prog"]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
 executable_target = "x86-64-linux"
 execute_if_native = true
 exit_code = 13
@@ -331,7 +331,7 @@ fn main() -> i32 {
     @float_to_int(before + @float_cast(small) + wide)
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "--target", "aarch64-linux", "-o", "prog"]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
 executable_target = "aarch64-linux"
 execute_if_native = true
 exit_code = 13
@@ -377,7 +377,7 @@ fn main() -> i32 {
         + memory + if nan != nan && !(nan == nan) { 1 } else { 90 }
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "--target", "x86-64-linux", "-o", "prog"]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
 executable_target = "x86-64-linux"
 execute_if_native = true
 exit_code = 43
@@ -423,7 +423,675 @@ fn main() -> i32 {
         + memory + if nan != nan && !(nan == nan) { 1 } else { 90 }
 }
 """ }]
-args = ["--preview", "floats", "main.rue", "--target", "aarch64-linux", "-o", "prog"]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
 executable_target = "aarch64-linux"
 execute_if_native = true
 exit_code = 43
+
+# ---------------------------------------------------------------------------
+# ADR-0065 §4, §7, §8: unsigned conversions, integral rounding, square root,
+# and IEEE total ordering. The same program runs on both targets; a NaN's sign
+# bit is the one target-dependent observable (x86-64's default NaN is negative,
+# AArch64's positive), so the total-order checks compare NaN only against
+# itself and against a value whose ordering does not depend on that bit.
+# ---------------------------------------------------------------------------
+
+
+[[case]]
+name = "x86-64-linux_rounding_sqrt_and_total_order"
+files = [{ path = "main.rue", source = """
+fn check(cond: bool, id: i32) -> i32 { if cond { 0 } else { id } }
+fn main() -> i32 {
+    let mut bad: i32 = 0;
+    let zero: f64 = 0.0;
+    let nan: f64 = zero / zero;
+    let inf: f64 = 1.0 / zero;
+    if bad == 0 { bad = check(@floor(2.7) == 2.0, 1); }
+    if bad == 0 { bad = check(@floor(-2.2) == -3.0, 2); }
+    if bad == 0 { bad = check(@ceil(2.2) == 3.0, 3); }
+    if bad == 0 { bad = check(@ceil(-2.7) == -2.0, 4); }
+    if bad == 0 { bad = check(@trunc(2.7) == 2.0, 5); }
+    if bad == 0 { bad = check(@trunc(-2.7) == -2.0, 6); }
+    if bad == 0 { bad = check(@round(2.5) == 3.0, 7); }
+    if bad == 0 { bad = check(@round(-2.5) == -3.0, 8); }
+    if bad == 0 { bad = check(@round(2.4) == 2.0, 9); }
+    if bad == 0 { bad = check(@round(-2.4) == -2.0, 10); }
+    if bad == 0 { bad = check(@round(0.49999999999999994) == 0.0, 11); }
+    if bad == 0 { bad = check(@round(inf) == inf, 12); }
+    if bad == 0 { bad = check(@round(nan) != @round(nan), 13); }
+    if bad == 0 { bad = check(@sqrt(9.0) == 3.0, 14); }
+    if bad == 0 { bad = check(@sqrt(-1.0) != @sqrt(-1.0), 15); }
+    let big: f64 = 4503599627370497.0;
+    if bad == 0 { bad = check(@round(big) == big, 16); }
+    let neg_small: f64 = -0.25;
+    if bad == 0 { bad = check(1.0 / @round(neg_small) == -inf, 17); }
+    if bad == 0 { bad = check(1.0 / @ceil(neg_small) == -inf, 18); }
+    if bad == 0 { bad = check(1.0 / @trunc(neg_small) == -inf, 19); }
+    if bad == 0 { bad = check(@floor(neg_small) == -1.0, 20); }
+    let pz: f64 = 0.0;
+    let nz: f64 = -0.0;
+    if bad == 0 { bad = check(@total_cmp(nz, pz) == -1, 21); }
+    if bad == 0 { bad = check(@total_cmp(pz, nz) == 1, 22); }
+    if bad == 0 { bad = check(@total_cmp(pz, pz) == 0, 23); }
+    if bad == 0 { bad = check(@total_cmp(nan, nan) == 0, 24); }
+    if bad == 0 { bad = check(@total_cmp(nan, inf) * @total_cmp(-nan, -inf) == -1, 25); }
+    if bad == 0 { bad = check(@total_cmp(1.5, 2.5) == -1, 26); }
+    if bad == 0 { bad = check(@total_cmp(-1.5, -2.5) == 1, 27); }
+    if bad == 0 { bad = check(@total_cmp(-inf, inf) == -1, 28); }
+    let f32v: f32 = -2.5;
+    if bad == 0 { bad = check(@round(f32v) == -3.0, 42); }
+    if bad == 0 { bad = check(@floor(f32v) == -3.0, 43); }
+    if bad == 0 { bad = check(@ceil(f32v) == -2.0, 44); }
+    if bad == 0 { bad = check(@trunc(f32v) == -2.0, 45); }
+    if bad == 0 { bad = check(@sqrt(f32v * f32v) == 2.5, 46); }
+    let f32nz: f32 = -0.0;
+    let f32pz: f32 = 0.0;
+    if bad == 0 { bad = check(@total_cmp(f32nz, f32pz) == -1, 47); }
+    if bad == 0 { bad = check(@total_cmp(f32pz, f32nz) == 1, 48); }
+    bad
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 0
+
+[[case]]
+name = "aarch64-linux_rounding_sqrt_and_total_order"
+files = [{ path = "main.rue", source = """
+fn check(cond: bool, id: i32) -> i32 { if cond { 0 } else { id } }
+fn main() -> i32 {
+    let mut bad: i32 = 0;
+    let zero: f64 = 0.0;
+    let nan: f64 = zero / zero;
+    let inf: f64 = 1.0 / zero;
+    if bad == 0 { bad = check(@floor(2.7) == 2.0, 1); }
+    if bad == 0 { bad = check(@floor(-2.2) == -3.0, 2); }
+    if bad == 0 { bad = check(@ceil(2.2) == 3.0, 3); }
+    if bad == 0 { bad = check(@ceil(-2.7) == -2.0, 4); }
+    if bad == 0 { bad = check(@trunc(2.7) == 2.0, 5); }
+    if bad == 0 { bad = check(@trunc(-2.7) == -2.0, 6); }
+    if bad == 0 { bad = check(@round(2.5) == 3.0, 7); }
+    if bad == 0 { bad = check(@round(-2.5) == -3.0, 8); }
+    if bad == 0 { bad = check(@round(2.4) == 2.0, 9); }
+    if bad == 0 { bad = check(@round(-2.4) == -2.0, 10); }
+    if bad == 0 { bad = check(@round(0.49999999999999994) == 0.0, 11); }
+    if bad == 0 { bad = check(@round(inf) == inf, 12); }
+    if bad == 0 { bad = check(@round(nan) != @round(nan), 13); }
+    if bad == 0 { bad = check(@sqrt(9.0) == 3.0, 14); }
+    if bad == 0 { bad = check(@sqrt(-1.0) != @sqrt(-1.0), 15); }
+    let big: f64 = 4503599627370497.0;
+    if bad == 0 { bad = check(@round(big) == big, 16); }
+    let neg_small: f64 = -0.25;
+    if bad == 0 { bad = check(1.0 / @round(neg_small) == -inf, 17); }
+    if bad == 0 { bad = check(1.0 / @ceil(neg_small) == -inf, 18); }
+    if bad == 0 { bad = check(1.0 / @trunc(neg_small) == -inf, 19); }
+    if bad == 0 { bad = check(@floor(neg_small) == -1.0, 20); }
+    let pz: f64 = 0.0;
+    let nz: f64 = -0.0;
+    if bad == 0 { bad = check(@total_cmp(nz, pz) == -1, 21); }
+    if bad == 0 { bad = check(@total_cmp(pz, nz) == 1, 22); }
+    if bad == 0 { bad = check(@total_cmp(pz, pz) == 0, 23); }
+    if bad == 0 { bad = check(@total_cmp(nan, nan) == 0, 24); }
+    if bad == 0 { bad = check(@total_cmp(nan, inf) * @total_cmp(-nan, -inf) == -1, 25); }
+    if bad == 0 { bad = check(@total_cmp(1.5, 2.5) == -1, 26); }
+    if bad == 0 { bad = check(@total_cmp(-1.5, -2.5) == 1, 27); }
+    if bad == 0 { bad = check(@total_cmp(-inf, inf) == -1, 28); }
+    let f32v: f32 = -2.5;
+    if bad == 0 { bad = check(@round(f32v) == -3.0, 42); }
+    if bad == 0 { bad = check(@floor(f32v) == -3.0, 43); }
+    if bad == 0 { bad = check(@ceil(f32v) == -2.0, 44); }
+    if bad == 0 { bad = check(@trunc(f32v) == -2.0, 45); }
+    if bad == 0 { bad = check(@sqrt(f32v * f32v) == 2.5, 46); }
+    let f32nz: f32 = -0.0;
+    let f32pz: f32 = 0.0;
+    if bad == 0 { bad = check(@total_cmp(f32nz, f32pz) == -1, 47); }
+    if bad == 0 { bad = check(@total_cmp(f32pz, f32nz) == 1, 48); }
+    bad
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 0
+
+[[case]]
+name = "x86-64-linux_unsigned_conversions_round_once"
+files = [{ path = "main.rue", source = """
+fn check(cond: bool, id: i32) -> i32 { if cond { 0 } else { id } }
+fn main() -> i32 {
+    let mut bad: i32 = 0;
+    let all_ones: u64 = 18446744073709551615;
+    let widened: f64 = @int_to_float(all_ones);
+    if bad == 0 { bad = check(widened == 18446744073709551616.0, 1); }
+    // 2^63 + 1 rounds down to 2^63; 2^63 + 2049 rounds up past the half ulp.
+    let just_over: u64 = 9223372036854775809;
+    if bad == 0 { bad = check(@int_to_float(just_over) == 9223372036854775808.0, 2); }
+    let sticky: u64 = 9223372036854777857;
+    let sticky_f: f64 = @int_to_float(sticky);
+    if bad == 0 { bad = check(sticky_f == 9223372036854777856.0, 3); }
+    let u32v: u32 = 4294967295;
+    if bad == 0 { bad = check(@int_to_float(u32v) == 4294967295.0, 4); }
+    let u8v: u8 = 255;
+    let u8f: f32 = @int_to_float(u8v);
+    if bad == 0 { bad = check(u8f == 255.0, 5); }
+    let u16v: u16 = 65535;
+    if bad == 0 { bad = check(@int_to_float(u16v) == 65535.0, 6); }
+    let narrow: f32 = @int_to_float(all_ones);
+    if bad == 0 { bad = check(narrow == 18446744073709551616.0, 7); }
+    let f: f64 = 4294967295.0;
+    let back: u32 = @float_to_int(f);
+    if bad == 0 { bad = check(back == 4294967295, 8); }
+    // Truncation toward zero lands in range even though the operand is negative.
+    let neg_half: f64 = -0.5;
+    let z: u32 = @float_to_int(neg_half);
+    if bad == 0 { bad = check(z == 0, 9); }
+    let below_max: f64 = 18446744073709549568.0;
+    let hu: u64 = @float_to_int(below_max);
+    if bad == 0 { bad = check(hu == 18446744073709549568, 10); }
+    let two63: f64 = 9223372036854775808.0;
+    let mu: u64 = @float_to_int(two63);
+    if bad == 0 { bad = check(mu == 9223372036854775808, 11); }
+    let small: f64 = 123.9;
+    let su: u64 = @float_to_int(small);
+    if bad == 0 { bad = check(su == 123, 12); }
+    let b8: u8 = @float_to_int(255.9);
+    if bad == 0 { bad = check(b8 == 255, 13); }
+    let two63_f32: f32 = 9223372036854775808.0;
+    let mu32: u64 = @float_to_int(two63_f32);
+    if bad == 0 { bad = check(mu32 == 9223372036854775808, 14); }
+    // A signed operand just below MIN still truncates to MIN.
+    let low: f64 = -2147483648.5;
+    let li: i32 = @float_to_int(low);
+    if bad == 0 { bad = check(li == -2147483648, 15); }
+    bad
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 0
+
+[[case]]
+name = "aarch64-linux_unsigned_conversions_round_once"
+files = [{ path = "main.rue", source = """
+fn check(cond: bool, id: i32) -> i32 { if cond { 0 } else { id } }
+fn main() -> i32 {
+    let mut bad: i32 = 0;
+    let all_ones: u64 = 18446744073709551615;
+    let widened: f64 = @int_to_float(all_ones);
+    if bad == 0 { bad = check(widened == 18446744073709551616.0, 1); }
+    // 2^63 + 1 rounds down to 2^63; 2^63 + 2049 rounds up past the half ulp.
+    let just_over: u64 = 9223372036854775809;
+    if bad == 0 { bad = check(@int_to_float(just_over) == 9223372036854775808.0, 2); }
+    let sticky: u64 = 9223372036854777857;
+    let sticky_f: f64 = @int_to_float(sticky);
+    if bad == 0 { bad = check(sticky_f == 9223372036854777856.0, 3); }
+    let u32v: u32 = 4294967295;
+    if bad == 0 { bad = check(@int_to_float(u32v) == 4294967295.0, 4); }
+    let u8v: u8 = 255;
+    let u8f: f32 = @int_to_float(u8v);
+    if bad == 0 { bad = check(u8f == 255.0, 5); }
+    let u16v: u16 = 65535;
+    if bad == 0 { bad = check(@int_to_float(u16v) == 65535.0, 6); }
+    let narrow: f32 = @int_to_float(all_ones);
+    if bad == 0 { bad = check(narrow == 18446744073709551616.0, 7); }
+    let f: f64 = 4294967295.0;
+    let back: u32 = @float_to_int(f);
+    if bad == 0 { bad = check(back == 4294967295, 8); }
+    // Truncation toward zero lands in range even though the operand is negative.
+    let neg_half: f64 = -0.5;
+    let z: u32 = @float_to_int(neg_half);
+    if bad == 0 { bad = check(z == 0, 9); }
+    let below_max: f64 = 18446744073709549568.0;
+    let hu: u64 = @float_to_int(below_max);
+    if bad == 0 { bad = check(hu == 18446744073709549568, 10); }
+    let two63: f64 = 9223372036854775808.0;
+    let mu: u64 = @float_to_int(two63);
+    if bad == 0 { bad = check(mu == 9223372036854775808, 11); }
+    let small: f64 = 123.9;
+    let su: u64 = @float_to_int(small);
+    if bad == 0 { bad = check(su == 123, 12); }
+    let b8: u8 = @float_to_int(255.9);
+    if bad == 0 { bad = check(b8 == 255, 13); }
+    let two63_f32: f32 = 9223372036854775808.0;
+    let mu32: u64 = @float_to_int(two63_f32);
+    if bad == 0 { bad = check(mu32 == 9223372036854775808, 14); }
+    // A signed operand just below MIN still truncates to MIN.
+    let low: f64 = -2147483648.5;
+    let li: i32 = @float_to_int(low);
+    if bad == 0 { bad = check(li == -2147483648, 15); }
+    bad
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 0
+
+[[case]]
+name = "native_float_to_u32_below_minus_one_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let f: f64 = -1.0;
+    let n: u32 = @float_to_int(f);
+    @intCast(n)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+runtime_error_contains = ["integer overflow"]
+exit_code = 101
+
+[[case]]
+name = "native_float_to_u32_at_two_pow_32_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let f: f64 = 4294967296.0;
+    let n: u32 = @float_to_int(f);
+    @intCast(n)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+runtime_error_contains = ["integer overflow"]
+exit_code = 101
+
+[[case]]
+name = "native_float_to_u64_at_two_pow_64_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let f: f64 = 18446744073709551616.0;
+    let n: u64 = @float_to_int(f);
+    @intCast(n)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+runtime_error_contains = ["integer overflow"]
+exit_code = 101
+
+[[case]]
+name = "native_float_to_u8_at_256_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let f: f32 = 256.0;
+    let n: u8 = @float_to_int(f);
+    @intCast(n)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+runtime_error_contains = ["integer overflow"]
+exit_code = 101
+
+[[case]]
+name = "native_float_to_i32_at_minus_two_pow_31_minus_one_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let f: f64 = -2147483649.0;
+    let n: i32 = @float_to_int(f);
+    @intCast(n)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+runtime_error_contains = ["integer overflow"]
+exit_code = 101
+
+[[case]]
+name = "native_f32_to_i32_below_min_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let f: f32 = -2147483904.0;
+    let n: i32 = @float_to_int(f);
+    @intCast(n)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+runtime_error_contains = ["integer overflow"]
+exit_code = 101
+
+[[case]]
+name = "native_float_to_u64_negative_infinity_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let f: f64 = -1.0 / 0.0;
+    let n: u64 = @float_to_int(f);
+    @intCast(n)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+runtime_error_contains = ["integer overflow"]
+exit_code = 101
+
+# `f32`/`f64` are identifiers rather than lexer keywords, so a float type
+# passed as a `comptime T: type` argument reaches inference as a variable
+# reference. Inference resolved such a reference only against type parameters
+# and user structs/enums, left `T` unsubstituted, and reported a bogus
+# "expected comptime_float, found type" against a `-> T` return used in a
+# binary operation with a float literal.
+[[case]]
+name = "native_float_type_argument_to_generic_call"
+files = [{ path = "main.rue", source = """
+fn sq(comptime T: type, x: T) -> T { x * x }
+fn inf(comptime T: type) -> T { let zero: T = 0.0; let one: T = 1.0; one / zero }
+fn neg_inf(comptime T: type) -> T { 0.0 - inf(T) }
+fn main() -> i32 {
+    let v: f32 = 2.5;
+    let w: f32 = 1.0 + sq(f32, v);
+    let d: f64 = sq(f64, 1.5) + 1.0;
+    let n: f32 = neg_inf(f32);
+    let sign: i32 = if n < 0.0 { 10 } else { 0 };
+    let a: i32 = @float_to_int(w);
+    let b: i32 = @float_to_int(d);
+    a + b + sign
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 20
+
+# The same call across a module boundary. The module-qualified generic path
+# built its type substitution but returned a bare inference variable for a
+# `-> T` result, so the use site decided the type instead: `h.sq(f32, v) ==
+# 6.25` defaulted the literal to `f64` while sema specialized the call to
+# `f32`, and the disagreement surfaced only as an AIR verification ICE.
+[[case]]
+name = "native_float_type_argument_to_cross_module_generic_call"
+files = [
+    { path = "main.rue", source = """
+const h = @import("helper.rue");
+fn main() -> i32 {
+    let v: f32 = 2.5;
+    let eq: i32 = if h.sq(f32, v) == 6.25 { 1 } else { 0 };
+    let w: f32 = h.sq(f32, v) + 1.0;
+    let d: f64 = h.sq(f64, 1.5) + 1.0;
+    let n: f32 = h.neg_inf(f32);
+    let sign: i32 = if n < 0.0 { 10 } else { 0 };
+    let a: i32 = @float_to_int(w);
+    let b: i32 = @float_to_int(d);
+    eq + a + b + sign
+}
+""" },
+    { path = "helper.rue", source = """
+pub fn sq(comptime T: type, x: T) -> T { x * x }
+pub fn inf(comptime T: type) -> T { let zero: T = 0.0; let one: T = 1.0; one / zero }
+pub fn neg_inf(comptime T: type) -> T { 0.0 - inf(T) }
+""" },
+]
+args = ["main.rue", "-o", "prog"]
+exit_code = 21
+
+# =============================================================================
+# Float fields inside AGGREGATES crossing a call boundary.
+#
+# A slot's register class follows its LEAF type everywhere: the call ABI
+# classifies each argument slot from `types::aggregate_leaf_types`, parameter
+# metadata from `native_arg_leaf_classes`, and multi-slot frame traffic from the
+# leaf types. A ONE-SLOT aggregate is the shape that had no such rule: its
+# lowering asked whether the WRAPPER type was a float, answered no for
+# `struct P { field: f64 }`, and put an FP-classed ABI slot in a general-purpose
+# vreg — an ICE at the emitter's operand-class assertion for a let-bound value
+# crossing a call, and, for a multi-slot float aggregate written through a
+# pointer, a silent general-purpose store of an XMM/V register's bytes.
+#
+# Every shape below is written per target so the argument and return banks are
+# exercised on both register files; execution runs on the native one.
+# =============================================================================
+
+[[case]]
+name = "x86_64_one_float_field_struct_crosses_a_call_by_value"
+files = [{ path = "main.rue", source = """
+struct P { field: f64 }
+fn get(p: P) -> f64 { p.field }
+fn main() -> i32 {
+    let p = P { field: 2.5 };
+    let q = P { field: 4.25 };
+    @float_to_int(get(p) + get(q))
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 6
+
+[[case]]
+name = "aarch64_one_float_field_struct_crosses_a_call_by_value"
+files = [{ path = "main.rue", source = """
+struct P { field: f64 }
+fn get(p: P) -> f64 { p.field }
+fn main() -> i32 {
+    let p = P { field: 2.5 };
+    let q = P { field: 4.25 };
+    @float_to_int(get(p) + get(q))
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 6
+
+[[case]]
+name = "x86_64_one_float_field_struct_is_a_method_receiver"
+files = [{ path = "main.rue", source = """
+struct P {
+    field: f64,
+    fn scaled(self, k: f64) -> f64 { self.field * k }
+}
+fn main() -> i32 {
+    let p = P { field: 2.5 };
+    @float_to_int(p.scaled(3.0))
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 7
+
+[[case]]
+name = "aarch64_one_float_field_struct_is_a_method_receiver"
+files = [{ path = "main.rue", source = """
+struct P {
+    field: f64,
+    fn scaled(self, k: f64) -> f64 { self.field * k }
+}
+fn main() -> i32 {
+    let p = P { field: 2.5 };
+    @float_to_int(p.scaled(3.0))
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 7
+
+[[case]]
+name = "x86_64_two_float_field_struct_crosses_a_call_by_value"
+files = [{ path = "main.rue", source = """
+struct Pair { x: f64, y: f64 }
+fn diff(p: Pair) -> f64 { p.x - p.y }
+fn main() -> i32 {
+    let p = Pair { x: 9.5, y: 2.0 };
+    @float_to_int(diff(p))
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 7
+
+[[case]]
+name = "aarch64_two_float_field_struct_crosses_a_call_by_value"
+files = [{ path = "main.rue", source = """
+struct Pair { x: f64, y: f64 }
+fn diff(p: Pair) -> f64 { p.x - p.y }
+fn main() -> i32 {
+    let p = Pair { x: 9.5, y: 2.0 };
+    @float_to_int(diff(p))
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 7
+
+[[case]]
+name = "x86_64_mixed_integer_and_float_struct_crosses_a_call_by_value"
+files = [{ path = "main.rue", source = """
+struct Mixed { n: i64, v: f64 }
+fn total(m: Mixed) -> f64 { @int_to_float(m.n) + m.v }
+fn main() -> i32 {
+    let m = Mixed { n: 5, v: 2.5 };
+    @float_to_int(total(m))
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 7
+
+[[case]]
+name = "aarch64_mixed_integer_and_float_struct_crosses_a_call_by_value"
+files = [{ path = "main.rue", source = """
+struct Mixed { n: i64, v: f64 }
+fn total(m: Mixed) -> f64 { @int_to_float(m.n) + m.v }
+fn main() -> i32 {
+    let m = Mixed { n: 5, v: 2.5 };
+    @float_to_int(total(m))
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 7
+
+[[case]]
+name = "x86_64_large_float_struct_crosses_a_call_by_value"
+files = [{ path = "main.rue", source = """
+struct Big { a: f64, b: f64, c: f64, n: i64 }
+fn total(b: Big) -> f64 { b.a + b.b + b.c + @int_to_float(b.n) }
+fn main() -> i32 {
+    let g = Big { a: 1.5, b: 2.25, c: 4.0, n: 8 };
+    @float_to_int(total(g))
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 15
+
+[[case]]
+name = "aarch64_large_float_struct_crosses_a_call_by_value"
+files = [{ path = "main.rue", source = """
+struct Big { a: f64, b: f64, c: f64, n: i64 }
+fn total(b: Big) -> f64 { b.a + b.b + b.c + @int_to_float(b.n) }
+fn main() -> i32 {
+    let g = Big { a: 1.5, b: 2.25, c: 4.0, n: 8 };
+    @float_to_int(total(g))
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 15
+
+[[case]]
+name = "x86_64_float_field_structs_return_by_value"
+files = [{ path = "main.rue", source = """
+struct P { field: f64 }
+struct Pair { x: f64, y: f64 }
+fn make(v: f64) -> P { P { field: v } }
+fn make_pair(x: f64, y: f64) -> Pair { Pair { x: x, y: y } }
+fn main() -> i32 {
+    let p = make(4.5);
+    let q = make_pair(1.25, 2.75);
+    @float_to_int(p.field + q.x + q.y)
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 8
+
+[[case]]
+name = "aarch64_float_field_structs_return_by_value"
+files = [{ path = "main.rue", source = """
+struct P { field: f64 }
+struct Pair { x: f64, y: f64 }
+fn make(v: f64) -> P { P { field: v } }
+fn make_pair(x: f64, y: f64) -> Pair { Pair { x: x, y: y } }
+fn main() -> i32 {
+    let p = make(4.5);
+    let q = make_pair(1.25, 2.75);
+    @float_to_int(p.field + q.x + q.y)
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 8
+
+[[case]]
+name = "x86_64_float_struct_local_copy_and_nested_field_projection"
+files = [{ path = "main.rue", source = """
+struct P { field: f64 }
+struct Outer { inner: P }
+fn take(p: P) -> f64 { p.field }
+fn main() -> i32 {
+    let p = P { field: 2.5 };
+    let q = p;
+    let o = Outer { inner: P { field: 3.25 } };
+    @float_to_int(take(q) + take(o.inner))
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 5
+
+[[case]]
+name = "aarch64_float_struct_local_copy_and_nested_field_projection"
+files = [{ path = "main.rue", source = """
+struct P { field: f64 }
+struct Outer { inner: P }
+fn take(p: P) -> f64 { p.field }
+fn main() -> i32 {
+    let p = P { field: 2.5 };
+    let q = p;
+    let o = Outer { inner: P { field: 3.25 } };
+    @float_to_int(take(q) + take(o.inner))
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 5
+
+[[case]]
+name = "x86_64_float_struct_field_written_through_an_inout_parameter"
+files = [{ path = "main.rue", source = """
+struct Pair { x: f64, y: f64 }
+struct Outer { p: Pair }
+fn set(inout o: Outer) { o.p = Pair { x: 1.5, y: 2.5 }; }
+fn main() -> i32 {
+    let mut o = Outer { p: Pair { x: 0.0, y: 0.0 } };
+    set(inout o);
+    @float_to_int(o.p.x + o.p.y)
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 4
+
+[[case]]
+name = "aarch64_float_struct_field_written_through_an_inout_parameter"
+files = [{ path = "main.rue", source = """
+struct Pair { x: f64, y: f64 }
+struct Outer { p: Pair }
+fn set(inout o: Outer) { o.p = Pair { x: 1.5, y: 2.5 }; }
+fn main() -> i32 {
+    let mut o = Outer { p: Pair { x: 0.0, y: 0.0 } };
+    set(inout o);
+    @float_to_int(o.p.x + o.p.y)
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 4

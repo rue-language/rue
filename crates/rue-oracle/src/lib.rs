@@ -1212,8 +1212,14 @@ fn unsupported_intrinsic_kind_for_operation(
         | rue_air::IntrinsicOperation::DebugI64
         | rue_air::IntrinsicOperation::DebugU64
         | rue_air::IntrinsicOperation::DebugBool
+        | rue_air::IntrinsicOperation::DebugFloat
         | rue_air::IntrinsicOperation::DebugStr
         | rue_air::IntrinsicOperation::TotalCmp
+        | rue_air::IntrinsicOperation::FloatSqrt
+        | rue_air::IntrinsicOperation::FloatFloor
+        | rue_air::IntrinsicOperation::FloatCeil
+        | rue_air::IntrinsicOperation::FloatTrunc
+        | rue_air::IntrinsicOperation::FloatRound
         | rue_air::IntrinsicOperation::BitCast => {
             UnsupportedKind::ContractViolation(ContractViolationKind::UnexpectedIntrinsic)
         }
@@ -1235,9 +1241,11 @@ fn unsupported_runtime_call_kind(kind: RuntimeCallKind) -> Option<UnsupportedRun
         | RuntimeCallKind::StrCharNextLossy
         | RuntimeCallKind::ToString
         | RuntimeCallKind::ToStringUnsigned
+        | RuntimeCallKind::ToStringFloat
         | RuntimeCallKind::DebugI64
         | RuntimeCallKind::DebugU64
         | RuntimeCallKind::DebugBool
+        | RuntimeCallKind::DebugFloat
         | RuntimeCallKind::DebugStr
         | RuntimeCallKind::Panic
         | RuntimeCallKind::PanicNoMessage
@@ -2209,6 +2217,7 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::DebugI64
             | rue_air::IntrinsicOperation::DebugU64
             | rue_air::IntrinsicOperation::DebugBool
+            | rue_air::IntrinsicOperation::DebugFloat
             | rue_air::IntrinsicOperation::DebugStr
             | rue_air::IntrinsicOperation::ParseI32
             | rue_air::IntrinsicOperation::ParseI64
@@ -2230,6 +2239,11 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::FloatCast
             | rue_air::IntrinsicOperation::BitCast => args.len() == 1,
             rue_air::IntrinsicOperation::TotalCmp => args.len() == 2,
+            rue_air::IntrinsicOperation::FloatSqrt
+            | rue_air::IntrinsicOperation::FloatFloor
+            | rue_air::IntrinsicOperation::FloatCeil
+            | rue_air::IntrinsicOperation::FloatTrunc
+            | rue_air::IntrinsicOperation::FloatRound => args.len() == 1,
             rue_air::IntrinsicOperation::PanicNoMessage => args.is_empty(),
         };
         if !arity_matches {
@@ -2376,8 +2390,14 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::DebugI64
             | rue_air::IntrinsicOperation::DebugU64
             | rue_air::IntrinsicOperation::DebugBool
+            | rue_air::IntrinsicOperation::DebugFloat
             | rue_air::IntrinsicOperation::DebugStr
             | rue_air::IntrinsicOperation::TotalCmp
+            | rue_air::IntrinsicOperation::FloatSqrt
+            | rue_air::IntrinsicOperation::FloatFloor
+            | rue_air::IntrinsicOperation::FloatCeil
+            | rue_air::IntrinsicOperation::FloatTrunc
+            | rue_air::IntrinsicOperation::FloatRound
             | rue_air::IntrinsicOperation::BitCast => false,
         };
         if signature_matches {
@@ -2407,6 +2427,7 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::DebugI64
             | rue_air::IntrinsicOperation::DebugU64
             | rue_air::IntrinsicOperation::DebugBool
+            | rue_air::IntrinsicOperation::DebugFloat
             | rue_air::IntrinsicOperation::DebugStr
             | rue_air::IntrinsicOperation::ReadLine
             | rue_air::IntrinsicOperation::ParseI32
@@ -2444,6 +2465,11 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::FloatToInt
             | rue_air::IntrinsicOperation::FloatCast
             | rue_air::IntrinsicOperation::TotalCmp
+            | rue_air::IntrinsicOperation::FloatSqrt
+            | rue_air::IntrinsicOperation::FloatFloor
+            | rue_air::IntrinsicOperation::FloatCeil
+            | rue_air::IntrinsicOperation::FloatTrunc
+            | rue_air::IntrinsicOperation::FloatRound
             | rue_air::IntrinsicOperation::BitCast => return Ok(None),
         };
         let arity_matches = match operation {
@@ -2454,6 +2480,7 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::DebugI64
             | rue_air::IntrinsicOperation::DebugU64
             | rue_air::IntrinsicOperation::DebugBool
+            | rue_air::IntrinsicOperation::DebugFloat
             | rue_air::IntrinsicOperation::DebugStr
             | rue_air::IntrinsicOperation::ReadLine
             | rue_air::IntrinsicOperation::ParseI32
@@ -2491,6 +2518,11 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::FloatToInt
             | rue_air::IntrinsicOperation::FloatCast
             | rue_air::IntrinsicOperation::TotalCmp
+            | rue_air::IntrinsicOperation::FloatSqrt
+            | rue_air::IntrinsicOperation::FloatFloor
+            | rue_air::IntrinsicOperation::FloatCeil
+            | rue_air::IntrinsicOperation::FloatTrunc
+            | rue_air::IntrinsicOperation::FloatRound
             | rue_air::IntrinsicOperation::BitCast => false,
         };
         if !arity_matches {
@@ -2659,31 +2691,52 @@ impl<'a> Interp<'a> {
         args: &[CfgValue],
         result_ty: Type,
     ) -> Step<Value> {
-        let [arg] = args else {
+        // A float `@dbg` carries its `u32` width beside the bit pattern
+        // (ADR-0065 §6); every other debug operation is unary.
+        let float = operation == rue_air::IntrinsicOperation::DebugFloat;
+        if args.len() != 1 + usize::from(float) {
             return Err(unsupported(
                 UnsupportedKind::ContractViolation(ContractViolationKind::DebugArity),
                 "@dbg arity",
             ));
-        };
-        let arg_ty = cfg.get_inst(*arg).ty;
-        if !operation.validate_call(
-            self.type_pool(),
-            &[rue_air::IntrinsicAirArgument::value(
-                arg_ty,
-                rue_air::AirArgMode::Normal,
-            )],
-            result_ty,
-        ) {
+        }
+        let arg = args[0];
+        let width_arg = if float { Some(args[1]) } else { None };
+        let arg_ty = cfg.get_inst(arg).ty;
+        let typed_arguments = args
+            .iter()
+            .map(|value| {
+                rue_air::IntrinsicAirArgument::value(
+                    cfg.get_inst(*value).ty,
+                    rue_air::AirArgMode::Normal,
+                )
+            })
+            .collect::<Vec<_>>();
+        if !operation.validate_call(self.type_pool(), &typed_arguments, result_ty) {
             return Err(unsupported(
                 UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
                 "@dbg typed operation signature",
             ));
         }
-        let val = self.eval(cfg, frame, *arg)?;
+        let val = self.eval(cfg, frame, arg)?;
         match operation {
             rue_air::IntrinsicOperation::DebugI64 => self.write_dbg(&val, arg_ty)?,
             rue_air::IntrinsicOperation::DebugU64 => self.write_dbg(&val, arg_ty)?,
             rue_air::IntrinsicOperation::DebugBool => self.write_dbg(&val, arg_ty)?,
+            rue_air::IntrinsicOperation::DebugFloat => {
+                let width =
+                    self.eval(cfg, frame, width_arg.expect("float @dbg carries a width"))?;
+                let Some(text) = format_float_bits(val.as_int() as u64, width.as_int() as u64)
+                else {
+                    return Err(unsupported(
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::IntrinsicSignature,
+                        ),
+                        "@dbg float width discriminator",
+                    ));
+                };
+                self.write_dbg_text(text.into_bytes())?
+            }
             rue_air::IntrinsicOperation::DebugStr => self.write_dbg(&val, arg_ty)?,
             rue_air::IntrinsicOperation::PanicNoMessage
             | rue_air::IntrinsicOperation::Panic
@@ -2725,6 +2778,11 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::FloatToInt
             | rue_air::IntrinsicOperation::FloatCast
             | rue_air::IntrinsicOperation::TotalCmp
+            | rue_air::IntrinsicOperation::FloatSqrt
+            | rue_air::IntrinsicOperation::FloatFloor
+            | rue_air::IntrinsicOperation::FloatCeil
+            | rue_air::IntrinsicOperation::FloatTrunc
+            | rue_air::IntrinsicOperation::FloatRound
             | rue_air::IntrinsicOperation::BitCast => {
                 return Err(unsupported(
                     UnsupportedKind::ContractViolation(ContractViolationKind::UnexpectedIntrinsic),
@@ -2755,6 +2813,12 @@ impl<'a> Interp<'a> {
             let formatted = format_dbg(val, ty)?;
             formatted.into_owned().into_bytes()
         };
+        self.write_dbg_text(output)
+    }
+
+    /// Emit one already-rendered `@dbg` line under the shared stdout bound.
+    fn write_dbg_text(&mut self, output: Vec<u8>) -> Step<()> {
+        let remaining = self.stdout_cap.saturating_sub(self.stdout_bytes);
         if output.len() >= remaining {
             return Err(unsupported(
                 UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes),
@@ -3200,6 +3264,7 @@ impl<'a> Interp<'a> {
     fn string_builtin_arity(kind: RuntimeCallKind) -> Option<usize> {
         match kind {
             RuntimeCallKind::ToString | RuntimeCallKind::ToStringUnsigned => Some(1),
+            RuntimeCallKind::ToStringFloat => Some(2),
             RuntimeCallKind::StrByteAt => Some(2),
             RuntimeCallKind::StrCharScalar
             | RuntimeCallKind::StrCharScalarLossy
@@ -3249,6 +3314,11 @@ impl<'a> Interp<'a> {
         let argument_types_match = match kind {
             RuntimeCallKind::ToString => arg_types[0] == Type::I64,
             RuntimeCallKind::ToStringUnsigned => arg_types[0] == Type::U64,
+            // A float formats from its bit pattern in a `u64` beside its
+            // explicit `u32` width discriminator (ADR-0065 §6).
+            RuntimeCallKind::ToStringFloat => {
+                arg_types[0] == Type::U64 && arg_types[1] == Type::U32
+            }
             RuntimeCallKind::StrByteAt => {
                 self.is_str_view_type(arg_types[0]) && arg_types[1].is_integer()
             }
@@ -3270,9 +3340,9 @@ impl<'a> Interp<'a> {
             ));
         }
         let result_type_matches = match kind {
-            RuntimeCallKind::ToString | RuntimeCallKind::ToStringUnsigned => {
-                self.is_owned_string_type(result_ty)
-            }
+            RuntimeCallKind::ToString
+            | RuntimeCallKind::ToStringUnsigned
+            | RuntimeCallKind::ToStringFloat => self.is_owned_string_type(result_ty),
             RuntimeCallKind::StrByteAt => result_ty == Type::U8,
             RuntimeCallKind::StrCharScalar | RuntimeCallKind::StrCharScalarLossy => {
                 result_ty == Type::U32
@@ -3315,6 +3385,9 @@ impl<'a> Interp<'a> {
             RuntimeCallKind::ToString | RuntimeCallKind::ToStringUnsigned => {
                 matches!(args[0], Value::Int(_))
             }
+            RuntimeCallKind::ToStringFloat => {
+                matches!(args[0], Value::Int(_)) && matches!(args[1], Value::Int(_))
+            }
             RuntimeCallKind::StrByteAt => {
                 // The receiver is a materialized `str` view `{ptr, len}`
                 // (RUE-1010 §6.13); the index is a scalar.
@@ -3346,6 +3419,24 @@ impl<'a> Interp<'a> {
             }
             RuntimeCallKind::ToStringUnsigned => {
                 let digits = (args[0].as_int() as u64).to_string().into_bytes();
+                let cap = digits.len() as i128;
+                self.materialize_text(digits, self.text_value_slot_width(result_ty), cap)?
+            }
+            // The same `zmij` formatter the runtime links, selected by the
+            // same explicit width, so the oracle and the compiled program
+            // agree byte for byte (ADR-0065 §6).
+            RuntimeCallKind::ToStringFloat => {
+                let Some(text) =
+                    format_float_bits(args[0].as_int() as u64, args[1].as_int() as u64)
+                else {
+                    return Err(unsupported(
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::BuiltinArgumentType,
+                        ),
+                        format!("builtin '{name}' float width discriminator drift"),
+                    ));
+                };
+                let digits = text.into_bytes();
                 let cap = digits.len() as i128;
                 self.materialize_text(digits, self.text_value_slot_width(result_ty), cap)?
             }
@@ -3615,10 +3706,7 @@ impl<'a> Interp<'a> {
         let inst = cfg.get_inst(v);
         let ty = inst.ty;
         if self.is_well_typed_float_operation(cfg, &inst.data, ty)? {
-            return Err(unsupported(
-                UnsupportedKind::SemanticGap(SemanticGapKind::FloatArithmetic),
-                "scalar or aggregate float operation",
-            ));
+            return self.eval_float_operation(cfg, frame, &inst.data, ty);
         }
         let result = match &inst.data {
             CfgInstData::Const(n) => {
@@ -4165,8 +4253,20 @@ impl<'a> Interp<'a> {
                     rue_air::IntrinsicOperation::DebugI64
                     | rue_air::IntrinsicOperation::DebugU64
                     | rue_air::IntrinsicOperation::DebugBool
+                    | rue_air::IntrinsicOperation::DebugFloat
                     | rue_air::IntrinsicOperation::DebugStr => {
                         self.eval_debug_intrinsic(cfg, frame, *operation, &args, ty)?
+                    }
+                    rue_air::IntrinsicOperation::IntToFloat
+                    | rue_air::IntrinsicOperation::FloatToInt
+                    | rue_air::IntrinsicOperation::FloatCast
+                    | rue_air::IntrinsicOperation::TotalCmp
+                    | rue_air::IntrinsicOperation::FloatSqrt
+                    | rue_air::IntrinsicOperation::FloatFloor
+                    | rue_air::IntrinsicOperation::FloatCeil
+                    | rue_air::IntrinsicOperation::FloatTrunc
+                    | rue_air::IntrinsicOperation::FloatRound => {
+                        self.eval_float_intrinsic(cfg, frame, *operation, &args, ty)?
                     }
                     rue_air::IntrinsicOperation::ReadLine
                     | rue_air::IntrinsicOperation::ParseI32
@@ -4198,12 +4298,9 @@ impl<'a> Interp<'a> {
                     | rue_air::IntrinsicOperation::EnvLen
                     | rue_air::IntrinsicOperation::Raw
                     | rue_air::IntrinsicOperation::RawMut
-                    | rue_air::IntrinsicOperation::FieldPtr
-                    | rue_air::IntrinsicOperation::IntToFloat
-                    | rue_air::IntrinsicOperation::FloatToInt
-                    | rue_air::IntrinsicOperation::FloatCast
-                    | rue_air::IntrinsicOperation::TotalCmp => {
+                    | rue_air::IntrinsicOperation::FieldPtr => {
                         // Classify first: the same static arity/signature validation
+
                         // that gates a model-gap registration also gates execution, so
                         // a malformed intrinsic still reports its contract violation
                         // rather than being run. A validated, now-modeled heap/pointer
@@ -4357,6 +4454,11 @@ impl<'a> Interp<'a> {
     fn values_equal_typed(&self, x: &Value, y: &Value, ty: Type) -> Step<bool> {
         if self.is_text_type(ty) {
             return Ok(self.text_bytes(x)? == self.text_bytes(y)?);
+        }
+        // A float leaf compares by IEEE equality, so an aggregate holding a NaN
+        // is unequal to itself and `-0.0` equals `0.0` (ADR-0065 §2).
+        if let Some(width) = float_width(ty) {
+            return Ok(float_equal(x.as_int() as u64, y.as_int() as u64, width));
         }
         if matches!(
             ty.kind(),
@@ -6318,6 +6420,229 @@ impl<'a> Interp<'a> {
     /// pattern back at the target's signedness. Sema guarantees both types are
     /// integers of one width; a CFG that violates that is a contract failure,
     /// not a gap.
+    /// A well-typed scalar or aggregate float operation (ADR-0065 §§1–2). A
+    /// float lives in the value model as its IEEE-754 bit pattern, so every
+    /// operation decodes the pattern at the instruction's width, performs the
+    /// IEEE operation on the host, and re-encodes the result: no operation
+    /// traps, division by zero yields an infinity or NaN, and comparison is
+    /// the partial IEEE order in which NaN is unordered.
+    fn eval_float_operation(
+        &mut self,
+        cfg: &'a Cfg,
+        frame: &mut Frame,
+        data: &CfgInstData,
+        ty: Type,
+    ) -> Step<Value> {
+        match data {
+            CfgInstData::Add(a, b)
+            | CfgInstData::Sub(a, b)
+            | CfgInstData::Mul(a, b)
+            | CfgInstData::Div(a, b) => {
+                let width = float_width(ty).expect("validated float arithmetic result");
+                let x = self.eval(cfg, frame, *a)?.as_int() as u64;
+                let y = self.eval(cfg, frame, *b)?.as_int() as u64;
+                let bits = match width {
+                    FloatWidth::F64 => {
+                        let (p, q) = (f64::from_bits(x), f64::from_bits(y));
+                        match data {
+                            CfgInstData::Add(..) => p + q,
+                            CfgInstData::Sub(..) => p - q,
+                            CfgInstData::Mul(..) => p * q,
+                            _ => p / q,
+                        }
+                        .to_bits()
+                    }
+                    FloatWidth::F32 => {
+                        let (p, q) = (f32::from_bits(x as u32), f32::from_bits(y as u32));
+                        u64::from(
+                            match data {
+                                CfgInstData::Add(..) => p + q,
+                                CfgInstData::Sub(..) => p - q,
+                                CfgInstData::Mul(..) => p * q,
+                                _ => p / q,
+                            }
+                            .to_bits(),
+                        )
+                    }
+                };
+                Ok(Value::Int(bits as i128))
+            }
+            CfgInstData::Neg(a) => {
+                let width = float_width(ty).expect("validated float negation result");
+                let x = self.eval(cfg, frame, *a)?.as_int() as u64;
+                Ok(Value::Int((x ^ width.sign_bit()) as i128))
+            }
+            CfgInstData::Eq(a, b)
+            | CfgInstData::Ne(a, b)
+            | CfgInstData::Lt(a, b)
+            | CfgInstData::Gt(a, b)
+            | CfgInstData::Le(a, b)
+            | CfgInstData::Ge(a, b) => {
+                let operand_ty = cfg.get_inst(*a).ty;
+                let x = self.eval(cfg, frame, *a)?;
+                let y = self.eval(cfg, frame, *b)?;
+                let result = match float_width(operand_ty) {
+                    Some(width) => {
+                        let ordering =
+                            float_partial_cmp(x.as_int() as u64, y.as_int() as u64, width);
+                        use std::cmp::Ordering::{Equal, Greater, Less};
+                        match data {
+                            CfgInstData::Eq(..) => ordering == Some(Equal),
+                            CfgInstData::Ne(..) => ordering != Some(Equal),
+                            CfgInstData::Lt(..) => ordering == Some(Less),
+                            CfgInstData::Gt(..) => ordering == Some(Greater),
+                            CfgInstData::Le(..) => matches!(ordering, Some(Less | Equal)),
+                            _ => matches!(ordering, Some(Greater | Equal)),
+                        }
+                    }
+                    // A float-bearing aggregate reaches only `==`/`!=` (the
+                    // typing contract above rejected an ordering); its float
+                    // leaves inherit IEEE partiality through the typed walk.
+                    None => {
+                        let equal = self.values_equal_typed(&x, &y, operand_ty)?;
+                        match data {
+                            CfgInstData::Eq(..) => equal,
+                            _ => !equal,
+                        }
+                    }
+                };
+                Ok(Value::Bool(result))
+            }
+            other => Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::NonIntegerOperationType),
+                format!("float operation shape {other:?}"),
+            )),
+        }
+    }
+
+    /// The float intrinsics of ADR-0065 §§4, 7, 8: explicit conversions, the
+    /// single-instruction rounding family, and IEEE `totalOrder`.
+    fn eval_float_intrinsic(
+        &mut self,
+        cfg: &'a Cfg,
+        frame: &mut Frame,
+        operation: rue_air::IntrinsicOperation,
+        args: &[CfgValue],
+        result_ty: Type,
+    ) -> Step<Value> {
+        let arguments = args
+            .iter()
+            .map(|arg| {
+                rue_air::IntrinsicAirArgument::value(
+                    cfg.get_inst(*arg).ty,
+                    rue_air::AirArgMode::Normal,
+                )
+            })
+            .collect::<Vec<_>>();
+        if !operation.validate_call(self.type_pool(), &arguments, result_ty) {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
+                format!("intrinsic @{} signature", operation.expected_spelling()),
+            ));
+        }
+        let source_ty = cfg.get_inst(args[0]).ty;
+        // Decode a float operand as `f64`: exact for an `f32` pattern, since
+        // every `f32` value is an `f64` value.
+        let read_f64 = |bits: u64, ty: Type| -> f64 {
+            match float_width(ty) {
+                Some(FloatWidth::F32) => f64::from(f32::from_bits(bits as u32)),
+                _ => f64::from_bits(bits),
+            }
+        };
+        let encode = |value: f64, ty: Type| -> Value {
+            let bits = match float_width(ty).expect("float result") {
+                FloatWidth::F64 => value.to_bits(),
+                FloatWidth::F32 => u64::from((value as f32).to_bits()),
+            };
+            Value::Int(bits as i128)
+        };
+        Ok(match operation {
+            rue_air::IntrinsicOperation::IntToFloat => {
+                // Round to nearest at the result width, in one rounding step.
+                let integer = self.eval(cfg, frame, args[0])?.as_int();
+                match float_width(result_ty).expect("float result") {
+                    FloatWidth::F64 => Value::Int((integer as f64).to_bits() as i128),
+                    FloatWidth::F32 => Value::Int(u64::from((integer as f32).to_bits()) as i128),
+                }
+            }
+            rue_air::IntrinsicOperation::FloatToInt => {
+                // Truncate toward zero; trap when the operand is NaN or the
+                // truncation is not representable (spec 3.12). The integer
+                // bounds `MIN` and `MAX + 1` are exact in `f64` for every
+                // integer type, so the range test is exact.
+                let bits = self.eval(cfg, frame, args[0])?.as_int() as u64;
+                let value = read_f64(bits, source_ty);
+                let (lo, hi) = int_bounds(result_ty).expect("integer result");
+                let truncated = value.trunc();
+                let lower = lo as f64;
+                let upper = hi as f64 + 1.0;
+                if value.is_nan() || !(truncated >= lower && truncated < upper) {
+                    return Err(Flow::Panic(Panic::runtime(TrapKind::ArithmeticOverflow)));
+                }
+                Value::Int(truncated as i128)
+            }
+            rue_air::IntrinsicOperation::FloatCast => {
+                let bits = self.eval(cfg, frame, args[0])?.as_int() as u64;
+                encode(read_f64(bits, source_ty), result_ty)
+            }
+            rue_air::IntrinsicOperation::TotalCmp => {
+                let width = float_width(source_ty).expect("float operand");
+                let x = self.eval(cfg, frame, args[0])?.as_int() as u64;
+                let y = self.eval(cfg, frame, args[1])?.as_int() as u64;
+                let ordering =
+                    float_total_order_key(x, width).cmp(&float_total_order_key(y, width));
+                Value::Int(ordering as i8 as i128)
+            }
+            rue_air::IntrinsicOperation::FloatSqrt
+            | rue_air::IntrinsicOperation::FloatFloor
+            | rue_air::IntrinsicOperation::FloatCeil
+            | rue_air::IntrinsicOperation::FloatTrunc
+            | rue_air::IntrinsicOperation::FloatRound => {
+                let bits = self.eval(cfg, frame, args[0])?.as_int() as u64;
+                let width = float_width(result_ty).expect("float result");
+                // Evaluate at the operand's own width: `sqrt` is correctly
+                // rounded only at the width it is performed at, and the
+                // rounding family is exact at either.
+                let result_bits = match width {
+                    FloatWidth::F64 => {
+                        let value = f64::from_bits(bits);
+                        match operation {
+                            rue_air::IntrinsicOperation::FloatSqrt => value.sqrt(),
+                            rue_air::IntrinsicOperation::FloatFloor => value.floor(),
+                            rue_air::IntrinsicOperation::FloatCeil => value.ceil(),
+                            rue_air::IntrinsicOperation::FloatTrunc => value.trunc(),
+                            _ => value.round(),
+                        }
+                        .to_bits()
+                    }
+                    FloatWidth::F32 => {
+                        let value = f32::from_bits(bits as u32);
+                        u64::from(
+                            match operation {
+                                rue_air::IntrinsicOperation::FloatSqrt => value.sqrt(),
+                                rue_air::IntrinsicOperation::FloatFloor => value.floor(),
+                                rue_air::IntrinsicOperation::FloatCeil => value.ceil(),
+                                rue_air::IntrinsicOperation::FloatTrunc => value.trunc(),
+                                _ => value.round(),
+                            }
+                            .to_bits(),
+                        )
+                    }
+                };
+                Value::Int(result_bits as i128)
+            }
+            other => {
+                return Err(unsupported(
+                    UnsupportedKind::ContractViolation(ContractViolationKind::UnexpectedIntrinsic),
+                    format!(
+                        "non-float intrinsic @{} reached float evaluation",
+                        other.expected_spelling()
+                    ),
+                ));
+            }
+        })
+    }
+
     fn eval_bit_cast(
         &mut self,
         cfg: &'a Cfg,
@@ -6332,8 +6657,8 @@ impl<'a> Interp<'a> {
             ));
         };
         let source_ty = cfg.get_inst(*arg).ty;
-        let (source_bits, _) = int_shape(source_ty)?;
-        let (target_bits, target_kind) = int_shape(result_ty)?;
+        let (source_bits, _) = bit_pattern_shape(source_ty)?;
+        let (target_bits, target_kind) = bit_pattern_shape(result_ty)?;
         if source_bits != target_bits {
             return Err(unsupported(
                 UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
@@ -6614,6 +6939,7 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::DebugI64
             | rue_air::IntrinsicOperation::DebugU64
             | rue_air::IntrinsicOperation::DebugBool
+            | rue_air::IntrinsicOperation::DebugFloat
             | rue_air::IntrinsicOperation::DebugStr
             | rue_air::IntrinsicOperation::ReadLine
             | rue_air::IntrinsicOperation::ParseI32
@@ -6633,6 +6959,11 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::FloatToInt
             | rue_air::IntrinsicOperation::FloatCast
             | rue_air::IntrinsicOperation::TotalCmp
+            | rue_air::IntrinsicOperation::FloatSqrt
+            | rue_air::IntrinsicOperation::FloatFloor
+            | rue_air::IntrinsicOperation::FloatCeil
+            | rue_air::IntrinsicOperation::FloatTrunc
+            | rue_air::IntrinsicOperation::FloatRound
             | rue_air::IntrinsicOperation::BitCast => Ok(None),
         }
     }
@@ -7160,6 +7491,101 @@ fn char_at_lossy(bytes: &[u8], offset: i128) -> (u32, u64) {
 }
 
 // ---- integer type helpers -------------------------------------------------
+
+/// The width and integer kind that carries a scalar's bit pattern: an integer's
+/// own, or the unsigned integer of a float's width. A float value lives in the
+/// oracle as its IEEE-754 bit pattern, so a same-width `BitCast` to or from a
+/// float is the identity on that pattern (ADR-0065 §6).
+fn bit_pattern_shape(ty: Type) -> Result<(u32, TypeKind), Flow> {
+    match ty.kind() {
+        TypeKind::F32 => Ok((32, TypeKind::U32)),
+        TypeKind::F64 => Ok((64, TypeKind::U64)),
+        _ => int_shape(ty),
+    }
+}
+
+/// Shortest round-trip rendering of an `f64` bit pattern, through the same
+/// `zmij` formatter the runtime links.
+/// Shortest round-trip rendering of a float bit pattern at the width the
+/// caller passed across the runtime ABI, or `None` when the discriminator is
+/// neither `FLOAT_WIDTH_F32` nor `FLOAT_WIDTH_F64` (or an f32 pattern carries
+/// bits above 32). The runtime traps on exactly those encodings, so refusing
+/// them here keeps the model and `__rue_to_string_float` in step.
+fn format_float_bits(bits: u64, width: u64) -> Option<String> {
+    match u32::try_from(width).ok()? {
+        rue_runtime_abi::FLOAT_WIDTH_F32 if bits <= u64::from(u32::MAX) => {
+            Some(format_f32_bits(bits))
+        }
+        rue_runtime_abi::FLOAT_WIDTH_F64 => Some(format_f64_bits(bits)),
+        _ => None,
+    }
+}
+
+fn format_f64_bits(bits: u64) -> String {
+    zmij::Buffer::new().format(f64::from_bits(bits)).to_owned()
+}
+
+/// Shortest round-trip rendering of an `f32` bit pattern held zero-extended
+/// in a `u64`.
+fn format_f32_bits(bits: u64) -> String {
+    zmij::Buffer::new()
+        .format(f32::from_bits(bits as u32))
+        .to_owned()
+}
+
+/// The width of a float type in the value model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FloatWidth {
+    F32,
+    F64,
+}
+
+impl FloatWidth {
+    fn sign_bit(self) -> u64 {
+        match self {
+            Self::F32 => 1 << 31,
+            Self::F64 => 1 << 63,
+        }
+    }
+}
+
+fn float_width(ty: Type) -> Option<FloatWidth> {
+    match ty.kind() {
+        TypeKind::F32 => Some(FloatWidth::F32),
+        TypeKind::F64 => Some(FloatWidth::F64),
+        _ => None,
+    }
+}
+
+/// IEEE partial comparison of two bit patterns at `width`: `None` when either
+/// is NaN.
+fn float_partial_cmp(x: u64, y: u64, width: FloatWidth) -> Option<std::cmp::Ordering> {
+    match width {
+        FloatWidth::F64 => f64::from_bits(x).partial_cmp(&f64::from_bits(y)),
+        FloatWidth::F32 => f32::from_bits(x as u32).partial_cmp(&f32::from_bits(y as u32)),
+    }
+}
+
+fn float_equal(x: u64, y: u64, width: FloatWidth) -> bool {
+    float_partial_cmp(x, y, width) == Some(std::cmp::Ordering::Equal)
+}
+
+/// The IEEE `totalOrder` key of a bit pattern: negative values have every bit
+/// but the sign flipped, so a signed integer compare of two keys orders
+/// `-NaN < -inf < ... < -0 < +0 < ... < +inf < +NaN` — the same key the
+/// backends compute for `@total_cmp` (ADR-0065 §8).
+fn float_total_order_key(bits: u64, width: FloatWidth) -> i64 {
+    match width {
+        FloatWidth::F64 => {
+            let bits = bits as i64;
+            bits ^ (((bits >> 63) as u64) >> 1) as i64
+        }
+        FloatWidth::F32 => {
+            let bits = bits as u32 as i32;
+            i64::from(bits ^ (((bits >> 31) as u32) >> 1) as i32)
+        }
+    }
+}
 
 fn int_shape(ty: Type) -> Result<(u32, TypeKind), Flow> {
     let kind = ty.kind();

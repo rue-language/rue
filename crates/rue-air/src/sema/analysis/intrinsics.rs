@@ -388,6 +388,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ctx,
                 crate::IntrinsicOperation::TotalCmp,
             )
+        } else if let Some(operation) = known.get_float_unary_operation(name) {
+            self.analyze_float_unary_intrinsic(air, name, &args, span, ctx, operation)
         } else if name == known.test_preview_gate {
             self.analyze_test_preview_gate_intrinsic(air, &args, span)
         } else if name == known.read_line {
@@ -946,11 +948,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
-        // Validate type: @dbg supports integers, bool, and String (spec 4.13:7).
-        // Structs, enums, and arrays must be rejected HERE — codegen has no
-        // lowering for them and would panic ("@dbg only supports scalars and
-        // strings"), which the spec mandates as a compile error instead.
+        // Validate type: @dbg supports integers, floats, bool, and String
+        // (spec 4.13:7). Structs, enums, and arrays must be rejected HERE —
+        // codegen has no lowering for them and would panic ("@dbg only
+        // supports scalars and strings"), which the spec mandates as a compile
+        // error instead.
         if !arg_type.is_integer()
+            && !arg_type.is_float()
             && arg_type != Type::BOOL
             && !self.is_strbuf(arg_type)
             && !self.is_str_like(arg_type)
@@ -959,11 +963,27 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "dbg".to_string(),
-                    expected: "integer, bool, or String".to_string(),
+                    expected: "integer, float, bool, or String".to_string(),
                     found: self.format_type_name(arg_type),
                 })),
                 span,
             ));
+        }
+
+        // A float crosses into the runtime as its bit pattern in a `u64` beside
+        // an explicit `u32` width (ADR-0065 §6), so the runtime needs no
+        // floating-point ABI and one helper serves both widths.
+        if arg_type.is_float() {
+            let bits = self.float_bits_as_u64(air, arg_result.air_ref, arg_type, span)?;
+            let width = self.float_width_discriminator(air, arg_type, span);
+            let intrinsic_ref = air.add_intrinsic(
+                crate::IntrinsicOperation::DebugFloat,
+                self.known_symbols().dbg,
+                &[bits, width],
+                Type::UNIT,
+                span,
+            )?;
+            return Ok(AnalysisResult::new(intrinsic_ref, Type::UNIT));
         }
 
         let source_strbuf = arg_type.as_struct().is_some_and(|struct_id| {
@@ -996,6 +1016,60 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let air_ref =
             self.wrap_value_with_temp_scope(air, intrinsic_ref, Type::UNIT, span, temp_scope)?;
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
+    }
+
+    /// Reinterpret a float value as its IEEE-754 bit pattern in a `u64`: a
+    /// same-width `BitCast` to the unsigned integer of the float's width, then
+    /// a zero-extending `IntCast` for `f32`. This is how a float reaches the
+    /// integer-only runtime helper ABI (ADR-0065 §6).
+    fn float_bits_as_u64(
+        &mut self,
+        air: &mut Air,
+        value: AirRef,
+        float_ty: Type,
+        span: Span,
+    ) -> CompileResult<AirRef> {
+        debug_assert!(float_ty.is_float());
+        let pattern_ty = if float_ty == Type::F32 {
+            Type::U32
+        } else {
+            Type::U64
+        };
+        let pattern = air.add_intrinsic(
+            crate::IntrinsicOperation::BitCast,
+            self.known_symbols().bit_cast,
+            &[value],
+            pattern_ty,
+            span,
+        )?;
+        if pattern_ty == Type::U64 {
+            return Ok(pattern);
+        }
+        Ok(air.add_inst(AirInst {
+            data: AirInstData::IntCast {
+                value: pattern,
+                from_ty: pattern_ty,
+            },
+            ty: Type::U64,
+            span,
+        }))
+    }
+
+    /// The `u32` width discriminator that travels beside a float's bit pattern
+    /// across the runtime ABI: `FLOAT_WIDTH_F32` or `FLOAT_WIDTH_F64`
+    /// (ADR-0065 §6). Passing the width explicitly is what lets one runtime
+    /// helper serve both widths without inferring one from the bit pattern.
+    fn float_width_discriminator(&mut self, air: &mut Air, float_ty: Type, span: Span) -> AirRef {
+        let width = if float_ty == Type::F32 {
+            rue_runtime_abi::FLOAT_WIDTH_F32
+        } else {
+            rue_runtime_abi::FLOAT_WIDTH_F64
+        };
+        air.add_inst(AirInst {
+            data: AirInstData::Const(u64::from(width)),
+            ty: Type::U32,
+            span,
+        })
     }
 
     /// Analyze the `@drop(x)` intentional-destroy intrinsic (RUE-187,
@@ -1773,6 +1847,50 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(())
     }
 
+    /// Analyze the unary float intrinsics `@sqrt`, `@floor`, `@ceil`,
+    /// `@trunc`, and `@round` (ADR-0065 §7). Each takes one `f32`/`f64`
+    /// operand and produces the same type; a bare literal operand takes the
+    /// `f64` default through inference like any other unconstrained float.
+    pub(super) fn analyze_float_unary_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+        operation: crate::IntrinsicOperation,
+    ) -> CompileResult<AnalysisResult> {
+        let intrinsic_name = operation.expected_spelling();
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: intrinsic_name.to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+        let arg = self.analyze_inst(air, args[0].value, ctx)?;
+        if !arg.ty.is_float() && !arg.ty.is_never() && !arg.ty.is_error() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: intrinsic_name.to_string(),
+                    expected: "f32 or f64".to_string(),
+                    found: self.format_type_name(arg.ty),
+                })),
+                span,
+            ));
+        }
+        let result_ty = if arg.ty.is_never() { Type::F64 } else { arg.ty };
+        let air_ref = air.add_intrinsic(operation, name, &[arg.air_ref], result_ty, span)?;
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            result_ty,
+            arg.continues,
+        ))
+    }
+
     /// Analyze @intCast intrinsic.
     pub(super) fn analyze_float_conversion_intrinsic(
         &mut self,
@@ -1784,7 +1902,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &mut AnalysisContext,
         operation: crate::IntrinsicOperation,
     ) -> CompileResult<AnalysisResult> {
-        self.require_preview(PreviewFeature::Floats, "a floating-point intrinsic", span)?;
         let intrinsic_name = operation.expected_spelling();
         let expected_count = if operation == crate::IntrinsicOperation::TotalCmp {
             2
@@ -2221,7 +2338,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// Analyze the `@to_string(n)` intrinsic (RUE-17 Phase 1, ADR-0035;
-    /// RUE-314).
+    /// RUE-314; ADR-0065 §6).
     ///
     /// Formats any integer (`i8`/`i16`/`i32`/`i64`/`u8`/`u16`/`u32`/`u64`) as
     /// its decimal representation in a fresh heap `String`. The runtime
@@ -2231,10 +2348,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// select [`rue_builtins::TextBuiltinOperation::ToStringUnsigned`] so a
     /// `u32`/`u64` with the high bit set prints as its unsigned value, not a
     /// negative number. The widening reuses the ordinary `IntCast` path, which
-    /// the backends already sign/zero-extend correctly (RUE-88). The builtin
-    /// mapping obtains the logical out-pointer signature from the canonical
-    /// runtime manifest; AIR retains its existing external-call representation
-    /// until the typed call migration.
+    /// the backends already sign/zero-extend correctly (RUE-88). A float
+    /// operand selects the one shortest-round-trip float formatter
+    /// ([`rue_builtins::TextBuiltinOperation::ToStringFloat`]) and crosses as
+    /// its bit pattern in a `u64` beside an explicit `u32` width
+    /// discriminator, so the width is chosen here rather than inferred by the
+    /// runtime. The builtin mapping obtains the logical
+    /// out-pointer signature from the canonical runtime manifest; AIR retains
+    /// its existing external-call representation until the typed call
+    /// migration.
     pub(super) fn analyze_to_string_intrinsic(
         &mut self,
         air: &mut Air,
@@ -2253,15 +2375,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
-        // The argument is consumed by value (every integer is Copy, so this is a
-        // plain read). Any integer width is accepted (RUE-314).
+        // The argument is consumed by value (every integer and float is Copy,
+        // so this is a plain read). Any integer width is accepted (RUE-314);
+        // `f32`/`f64` format as their shortest round-trip decimal (ADR-0065).
         let arg_result = self.analyze_inst(air, args[0].value, ctx)?;
         let arg_type = arg_result.ty;
-        if !arg_type.is_integer() && !arg_type.is_error() {
+        if !arg_type.is_integer() && !arg_type.is_float() && !arg_type.is_error() {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "@to_string".to_string(),
-                    expected: "integer".to_string(),
+                    expected: "integer or float".to_string(),
                     found: self.format_type_name(arg_type),
                 })),
                 span,
@@ -2271,50 +2394,71 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Widen the argument to a 64-bit value and pick the runtime formatter by
         // signedness. Unsigned types must format their zero-extended value, so
         // route them through the unsigned formatter; an error-typed argument is
-        // treated as signed (it never reaches codegen).
-        let unsigned = arg_type.is_unsigned();
-        let widen_to = if unsigned { Type::U64 } else { Type::I64 };
-        let arg_air_ref = if arg_type.is_error() || arg_type == widen_to {
-            arg_result.air_ref
+        // treated as signed (it never reaches codegen). A float travels as its
+        // bit pattern and selects the formatter of its own width.
+        let mut width_arg = None;
+        let (arg_air_ref, operation, runtime_kind) = if arg_type.is_float() {
+            let bits = self.float_bits_as_u64(air, arg_result.air_ref, arg_type, span)?;
+            width_arg = Some(self.float_width_discriminator(air, arg_type, span));
+            (
+                bits,
+                rue_builtins::TextBuiltinOperation::ToStringFloat,
+                crate::RuntimeCallKind::ToStringFloat,
+            )
         } else {
-            air.add_inst(AirInst {
-                data: AirInstData::IntCast {
-                    value: arg_result.air_ref,
-                    from_ty: arg_type,
-                },
-                ty: widen_to,
-                span,
-            })
+            let unsigned = arg_type.is_unsigned();
+            let widen_to = if unsigned { Type::U64 } else { Type::I64 };
+            let arg_air_ref = if arg_type.is_error() || arg_type == widen_to {
+                arg_result.air_ref
+            } else {
+                air.add_inst(AirInst {
+                    data: AirInstData::IntCast {
+                        value: arg_result.air_ref,
+                        from_ty: arg_type,
+                    },
+                    ty: widen_to,
+                    span,
+                })
+            };
+            if unsigned {
+                (
+                    arg_air_ref,
+                    rue_builtins::TextBuiltinOperation::ToStringUnsigned,
+                    crate::RuntimeCallKind::ToStringUnsigned,
+                )
+            } else {
+                (
+                    arg_air_ref,
+                    rue_builtins::TextBuiltinOperation::ToStringSigned,
+                    crate::RuntimeCallKind::ToString,
+                )
+            }
         };
 
         let string_type = self
             .strbuf_type()
             .ok_or_compile_error(ErrorKind::UnknownType("StrBuf".to_string()), span)?;
-        let operation = if unsigned {
-            rue_builtins::TextBuiltinOperation::ToStringUnsigned
-        } else {
-            rue_builtins::TextBuiltinOperation::ToStringSigned
-        };
         let runtime_helper = operation
             .runtime_helper()
             .expect("to_string builtin must map to a runtime helper");
-        debug_assert_eq!(runtime_helper.parameters.len(), 2);
+        // The out-pointer plus the value, and for a float the width beside it.
+        debug_assert_eq!(
+            runtime_helper.parameters.len(),
+            2 + usize::from(width_arg.is_some())
+        );
         let call_name = self.intern_body_symbol(runtime_helper.symbol)?;
 
-        let air_ref = air.add_call(
-            Some(if unsigned {
-                crate::RuntimeCallKind::ToStringUnsigned
-            } else {
-                crate::RuntimeCallKind::ToString
-            }),
-            call_name,
-            &[AirCallArg {
-                value: arg_air_ref,
+        let mut call_args = vec![AirCallArg {
+            value: arg_air_ref,
+            mode: AirArgMode::Normal,
+        }];
+        if let Some(width) = width_arg {
+            call_args.push(AirCallArg {
+                value: width,
                 mode: AirArgMode::Normal,
-            }],
-            string_type,
-            span,
-        )?;
+            });
+        }
+        let air_ref = air.add_call(Some(runtime_kind), call_name, &call_args, string_type, span)?;
         Ok(AnalysisResult::new(air_ref, string_type))
     }
 

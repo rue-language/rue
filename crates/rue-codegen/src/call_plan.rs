@@ -164,6 +164,18 @@ pub enum AbiSlotClass {
     Fp(crate::value_plan::FloatWidth),
 }
 
+impl AbiSlotClass {
+    /// The class of an ABI slot carrying `leaf`, the one rule every direction
+    /// of the native convention uses: a float leaf goes to the FP bank, at its
+    /// own width; everything else to the GP bank.
+    pub fn for_leaf(leaf: Type) -> Self {
+        match crate::value_plan::float_width(leaf) {
+            Some(width) => Self::Fp(width),
+            None => Self::Gp,
+        }
+    }
+}
+
 impl From<rue_air::NativeArgClass> for AbiSlotClass {
     fn from(value: rue_air::NativeArgClass) -> Self {
         match value {
@@ -213,6 +225,65 @@ pub fn assign_abi_slots(
                 stack += 1;
                 AbiSlotLocation::Stack(index)
             }
+        })
+        .collect()
+}
+
+/// Where one logical slot of a REGISTER-RETURNED aggregate travels.
+///
+/// A return slot's bank follows its LEAF type, exactly as an argument slot's
+/// class does ([`AbiSlotClass`]): `struct P { field: f64 }` hands its one slot
+/// to the first floating-point return register, not to a general-purpose one.
+/// Keeping one rule for both directions is what stops the same type from
+/// crossing in an XMM/V register as an argument and a GP register as a return,
+/// which is how a general-purpose vreg came to hold an FP-classed slot.
+///
+/// Only a ONE-SLOT aggregate can reach this today: a wider aggregate holding a
+/// float is not slot-identical under the compact layout, so
+/// `NativeAbiTypeFacts::classify_return` sends it through sret instead. The
+/// assignment below is written for the general case anyway, so the rule does
+/// not have to be rediscovered when that changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnSlotReg {
+    /// Return register `index` of the general-purpose bank.
+    Gp(usize),
+    /// Return register `index` of the floating-point bank, moved at `width`.
+    Fp {
+        index: usize,
+        width: crate::value_plan::FloatWidth,
+    },
+}
+
+/// The ABI slot classes of `ty`'s logical slots, in logical slot order: one
+/// class per aggregate leaf, floating-point leaves in the FP bank.
+pub fn aggregate_slot_classes(type_pool: &FrozenTypeInternPool, ty: Type) -> Vec<AbiSlotClass> {
+    crate::types::aggregate_leaf_types(type_pool, ty)
+        .into_iter()
+        .map(AbiSlotClass::for_leaf)
+        .collect()
+}
+
+/// Assign every logical slot of a register-returned aggregate of type `ty` to a
+/// return register, counting each bank independently.
+///
+/// `banks` is the target's return-register file. A slot that does not fit a
+/// bank is a classification error rather than a stack argument: the return
+/// classifier only answers `Registers` when every slot fits.
+pub fn return_slot_regs(
+    type_pool: &FrozenTypeInternPool,
+    ty: Type,
+    banks: AbiRegisterBanks,
+) -> Vec<ReturnSlotReg> {
+    let classes = aggregate_slot_classes(type_pool, ty);
+    assign_abi_slots(classes.iter().copied(), banks)
+        .into_iter()
+        .zip(classes)
+        .map(|(location, class)| match (location, class) {
+            (AbiSlotLocation::GpReg(index), _) => ReturnSlotReg::Gp(index),
+            (AbiSlotLocation::FpReg(index), AbiSlotClass::Fp(width)) => {
+                ReturnSlotReg::Fp { index, width }
+            }
+            _ => panic!("a register-returned aggregate slot must fit a return register bank"),
         })
         .collect()
 }
@@ -271,6 +342,10 @@ pub struct CallPlan {
     pub abi_classes: Vec<AbiSlotClass>,
     pub abi_locations: Vec<AbiSlotLocation>,
     pub return_plan: ReturnPlan,
+    /// For a [`ReturnPlan::Registers`] return, the return register each logical
+    /// slot arrives in (see [`return_slot_regs`]). Empty for every other return
+    /// plan, which has no register slots to read back.
+    pub return_slot_regs: Vec<ReturnSlotReg>,
     /// For a compact aggregate returned via sret under `aggregate_layout`
     /// (ADR-0052 phase 5.7, RUE-1004), the internal-slot → physical-byte image
     /// the callee writes and the caller reads back through the sret buffer.
@@ -285,6 +360,9 @@ pub struct CallPlan {
     /// Result vreg reserved by the shared dispatcher before argument leaves
     /// materialize, preserving the canonical event allocation order.
     pub result: Option<VReg>,
+    /// Float width of the result's LOGICAL SLOT 0 — the width of the move that
+    /// loads the primary result vreg. `None` when that slot is general-purpose.
+    /// See `value_plan::primary_slot_float_width`.
     pub result_float_width: Option<crate::value_plan::FloatWidth>,
     pub stack_slot_count: usize,
     pub stack_bytes: u32,
@@ -656,10 +734,8 @@ impl CallPlan {
                     } else {
                         slot_types
                             .iter()
-                            .map(|ty| match crate::value_plan::float_width(*ty) {
-                                Some(width) => AbiSlotClass::Fp(width),
-                                None => AbiSlotClass::Gp,
-                            })
+                            .copied()
+                            .map(AbiSlotClass::for_leaf)
                             .collect::<Vec<_>>()
                     };
                     if *is_multislot_aggregate && callee_abi == CalleeAbi::Rue {
@@ -709,6 +785,9 @@ impl CallPlan {
             abi_classes,
             abi_locations,
             return_plan,
+            // Set by the caller (the value-plan Call arm), which holds the
+            // return type and the target's return-register banks.
+            return_slot_regs: Vec::new(),
             compact_return_image,
             compact_return_dispatch,
             result,
@@ -748,6 +827,7 @@ impl CallPlan {
             abi_classes,
             abi_locations,
             return_plan: ReturnPlan::ZeroSized,
+            return_slot_regs: Vec::new(),
             compact_return_image: None,
             compact_return_dispatch: None,
             result: None,
@@ -938,6 +1018,7 @@ mod tests {
             abi_classes: vec![AbiSlotClass::Gp],
             abi_locations: vec![AbiSlotLocation::GpReg(0)],
             return_plan: ReturnPlan::ZeroSized,
+            return_slot_regs: Vec::new(),
             compact_return_image: None,
             compact_return_dispatch: None,
             result: None,

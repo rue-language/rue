@@ -84,7 +84,7 @@ pub use comptime::{
     comptime_depth_over_limit, next_comptime_depth,
 };
 pub use comptime::{
-    ComptimeDiagnosticSite, ComptimeMatchPattern, ComptimeSemanticRejection,
+    ComptimeDiagnosticSite, ComptimeFloatWidth, ComptimeMatchPattern, ComptimeSemanticRejection,
     ComptimeUnaryOperation, decode_comptime_match_pattern,
 };
 pub use context::ConstValue;

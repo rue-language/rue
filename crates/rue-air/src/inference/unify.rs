@@ -583,6 +583,16 @@ impl Unifier {
                     }
                     continue;
                 }
+                // Contextual admission is the integer-literal rule of spec
+                // 3.12:11 and nothing else. A *concrete* `comptime_float` is
+                // deliberately not admitted here: it carries no width, so
+                // accepting it against `f32`/`f64` would leave the reference
+                // typed `comptime_float` with no variable left to rebind, and
+                // its materialization — the zero placeholder a genuine
+                // comptime position uses — would reach codegen as the value
+                // (RUE-1076). A width-less float in a float context is a type
+                // error instead, which is why no source construct may name
+                // `comptime_float` (spec 3.12:3).
                 Constraint::ContextualEqual(lhs, rhs, span) => {
                     let lhs_applied = self.substitution.apply(lhs);
                     let rhs_applied = self.substitution.apply(rhs);
@@ -590,11 +600,7 @@ impl Unifier {
                         || matches!(lhs, InferType::Var(var) if self.int_literal_vars.contains(var));
                     let expected_float =
                         matches!(rhs_applied, InferType::Concrete(Type::F32 | Type::F64));
-                    let exact_float =
-                        matches!(lhs_applied, InferType::Concrete(Type::COMPTIME_FLOAT));
-                    let result = if exact_float && expected_float {
-                        UnifyResult::Ok
-                    } else if integer_literal && expected_float {
+                    let result = if integer_literal && expected_float {
                         let InferType::Concrete(expected) = rhs_applied else {
                             unreachable!()
                         };

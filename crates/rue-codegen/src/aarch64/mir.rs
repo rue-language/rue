@@ -677,22 +677,36 @@ pub enum Aarch64Inst {
         src: Operand,
         width: FloatWidth,
     },
+    /// `frintm`/`frintp`/`frintz`/`frinta`: round to an integral value in the
+    /// selected direction (ADR-0065 §7).
+    FloatRound {
+        dst: Operand,
+        src: Operand,
+        width: FloatWidth,
+        mode: crate::value_plan::FloatRounding,
+    },
     FloatCmp {
         lhs: Operand,
         rhs: Operand,
         width: FloatWidth,
     },
+    /// `scvtf`/`ucvtf`: integer to float, correctly rounded. `unsigned`
+    /// selects the unsigned form for `u*` sources.
     IntToFloat {
         dst: Operand,
         src: Operand,
         int_bits: u32,
         width: FloatWidth,
+        unsigned: bool,
     },
+    /// `fcvtzs`/`fcvtzu`: float to integer, truncating toward zero. The
+    /// caller has already trapped on NaN and out-of-range operands.
     FloatToInt {
         dst: Operand,
         src: Operand,
         int_bits: u32,
         width: FloatWidth,
+        unsigned: bool,
     },
     FloatCast {
         dst: Operand,
@@ -1335,19 +1349,35 @@ impl fmt::Display for Aarch64Inst {
             ),
             Aarch64Inst::FloatNeg { dst, src, width } => write!(f, "fneg.{width:?} {dst}, {src}"),
             Aarch64Inst::FloatSqrt { dst, src, width } => write!(f, "fsqrt.{width:?} {dst}, {src}"),
+            Aarch64Inst::FloatRound {
+                dst,
+                src,
+                width,
+                mode,
+            } => write!(f, "fround.{mode:?}.{width:?} {dst}, {src}"),
             Aarch64Inst::FloatCmp { lhs, rhs, width } => write!(f, "fcmp.{width:?} {lhs}, {rhs}"),
             Aarch64Inst::IntToFloat {
                 dst,
                 src,
                 int_bits,
                 width,
-            } => write!(f, "scvtf.{width:?}.{int_bits} {dst}, {src}"),
+                unsigned,
+            } => write!(
+                f,
+                "{}cvtf.{width:?}.{int_bits} {dst}, {src}",
+                if *unsigned { "u" } else { "s" }
+            ),
             Aarch64Inst::FloatToInt {
                 dst,
                 src,
                 int_bits,
                 width,
-            } => write!(f, "fcvtzs.{int_bits}.{width:?} {dst}, {src}"),
+                unsigned,
+            } => write!(
+                f,
+                "fcvtz{}.{int_bits}.{width:?} {dst}, {src}",
+                if *unsigned { "u" } else { "s" }
+            ),
             Aarch64Inst::FloatCast { dst, src, from, to } => {
                 write!(f, "fcvt.{to:?}.{from:?} {dst}, {src}")
             }

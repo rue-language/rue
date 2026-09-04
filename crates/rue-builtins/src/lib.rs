@@ -315,6 +315,12 @@ text_builtin_inventory! {
         surface: "@to_string(unsigned)",
         disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::ToStringUnsigned)
     },
+    ToStringFloat => {
+        category: Formatting,
+        surface: "@to_string(float)",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::ToStringFloat)
+    },
+
     IntToString => {
         category: Formatting,
         surface: "std.fmt.int_to_string",

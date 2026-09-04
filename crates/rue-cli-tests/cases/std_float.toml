@@ -1,0 +1,126 @@
+# std.math and std.fmt floating-point surface (ADR-0065 §§6–9), exercised
+# through the real std bundle via RUE_STD_PATH.
+
+[section]
+id = "cli.std_float"
+name = "Standard library — floating-point math and formatting"
+description = "std.math sqrt/floor/ceil/trunc/round/fabs/inf/nan/is_*/rem/total_cmp and std.fmt.float_to_string, end-to-end through @import(\"std\")."
+
+[[case]]
+name = "std_math_float_functions"
+description = "Every std.math float function on f64 and f32, including the exact remainder and total order."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const math = std.math;
+
+fn check(cond: bool, id: i32) -> i32 { if cond { 0 } else { id } }
+
+fn main() -> i32 {
+    let mut bad: i32 = 0;
+    let nine: f64 = 9.0;
+    let two: f64 = 2.0;
+    let neg_half: f64 = -2.5;
+    if bad == 0 { bad = check(math.sqrt(f64, nine) == 3.0, 1); }
+    if bad == 0 { bad = check(math.sqrt(f64, two) == 1.4142135623730951, 2); }
+    if bad == 0 { bad = check(math.floor(f64, neg_half) == -3.0, 3); }
+    if bad == 0 { bad = check(math.ceil(f64, neg_half) == -2.0, 4); }
+    if bad == 0 { bad = check(math.trunc(f64, neg_half) == -2.0, 5); }
+    if bad == 0 { bad = check(math.round(f64, neg_half) == -3.0, 6); }
+    let pos_half: f64 = 2.5;
+    if bad == 0 { bad = check(math.round(f64, pos_half) == 3.0, 7); }
+    let neg_zero: f64 = -0.0;
+    if bad == 0 { bad = check(1.0 / math.fabs(f64, neg_zero) == math.inf(f64), 8); }
+    let neg_three: f64 = -3.0;
+    if bad == 0 { bad = check(math.fabs(f64, neg_three) == 3.0, 9); }
+    if bad == 0 { bad = check(math.is_nan(f64, math.nan(f64)), 10); }
+    if bad == 0 { bad = check(!math.is_nan(f64, math.inf(f64)), 11); }
+    if bad == 0 { bad = check(math.is_inf(f64, math.inf(f64)), 12); }
+    let neg_inf: f64 = 0.0 - math.inf(f64);
+    if bad == 0 { bad = check(math.is_inf(f64, neg_inf), 13); }
+    if bad == 0 { bad = check(math.is_finite(f64, nine) && !math.is_finite(f64, neg_inf), 14); }
+    if bad == 0 { bad = check(!math.is_finite(f64, math.nan(f64)), 15); }
+
+    // rem: exact fmod, sign of the dividend, IEEE specials.
+    let x: f64 = 5.5;
+    let y: f64 = 2.0;
+    if bad == 0 { bad = check(math.rem(f64, x, y) == 1.5, 16); }
+    let neg_x: f64 = -5.5;
+    if bad == 0 { bad = check(math.rem(f64, neg_x, y) == -1.5, 17); }
+    let neg_y: f64 = -2.0;
+    if bad == 0 { bad = check(math.rem(f64, x, neg_y) == 1.5, 18); }
+    let seven_tenths: f64 = 0.7;
+    let tenth: f64 = 0.1;
+    if bad == 0 { bad = check(math.rem(f64, seven_tenths, tenth) == 0.09999999999999992, 19); }
+    let huge: f64 = 1e300;
+    let three: f64 = 3.0;
+    let r = math.rem(f64, huge, three);
+    if bad == 0 { bad = check(r >= 0.0 && r < 3.0 && r == 0.0, 20); }
+    if bad == 0 { bad = check(math.rem(f64, x, math.inf(f64)) == x, 21); }
+    if bad == 0 { bad = check(math.is_nan(f64, math.rem(f64, math.inf(f64), y)), 22); }
+    let zero: f64 = 0.0;
+    if bad == 0 { bad = check(math.is_nan(f64, math.rem(f64, x, zero)), 23); }
+    if bad == 0 { bad = check(1.0 / math.rem(f64, neg_zero, y) == neg_inf, 24); }
+    let small: f64 = 1.0;
+    if bad == 0 { bad = check(math.rem(f64, small, y) == 1.0, 25); }
+    let eight: f64 = 8.0;
+    if bad == 0 { bad = check(math.rem(f64, eight, y) == 0.0, 26); }
+
+    // total_cmp: the total order `<` is not.
+    let pos_zero: f64 = 0.0;
+    if bad == 0 { bad = check(math.total_cmp(f64, neg_zero, pos_zero) < 0, 27); }
+    if bad == 0 { bad = check(math.total_cmp(f64, pos_zero, neg_zero) > 0, 28); }
+    if bad == 0 { bad = check(math.total_cmp(f64, x, x) == 0, 29); }
+    if bad == 0 { bad = check(math.total_cmp(f64, math.nan(f64), math.nan(f64)) == 0, 30); }
+    if bad == 0 { bad = check(math.total_cmp(f64, neg_inf, math.inf(f64)) < 0, 31); }
+
+    // f32 instantiations.
+    let f_nine: f32 = 9.0;
+    let f_neg_half: f32 = -2.5;
+    if bad == 0 { bad = check(math.sqrt(f32, f_nine) == 3.0, 32); }
+    if bad == 0 { bad = check(math.round(f32, f_neg_half) == -3.0, 33); }
+    if bad == 0 { bad = check(math.floor(f32, f_neg_half) == -3.0, 34); }
+    let f_x: f32 = 5.5;
+    let f_y: f32 = 2.0;
+    if bad == 0 { bad = check(math.rem(f32, f_x, f_y) == 1.5, 35); }
+    if bad == 0 { bad = check(math.is_nan(f32, math.nan(f32)) && math.is_inf(f32, math.inf(f32)), 36); }
+    let f_neg_zero: f32 = -0.0;
+    let f_zero: f32 = 0.0;
+    if bad == 0 { bad = check(math.total_cmp(f32, f_neg_zero, f_zero) < 0, 37); }
+    bad
+}
+""" }]
+
+[[case]]
+name = "std_fmt_float_to_string"
+description = "std.fmt.float_to_string renders the shortest round-trip decimal at the value's own width."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = """1.5
+0.1
+0.10000000149011612
+-0.0
+1e+21
+NaN
+"""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let a: f64 = 1.5;
+    let b: f32 = 0.1;
+    let widened: f64 = @float_cast(b);
+    let neg_zero: f64 = -0.0;
+    let big: f64 = 1e21;
+    @dbg(std.fmt.float_to_string(f64, a));
+    @dbg(std.fmt.float_to_string(f32, b));
+    @dbg(std.fmt.float_to_string(f64, widened));
+    @dbg(std.fmt.float_to_string(f64, neg_zero));
+    @dbg(std.fmt.float_to_string(f64, big));
+    @dbg(std.fmt.float_to_string(f64, std.math.nan(f64)));
+    0
+}
+""" }]

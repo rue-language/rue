@@ -2222,10 +2222,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         span,
                     ));
                 }
-                let bits = crate::finite_float_literal_bits(spelling, ty).ok_or_else(|| {
+                // A literal's spelling was already range-checked where it was
+                // written; a computed constant may legitimately be `inf` or
+                // `NaN`, so the value parser is the permissive one.
+                let bits = crate::float_value_bits(spelling, ty).ok_or_else(|| {
                     CompileError::new(
                         ErrorKind::TypeMismatch {
-                            expected: format!("finite {} literal", self.format_type_name(ty)),
+                            expected: format!("{} value", self.format_type_name(ty)),
                             found: spelling.to_owned(),
                         },
                         span,
@@ -2514,7 +2517,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     ));
                 }
                 ConstValue::Float(content) => {
-                    let ty = resolved_ty.unwrap_or(Type::COMPTIME_FLOAT);
+                    // The captured value carries only its decimal spelling, so
+                    // the width comes from the HM-resolved type of this
+                    // reference — a captured `comptime v: f64` read where f32
+                    // is expected resolves to f32 — exactly as the captured
+                    // integer above recovers its width. An unresolved
+                    // reference falls back to the no-context width of spec
+                    // 3.12:8 rather than to the width-less `comptime_float`,
+                    // whose materialization is the zero placeholder that only
+                    // a genuine comptime position may see (RUE-1076).
+                    let ty = match resolved_ty {
+                        Some(t) if t.is_float() => t,
+                        _ => Type::F64,
+                    };
                     let (data, ty) = self.materialize_const_value(
                         ctx,
                         ConstValue::Float(*content),

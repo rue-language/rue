@@ -935,6 +935,23 @@ impl<'a> Emitter<'a> {
                 self.emit_float_unary(0x1e21c000, dst.as_physical(), src.as_physical(), *width);
                 end_inst!(self, "{}", inst);
             }
+            Aarch64Inst::FloatRound {
+                dst,
+                src,
+                width,
+                mode,
+            } => {
+                // FRINTM / FRINTP / FRINTZ / FRINTA (scalar).
+                let base = match mode {
+                    crate::value_plan::FloatRounding::Floor => 0x1e254000,
+                    crate::value_plan::FloatRounding::Ceil => 0x1e24c000,
+                    crate::value_plan::FloatRounding::Trunc => 0x1e25c000,
+                    crate::value_plan::FloatRounding::NearestTiesAway => 0x1e264000,
+                };
+                self.begin_inst();
+                self.emit_float_unary(base, dst.as_physical(), src.as_physical(), *width);
+                end_inst!(self, "{}", inst);
+            }
             Aarch64Inst::FloatLoad {
                 dst,
                 base,
@@ -990,9 +1007,16 @@ impl<'a> Emitter<'a> {
                 src,
                 int_bits,
                 width,
+                unsigned,
             } => {
                 self.begin_inst();
-                self.emit_scvtf(dst.as_physical(), src.as_physical(), *int_bits, *width);
+                self.emit_cvtf(
+                    dst.as_physical(),
+                    src.as_physical(),
+                    *int_bits,
+                    *width,
+                    *unsigned,
+                );
                 end_inst!(self, "{}", inst);
             }
             Aarch64Inst::FloatToInt {
@@ -1000,9 +1024,16 @@ impl<'a> Emitter<'a> {
                 src,
                 int_bits,
                 width,
+                unsigned,
             } => {
                 self.begin_inst();
-                self.emit_fcvtzs(dst.as_physical(), src.as_physical(), *int_bits, *width);
+                self.emit_fcvtz(
+                    dst.as_physical(),
+                    src.as_physical(),
+                    *int_bits,
+                    *width,
+                    *unsigned,
+                );
                 end_inst!(self, "{}", inst);
             }
             Aarch64Inst::FloatCast { dst, src, from, to } => {
@@ -1772,6 +1803,7 @@ impl<'a> Emitter<'a> {
             Aarch64Inst::FloatMov { dst, src, .. }
             | Aarch64Inst::FloatNeg { dst, src, .. }
             | Aarch64Inst::FloatSqrt { dst, src, .. }
+            | Aarch64Inst::FloatRound { dst, src, .. }
             | Aarch64Inst::FloatCast { dst, src, .. } => {
                 fp(dst);
                 fp(src);
@@ -2077,35 +2109,43 @@ impl<'a> Emitter<'a> {
         );
     }
 
-    fn emit_scvtf(
+    /// SCVTF / UCVTF (scalar, integer source). The unsigned form differs from
+    /// the signed one only in the opcode field (bit 16).
+    fn emit_cvtf(
         &mut self,
         dst: Reg,
         src: Reg,
         int_bits: u32,
         width: crate::value_plan::FloatWidth,
+        unsigned: bool,
     ) {
-        let base = match (int_bits, width) {
+        let base: u32 = match (int_bits, width) {
             (64, crate::value_plan::FloatWidth::F32) => 0x9e220000,
             (64, crate::value_plan::FloatWidth::F64) => 0x9e620000,
             (_, crate::value_plan::FloatWidth::F32) => 0x1e220000,
             (_, crate::value_plan::FloatWidth::F64) => 0x1e620000,
         };
+        let base = base | if unsigned { 1 << 16 } else { 0 };
         self.emit_u32(base | ((src.encoding() as u32) << 5) | dst.encoding() as u32);
     }
 
-    fn emit_fcvtzs(
+    /// FCVTZS / FCVTZU (scalar, integer destination). The unsigned form
+    /// differs from the signed one only in the opcode field (bit 16).
+    fn emit_fcvtz(
         &mut self,
         dst: Reg,
         src: Reg,
         int_bits: u32,
         width: crate::value_plan::FloatWidth,
+        unsigned: bool,
     ) {
-        let base = match (int_bits, width) {
+        let base: u32 = match (int_bits, width) {
             (64, crate::value_plan::FloatWidth::F32) => 0x9e380000,
             (64, crate::value_plan::FloatWidth::F64) => 0x9e780000,
             (_, crate::value_plan::FloatWidth::F32) => 0x1e380000,
             (_, crate::value_plan::FloatWidth::F64) => 0x1e780000,
         };
+        let base = base | if unsigned { 1 << 16 } else { 0 };
         self.emit_u32(base | ((src.encoding() as u32) << 5) | dst.encoding() as u32);
     }
 
@@ -3040,6 +3080,7 @@ mod tests {
                 src: Operand::Physical(Reg::X1),
                 int_bits: 64,
                 width: FloatWidth::F64,
+                unsigned: false,
             }),
             0x9e620020_u32.to_le_bytes()
         );
@@ -3049,8 +3090,82 @@ mod tests {
                 src: Operand::Physical(Reg::V1),
                 int_bits: 32,
                 width: FloatWidth::F32,
+                unsigned: false,
             }),
             0x1e380020_u32.to_le_bytes()
+        );
+    }
+
+    #[test]
+    fn scalar_float_rounding_encodings_cover_every_direction() {
+        use crate::value_plan::FloatRounding;
+        // frintm d0, d1 / frintp s0, s1 / frintz d0, d1 / frinta s0, s1
+        for (mode, width, expected) in [
+            (FloatRounding::Floor, FloatWidth::F64, 0x1e654020_u32),
+            (FloatRounding::Ceil, FloatWidth::F32, 0x1e24c020_u32),
+            (FloatRounding::Trunc, FloatWidth::F64, 0x1e65c020_u32),
+            (
+                FloatRounding::NearestTiesAway,
+                FloatWidth::F32,
+                0x1e264020_u32,
+            ),
+        ] {
+            assert_eq!(
+                emit_single(Aarch64Inst::FloatRound {
+                    dst: Operand::Physical(Reg::V0),
+                    src: Operand::Physical(Reg::V1),
+                    width,
+                    mode,
+                }),
+                expected.to_le_bytes(),
+                "{mode:?} {width:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scalar_float_unsigned_conversion_encodings() {
+        // ucvtf d0, x1 / ucvtf s0, w1
+        assert_eq!(
+            emit_single(Aarch64Inst::IntToFloat {
+                dst: Operand::Physical(Reg::V0),
+                src: Operand::Physical(Reg::X1),
+                int_bits: 64,
+                width: FloatWidth::F64,
+                unsigned: true,
+            }),
+            0x9e630020_u32.to_le_bytes()
+        );
+        assert_eq!(
+            emit_single(Aarch64Inst::IntToFloat {
+                dst: Operand::Physical(Reg::V0),
+                src: Operand::Physical(Reg::X1),
+                int_bits: 32,
+                width: FloatWidth::F32,
+                unsigned: true,
+            }),
+            0x1e230020_u32.to_le_bytes()
+        );
+        // fcvtzu x0, d1 / fcvtzu w0, s1
+        assert_eq!(
+            emit_single(Aarch64Inst::FloatToInt {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Physical(Reg::V1),
+                int_bits: 64,
+                width: FloatWidth::F64,
+                unsigned: true,
+            }),
+            0x9e790020_u32.to_le_bytes()
+        );
+        assert_eq!(
+            emit_single(Aarch64Inst::FloatToInt {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Physical(Reg::V1),
+                int_bits: 32,
+                width: FloatWidth::F32,
+                unsigned: true,
+            }),
+            0x1e390020_u32.to_le_bytes()
         );
     }
 

@@ -112,6 +112,9 @@ pub enum RuntimeCallKind {
     StrCharNextLossy,
     ToString,
     ToStringUnsigned,
+    /// `@to_string` of an `f32`/`f64`, passed as its bit pattern beside an
+    /// explicit width discriminator (ADR-0065 §6).
+    ToStringFloat,
     StrPrintAggregate,
     StrPrintProjected,
     StrPrintlnAggregate,
@@ -119,6 +122,9 @@ pub enum RuntimeCallKind {
     DebugI64,
     DebugU64,
     DebugBool,
+    /// `@dbg` of an `f32`/`f64`, passed as its bit pattern beside an explicit
+    /// width discriminator (ADR-0065 §6).
+    DebugFloat,
     DebugStr,
     Panic,
     PanicNoMessage,
@@ -194,6 +200,17 @@ const FORMAT_UNSIGNED: &[RuntimeOperandOrigin] = &[
         ty: AbiType::U64,
     },
 ];
+const FORMAT_FLOAT: &[RuntimeOperandOrigin] = &[
+    RuntimeOperandOrigin::OutResult(AggregateShapeId::StrBufResult),
+    RuntimeOperandOrigin::ValueArgument {
+        index: 0,
+        ty: AbiType::U64,
+    },
+    RuntimeOperandOrigin::ValueArgument {
+        index: 1,
+        ty: AbiType::U32,
+    },
+];
 const TEXT: &[RuntimeOperandOrigin] = &[
     RuntimeOperandOrigin::TextPointer(0),
     RuntimeOperandOrigin::TextLength(0),
@@ -205,6 +222,21 @@ const PROJECTED_TEXT: &[RuntimeOperandOrigin] = &[
 const SIGNED_SCALAR: &[RuntimeOperandOrigin] = &[RuntimeOperandOrigin::SignExtendedArgument(0)];
 const UNSIGNED_SCALAR: &[RuntimeOperandOrigin] = &[RuntimeOperandOrigin::ZeroExtendedArgument(0)];
 const BOOL_SCALAR: &[RuntimeOperandOrigin] = &[RuntimeOperandOrigin::BoolWordArgument(0)];
+// A float crosses into the runtime as its IEEE-754 bit pattern in one `u64`
+// beside an explicit `u32` width discriminator (ADR-0065 §6): sema
+// reinterprets the value with a same-width `BitCast`, zero-extends an `f32`
+// pattern, and materializes `FLOAT_WIDTH_F32`/`FLOAT_WIDTH_F64` as the second
+// argument, so the helper has no floating-point ABI and never infers a width.
+const FLOAT_BITS_AND_WIDTH: &[RuntimeOperandOrigin] = &[
+    RuntimeOperandOrigin::ValueArgument {
+        index: 0,
+        ty: AbiType::U64,
+    },
+    RuntimeOperandOrigin::ValueArgument {
+        index: 1,
+        ty: AbiType::U32,
+    },
+];
 const NONE: &[RuntimeOperandOrigin] = &[];
 const READ_LINE: &[RuntimeOperandOrigin] = &[
     RuntimeOperandOrigin::OutResult(AggregateShapeId::OptionStrBufResult),
@@ -344,7 +376,7 @@ const TEST_FAIL: &[RuntimeOperandOrigin] = &[
 ];
 
 impl RuntimeCallKind {
-    pub const ALL: [Self; 47] = [
+    pub const ALL: [Self; 49] = [
         Self::StrByteAt,
         Self::StrCharScalar,
         Self::StrCharNext,
@@ -352,6 +384,7 @@ impl RuntimeCallKind {
         Self::StrCharNextLossy,
         Self::ToString,
         Self::ToStringUnsigned,
+        Self::ToStringFloat,
         Self::StrPrintAggregate,
         Self::StrPrintProjected,
         Self::StrPrintlnAggregate,
@@ -359,6 +392,7 @@ impl RuntimeCallKind {
         Self::DebugI64,
         Self::DebugU64,
         Self::DebugBool,
+        Self::DebugFloat,
         Self::DebugStr,
         Self::Panic,
         Self::PanicNoMessage,
@@ -403,11 +437,13 @@ impl RuntimeCallKind {
             Self::StrCharNextLossy => RuntimeHelperId::StrCharNextLossy,
             Self::ToString => RuntimeHelperId::ToString,
             Self::ToStringUnsigned => RuntimeHelperId::ToStringUnsigned,
+            Self::ToStringFloat => RuntimeHelperId::ToStringFloat,
             Self::StrPrintAggregate | Self::StrPrintProjected => RuntimeHelperId::StrPrint,
             Self::StrPrintlnAggregate | Self::StrPrintlnProjected => RuntimeHelperId::StrPrintln,
             Self::DebugI64 => RuntimeHelperId::DebugI64,
             Self::DebugU64 => RuntimeHelperId::DebugU64,
             Self::DebugBool => RuntimeHelperId::DebugBool,
+            Self::DebugFloat => RuntimeHelperId::DebugFloat,
             Self::DebugStr => RuntimeHelperId::DebugStr,
             Self::Panic => RuntimeHelperId::Panic,
             Self::PanicNoMessage => RuntimeHelperId::PanicNoMessage,
@@ -453,6 +489,7 @@ impl RuntimeCallKind {
             | Self::StrCharNextLossy => CHAR_INDEX,
             Self::ToString => FORMAT_SIGNED,
             Self::ToStringUnsigned => FORMAT_UNSIGNED,
+            Self::ToStringFloat => FORMAT_FLOAT,
             Self::StrPrintAggregate | Self::StrPrintlnAggregate | Self::DebugStr | Self::Panic => {
                 TEXT
             }
@@ -460,6 +497,8 @@ impl RuntimeCallKind {
             Self::DebugI64 => SIGNED_SCALAR,
             Self::DebugU64 => UNSIGNED_SCALAR,
             Self::DebugBool => BOOL_SCALAR,
+            Self::DebugFloat => FLOAT_BITS_AND_WIDTH,
+
             Self::PanicNoMessage
             | Self::AssertFailed
             | Self::BoundsCheck

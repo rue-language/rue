@@ -72,11 +72,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         match &inst.data {
             InstData::FloatConst { text } => {
-                self.require_preview(
-                    rue_error::PreviewFeature::Floats,
-                    "a floating-point literal",
-                    inst.span,
-                )?;
                 let ty =
                     Self::get_resolved_type(ctx, inst_ref, inst.span, "floating-point literal")?;
                 let spelling = self.body_interner().resolve(text);
@@ -127,11 +122,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // (ADR-0065 §3); this is literal contextualization, not a
                 // runtime implicit integer/float conversion.
                 if ty.is_float() {
-                    self.require_preview(
-                        rue_error::PreviewFeature::Floats,
-                        "an integer literal in floating-point context",
-                        inst.span,
-                    )?;
                     let bits = if ty == Type::F32 {
                         u64::from((*value as f32).to_bits())
                     } else {
@@ -293,11 +283,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 if let InstData::FloatConst { text } = &operand_inst.data
                     && ty.is_float()
                 {
-                    self.require_preview(
-                        rue_error::PreviewFeature::Floats,
-                        "a floating-point literal",
-                        inst.span,
-                    )?;
                     let spelling = self.body_interner().resolve(text);
                     let bits = crate::finite_float_literal_bits_with_sign(spelling, ty, true)
                         .ok_or_else(|| {

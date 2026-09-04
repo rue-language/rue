@@ -31,6 +31,33 @@ fn main() -> i32 {
 }
 ```
 
+## Float Literals
+
+{{ rule(id="4.1:13", cat="dynamic-semantics") }}
+
+A float literal (2.1:29) evaluates to the floating-point value obtained by
+rounding its exact written decimal value to the nearest value of its type, ties
+to even (3.12:9).
+
+{{ rule(id="4.1:14", cat="normative") }}
+
+A float literal has type `comptime_float` and takes a concrete floating-point
+type from its context; with no such context its type is `f64` (3.12:7,
+3.12:8). Unlike an integer literal it is never given an integer type, however
+integral its value.
+
+{{ rule(id="4.1:15") }}
+
+```rue
+fn main() -> i32 {
+    let a = 2.5;         // f64 by default
+    let b: f32 = 2.5;    // f32 by annotation
+    @dbg(a);
+    @dbg(b);
+    0
+}
+```
+
 ## Boolean Literals
 
 {{ rule(id="4.1:5", cat="normative") }}

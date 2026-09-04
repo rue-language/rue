@@ -3127,3 +3127,134 @@ fn main() -> i32 {
 """
 exit_code = 101
 stderr_contains = "panic: assertion failed: left == right"
+
+# =============================================================================
+# Floating-point intrinsics (§ 3.12, ADR-0065)
+# =============================================================================
+
+[[case]]
+name = "int_to_float_takes_one_integer_and_infers_its_result"
+spec = ["4.13:139"]
+description = "One integer argument, result type from context"
+source = """
+fn i(v: i32) -> i32 { v }
+
+fn main() -> i32 {
+    let wide: f64 = @int_to_float(i(7));
+    let narrow: f32 = @int_to_float(i(7));
+    @dbg(wide);
+    @dbg(narrow);
+    0
+}
+"""
+expected_stdout = """
+7.0
+7.0
+"""
+exit_code = 0
+
+[[case]]
+name = "float_to_int_takes_one_float_and_infers_its_result"
+spec = ["4.13:140"]
+description = "One float argument, signed or unsigned result type from context"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let signed: i32 = @float_to_int(f(-2.9));
+    let unsigned: u8 = @float_to_int(f(200.7));
+    @dbg(signed);
+    @dbg(unsigned);
+    0
+}
+"""
+expected_stdout = """
+-2
+200
+"""
+exit_code = 0
+
+[[case]]
+name = "float_cast_takes_one_float_and_infers_the_other_width"
+spec = ["4.13:141"]
+description = "One float argument, the other float type from context, in both directions"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let narrow: f32 = @float_cast(f(1.5));
+    let wide: f64 = @float_cast(narrow);
+    @dbg(narrow);
+    @dbg(wide);
+    0
+}
+"""
+expected_stdout = """
+1.5
+1.5
+"""
+exit_code = 0
+
+[[case]]
+name = "total_cmp_takes_two_floats_and_returns_i32"
+spec = ["4.13:142"]
+description = "Two operands of one float type, result i32"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let r: i32 = @total_cmp(f(2.0), f(1.0));
+    @dbg(r);
+    @dbg(@total_cmp(f(1.0), f(2.0)));
+    0
+}
+"""
+expected_stdout = """
+1
+-1
+"""
+exit_code = 0
+
+[[case]]
+name = "rounding_intrinsics_take_one_float_and_return_it"
+spec = ["4.13:143"]
+description = "@sqrt, @floor, @ceil, @trunc, and @round each take one float and produce that float type"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    @dbg(@sqrt(f(9.0)));
+    @dbg(@floor(f(1.7)));
+    @dbg(@ceil(f(1.2)));
+    @dbg(@trunc(f(1.7)));
+    @dbg(@round(f(1.5)));
+    0
+}
+"""
+expected_stdout = """
+3.0
+1.0
+2.0
+1.0
+2.0
+"""
+exit_code = 0
+
+[[case]]
+name = "dbg_accepts_a_float_argument"
+spec = ["4.13:7", "4.13:8a"]
+description = "@dbg's accepted argument types include the float types, printed by the § 3.12 rules"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    @dbg(f(1.5));
+    @dbg(-f(0.0));
+    0
+}
+"""
+expected_stdout = """
+1.5
+-0.0
+"""
+exit_code = 0

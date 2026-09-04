@@ -873,6 +873,38 @@ mod tests {
     }
 
     #[test]
+    fn float_formatting_is_shortest_round_trip_and_spells_specials() {
+        for (value, expected) in [
+            (1.5f64, "1.5"),
+            (0.1, "0.1"),
+            (-0.0, "-0.0"),
+            (0.0, "0.0"),
+            (1e21, "1e+21"),
+            (123456789.0, "123456789.0"),
+            (f64::NAN, "NaN"),
+            (f64::INFINITY, "inf"),
+            (f64::NEG_INFINITY, "-inf"),
+            (5e-324, "5e-324"),
+            (1.7976931348623157e308, "1.7976931348623157e+308"),
+            (1e15, "1000000000000000.0"),
+            (1e16, "1e+16"),
+            (0.00001, "0.00001"),
+            (0.000001, "1e-6"),
+        ] {
+            assert_f64(value, expected);
+        }
+        for (value, expected) in [
+            (0.1f32, "0.1"),
+            (16777217.0f32, "16777216.0"),
+            (-2.5f32, "-2.5"),
+            (f32::NAN, "NaN"),
+            (1e-45f32, "1e-45"),
+        ] {
+            assert_f32(value, expected);
+        }
+    }
+
+    #[test]
     fn integer_formatting_covers_extremes() {
         let mut out = blank_result();
         // SAFETY: `out` is valid, aligned, exclusive result storage.

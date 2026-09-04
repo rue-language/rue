@@ -743,6 +743,18 @@ $runtime
                                                 }
                                                 Ok(EvaluatedSemanticConst::Value(typed)) => {
                                                     let typed = Arc::unwrap_or_clone(typed);
+                                                    // A float value that is still `comptime_float`
+                                                    // is the literal's own exact decimal text: no
+                                                    // operation has given it a width yet. That is
+                                                    // the source literal spec 3.12:10 holds to the
+                                                    // finite-range rule, exactly as the body path
+                                                    // holds `let x: f32 = 1e39;`. Anything else
+                                                    // already carries the width it was computed at
+                                                    // and may legitimately be `inf` or `NaN`.
+                                                    let float_initializer_is_literal = matches!(
+                                                        typed.ty,
+                                                        Some(crate::durable_semantics::DurableType::ComptimeFloat)
+                                                    );
                                                     let value = typed.value;
                                                     let resolved_type = match declared_type_resolution {
                                                         Some(Ok(ty)) => Ok(ty),
@@ -753,7 +765,7 @@ $runtime
                                                                 | crate::durable_semantics::DurableConstValue::Function(_)
                                                         ) => Ok(crate::durable_semantics::DurableType::ComptimeType),
                                                         None => {
-                                                            let inferred = inferred_const_type_name(&value);
+                                                            let inferred = suggested_const_type_name(&value);
                                                             return Ok(QueryOutput::success(Value::Failure(
                                                                 Failure::DiagnosticWithHelp {
                                                                     kind: rue_error::ErrorKind::ConstMissingTypeAnnotation {
@@ -775,10 +787,25 @@ $runtime
                                                             ResolveSemanticSignatureError::Failure(failure) => Value::Failure(*failure),
                                                         },
                                                         Ok(ty) => {
+                                                            // An integer literal is admitted where a float
+                                                            // is expected (ADR-0065 §3): it becomes the
+                                                            // float value nearest to it, exactly as the
+                                                            // body path converts `let x: f64 = 3;`.
+                                                            let value = match (&ty, value) {
+                                                                (
+                                                                    crate::durable_semantics::DurableType::F32
+                                                                    | crate::durable_semantics::DurableType::F64,
+                                                                    crate::durable_semantics::DurableConstValue::Integer(integer),
+                                                                ) => crate::durable_semantics::DurableConstValue::Float(Arc::from(
+                                                                    integer.to_string(),
+                                                                )),
+                                                                (_, value) => value,
+                                                            };
                                                             let compatible = typed.ty.as_ref().is_none_or(|found| {
                                                                 found == &ty
-                                                                    || (matches!(found, crate::durable_semantics::DurableType::ComptimeFloat)
-                                                                        && matches!(ty, crate::durable_semantics::DurableType::F32 | crate::durable_semantics::DurableType::F64))
+                                                                    || (matches!(found, crate::durable_semantics::DurableType::ComptimeFloat | crate::durable_semantics::DurableType::I32)
+                                                                        && matches!(ty, crate::durable_semantics::DurableType::F32 | crate::durable_semantics::DurableType::F64)
+                                                                        && matches!(value, crate::durable_semantics::DurableConstValue::Float(_)))
                                                             })
                                                                 && match (&ty, &value) {
                                                                 (crate::durable_semantics::DurableType::I8, crate::durable_semantics::DurableConstValue::Integer(value)) => i8::try_from(*value).is_ok(),
@@ -793,8 +820,8 @@ $runtime
                                                                 | (crate::durable_semantics::DurableType::Unit, crate::durable_semantics::DurableConstValue::Unit)
                                                                 | (crate::durable_semantics::DurableType::ComptimeFloat, crate::durable_semantics::DurableConstValue::Float(_))
                                                                 | (crate::durable_semantics::DurableType::ComptimeType, crate::durable_semantics::DurableConstValue::Type(_) | crate::durable_semantics::DurableConstValue::Function(_)) => true,
-                                                                (crate::durable_semantics::DurableType::F32, crate::durable_semantics::DurableConstValue::Float(value)) => rue_air::finite_float_literal_bits(value, rue_air::Type::F32).is_some(),
-                                                                (crate::durable_semantics::DurableType::F64, crate::durable_semantics::DurableConstValue::Float(value)) => rue_air::finite_float_literal_bits(value, rue_air::Type::F64).is_some(),
+                                                                (crate::durable_semantics::DurableType::F32, crate::durable_semantics::DurableConstValue::Float(value)) => float_const_initializer_bits(value, rue_air::Type::F32, float_initializer_is_literal).is_some(),
+                                                                (crate::durable_semantics::DurableType::F64, crate::durable_semantics::DurableConstValue::Float(value)) => float_const_initializer_bits(value, rue_air::Type::F64, float_initializer_is_literal).is_some(),
                                                                 (crate::durable_semantics::DurableType::BuiltinNominal { name, .. }, crate::durable_semantics::DurableConstValue::String(_)) if name.as_ref() == "str" => true,
                                                                 _ => false,
                                                             };
@@ -853,6 +880,19 @@ $runtime
                                                                                 "value {value} is out of range for type {}",
                                                                                 durable_type_diagnostic_name(&ty),
                                                                             ),
+                                                                        }
+                                                                    }
+                                                                    (crate::durable_semantics::DurableType::F32
+                                                                    | crate::durable_semantics::DurableType::F64,
+                                                                    crate::durable_semantics::DurableConstValue::Float(text))
+                                                                        if float_initializer_is_literal =>
+                                                                    {
+                                                                        rue_error::ErrorKind::TypeMismatch {
+                                                                            expected: format!(
+                                                                                "finite {} literal",
+                                                                                durable_type_diagnostic_name(&ty)
+                                                                            ),
+                                                                            found: text.to_string(),
                                                                         }
                                                                     }
                                                                     _ => rue_error::ErrorKind::TypeMismatch {

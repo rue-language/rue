@@ -567,6 +567,21 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
         DurableComptimeScalarPolicy::type_integer_semantics(ty.as_ref())
     }
 
+    fn type_float_width(&self, ty: &Self::Type) -> Option<rue_air::ComptimeFloatWidth> {
+        match ty.as_ref() {
+            DurableType::F32 => Some(rue_air::ComptimeFloatWidth::F32),
+            DurableType::F64 => Some(rue_air::ComptimeFloatWidth::F64),
+            _ => None,
+        }
+    }
+
+    fn float_type(&self, width: rue_air::ComptimeFloatWidth) -> Option<Self::Type> {
+        Some(DurableComptimeType(match width {
+            rue_air::ComptimeFloatWidth::F32 => DurableType::F32,
+            rue_air::ComptimeFloatWidth::F64 => DurableType::F64,
+        }))
+    }
+
     fn resolve_comptime_type_intrinsic(
         &mut self,
         intrinsic: rue_air::ComptimeTypeIntrinsic,
@@ -850,6 +865,29 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
                 ty: Some(DurableType::ComptimeFloat),
             },
         )))
+    }
+
+    fn float_value_text(&self, value: &Self::Value) -> Option<String> {
+        let EvaluatedSemanticConst::Value(typed) = value else {
+            return None;
+        };
+        match &typed.value {
+            DurableConstValue::Float(text) => Some(text.to_string()),
+            _ => None,
+        }
+    }
+
+    fn float_value_from_text(
+        &mut self,
+        text: &str,
+        ty: Option<Self::Type>,
+    ) -> rue_air::ComptimeHostResult<Option<Self::Value>, Self::Failure> {
+        Ok(Some(EvaluatedSemanticConst::Value(Arc::new(
+            TypedSemanticConst {
+                value: DurableConstValue::Float(Arc::from(text)),
+                ty: Some(ty.map_or(DurableType::ComptimeFloat, |ty| ty.0)),
+            },
+        ))))
     }
 
     fn resolve_comptime_expression_intrinsic(
@@ -1676,16 +1714,6 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeRejections
                 value,
                 ty: DurableComptimeScalarPolicy::type_name(ty.as_ref()),
             },
-        )
-    }
-
-    fn float_not_implemented(
-        &self,
-        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure {
-        durable_diagnostic_failure(
-            &self.diagnostic_site(site),
-            rue_error::ErrorKind::FloatNotYetImplemented,
         )
     }
 

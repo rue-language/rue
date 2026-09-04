@@ -93,6 +93,7 @@ fn get_latency(inst: &Aarch64Inst) -> u32 {
         Aarch64Inst::FloatBin { .. }
         | Aarch64Inst::FloatNeg { .. }
         | Aarch64Inst::FloatSqrt { .. }
+        | Aarch64Inst::FloatRound { .. }
         | Aarch64Inst::FloatCast { .. }
         | Aarch64Inst::IntToFloat { .. }
         | Aarch64Inst::FloatToInt { .. } => 4,
@@ -281,6 +282,7 @@ pub(super) fn regs_read(inst: &Aarch64Inst) -> RegList<Reg> {
         | Aarch64Inst::BitsToFloat { src, .. }
         | Aarch64Inst::FloatNeg { src, .. }
         | Aarch64Inst::FloatSqrt { src, .. }
+        | Aarch64Inst::FloatRound { src, .. }
         | Aarch64Inst::IntToFloat { src, .. }
         | Aarch64Inst::FloatToInt { src, .. }
         | Aarch64Inst::FloatCast { src, .. } => add_if_phys(src, &mut result),
@@ -430,6 +432,7 @@ pub(super) fn regs_written(inst: &Aarch64Inst) -> RegList<Reg> {
         | Aarch64Inst::FloatBin { dst, .. }
         | Aarch64Inst::FloatNeg { dst, .. }
         | Aarch64Inst::FloatSqrt { dst, .. }
+        | Aarch64Inst::FloatRound { dst, .. }
         | Aarch64Inst::IntToFloat { dst, .. }
         | Aarch64Inst::FloatToInt { dst, .. }
         | Aarch64Inst::FloatCast { dst, .. } => add_if_phys(dst, &mut result),

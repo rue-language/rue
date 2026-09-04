@@ -95,7 +95,7 @@ Some values can only exist at compile time:
 |------|-------------|
 | `type` | Type values (e.g., `i32`, `bool`, `MyStruct`) |
 | `comptime_int` | Arbitrary-precision integers (future) |
-| `comptime_float` | Arbitrary-precision floats (future) |
+| `comptime_float` | The type of a float literal; exact until context fixes a width (ADR-0065, spec 3.12:3) |
 
 Attempting to store these in a runtime variable is a compile error:
 

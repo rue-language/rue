@@ -1415,6 +1415,19 @@ impl<'a> ConstraintGenerator<'a> {
         var
     }
 
+    /// Allocate a fresh type variable that behaves like a float literal: the
+    /// unifier rejects binding it to a non-float type, and if it is still
+    /// unbound after solving it defaults to `f64` (spec 3.12:8). This is the
+    /// float mirror of [`Self::fresh_int_literal_var`], for a captured
+    /// comptime float value: the capture carries only the value's decimal
+    /// spelling, so its width is recovered from use exactly as a literal's is
+    /// (RUE-1076).
+    pub fn fresh_float_literal_var(&mut self) -> TypeVarId {
+        let var = self.fresh_var();
+        self.float_literal_vars.push(var);
+        var
+    }
+
     /// Add a constraint.
     pub fn add_constraint(&mut self, constraint: Constraint) {
         self.record_fixed_string_types(&constraint);
@@ -2186,14 +2199,12 @@ impl<'a> ConstraintGenerator<'a> {
                         let return_type = if func.return_type
                             == InferType::Concrete(Type::COMPTIME_TYPE)
                         {
-                            match func.return_type_syntax.as_ref().and_then(|syntax| {
-                                self.infer_structured_type_hint(
-                                    syntax,
-                                    &type_subst,
-                                    &value_subst,
-                                    span.file_id,
-                                )
-                            }) {
+                            match self.substituted_generic_return_type(
+                                &func,
+                                &type_subst,
+                                &value_subst,
+                                span.file_id,
+                            ) {
                                 Some(ty) => ty,
                                 None => {
                                     // The declared return type is a
@@ -2347,6 +2358,20 @@ impl<'a> ConstraintGenerator<'a> {
                     let result = self.fresh_var();
                     self.int_literal_vars.push(result);
                     InferType::Var(result)
+                } else if matches!(
+                    intrinsic_name,
+                    "sqrt" | "floor" | "ceil" | "trunc" | "round"
+                ) {
+                    // The unary float intrinsics return their operand's type;
+                    // an unconstrained literal operand takes the `f64` default.
+                    let common = self.fresh_var();
+                    self.float_literal_vars.push(common);
+                    let common = InferType::Var(common);
+                    for arg_ref in args.iter() {
+                        let info = generate_intrinsic_arg!(*arg_ref);
+                        self.add_constraint(Constraint::equal(info.ty, common.clone(), info.span));
+                    }
+                    common
                 } else if intrinsic_name == "total_cmp" {
                     let common = self.fresh_var();
                     self.float_literal_vars.push(common);
@@ -3893,6 +3918,10 @@ impl<'a> ConstraintGenerator<'a> {
                                 .and_then(|file_id| self.function_by_file((file_id, *method)))
                         });
                         if let Some(func) = function_key.and_then(|key| self.func_sig(key)) {
+                            // Populated by the generic branch below and read by
+                            // the return-type substitution after it.
+                            let mut type_subst: AHashMap<lasso::Spur, Type> = AHashMap::new();
+                            let mut value_subst: AHashMap<lasso::Spur, i128> = AHashMap::new();
                             if !func.is_generic && call_args.len() == func.param_types.len() {
                                 // Constrain each argument against its declared
                                 // parameter type (same as a direct Call).
@@ -3945,8 +3974,6 @@ impl<'a> ConstraintGenerator<'a> {
                                         break;
                                     }
                                 }
-                                let mut type_subst: AHashMap<lasso::Spur, Type> = AHashMap::new();
-                                let mut value_subst: AHashMap<lasso::Spur, i128> = AHashMap::new();
                                 for (i, arg) in call_args.iter().enumerate() {
                                     if self.was_canceled() {
                                         break;
@@ -4030,9 +4057,32 @@ impl<'a> ConstraintGenerator<'a> {
                                 }
                             }
                             if func.return_type == InferType::Concrete(Type::COMPTIME_TYPE) {
-                                // Generic return type that can't be resolved
-                                // here; sema specialization determines it.
-                                InferType::Var(self.fresh_var())
+                                // `-> T` resolves from this call's type
+                                // arguments on the same canonical route as the
+                                // direct-Call path. A bare fresh variable let
+                                // the use site decide instead: in
+                                // `h.sq(f32, v) == 6.25` the literal defaulted
+                                // to `f64` and unified with the unconstrained
+                                // result, while sema specialized the call to
+                                // `f32` — a mismatch that only surfaced as an
+                                // AIR verification ICE. Float type names are
+                                // ordinary identifiers rather than lexer
+                                // keywords (ADR-0065), so `f32` arrives here as
+                                // a `VarRef` and is resolved by
+                                // `extract_type_argument`'s primitive lookup
+                                // above.
+                                //
+                                // A return type that still can't be reduced
+                                // here (a type-function application such as
+                                // `-> Option(T)`) keeps the fresh variable;
+                                // sema specialization determines it.
+                                self.substituted_generic_return_type(
+                                    &func,
+                                    &type_subst,
+                                    &value_subst,
+                                    span.file_id,
+                                )
+                                .unwrap_or_else(|| InferType::Var(self.fresh_var()))
                             } else {
                                 func.return_type.clone()
                             }
@@ -4889,6 +4939,28 @@ impl<'a> ConstraintGenerator<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Substitute a generic call's comptime type/value arguments into the
+    /// callee's declared return-type syntax — a bare `-> T`, or a composite
+    /// mentioning a type parameter such as `-> [T; 3]` (RUE-172).
+    ///
+    /// This is the one route both call shapes take: the same-module
+    /// `InstData::Call` path and the module-qualified `module.f(...)` path,
+    /// which previously left `-> T` as a bare inference variable. `None` means
+    /// the declared return type cannot be reduced during constraint generation
+    /// (an unresolved type parameter, or a type-function application like
+    /// `-> Option(T)`); each caller keeps its own fallback for that case.
+    fn substituted_generic_return_type(
+        &self,
+        func: &FunctionSig,
+        type_subst: &AHashMap<Spur, Type>,
+        value_subst: &AHashMap<Spur, i128>,
+        file_id: FileId,
+    ) -> Option<InferType> {
+        func.return_type_syntax.as_ref().and_then(|syntax| {
+            self.infer_structured_type_hint(syntax, type_subst, value_subst, file_id)
+        })
     }
 
     /// Return a comptime argument already evaluated by the canonical engine.

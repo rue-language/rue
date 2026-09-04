@@ -3150,7 +3150,8 @@ pub(super) fn primitive_durable_type(name: &str) -> Option<crate::DurableType> {
         "type" => T::ComptimeType,
         "f32" => T::F32,
         "f64" => T::F64,
-        "comptime_float" => T::ComptimeFloat,
+        // No `comptime_float`: a comptime-only type is inferred, never named
+        // (spec 3.12:3), exactly as `comptime_int` is not nameable.
         _ => return None,
     })
 }

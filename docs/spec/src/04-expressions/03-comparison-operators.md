@@ -18,8 +18,10 @@ exactly when the two operand values stand in the operator's relation, and
 
 {{ rule(id="4.3:2", cat="normative") }}
 
-Equality operators work on integers, booleans, strings, the unit type, and the
-aggregate types: structs, arrays, and enums.
+Equality operators work on integers, floating-point values, booleans, strings,
+the unit type, and the aggregate types: structs, arrays, and enums. On
+floating-point operands they are the IEEE comparisons of 3.12:27, not the total
+equivalence the other leaf types give.
 
 | Operator | Name | Description |
 |----------|------|-------------|
@@ -80,11 +82,12 @@ usable afterward.
 
 Equality is structural **by default**. Trait-based refinement of equality —
 opting a type out of comparison, or giving it a user-defined equality (a
-`PartialEq`-style mechanism) — is deferred until traits exist (RUE-246). A
-related future consideration, once floating-point types exist, is the
-partial-equality of `NaN` (where `NaN != NaN`), which motivates the eventual
-`PartialEq`/`Eq` split; today no leaf type has such a value, so structural
-equality is a total equivalence.
+`PartialEq`-style mechanism) — is deferred until traits exist (RUE-246).
+Structural equality is a *partial* equivalence, not a total one: the
+floating-point types have a value unequal to itself, `NaN` (3.12:27), and an
+aggregate reaching one at any leaf inherits that (3.12:29). This is the concrete
+motivation for the eventual `PartialEq`/`Eq` split; until it lands,
+`@total_cmp` (3.12:32) is the total order available for sorting and hashing.
 
 {{ rule(id="4.3:4") }}
 
@@ -130,11 +133,13 @@ fn main() -> i32 {
 
 {{ rule(id="4.3:5", cat="normative") }}
 
-Ordering operators work only on integers. They compare the two operands by their
-integer values, respecting the signedness of the shared operand type — a signed
-type orders negatives below non-negatives, an unsigned type orders by magnitude
-(core calculus `docs/formal/01-core-calculus.md` §6.4: scalars compare by their
-integer value, respecting signedness).
+Ordering operators work on integers and on floating-point values. On integers
+they compare the two operands by their integer values, respecting the
+signedness of the shared operand type — a signed type orders negatives below
+non-negatives, an unsigned type orders by magnitude (core calculus
+`docs/formal/01-core-calculus.md` §6.4: scalars compare by their integer value,
+respecting signedness). On floating-point operands they are the IEEE partial
+comparisons of 3.12:27.
 
 | Operator | Name | Description |
 |----------|------|-------------|
@@ -147,7 +152,7 @@ integer value, respecting signedness).
 
 Ordering operators on boolean, string, unit, or aggregate (struct, array, or
 enum) values are a compile-time error. Implementations **MUST** reject such
-programs.
+programs. (Floating-point operands are ordered, by 4.3:5.)
 
 {{ rule(id="4.3:7") }}
 

@@ -383,6 +383,16 @@ pub enum X86Inst {
         src: Operand,
         width: FloatWidth,
     },
+    /// `roundsd`/`roundss dst, src, imm8` (SSE4.1): round to an integral value
+    /// in one direction. The x86-64 backend's one dependency above the SSE2
+    /// baseline, per ADR-0065 §7; `NearestTiesAway` is not an encodable mode
+    /// and is lowered as a sequence around `Trunc` instead.
+    FloatRound {
+        dst: Operand,
+        src: Operand,
+        width: FloatWidth,
+        mode: crate::value_plan::FloatRounding,
+    },
     FloatCmp {
         lhs: Operand,
         rhs: Operand,
@@ -838,6 +848,13 @@ pub enum X86Inst {
         label: LabelId,
     },
 
+    /// `ja label` - Jump if above (unsigned: CF=0 and ZF=0). After `ucomis*`
+    /// this is the ordered `lhs > rhs`: an unordered compare sets CF, so a NaN
+    /// operand never takes the branch.
+    Ja {
+        label: LabelId,
+    },
+
     /// `jge label` - Jump if greater or equal (signed: SF=OF).
     Jge {
         label: LabelId,
@@ -1180,6 +1197,13 @@ impl fmt::Display for X86Inst {
             ),
             X86Inst::FloatNeg { dst, src, width } => write!(f, "fneg.{width:?} {dst}, {src}"),
             X86Inst::FloatSqrt { dst, src, width } => write!(f, "fsqrt.{width:?} {dst}, {src}"),
+            X86Inst::FloatRound {
+                dst,
+                src,
+                width,
+                mode,
+            } => write!(f, "fround.{mode:?}.{width:?} {dst}, {src}"),
+
             X86Inst::FloatCmp { lhs, rhs, width } => write!(
                 f,
                 "ucomis{} {lhs}, {rhs}",
@@ -1300,6 +1324,7 @@ impl fmt::Display for X86Inst {
             X86Inst::Jb { label } => write!(f, "jb {}", label),
             X86Inst::Jae { label } => write!(f, "jae {}", label),
             X86Inst::Jbe { label } => write!(f, "jbe {}", label),
+            X86Inst::Ja { label } => write!(f, "ja {}", label),
             X86Inst::Jge { label } => write!(f, "jge {}", label),
             X86Inst::Jle { label } => write!(f, "jle {}", label),
             X86Inst::Jmp { label } => write!(f, "jmp {}", label),

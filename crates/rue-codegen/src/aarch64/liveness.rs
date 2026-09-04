@@ -159,6 +159,7 @@ fn uses(inst: &Aarch64Inst) -> VRegList {
         | Aarch64Inst::BitsToFloat { src, .. }
         | Aarch64Inst::FloatNeg { src, .. }
         | Aarch64Inst::FloatSqrt { src, .. }
+        | Aarch64Inst::FloatRound { src, .. }
         | Aarch64Inst::IntToFloat { src, .. }
         | Aarch64Inst::FloatToInt { src, .. }
         | Aarch64Inst::FloatCast { src, .. }
@@ -325,6 +326,7 @@ pub(crate) fn defs(inst: &Aarch64Inst) -> VRegList {
         | Aarch64Inst::FloatBin { dst, .. }
         | Aarch64Inst::FloatNeg { dst, .. }
         | Aarch64Inst::FloatSqrt { dst, .. }
+        | Aarch64Inst::FloatRound { dst, .. }
         | Aarch64Inst::IntToFloat { dst, .. }
         | Aarch64Inst::FloatToInt { dst, .. }
         | Aarch64Inst::FloatCast { dst, .. } => add_if_virtual(dst, &mut result),

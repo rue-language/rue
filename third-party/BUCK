@@ -5531,6 +5531,7 @@ rue_alias(
 
 rue_rust_library(
     name = "zmij-0.1.7",
+
     srcs = [
         "vendor/zmij-0.1.7/src/lib.rs",
         "vendor/zmij-0.1.7/src/tests.rs",

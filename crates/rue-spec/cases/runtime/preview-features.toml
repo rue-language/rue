@@ -49,28 +49,23 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "--preview test_infra"
 
-# The gate applies to grammar, not just intrinsics: a float literal is
-# preview-gated syntax (ADR-0065, RUE-1068/RUE-1069), so writing one without
-# `--preview floats` is the same 8.4:1 error, naming the same flag.
+# The gate applies to grammar, not just intrinsics: an `extern "C"` foreign
+# declaration is preview-gated syntax (ADR-0064, RUE-1055), so writing one
+# without `--preview c_ffi` is the same 8.4:1 error, naming its own feature.
+# This case follows the language's stabilizations: it named the float literal
+# until ADR-0065 shipped (RUE-1076) and the test declaration until ADR-0083
+# did (RUE-1955), and `c_ffi` is the gated grammar that remains.
 [[case]]
-name = "float_literal_requires_the_floats_feature"
+name = "gated_grammar_names_its_own_feature"
 spec = ["8.4:1"]
 source = """
+extern "C" {
+    fn answer() -> i64;
+}
+
 fn main() -> i32 {
-    let x = 1.5;
     0
 }
 """
 compile_fail = true
-error_contains = "--preview floats"
-
-[[case]]
-name = "float_intrinsic_requires_the_floats_feature"
-spec = ["8.4:1"]
-source = """
-fn main() -> i32 {
-    @float_to_int(@int_to_float(1))
-}
-"""
-compile_fail = true
-error_contains = "--preview floats"
+error_contains = ["requires preview feature", "c_ffi"]

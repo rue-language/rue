@@ -64,6 +64,11 @@ pub(super) const FP_ARG_REGS: [Reg; 8] = [
 /// `crate::cfg_lower::type_uses_sret_return`. (RUE-106)
 pub(super) const RET_REGS: [Reg; 6] = [Reg::Rax, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9, Reg::R10];
 
+/// Floating-point return registers. A float-classed return slot travels in the
+/// same XMM bank a float argument does — `xmm0` is already the scalar float
+/// return register — so the two directions name one register file.
+pub(super) const FP_RET_REGS: [Reg; 8] = FP_ARG_REGS;
+
 // Call sequences and the prologue name these registers physically, and liveness
 // models neither those physical definitions nor their uses. So they must be off
 // limits to the allocator, not merely unlikely to collide (RUE-1146).
@@ -84,7 +89,25 @@ const _: () = {
         );
         index += 1;
     }
+    let mut index = 0;
+    while index < FP_RET_REGS.len() {
+        assert!(
+            super::mir::is_reserved(FP_RET_REGS[index]),
+            "every ABI result register must be reserved from allocation"
+        );
+        index += 1;
+    }
 };
+
+/// The target's return-register file, one bank per register class: a
+/// general-purpose slot lands in [`RET_REGS`], a float-classed one in
+/// [`FP_RET_REGS`].
+pub(super) const fn return_register_banks() -> crate::call_plan::AbiRegisterBanks {
+    crate::call_plan::AbiRegisterBanks {
+        gp: RET_REGS.len(),
+        fp: FP_RET_REGS.len(),
+    }
+}
 
 /// CFG to X86Mir lowering.
 pub struct CfgLower<'a> {
@@ -757,7 +780,7 @@ impl<'a> CfgLower<'a> {
             &ctx,
             &mut self,
             None,
-            RET_REGS.len() as u32,
+            return_register_banks(),
             cancellation,
         )?;
         Ok(self.mir)
@@ -785,7 +808,7 @@ impl<'a> CfgLower<'a> {
             &ctx,
             &mut self,
             Some(&mut debug_info),
-            RET_REGS.len() as u32,
+            return_register_banks(),
             cancellation,
         )?;
         Ok((self.mir, debug_info))
@@ -1344,24 +1367,57 @@ impl<'a> CfgLower<'a> {
                 });
                 slots
             }
-            ReturnPlan::Registers { slot_count } => (0..slot_count)
-                .map(|index| {
-                    let slot = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(slot),
-                        src: Operand::Physical(RET_REGS[index as usize]),
-                    });
-                    slot
-                })
-                .collect(),
+            ReturnPlan::Registers { slot_count } => {
+                assert_eq!(
+                    plan.return_slot_regs.len(),
+                    slot_count as usize,
+                    "a register return must name a return register for every slot"
+                );
+                plan.return_slot_regs
+                    .iter()
+                    .map(|reg| match *reg {
+                        crate::call_plan::ReturnSlotReg::Gp(index) => {
+                            let slot = self.mir.alloc_vreg();
+                            self.mir.push(X86Inst::MovRR {
+                                dst: Operand::Virtual(slot),
+                                src: Operand::Physical(RET_REGS[index]),
+                            });
+                            slot
+                        }
+                        crate::call_plan::ReturnSlotReg::Fp { index, width } => {
+                            let slot = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
+                            self.mir.push(X86Inst::FloatMov {
+                                dst: Operand::Virtual(slot),
+                                src: Operand::Physical(FP_RET_REGS[index]),
+                                width,
+                            });
+                            slot
+                        }
+                    })
+                    .collect()
+            }
             ReturnPlan::Scalar => Vec::new(),
             ReturnPlan::ZeroSized => Vec::new(),
         };
         if let Some(&slot) = slots.first() {
-            self.mir.push(X86Inst::MovRR {
-                dst: Operand::Virtual(primary),
-                src: Operand::Virtual(slot),
-            });
+            // The primary vreg mirrors logical slot 0, so the move that syncs it
+            // has to be the one for that slot's class.
+            self.mir.push(
+                if self.mir.vreg_class(slot) == crate::reg_class::RegClass::Fp {
+                    X86Inst::FloatMov {
+                        dst: Operand::Virtual(primary),
+                        src: Operand::Virtual(slot),
+                        width: plan
+                            .result_float_width
+                            .expect("FP aggregate return slot width"),
+                    }
+                } else {
+                    X86Inst::MovRR {
+                        dst: Operand::Virtual(primary),
+                        src: Operand::Virtual(slot),
+                    }
+                },
+            );
         } else if matches!(plan.return_plan, ReturnPlan::Scalar) {
             self.mir.push(
                 if self.mir.vreg_class(primary) == crate::reg_class::RegClass::Fp {
@@ -1804,7 +1860,13 @@ impl<'a> CfgLower<'a> {
                         }
                         crate::value_plan::StoreDestination::ByRefParam(param_slot) => {
                             let ptr = self.ensure_by_ref_param_ptr(param_slot);
-                            crate::agg_slots::store_slots_through_ptr(self, &value.slots, ptr, 0);
+                            crate::agg_slots::store_slots_through_ptr_typed(
+                                self,
+                                &value.slots,
+                                ptr,
+                                0,
+                                &leaf_types,
+                            );
                         }
                     }
                 }
@@ -1835,7 +1897,13 @@ impl<'a> CfgLower<'a> {
                             self.emit_store_ptr_base(value.primary, ptr);
                         }
                     } else {
-                        crate::agg_slots::store_slots_through_ptr(self, &value.slots, ptr, 0);
+                        crate::agg_slots::store_slots_through_ptr_typed(
+                            self,
+                            &value.slots,
+                            ptr,
+                            0,
+                            &leaf_types,
+                        );
                     }
                 } else {
                     // By-value slot (a `mut self` receiver): the param area
@@ -1868,20 +1936,22 @@ impl<'a> CfgLower<'a> {
                 }
                 return ValueResult::SideEffect;
             }
-            ResidualValuePlan::PlaceRead { place } => {
+            ResidualValuePlan::PlaceRead { place, leaf_types } => {
                 let count = plan.policy.shape.slot_count();
                 if count > 1 {
                     let addr = self.mir.alloc_vreg();
                     crate::place_lower::lower_checked_place_addr_plan(self, addr, &place);
-                    slots = crate::agg_slots::load_slots_through_ptr(self, addr, count);
+                    slots = crate::agg_slots::load_slots_through_ptr_typed(self, addr, &leaf_types);
                     let dst = slots[0];
                     dst
                 } else {
-                    let dst = self.mir.alloc_vreg_in(if ty.is_float() {
-                        crate::reg_class::RegClass::Fp
-                    } else {
-                        crate::reg_class::RegClass::Gp
-                    });
+                    let dst =
+                        self.mir
+                            .alloc_vreg_in(if plan.policy.primary_float_width.is_some() {
+                                crate::reg_class::RegClass::Fp
+                            } else {
+                                crate::reg_class::RegClass::Gp
+                            });
                     crate::place_lower::lower_place_read_plan(self, dst, &place, ty);
                     dst
                 }
@@ -1891,6 +1961,7 @@ impl<'a> CfgLower<'a> {
                 value,
                 value_shape,
                 float_width,
+                leaf_types,
             } => {
                 let vals = if matches!(
                     value_shape,
@@ -1903,7 +1974,13 @@ impl<'a> CfgLower<'a> {
                 } else {
                     value.slots
                 };
-                crate::place_lower::lower_place_write_plan(self, &place, &vals, float_width);
+                crate::place_lower::lower_place_write_plan(
+                    self,
+                    &place,
+                    &vals,
+                    float_width,
+                    &leaf_types,
+                );
                 return ValueResult::SideEffect;
             }
             ResidualValuePlan::StructInit { fields, .. }
@@ -1924,27 +2001,41 @@ impl<'a> CfgLower<'a> {
                     };
                     slots.extend(source);
                 }
-                let dst = self.mir.alloc_vreg();
-                if matches!(
+                // The primary vreg mirrors logical slot 0, so it takes that
+                // slot's register class and is written with that class's move
+                //. The zero placeholders are general-purpose: nothing
+                // reads them as a value.
+                match (
                     plan.policy.aggregate_primary,
-                    crate::value_plan::AggregatePrimary::Zero
+                    slots.first().copied(),
+                    plan.policy.primary_float_width,
                 ) {
-                    self.mir.push(X86Inst::MovRI32 {
-                        dst: Operand::Virtual(dst),
-                        imm: 0,
-                    });
-                } else if let Some(&first) = slots.first() {
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(dst),
-                        src: Operand::Virtual(first),
-                    });
-                } else {
-                    self.mir.push(X86Inst::MovRI32 {
-                        dst: Operand::Virtual(dst),
-                        imm: 0,
-                    });
+                    (crate::value_plan::AggregatePrimary::FirstSlot, Some(first), Some(width)) => {
+                        let dst = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
+                        self.mir.push(X86Inst::FloatMov {
+                            dst: Operand::Virtual(dst),
+                            src: Operand::Virtual(first),
+                            width,
+                        });
+                        dst
+                    }
+                    (crate::value_plan::AggregatePrimary::FirstSlot, Some(first), None) => {
+                        let dst = self.mir.alloc_vreg();
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Virtual(dst),
+                            src: Operand::Virtual(first),
+                        });
+                        dst
+                    }
+                    _ => {
+                        let dst = self.mir.alloc_vreg();
+                        self.mir.push(X86Inst::MovRI32 {
+                            dst: Operand::Virtual(dst),
+                            imm: 0,
+                        });
+                        dst
+                    }
                 }
-                dst
             }
             ResidualValuePlan::EnumVariant {
                 variant_index,
@@ -2334,6 +2425,265 @@ impl<'a> CfgLower<'a> {
         }
     }
 
+    /// `u64 -> f32/f64`, correctly rounded. SSE2 converts only signed
+    /// integers, so a value with the top bit set is halved with its dropped
+    /// bit folded into the new low bit (a sticky bit that keeps the single
+    /// rounding correct), converted, and doubled exactly.
+    fn lower_u64_to_float(&mut self, dst: VReg, src: VReg, width: FloatWidth) {
+        let non_negative = self.new_label();
+        let done = self.new_label();
+        self.mir.push(X86Inst::Cmp64RI {
+            src: Operand::Virtual(src),
+            imm: 0,
+        });
+        self.mir.push(X86Inst::Jge {
+            label: non_negative,
+        });
+        let half = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(half),
+            src: Operand::Virtual(src),
+        });
+        self.mir.push(X86Inst::ShrRI {
+            dst: Operand::Virtual(half),
+            imm: 1,
+        });
+        let sticky = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(sticky),
+            src: Operand::Virtual(src),
+        });
+        let one = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRI32 {
+            dst: Operand::Virtual(one),
+            imm: 1,
+        });
+        self.mir.push(X86Inst::And64RR {
+            dst: Operand::Virtual(sticky),
+            src: Operand::Virtual(one),
+        });
+        self.mir.push(X86Inst::Or64RR {
+            dst: Operand::Virtual(half),
+            src: Operand::Virtual(sticky),
+        });
+        self.mir.push(X86Inst::IntToFloat {
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(half),
+            int_bits: 64,
+            width,
+        });
+        self.mir.push(X86Inst::FloatBin {
+            op: super::mir::FloatBinOp::Add,
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(dst),
+            width,
+        });
+        self.mir.push(X86Inst::Jmp { label: done });
+        self.mir.push(X86Inst::Label { id: non_negative });
+        self.mir.push(X86Inst::IntToFloat {
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(src),
+            int_bits: 64,
+            width,
+        });
+        self.mir.push(X86Inst::Label { id: done });
+    }
+
+    /// `f32/f64 -> u64` for an operand the guards have already proved to lie
+    /// in `(-1, 2^64)`. `cvtts*2si` handles `x < 2^63` directly; a larger
+    /// value is converted with `2^63` subtracted (exact, since both operands
+    /// are at least `2^63`) and the bit put back on the integer side.
+    fn lower_float_to_u64(&mut self, dst: VReg, src: VReg, width: FloatWidth) {
+        let small = self.new_label();
+        let done = self.new_label();
+        let two63 = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
+        self.mir.push(X86Inst::FloatConst {
+            dst: Operand::Virtual(two63),
+            bits: crate::value_plan::float_const_bits(width, 9_223_372_036_854_775_808.0),
+            width,
+        });
+        self.mir.push(X86Inst::FloatCmp {
+            lhs: Operand::Virtual(src),
+            rhs: Operand::Virtual(two63),
+            width,
+        });
+        self.mir.push(X86Inst::Jb { label: small });
+        let shifted = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
+        self.mir.push(X86Inst::FloatMov {
+            dst: Operand::Virtual(shifted),
+            src: Operand::Virtual(src),
+            width,
+        });
+        self.mir.push(X86Inst::FloatBin {
+            op: super::mir::FloatBinOp::Sub,
+            dst: Operand::Virtual(shifted),
+            src: Operand::Virtual(two63),
+            width,
+        });
+        self.mir.push(X86Inst::FloatToInt {
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(shifted),
+            int_bits: 64,
+            width,
+        });
+        let sign = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRI64 {
+            dst: Operand::Virtual(sign),
+            imm: i64::MIN,
+        });
+        self.mir.push(X86Inst::Xor64RR {
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(sign),
+        });
+        self.mir.push(X86Inst::Jmp { label: done });
+        self.mir.push(X86Inst::Label { id: small });
+        self.mir.push(X86Inst::FloatToInt {
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(src),
+            int_bits: 64,
+            width,
+        });
+        self.mir.push(X86Inst::Label { id: done });
+    }
+
+    /// The IEEE `totalOrder` key of a float as a signed integer: the bit
+    /// pattern with every bit but the sign flipped for negative values, so
+    /// that a signed integer compare orders `-NaN < -inf < ... < -0 < +0 < ...
+    /// < +inf < +NaN` (ADR-0065 §8).
+    fn lower_float_total_order_key(&mut self, value: VReg, width: FloatWidth) -> VReg {
+        let bits = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::FloatToBits {
+            dst: Operand::Virtual(bits),
+            src: Operand::Virtual(value),
+            width,
+        });
+        let key = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(key),
+            src: Operand::Virtual(bits),
+        });
+        if width == FloatWidth::F64 {
+            self.mir.push(X86Inst::SarRI {
+                dst: Operand::Virtual(key),
+                imm: 63,
+            });
+            self.mir.push(X86Inst::ShrRI {
+                dst: Operand::Virtual(key),
+                imm: 1,
+            });
+            self.mir.push(X86Inst::Xor64RR {
+                dst: Operand::Virtual(key),
+                src: Operand::Virtual(bits),
+            });
+        } else {
+            self.mir.push(X86Inst::Sar32RI {
+                dst: Operand::Virtual(key),
+                imm: 31,
+            });
+            self.mir.push(X86Inst::Shr32RI {
+                dst: Operand::Virtual(key),
+                imm: 1,
+            });
+            self.mir.push(X86Inst::XorRR {
+                dst: Operand::Virtual(key),
+                src: Operand::Virtual(bits),
+            });
+        }
+        key
+    }
+
+    /// Integral rounding. Floor, ceil, and trunc are one `rounds*`. SSE has
+    /// no ties-away-from-zero mode, so `@round` truncates and then moves the
+    /// result one unit away from zero when the discarded fraction has
+    /// magnitude at least one half; NaN and infinities fall through every
+    /// comparison and return the truncated (identical) value.
+    fn lower_float_rounding(
+        &mut self,
+        src: VReg,
+        width: FloatWidth,
+        mode: crate::value_plan::FloatRounding,
+    ) -> VReg {
+        let dst = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
+        if mode != crate::value_plan::FloatRounding::NearestTiesAway {
+            self.mir.push(X86Inst::FloatRound {
+                dst: Operand::Virtual(dst),
+                src: Operand::Virtual(src),
+                width,
+                mode,
+            });
+            return dst;
+        }
+        self.mir.push(X86Inst::FloatRound {
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(src),
+            width,
+            mode: crate::value_plan::FloatRounding::Trunc,
+        });
+        let fraction = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
+        self.mir.push(X86Inst::FloatMov {
+            dst: Operand::Virtual(fraction),
+            src: Operand::Virtual(src),
+            width,
+        });
+        self.mir.push(X86Inst::FloatBin {
+            op: super::mir::FloatBinOp::Sub,
+            dst: Operand::Virtual(fraction),
+            src: Operand::Virtual(dst),
+            width,
+        });
+        let one = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
+        self.mir.push(X86Inst::FloatConst {
+            dst: Operand::Virtual(one),
+            bits: crate::value_plan::float_const_bits(width, 1.0),
+            width,
+        });
+        let half = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
+        self.mir.push(X86Inst::FloatConst {
+            dst: Operand::Virtual(half),
+            bits: crate::value_plan::float_const_bits(width, 0.5),
+            width,
+        });
+        let not_up = self.new_label();
+        let done = self.new_label();
+        // fraction >= 0.5 (ordered): round up.
+        self.mir.push(X86Inst::FloatCmp {
+            lhs: Operand::Virtual(fraction),
+            rhs: Operand::Virtual(half),
+            width,
+        });
+        self.mir.push(X86Inst::Jb { label: not_up });
+        self.mir.push(X86Inst::FloatBin {
+            op: super::mir::FloatBinOp::Add,
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(one),
+            width,
+        });
+        self.mir.push(X86Inst::Jmp { label: done });
+        self.mir.push(X86Inst::Label { id: not_up });
+        // fraction <= -0.5 (ordered): round down. Spelled as `-0.5 < fraction`
+        // falling through to done so that an unordered compare also skips.
+        let neg_half = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
+        self.mir.push(X86Inst::FloatConst {
+            dst: Operand::Virtual(neg_half),
+            bits: crate::value_plan::float_const_bits(width, -0.5),
+            width,
+        });
+        self.mir.push(X86Inst::FloatCmp {
+            lhs: Operand::Virtual(neg_half),
+            rhs: Operand::Virtual(fraction),
+            width,
+        });
+        self.mir.push(X86Inst::Jb { label: done });
+        self.mir.push(X86Inst::FloatBin {
+            op: super::mir::FloatBinOp::Sub,
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(one),
+            width,
+        });
+        self.mir.push(X86Inst::Label { id: done });
+        dst
+    }
+
     fn lower_float_comparison(
         &mut self,
         op: crate::value_plan::ComparisonOp,
@@ -2474,11 +2824,35 @@ impl<'a> CfgLower<'a> {
                 let form = plan
                     .bit_cast_form
                     .expect("bitCast intrinsic must carry its contextual form");
+                // A float operand or result crosses the register-file boundary
+                // (ADR-0065 §6): `FloatToBits` lands the pattern zero-extended
+                // in a general-purpose register, and `BitsToFloat` is the
+                // whole cast the other way.
+                if let Some(width) = crate::value_plan::float_width(plan.result_ty) {
+                    let dst = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
+                    self.mir.push(X86Inst::BitsToFloat {
+                        dst: Operand::Virtual(dst),
+                        src: Operand::Virtual(plan.args[0].primary),
+                        width,
+                    });
+                    return crate::value_plan::MaterializedValue {
+                        primary: dst,
+                        slots: Vec::new(),
+                    };
+                }
                 let dst = self.mir.alloc_vreg();
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(dst),
-                    src: Operand::Virtual(plan.args[0].primary),
-                });
+                if let Some(width) = crate::value_plan::float_width(plan.args[0].ty) {
+                    self.mir.push(X86Inst::FloatToBits {
+                        dst: Operand::Virtual(dst),
+                        src: Operand::Virtual(plan.args[0].primary),
+                        width,
+                    });
+                } else {
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(dst),
+                        src: Operand::Virtual(plan.args[0].primary),
+                    });
+                }
                 let operand = Operand::Virtual(dst);
                 match form {
                     BitCastForm::Move => {}
@@ -2523,7 +2897,12 @@ impl<'a> CfgLower<'a> {
                     slots = crate::agg_slots::load_dispatch_image(self, ptr, image);
                     slots[0]
                 } else if count > 1 {
-                    slots = crate::agg_slots::load_slots_through_ptr(self, ptr, count);
+                    // The pointee's slots are read at their leaf widths and
+                    // classes, matching what every aggregate writer through a
+                    // pointer stores.
+                    let leaf_types =
+                        crate::types::aggregate_leaf_types(self.ctx.type_pool, plan.result_ty);
+                    slots = crate::agg_slots::load_slots_through_ptr_typed(self, ptr, &leaf_types);
                     slots[0]
                 } else {
                     let float_width = crate::value_plan::float_width(plan.result_ty);
@@ -2602,7 +2981,15 @@ impl<'a> CfgLower<'a> {
                 } else if value.slot_count == 0 {
                     // Zero-sized values have no bytes to write.
                 } else if !value.slots.is_empty() {
-                    crate::agg_slots::store_slots_through_ptr(self, &value.slots, ptr, 0);
+                    let leaf_types =
+                        crate::types::aggregate_leaf_types(self.ctx.type_pool, plan.args[1].ty);
+                    crate::agg_slots::store_slots_through_ptr_typed(
+                        self,
+                        &value.slots,
+                        ptr,
+                        0,
+                        &leaf_types,
+                    );
                 } else if let Some(width) = crate::value_plan::float_width(plan.args[1].ty) {
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rax),
@@ -2730,6 +3117,7 @@ impl<'a> CfgLower<'a> {
             }
             rue_air::IntrinsicOperation::DebugI64
             | rue_air::IntrinsicOperation::DebugU64
+            | rue_air::IntrinsicOperation::DebugFloat
             | rue_air::IntrinsicOperation::DebugBool
             | rue_air::IntrinsicOperation::DebugStr => {
                 self.lower_runtime_call(plan.runtime_call.expect("debug runtime call plan"))
@@ -2774,13 +3162,43 @@ impl<'a> CfgLower<'a> {
                 let width = crate::value_plan::float_width(plan.result_ty).expect("float result");
                 let int =
                     crate::value_plan::integer_width(plan.args[0].ty).expect("integer source");
+                let src = plan.args[0].primary;
                 let dst = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
-                self.mir.push(X86Inst::IntToFloat {
-                    dst: Operand::Virtual(dst),
-                    src: Operand::Virtual(plan.args[0].primary),
-                    int_bits: int.bits.max(32),
-                    width,
-                });
+                if int.signed {
+                    self.mir.push(X86Inst::IntToFloat {
+                        dst: Operand::Virtual(dst),
+                        src: Operand::Virtual(src),
+                        int_bits: int.bits.max(32),
+                        width,
+                    });
+                } else if int.bits < 64 {
+                    // A narrow unsigned value is exact in the 64-bit signed
+                    // form once its upper bits are cleared, and `cvtsi2s*`
+                    // rounds that form once, correctly.
+                    let wide = self.mir.alloc_vreg();
+                    self.mir.push(match plan.args[0].integer_extension {
+                        crate::value_plan::IntegerExtension::Zero8 => X86Inst::Movzx8To64 {
+                            dst: Operand::Virtual(wide),
+                            src: Operand::Virtual(src),
+                        },
+                        crate::value_plan::IntegerExtension::Zero16 => X86Inst::Movzx16To64 {
+                            dst: Operand::Virtual(wide),
+                            src: Operand::Virtual(src),
+                        },
+                        _ => X86Inst::Movzx32To64 {
+                            dst: Operand::Virtual(wide),
+                            src: Operand::Virtual(src),
+                        },
+                    });
+                    self.mir.push(X86Inst::IntToFloat {
+                        dst: Operand::Virtual(dst),
+                        src: Operand::Virtual(wide),
+                        int_bits: 64,
+                        width,
+                    });
+                } else {
+                    self.lower_u64_to_float(dst, src, width);
+                }
                 dst
             }
             rue_air::IntrinsicOperation::FloatToInt => {
@@ -2804,6 +3222,9 @@ impl<'a> CfgLower<'a> {
                         crate::value_plan::FloatToIntGuardRelation::OrderedGreaterEqual => {
                             X86Inst::Jae { label: ok }
                         }
+                        crate::value_plan::FloatToIntGuardRelation::OrderedGreater => {
+                            X86Inst::Ja { label: ok }
+                        }
                         crate::value_plan::FloatToIntGuardRelation::OrderedLess => {
                             X86Inst::Jb { label: ok }
                         }
@@ -2812,12 +3233,26 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(X86Inst::Label { id: ok });
                 }
                 let dst = self.mir.alloc_vreg();
-                self.mir.push(X86Inst::FloatToInt {
-                    dst: Operand::Virtual(dst),
-                    src: Operand::Virtual(plan.args[0].primary),
-                    int_bits: int.bits.max(32),
-                    width,
-                });
+                if int.signed {
+                    self.mir.push(X86Inst::FloatToInt {
+                        dst: Operand::Virtual(dst),
+                        src: Operand::Virtual(plan.args[0].primary),
+                        int_bits: int.bits.max(32),
+                        width,
+                    });
+                } else if int.bits < 64 {
+                    // The guards proved `0 <= trunc(x) < 2^bits <= 2^32`, so the
+                    // 64-bit signed conversion is exact and its low bits are
+                    // the unsigned result.
+                    self.mir.push(X86Inst::FloatToInt {
+                        dst: Operand::Virtual(dst),
+                        src: Operand::Virtual(plan.args[0].primary),
+                        int_bits: 64,
+                        width,
+                    });
+                } else {
+                    self.lower_float_to_u64(dst, plan.args[0].primary, width);
+                }
                 dst
             }
             rue_air::IntrinsicOperation::FloatCast => {
@@ -2832,7 +3267,66 @@ impl<'a> CfgLower<'a> {
                 });
                 dst
             }
-            rue_air::IntrinsicOperation::TotalCmp => unreachable!("total_cmp is ADR-0065 phase 8"),
+            rue_air::IntrinsicOperation::TotalCmp => {
+                let width = crate::value_plan::float_width(plan.args[0].ty).expect("float operand");
+                let lhs = self.lower_float_total_order_key(plan.args[0].primary, width);
+                let rhs = self.lower_float_total_order_key(plan.args[1].primary, width);
+                self.mir.push(if width == FloatWidth::F64 {
+                    X86Inst::Cmp64RR {
+                        src1: Operand::Virtual(lhs),
+                        src2: Operand::Virtual(rhs),
+                    }
+                } else {
+                    X86Inst::CmpRR {
+                        src1: Operand::Virtual(lhs),
+                        src2: Operand::Virtual(rhs),
+                    }
+                });
+                let greater = self.mir.alloc_vreg();
+                let less = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::Setg {
+                    dst: Operand::Virtual(greater),
+                });
+                self.mir.push(X86Inst::Setl {
+                    dst: Operand::Virtual(less),
+                });
+                self.mir.push(X86Inst::Movzx {
+                    dst: Operand::Virtual(greater),
+                    src: Operand::Virtual(greater),
+                });
+                self.mir.push(X86Inst::Movzx {
+                    dst: Operand::Virtual(less),
+                    src: Operand::Virtual(less),
+                });
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Virtual(greater),
+                });
+                self.mir.push(X86Inst::SubRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Virtual(less),
+                });
+                dst
+            }
+            rue_air::IntrinsicOperation::FloatSqrt => {
+                let width = crate::value_plan::float_width(plan.result_ty).expect("float result");
+                let dst = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
+                self.mir.push(X86Inst::FloatSqrt {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Virtual(plan.args[0].primary),
+                    width,
+                });
+                dst
+            }
+            rue_air::IntrinsicOperation::FloatFloor
+            | rue_air::IntrinsicOperation::FloatCeil
+            | rue_air::IntrinsicOperation::FloatTrunc
+            | rue_air::IntrinsicOperation::FloatRound => {
+                let width = crate::value_plan::float_width(plan.result_ty).expect("float result");
+                let mode = crate::value_plan::float_rounding(plan.operation).expect("rounding");
+                self.lower_float_rounding(plan.args[0].primary, width, mode)
+            }
         };
         crate::value_plan::MaterializedValue { primary, slots }
     }
@@ -3248,7 +3742,11 @@ impl<'a> CfgLower<'a> {
                         );
                         self.mir.push(X86Inst::Ret);
                     }
-                    ReturnValuePlan::Aggregate { slots, return_plan } => {
+                    ReturnValuePlan::Aggregate {
+                        slots,
+                        return_plan,
+                        slot_regs,
+                    } => {
                         if return_plan.uses_sret() {
                             let return_ty = self.ctx.cfg.return_type();
                             match crate::types::aggregate_physical_slot_map(
@@ -3277,13 +3775,25 @@ impl<'a> CfgLower<'a> {
                                 },
                             }
                         } else {
-                            for (index, slot) in slots.iter().enumerate().rev() {
-                                if index < RET_REGS.len() {
-                                    self.mir.push(X86Inst::MovRR {
+                            assert_eq!(
+                                slot_regs.len(),
+                                slots.len(),
+                                "a register return must name a return register for every slot"
+                            );
+                            for (reg, slot) in slot_regs.iter().zip(&slots).rev() {
+                                self.mir.push(match *reg {
+                                    crate::call_plan::ReturnSlotReg::Gp(index) => X86Inst::MovRR {
                                         dst: Operand::Physical(RET_REGS[index]),
                                         src: Operand::Virtual(*slot),
-                                    });
-                                }
+                                    },
+                                    crate::call_plan::ReturnSlotReg::Fp { index, width } => {
+                                        X86Inst::FloatMov {
+                                            dst: Operand::Physical(FP_RET_REGS[index]),
+                                            src: Operand::Virtual(*slot),
+                                            width,
+                                        }
+                                    }
+                                });
                             }
                         }
                         self.mir.push(X86Inst::Ret);
@@ -3465,8 +3975,11 @@ impl crate::value_plan::ValueLowerAdapter for CfgLower<'_> {
     fn reserve_value_result(&mut self) -> VReg {
         self.mir.alloc_vreg()
     }
-    fn reserve_typed_value_result(&mut self, ty: Type) -> VReg {
-        self.mir.alloc_vreg_in(if ty.is_float() {
+    fn reserve_typed_value_result(
+        &mut self,
+        float_width: Option<crate::value_plan::FloatWidth>,
+    ) -> VReg {
+        self.mir.alloc_vreg_in(if float_width.is_some() {
             crate::reg_class::RegClass::Fp
         } else {
             crate::reg_class::RegClass::Gp
@@ -3490,8 +4003,8 @@ impl crate::value_plan::ValueLowerAdapter for CfgLower<'_> {
             fp: FP_ARG_REGS.len(),
         }
     }
-    fn return_register_budget(&self) -> u32 {
-        RET_REGS.len() as u32
+    fn return_register_banks(&self) -> crate::call_plan::AbiRegisterBanks {
+        return_register_banks()
     }
     fn emit_value(
         &mut self,

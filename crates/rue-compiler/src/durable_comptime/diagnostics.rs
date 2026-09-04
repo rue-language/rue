@@ -270,6 +270,12 @@ impl DurableComptimeFailure {
                     expr_kind: format!("intrinsic `@{name}`"),
                 }),
             ),
+            ComptimeSemanticRejection::FloatOperandWidthMismatch { .. } => {
+                Self::resolution("comptime float operands have different types (f32 and f64)")
+            }
+            ComptimeSemanticRejection::FloatRemainder { .. } => {
+                Self::resolution("`%` is not defined on floating-point operands; use std.math.rem")
+            }
             ComptimeSemanticRejection::UnsupportedExpression => {
                 Self::resolution("expression is not supported in declaration-time comptime")
             }

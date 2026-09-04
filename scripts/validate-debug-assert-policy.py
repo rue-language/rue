@@ -44,7 +44,12 @@ ALLOWANCES = {
     "crates/rue-air/src/intern_pool.rs": Allowance(3, "redundant arena and traversal bookkeeping checks"),
     "crates/rue-air/src/sema/analysis/builtin_ops.rs": Allowance(1, "redundant error-recovery state check"),
     "crates/rue-air/src/sema/analysis/calls.rs": Allowance(1, "redundant parameter metadata width check"),
-    "crates/rue-air/src/sema/analysis/intrinsics.rs": Allowance(1, "redundant intrinsic signature inventory check"),
+    "crates/rue-air/src/sema/analysis/intrinsics.rs": Allowance(
+        2,
+        "redundant intrinsic signature inventory check; redundant check that"
+        " a float bit-pattern helper was reached with a float type, which the"
+        " caller has already established (ADR-0065)",
+    ),
     "crates/rue-air/src/sema/analysis/ownership.rs": Allowance(
         2,
         "redundant non-negative arena-index check; redundant cross-check that"

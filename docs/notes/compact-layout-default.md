@@ -70,7 +70,7 @@ their compact and slot layouts coincide, so they are byte-for-byte unaffected.
 
 The preview feature is retired. `--preview aggregate_layout` is now a plain
 unknown-preview error listing the remaining features (`test_infra`, `c_ffi`,
-`floats`).
+`non_exhaustive_enums`, `test_declarations`).
 There is nothing to opt into: the compact layout is simply how Rue lays out
 memory.
 

@@ -1,13 +1,13 @@
 ---
 id: 0065
 title: "Floating point: f32/f64, IEEE-754 semantics, and register classes"
-status: accepted
+status: implemented
 tags: [types, semantics, codegen, numerics, abi]
-feature-flag: floats
+feature-flag: (none - feature stabilized)
 created: 2026-07-19
 accepted: 2026-07-20
-implemented:
-spec-sections: []
+implemented: 2026-09-04
+spec-sections: ["2.1:29", "2.1:30", "3.7:22", "3.12:1", "3.12:2", "3.12:3", "3.12:5", "3.12:6", "3.12:7", "3.12:8", "3.12:9", "3.12:10", "3.12:11", "3.12:13", "3.12:14", "3.12:16", "3.12:17", "3.12:18", "3.12:19", "3.12:21", "3.12:22", "3.12:23", "3.12:24", "3.12:25", "3.12:27", "3.12:28", "3.12:29", "3.12:31", "3.12:32", "3.12:34", "3.12:35", "3.12:36", "3.12:37", "3.12:39", "3.12:40", "3.12:41", "3.12:42", "3.12:44", "3.12:46", "3.12:47", "3.12:48", "3.12:49", "4.1:13", "4.1:14", "4.2:14", "4.3:2", "4.3:5", "4.13:139", "4.13:140", "4.13:141", "4.13:142", "4.13:143", "8.1:7"]
 superseded-by:
 ---
 
@@ -27,6 +27,12 @@ registers, and the register allocator had **no register-class concept at all**
 existing traces were a forward reference in spec `4.3` ("once floating-point types
 exist") and `comptime_float` marked *future* in [ADR-0025](0025-comptime.md).
 
+Implemented 2026-09-04. All ten phases have landed; the normative specification
+is spec chapter 3.12 plus the paragraphs listed in `spec-sections`, and the
+decisions the implementation forced are recorded in Amendment 1 below. The 4.3
+forward reference and the ADR-0025 *future* marker were both replaced by the
+shipped rules.
+
 ## Summary
 
 Rue gains two floating-point types, **`f32`** (IEEE-754 binary32) and **`f64`**
@@ -45,8 +51,8 @@ spec 4.3 and is the concrete motivation for the future `PartialEq`/`Eq` split
 enabling compiler change is a **register-class split (GP vs FP)**
 threaded through `VReg`, liveness, register allocation, and scheduling; it lands
 as a no-op refactor *before* any float instruction selection. Runtime `float →
-string` adopts the already-vendored `zmij` dtoa crate. The whole feature is gated
-behind `PreviewFeature::Floats`.
+string` adopts the already-vendored `zmij` dtoa crate. The feature ships behind
+`PreviewFeature::Floats` until Phase 10 retires that gate.
 
 ## Context
 
@@ -262,7 +268,7 @@ trait, lands with v1 rather than waiting for the `PartialEq`/`Eq`/`Ord` split
 
 Resolves the "`%` on floats" open question. The `%` operator stays
 integer-only; the typechecker rejects it on float operands with a diagnostic
-that names the tracking issue and points at the `std.math.rem` workaround path
+that points at the `std.math.rem` workaround path
 (agents porting C/Rust code with `fmod` will hit this rejection directly).
 
 Deferral is deliberate, not just scope-trimming: truncated `fmod` and IEEE
@@ -277,23 +283,107 @@ first.
 Sub-issues are filed under an M9 epic **after this ADR is accepted**; the
 register-class pre-work (Phase 1) is a hard prerequisite for Phases 5–6.
 
-- [ ] **Phase 1: Register classes (GP/FP) in codegen** — no-op refactor of
+- [x] **Phase 1: Register classes (GP/FP) in codegen** — no-op refactor of
   `VReg`/liveness/regalloc/scheduling. RUE-NNN
 - [x] **Phase 2: Lexer** — `comptime_float` literal token (`1.5`, `1e9`). RUE-1068
 - [x] **Phase 3: Parser + RIR** — float literal node through untyped IR. RUE-1069
 - [x] **Phase 4: AIR types + inference** — `f32`/`f64` tags in the packed `Type`,
   `comptime_float`, context coercion, `@int_to_float`/`@float_to_int`/`@float_cast`;
   plus `@total_cmp` typing (§8) and rejecting `%` on float operands with a
-  diagnostic naming the tracking issue and the `std.math.rem` path (§9). RUE-1070
-- [ ] **Phase 5: x86-64 backend** — SSE2 scalar ops, XMM regs, SysV FP ABI. RUE-NNN
-- [ ] **Phase 6: aarch64 backend** — FP/NEON scalar ops, V-regs, AAPCS64 FP ABI. RUE-NNN
+  diagnostic naming the `std.math.rem` path (§9). RUE-1070
+- [x] **Phase 5: x86-64 backend** — SSE2 scalar ops, XMM regs, SysV FP ABI. RUE-NNN
+- [x] **Phase 6: aarch64 backend** — FP/NEON scalar ops, V-regs, AAPCS64 FP ABI. RUE-NNN
 - [x] **Phase 7: Runtime dtoa** — wire `zmij` as `__rue_to_string_float`. RUE-1073
-- [ ] **Phase 8: std.math / std.fmt / @dbg** — hardware-instruction math, float
+- [x] **Phase 8: std.math / std.fmt / @dbg** — hardware-instruction math, float
   formatting, `@total_cmp` lowering (§8). RUE-NNN
-- [ ] **Phase 9: Spec + spec tests** — a `03-types/` float chapter, division-divergence
+- [x] **Phase 9: Spec + spec tests** — a `03-types/` float chapter, division-divergence
   and NaN-comparison paragraphs, plus paragraphs for total ordering (`@total_cmp`,
   §8) and the deferred float `%` (§9), traceability. RUE-NNN
-- [ ] **Phase 10: Stabilization** — remove the `Floats` preview gate. RUE-NNN
+- [x] **Phase 10: Stabilization** — remove the `Floats` preview gate. RUE-1076
+
+
+## Amendment 1: decisions taken during implementation (2026-09-04)
+
+Ratification left these open at the level of "the obvious thing"; implementing
+Phases 1–9 forced each one to a concrete answer. They are recorded here rather
+than in a new ADR because none of them changes a Decision above.
+
+1. **x86-64 rounding uses SSE4.1, the one instruction above the SSE2
+   baseline.** Decision §5 promised SSE2-only lowering, which has no rounding
+   instruction at all: `@floor`/`@ceil`/`@trunc`/`@round` under SSE2 alone cost
+   a magic-constant add-subtract sequence with its own edge cases. The backend
+   instead emits `roundsd`/`roundss` (SSE4.1) for `@floor`, `@ceil`, and
+   `@trunc`, and a trunc-and-adjust sequence built on `roundsd`/`roundss` for
+   the ties-away-from-zero `@round`, which no single instruction provides on
+   either target. This raises the x86-64 floor from SSE2 to SSE4.1 for these
+   five intrinsics only; every other float operation stays on the SSE2
+   instructions §5 names. SSE4.1 has been present on shipping x86-64 parts
+   since 2008 and is well below the 64-bit baseline any Rue target meets.
+   AArch64 needs no equivalent: `frintX` covers all five directly.
+
+2. **Comptime float arithmetic evaluates at the operation's width, not in
+   arbitrary precision.** Decision §3 calls `comptime_float` arbitrary
+   precision, which is true of a *literal*: its written text is carried exactly
+   until context fixes a width. It is not true of an *operation*. A `const`
+   expression's `+`, `-`, `*`, `/`, negation, and comparisons are evaluated at
+   the width of the operation — the annotated type, or the `f64` default when
+   only literals are involved — so a `const` and the identical runtime
+   computation cannot disagree. Evaluating at higher precision and rounding
+   once at the end would make `const SUM: f64 = 0.1 + 0.2;` differ from the
+   runtime sum, which is the double-rounding trap C's `long double` intermediate
+   is famous for. This is spec 3.12:46 and 3.12:47. Its corollary is that a
+   comptime expression mixing an `f32` operand with an `f64` one has no width
+   to evaluate at and is rejected (3.12:49), matching the runtime rule.
+
+3. **A comptime NaN is canonicalized to a positive quiet NaN.** Compile-time
+   evaluation runs on the build host, so an uncanonicalized NaN would carry the
+   *host's* default sign into the compiled program and make the output
+   host-dependent — a reproducible-build break. The comptime evaluator therefore
+   renders every NaN as a positive quiet NaN (spec 3.12:48).
+
+4. **The sign of a runtime NaN is target-defined, and specified as
+   implementation-defined.** The default NaN the hardware produces for an
+   invalid operation is negative on x86-64 and positive on AArch64, and forcing
+   agreement would cost a fixup on every float operation that can produce one.
+   The sign is observable only through `@total_cmp` or bit inspection, never
+   through arithmetic, the comparison operators, or formatting. Spec 3.12:44
+   classifies it as implementation-defined (Appendix B.1) — a documented choice
+   from a permitted set — explicitly *not* as undefined behavior.
+
+5. **Floats cross the runtime helper ABI as bit patterns in `u64` beside an
+   explicit width.** The compiler-to-runtime boundary (`rue-runtime-abi`) stays
+   integer-only: a float argument to a runtime helper is passed as its IEEE bit
+   pattern in a `u64` general-purpose parameter and reinterpreted inside the
+   helper. The width travels with it as a separate `u32` discriminator —
+   `FLOAT_WIDTH_F32` (32) or `FLOAT_WIDTH_F64` (64) — rather than being encoded
+   in the symbol, so each float-consuming helper is a single width-explicit
+   authority: `__rue_to_string_float(out, bits, width)` and
+   `__rue_dbg_float(bits, width)`, the latter formatting through the former. An
+   f32 pattern is zero-extended and must leave the upper 32 bits clear; any
+   other encoding traps rather than selecting a width implicitly. This keeps the
+   ABI contract free of any floating-point calling-convention dependency, so the
+   runtime needs no FP register classification of its own; the Rue-level
+   *language* calling conventions (SysV XMM0–7, AAPCS64 V0–7) are unaffected and
+   remain as Decision §5 specifies.
+
+6. **Formatting is zmij shortest-round-trip with fixed notation thresholds.**
+   Decision §6 adopted `zmij` without saying what the rendered text looks like.
+   It is the shortest decimal digit string that round-trips at the value's own
+   width, laid out positionally when the decimal exponent is in `-5..=15` for
+   `f64` or `-6..=12` for `f32`, and in `d.ddde±XX` scientific form with an
+   explicit exponent sign otherwise. The rendering always carries a fractional
+   part or an exponent — `1.0` prints as `1.0`, never `1` — so float output is
+   never mistakable for integer output. Specials print `NaN`, `inf`, `-inf`,
+   and negative zero prints `-0.0`. This is spec 3.12:40–3.12:42.
+
+7. **`std.math.rem` shipped with the float functions rather than waiting.**
+   Decision §9 deferred float `%` and named `std.math.rem` as the workaround
+   path "once a concrete use case picks a semantics". The rejection diagnostic
+   points at that function, so it had to exist for the diagnostic to be
+   actionable. It implements the truncated remainder (C's `fmod`), computed
+   exactly by shift-and-subtract, which is the semantics the `%` spelling would
+   have had in C and Rust. The operator itself remains undefined on floats
+   (spec 3.12:25); this fixes only the library function's semantics.
 
 ## Consequences
 

@@ -124,6 +124,8 @@ place_postfix  = "." IDENT | "[" expression "]"
 type           = "i8" | "i16" | "i32" | "i64"
                | "u8" | "u16" | "u32" | "u64"
                | "usize" | "isize"
+               | "f32" | "f64"          (* ordinary identifiers naming builtin
+                                           types, not keywords; §3.12 *)
                | "bool" | "type" | "()" | "!"
                | "[" type [ ";" array_length ] "]"
                | "ptr" "const" type
@@ -182,7 +184,7 @@ suffix         = "." IDENT                                     (* field access /
 call_args      = call_arg { "," call_arg } [ "," ] ;
 call_arg       = [ "inout" | "borrow" ] expression ;
 
-primary        = INTEGER | STRING | BOOL | "()"
+primary        = INTEGER | FLOAT | STRING | BOOL | "()"
                | "self"
                | ident_expr
                | self_struct_literal
@@ -207,7 +209,8 @@ ident_expr     = IDENT "(" [ call_args ] ")"           (* function call *)
                | IDENT ;                               (* Enum.Variant / Type.function(args) parse via postfix `.` suffixes *)
 self_struct_literal = "Self" "{" [ field_inits ] "}" ;
 primitive_type_literal = "i8" | "i16" | "i32" | "i64"
-                       | "u8" | "u16" | "u32" | "u64" | "bool" ;
+                       | "u8" | "u16" | "u32" | "u64" | "bool"
+                       | "f32" | "f64" ;
 
 (* Compound expressions *)
 block_expr     = "{" block "}" ;
@@ -248,6 +251,10 @@ dec_literal    = digit { digit | "_" } ;
 hex_literal    = "0x" { hex_digit | "_" } ;   (* at least one hex_digit *)
 oct_literal    = "0o" { oct_digit | "_" } ;   (* at least one oct_digit *)
 bin_literal    = "0b" { bin_digit | "_" } ;   (* at least one bin_digit *)
+FLOAT          = dec_literal ( float_fraction [ float_exponent ]
+                             | float_exponent ) ;   (* §2.1:29; no suffixes *)
+float_fraction = "." dec_literal ;
+float_exponent = ( "e" | "E" ) [ "+" | "-" ] dec_literal ;
 hex_digit      = digit | "a" | ... | "f" | "A" | ... | "F" ;
 oct_digit      = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" ;
 bin_digit      = "0" | "1" ;

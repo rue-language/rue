@@ -5,10 +5,12 @@
 //
 // The standard library provides common utilities organized into submodules:
 // - std.math: Integer math (generic min/max/abs/gcd/isqrt/pow, i64 checked_*)
+//   and float math (sqrt/floor/ceil/trunc/round, inf/nan predicates, exact
+//   rem, total_cmp)
 // - std.cmp: Ordering + generic min/max/clamp/cmp
 // - std.mem: swap / replace (inout helpers)
 // - std.tuple: Pair / Triple
-// - std.fmt: scalar-to-string formatting (int/bool, hex/binary)
+// - std.fmt: scalar-to-string formatting (int/float/bool, hex/binary)
 // - std.option.Option: Optional values
 // - std.result.Result: Fallible values (Ok/Err), propagated with `?`
 // - std.intmap.IntMap / std.strmap.StrMap: open-addressing hash maps

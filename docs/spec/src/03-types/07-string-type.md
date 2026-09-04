@@ -233,8 +233,9 @@ fn main() -> i32 {
 {{ rule(id="3.7:22", cat="normative") }}
 
 The intrinsic `@to_string(n)` takes an argument of any integer type (`i8`,
-`i16`, `i32`, `i64`, `u8`, `u16`, `u32`, or `u64`) and returns a new,
-heap-allocated `StrBuf` containing the base-10 decimal representation of `n`
+`i16`, `i32`, `i64`, `u8`, `u16`, `u32`, or `u64`) or of either floating-point
+type (`f32`, `f64`; the text it produces for one is 3.12:40–3.12:42) and returns
+a new, heap-allocated `StrBuf` containing the decimal representation of `n`
 (see ADR-0035). The argument keeps its own type; a bare integer literal argument
 is inferred to be `i32` (the default integer type). Using `@to_string` requires
 the enclosing file to import the standard library lexically

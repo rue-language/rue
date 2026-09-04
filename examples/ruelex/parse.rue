@@ -143,6 +143,9 @@ pub struct Parser {
         let mut base = if t.kind == token.INT {
             let _ = self.bump();
             self.add(ast.INT, t.value, t.start, t.end, 0, 0, 0)
+        } else if t.kind == token.FLOAT {
+            let _ = self.bump();
+            self.add(ast.FLOAT, t.value, t.start, t.end, 0, 0, 0)
         } else if t.kind == token.STRING {
             let _ = self.bump();
             self.add(ast.STRING, t.value, t.start, t.end, 0, 0, 0)
@@ -481,7 +484,8 @@ pub struct Parser {
     }
 
     fn expression_starts(kind: u64) -> bool {
-        kind == token.INT || kind == token.STRING || kind == token.TRUE || kind == token.FALSE ||
+        kind == token.INT || kind == token.FLOAT || kind == token.STRING ||
+        kind == token.TRUE || kind == token.FALSE ||
         kind == token.IDENT || kind == token.SELF || kind == token.SELFTYPE ||
         kind == token.LPAREN || kind == token.LBRACKET || kind == token.LBRACE ||
         kind == token.COMPTIME || kind == token.CHECKED || kind == token.IF ||

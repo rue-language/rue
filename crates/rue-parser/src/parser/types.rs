@@ -116,12 +116,13 @@ impl Parser {
             TokenKind::U32 => self.syms.u32,
             TokenKind::U64 => self.syms.u64,
             TokenKind::Bool => self.syms.bool,
-            TokenKind::Ident(symbol)
-                if matches!(
-                    self.interner.resolve(&symbol),
-                    "f32" | "f64" | "comptime_float"
-                ) =>
-            {
+            // `f32` and `f64` are ordinary identifiers naming builtin types
+            // (spec 3.12:2), so they are recognized here rather than as
+            // keywords. `comptime_float` is deliberately not among them: it is
+            // a type the implementation infers and no program may name (spec
+            // 3.12:3), so it stays an ordinary identifier and is reported like
+            // any other unknown name, exactly as `comptime_int` is (RUE-1076).
+            TokenKind::Ident(symbol) if matches!(self.interner.resolve(&symbol), "f32" | "f64") => {
                 symbol
             }
             _ => return None,

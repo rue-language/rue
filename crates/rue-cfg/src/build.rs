@@ -1757,26 +1757,6 @@ impl<'a> CfgBuilder<'a> {
                 name,
                 args,
             } => {
-                // ADR-0065 Phase 8 owns total ordering, and Phases 5/6 cover
-                // signed integer conversions only. Keep the existing
-                // fail-closed diagnostic for later phases while supported
-                // scalar operations proceed into the target backends.
-                let unsupported_float_intrinsic = *operation
-                    == rue_air::IntrinsicOperation::TotalCmp
-                    || (*operation == rue_air::IntrinsicOperation::FloatToInt && !ty.is_signed())
-                    || (*operation == rue_air::IntrinsicOperation::IntToFloat
-                        && self
-                            .air
-                            .get_intrinsic_args(args)
-                            .next()
-                            .is_some_and(|arg| !self.air.get(arg).ty.is_signed()));
-                if unsupported_float_intrinsic {
-                    self.errors
-                        .push(CompileError::new(ErrorKind::FloatNotYetImplemented, span));
-                    self.cfg
-                        .set_terminator(self.current_block, Terminator::Unreachable);
-                    return Self::diverged();
-                }
                 let arguments = self
                     .air
                     .get_intrinsic_args(args)

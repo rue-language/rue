@@ -366,6 +366,23 @@ pub(crate) fn inferred_durable_const_type_name(value: &DurableConstValue) -> &'s
     }
 }
 
+/// The type name to *suggest* for a value constant that was written without an
+/// annotation.
+///
+/// This differs from [`inferred_durable_const_type_name`] only for a float:
+/// that function names the type the initializer has, which is the reason a
+/// mismatch diagnostic can say "found comptime_float", while a suggestion has
+/// to name a type the program may actually write. `comptime_float` is not one
+/// (spec 3.12:3, the same rule that keeps `comptime_int` unnameable), so a
+/// float initializer suggests the width a literal takes when no context
+/// supplies one (3.12:8).
+pub(crate) fn suggested_durable_const_type_name(value: &DurableConstValue) -> &'static str {
+    match value {
+        DurableConstValue::Float(_) => "f64",
+        other => inferred_durable_const_type_name(other),
+    }
+}
+
 pub(crate) fn substitute_durable_generics(
     ty: &DurableType,
     type_arguments: &[DurableType],
@@ -1024,6 +1041,20 @@ impl ComptimeValue for EvaluatedSemanticConst {
                 ty.0,
             )),
             None => Self::integer(value),
+        }
+    }
+
+    fn as_float_type(&self) -> Option<Self::Type> {
+        let Self::Value(value) = self else {
+            return None;
+        };
+        if !matches!(value.value, DurableConstValue::Float(_)) {
+            return None;
+        }
+        match value.ty {
+            Some(DurableType::F32) => Some(DurableComptimeType(DurableType::F32)),
+            Some(DurableType::F64) => Some(DurableComptimeType(DurableType::F64)),
+            _ => None,
         }
     }
 }

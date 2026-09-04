@@ -1,0 +1,1209 @@
+# Floating-point types (specification § 3.12, ADR-0065).
+#
+# Floats are stable as of ADR-0065 Phase 10: no case here carries a preview
+# flag, and every one compiles with the ordinary driver.
+
+[section]
+id = "types.floats"
+spec_chapter = "3.12"
+name = "Floating-Point Types"
+description = "f32 and f64: IEEE-754 arithmetic, comparison, conversion, formatting, and compile-time evaluation."
+
+# =============================================================================
+# The floating-point types (3.12:1 - 3.12:3)
+# =============================================================================
+
+[[case]]
+name = "float_types_are_binary32_and_binary64"
+spec = ["3.12:1"]
+description = "f32 is binary32 and f64 is binary64: four and eight bytes, and f32 rounds a value f64 keeps"
+source = """
+fn main() -> i32 {
+    @dbg(@size_of(f32));
+    @dbg(@size_of(f64));
+    let wide: f64 = 16777217.0;
+    let narrow: f32 = 16777217.0;
+    @dbg(wide);
+    @dbg(narrow);
+    0
+}
+"""
+expected_stdout = """
+4
+8
+16777217.0
+16777216.0
+"""
+exit_code = 0
+
+[[case]]
+name = "float_type_names_are_ordinary_identifiers"
+spec = ["3.12:2"]
+description = "f32/f64 name types in every type position and are usable as `type` values"
+source = """
+struct Pair { a: f32, b: f64 }
+
+fn widen(x: f32) -> f64 { @float_cast(x) }
+
+fn size(comptime T: type) -> i32 { @size_of(T) }
+
+fn main() -> i32 {
+    let p = Pair { a: 1.5, b: 2.5 };
+    let row: [f64; 2] = [p.b, 0.5];
+    let t: type = f32;
+    @dbg(widen(p.a) + row[0] + row[1]);
+    @dbg(size(f64));
+    @dbg(@size_of(t));
+    0
+}
+"""
+expected_stdout = """
+4.5
+8
+4
+"""
+exit_code = 0
+
+[[case]]
+name = "comptime_float_has_no_runtime_representation"
+spec = ["3.12:3"]
+description = "A binding annotated comptime_float cannot exist at run time, so the annotation itself is rejected"
+source = """
+fn main() -> i32 {
+    let x: comptime_float = 1.0;
+    @dbg(x);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0204"
+error_contains = ["comptime_float"]
+
+[[case]]
+name = "comptime_float_is_not_nameable_in_a_{case_name}"
+spec = ["3.12:3"]
+description = "The name is rejected in every type position, including a comptime parameter, exactly as comptime_int is"
+source = """
+{declaration}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+expected_error_code = "E0204"
+error_contains = ["comptime_float"]
+params = [
+  { case_name = "const_annotation", declaration = "const B: comptime_float = 1.5;" },
+  { case_name = "parameter", declaration = "fn f(v: comptime_float) -> f64 { v }" },
+  { case_name = "comptime_parameter", declaration = "fn f(comptime v: comptime_float) -> f64 { v }" },
+  { case_name = "result_type", declaration = "fn f() -> comptime_float { 1.5 }" },
+  { case_name = "struct_field", declaration = "struct Holder { field: comptime_float }" },
+]
+
+[[case]]
+name = "a_comptime_float_value_is_declared_at_a_width"
+spec = ["3.12:3"]
+description = "The f64 spelling of the rejected annotations keeps the exact value at every use, locally and across a module boundary"
+source = """
+const dep = @import("dep.rue");
+
+const LOCAL: f64 = 1.5;
+
+fn take(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let bound: f64 = LOCAL;
+    @dbg(LOCAL);
+    @dbg(take(LOCAL));
+    @dbg(bound);
+    @dbg(dep.EXACT);
+    @dbg(dep.value());
+    0
+}
+"""
+aux_files = { "dep.rue" = "pub const EXACT: f64 = 15e-1;\npub fn value() -> f64 { EXACT }\n" }
+expected_stdout = """
+1.5
+1.5
+1.5
+1.5
+1.5
+"""
+exit_code = 0
+
+# =============================================================================
+# Float literals (3.12:5 - 3.12:12)
+# =============================================================================
+
+[[case]]
+name = "float_literal_forms"
+spec = ["3.12:5"]
+description = "Fraction form, exponent form, both, digit separators, and an uppercase exponent marker"
+source = """
+fn main() -> i32 {
+    @dbg(1.0);
+    @dbg(1e9);
+    @dbg(1.5e-3);
+    @dbg(1_000.5);
+    @dbg(2.5E+7);
+    0
+}
+"""
+expected_stdout = """
+1.0
+1000000000.0
+0.0015
+1000.5
+25000000.0
+"""
+exit_code = 0
+
+[[case]]
+name = "float_literal_{case_name}_is_rejected"
+spec = ["3.12:6"]
+description = "A leading dot, a trailing dot, and an empty exponent are all lexical errors"
+source = """
+fn main() -> i32 {
+    let x: f64 = {literal};
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0011"
+params = [
+  { case_name = "leading_dot", literal = ".5" },
+  { case_name = "trailing_dot", literal = "5." },
+  { case_name = "empty_exponent", literal = "1e" },
+]
+
+[[case]]
+name = "float_literal_takes_its_type_from_context"
+spec = ["3.12:7"]
+description = "Annotation, binary operand, argument, and result position each fix a literal's type"
+source = """
+fn takes(v: f32) -> f32 { v }
+
+fn gives() -> f32 { 0.25 }
+
+fn main() -> i32 {
+    let annotated: f32 = 0.5;
+    let operand = annotated + 1.0;
+    @dbg(operand);
+    @dbg(takes(2.0));
+    @dbg(gives());
+    0
+}
+"""
+expected_stdout = """
+1.5
+2.0
+0.25
+"""
+exit_code = 0
+
+[[case]]
+name = "float_literal_defaults_to_f64"
+spec = ["3.12:8"]
+description = "With no contextual float type the literal is f64, which 0.1 + 0.2 makes observable"
+source = """
+fn main() -> i32 {
+    let a = 0.1 + 0.2;
+    @dbg(a);
+    @dbg(@size_of(f64));
+    0
+}
+"""
+expected_stdout = """
+0.30000000000000004
+8
+"""
+exit_code = 0
+
+[[case]]
+name = "float_literal_rounds_ties_to_even"
+spec = ["3.12:9"]
+description = "Two f32 halfway cases round to the even significand, up in one direction and down in the other"
+source = """
+fn main() -> i32 {
+    let down: f32 = 16777217.0;
+    let up: f32 = 16777219.0;
+    @dbg(down);
+    @dbg(up);
+    0
+}
+"""
+expected_stdout = """
+16777216.0
+16777220.0
+"""
+exit_code = 0
+
+[[case]]
+name = "float_literal_out_of_range_for_{type}_is_rejected"
+spec = ["3.12:10"]
+description = "A literal that would round to an infinity is a compile-time error"
+source = """
+fn main() -> i32 {
+    let x: {type} = {literal};
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0206"
+error_contains = ["finite"]
+params = [
+  { type = "f32", literal = "1e39" },
+  { type = "f64", literal = "1e400" },
+]
+
+[[case]]
+name = "float_literal_out_of_range_for_a_{type}_const_is_rejected"
+spec = ["3.12:10"]
+description = "The finite-range rule holds for a const initializer, not just a let binding"
+source = """
+const BIG: {type} = {literal};
+
+fn main() -> i32 {
+    @dbg(BIG);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0206"
+error_contains = ["finite"]
+params = [
+  { type = "f32", literal = "1e39" },
+  { type = "f64", literal = "1e400" },
+]
+
+[[case]]
+name = "computed_const_infinity_is_not_a_literal_range_error"
+spec = ["3.12:10"]
+description = "3.12:10 governs a written literal; a compile-time computation may still produce an infinity"
+source = """
+const INF: f64 = 1.0 / 0.0;
+
+fn main() -> i32 {
+    @dbg(INF);
+    0
+}
+"""
+expected_stdout = """
+inf
+"""
+exit_code = 0
+
+[[case]]
+name = "float_literal_underflow_is_a_zero_not_an_error"
+spec = ["3.12:10"]
+description = "Rounding down to zero is legal; only rounding up to an infinity is rejected"
+source = """
+fn main() -> i32 {
+    let x: f32 = 1e-50;
+    @dbg(x);
+    0
+}
+"""
+expected_stdout = """
+0.0
+"""
+exit_code = 0
+
+[[case]]
+name = "integer_literal_is_accepted_in_float_position"
+spec = ["3.12:11"]
+description = "An integer literal denotes a float where a float type is expected"
+source = """
+fn main() -> i32 {
+    let x: f64 = 3;
+    @dbg(x + 0.5);
+    0
+}
+"""
+expected_stdout = """
+3.5
+"""
+exit_code = 0
+
+[[case]]
+name = "float_literal_is_never_given_an_integer_type"
+spec = ["3.12:11"]
+description = "The converse coercion does not exist, even for an integral value"
+source = """
+fn main() -> i32 {
+    let x: i32 = 3.0;
+    x
+}
+"""
+compile_fail = true
+expected_error_code = "E0206"
+
+# =============================================================================
+# No implicit conversions (3.12:13, 3.12:14)
+# =============================================================================
+
+[[case]]
+name = "mixing_float_widths_with_{op_name}_is_rejected"
+spec = ["3.12:13"]
+description = "f32 and f64 never mix implicitly, in arithmetic or in comparison"
+source = """
+fn main() -> i32 {
+    let a: f32 = 1.0;
+    let b: f64 = 2.0;
+    let c = a {op} b;
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0206"
+params = [
+  { op_name = "add", op = "+" },
+  { op_name = "mul", op = "*" },
+  { op_name = "less", op = "<" },
+  { op_name = "eq", op = "==" },
+]
+
+[[case]]
+name = "mixing_int_and_float_with_{op_name}_is_rejected"
+spec = ["3.12:14"]
+description = "There is no implicit int-to-float conversion in either direction"
+source = """
+fn main() -> i32 {
+    let a: f64 = 1.0;
+    let b: i64 = 2;
+    let c = a {op} b;
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0206"
+params = [
+  { op_name = "add", op = "+" },
+  { op_name = "div", op = "/" },
+  { op_name = "less", op = "<" },
+  { op_name = "eq", op = "==" },
+]
+
+# =============================================================================
+# Conversion intrinsics (3.12:16 - 3.12:20)
+# =============================================================================
+
+[[case]]
+name = "int_to_float_converts_and_rounds_to_nearest"
+spec = ["3.12:16"]
+description = "Any integer type converts; a value beyond the target's exact range rounds to nearest"
+source = """
+fn i(v: i32) -> i32 { v }
+fn wide(v: i64) -> i64 { v }
+
+fn main() -> i32 {
+    let a: f64 = @int_to_float(i(7));
+    let b: f32 = @int_to_float(i(7));
+    let c: f64 = @int_to_float(wide(9007199254740993));
+    @dbg(a);
+    @dbg(b);
+    @dbg(c);
+    0
+}
+"""
+expected_stdout = """
+7.0
+7.0
+9007199254740992.0
+"""
+exit_code = 0
+
+[[case]]
+name = "float_to_int_truncates_toward_zero"
+spec = ["3.12:17"]
+description = "The fractional part is discarded, toward zero on both signs, into signed and unsigned targets"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let up: i32 = @float_to_int(f(2.9));
+    let down: i32 = @float_to_int(f(-2.9));
+    let byte: u8 = @float_to_int(f(200.7));
+    @dbg(up);
+    @dbg(down);
+    @dbg(byte);
+    0
+}
+"""
+expected_stdout = """
+2
+-2
+200
+"""
+exit_code = 0
+
+[[case]]
+name = "float_to_int_traps_on_{case_name}"
+spec = ["3.12:18", "8.1:7", "B.2:2"]
+description = "A NaN, an infinity, and a truncated value outside the target's range each trap"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let zero: f64 = f(0.0);
+    let x: {type} = @float_to_int({operand});
+    @dbg(x);
+    0
+}
+"""
+runtime_error = "integer overflow"
+params = [
+  { case_name = "nan", type = "i32", operand = "zero / zero" },
+  { case_name = "infinity", type = "i64", operand = "f(1.0) / zero" },
+  { case_name = "too_large", type = "i32", operand = "f(3e9)" },
+  { case_name = "negative_into_unsigned", type = "u32", operand = "f(-1.5)" },
+]
+
+[[case]]
+name = "float_to_int_succeeds_at_the_boundary"
+spec = ["3.12:18"]
+description = "The admitted range is MIN - 1 < x < MAX + 1: a fraction past either end still truncates in"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let high: i32 = @float_to_int(f(2147483647.5));
+    let low: i32 = @float_to_int(f(-2147483648.5));
+    let unsigned: u32 = @float_to_int(f(-0.5));
+    @dbg(high);
+    @dbg(low);
+    @dbg(unsigned);
+    0
+}
+"""
+expected_stdout = """
+2147483647
+-2147483648
+0
+"""
+exit_code = 0
+
+[[case]]
+name = "float_cast_widens_exactly_and_narrows_by_rounding"
+spec = ["3.12:19"]
+description = "f32 to f64 is exact; f64 to f32 rounds to nearest and overflows to an infinity"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let narrow: f32 = @float_cast(f(1.0) / 3.0);
+    let wide: f64 = @float_cast(narrow);
+    let over: f32 = @float_cast(f(1e300));
+    @dbg(narrow);
+    @dbg(wide);
+    @dbg(over);
+    0
+}
+"""
+expected_stdout = """
+0.33333334
+0.3333333432674408
+inf
+"""
+exit_code = 0
+
+# =============================================================================
+# Arithmetic (3.12:21 - 3.12:26)
+# =============================================================================
+
+[[case]]
+name = "float_arithmetic_is_ieee_and_never_traps"
+spec = ["3.12:21"]
+description = "The four operators produce the correctly rounded IEEE result at the operand type"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let a: f64 = f(7.0);
+    let b: f64 = f(2.0);
+    @dbg(a + b);
+    @dbg(a - b);
+    @dbg(a * b);
+    @dbg(a / b);
+    @dbg(f(0.1) + 0.2);
+    0
+}
+"""
+expected_stdout = """
+9.0
+5.0
+14.0
+3.5
+0.30000000000000004
+"""
+exit_code = 0
+
+[[case]]
+name = "float_division_by_zero_is_infinity_or_nan"
+spec = ["3.12:22"]
+description = "Unlike integer division this does not trap: the signs combine, and 0/0 is a NaN"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let zero: f64 = f(0.0);
+    @dbg(f(1.0) / zero);
+    @dbg(f(-1.0) / zero);
+    @dbg(zero / zero);
+    0
+}
+"""
+expected_stdout = """
+inf
+-inf
+NaN
+"""
+exit_code = 0
+
+[[case]]
+name = "float_overflow_yields_infinity_not_a_trap"
+spec = ["3.12:23"]
+description = "Out of range becomes an infinity of that sign, and below the smallest subnormal becomes a zero"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let big: f64 = f(1e308);
+    @dbg(big * 10.0);
+    @dbg(-big * 10.0);
+    @dbg(f(1e-320) / 1e10);
+    0
+}
+"""
+expected_stdout = """
+inf
+-inf
+0.0
+"""
+exit_code = 0
+
+[[case]]
+name = "float_negation_flips_the_sign_bit"
+spec = ["3.12:24", "4.2:14"]
+description = "Negation is total: -0.0 is a negative zero and a negated NaN is still a NaN"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let zero: f64 = f(0.0);
+    let nan: f64 = zero / zero;
+    @dbg(-zero);
+    @dbg(@total_cmp(-zero, zero));
+    @dbg(-f(1.5));
+    @dbg(-nan == -nan);
+    0
+}
+"""
+expected_stdout = """
+-0.0
+-1
+-1.5
+false
+"""
+exit_code = 0
+
+[[case]]
+name = "float_remainder_operator_is_rejected"
+spec = ["3.12:25"]
+description = "`%` has no float form; the diagnostic points at std.math.rem"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let a: f64 = f(5.0);
+    let b: f64 = f(2.0);
+    @dbg(a % b);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0206"
+error_contains = ["std.math.rem"]
+
+[[case]]
+name = "float_remainder_is_rejected_at_compile_time_too"
+spec = ["3.12:25"]
+description = "The rejection also applies to a const initializer, where the operands are compile-time floats"
+source = """
+const C: f64 = 5.0 % 2.0;
+
+fn main() -> i32 {
+    @dbg(C);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E1200"
+error_contains = ["std.math.rem"]
+
+# =============================================================================
+# Comparison (3.12:27 - 3.12:30)
+# =============================================================================
+
+[[case]]
+name = "nan_comparisons_are_all_false_except_not_equal"
+spec = ["3.12:27"]
+description = "A NaN operand makes every comparison false except `!=`, which is true"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let zero: f64 = f(0.0);
+    let n: f64 = zero / zero;
+    @dbg(n == n);
+    @dbg(n != n);
+    @dbg(n < n);
+    @dbg(n <= n);
+    @dbg(n > f(1.0));
+    @dbg(n >= f(1.0));
+    0
+}
+"""
+expected_stdout = """
+false
+true
+false
+false
+false
+false
+"""
+exit_code = 0
+
+[[case]]
+name = "negative_zero_equals_positive_zero"
+spec = ["3.12:28"]
+description = "The two zeros compare equal and neither is less than the other, though their bits differ"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let negative: f64 = -f(0.0);
+    let positive: f64 = f(0.0);
+    @dbg(negative == positive);
+    @dbg(negative < positive);
+    @dbg(@total_cmp(negative, positive));
+    0
+}
+"""
+expected_stdout = """
+true
+false
+-1
+"""
+exit_code = 0
+
+[[case]]
+name = "aggregate_equality_uses_ieee_at_float_leaves"
+spec = ["3.12:29", "4.3:3b"]
+description = "A struct holding a NaN is not equal to itself; an array whose leaves are -0.0 and 0.0 is equal"
+source = """
+struct Point { x: f64, y: f64 }
+
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let zero: f64 = f(0.0);
+    let n: f64 = zero / zero;
+    let a = Point { x: 1.0, y: n };
+    let b = Point { x: 1.0, y: n };
+    @dbg(a == b);
+    let c: [f64; 2] = [-zero, 1.0];
+    let d: [f64; 2] = [zero, 1.0];
+    @dbg(c == d);
+    0
+}
+"""
+expected_stdout = """
+false
+true
+"""
+exit_code = 0
+
+# =============================================================================
+# Total ordering (3.12:31 - 3.12:33)
+# =============================================================================
+
+[[case]]
+name = "total_cmp_takes_one_float_type_and_returns_i32"
+spec = ["3.12:31"]
+description = "Both operands share a float type and the result is an i32"
+source = """
+fn f(v: f32) -> f32 { v }
+
+fn main() -> i32 {
+    let r: i32 = @total_cmp(f(1.0), f(1.0));
+    @dbg(r);
+    r
+}
+"""
+expected_stdout = """
+0
+"""
+exit_code = 0
+
+[[case]]
+name = "total_cmp_operands_must_share_a_type"
+spec = ["3.12:31"]
+description = "An f32 and an f64 operand are rejected, as everywhere else"
+source = """
+fn main() -> i32 {
+    let a: f32 = 1.0;
+    let b: f64 = 2.0;
+    @dbg(@total_cmp(a, b));
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0206"
+
+[[case]]
+name = "total_cmp_orders_zeros_infinities_and_nans"
+spec = ["3.12:32"]
+description = "-inf < finite < -0.0 < +0.0 < finite < +inf, and a NaN sorts outside the numbers on its sign's side"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let zero: f64 = f(0.0);
+    let plus_inf: f64 = f(1.0) / zero;
+    let minus_inf: f64 = f(-1.0) / zero;
+    @dbg(@total_cmp(minus_inf, -f(1.0)));
+    @dbg(@total_cmp(-f(1.0), -zero));
+    @dbg(@total_cmp(-zero, zero));
+    @dbg(@total_cmp(zero, f(1.0)));
+    @dbg(@total_cmp(f(1.0), plus_inf));
+    @dbg(@total_cmp(f(1.0), f(1.0)));
+    0
+}
+"""
+expected_stdout = """
+-1
+-1
+-1
+-1
+-1
+0
+"""
+exit_code = 0
+
+# =============================================================================
+# Rounding and square root (3.12:34 - 3.12:38)
+# =============================================================================
+
+[[case]]
+name = "rounding_intrinsics_preserve_the_operand_type"
+spec = ["3.12:34"]
+description = "Each of the five takes one float operand and returns that same float type"
+source = """
+fn s(v: f32) -> f32 { v }
+fn d(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let a: f32 = @sqrt(s(4.0));
+    let b: f64 = @floor(d(1.5));
+    let c: f32 = @ceil(s(1.5));
+    let e: f64 = @trunc(d(1.5));
+    let g: f32 = @round(s(1.5));
+    @dbg(a + c + g);
+    @dbg(b + e);
+    0
+}
+"""
+expected_stdout = """
+6.0
+2.0
+"""
+exit_code = 0
+
+[[case]]
+name = "sqrt_is_correctly_rounded_and_nan_on_a_negative"
+spec = ["3.12:35"]
+description = "@sqrt of a negative is a NaN; -0.0 and an infinity pass through"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let zero: f64 = f(0.0);
+    @dbg(@sqrt(f(4.0)));
+    @dbg(@sqrt(f(2.0)));
+    @dbg(@sqrt(f(-1.0)));
+    @dbg(@sqrt(-zero));
+    @dbg(@sqrt(f(1.0) / zero));
+    0
+}
+"""
+expected_stdout = """
+2.0
+1.4142135623730951
+NaN
+-0.0
+inf
+"""
+exit_code = 0
+
+[[case]]
+name = "rounding_directions_including_ties_away_from_zero"
+spec = ["3.12:36"]
+description = "floor/ceil/trunc go toward -inf, +inf, and zero; round breaks ties away from zero"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    @dbg(@floor(f(-1.5)));
+    @dbg(@ceil(f(-1.5)));
+    @dbg(@trunc(f(-1.5)));
+    @dbg(@round(f(2.5)));
+    @dbg(@round(f(-2.5)));
+    @dbg(@round(f(0.5)));
+    0
+}
+"""
+expected_stdout = """
+-2.0
+-1.0
+-1.0
+3.0
+-3.0
+1.0
+"""
+exit_code = 0
+
+[[case]]
+name = "rounding_intrinsics_propagate_nan_infinity_and_zero_sign"
+spec = ["3.12:37"]
+description = "None of them traps: a NaN stays a NaN, an infinity stays itself, a zero keeps its sign"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let zero: f64 = f(0.0);
+    let n: f64 = zero / zero;
+    @dbg(@trunc(n));
+    @dbg(@round(n));
+    @dbg(@floor(f(1.0) / zero));
+    @dbg(@ceil(-zero));
+    0
+}
+"""
+expected_stdout = """
+NaN
+NaN
+inf
+-0.0
+"""
+exit_code = 0
+
+# =============================================================================
+# Formatting (3.12:39 - 3.12:43)
+# =============================================================================
+
+[[case]]
+name = "dbg_and_to_string_accept_floats"
+spec = ["3.12:39", "3.7:22"]
+real_std = true
+description = "Both formatting surfaces take a float argument and produce the same text"
+source = """
+const std = @import("std");
+
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    @dbg(f(1.5));
+    @dbg(@to_string(f(1.5)));
+    @dbg(@to_string(f(1.0) / 0.0));
+    0
+}
+"""
+expected_stdout = """
+1.5
+1.5
+inf
+"""
+exit_code = 0
+
+[[case]]
+name = "float_formatting_is_shortest_round_trip_at_the_value_width"
+spec = ["3.12:40"]
+description = "The same number prints with the digits that identify it at its own width"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let wide: f64 = f(1.0) / 3.0;
+    let narrow: f32 = @float_cast(wide);
+    @dbg(wide);
+    @dbg(narrow);
+    0
+}
+"""
+expected_stdout = """
+0.3333333333333333
+0.33333334
+"""
+exit_code = 0
+
+[[case]]
+name = "float_formatting_notation_thresholds_for_f64"
+spec = ["3.12:41"]
+description = "f64 uses positional notation for a decimal exponent in -5..=15 and scientific outside it, always with a fraction or an exponent"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    @dbg(f(1.0));
+    @dbg(f(1e15));
+    @dbg(f(1e16));
+    @dbg(f(1e-5));
+    @dbg(f(1e-6));
+    @dbg(f(1.5e300));
+    0
+}
+"""
+expected_stdout = """
+1.0
+1000000000000000.0
+1e+16
+0.00001
+1e-6
+1.5e+300
+"""
+exit_code = 0
+
+[[case]]
+name = "float_formatting_notation_thresholds_for_f32"
+spec = ["3.12:41"]
+description = "f32 switches at a narrower exponent window than f64: -6..=12"
+source = """
+fn f(v: f32) -> f32 { v }
+
+fn main() -> i32 {
+    @dbg(f(1e12));
+    @dbg(f(1e13));
+    @dbg(f(1e-6));
+    @dbg(f(1e-7));
+    0
+}
+"""
+expected_stdout = """
+1000000000000.0
+1e+13
+0.000001
+1e-7
+"""
+exit_code = 0
+
+[[case]]
+name = "float_formatting_of_specials_and_negative_zero"
+spec = ["3.12:42"]
+description = "NaN, inf, -inf, and -0.0 each have a fixed spelling"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let zero: f64 = f(0.0);
+    @dbg(zero / zero);
+    @dbg(f(1.0) / zero);
+    @dbg(f(-1.0) / zero);
+    @dbg(-zero);
+    @dbg(zero);
+    0
+}
+"""
+expected_stdout = """
+NaN
+inf
+-inf
+-0.0
+0.0
+"""
+exit_code = 0
+
+# =============================================================================
+# The sign of a NaN (3.12:44)
+# =============================================================================
+
+[[case]]
+name = "runtime_nan_sign_is_implementation_defined_but_definite"
+spec = ["3.12:44"]
+description = "A produced NaN has some sign on every target — @total_cmp against a number is never zero — and formatting and equality ignore it"
+source = """
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let zero: f64 = f(0.0);
+    let n: f64 = zero / zero;
+    let side: i32 = @total_cmp(n, zero);
+    @dbg(side < 0 || side > 0);
+    @dbg(n);
+    @dbg(-n);
+    @dbg(n == n);
+    0
+}
+"""
+expected_stdout = """
+true
+NaN
+NaN
+false
+"""
+exit_code = 0
+
+# =============================================================================
+# Compile-time evaluation (3.12:46 - 3.12:50)
+# =============================================================================
+
+[[case]]
+name = "comptime_float_arithmetic_evaluates_at_the_operation_width"
+spec = ["3.12:46"]
+description = "The same written expression evaluates at f32 in one const and at f64 in the other; a literal-only comptime block is f64"
+source = """
+const THIRD_32: f32 = 1.0 / 3.0;
+const THIRD_64: f64 = 1.0 / 3.0;
+const ORDERED: bool = 1.0 < 2.0;
+
+fn main() -> i32 {
+    @dbg(THIRD_32);
+    @dbg(THIRD_64);
+    @dbg(ORDERED);
+    @dbg(comptime { 0.1 + 0.2 });
+    0
+}
+"""
+expected_stdout = """
+0.33333334
+0.3333333333333333
+true
+0.30000000000000004
+"""
+exit_code = 0
+
+[[case]]
+name = "comptime_float_result_matches_the_runtime_result"
+spec = ["3.12:47"]
+description = "A const and the same computation at run time agree bit for bit, infinities and zero signs included"
+source = """
+const SUM: f64 = 0.1 + 0.2;
+const OVER: f64 = 1e308 * 10.0;
+const NEG_ZERO: f64 = -0.0;
+
+fn f(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    @dbg(SUM == f(0.1) + 0.2);
+    @dbg(OVER == f(1e308) * 10.0);
+    @dbg(@total_cmp(NEG_ZERO, -f(0.0)));
+    @dbg(OVER);
+    0
+}
+"""
+expected_stdout = """
+true
+true
+0
+inf
+"""
+exit_code = 0
+
+[[case]]
+name = "comptime_nan_is_a_positive_quiet_nan"
+spec = ["3.12:48"]
+description = "Compile-time evaluation canonicalizes, so a const NaN sorts after every number on every host"
+source = """
+const NAN: f64 = 0.0 / 0.0;
+
+fn main() -> i32 {
+    @dbg(NAN);
+    @dbg(@total_cmp(NAN, 0.0));
+    @dbg(NAN == NAN);
+    0
+}
+"""
+expected_stdout = """
+NaN
+1
+false
+"""
+exit_code = 0
+
+[[case]]
+name = "comptime_float_operands_must_share_a_width"
+spec = ["3.12:49"]
+description = "Mixing an f32 const with an f64 const in a compile-time expression is rejected"
+source = """
+const A: f32 = 1.0;
+const B: f64 = 2.0;
+const C: f64 = A + B;
+
+fn main() -> i32 {
+    @dbg(C);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E1200"
+error_contains = ["different types"]
+
+# =============================================================================
+# The rules survive optimization
+#
+# Constant folding compares constants as raw stored bits and rewrites
+# `x * 0` to zero, both of which answer float questions backwards: a NaN is
+# bitwise equal to itself, `-0.0` and `+0.0` differ bitwise, and `inf * 0.0`
+# is a NaN. These cases run at -O1 so the folds are enabled.
+# =============================================================================
+
+[[case]]
+name = "nan_and_zero_comparisons_survive_constant_folding"
+spec = ["3.12:27", "3.12:28"]
+opt_level = 1
+description = "With both operands compile-time constants and the optimizer on, NaN is still unequal to itself and -0.0 is still equal to 0.0"
+source = """
+const NAN: f64 = 0.0 / 0.0;
+const NEG_ZERO: f64 = -0.0;
+const POS_ZERO: f64 = 0.0;
+
+fn main() -> i32 {
+    let a: f64 = NAN;
+    let b: f64 = NAN;
+    @dbg(a == b);
+    @dbg(a != b);
+    let c: f64 = NEG_ZERO;
+    let d: f64 = POS_ZERO;
+    @dbg(c == d);
+    @dbg(c != d);
+    0
+}
+"""
+expected_stdout = """
+false
+true
+true
+false
+"""
+exit_code = 0
+
+[[case]]
+name = "float_multiplication_by_zero_survives_constant_folding"
+spec = ["3.12:21"]
+opt_level = 1
+description = "With the optimizer on, `inf * 0.0` is still a NaN and a negative operand times zero is still a negative zero"
+source = """
+const INF: f64 = 1.0 / 0.0;
+
+fn main() -> i32 {
+    let a: f64 = INF;
+    @dbg(a * 0.0);
+    let neg: f64 = -1.0;
+    @dbg(neg * 0.0);
+    0
+}
+"""
+expected_stdout = """
+NaN
+-0.0
+"""
+exit_code = 0

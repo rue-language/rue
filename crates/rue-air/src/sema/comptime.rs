@@ -128,6 +128,13 @@ pub const fn comptime_depth_over_limit(depth: usize) -> bool {
     depth > MAX_COMPTIME_CALL_DEPTH
 }
 
+/// Both operands of a binary arithmetic or ordering operation, classified by
+/// the value domain they were reduced to.
+enum ArithOperands<V> {
+    Integer(V, V),
+    Float(V, V),
+}
+
 macro_rules! outcome_value {
     ($value:expr) => {
         match $value {
@@ -293,6 +300,16 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
     fn type_name(&self, ty: &Self::Type) -> String;
     fn type_is_unsigned(&self, ty: &Self::Type) -> bool;
     fn type_integer_semantics(&self, ty: &Self::Type) -> Option<IntegerType>;
+    /// The float width of `ty`, or `None` for a non-float type. The default
+    /// describes a domain without floating-point types.
+    fn type_float_width(&self, _ty: &Self::Type) -> Option<ComptimeFloatWidth> {
+        None
+    }
+    /// The concrete float type of `width`; `None` for a domain without
+    /// floating-point types, which keeps every float operation runtime-dependent.
+    fn float_type(&self, _width: ComptimeFloatWidth) -> Option<Self::Type> {
+        None
+    }
     /// Resolve a classified type intrinsic after its type argument has been
     /// reduced. The default delegates to the ordinary ownership hooks and
     /// integer-bound behavior; durable hosts can override this one typed seam
@@ -448,6 +465,22 @@ pub trait ComptimeValueAlgebra: ComptimeDomain {
         _span: Span,
     ) -> ComptimeOutcome<Self::Value, Self::Failure> {
         ComptimeOutcome::RuntimeDependent
+    }
+    /// The decimal text of a compile-time float value — a literal's exact
+    /// canonical spelling, or a computed value's shortest round-trip rendering
+    /// at its width — or `None` for any other value.
+    fn float_value_text(&self, _value: &Self::Value) -> Option<String> {
+        None
+    }
+    /// Build a compile-time float value from its text, carrying `ty` (a
+    /// concrete float type, or `None` for an untyped `comptime_float`). The
+    /// default describes a domain without floating-point values.
+    fn float_value_from_text(
+        &mut self,
+        _text: &str,
+        _ty: Option<Self::Type>,
+    ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure> {
+        Ok(None)
     }
     /// Resolve a classified expression intrinsic after AIR has decoded its
     /// exact argument shape. No child argument is evaluated for this finite
@@ -735,10 +768,6 @@ pub trait ComptimeRejections: ComptimeDomain {
         &self,
         value: u64,
         ty: &Self::Type,
-        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure;
-    fn float_not_implemented(
-        &self,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Self::Failure;
     fn cannot_negate(
@@ -1693,19 +1722,26 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         Some((file_id, segments))
     }
 
-    fn eval_int_operands(
+    /// Evaluate both operands of an arithmetic or ordering operation and
+    /// classify the pair. Two integers take the integer path; a float beside a
+    /// float or an integer takes the float path (an integer operand is the
+    /// `comptime_int -> comptime_float` admission of ADR-0065 §3). Anything
+    /// else is the host's operand rejection.
+    fn eval_arith_operands(
         &mut self,
         operation: ComptimeIntegerOperation,
         lhs: InstRef,
         rhs: InstRef,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
         span: Span,
-    ) -> ComptimeOutcome<(H::Value, H::Value), H::Failure> {
+    ) -> ComptimeOutcome<ArithOperands<H::Value>, H::Failure> {
         let l = match self.eval(lhs, env) {
             ComptimeOutcome::Known(value) => value,
             other => return Self::discard_rejection(other),
         };
-        if l.as_integer().is_none() && !self.host.evaluate_binary_rhs_after_rejection() {
+        let l_float = self.host.float_value_text(&l).is_some();
+        let l_numeric = l_float || l.as_integer().is_some();
+        if !l_numeric && !self.host.evaluate_binary_rhs_after_rejection() {
             return Self::discard_rejection(self.host.reject_comptime_expression(
                 ComptimeSemanticRejection::ArithmeticOperandNotInteger {
                     operation,
@@ -1719,7 +1755,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             ComptimeOutcome::Known(value) => value,
             other => return Self::discard_rejection(other),
         };
-        if l.as_integer().is_none() || r.as_integer().is_none() {
+        let r_float = self.host.float_value_text(&r).is_some();
+        let r_numeric = r_float || r.as_integer().is_some();
+        if !l_numeric || !r_numeric {
             return Self::discard_rejection(self.host.reject_comptime_expression(
                 ComptimeSemanticRejection::ArithmeticOperandNotInteger {
                     operation,
@@ -1729,7 +1767,230 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 &self.diagnostic_site(span),
             ));
         }
-        ComptimeOutcome::Known((l, r))
+        ComptimeOutcome::Known(if l_float || r_float {
+            ArithOperands::Float(l, r)
+        } else {
+            ArithOperands::Integer(l, r)
+        })
+    }
+
+    /// Integer-only operands (bitwise and shift operations): a float operand
+    /// is the same rejection as any other non-integer.
+    fn eval_int_operands(
+        &mut self,
+        operation: ComptimeIntegerOperation,
+        lhs: InstRef,
+        rhs: InstRef,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+        span: Span,
+    ) -> ComptimeOutcome<(H::Value, H::Value), H::Failure> {
+        match outcome_value!(self.eval_arith_operands(operation, lhs, rhs, env, span)) {
+            ArithOperands::Integer(l, r) => ComptimeOutcome::Known((l, r)),
+            ArithOperands::Float(l, r) => {
+                Self::discard_rejection(self.host.reject_comptime_expression(
+                    ComptimeSemanticRejection::ArithmeticOperandNotInteger {
+                        operation,
+                        lhs: l,
+                        rhs: Some(r),
+                    },
+                    &self.diagnostic_site(span),
+                ))
+            }
+        }
+    }
+
+    /// The float type a compile-time float operation is evaluated at, with its
+    /// width: the frame's expected result when that is a float, else the
+    /// expression's inferred type, else a concrete width an operand already
+    /// carries, else the `f64` default of ADR-0065 §3. This is the width at
+    /// which the same expression would execute at run time, so a `const` and a
+    /// `let` of one expression agree bit for bit.
+    fn float_operation_type(
+        &mut self,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+        inst_ref: InstRef,
+        lhs: &H::Value,
+        rhs: Option<&H::Value>,
+    ) -> Option<(H::Type, ComptimeFloatWidth)> {
+        let candidates = [
+            env.expected_result.clone(),
+            self.host
+                .const_expr_type(&self.program_key(), env, inst_ref),
+            lhs.as_float_type(),
+            rhs.and_then(ComptimeValue::as_float_type),
+        ];
+        for ty in candidates.into_iter().flatten() {
+            if let Some(width) = self.host.type_float_width(&ty) {
+                return Some((ty, width));
+            }
+        }
+        let ty = self.host.float_type(ComptimeFloatWidth::F64)?;
+        Some((ty, ComptimeFloatWidth::F64))
+    }
+
+    /// The bit pattern of a numeric operand at `width`: a float value parsed
+    /// at that width, or an integer converted with round-to-nearest.
+    fn float_operand_bits(&self, value: &H::Value, width: ComptimeFloatWidth) -> Option<u64> {
+        let text = self
+            .host
+            .float_value_text(value)
+            .or_else(|| value.as_integer().map(|integer| integer.to_string()))?;
+        crate::float_value_bits(&text, width.air_type())
+    }
+
+    /// IEEE-754 arithmetic or comparison on two float operands at the
+    /// operation's width. Division by zero yields an infinity or NaN and NaN
+    /// compares unordered, exactly as at run time (ADR-0065 §§1–2); `%` has no
+    /// float meaning and is rejected like any non-integer operand.
+    fn float_binary(
+        &mut self,
+        operation: ComptimeIntegerOperation,
+        lhs: H::Value,
+        rhs: H::Value,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+        inst_ref: InstRef,
+        span: Span,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        use ComptimeIntegerOperation as Op;
+        if operation == Op::Mod {
+            return self.host.reject_comptime_expression(
+                ComptimeSemanticRejection::FloatRemainder { lhs, rhs },
+                &self.diagnostic_site(span),
+            );
+        }
+        if !matches!(
+            operation,
+            Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Lt | Op::Gt | Op::Le | Op::Ge
+        ) {
+            return self.host.reject_comptime_expression(
+                ComptimeSemanticRejection::ArithmeticOperandNotInteger {
+                    operation,
+                    lhs,
+                    rhs: Some(rhs),
+                },
+                &self.diagnostic_site(span),
+            );
+        }
+        let Some((ty, width)) = self.float_operation_type(env, inst_ref, &lhs, Some(&rhs)) else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        // An operand that already has a concrete float width must agree with
+        // the operation's width: there are no implicit float conversions.
+        let width_mismatch = [&lhs, &rhs].into_iter().any(|operand| {
+            operand
+                .as_float_type()
+                .is_some_and(|operand_ty| self.host.type_float_width(&operand_ty) != Some(width))
+        });
+        if width_mismatch {
+            return self.host.reject_comptime_expression(
+                ComptimeSemanticRejection::FloatOperandWidthMismatch {
+                    operation,
+                    lhs,
+                    rhs,
+                },
+                &self.diagnostic_site(span),
+            );
+        }
+        let (Some(l), Some(r)) = (
+            self.float_operand_bits(&lhs, width),
+            self.float_operand_bits(&rhs, width),
+        ) else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        let comparison = |ordering: Option<std::cmp::Ordering>| -> Option<bool> {
+            use std::cmp::Ordering::*;
+            Some(match operation {
+                Op::Lt => ordering == Some(Less),
+                Op::Gt => ordering == Some(Greater),
+                Op::Le => matches!(ordering, Some(Less | Equal)),
+                Op::Ge => matches!(ordering, Some(Greater | Equal)),
+                _ => return None,
+            })
+        };
+        let text = match width {
+            ComptimeFloatWidth::F64 => {
+                let (a, b) = (f64::from_bits(l), f64::from_bits(r));
+                if let Some(result) = comparison(a.partial_cmp(&b)) {
+                    return ComptimeOutcome::Known(H::Value::boolean(result));
+                }
+                let value = match operation {
+                    Op::Add => a + b,
+                    Op::Sub => a - b,
+                    Op::Mul => a * b,
+                    Op::Div => a / b,
+                    _ => unreachable!("comparison handled above"),
+                };
+                crate::render_float_bits(value.to_bits(), crate::Type::F64)
+            }
+            ComptimeFloatWidth::F32 => {
+                let (a, b) = (f32::from_bits(l as u32), f32::from_bits(r as u32));
+                if let Some(result) = comparison(a.partial_cmp(&b)) {
+                    return ComptimeOutcome::Known(H::Value::boolean(result));
+                }
+                let value = match operation {
+                    Op::Add => a + b,
+                    Op::Sub => a - b,
+                    Op::Mul => a * b,
+                    Op::Div => a / b,
+                    _ => unreachable!("comparison handled above"),
+                };
+                crate::render_float_bits(u64::from(value.to_bits()), crate::Type::F32)
+            }
+        };
+        match host_value!(self.host.float_value_from_text(&text, Some(ty))) {
+            Some(value) => ComptimeOutcome::Known(value),
+            None => ComptimeOutcome::RuntimeDependent,
+        }
+    }
+
+    /// IEEE equality of two operands of which at least one is a float: `NaN`
+    /// is unequal to everything including itself and `-0.0 == 0.0`.
+    fn float_equality(
+        &mut self,
+        lhs: &H::Value,
+        rhs: &H::Value,
+        equal: bool,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+        inst_ref: InstRef,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let Some((_, width)) = self.float_operation_type(env, inst_ref, lhs, Some(rhs)) else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        let (Some(l), Some(r)) = (
+            self.float_operand_bits(lhs, width),
+            self.float_operand_bits(rhs, width),
+        ) else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        let same = match width {
+            ComptimeFloatWidth::F64 => f64::from_bits(l) == f64::from_bits(r),
+            ComptimeFloatWidth::F32 => f32::from_bits(l as u32) == f32::from_bits(r as u32),
+        };
+        ComptimeOutcome::Known(H::Value::boolean(same == equal))
+    }
+
+    /// Negate a float value by flipping the sign of its text: exact at every
+    /// width, so a negated literal keeps its full decimal identity for a later
+    /// coercion. The canonical `NaN` has no sign to flip.
+    fn float_negate(
+        &mut self,
+        text: &str,
+        value: &H::Value,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let negated = if text == "NaN" {
+            text.to_owned()
+        } else if let Some(magnitude) = text.strip_prefix('-') {
+            magnitude.to_owned()
+        } else {
+            format!("-{text}")
+        };
+        match host_value!(
+            self.host
+                .float_value_from_text(&negated, value.as_float_type())
+        ) {
+            Some(value) => ComptimeOutcome::Known(value),
+            None => ComptimeOutcome::RuntimeDependent,
+        }
     }
 
     fn integer_pair(values: &(H::Value, H::Value)) -> Option<(i128, i128)> {
@@ -1980,15 +2241,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 ComptimeOutcome::Known(H::Value::integer_typed(v, ty))
             }
 
-            InstData::FloatConst { text } => {
-                host_value!(self.host.require_preview(
-                    rue_error::PreviewFeature::Floats,
-                    "a floating-point literal",
-                    &self.diagnostic_site(span),
-                ));
-                self.host
-                    .resolve_float_const(self.name_from_rir((*text).into()), span)
-            }
+            InstData::FloatConst { text } => self
+                .host
+                .resolve_float_const(self.name_from_rir((*text).into()), span),
 
             // String constants are intentionally routed through the host:
             // they are not part of the ordinary four-value comptime algebra,
@@ -2035,6 +2290,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 } else {
                     match self.eval(*operand, env) {
                         ComptimeOutcome::Known(value) => {
+                            if let Some(text) = self.host.float_value_text(&value) {
+                                return self.float_negate(&text, &value);
+                            }
                             let Some(n) = value.as_integer() else {
                                 return self.host.reject_comptime_expression(
                                     ComptimeSemanticRejection::UnaryOperandNotInteger(value),
@@ -2094,13 +2352,25 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
 
             // Binary arithmetic operations, checked at the operand type
             InstData::Add { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(
+                let operands = match outcome_value!(self.eval_arith_operands(
                     ComptimeIntegerOperation::Add,
                     *lhs,
                     *rhs,
                     env,
                     span
-                ));
+                )) {
+                    ArithOperands::Float(l, r) => {
+                        return self.float_binary(
+                            ComptimeIntegerOperation::Add,
+                            l,
+                            r,
+                            env,
+                            inst_ref,
+                            span,
+                        );
+                    }
+                    ArithOperands::Integer(l, r) => (l, r),
+                };
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let ty = outcome_value!(self.integer_type_for(
                     env,
@@ -2119,13 +2389,25 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 self.finish_arith_value(result, ty, "+", span)
             }
             InstData::Sub { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(
+                let operands = match outcome_value!(self.eval_arith_operands(
                     ComptimeIntegerOperation::Sub,
                     *lhs,
                     *rhs,
                     env,
                     span
-                ));
+                )) {
+                    ArithOperands::Float(l, r) => {
+                        return self.float_binary(
+                            ComptimeIntegerOperation::Sub,
+                            l,
+                            r,
+                            env,
+                            inst_ref,
+                            span,
+                        );
+                    }
+                    ArithOperands::Integer(l, r) => (l, r),
+                };
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let ty = outcome_value!(self.integer_type_for(
                     env,
@@ -2144,13 +2426,25 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 self.finish_arith_value(result, ty, "-", span)
             }
             InstData::Mul { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(
+                let operands = match outcome_value!(self.eval_arith_operands(
                     ComptimeIntegerOperation::Mul,
                     *lhs,
                     *rhs,
                     env,
                     span
-                ));
+                )) {
+                    ArithOperands::Float(l, r) => {
+                        return self.float_binary(
+                            ComptimeIntegerOperation::Mul,
+                            l,
+                            r,
+                            env,
+                            inst_ref,
+                            span,
+                        );
+                    }
+                    ArithOperands::Integer(l, r) => (l, r),
+                };
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let ty = outcome_value!(self.integer_type_for(
                     env,
@@ -2171,17 +2465,19 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             InstData::Div { lhs, rhs } | InstData::Mod { lhs, rhs } => {
                 let is_div = matches!(&inst.data, InstData::Div { .. });
                 let op = if is_div { "/" } else { "%" };
-                let operands = outcome_value!(self.eval_int_operands(
-                    if is_div {
-                        ComptimeIntegerOperation::Div
-                    } else {
-                        ComptimeIntegerOperation::Mod
-                    },
-                    *lhs,
-                    *rhs,
-                    env,
-                    span
-                ));
+                let operation = if is_div {
+                    ComptimeIntegerOperation::Div
+                } else {
+                    ComptimeIntegerOperation::Mod
+                };
+                let operands = match outcome_value!(
+                    self.eval_arith_operands(operation, *lhs, *rhs, env, span)
+                ) {
+                    ArithOperands::Float(l, r) => {
+                        return self.float_binary(operation, l, r, env, inst_ref, span);
+                    }
+                    ArithOperands::Integer(l, r) => (l, r),
+                };
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let ty = outcome_value!(self.integer_type_for(
                     env,
@@ -2265,6 +2561,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                                 ComptimeOutcome::Known(H::Value::boolean(lhs == rhs))
                             }
                             _ => {
+                                if self.host.float_value_text(&lhs).is_some()
+                                    || self.host.float_value_text(&rhs).is_some()
+                                {
+                                    return self.float_equality(&lhs, &rhs, true, env, inst_ref);
+                                }
                                 let site = self.diagnostic_site(span);
                                 self.host.compare_comptime_values(&lhs, &rhs, true, &site)
                             }
@@ -2306,6 +2607,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                                 ComptimeOutcome::Known(H::Value::boolean(lhs != rhs))
                             }
                             _ => {
+                                if self.host.float_value_text(&lhs).is_some()
+                                    || self.host.float_value_text(&rhs).is_some()
+                                {
+                                    return self.float_equality(&lhs, &rhs, false, env, inst_ref);
+                                }
                                 let site = self.diagnostic_site(span);
                                 self.host.compare_comptime_values(&lhs, &rhs, false, &site)
                             }
@@ -2315,13 +2621,25 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 }
             }
             InstData::Lt { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(
+                let operands = match outcome_value!(self.eval_arith_operands(
                     ComptimeIntegerOperation::Lt,
                     *lhs,
                     *rhs,
                     env,
                     span
-                ));
+                )) {
+                    ArithOperands::Float(l, r) => {
+                        return self.float_binary(
+                            ComptimeIntegerOperation::Lt,
+                            l,
+                            r,
+                            env,
+                            inst_ref,
+                            span,
+                        );
+                    }
+                    ArithOperands::Integer(l, r) => (l, r),
+                };
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let _ = outcome_value!(self.integer_type_for(
                     env,
@@ -2333,13 +2651,25 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 ComptimeOutcome::Known(H::Value::boolean(l < r))
             }
             InstData::Gt { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(
+                let operands = match outcome_value!(self.eval_arith_operands(
                     ComptimeIntegerOperation::Gt,
                     *lhs,
                     *rhs,
                     env,
                     span
-                ));
+                )) {
+                    ArithOperands::Float(l, r) => {
+                        return self.float_binary(
+                            ComptimeIntegerOperation::Gt,
+                            l,
+                            r,
+                            env,
+                            inst_ref,
+                            span,
+                        );
+                    }
+                    ArithOperands::Integer(l, r) => (l, r),
+                };
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let _ = outcome_value!(self.integer_type_for(
                     env,
@@ -2351,13 +2681,25 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 ComptimeOutcome::Known(H::Value::boolean(l > r))
             }
             InstData::Le { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(
+                let operands = match outcome_value!(self.eval_arith_operands(
                     ComptimeIntegerOperation::Le,
                     *lhs,
                     *rhs,
                     env,
                     span
-                ));
+                )) {
+                    ArithOperands::Float(l, r) => {
+                        return self.float_binary(
+                            ComptimeIntegerOperation::Le,
+                            l,
+                            r,
+                            env,
+                            inst_ref,
+                            span,
+                        );
+                    }
+                    ArithOperands::Integer(l, r) => (l, r),
+                };
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let _ = outcome_value!(self.integer_type_for(
                     env,
@@ -2369,13 +2711,25 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 ComptimeOutcome::Known(H::Value::boolean(l <= r))
             }
             InstData::Ge { lhs, rhs } => {
-                let operands = outcome_value!(self.eval_int_operands(
+                let operands = match outcome_value!(self.eval_arith_operands(
                     ComptimeIntegerOperation::Ge,
                     *lhs,
                     *rhs,
                     env,
                     span
-                ));
+                )) {
+                    ArithOperands::Float(l, r) => {
+                        return self.float_binary(
+                            ComptimeIntegerOperation::Ge,
+                            l,
+                            r,
+                            env,
+                            inst_ref,
+                            span,
+                        );
+                    }
+                    ArithOperands::Integer(l, r) => (l, r),
+                };
                 let (l, r) = Self::integer_pair(&operands).expect("integer operands");
                 let _ = outcome_value!(self.integer_type_for(
                     env,

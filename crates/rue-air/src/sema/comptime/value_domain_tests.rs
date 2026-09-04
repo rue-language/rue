@@ -2117,13 +2117,6 @@ impl ComptimeRejections for FakeHost {
     ) -> Self::Failure {
         FAKE_FAILURE
     }
-    fn float_not_implemented(
-        &self,
-        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure {
-        self.float_evaluations.set(self.float_evaluations.get() + 1);
-        FAKE_FAILURE
-    }
     fn cannot_negate(
         &self,
         _ty: &Self::Type,

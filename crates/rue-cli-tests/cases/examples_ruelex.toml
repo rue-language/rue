@@ -10,7 +10,10 @@
 # time. The fixture pins the uniform builtin form (RUE-949): `@import` lexes as
 # `AT` + `IDENT`, interning `import` at its natural position (`sym:1`), and the
 # shared identifier/string interner gives the string literal `"std"` the same
-# `sym:0` as the identifier `std`.
+# `sym:0` as the identifier `std`. The third line carries a float literal, so
+# the pinned dump also holds ruelex's float support (ADR-0065) to the
+# compiler's: `f64` is an ordinary identifier (spec 3.12:2) and the literal's
+# exact text is interned as `FLOAT`.
 
 [section]
 id = "cli.examples_ruelex"
@@ -26,6 +29,7 @@ env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "sample.rue", source = """
 const std = @import("std");
 fn add(x: i32) -> i32 { x + 1 }
+const ratio: f64 = 1.5e3;
 """ }]
 program_args = ["sample.rue"]
 exit_code = 0
@@ -53,5 +57,12 @@ stdout = """
   54..55   PLUS
   56..57   INT(1)
   58..59   RBRACE
-  60..60   EOF
+  60..65   CONST
+  66..71   IDENT(sym:4)
+  71..72   COLON
+  73..76   IDENT(sym:5)
+  77..78   EQ
+  79..84   FLOAT(sym:6)
+  84..85   SEMI
+  86..86   EOF
 """

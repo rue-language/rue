@@ -143,3 +143,58 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
+
+# =============================================================================
+# Float Literals (§ 3.12, ADR-0065)
+# =============================================================================
+
+[[case]]
+name = "float_literal_evaluates_to_its_rounded_value"
+spec = ["4.1:1", "4.1:13"]
+description = "A float literal denotes its written decimal value rounded to nearest at its type, ties to even"
+source = """
+fn main() -> i32 {
+    let exact: f64 = 2.5;
+    let rounded: f32 = 16777217.0;
+    @dbg(exact);
+    @dbg(rounded);
+    0
+}
+"""
+expected_stdout = """
+2.5
+16777216.0
+"""
+exit_code = 0
+
+[[case]]
+name = "float_literal_type_comes_from_context_else_f64"
+spec = ["4.1:14"]
+description = "An annotation fixes the width; without one the literal is f64"
+source = """
+fn main() -> i32 {
+    let a = 0.1 + 0.2;
+    let b: f32 = 0.5;
+    @dbg(a);
+    @dbg(b);
+    0
+}
+"""
+expected_stdout = """
+0.30000000000000004
+0.5
+"""
+exit_code = 0
+
+[[case]]
+name = "float_literal_is_not_an_integer_literal"
+spec = ["4.1:14"]
+description = "A float literal is never given an integer type, even when its value is integral"
+source = """
+fn main() -> i32 {
+    let x: i32 = 3.0;
+    x
+}
+"""
+compile_fail = true
+expected_error_code = "E0206"

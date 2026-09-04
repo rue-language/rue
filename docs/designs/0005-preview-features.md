@@ -180,6 +180,8 @@ The following preview features completed this process and are now stable (their
 - `string_trio` — see ADR-0043; stabilized by RUE-876 on 2026-07-14.
 - `slices` — see ADR-0043; stabilized by RUE-936 on 2026-08-20.
 - `borrow_accessors` — see ADR-0062; stabilized by RUE-1018 on 2026-08-21.
+- `floats` — `f32`/`f64`, IEEE-754 arithmetic, and `comptime_float` literals;
+  see ADR-0065; stabilized by RUE-1076 on 2026-09-04.
 - `test_declarations` — see ADR-0083; stabilized by RUE-1955 on 2026-09-04.
 
 `test_infra` remains permanently unstable (it exists only to exercise the gating

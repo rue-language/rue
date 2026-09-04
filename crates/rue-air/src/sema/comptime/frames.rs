@@ -156,6 +156,20 @@ pub enum ComptimeSemanticRejection<V> {
         operation: ComptimeUnaryOperation,
         value: V,
     },
+    /// A float operand carries a concrete width different from the width the
+    /// operation is evaluated at (`f32` beside `f64`): the same mismatch the
+    /// body type checker reports, seen from declaration-time evaluation.
+    FloatOperandWidthMismatch {
+        operation: ComptimeIntegerOperation,
+        lhs: V,
+        rhs: V,
+    },
+    /// `%` on floating-point operands, which has no meaning in Rue (ADR-0065
+    /// §9; `std.math.rem` is the explicit path).
+    FloatRemainder {
+        lhs: V,
+        rhs: V,
+    },
     Assignment,
     AggregateExpression,
     EmptyBlock,

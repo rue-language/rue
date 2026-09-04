@@ -37,7 +37,8 @@ analysis.
 
 The stable or substantially implemented surface includes:
 
-- signed and unsigned integer types, booleans, unit, and the never type;
+- signed and unsigned integer types, `f32`/`f64` floating point with IEEE-754
+  semantics, booleans, unit, and the never type;
 - inference, constants, functions, recursion, methods, and comptime execution;
 - blocks, `if`, `match`, `while`, `for`, `break`, `continue`, `return`, and `?`;
 - structs, anonymous structs, payload enums, fixed arrays, and strings;

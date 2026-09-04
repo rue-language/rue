@@ -197,6 +197,29 @@ impl RegAlloc {
                     });
                 }
             }
+            Aarch64Inst::FloatRound {
+                dst,
+                src,
+                width,
+                mode,
+            } => {
+                let src = Self::load_float_operand(context, mir, src, SCRATCH_FP_SOURCE, width)?;
+                let (out, spill) = Self::float_output(context, dst, SCRATCH_FP_VALUE);
+                mir.push(Aarch64Inst::FloatRound {
+                    dst: out,
+                    src,
+                    width,
+                    mode,
+                });
+                if let Some(offset) = spill {
+                    mir.push_after(Aarch64Inst::FloatStore {
+                        base: Reg::Fp,
+                        offset,
+                        src: out,
+                        width,
+                    });
+                }
+            }
             Aarch64Inst::FloatMov { dst, src, width }
             | Aarch64Inst::FloatNeg { dst, src, width }
             | Aarch64Inst::FloatSqrt { dst, src, width } => {
@@ -336,6 +359,7 @@ impl RegAlloc {
                 src,
                 int_bits,
                 width,
+                unsigned,
             } => {
                 let src = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
                 let (out, spill) = Self::float_output(context, dst, SCRATCH_FP_VALUE);
@@ -344,6 +368,7 @@ impl RegAlloc {
                     src,
                     int_bits,
                     width,
+                    unsigned,
                 });
                 if let Some(offset) = spill {
                     mir.push_after(Aarch64Inst::FloatStore {
@@ -359,6 +384,7 @@ impl RegAlloc {
                 src,
                 int_bits,
                 width,
+                unsigned,
             } => {
                 let src = Self::load_float_operand(context, mir, src, SCRATCH_FP_VALUE, width)?;
                 let dst_alloc = Self::get_allocation(context, dst);
@@ -373,6 +399,7 @@ impl RegAlloc {
                     src,
                     int_bits,
                     width,
+                    unsigned,
                 });
                 if let Some(Allocation::Spill(offset)) = dst_alloc {
                     mir.push_after(Aarch64Inst::Str {

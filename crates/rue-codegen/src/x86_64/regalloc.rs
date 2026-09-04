@@ -320,11 +320,35 @@ impl RegAlloc {
                     });
                 }
             }
+            X86Inst::FloatRound {
+                dst,
+                src,
+                width,
+                mode,
+            } => {
+                let src = Self::load_float_operand(context, mir, src, SCRATCH_FP_SOURCE, width)?;
+                let (out, spill) = Self::float_output(context, dst, SCRATCH_FP_VALUE);
+                mir.push(X86Inst::FloatRound {
+                    dst: out,
+                    src,
+                    width,
+                    mode,
+                });
+                if let Some(offset) = spill {
+                    mir.push_after(X86Inst::FloatStore {
+                        base: Reg::Rbp,
+                        offset,
+                        src: out,
+                        width,
+                    });
+                }
+            }
             X86Inst::FloatCmp { lhs, rhs, width } => {
                 let lhs = Self::load_float_operand(context, mir, lhs, SCRATCH_FP_VALUE, width)?;
                 let rhs = Self::load_float_operand(context, mir, rhs, SCRATCH_FP_SOURCE, width)?;
                 mir.push(X86Inst::FloatCmp { lhs, rhs, width });
             }
+
             X86Inst::FloatLoad {
                 dst,
                 base,
@@ -1261,6 +1285,8 @@ impl RegAlloc {
             X86Inst::Jb { label } => mir.push(X86Inst::Jb { label }),
             X86Inst::Jae { label } => mir.push(X86Inst::Jae { label }),
             X86Inst::Jbe { label } => mir.push(X86Inst::Jbe { label }),
+            X86Inst::Ja { label } => mir.push(X86Inst::Ja { label }),
+
             X86Inst::Jge { label } => mir.push(X86Inst::Jge { label }),
             X86Inst::Jle { label } => mir.push(X86Inst::Jle { label }),
             X86Inst::Jmp { label } => mir.push(X86Inst::Jmp { label }),

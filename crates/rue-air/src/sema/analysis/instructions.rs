@@ -133,7 +133,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 if ctx.resolved_type_of(*lhs).is_some_and(|ty| ty.is_float()) {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
-                            expected: "integer operand (`%` for floats is tracked by RUE-1070; use std.math.rem)".to_string(),
+                            expected:
+                                "integer operand (`%` is not defined on floats; use std.math.rem)"
+                                    .to_string(),
                             found: "floating-point operand".to_string(),
                         },
                         inst.span,
@@ -349,19 +351,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                 inst.span,
                             ));
                         }
-                        let bits =
-                            crate::finite_float_literal_bits(spelling, ty).ok_or_else(|| {
-                                CompileError::new(
-                                    ErrorKind::TypeMismatch {
-                                        expected: format!(
-                                            "finite {} literal",
-                                            self.format_type_name(ty)
-                                        ),
-                                        found: spelling.to_owned(),
-                                    },
-                                    inst.span,
-                                )
-                            })?;
+                        // A computed comptime value may be `inf` or `NaN`; only a
+                        // source literal is held to the finite-range rule.
+                        let bits = crate::float_value_bits(spelling, ty).ok_or_else(|| {
+                            CompileError::new(
+                                ErrorKind::TypeMismatch {
+                                    expected: format!("{} value", self.format_type_name(ty)),
+                                    found: spelling.to_owned(),
+                                },
+                                inst.span,
+                            )
+                        })?;
                         let air_ref = air.add_inst(AirInst {
                             data: AirInstData::Const(bits),
                             ty,

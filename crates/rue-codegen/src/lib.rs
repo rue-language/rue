@@ -838,6 +838,13 @@ mod tests {
             }
             IntrinsicOperation::DebugI64 => vec![append(CfgInstData::Const(7), Type::I64)],
             IntrinsicOperation::DebugU64 => vec![append(CfgInstData::Const(7), Type::U64)],
+            IntrinsicOperation::DebugFloat => vec![
+                append(CfgInstData::Const(7), Type::U64),
+                append(
+                    CfgInstData::Const(u64::from(rue_runtime_abi::FLOAT_WIDTH_F64)),
+                    Type::U32,
+                ),
+            ],
             IntrinsicOperation::DebugBool => {
                 vec![append(CfgInstData::BoolConst(true), Type::BOOL)]
             }
@@ -877,7 +884,12 @@ mod tests {
             | IntrinsicOperation::IntToFloat
             | IntrinsicOperation::FloatToInt
             | IntrinsicOperation::FloatCast
-            | IntrinsicOperation::TotalCmp => {
+            | IntrinsicOperation::TotalCmp
+            | IntrinsicOperation::FloatSqrt
+            | IntrinsicOperation::FloatFloor
+            | IntrinsicOperation::FloatCeil
+            | IntrinsicOperation::FloatTrunc
+            | IntrinsicOperation::FloatRound => {
                 panic!("fixture only accepts trap and debug operations")
             }
         };
@@ -1153,6 +1165,7 @@ mod tests {
             IntrinsicOperation::DebugI64,
             IntrinsicOperation::DebugU64,
             IntrinsicOperation::DebugBool,
+            IntrinsicOperation::DebugFloat,
             IntrinsicOperation::DebugStr,
         ];
         for operation in operations {
