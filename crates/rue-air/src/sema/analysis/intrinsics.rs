@@ -1512,13 +1512,24 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // types are comparable.
         self.validate_equality_operand_type(left.ty, left_span)?;
 
-        if let Some(fails) = Self::comptime_comparison(air, &failed) {
-            // Both operands are compile-time constants, so the comparison has
-            // an answer now and the intrinsic is exactly the `@assert` it could
-            // have been written as — no branch, no rendering, and no printer
-            // synthesized for a type nothing will render at run time.
+        // Only a comparison that *holds* folds. Both operands are compile-time
+        // constants, the assertion passes, and nothing downstream can observe
+        // the difference — so the intrinsic is exactly the `@assert` it could
+        // have been written as: no branch, no rendering, and no printer
+        // synthesized for a type nothing will render at run time.
+        //
+        // A statically failing one keeps the ordinary lowering (RUE-1961).
+        // Folding it too traded the report for the condition's answer: the arm
+        // that renders both operands and stages the intrinsic's own site is the
+        // only thing that makes the verdict `assert_eq` with `left` and `right`
+        // rather than a bare `assert` carrying the enclosing declaration's line,
+        // and a failing assertion is the one case where that report is what the
+        // program is for. The condition the branch tests is still a constant,
+        // and the optimizer folds it like any other, so nothing but the report
+        // survives to code generation.
+        if Self::comptime_comparison(air, &failed) == Some(false) {
             let condition = air.add_inst(AirInst {
-                data: AirInstData::BoolConst(!fails),
+                data: AirInstData::BoolConst(true),
                 ty: Type::BOOL,
                 span,
             });

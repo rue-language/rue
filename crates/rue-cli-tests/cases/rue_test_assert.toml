@@ -236,6 +236,121 @@ compile_stdout_contains = [
 compile_stdout_not_contains = ['"failure"', '"left":', '"diff"']
 
 # =============================================================================
+# Operands the compiler can compare for itself (RUE-1961).
+#
+# When both operands fold to a compile-time scalar the comparison has an answer
+# before the program runs, and the two directions are not symmetric. A holding
+# one is the `@assert` it could have been written as and lowers to nothing. A
+# failing one is exactly the case the report exists for, so it keeps the
+# ordinary lowering: the verdict is still `assert_eq`/`assert_ne` with `left`,
+# `right`, a `diff`, and the intrinsic's own line — not a bare `assert` at the
+# enclosing declaration's header. This is a compile-time fact and not a warning:
+# `@allow` has no always-true/always-false lint family to join.
+# =============================================================================
+
+[[case]]
+name = "a_statically_failing_comparison_reports_like_any_other"
+description = """
+Both operands of `@assert_eq(41, 42)` are constants, so the condition is decided
+at compile time — and the report is unchanged by that. The site is the
+intrinsic's own line 2, not the declaration's line 1, and `left`/`right` are the
+two constants as the structural printer rendered them.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "rejects a mismatched constant pair" {
+    @assert_eq(41, 42);
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"diff":[{"op":"equal","text":"4"},{"op":"delete","text":"1"},{"op":"insert","text":"2"}],"exit_code":101,"kind":"assert_eq","left":"41","location":{"column":5,"file":"tests.rue","line":2},"message":"assertion failed: left == right","right":"42"',
+    '"verdict":"fail"',
+    '"crash":0,"event":"run_finished","failed":1,"passed":0',
+]
+compile_stdout_not_contains = ['"kind":"assert"', '"message":"assertion failed"']
+
+[[case]]
+name = "a_statically_equal_pair_reports_the_inequality_it_demanded"
+description = """
+The `@assert_ne` direction of the same fact. Two identical constants make one
+`equal` diff hunk, and the site is the intrinsic's line 2.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "rejects an equal constant pair" {
+    @assert_ne(1, 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"diff":[{"op":"equal","text":"1"}],"exit_code":101,"kind":"assert_ne","left":"1","location":{"column":5,"file":"tests.rue","line":2},"message":"assertion failed: left != right","right":"1"',
+    '"verdict":"fail"',
+    '"crash":0,"event":"run_finished","failed":1,"passed":0',
+]
+compile_stdout_not_contains = ['"kind":"assert"', '"message":"assertion failed"']
+
+[[case]]
+name = "a_statically_holding_comparison_synthesizes_no_printer"
+description = """
+The other direction, read off the AIR: a comparison that holds keeps folding to
+the plain `@assert` intrinsic on a constant, so no structural printer is
+synthesized for a type nothing will render at run time.
+"""
+files = [{ path = "main.rue", source = """
+fn check() {
+    @assert_eq(1, 1);
+}
+
+fn main() -> i32 {
+    check();
+    0
+}
+""" }]
+args = ["--emit", "air", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== AIR ===", "AssertFailed intrinsic @assert"]
+compile_stdout_not_contains = ["__rue_error_printer__"]
+
+[[case]]
+name = "a_statically_failing_comparison_synthesizes_its_printer"
+description = """
+The same program with the constants changed does synthesize one, which is what
+the report arm renders both operands with.
+"""
+files = [{ path = "main.rue", source = """
+fn check() {
+    @assert_eq(41, 42);
+}
+
+fn main() -> i32 {
+    check();
+    0
+}
+""" }]
+args = ["--emit", "air", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== AIR ===", "__rue_error_printer__"]
+
+# =============================================================================
 # Borrowed operands (spec 4.13:5f, 4.3:3f).
 #
 # The report arm renders each operand with a printer whose parameter is by

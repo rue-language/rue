@@ -256,17 +256,17 @@ fn main() -> i32 {
     );
 }
 
-/// A comparison both of whose operands are compile-time constants has its
-/// answer now, so it lowers to exactly the `@assert` it could have been written
-/// as: no branch to report from, no rendering, and no printer synthesized for a
-/// type nothing will render at run time.
+/// A comparison both of whose operands are compile-time constants *and which
+/// holds* has its answer now, so it lowers to exactly the `@assert` it could
+/// have been written as: no branch to report from, no rendering, and no printer
+/// synthesized for a type nothing will render at run time.
 #[test]
-fn a_comptime_known_comparison_folds_to_a_plain_assert() {
+fn a_comptime_known_passing_comparison_folds_to_a_plain_assert() {
     let output = rooted_cfg(
         r#"
 fn check() {
-    @assert_eq(1, 2);
-    @assert_ne(true, true);
+    @assert_eq(1, 1);
+    @assert_ne(true, false);
 }
 fn main() -> i32 {
     check();
@@ -304,6 +304,46 @@ fn main() -> i32 {
             rue_air::IntrinsicOperation::AssertFailed
         ],
         "the fold is the ordinary `@assert` lowering"
+    );
+}
+
+/// A comparison that is statically *false* keeps the report (RUE-1961).
+///
+/// Its answer is known too, but the answer is not what the program wants from
+/// it: a failing assertion exists to say which two values disagreed and where.
+/// Folding it away left a bare `assert` carrying the enclosing declaration's
+/// line, so the failing case takes the ordinary lowering — one printer for the
+/// operand type, both renderings, the intrinsic's own site, and the terminal
+/// comparison report — with a condition the optimizer folds like any other.
+#[test]
+fn a_comptime_known_failing_comparison_still_reports() {
+    let output = rooted_cfg(
+        r#"
+fn check() {
+    @assert_eq(41, 42);
+}
+fn main() -> i32 {
+    check();
+    0
+}
+"#,
+    )
+    .expect("a constant comparison is legal");
+    assert_eq!(
+        call_sequence(unit(&output, "check")),
+        [
+            "printer#0",
+            "printer#0",
+            "TestFailureSite",
+            "TestFailComparison",
+        ],
+        "a statically failing comparison reports like any other"
+    );
+    assert_eq!(
+        printers(&output).len(),
+        1,
+        "the report renders both operands with one printer: {:?}",
+        printers(&output)
     );
 }
 
