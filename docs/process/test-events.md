@@ -29,7 +29,10 @@ while making `rue test` the first flag to bypass ADR-0005's explicit opt-in.
   events are rendered as text on stdout instead.
 - **stderr is the compiler's surface**, byte-for-byte as
   [diagnostics.md](diagnostics.md) pins it, plus the runner's own warnings
-  (unimported test files) and its one-line reason for a nonzero exit.
+  (unimported test files) and its one-line reason for a nonzero exit. Those
+  warnings are stderr's alone, once, in both formats: the human renderer does
+  not repeat them on stdout, where a terminal joining the streams would show
+  two copies of one warning.
 - **No event is emitted before the test image exists.** A compile failure is
   diagnostics on stderr, an empty event stream, and exit `2` — never a
   `run_started` for a run that never began.

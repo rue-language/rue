@@ -729,6 +729,55 @@ compile_stdout_contains = [
     '"test_candidates":"declared"',
     '"unimported_test_files":[{"parse_failed":false,"path":"orphan_tests.rue","tests":2}]',
 ]
+# The warning is stderr's, once (test-events.md, "Streams"). stdout carries the
+# same fact as `run_finished` data, never as a second warning line.
+compile_stdout_not_contains = ["warning:"]
+
+[[case]]
+name = "the_orphan_warning_is_stderrs_alone_under_the_human_format"
+description = """
+RUE-1957: the runner warns on stderr in every format, and the human renderer
+does not repeat it on stdout. On a terminal, which joins the two streams, a
+second copy read as two orphaned files.
+"""
+files = [
+    { path = "test-candidates.list", source = """
+main.rue
+tests.rue
+orphan_tests.rue
+""" },
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "alpha" {
+    @assert(1 == 1);
+}
+""" },
+    { path = "orphan_tests.rue", source = """
+test "nothing imports this file" {
+    @assert(1 == 1);
+}
+
+test "nor this one" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = [
+    "test", "main.rue", "--preview", "test_declarations",
+    "--test-candidates", "test-candidates.list", "--seed", "1", "-j1", "--format", "human",
+]
+driver_exit_code = 0
+compile_stderr_contains = [
+    "warning: test file 'orphan_tests.rue' declares 2 tests but no module in the compiled closure imports it",
+]
+compile_stdout_contains = ["1 passed"]
+compile_stdout_not_contains = ["warning:", "orphan_tests.rue"]
 
 [[case]]
 name = "without_an_inventory_a_multi_module_summary_says_orphans_are_not_detected"
