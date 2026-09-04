@@ -1269,7 +1269,11 @@ impl<'a> CfgLower<'a> {
                 dst: Operand::Physical(ARG_REGS[*index]),
             });
         }
-        for (index, arg, width) in fp_args {
+        // Regalloc reloads a spilled FloatMov source through xmm0. Populate
+        // the FP argument bank from high to low so such a reload happens
+        // before xmm0 receives its final ABI value. The allocator reserves
+        // xmm0-xmm7, so no other source can alias a destination in this bank.
+        for (index, arg, width) in fp_args.into_iter().rev() {
             self.mir.push(X86Inst::FloatMov {
                 dst: Operand::Physical(FP_ARG_REGS[index]),
                 src: Operand::Virtual(arg),
@@ -6093,6 +6097,93 @@ mod tests {
                 }
             )
         }));
+    }
+
+    #[test]
+    fn spilled_fp_call_argument_is_reloaded_before_xmm0_is_populated() {
+        // Nine simultaneously-live f64 arguments exceed the eight allocatable
+        // FP registers. A spill reload uses xmm0 as its reserved scratch, so
+        // the ABI moves must run from xmm7 down through xmm0.
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::F64,
+            0,
+            "caller",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        let args = (1..=9)
+            .map(|value| CfgCallArg {
+                value: fixture.konst((value as f64).to_bits(), Type::F64),
+                mode: CfgArgMode::Normal,
+            })
+            .collect();
+        let result = fixture.call("sum9", args, Type::F64);
+        fixture.ret(Some(result));
+
+        let allocated = crate::x86_64::regalloc::RegAlloc::new(
+            fixture.lower().expect("float call must lower"),
+            0,
+        )
+        .allocate()
+        .expect("float call must allocate");
+        let call_index = allocated
+            .instructions()
+            .iter()
+            .position(|inst| matches!(inst, X86Inst::CallRel { .. }))
+            .expect("float call must emit a call");
+        let call_setup = &allocated.instructions()[..call_index];
+        let fp_destinations: Vec<_> = call_setup
+            .iter()
+            .filter_map(|inst| match inst {
+                X86Inst::FloatMov {
+                    dst: Operand::Physical(dst),
+                    ..
+                } if FP_ARG_REGS.contains(dst) => Some(*dst),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            fp_destinations,
+            vec![
+                Reg::Xmm7,
+                Reg::Xmm6,
+                Reg::Xmm5,
+                Reg::Xmm4,
+                Reg::Xmm3,
+                Reg::Xmm2,
+                Reg::Xmm1,
+                Reg::Xmm0,
+            ]
+        );
+        let spill_reload = call_setup
+            .iter()
+            .position(|inst| {
+                matches!(
+                    inst,
+                    X86Inst::FloatLoad {
+                        dst: Operand::Physical(Reg::Xmm0),
+                        ..
+                    }
+                )
+            })
+            .expect("register pressure must reload one FP argument through xmm0");
+        let final_xmm0 = call_setup
+            .iter()
+            .rposition(|inst| {
+                matches!(
+                    inst,
+                    X86Inst::FloatMov {
+                        dst: Operand::Physical(Reg::Xmm0),
+                        ..
+                    }
+                )
+            })
+            .expect("the first FP argument must populate xmm0");
+        assert!(spill_reload < final_xmm0);
     }
 
     #[test]
