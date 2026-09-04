@@ -1577,6 +1577,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ctx.ownership.byref_arg_root = prev_byref_root;
             trace?.ok_or_else(|| CompileError::new(ErrorKind::BorrowNonLvalue, receiver_span))?
         };
+        // The receiver is a place that is read here and, for an `inout`
+        // accessor, written through: `xs[5].cell_mut().value = 7` reaches the
+        // same element `xs[5]` names. Its chain must be bounds-checked now,
+        // because the receiver's projections are replaced below by the
+        // accessor result's own base and no later check can see them
+        // (4.11:7, RUE-2008).
+        self.check_traced_const_index_bounds(&receiver_trace, ctx)?;
         let root = receiver_trace.root_var;
         let accessor_loan_kind = if info.returns_inout {
             CallLoanKind::Inout
@@ -5006,6 +5013,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
             }
 
+            // The base chain reached here is read in place context
+            // (3.8:76), so a constant index in it must still name an element
+            // of its array: `xs[5].a = 7` is as out of range as `xs[5] = p`
+            // is, which `analyze_index_set` already rejects. The check runs
+            // over the base alone, since the field projection appended below
+            // carries no index (4.11:7, RUE-2008).
+            self.check_traced_const_index_bounds(&trace, ctx)?;
+
             // Add the final field projection
             let base_type = trace.result_type();
             let struct_id = match base_type.as_struct() {
@@ -5204,12 +5219,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
             }
 
-            // Get array type info from the trace
+            // Get array type info from the trace. The array's length is not
+            // read here: `check_traced_const_index_bounds` re-derives it per
+            // projection when it checks the whole chain below.
             let base_type = trace.result_type();
-            let (_array_type_id, elem_type, array_len) = match base_type.as_array() {
+            let elem_type = match base_type.as_array() {
                 Some(id) => {
-                    let (elem, len) = self.body_type_pool().array_def(id);
-                    (id, elem, len)
+                    let (elem, _len) = self.body_type_pool().array_def(id);
+                    elem
                 }
                 None => {
                     return Err(CompileError::new(
@@ -5241,21 +5258,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ));
             }
 
-            // Compile-time bounds check for constant indices, evaluated at the
-            // index's resolved operand types so an overflowing index expression
-            // is a compile-time error, not a folded runtime panic (RUE-234).
-            if let Some(const_index) = self.try_get_const_index_checked(index, ctx)? {
-                if const_index < 0 || const_index >= array_len as i128 {
-                    return Err(CompileError::new(
-                        ErrorKind::IndexOutOfBounds {
-                            index: const_index,
-                            length: array_len,
-                        },
-                        self.body_rir_ref().get(index).span,
-                    ));
-                }
-            }
-
             // Add the index projection. A non-negative constant index carries
             // its element path segment so field_path nests through it (RUE-279).
             let const_index = self.try_get_const_index(index);
@@ -5274,6 +5276,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 index_segment,
                 index_inst: Some(index),
             });
+
+            // Constant out-of-bounds indices anywhere in the traced chain,
+            // this write's own index included (4.11:7, RUE-234). Checking the
+            // whole chain after the projection is pushed is what catches the
+            // nested form `xs[5].arr[0] = 1`, whose out-of-range index is in
+            // the base rather than in the assigned index (RUE-2008).
+            self.check_traced_const_index_bounds(&trace, ctx)?;
 
             // Writing into an array with moved-out elements is rejected
             // (RUE-186, E0480): the write can't re-arm per-element ownership.
@@ -6371,6 +6380,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// index expression that overflows its integer type is a compile-time
     /// error rather than a folded runtime panic (RUE-234), and the diagnostic
     /// is labelled on the index expression, matching a direct element read.
+    ///
+    /// Naming an element is not reading it, so this is the one check of the
+    /// read set that a **write** through a traced place makes as well: an
+    /// assignment target is a place context and its base chain is not a use
+    /// (3.8:76), but the element it names must exist either way. Every traced
+    /// write path calls it — `analyze_field_set` on the base chain,
+    /// `analyze_index_set` on the chain including its own index, and
+    /// `expand_accessor_call` on the receiver chain before that chain is
+    /// replaced by the accessor result (RUE-2008). The rest of the read set
+    /// does not carry over: a write to a moved path reinitializes it (3.8:55),
+    /// and the write paths reject a partially moved array with their own
+    /// E0480 rule (3.8:72) instead.
     fn check_traced_const_index_bounds(
         &mut self,
         trace: &PlaceTrace,
