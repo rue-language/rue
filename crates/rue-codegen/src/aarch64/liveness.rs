@@ -153,6 +153,20 @@ fn uses(inst: &Aarch64Inst) -> VRegList {
     };
 
     match inst {
+        Aarch64Inst::FloatConst { .. } | Aarch64Inst::FloatLoad { .. } => {}
+        Aarch64Inst::FloatMov { src, .. }
+        | Aarch64Inst::FloatToBits { src, .. }
+        | Aarch64Inst::BitsToFloat { src, .. }
+        | Aarch64Inst::FloatNeg { src, .. }
+        | Aarch64Inst::FloatSqrt { src, .. }
+        | Aarch64Inst::IntToFloat { src, .. }
+        | Aarch64Inst::FloatToInt { src, .. }
+        | Aarch64Inst::FloatCast { src, .. }
+        | Aarch64Inst::FloatStore { src, .. } => add_if_virtual(src, &mut result),
+        Aarch64Inst::FloatBin { lhs, rhs, .. } | Aarch64Inst::FloatCmp { lhs, rhs, .. } => {
+            add_if_virtual(lhs, &mut result);
+            add_if_virtual(rhs, &mut result);
+        }
         Aarch64Inst::MovImm { .. } => {
             // Only defines
         }
@@ -303,6 +317,18 @@ pub(crate) fn defs(inst: &Aarch64Inst) -> VRegList {
     };
 
     match inst {
+        Aarch64Inst::FloatConst { dst, .. }
+        | Aarch64Inst::FloatMov { dst, .. }
+        | Aarch64Inst::FloatToBits { dst, .. }
+        | Aarch64Inst::BitsToFloat { dst, .. }
+        | Aarch64Inst::FloatLoad { dst, .. }
+        | Aarch64Inst::FloatBin { dst, .. }
+        | Aarch64Inst::FloatNeg { dst, .. }
+        | Aarch64Inst::FloatSqrt { dst, .. }
+        | Aarch64Inst::IntToFloat { dst, .. }
+        | Aarch64Inst::FloatToInt { dst, .. }
+        | Aarch64Inst::FloatCast { dst, .. } => add_if_virtual(dst, &mut result),
+        Aarch64Inst::FloatStore { .. } | Aarch64Inst::FloatCmp { .. } => {}
         Aarch64Inst::MovImm { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
@@ -423,6 +449,23 @@ pub(crate) fn defs(inst: &Aarch64Inst) -> VRegList {
 mod tests {
     use super::*;
     use crate::aarch64::mir::Cond;
+    use crate::vreg::VReg;
+
+    #[test]
+    fn scalar_float_binary_op_reads_sources_and_defines_destination() {
+        let dst = VReg::new(0);
+        let lhs = VReg::new(1);
+        let rhs = VReg::new(2);
+        let inst = Aarch64Inst::FloatBin {
+            op: super::super::mir::FloatBinOp::Div,
+            dst: Operand::Virtual(dst),
+            lhs: Operand::Virtual(lhs),
+            rhs: Operand::Virtual(rhs),
+            width: crate::value_plan::FloatWidth::F32,
+        };
+        assert_eq!(uses(&inst).into_iter().collect::<Vec<_>>(), vec![lhs, rhs]);
+        assert_eq!(defs(&inst).into_iter().collect::<Vec<_>>(), vec![dst]);
+    }
 
     #[test]
     fn clobbers_are_borrowed_static_slices() {
@@ -469,6 +512,30 @@ mod tests {
                 Reg::X16,
                 Reg::X17,
                 Reg::Lr,
+                Reg::V0,
+                Reg::V1,
+                Reg::V2,
+                Reg::V3,
+                Reg::V4,
+                Reg::V5,
+                Reg::V6,
+                Reg::V7,
+                Reg::V16,
+                Reg::V17,
+                Reg::V18,
+                Reg::V19,
+                Reg::V20,
+                Reg::V21,
+                Reg::V22,
+                Reg::V23,
+                Reg::V24,
+                Reg::V25,
+                Reg::V26,
+                Reg::V27,
+                Reg::V28,
+                Reg::V29,
+                Reg::V30,
+                Reg::V31,
             ]
         );
         assert!(!call_clobbers.contains(&Reg::X18));

@@ -737,6 +737,7 @@ mod tests {
                 start_slot: slot,
                 slot_count: 1,
                 crossing_regs: 1,
+                crossing_classes: vec![rue_air::NativeArgClass::Gp],
                 ty: None,
             })
             .collect()
@@ -1607,6 +1608,7 @@ mod tests {
             start_slot: 0,
             slot_count: 3,
             crossing_regs: 1,
+            crossing_classes: vec![rue_air::NativeArgClass::Gp],
             ty: Some(shape_ty),
         }]);
         let entry = cfg.new_block();
@@ -1780,6 +1782,7 @@ mod tests {
             start_slot: 0,
             slot_count: 2,
             crossing_regs: 1,
+            crossing_classes: vec![rue_air::NativeArgClass::Gp],
             ty: Some(pair_ty),
         }]);
         let entry = cfg.new_block();

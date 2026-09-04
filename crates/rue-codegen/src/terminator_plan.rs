@@ -24,6 +24,7 @@ pub struct SlotMove {
     pub slot_index: u32,
     pub source: VReg,
     pub destination: VReg,
+    pub float_width: Option<crate::value_plan::FloatWidth>,
 }
 
 /// Normalized work for one CFG successor edge.
@@ -49,6 +50,7 @@ pub enum ReturnValuePlan {
     ZeroSized,
     Scalar {
         value: VReg,
+        float_width: Option<crate::value_plan::FloatWidth>,
     },
     Aggregate {
         slots: Vec<VReg>,
@@ -328,11 +330,14 @@ fn moves_for_edge<A: TerminatorAdapter>(
                     slot_index: 0,
                     source: source.primary,
                     destination: destination.primary,
+                    float_width: crate::value_plan::float_width(ctx.cfg.get_inst(value).ty),
                 });
             }
             ValueShape::CompleteAggregate { slot_count } => {
                 assert_eq!(source.slots.len(), slot_count as usize);
                 assert_eq!(destination.slots.len(), slot_count as usize);
+                let leaf_types =
+                    crate::types::aggregate_leaf_types(ctx.type_pool, ctx.cfg.get_inst(value).ty);
                 moves.extend(
                     source
                         .slots
@@ -345,6 +350,7 @@ fn moves_for_edge<A: TerminatorAdapter>(
                             slot_index: slot_index as u32,
                             source,
                             destination,
+                            float_width: crate::value_plan::float_width(leaf_types[slot_index]),
                         }),
                 );
             }
@@ -385,6 +391,7 @@ fn return_value<A: TerminatorAdapter>(
         ValueShape::ZeroSized => ReturnValuePlan::ZeroSized,
         ValueShape::Scalar => ReturnValuePlan::Scalar {
             value: materialized.primary,
+            float_width: crate::value_plan::float_width(ctx.cfg.get_inst(value).ty),
         },
         ValueShape::CompleteAggregate { slot_count } => {
             assert_eq!(materialized.slots.len(), slot_count as usize);
@@ -1475,6 +1482,7 @@ mod tests {
                     slot_index: 0,
                     source: VReg::new(1),
                     destination: VReg::new(2),
+                    float_width: None,
                 }],
                 fallthrough: true,
             },

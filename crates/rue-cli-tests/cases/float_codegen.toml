@@ -1,0 +1,429 @@
+[section]
+id = "cli.float_codegen"
+name = "Scalar float code generation"
+description = "ADR-0065 Phases 5 and 6: scalar float lowering, FP ABI registers, IEEE comparisons, and checked conversions on both native backends."
+
+[[case]]
+name = "x86_64_scalar_arithmetic_and_fp_abi"
+files = [{ path = "main.rue", source = """
+fn sum9(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64, i: f64) -> f64 {
+    a + b + c + d + e + f + g + h + i
+}
+fn main() -> i32 {
+    @float_to_int(sum9(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0))
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 45
+
+[[case]]
+name = "aarch64_scalar_arithmetic_and_fp_abi"
+files = [{ path = "main.rue", source = """
+fn sum9(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64, i: f64) -> f64 {
+    a + b + c + d + e + f + g + h + i
+}
+fn main() -> i32 {
+    @float_to_int(sum9(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0))
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 45
+
+[[case]]
+name = "native_width_conversions_and_arithmetic"
+files = [{ path = "main.rue", source = """
+fn f32_value() -> f32 { @int_to_float(6) / 4.0 }
+fn main() -> i32 {
+    let widened: f64 = @float_cast(f32_value());
+    let narrowed: f32 = @float_cast(widened + 2.25);
+    @float_to_int(narrowed)
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "-o", "prog"]
+exit_code = 3
+
+[[case]]
+name = "native_float_value_survives_a_call_via_spill"
+files = [{ path = "main.rue", source = """
+fn identity(value: f64) -> f64 { value }
+fn main() -> i32 {
+    let across_call: f64 = 1.5;
+    let returned: f64 = identity(2.5);
+    @float_to_int(across_call + returned)
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "-o", "prog"]
+exit_code = 4
+
+[[case]]
+name = "native_nan_comparisons_are_unordered"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let zero: f64 = 0.0;
+    let nan: f64 = zero / zero;
+    if nan != nan && !(nan == nan) && !(nan < zero) && !(nan <= zero)
+        && !(nan > zero) && !(nan >= zero) { 7 } else { 99 }
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "-o", "prog"]
+exit_code = 7
+
+[[case]]
+name = "native_nan_to_int_traps"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let zero: f64 = 0.0;
+    @float_to_int(zero / zero)
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "-o", "prog"]
+runtime_error_contains = ["integer overflow"]
+exit_code = 101
+
+[[case]]
+name = "native_float_to_i32_upper_boundary_traps"
+files = [{ path = "main.rue", source = "fn main() -> i32 { @float_to_int(2147483648.0) }" }]
+args = ["--preview", "floats", "main.rue", "-o", "prog"]
+runtime_error_contains = ["integer overflow"]
+exit_code = 101
+
+[[case]]
+name = "native_float_to_i32_lower_boundary_is_inclusive"
+files = [{ path = "main.rue", source = "fn main() -> i32 { @float_to_int(-2147483648.0) }" }]
+args = ["--preview", "floats", "main.rue", "-o", "prog"]
+exit_code = 0
+
+[[case]]
+name = "x86_64_float_block_parameter"
+files = [{ path = "main.rue", source = """
+fn choose(flag: bool) -> f64 { if flag { 3.0 } else { 9.0 } }
+fn main() -> i32 { @float_to_int(choose(true)) }
+""" }]
+args = ["--preview", "floats", "main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 3
+
+[[case]]
+name = "aarch64_float_block_parameter"
+files = [{ path = "main.rue", source = """
+fn choose(flag: bool) -> f64 { if flag { 3.0 } else { 9.0 } }
+fn main() -> i32 { @float_to_int(choose(true)) }
+""" }]
+args = ["--preview", "floats", "main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 3
+
+[[case]]
+name = "x86_64_mixed_argument_banks_are_independent"
+files = [{ path = "main.rue", source = """
+fn pick(_left: f64, right: i32, a: f32, b: i32, c: f64) -> i32 {
+    right + b + @float_to_int(a) + @float_to_int(c)
+}
+fn main() -> i32 { pick(1.0, 32, 2.0, 3, 5.0) }
+""" }]
+args = ["--preview", "floats", "main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 42
+
+[[case]]
+name = "aarch64_mixed_argument_banks_are_independent"
+files = [{ path = "main.rue", source = """
+fn pick(_left: f64, right: i32, a: f32, b: i32, c: f64) -> i32 {
+    right + b + @float_to_int(a) + @float_to_int(c)
+}
+fn main() -> i32 { pick(1.0, 32, 2.0, 3, 5.0) }
+""" }]
+args = ["--preview", "floats", "main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 42
+
+[[case]]
+name = "native_float_pointer_widths_preserve_neighbor_bytes"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut value: f32 = 1.0;
+    let mut wide: f64 = 2.0;
+    let neighbor: u8 = 77;
+    checked {
+        let pf: ptr mut f32 = @raw_mut(value);
+        @ptr_write(pf, 3.5);
+        let f: f32 = @ptr_read(pf);
+        let pd: ptr mut f64 = @raw_mut(wide);
+        @ptr_write(pd, 6.0);
+        let d: f64 = @ptr_read(pd);
+        if @float_to_int(f) == 3 && @float_to_int(d) == 6 && neighbor == 77 { 9 } else { 99 }
+    }
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "-o", "prog"]
+exit_code = 9
+
+[[case]]
+name = "x86_64_mixed_argument_banks_overflow_independently"
+files = [{ path = "main.rue", source = """
+fn tail(i0:i32,f0:f64,i1:i32,f1:f64,i2:i32,f2:f64,i3:i32,f3:f64,i4:i32,f4:f64,
+    i5:i32,f5:f64,i6:i32,f6:f64,i7:i32,f7:f64,ix8:i32,fx8:f64) -> i32 {
+    ix8 + @float_to_int(fx8)
+}
+fn main() -> i32 {
+    tail(1,1.0,2,2.0,3,3.0,4,4.0,5,5.0,6,6.0,7,7.0,8,8.0,19,23.0)
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 42
+
+[[case]]
+name = "aarch64_mixed_argument_banks_overflow_independently"
+files = [{ path = "main.rue", source = """
+fn tail(i0:i32,f0:f64,i1:i32,f1:f64,i2:i32,f2:f64,i3:i32,f3:f64,i4:i32,f4:f64,
+    i5:i32,f5:f64,i6:i32,f6:f64,i7:i32,f7:f64,ix8:i32,fx8:f64) -> i32 {
+    ix8 + @float_to_int(fx8)
+}
+fn main() -> i32 {
+    tail(1,1.0,2,2.0,3,3.0,4,4.0,5,5.0,6,6.0,7,7.0,8,8.0,19,23.0)
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 42
+
+[[case]]
+name = "native_float_fields_arrays_and_inout"
+files = [{ path = "main.rue", source = """
+struct Pair { small: f32, wide: f64 }
+fn set32(inout value: f32) { value = 4.0; }
+fn set64(inout value: f64) { value = 8.0; }
+fn main() -> i32 {
+    let mut pair = Pair { small: 1.0, wide: 2.0 };
+    let mut values: [f64; 2] = [3.0, 5.0];
+    set32(inout pair.small);
+    set64(inout values[1]);
+    @float_to_int(@float_cast(pair.small) + pair.wide + values[0] + values[1])
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "-o", "prog"]
+exit_code = 17
+
+[[case]]
+name = "aarch64_float_large_frame_offsets"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let values: [f64; 40] = [
+        7.0,1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0,
+        10.0,11.0,12.0,13.0,14.0,15.0,16.0,17.0,18.0,19.0,
+        20.0,21.0,22.0,23.0,24.0,25.0,26.0,27.0,28.0,29.0,
+        30.0,31.0,32.0,33.0,34.0,35.0,36.0,37.0,38.0,39.0
+    ];
+    @float_to_int(values[0])
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 7
+
+[[case]]
+name = "native_aggregate_float_equality_is_ieee"
+files = [{ path = "main.rue", source = """
+struct Inner { x: f32, y: f64 }
+struct Outer { tag: i32, inner: Inner }
+fn main() -> i32 {
+    let a = Outer { tag: 1, inner: Inner { x: 2.0, y: 3.0 } };
+    let b = Outer { tag: 1, inner: Inner { x: 2.0, y: 3.0 } };
+    let zero: f64 = 0.0;
+    let nan = zero / zero;
+    let n = Outer { tag: 1, inner: Inner { x: 2.0, y: nan } };
+    if a == b && !(a != b) && n != n && !(n == n) { 11 } else { 99 }
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "-o", "prog"]
+exit_code = 11
+
+[[case]]
+name = "x86_64_float_enums_preserve_slot_classes"
+files = [{ path = "main.rue", source = """
+enum Small { Some(f32), None }
+enum Wide { Some(f64), None }
+fn read_wide(value: Wide) -> f64 {
+    match value { Wide.Some(x) => x, Wide.None => 0.0 }
+}
+fn main() -> i32 {
+    let small = Small.Some(2.0);
+    let local: f32 = match small { Small.Some(x) => x, Small.None => 0.0 };
+    let zero: f64 = 0.0;
+    let nan = Wide.Some(zero / zero);
+    let sum = @float_cast(local) + read_wide(Wide.Some(5.0));
+    @float_to_int(sum) + if nan != nan { 1 } else { 90 }
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 8
+
+[[case]]
+name = "aarch64_float_enums_preserve_slot_classes"
+files = [{ path = "main.rue", source = """
+enum Small { Some(f32), None }
+enum Wide { Some(f64), None }
+fn read_wide(value: Wide) -> f64 {
+    match value { Wide.Some(x) => x, Wide.None => 0.0 }
+}
+fn main() -> i32 {
+    let small = Small.Some(2.0);
+    let local: f32 = match small { Small.Some(x) => x, Small.None => 0.0 };
+    let zero: f64 = 0.0;
+    let nan = Wide.Some(zero / zero);
+    let sum = @float_cast(local) + read_wide(Wide.Some(5.0));
+    @float_to_int(sum) + if nan != nan { 1 } else { 90 }
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 8
+
+[[case]]
+name = "x86_64_borrow_and_inout_float_transport_is_gp"
+files = [{ path = "main.rue", source = """
+fn read32(borrow value: f32) -> f32 { value }
+fn read64(borrow value: f64) -> f64 { value }
+fn bump32(inout value: f32) { value = value + 1.5; }
+fn bump64(inout value: f64) { value = value + 2.0; }
+fn main() -> i32 {
+    let mut small: f32 = 2.0;
+    let mut wide: f64 = 3.0;
+    let before = @float_cast(read32(borrow small)) + read64(borrow wide);
+    bump32(inout small);
+    bump64(inout wide);
+    @float_to_int(before + @float_cast(small) + wide)
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 13
+
+[[case]]
+name = "aarch64_borrow_and_inout_float_transport_is_gp"
+files = [{ path = "main.rue", source = """
+fn read32(borrow value: f32) -> f32 { value }
+fn read64(borrow value: f64) -> f64 { value }
+fn bump32(inout value: f32) { value = value + 1.5; }
+fn bump64(inout value: f64) { value = value + 2.0; }
+fn main() -> i32 {
+    let mut small: f32 = 2.0;
+    let mut wide: f64 = 3.0;
+    let before = @float_cast(read32(borrow small)) + read64(borrow wide);
+    bump32(inout small);
+    bump64(inout wide);
+    @float_to_int(before + @float_cast(small) + wide)
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 13
+
+[[case]]
+name = "x86_64_mixed_enum_payload_carriers_are_tag_typed"
+files = [{ path = "main.rue", source = """
+enum Mixed { Small(f32), Wide(f64), Empty }
+enum Overlay { Float(f64), Integer(i64), Empty }
+fn read_mixed(value: Mixed) -> f64 {
+    match value {
+        Mixed.Small(x) => @float_cast(x),
+        Mixed.Wide(x) => x,
+        Mixed.Empty => 0.0,
+    }
+}
+fn read_float(value: Overlay) -> f64 {
+    match value { Overlay.Float(x) => x, Overlay.Integer(_) => 0.0, Overlay.Empty => 0.0 }
+}
+fn read_integer(value: Overlay) -> i64 {
+    match value { Overlay.Integer(x) => x, Overlay.Float(_) => 0, Overlay.Empty => 0 }
+}
+fn main() -> i32 {
+    let zero: f64 = 0.0;
+    let nan = Mixed.Wide(zero / zero);
+    let floats = read_mixed(Mixed.Small(3.0)) + read_mixed(Mixed.Wide(4.0));
+    let overlay = read_float(Overlay.Float(5.0));
+    let memory = checked {
+        let pm: ptr mut Mixed = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(Mixed)), @intCast(@align_of(Mixed)))));
+        @ptr_write(pm, Mixed.Small(6.0));
+        let m = @ptr_read(pm);
+        let po: ptr mut Overlay = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(Overlay)), @intCast(@align_of(Overlay)))));
+        @ptr_write(po, Overlay.Float(7.0));
+        let f = @ptr_read(po);
+        @ptr_write(po, Overlay.Integer(8));
+        let i = @ptr_read(po);
+        let result = @float_to_int(read_mixed(m) + read_float(f)) + @intCast(read_integer(i));
+        @free(@int_to_ptr(@ptr_to_int(pm)), @intCast(@size_of(Mixed)), @intCast(@align_of(Mixed)));
+        @free(@int_to_ptr(@ptr_to_int(po)), @intCast(@size_of(Overlay)), @intCast(@align_of(Overlay)));
+        result
+    };
+    @float_to_int(floats + overlay) + @intCast(read_integer(Overlay.Integer(9)))
+        + memory + if nan != nan && !(nan == nan) { 1 } else { 90 }
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 43
+
+[[case]]
+name = "aarch64_mixed_enum_payload_carriers_are_tag_typed"
+files = [{ path = "main.rue", source = """
+enum Mixed { Small(f32), Wide(f64), Empty }
+enum Overlay { Float(f64), Integer(i64), Empty }
+fn read_mixed(value: Mixed) -> f64 {
+    match value {
+        Mixed.Small(x) => @float_cast(x),
+        Mixed.Wide(x) => x,
+        Mixed.Empty => 0.0,
+    }
+}
+fn read_float(value: Overlay) -> f64 {
+    match value { Overlay.Float(x) => x, Overlay.Integer(_) => 0.0, Overlay.Empty => 0.0 }
+}
+fn read_integer(value: Overlay) -> i64 {
+    match value { Overlay.Integer(x) => x, Overlay.Float(_) => 0, Overlay.Empty => 0 }
+}
+fn main() -> i32 {
+    let zero: f64 = 0.0;
+    let nan = Mixed.Wide(zero / zero);
+    let floats = read_mixed(Mixed.Small(3.0)) + read_mixed(Mixed.Wide(4.0));
+    let overlay = read_float(Overlay.Float(5.0));
+    let memory = checked {
+        let pm: ptr mut Mixed = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(Mixed)), @intCast(@align_of(Mixed)))));
+        @ptr_write(pm, Mixed.Small(6.0));
+        let m = @ptr_read(pm);
+        let po: ptr mut Overlay = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(Overlay)), @intCast(@align_of(Overlay)))));
+        @ptr_write(po, Overlay.Float(7.0));
+        let f = @ptr_read(po);
+        @ptr_write(po, Overlay.Integer(8));
+        let i = @ptr_read(po);
+        let result = @float_to_int(read_mixed(m) + read_float(f)) + @intCast(read_integer(i));
+        @free(@int_to_ptr(@ptr_to_int(pm)), @intCast(@size_of(Mixed)), @intCast(@align_of(Mixed)));
+        @free(@int_to_ptr(@ptr_to_int(po)), @intCast(@size_of(Overlay)), @intCast(@align_of(Overlay)));
+        result
+    };
+    @float_to_int(floats + overlay) + @intCast(read_integer(Overlay.Integer(9)))
+        + memory + if nan != nan && !(nan == nan) { 1 } else { 90 }
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 43

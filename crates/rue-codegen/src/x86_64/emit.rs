@@ -593,8 +593,12 @@ impl<'a> Emitter<'a> {
             (0..self.num_params)
                 .map(|slot| crate::codegen_pipeline::ParamHoming {
                     start_slot: slot,
-                    reg_count: 1,
-                    abi_start: slot + abi_shift,
+                    class: crate::call_plan::AbiSlotClass::Gp,
+                    location: if (slot + abi_shift) < 6 {
+                        crate::call_plan::AbiSlotLocation::GpReg((slot + abi_shift) as usize)
+                    } else {
+                        crate::call_plan::AbiSlotLocation::Stack((slot + abi_shift) as usize - 6)
+                    },
                 })
                 .collect()
         } else {
@@ -667,6 +671,16 @@ impl<'a> Emitter<'a> {
         // When the function returns via sret, the hidden buffer pointer is
         // the first ABI argument, shifting every user param by one slot.
         const ARG_REGS: [Reg; 6] = [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9];
+        const FP_ARG_REGS: [Reg; 8] = [
+            Reg::Xmm0,
+            Reg::Xmm1,
+            Reg::Xmm2,
+            Reg::Xmm3,
+            Reg::Xmm4,
+            Reg::Xmm5,
+            Reg::Xmm6,
+            Reg::Xmm7,
+        ];
 
         let callee_saved_size = self.callee_saved_size();
 
@@ -680,25 +694,47 @@ impl<'a> Emitter<'a> {
         // argument registers without appearing here at all; their frame slots
         // are likewise compacted away, which `start_slot` already reflects.
         for homing in self.param_homing_or_per_slot() {
-            for k in 0..homing.reg_count {
-                // Use frame_local_slots (not num_locals which includes spills)
-                // because CfgLower generates param offsets based on the original count
-                let slot = self.frame_local_slots + homing.start_slot + k;
-                // Skip past callee-saved registers in the offset calculation
-                let offset = -callee_saved_size + crate::frame_layout::slot_offset_pre_saved(slot);
+            // Use frame_local_slots (not num_locals which includes spills)
+            // because CfgLower generates param offsets based on the original count
+            let slot = self.frame_local_slots + homing.start_slot;
+            // Skip past callee-saved registers in the offset calculation
+            let offset = -callee_saved_size + crate::frame_layout::slot_offset_pre_saved(slot);
 
-                let abi_index = homing.abi_start + k;
-                if (abi_index as usize) < ARG_REGS.len() {
-                    let reg = ARG_REGS[abi_index as usize];
+            match (homing.class, homing.location) {
+                (
+                    crate::call_plan::AbiSlotClass::Gp,
+                    crate::call_plan::AbiSlotLocation::GpReg(index),
+                ) => {
+                    let reg = ARG_REGS[index];
                     // Emit: mov [rbp + offset], reg
                     self.begin_inst();
                     self.emit_mov_mr(Reg::Rbp, offset, reg);
                     end_inst!(self, "mov [rbp{}], {}", offset, reg);
-                } else {
+                }
+                (
+                    crate::call_plan::AbiSlotClass::Fp(width),
+                    crate::call_plan::AbiSlotLocation::FpReg(index),
+                ) => {
+                    self.begin_inst();
+                    self.emit_sse_rm(
+                        if width == crate::value_plan::FloatWidth::F32 {
+                            0xF3
+                        } else {
+                            0xF2
+                        },
+                        0x11,
+                        FP_ARG_REGS[index],
+                        Reg::Rbp,
+                        offset,
+                    );
+                    end_inst!(self, "mov float [rbp{}], {}", offset, FP_ARG_REGS[index]);
+                }
+                (_, crate::call_plan::AbiSlotLocation::Stack(stack_index)) => {
                     // Stack-passed arg: copy from above the frame into the param area
                     let src_offset = crate::frame_layout::checked_incoming_stack_arg_offset(
                         16,
-                        abi_index,
+                        u32::try_from(ARG_REGS.len() + stack_index)
+                            .expect("incoming stack argument index must fit u32"),
                         u32::try_from(ARG_REGS.len())
                             .expect("argument register count must fit u32"),
                     )
@@ -710,6 +746,7 @@ impl<'a> Emitter<'a> {
                     self.emit_mov_mr(Reg::Rbp, offset, Reg::Rax);
                     end_inst!(self, "mov [rbp{}], rax", offset);
                 }
+                _ => unreachable!("parameter ABI class/location mismatch"),
             }
         }
 
@@ -806,7 +843,208 @@ impl<'a> Emitter<'a> {
 
     /// Emit a single instruction.
     fn emit_inst(&mut self, inst: &X86Inst) -> CompileResult<()> {
+        Self::assert_float_operand_classes(inst);
         match inst {
+            X86Inst::FloatConst { dst, bits, width } => {
+                self.begin_inst();
+                self.emit_float_const(dst.as_physical(), *bits, *width);
+                end_inst!(self, "{}", inst);
+            }
+            X86Inst::FloatMov { dst, src, width } => {
+                self.begin_inst();
+                self.emit_sse_rr(
+                    if *width == crate::value_plan::FloatWidth::F32 {
+                        0xF3
+                    } else {
+                        0xF2
+                    },
+                    0x10,
+                    dst.as_physical(),
+                    src.as_physical(),
+                    false,
+                );
+                end_inst!(self, "{}", inst);
+            }
+            X86Inst::FloatToBits { dst, src, width } => {
+                self.begin_inst();
+                self.emit_sse_rr(
+                    0x66,
+                    0x7e,
+                    src.as_physical(),
+                    dst.as_physical(),
+                    *width == crate::value_plan::FloatWidth::F64,
+                );
+                end_inst!(self, "{}", inst);
+            }
+            X86Inst::BitsToFloat { dst, src, width } => {
+                self.begin_inst();
+                self.emit_sse_rr(
+                    0x66,
+                    0x6e,
+                    dst.as_physical(),
+                    src.as_physical(),
+                    *width == crate::value_plan::FloatWidth::F64,
+                );
+                end_inst!(self, "{}", inst);
+            }
+            X86Inst::FloatLoad {
+                dst,
+                base,
+                offset,
+                width,
+            } => {
+                let offset = self.adjust_fp_offset(*base, *offset);
+                self.begin_inst();
+                self.emit_sse_rm(
+                    if *width == crate::value_plan::FloatWidth::F32 {
+                        0xF3
+                    } else {
+                        0xF2
+                    },
+                    0x10,
+                    dst.as_physical(),
+                    *base,
+                    offset,
+                );
+                end_inst!(self, "{}", inst);
+            }
+            X86Inst::FloatStore {
+                base,
+                offset,
+                src,
+                width,
+            } => {
+                let offset = self.adjust_fp_offset(*base, *offset);
+                self.begin_inst();
+                self.emit_sse_rm(
+                    if *width == crate::value_plan::FloatWidth::F32 {
+                        0xF3
+                    } else {
+                        0xF2
+                    },
+                    0x11,
+                    src.as_physical(),
+                    *base,
+                    offset,
+                );
+                end_inst!(self, "{}", inst);
+            }
+            X86Inst::FloatBin {
+                op,
+                dst,
+                src,
+                width,
+            } => {
+                let opcode = match op {
+                    super::mir::FloatBinOp::Add => 0x58,
+                    super::mir::FloatBinOp::Sub => 0x5c,
+                    super::mir::FloatBinOp::Mul => 0x59,
+                    super::mir::FloatBinOp::Div => 0x5e,
+                };
+                self.begin_inst();
+                self.emit_sse_rr(
+                    if *width == crate::value_plan::FloatWidth::F32 {
+                        0xF3
+                    } else {
+                        0xF2
+                    },
+                    opcode,
+                    dst.as_physical(),
+                    src.as_physical(),
+                    false,
+                );
+                end_inst!(self, "{}", inst);
+            }
+            X86Inst::FloatNeg { dst, src, width } => {
+                self.begin_inst();
+                self.emit_float_neg(dst.as_physical(), src.as_physical(), *width);
+                end_inst!(self, "{}", inst);
+            }
+            X86Inst::FloatSqrt { dst, src, width } => {
+                self.begin_inst();
+                self.emit_sse_rr(
+                    if *width == crate::value_plan::FloatWidth::F32 {
+                        0xF3
+                    } else {
+                        0xF2
+                    },
+                    0x51,
+                    dst.as_physical(),
+                    src.as_physical(),
+                    false,
+                );
+                end_inst!(self, "{}", inst);
+            }
+            X86Inst::FloatCmp { lhs, rhs, width } => {
+                self.begin_inst();
+                self.emit_sse_rr(
+                    if *width == crate::value_plan::FloatWidth::F32 {
+                        0x00
+                    } else {
+                        0x66
+                    },
+                    0x2e,
+                    lhs.as_physical(),
+                    rhs.as_physical(),
+                    false,
+                );
+                end_inst!(self, "{}", inst);
+            }
+            X86Inst::IntToFloat {
+                dst,
+                src,
+                int_bits,
+                width,
+            } => {
+                self.begin_inst();
+                self.emit_sse_rr(
+                    if *width == crate::value_plan::FloatWidth::F32 {
+                        0xF3
+                    } else {
+                        0xF2
+                    },
+                    0x2a,
+                    dst.as_physical(),
+                    src.as_physical(),
+                    *int_bits == 64,
+                );
+                end_inst!(self, "{}", inst);
+            }
+            X86Inst::FloatToInt {
+                dst,
+                src,
+                int_bits,
+                width,
+            } => {
+                self.begin_inst();
+                self.emit_sse_rr(
+                    if *width == crate::value_plan::FloatWidth::F32 {
+                        0xF3
+                    } else {
+                        0xF2
+                    },
+                    0x2c,
+                    dst.as_physical(),
+                    src.as_physical(),
+                    *int_bits == 64,
+                );
+                end_inst!(self, "{}", inst);
+            }
+            X86Inst::FloatCast { dst, src, from, .. } => {
+                self.begin_inst();
+                self.emit_sse_rr(
+                    if *from == crate::value_plan::FloatWidth::F32 {
+                        0xF3
+                    } else {
+                        0xF2
+                    },
+                    0x5a,
+                    dst.as_physical(),
+                    src.as_physical(),
+                    false,
+                );
+                end_inst!(self, "{}", inst);
+            }
             X86Inst::MovRI32 { dst, imm } => {
                 self.begin_inst();
                 self.emit_mov_ri32(dst.as_physical(), *imm);
@@ -1106,6 +1344,16 @@ impl<'a> Emitter<'a> {
                 self.begin_inst();
                 self.emit_setcc(0x94, dst.as_physical());
                 end_inst!(self, "sete {}", dst.as_physical());
+            }
+            X86Inst::Setp { dst } => {
+                self.begin_inst();
+                self.emit_setcc(0x9A, dst.as_physical());
+                end_inst!(self, "setp {}", dst.as_physical());
+            }
+            X86Inst::Setnp { dst } => {
+                self.begin_inst();
+                self.emit_setcc(0x9B, dst.as_physical());
+                end_inst!(self, "setnp {}", dst.as_physical());
             }
             X86Inst::Setne { dst } => {
                 self.begin_inst();
@@ -1415,6 +1663,66 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
+    fn assert_float_operand_classes(inst: &X86Inst) {
+        let fp = |operand: &super::mir::Operand| {
+            assert_eq!(
+                operand.as_physical().class(),
+                crate::reg_class::RegClass::Fp,
+                "{inst:?}"
+            )
+        };
+        let gp = |operand: &super::mir::Operand| {
+            assert_eq!(
+                operand.as_physical().class(),
+                crate::reg_class::RegClass::Gp,
+                "{inst:?}"
+            )
+        };
+        match inst {
+            X86Inst::FloatConst { dst, .. } => fp(dst),
+            X86Inst::FloatMov { dst, src, .. }
+            | X86Inst::FloatNeg { dst, src, .. }
+            | X86Inst::FloatSqrt { dst, src, .. }
+            | X86Inst::FloatCast { dst, src, .. } => {
+                fp(dst);
+                fp(src);
+            }
+            X86Inst::FloatToBits { dst, src, .. } => {
+                gp(dst);
+                fp(src);
+            }
+            X86Inst::BitsToFloat { dst, src, .. } => {
+                fp(dst);
+                gp(src);
+            }
+            X86Inst::FloatLoad { dst, base, .. } => {
+                fp(dst);
+                assert_eq!(base.class(), crate::reg_class::RegClass::Gp);
+            }
+            X86Inst::FloatStore { base, src, .. } => {
+                assert_eq!(base.class(), crate::reg_class::RegClass::Gp);
+                fp(src);
+            }
+            X86Inst::FloatBin { dst, src, .. } => {
+                fp(dst);
+                fp(src);
+            }
+            X86Inst::FloatCmp { lhs, rhs, .. } => {
+                fp(lhs);
+                fp(rhs);
+            }
+            X86Inst::IntToFloat { dst, src, .. } => {
+                fp(dst);
+                gp(src);
+            }
+            X86Inst::FloatToInt { dst, src, .. } => {
+                gp(dst);
+                fp(src);
+            }
+            _ => {}
+        }
+    }
+
     /// Emit LEA with simple [base + disp] addressing.
     fn emit_lea_simple(&mut self, dst: Reg, base: Reg, disp: i32) {
         let dst_enc = dst.encoding();
@@ -1544,6 +1852,67 @@ impl<'a> Emitter<'a> {
     /// - REX.R = 1 if src is r8-r15
     /// - REX.B = 1 if dst is r8-r15
     /// - ModR/M byte: mod=11 (register), reg=src, r/m=dst
+    fn emit_sse_rr(&mut self, prefix: u8, opcode: u8, reg: Reg, rm: Reg, rex_w: bool) {
+        if prefix != 0 {
+            self.code.push(prefix);
+        }
+        let rex = 0x40
+            | if rex_w { 8 } else { 0 }
+            | if reg.needs_rex() { 4 } else { 0 }
+            | if rm.needs_rex() { 1 } else { 0 };
+        if rex != 0x40 {
+            self.code.push(rex);
+        }
+        self.code.extend_from_slice(&[
+            0x0f,
+            opcode,
+            0xc0 | ((reg.encoding() & 7) << 3) | (rm.encoding() & 7),
+        ]);
+    }
+
+    fn emit_sse_rm(&mut self, prefix: u8, opcode: u8, reg: Reg, base: Reg, offset: i32) {
+        if prefix != 0 {
+            self.code.push(prefix);
+        }
+        let rex = 0x40 | if reg.needs_rex() { 4 } else { 0 } | if base.needs_rex() { 1 } else { 0 };
+        if rex != 0x40 {
+            self.code.push(rex);
+        }
+        self.code.extend_from_slice(&[0x0f, opcode]);
+        self.emit_modrm_memory(reg.encoding(), base.encoding(), offset);
+    }
+
+    fn emit_float_const(&mut self, dst: Reg, bits: u64, width: crate::value_plan::FloatWidth) {
+        self.emit_mov_ri64(Reg::Rax, bits as i64);
+        self.emit_sse_rr(
+            0x66,
+            0x6e,
+            dst,
+            Reg::Rax,
+            width == crate::value_plan::FloatWidth::F64,
+        );
+    }
+
+    fn emit_float_neg(&mut self, dst: Reg, src: Reg, width: crate::value_plan::FloatWidth) {
+        let sign = if width == crate::value_plan::FloatWidth::F32 {
+            1u64 << 31
+        } else {
+            1u64 << 63
+        };
+        self.emit_float_const(dst, sign, width);
+        self.emit_sse_rr(
+            if width == crate::value_plan::FloatWidth::F64 {
+                0x66
+            } else {
+                0
+            },
+            0x57,
+            dst,
+            src,
+            false,
+        );
+    }
+
     fn emit_mov_rr(&mut self, dst: Reg, src: Reg) {
         let dst_enc = dst.encoding();
         let src_enc = src.encoding();
@@ -3025,7 +3394,7 @@ impl<'a> Emitter<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::mir::Operand;
+    use super::super::mir::{FloatBinOp, FloatWidth, Operand};
     use super::*;
     use crate::LabelId;
 
@@ -3052,14 +3421,119 @@ mod tests {
     }
 
     #[test]
+    fn scalar_sse2_float_encodings_cover_widths_and_extended_registers() {
+        assert_eq!(
+            emit_single(X86Inst::FloatBin {
+                op: FloatBinOp::Add,
+                dst: Operand::Physical(Reg::Xmm0),
+                src: Operand::Physical(Reg::Xmm1),
+                width: FloatWidth::F32,
+            }),
+            vec![0xf3, 0x0f, 0x58, 0xc1]
+        );
+        assert_eq!(
+            emit_single(X86Inst::FloatMov {
+                dst: Operand::Physical(Reg::Xmm8),
+                src: Operand::Physical(Reg::Xmm9),
+                width: FloatWidth::F64,
+            }),
+            vec![0xf2, 0x45, 0x0f, 0x10, 0xc1]
+        );
+        assert_eq!(
+            emit_single(X86Inst::FloatCmp {
+                lhs: Operand::Physical(Reg::Xmm0),
+                rhs: Operand::Physical(Reg::Xmm1),
+                width: FloatWidth::F64,
+            }),
+            vec![0x66, 0x0f, 0x2e, 0xc1]
+        );
+        assert_eq!(
+            emit_single(X86Inst::FloatSqrt {
+                dst: Operand::Physical(Reg::Xmm0),
+                src: Operand::Physical(Reg::Xmm1),
+                width: FloatWidth::F32,
+            }),
+            vec![0xf3, 0x0f, 0x51, 0xc1]
+        );
+        assert_eq!(
+            emit_single(X86Inst::FloatSqrt {
+                dst: Operand::Physical(Reg::Xmm8),
+                src: Operand::Physical(Reg::Xmm9),
+                width: FloatWidth::F64,
+            }),
+            vec![0xf2, 0x45, 0x0f, 0x51, 0xc1]
+        );
+    }
+
+    #[test]
+    fn scalar_float_bit_carrier_moves_cover_both_widths_and_classes() {
+        assert_eq!(
+            emit_single(X86Inst::FloatToBits {
+                dst: Operand::Physical(Reg::Rax),
+                src: Operand::Physical(Reg::Xmm1),
+                width: FloatWidth::F32,
+            }),
+            vec![0x66, 0x0f, 0x7e, 0xc8]
+        );
+        assert_eq!(
+            emit_single(X86Inst::BitsToFloat {
+                dst: Operand::Physical(Reg::Xmm1),
+                src: Operand::Physical(Reg::Rax),
+                width: FloatWidth::F32,
+            }),
+            vec![0x66, 0x0f, 0x6e, 0xc8]
+        );
+        assert_eq!(
+            emit_single(X86Inst::FloatToBits {
+                dst: Operand::Physical(Reg::R10),
+                src: Operand::Physical(Reg::Xmm9),
+                width: FloatWidth::F64,
+            }),
+            vec![0x66, 0x4d, 0x0f, 0x7e, 0xca]
+        );
+        assert_eq!(
+            emit_single(X86Inst::BitsToFloat {
+                dst: Operand::Physical(Reg::Xmm9),
+                src: Operand::Physical(Reg::R10),
+                width: FloatWidth::F64,
+            }),
+            vec![0x66, 0x4d, 0x0f, 0x6e, 0xca]
+        );
+    }
+
+    #[test]
+    fn scalar_sse2_signed_conversion_encoding() {
+        assert_eq!(
+            emit_single(X86Inst::FloatToInt {
+                dst: Operand::Physical(Reg::Rax),
+                src: Operand::Physical(Reg::Xmm0),
+                int_bits: 64,
+                width: FloatWidth::F64,
+            }),
+            vec![0xf2, 0x48, 0x0f, 0x2c, 0xc0]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "FloatBin")]
+    fn float_encoder_rejects_gp_operands() {
+        let _ = emit_single(X86Inst::FloatBin {
+            op: FloatBinOp::Add,
+            dst: Operand::Physical(Reg::Xmm0),
+            src: Operand::Physical(Reg::Rax),
+            width: FloatWidth::F64,
+        });
+    }
+
+    #[test]
     fn incoming_stack_argument_homing_uses_sysv_entry_offset() {
         let mut mir = X86Mir::new();
         mir.push(X86Inst::Ret);
         let emitted = Emitter::new(&mir, 0, 0, 1, &[], &[])
             .with_param_homing(vec![crate::codegen_pipeline::ParamHoming {
                 start_slot: 0,
-                reg_count: 1,
-                abi_start: 6,
+                class: crate::call_plan::AbiSlotClass::Gp,
+                location: crate::call_plan::AbiSlotLocation::Stack(0),
             }])
             .emit_all()
             .expect("stack argument homing must emit");

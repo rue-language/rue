@@ -18,8 +18,17 @@ pub use rue_runtime_abi::ReturnBehavior;
 const _: () = assert!(std::mem::size_of::<X86Inst>() <= 40);
 
 pub use crate::reg_class::{RegClass, VRegClasses};
+pub use crate::value_plan::FloatWidth;
 use crate::vreg::MirState;
 pub use crate::vreg::{LabelId, VReg};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatBinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
 
 /// A physical x86-64 register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -41,6 +50,22 @@ pub enum Reg {
     R13 = 13,
     R14 = 14,
     R15 = 15,
+    Xmm0 = 16,
+    Xmm1,
+    Xmm2,
+    Xmm3,
+    Xmm4,
+    Xmm5,
+    Xmm6,
+    Xmm7,
+    Xmm8,
+    Xmm9,
+    Xmm10,
+    Xmm11,
+    Xmm12,
+    Xmm13,
+    Xmm14,
+    Xmm15,
 }
 
 // ============================================================================
@@ -89,6 +114,14 @@ pub(crate) const RESERVED_REGS: &[Reg] = &[
     Reg::R8,  // ARG_REGS[4], RET_REGS[3]
     Reg::R9,  // ARG_REGS[5], RET_REGS[4]
     Reg::R10, // RET_REGS[5], SCRATCH_SOURCE
+    Reg::Xmm0,
+    Reg::Xmm1,
+    Reg::Xmm2,
+    Reg::Xmm3,
+    Reg::Xmm4,
+    Reg::Xmm5,
+    Reg::Xmm6,
+    Reg::Xmm7,
 ];
 
 /// Scratch register for a rewritten instruction's value: the destination when
@@ -109,6 +142,8 @@ pub(crate) const SCRATCH_ADDR_BASE: Reg = Reg::Rdx;
 /// SIB address rewrite already occupies. (`rsp` cannot encode as a SIB index,
 /// which is one more reason it is reserved.)
 pub(crate) const SCRATCH_ADDR_INDEX: Reg = Reg::Rcx;
+pub(crate) const SCRATCH_FP_VALUE: Reg = Reg::Xmm0;
+pub(crate) const SCRATCH_FP_SOURCE: Reg = Reg::Xmm1;
 
 /// The register a variable-count shift takes its count in: `cl`, the low byte
 /// of `rcx`. This is a fixed machine operand, not a choice, so the allocator
@@ -147,19 +182,23 @@ impl Reg {
     /// special-casing a target that has only one class (RUE-1067).
     #[inline]
     pub const fn class(self) -> RegClass {
-        RegClass::Gp
+        if (self as u8) >= Reg::Xmm0 as u8 {
+            RegClass::Fp
+        } else {
+            RegClass::Gp
+        }
     }
 
     /// Get the register encoding for ModR/M and SIB bytes.
     #[inline]
     pub const fn encoding(self) -> u8 {
-        self as u8
+        (self as u8) & 15
     }
 
     /// Whether this register requires a REX prefix (R8-R15).
     #[inline]
     pub const fn needs_rex(self) -> bool {
-        (self as u8) >= 8
+        self.encoding() >= 8
     }
 
     /// The 32-bit version of this register's name.
@@ -181,6 +220,7 @@ impl Reg {
             Reg::R13 => "r13d",
             Reg::R14 => "r14d",
             Reg::R15 => "r15d",
+            _ => self.name64(),
         }
     }
 
@@ -203,6 +243,22 @@ impl Reg {
             Reg::R13 => "r13",
             Reg::R14 => "r14",
             Reg::R15 => "r15",
+            Reg::Xmm0 => "xmm0",
+            Reg::Xmm1 => "xmm1",
+            Reg::Xmm2 => "xmm2",
+            Reg::Xmm3 => "xmm3",
+            Reg::Xmm4 => "xmm4",
+            Reg::Xmm5 => "xmm5",
+            Reg::Xmm6 => "xmm6",
+            Reg::Xmm7 => "xmm7",
+            Reg::Xmm8 => "xmm8",
+            Reg::Xmm9 => "xmm9",
+            Reg::Xmm10 => "xmm10",
+            Reg::Xmm11 => "xmm11",
+            Reg::Xmm12 => "xmm12",
+            Reg::Xmm13 => "xmm13",
+            Reg::Xmm14 => "xmm14",
+            Reg::Xmm15 => "xmm15",
         }
     }
 }
@@ -279,14 +335,94 @@ impl From<Reg> for Operand {
 /// An x86-64 MIR instruction.
 #[derive(Debug, Clone)]
 pub enum X86Inst {
+    FloatConst {
+        dst: Operand,
+        bits: u64,
+        width: FloatWidth,
+    },
+    FloatMov {
+        dst: Operand,
+        src: Operand,
+        width: FloatWidth,
+    },
+    FloatToBits {
+        dst: Operand,
+        src: Operand,
+        width: FloatWidth,
+    },
+    BitsToFloat {
+        dst: Operand,
+        src: Operand,
+        width: FloatWidth,
+    },
+    FloatLoad {
+        dst: Operand,
+        base: Reg,
+        offset: i32,
+        width: FloatWidth,
+    },
+    FloatStore {
+        base: Reg,
+        offset: i32,
+        src: Operand,
+        width: FloatWidth,
+    },
+    FloatBin {
+        op: FloatBinOp,
+        dst: Operand,
+        src: Operand,
+        width: FloatWidth,
+    },
+    FloatNeg {
+        dst: Operand,
+        src: Operand,
+        width: FloatWidth,
+    },
+    FloatSqrt {
+        dst: Operand,
+        src: Operand,
+        width: FloatWidth,
+    },
+    FloatCmp {
+        lhs: Operand,
+        rhs: Operand,
+        width: FloatWidth,
+    },
+    IntToFloat {
+        dst: Operand,
+        src: Operand,
+        int_bits: u32,
+        width: FloatWidth,
+    },
+    FloatToInt {
+        dst: Operand,
+        src: Operand,
+        int_bits: u32,
+        width: FloatWidth,
+    },
+    FloatCast {
+        dst: Operand,
+        src: Operand,
+        from: FloatWidth,
+        to: FloatWidth,
+    },
     /// `mov dst, imm32` - Move 32-bit immediate to register.
-    MovRI32 { dst: Operand, imm: i32 },
+    MovRI32 {
+        dst: Operand,
+        imm: i32,
+    },
 
     /// `mov dst, imm64` - Move 64-bit immediate to register.
-    MovRI64 { dst: Operand, imm: i64 },
+    MovRI64 {
+        dst: Operand,
+        imm: i64,
+    },
 
     /// `mov dst, src` - Move register to register.
-    MovRR { dst: Operand, src: Operand },
+    MovRR {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `mov dst, [base + offset]` - Load from memory (stack local).
     MovRM {
@@ -304,105 +440,185 @@ pub enum X86Inst {
 
     // Arithmetic instructions
     /// `add dst, src` - Add src to dst (dst = dst + src).
-    AddRR { dst: Operand, src: Operand },
+    AddRR {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `add dst, src` (64-bit) - Add src to dst treating operands as 64-bit.
     ///
     /// Used for 64-bit arithmetic where 32-bit truncation would give incorrect overflow detection.
-    AddRR64 { dst: Operand, src: Operand },
+    AddRR64 {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `sub dst, src` - Subtract src from dst (dst = dst - src).
-    SubRR { dst: Operand, src: Operand },
+    SubRR {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `sub dst, src` (64-bit) - Subtract src from dst treating operands as 64-bit.
     ///
     /// Used for pointer arithmetic where 32-bit truncation would break addresses.
-    SubRR64 { dst: Operand, src: Operand },
+    SubRR64 {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `add dst, imm` - Add immediate to register (dst = dst + imm).
-    AddRI { dst: Operand, imm: i32 },
+    AddRI {
+        dst: Operand,
+        imm: i32,
+    },
 
     /// `imul dst, src` - Signed multiply (dst = dst * src).
-    ImulRR { dst: Operand, src: Operand },
+    ImulRR {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `imul dst, src` (64-bit) - Signed multiply treating operands as 64-bit.
     ///
     /// Used for 64-bit multiplication where 32-bit truncation would give incorrect overflow detection.
-    ImulRR64 { dst: Operand, src: Operand },
+    ImulRR64 {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `neg dst` - Two's complement negation (dst = -dst).
-    Neg { dst: Operand },
+    Neg {
+        dst: Operand,
+    },
 
     /// `neg dst` (64-bit) - Two's complement negation treating operand as 64-bit.
     ///
     /// Used for 64-bit negation where 32-bit truncation would give incorrect overflow detection.
-    Neg64 { dst: Operand },
+    Neg64 {
+        dst: Operand,
+    },
 
     /// `xor dst, imm` - XOR with immediate (dst = dst ^ imm).
-    XorRI { dst: Operand, imm: i32 },
+    XorRI {
+        dst: Operand,
+        imm: i32,
+    },
 
     /// `and dst, src` - Bitwise AND, 32-bit (dst = dst & src).
-    AndRR { dst: Operand, src: Operand },
+    AndRR {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `or dst, src` - Bitwise OR, 32-bit (dst = dst | src).
-    OrRR { dst: Operand, src: Operand },
+    OrRR {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `xor dst, src` - Bitwise XOR, 32-bit (dst = dst ^ src).
-    XorRR { dst: Operand, src: Operand },
+    XorRR {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `and dst, src` - Bitwise AND, 64-bit (dst = dst & src).
-    And64RR { dst: Operand, src: Operand },
+    And64RR {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `or dst, src` - Bitwise OR, 64-bit (dst = dst | src).
-    Or64RR { dst: Operand, src: Operand },
+    Or64RR {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `xor dst, src` - Bitwise XOR, 64-bit (dst = dst ^ src).
-    Xor64RR { dst: Operand, src: Operand },
+    Xor64RR {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `not dst` - Bitwise NOT, 32-bit (dst = ~dst).
-    NotR { dst: Operand },
+    NotR {
+        dst: Operand,
+    },
 
     /// `not dst` (64-bit) - Bitwise NOT treating operand as 64-bit (dst = ~dst).
     ///
     /// Used for i64/u64 BitNot where the 32-bit form would zero the high
     /// 32 bits of the result (RUE-59).
-    Not64R { dst: Operand },
+    Not64R {
+        dst: Operand,
+    },
 
     /// `shl dst, cl` - Shift left 64-bit by count in CL register (dst = dst << CL).
-    ShlRCl { dst: Operand },
+    ShlRCl {
+        dst: Operand,
+    },
 
     /// `shl dst, cl` - Shift left 32-bit by count in CL register (dst = dst << CL).
-    Shl32RCl { dst: Operand },
+    Shl32RCl {
+        dst: Operand,
+    },
 
     /// `shl dst, imm` - Shift left 64-bit by immediate (dst = dst << imm).
-    ShlRI { dst: Operand, imm: u8 },
+    ShlRI {
+        dst: Operand,
+        imm: u8,
+    },
 
     /// `shl dst, imm` - Shift left 32-bit by immediate (dst = dst << imm).
-    Shl32RI { dst: Operand, imm: u8 },
+    Shl32RI {
+        dst: Operand,
+        imm: u8,
+    },
 
     /// `shr dst, cl` - Logical shift right 64-bit by count in CL register (dst = dst >> CL).
-    ShrRCl { dst: Operand },
+    ShrRCl {
+        dst: Operand,
+    },
 
     /// `shr dst, cl` - Logical shift right 32-bit by count in CL register (dst = dst >> CL).
-    Shr32RCl { dst: Operand },
+    Shr32RCl {
+        dst: Operand,
+    },
 
     /// `shr dst, imm` - Logical shift right 64-bit by immediate (dst = dst >> imm).
-    ShrRI { dst: Operand, imm: u8 },
+    ShrRI {
+        dst: Operand,
+        imm: u8,
+    },
 
     /// `shr dst, imm` - Logical shift right 32-bit by immediate (dst = dst >> imm).
-    Shr32RI { dst: Operand, imm: u8 },
+    Shr32RI {
+        dst: Operand,
+        imm: u8,
+    },
 
     /// `sar dst, cl` - Arithmetic shift right 64-bit by count in CL register.
-    SarRCl { dst: Operand },
+    SarRCl {
+        dst: Operand,
+    },
 
     /// `sar dst, cl` - Arithmetic shift right 32-bit by count in CL register.
-    Sar32RCl { dst: Operand },
+    Sar32RCl {
+        dst: Operand,
+    },
 
     /// `sar dst, imm` - Arithmetic shift right 64-bit by immediate.
-    SarRI { dst: Operand, imm: u8 },
+    SarRI {
+        dst: Operand,
+        imm: u8,
+    },
 
     /// `sar dst, imm` - Arithmetic shift right 32-bit by immediate.
-    Sar32RI { dst: Operand, imm: u8 },
+    Sar32RI {
+        dst: Operand,
+        imm: u8,
+    },
 
     /// `cdq` - Sign-extend EAX into EDX:EAX (for signed division).
     Cdq,
@@ -412,136 +628,235 @@ pub enum X86Inst {
 
     /// `idiv src` - Signed divide EDX:EAX by src.
     /// Quotient in EAX, remainder in EDX.
-    IdivR { src: Operand },
+    IdivR {
+        src: Operand,
+    },
 
     /// `div src` - Unsigned divide EDX:EAX by src.
     /// Quotient in EAX, remainder in EDX.
-    DivR { src: Operand },
+    DivR {
+        src: Operand,
+    },
 
     /// `idiv src` - Signed divide RDX:RAX by src (64-bit).
     /// Quotient in RAX, remainder in RDX.
-    Idiv64R { src: Operand },
+    Idiv64R {
+        src: Operand,
+    },
 
     /// `div src` - Unsigned divide RDX:RAX by src (64-bit).
     /// Quotient in RAX, remainder in RDX.
-    Div64R { src: Operand },
+    Div64R {
+        src: Operand,
+    },
 
     /// `mul src` - Unsigned multiply EAX by src (32-bit).
     /// Product in EDX:EAX; CF and OF are set iff EDX (the high half) is
     /// non-zero, i.e. exactly on unsigned overflow (RUE-148).
-    MulR { src: Operand },
+    MulR {
+        src: Operand,
+    },
 
     /// `mul src` - Unsigned multiply RAX by src (64-bit).
     /// Product in RDX:RAX; CF and OF are set iff RDX (the high half) is
     /// non-zero, i.e. exactly on unsigned overflow (RUE-148).
-    Mul64R { src: Operand },
+    Mul64R {
+        src: Operand,
+    },
 
     // Comparison and control flow
     /// `cmp src1, src2` - Compare 32-bit (subtract and set flags, discard result).
-    CmpRR { src1: Operand, src2: Operand },
+    CmpRR {
+        src1: Operand,
+        src2: Operand,
+    },
 
     /// `cmp src1, src2` - Compare 64-bit (subtract and set flags, discard result).
-    Cmp64RR { src1: Operand, src2: Operand },
+    Cmp64RR {
+        src1: Operand,
+        src2: Operand,
+    },
 
     /// `cmp src, imm` - Compare register with immediate (32-bit).
-    CmpRI { src: Operand, imm: i32 },
+    CmpRI {
+        src: Operand,
+        imm: i32,
+    },
 
     /// `cmp src, imm` - Compare register with immediate (64-bit).
-    Cmp64RI { src: Operand, imm: i32 },
+    Cmp64RI {
+        src: Operand,
+        imm: i32,
+    },
 
     /// `sete dst` - Set byte if equal (ZF=1).
-    Sete { dst: Operand },
+    Sete {
+        dst: Operand,
+    },
+    Setp {
+        dst: Operand,
+    },
+    Setnp {
+        dst: Operand,
+    },
 
     /// `setne dst` - Set byte if not equal (ZF=0).
-    Setne { dst: Operand },
+    Setne {
+        dst: Operand,
+    },
 
     /// `setl dst` - Set byte if less (signed: SF!=OF).
-    Setl { dst: Operand },
+    Setl {
+        dst: Operand,
+    },
 
     /// `setg dst` - Set byte if greater (signed: ZF=0 and SF=OF).
-    Setg { dst: Operand },
+    Setg {
+        dst: Operand,
+    },
 
     /// `setle dst` - Set byte if less or equal (signed: ZF=1 or SF!=OF).
-    Setle { dst: Operand },
+    Setle {
+        dst: Operand,
+    },
 
     /// `setge dst` - Set byte if greater or equal (signed: SF=OF).
-    Setge { dst: Operand },
+    Setge {
+        dst: Operand,
+    },
 
     /// `setb dst` - Set byte if below (unsigned: CF=1).
-    Setb { dst: Operand },
+    Setb {
+        dst: Operand,
+    },
 
     /// `seta dst` - Set byte if above (unsigned: CF=0 and ZF=0).
-    Seta { dst: Operand },
+    Seta {
+        dst: Operand,
+    },
 
     /// `setbe dst` - Set byte if below or equal (unsigned: CF=1 or ZF=1).
-    Setbe { dst: Operand },
+    Setbe {
+        dst: Operand,
+    },
 
     /// `setae dst` - Set byte if above or equal (unsigned: CF=0).
-    Setae { dst: Operand },
+    Setae {
+        dst: Operand,
+    },
 
     /// `movzx dst, src` - Move with zero-extend (byte to dword).
-    Movzx { dst: Operand, src: Operand },
+    Movzx {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `movsx dst, src` - Sign-extend 8-bit to 64-bit.
-    Movsx8To64 { dst: Operand, src: Operand },
+    Movsx8To64 {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `movsx dst, src` - Sign-extend 16-bit to 64-bit.
-    Movsx16To64 { dst: Operand, src: Operand },
+    Movsx16To64 {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `movsxd dst, src` - Sign-extend 32-bit to 64-bit.
-    Movsx32To64 { dst: Operand, src: Operand },
+    Movsx32To64 {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `mov dst32, src32` - Zero-extend 32-bit to 64-bit via a 32-bit write.
     ///
     /// In 64-bit mode, any write to a 32-bit general-purpose register clears
     /// the destination's upper half. This is the canonical register-to-register
     /// u32-to-u64 normalization instruction.
-    Movzx32To64 { dst: Operand, src: Operand },
+    Movzx32To64 {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `movzx dst, src` - Zero-extend 8-bit to 64-bit.
-    Movzx8To64 { dst: Operand, src: Operand },
+    Movzx8To64 {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `movzx dst, src` - Zero-extend 16-bit to 64-bit.
-    Movzx16To64 { dst: Operand, src: Operand },
+    Movzx16To64 {
+        dst: Operand,
+        src: Operand,
+    },
 
     /// `test src1, src2` - Bitwise AND, set flags, discard result.
-    TestRR { src1: Operand, src2: Operand },
+    TestRR {
+        src1: Operand,
+        src2: Operand,
+    },
 
     /// `test src1, src2` - Bitwise AND (64-bit), set flags, discard result.
-    Test64RR { src1: Operand, src2: Operand },
+    Test64RR {
+        src1: Operand,
+        src2: Operand,
+    },
 
     /// `jz label` - Jump if zero flag is set.
-    Jz { label: LabelId },
+    Jz {
+        label: LabelId,
+    },
 
     /// `jnz label` - Jump if zero flag is not set.
-    Jnz { label: LabelId },
+    Jnz {
+        label: LabelId,
+    },
 
     /// `jo label` - Jump if overflow flag is set.
-    Jo { label: LabelId },
+    Jo {
+        label: LabelId,
+    },
 
     /// `jno label` - Jump if overflow flag is not set.
-    Jno { label: LabelId },
+    Jno {
+        label: LabelId,
+    },
 
     /// `jb label` - Jump if below (unsigned: CF=1).
-    Jb { label: LabelId },
+    Jb {
+        label: LabelId,
+    },
 
     /// `jae label` - Jump if above or equal (unsigned: CF=0).
-    Jae { label: LabelId },
+    Jae {
+        label: LabelId,
+    },
 
     /// `jbe label` - Jump if below or equal (unsigned: CF=1 or ZF=1).
-    Jbe { label: LabelId },
+    Jbe {
+        label: LabelId,
+    },
 
     /// `jge label` - Jump if greater or equal (signed: SF=OF).
-    Jge { label: LabelId },
+    Jge {
+        label: LabelId,
+    },
 
     /// `jle label` - Jump if less or equal (signed: ZF=1 or SF≠OF).
-    Jle { label: LabelId },
+    Jle {
+        label: LabelId,
+    },
 
     /// `jmp label` - Unconditional jump.
-    Jmp { label: LabelId },
+    Jmp {
+        label: LabelId,
+    },
 
     /// Label marker (not a real instruction).
-    Label { id: LabelId },
+    Label {
+        id: LabelId,
+    },
 
     /// `call symbol` - Call a function by symbol name (PC-relative).
     ///
@@ -573,18 +888,29 @@ pub enum X86Inst {
     Ud2,
 
     /// `pop dst` - Pop value from stack into register.
-    Pop { dst: Operand },
+    Pop {
+        dst: Operand,
+    },
 
     /// `push src` - Push value from register onto stack.
-    Push { src: Operand },
+    Push {
+        src: Operand,
+    },
 
     /// `lea dst, [base + disp]` - Load effective address.
-    Lea { dst: Operand, base: Reg, disp: i32 },
+    Lea {
+        dst: Operand,
+        base: Reg,
+        disp: i32,
+    },
 
     /// `shl dst, count` - Pre-register-allocation variable left-shift pseudo.
     /// Register allocation loads `count` into `cl` and lowers this to
     /// [`X86Inst::ShlRCl`] before scheduling.
-    Shl { dst: Operand, count: Operand },
+    Shl {
+        dst: Operand,
+        count: Operand,
+    },
 
     /// `mov dst, [base]` - Load from memory via a virtual base register.
     ///
@@ -682,14 +1008,23 @@ pub enum X86Inst {
     },
 
     /// Load pointer to string constant (pseudo-instruction resolved during emission)
-    StringConstPtr { dst: Operand, string_id: u32 },
+    StringConstPtr {
+        dst: Operand,
+        string_id: u32,
+    },
 
     /// Load string length (pseudo-instruction resolved during emission)
-    StringConstLen { dst: Operand, string_id: u32 },
+    StringConstLen {
+        dst: Operand,
+        string_id: u32,
+    },
 
     /// Load string capacity (pseudo-instruction resolved during emission)
     /// For string literals, this is always 0 (indicating rodata, not heap)
-    StringConstCap { dst: Operand, string_id: u32 },
+    StringConstCap {
+        dst: Operand,
+        string_id: u32,
+    },
 }
 
 impl X86Inst {
@@ -733,6 +1068,7 @@ impl X86Inst {
             | X86Inst::Mul64R { .. } => &[Reg::Rax, Reg::Rdx],
             // CDQ/CQO sign-extends (E/R)AX into (E/R)DX, clobbering RDX
             X86Inst::Cdq | X86Inst::Cqo => &[Reg::Rdx],
+            X86Inst::FloatConst { .. } | X86Inst::FloatNeg { .. } => &[Reg::Rax],
             // Function calls clobber all caller-saved registers per System V AMD64 ABI
             X86Inst::CallRel { .. } => &[
                 Reg::Rax,
@@ -744,6 +1080,22 @@ impl X86Inst {
                 Reg::R9,
                 Reg::R10,
                 Reg::R11,
+                Reg::Xmm0,
+                Reg::Xmm1,
+                Reg::Xmm2,
+                Reg::Xmm3,
+                Reg::Xmm4,
+                Reg::Xmm5,
+                Reg::Xmm6,
+                Reg::Xmm7,
+                Reg::Xmm8,
+                Reg::Xmm9,
+                Reg::Xmm10,
+                Reg::Xmm11,
+                Reg::Xmm12,
+                Reg::Xmm13,
+                Reg::Xmm14,
+                Reg::Xmm15,
             ],
             // Syscall clobbers RAX (return value), RCX (saved RIP), R11 (saved RFLAGS)
             X86Inst::Syscall => &[Reg::Rax, Reg::Rcx, Reg::R11],
@@ -774,6 +1126,88 @@ fn fmt_disp(offset: i32) -> String {
 impl fmt::Display for X86Inst {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            X86Inst::FloatConst { dst, bits, width } => {
+                write!(f, "fconst.{width:?} {dst}, 0x{bits:x}")
+            }
+            X86Inst::FloatMov { dst, src, width } => write!(
+                f,
+                "movs{} {dst}, {src}",
+                if *width == FloatWidth::F32 { "s" } else { "d" }
+            ),
+            X86Inst::FloatToBits { dst, src, width } => {
+                write!(f, "float_to_bits.{width:?} {dst}, {src}")
+            }
+            X86Inst::BitsToFloat { dst, src, width } => {
+                write!(f, "bits_to_float.{width:?} {dst}, {src}")
+            }
+            X86Inst::FloatLoad {
+                dst,
+                base,
+                offset,
+                width,
+            } => write!(
+                f,
+                "movs{} {dst}, [{base}{}]",
+                if *width == FloatWidth::F32 { "s" } else { "d" },
+                fmt_disp(*offset)
+            ),
+            X86Inst::FloatStore {
+                base,
+                offset,
+                src,
+                width,
+            } => write!(
+                f,
+                "movs{} [{base}{}], {src}",
+                if *width == FloatWidth::F32 { "s" } else { "d" },
+                fmt_disp(*offset)
+            ),
+            X86Inst::FloatBin {
+                op,
+                dst,
+                src,
+                width,
+            } => write!(
+                f,
+                "{}s{} {dst}, {src}",
+                match op {
+                    FloatBinOp::Add => "add",
+                    FloatBinOp::Sub => "sub",
+                    FloatBinOp::Mul => "mul",
+                    FloatBinOp::Div => "div",
+                },
+                if *width == FloatWidth::F32 { "s" } else { "d" }
+            ),
+            X86Inst::FloatNeg { dst, src, width } => write!(f, "fneg.{width:?} {dst}, {src}"),
+            X86Inst::FloatSqrt { dst, src, width } => write!(f, "fsqrt.{width:?} {dst}, {src}"),
+            X86Inst::FloatCmp { lhs, rhs, width } => write!(
+                f,
+                "ucomis{} {lhs}, {rhs}",
+                if *width == FloatWidth::F32 { "s" } else { "d" }
+            ),
+            X86Inst::IntToFloat {
+                dst,
+                src,
+                int_bits,
+                width,
+            } => write!(
+                f,
+                "cvtsi{int_bits}2s{} {dst}, {src}",
+                if *width == FloatWidth::F32 { "s" } else { "d" }
+            ),
+            X86Inst::FloatToInt {
+                dst,
+                src,
+                int_bits,
+                width,
+            } => write!(
+                f,
+                "cvtts{}2si{int_bits} {dst}, {src}",
+                if *width == FloatWidth::F32 { "s" } else { "d" }
+            ),
+            X86Inst::FloatCast { dst, src, from, to } => {
+                write!(f, "cvt{from:?}2{to:?} {dst}, {src}")
+            }
             X86Inst::MovRI32 { dst, imm } => write!(f, "mov {}, {}", dst, imm),
             X86Inst::MovRI64 { dst, imm } => write!(f, "mov {}, {}", dst, imm),
             X86Inst::MovRR { dst, src } => write!(f, "mov {}, {}", dst, src),
@@ -834,6 +1268,8 @@ impl fmt::Display for X86Inst {
             X86Inst::CmpRI { src, imm } => write!(f, "cmp {}, {}", src, imm),
             X86Inst::Cmp64RI { src, imm } => write!(f, "cmpq {}, {}", src, imm),
             X86Inst::Sete { dst } => write!(f, "sete {}", dst),
+            X86Inst::Setp { dst } => write!(f, "setp {}", dst),
+            X86Inst::Setnp { dst } => write!(f, "setnp {}", dst),
             X86Inst::Setne { dst } => write!(f, "setne {}", dst),
             X86Inst::Setl { dst } => write!(f, "setl {}", dst),
             X86Inst::Setg { dst } => write!(f, "setg {}", dst),
@@ -1073,10 +1509,8 @@ impl X86Mir {
 
     /// Allocate a new general-purpose virtual register.
     ///
-    /// This is the whole of lowering today: no Rue type lowers to a
-    /// floating-point value yet, so every value a function computes lives in a
-    /// general-purpose register. Sites that later hold a floating-point value
-    /// call [`X86Mir::alloc_vreg_in`] with [`RegClass::Fp`] instead (RUE-1067).
+    /// Integer values and addresses use this default. Scalar float lowering
+    /// calls [`X86Mir::alloc_vreg_in`] with [`RegClass::Fp`].
     pub fn alloc_vreg(&mut self) -> VReg {
         self.alloc_vreg_in(RegClass::Gp)
     }
@@ -1253,8 +1687,10 @@ mod tests {
     }
 
     #[test]
-    fn every_physical_register_is_general_purpose() {
+    fn physical_registers_report_their_register_class() {
         assert_eq!(Reg::Rbx.class(), RegClass::Gp);
+        assert_eq!(Reg::Xmm0.class(), RegClass::Fp);
+        assert_eq!(Reg::Xmm15.class(), RegClass::Fp);
     }
 
     #[test]
@@ -1263,6 +1699,8 @@ mod tests {
         assert_eq!(Reg::Rdi.encoding(), 7);
         assert_eq!(Reg::R8.encoding(), 8);
         assert_eq!(Reg::R15.encoding(), 15);
+        assert_eq!(Reg::Xmm0.encoding(), 0);
+        assert_eq!(Reg::Xmm15.encoding(), 15);
     }
 
     #[test]

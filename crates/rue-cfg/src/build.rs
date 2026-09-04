@@ -7,8 +7,8 @@ use ahash::{AHashMap, AHashSet};
 use lasso::{Spur, ThreadedRodeo};
 use rue_air::{
     AirArgMode, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection, AirRef,
-    AnalyzedCallableKind, ArgConvention, FrozenTypeInternPool, NativeCallAbi, ParamSlotModes,
-    SourceParamAbi, StructId, Type, TypeKind, ValidatedAir,
+    AnalyzedCallableKind, ArgConvention, FrozenTypeInternPool, NativeArgClass, NativeCallAbi,
+    ParamSlotModes, SourceParamAbi, StructId, Type, TypeKind, ValidatedAir,
 };
 use rue_error::{CompileError, CompileWarning, ErrorKind, WarningKind};
 use std::cell::RefCell;
@@ -789,10 +789,10 @@ fn derive_source_param_abi(builder: &CfgBuilder<'_>) -> Vec<SourceParamAbi> {
     let mut slot = 0u32;
     while slot < num_params {
         let is_by_ref = by_ref.get(slot as usize).copied().unwrap_or(false);
-        let (slot_count, crossing_regs, ty) = if is_by_ref {
+        let (slot_count, crossing_regs, ty, crossing_classes) = if is_by_ref {
             // A by-reference parameter is always one pointer slot; its type is
             // never consulted by code generation.
-            (1, 1, None)
+            (1, 1, None, vec![NativeArgClass::Gp])
         } else if let Some(&ty) = ty_at.get(&slot) {
             let width = type_pool.abi_slot_count(ty).max(1);
             let crossing = if direct_slot_abi {
@@ -808,21 +808,66 @@ fn derive_source_param_abi(builder: &CfgBuilder<'_>) -> Vec<SourceParamAbi> {
             // pointer over a multi-slot span), so a direct parameter's CFG stays
             // layout-independent.
             let carried_ty = (crossing < width).then_some(ty);
-            (width, crossing, carried_ty)
+            let crossing_classes = if crossing < width {
+                vec![NativeArgClass::Gp]
+            } else {
+                let mut classes = native_arg_leaf_classes(type_pool, ty);
+                classes.reverse();
+                // Unit occupies one historical parameter slot even though it
+                // has no ABI leaf. Keep that synthetic slot in the GP bank so
+                // the parameter metadata remains a total description of the
+                // existing slot-oriented CFG contract.
+                if classes.is_empty() && crossing == 1 {
+                    classes.push(NativeArgClass::Gp);
+                }
+                classes
+            };
+            (width, crossing, carried_ty, crossing_classes)
         } else {
             // No recorded type for a by-value slot: a single direct slot, which
             // homes exactly as the historical prologue.
-            (1, 1, None)
+            (1, 1, None, vec![NativeArgClass::Gp])
         };
         descriptors.push(SourceParamAbi {
             start_slot: slot,
             slot_count,
             crossing_regs,
+            crossing_classes,
             ty,
         });
         slot += slot_count;
     }
     descriptors
+}
+
+fn native_arg_leaf_classes(type_pool: &FrozenTypeInternPool, ty: Type) -> Vec<NativeArgClass> {
+    fn push(type_pool: &FrozenTypeInternPool, ty: Type, out: &mut Vec<NativeArgClass>) {
+        match ty.kind() {
+            TypeKind::Unit | TypeKind::Never => {}
+            TypeKind::F32 => out.push(NativeArgClass::Fp32),
+            TypeKind::F64 => out.push(NativeArgClass::Fp64),
+            TypeKind::Struct(id) => {
+                for field in &type_pool.struct_def(id).fields {
+                    push(type_pool, field.ty, out);
+                }
+            }
+            TypeKind::Array(id) => {
+                let (element, len) = type_pool.array_def(id);
+                for _ in 0..len {
+                    push(type_pool, element, out);
+                }
+            }
+            // Enums always carry an integer tag and may overlay unlike payload
+            // classes, so their stable internal call image remains GP-shaped.
+            TypeKind::Enum(_) => {
+                out.extend((0..type_pool.abi_slot_count(ty)).map(|_| NativeArgClass::Gp));
+            }
+            _ => out.push(NativeArgClass::Gp),
+        }
+    }
+    let mut out = Vec::new();
+    push(type_pool, ty, &mut out);
+    out
 }
 
 impl<'a> CfgBuilder<'a> {
@@ -1090,18 +1135,6 @@ impl<'a> CfgBuilder<'a> {
         let inst = self.air.get(air_ref);
         let span = inst.span;
         let ty = inst.ty;
-
-        // ADR-0065 Phase 4 deliberately stops at typed AIR. Until both
-        // backends implement float register classes and operations, reject a
-        // concrete float before it can be represented by the integer-oriented
-        // CFG and silently miscompiled.
-        if ty.is_float() {
-            self.errors
-                .push(CompileError::new(ErrorKind::FloatNotYetImplemented, span));
-            self.cfg
-                .set_terminator(self.current_block, Terminator::Unreachable);
-            return Self::diverged();
-        }
 
         match &inst.data {
             AirInstData::Const(v) => {
@@ -1724,6 +1757,26 @@ impl<'a> CfgBuilder<'a> {
                 name,
                 args,
             } => {
+                // ADR-0065 Phase 8 owns total ordering, and Phases 5/6 cover
+                // signed integer conversions only. Keep the existing
+                // fail-closed diagnostic for later phases while supported
+                // scalar operations proceed into the target backends.
+                let unsupported_float_intrinsic = *operation
+                    == rue_air::IntrinsicOperation::TotalCmp
+                    || (*operation == rue_air::IntrinsicOperation::FloatToInt && !ty.is_signed())
+                    || (*operation == rue_air::IntrinsicOperation::IntToFloat
+                        && self
+                            .air
+                            .get_intrinsic_args(args)
+                            .next()
+                            .is_some_and(|arg| !self.air.get(arg).ty.is_signed()));
+                if unsupported_float_intrinsic {
+                    self.errors
+                        .push(CompileError::new(ErrorKind::FloatNotYetImplemented, span));
+                    self.cfg
+                        .set_terminator(self.current_block, Terminator::Unreachable);
+                    return Self::diverged();
+                }
                 let arguments = self
                     .air
                     .get_intrinsic_args(args)
@@ -2523,11 +2576,23 @@ impl<'a> CfgBuilder<'a> {
                 // Unit has no runtime value. Keeping a path-local synthetic
                 // unit value on Return makes that operand appear to cross a
                 // join without a block parameter and violates SSA dominance.
-                let val = if self.cfg.return_type() == Type::UNIT {
+                let mut val = if self.cfg.return_type() == Type::UNIT {
                     None
                 } else {
                     val
                 };
+
+                // A named comptime-float constant retains its exact semantic
+                // identity in AIR. Materialize it at the function's declared
+                // float width before CFG verification and machine lowering.
+                let return_type = self.cfg.return_type();
+                if return_type.is_float()
+                    && let Some(value) = val
+                    && self.cfg.get_inst(value).ty == Type::COMPTIME_FLOAT
+                    && let CfgInstData::Const(bits) = self.cfg.get_inst(value).data
+                {
+                    val = Some(self.emit(CfgInstData::Const(bits), return_type, span));
+                }
 
                 self.branch_through_return_cleanup(val, span);
 

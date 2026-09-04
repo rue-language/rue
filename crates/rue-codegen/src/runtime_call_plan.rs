@@ -239,6 +239,7 @@ impl RuntimeCallPlan {
                     value,
                     slot_count,
                     is_multislot_aggregate,
+                    ..
                 } => {
                     if *slot_count == 0 {
                         continue;

@@ -544,8 +544,12 @@ impl<'a> Emitter<'a> {
             (0..self.num_params)
                 .map(|slot| crate::codegen_pipeline::ParamHoming {
                     start_slot: slot,
-                    reg_count: 1,
-                    abi_start: slot + abi_shift,
+                    class: crate::call_plan::AbiSlotClass::Gp,
+                    location: if (slot + abi_shift) < 8 {
+                        crate::call_plan::AbiSlotLocation::GpReg((slot + abi_shift) as usize)
+                    } else {
+                        crate::call_plan::AbiSlotLocation::Stack((slot + abi_shift - 8) as usize)
+                    },
                 })
                 .collect()
         } else {
@@ -812,6 +816,16 @@ impl<'a> Emitter<'a> {
             Reg::X6,
             Reg::X7,
         ];
+        let fp_param_regs = [
+            Reg::V0,
+            Reg::V1,
+            Reg::V2,
+            Reg::V3,
+            Reg::V4,
+            Reg::V5,
+            Reg::V6,
+            Reg::V7,
+        ];
         // Home incoming argument registers into the frame parameter area. Each
         // source parameter consumes `reg_count` consecutive incoming registers
         // (RUE-1005): a by-value indirect compact aggregate arrives as one
@@ -822,27 +836,43 @@ impl<'a> Emitter<'a> {
         // all; their frame slots are likewise compacted away, which
         // `start_slot` already reflects.
         for homing in self.param_homing_or_per_slot() {
-            for k in 0..homing.reg_count {
-                // Use frame_local_slots (not num_locals, which includes spill
-                // slots): CfgLower generated the body's param reads against the
-                // pre-spill count. (RUE-129)
-                let slot = self.frame_local_slots + homing.start_slot + k;
-                // Slot location past the callee-saved area — the single
-                // AArch64 authority shared with the `--emit stackframe`
-                // reporter (RUE-774).
-                let offset =
-                    crate::frame_layout::aarch64_slot_offset(self.callee_saved.len(), slot);
+            // Use frame_local_slots (not num_locals, which includes spill
+            // slots): CfgLower generated the body's param reads against the
+            // pre-spill count. (RUE-129)
+            let slot = self.frame_local_slots + homing.start_slot;
+            // Slot location past the callee-saved area — the single
+            // AArch64 authority shared with the `--emit stackframe`
+            // reporter (RUE-774).
+            let offset = crate::frame_layout::aarch64_slot_offset(self.callee_saved.len(), slot);
 
-                let abi_index = (homing.abi_start + k) as usize;
-                if abi_index < param_regs.len() {
+            match (homing.class, homing.location) {
+                (
+                    crate::call_plan::AbiSlotClass::Gp,
+                    crate::call_plan::AbiSlotLocation::GpReg(abi_index),
+                ) => {
                     self.begin_inst();
                     self.emit_str(param_regs[abi_index], Reg::Fp, offset);
                     end_inst!(self, "str {}, [x29, #{}]", param_regs[abi_index], offset);
-                } else {
+                }
+                (
+                    crate::call_plan::AbiSlotClass::Fp(width),
+                    crate::call_plan::AbiSlotLocation::FpReg(abi_index),
+                ) => {
+                    self.begin_inst();
+                    self.emit_float_mem(false, fp_param_regs[abi_index], Reg::Fp, offset, width);
+                    end_inst!(
+                        self,
+                        "str float {}, [x29, #{}]",
+                        fp_param_regs[abi_index],
+                        offset
+                    );
+                }
+                (_, crate::call_plan::AbiSlotLocation::Stack(stack_index)) => {
                     // Stack-passed arg: copy from above the frame into the param area
                     let src_offset = crate::frame_layout::checked_incoming_stack_arg_offset(
                         16,
-                        u32::try_from(abi_index).expect("ABI index must fit u32"),
+                        u32::try_from(param_regs.len() + stack_index)
+                            .expect("ABI index must fit u32"),
                         u32::try_from(param_regs.len())
                             .expect("argument register count must fit u32"),
                     )
@@ -854,6 +884,7 @@ impl<'a> Emitter<'a> {
                     self.emit_str(Reg::X9, Reg::Fp, offset);
                     end_inst!(self, "str x9, [x29, #{}]", offset);
                 }
+                _ => unreachable!("parameter ABI class/location mismatch"),
             }
         }
 
@@ -871,7 +902,114 @@ impl<'a> Emitter<'a> {
 
     /// Emit a single instruction.
     fn emit_inst(&mut self, inst: &Aarch64Inst) -> CompileResult<()> {
+        Self::assert_float_operand_classes(inst);
         match inst {
+            Aarch64Inst::FloatConst { dst, bits, width } => {
+                self.begin_inst();
+                self.emit_mov_imm(Reg::X9, *bits as i64);
+                self.emit_float_from_gp(dst.as_physical(), Reg::X9, *width);
+                end_inst!(self, "{}", inst);
+            }
+            Aarch64Inst::FloatMov { dst, src, width } => {
+                self.begin_inst();
+                self.emit_float_unary(0x1e204000, dst.as_physical(), src.as_physical(), *width);
+                end_inst!(self, "{}", inst);
+            }
+            Aarch64Inst::FloatToBits { dst, src, width } => {
+                self.begin_inst();
+                self.emit_float_to_gp(dst.as_physical(), src.as_physical(), *width);
+                end_inst!(self, "{}", inst);
+            }
+            Aarch64Inst::BitsToFloat { dst, src, width } => {
+                self.begin_inst();
+                self.emit_float_from_gp(dst.as_physical(), src.as_physical(), *width);
+                end_inst!(self, "{}", inst);
+            }
+            Aarch64Inst::FloatNeg { dst, src, width } => {
+                self.begin_inst();
+                self.emit_float_unary(0x1e214000, dst.as_physical(), src.as_physical(), *width);
+                end_inst!(self, "{}", inst);
+            }
+            Aarch64Inst::FloatSqrt { dst, src, width } => {
+                self.begin_inst();
+                self.emit_float_unary(0x1e21c000, dst.as_physical(), src.as_physical(), *width);
+                end_inst!(self, "{}", inst);
+            }
+            Aarch64Inst::FloatLoad {
+                dst,
+                base,
+                offset,
+                width,
+            } => {
+                let offset = self.adjust_fp_offset(*base, i64::from(*offset)) as i32;
+                self.begin_inst();
+                self.emit_float_mem(true, dst.as_physical(), *base, offset, *width);
+                end_inst!(self, "{}", inst);
+            }
+            Aarch64Inst::FloatStore {
+                base,
+                offset,
+                src,
+                width,
+            } => {
+                let offset = self.adjust_fp_offset(*base, i64::from(*offset)) as i32;
+                self.begin_inst();
+                self.emit_float_mem(false, src.as_physical(), *base, offset, *width);
+                end_inst!(self, "{}", inst);
+            }
+            Aarch64Inst::FloatBin {
+                op,
+                dst,
+                lhs,
+                rhs,
+                width,
+            } => {
+                let base = match op {
+                    super::mir::FloatBinOp::Add => 0x1e202800,
+                    super::mir::FloatBinOp::Sub => 0x1e203800,
+                    super::mir::FloatBinOp::Mul => 0x1e200800,
+                    super::mir::FloatBinOp::Div => 0x1e201800,
+                };
+                self.begin_inst();
+                self.emit_float_binary(
+                    base,
+                    dst.as_physical(),
+                    lhs.as_physical(),
+                    rhs.as_physical(),
+                    *width,
+                );
+                end_inst!(self, "{}", inst);
+            }
+            Aarch64Inst::FloatCmp { lhs, rhs, width } => {
+                self.begin_inst();
+                self.emit_float_cmp(lhs.as_physical(), rhs.as_physical(), *width);
+                end_inst!(self, "{}", inst);
+            }
+            Aarch64Inst::IntToFloat {
+                dst,
+                src,
+                int_bits,
+                width,
+            } => {
+                self.begin_inst();
+                self.emit_scvtf(dst.as_physical(), src.as_physical(), *int_bits, *width);
+                end_inst!(self, "{}", inst);
+            }
+            Aarch64Inst::FloatToInt {
+                dst,
+                src,
+                int_bits,
+                width,
+            } => {
+                self.begin_inst();
+                self.emit_fcvtzs(dst.as_physical(), src.as_physical(), *int_bits, *width);
+                end_inst!(self, "{}", inst);
+            }
+            Aarch64Inst::FloatCast { dst, src, from, to } => {
+                self.begin_inst();
+                self.emit_fcvt(dst.as_physical(), src.as_physical(), *from, *to);
+                end_inst!(self, "{}", inst);
+            }
             Aarch64Inst::MovImm { dst, imm } => {
                 let rd = dst.as_physical();
                 self.begin_inst();
@@ -1614,6 +1752,67 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
+    fn assert_float_operand_classes(inst: &Aarch64Inst) {
+        let fp = |operand: &super::mir::Operand| {
+            assert_eq!(
+                operand.as_physical().class(),
+                crate::reg_class::RegClass::Fp,
+                "{inst:?}"
+            )
+        };
+        let gp = |operand: &super::mir::Operand| {
+            assert_eq!(
+                operand.as_physical().class(),
+                crate::reg_class::RegClass::Gp,
+                "{inst:?}"
+            )
+        };
+        match inst {
+            Aarch64Inst::FloatConst { dst, .. } => fp(dst),
+            Aarch64Inst::FloatMov { dst, src, .. }
+            | Aarch64Inst::FloatNeg { dst, src, .. }
+            | Aarch64Inst::FloatSqrt { dst, src, .. }
+            | Aarch64Inst::FloatCast { dst, src, .. } => {
+                fp(dst);
+                fp(src);
+            }
+            Aarch64Inst::FloatToBits { dst, src, .. } => {
+                gp(dst);
+                fp(src);
+            }
+            Aarch64Inst::BitsToFloat { dst, src, .. } => {
+                fp(dst);
+                gp(src);
+            }
+            Aarch64Inst::FloatLoad { dst, base, .. } => {
+                fp(dst);
+                assert_eq!(base.class(), crate::reg_class::RegClass::Gp);
+            }
+            Aarch64Inst::FloatStore { base, src, .. } => {
+                assert_eq!(base.class(), crate::reg_class::RegClass::Gp);
+                fp(src);
+            }
+            Aarch64Inst::FloatBin { dst, lhs, rhs, .. } => {
+                fp(dst);
+                fp(lhs);
+                fp(rhs);
+            }
+            Aarch64Inst::FloatCmp { lhs, rhs, .. } => {
+                fp(lhs);
+                fp(rhs);
+            }
+            Aarch64Inst::IntToFloat { dst, src, .. } => {
+                fp(dst);
+                gp(src);
+            }
+            Aarch64Inst::FloatToInt { dst, src, .. } => {
+                gp(dst);
+                fp(src);
+            }
+            _ => {}
+        }
+    }
+
     /// Emit function epilogue (restore SP from FP, restore callee-saved, LDP FP/LR).
     fn emit_epilogue(&mut self) {
         self.record_comment("epilogue");
@@ -1754,6 +1953,176 @@ impl<'a> Emitter<'a> {
     }
 
     // ========== Instruction encoding helpers ==========
+
+    fn emit_float_unary(
+        &mut self,
+        base: u32,
+        dst: Reg,
+        src: Reg,
+        width: crate::value_plan::FloatWidth,
+    ) {
+        let width_bit = if width == crate::value_plan::FloatWidth::F64 {
+            1 << 22
+        } else {
+            0
+        };
+        self.emit_u32(base | width_bit | ((src.encoding() as u32) << 5) | dst.encoding() as u32);
+    }
+
+    fn emit_float_binary(
+        &mut self,
+        base: u32,
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+        width: crate::value_plan::FloatWidth,
+    ) {
+        let width_bit = if width == crate::value_plan::FloatWidth::F64 {
+            1 << 22
+        } else {
+            0
+        };
+        self.emit_u32(
+            base | width_bit
+                | ((rhs.encoding() as u32) << 16)
+                | ((lhs.encoding() as u32) << 5)
+                | dst.encoding() as u32,
+        );
+    }
+
+    fn emit_float_cmp(&mut self, lhs: Reg, rhs: Reg, width: crate::value_plan::FloatWidth) {
+        let width_bit = if width == crate::value_plan::FloatWidth::F64 {
+            1 << 22
+        } else {
+            0
+        };
+        self.emit_u32(
+            0x1e202000
+                | width_bit
+                | ((rhs.encoding() as u32) << 16)
+                | ((lhs.encoding() as u32) << 5),
+        );
+    }
+
+    fn emit_float_from_gp(&mut self, dst: Reg, src: Reg, width: crate::value_plan::FloatWidth) {
+        let base = if width == crate::value_plan::FloatWidth::F64 {
+            0x9e670000
+        } else {
+            0x1e270000
+        };
+        self.emit_u32(base | ((src.encoding() as u32) << 5) | dst.encoding() as u32);
+    }
+
+    fn emit_float_to_gp(&mut self, dst: Reg, src: Reg, width: crate::value_plan::FloatWidth) {
+        let base = if width == crate::value_plan::FloatWidth::F64 {
+            0x9e660000
+        } else {
+            0x1e260000
+        };
+        self.emit_u32(base | ((src.encoding() as u32) << 5) | dst.encoding() as u32);
+    }
+
+    fn emit_float_mem(
+        &mut self,
+        load: bool,
+        reg: Reg,
+        base: Reg,
+        offset: i32,
+        width: crate::value_plan::FloatWidth,
+    ) {
+        let scale = if width == crate::value_plan::FloatWidth::F32 {
+            4
+        } else {
+            8
+        };
+        let scaled_opcode = match (load, width) {
+            (true, crate::value_plan::FloatWidth::F32) => 0xbd400000,
+            (false, crate::value_plan::FloatWidth::F32) => 0xbd000000,
+            (true, crate::value_plan::FloatWidth::F64) => 0xfd400000,
+            (false, crate::value_plan::FloatWidth::F64) => 0xfd000000,
+        };
+        if offset >= 0 && offset % scale == 0 && offset / scale < 4096 {
+            self.emit_u32(
+                scaled_opcode
+                    | (((offset / scale) as u32) << 10)
+                    | ((base.encoding() as u32) << 5)
+                    | reg.encoding() as u32,
+            );
+            return;
+        }
+        if (-256..=255).contains(&offset) {
+            let unscaled_opcode = match (load, width) {
+                (true, crate::value_plan::FloatWidth::F32) => 0xbc400000,
+                (false, crate::value_plan::FloatWidth::F32) => 0xbc000000,
+                (true, crate::value_plan::FloatWidth::F64) => 0xfc400000,
+                (false, crate::value_plan::FloatWidth::F64) => 0xfc000000,
+            };
+            self.emit_u32(
+                unscaled_opcode
+                    | (((offset as u32) & 0x1ff) << 12)
+                    | ((base.encoding() as u32) << 5)
+                    | reg.encoding() as u32,
+            );
+            return;
+        }
+
+        assert!(
+            base != Reg::Sp && base != SCRATCH_ADDRESS,
+            "large float offset needs a general base register"
+        );
+        self.emit_mov_imm(SCRATCH_ADDRESS, offset as i64);
+        self.emit_add_rr(SCRATCH_ADDRESS, base, SCRATCH_ADDRESS, false);
+        self.emit_u32(
+            scaled_opcode | ((SCRATCH_ADDRESS.encoding() as u32) << 5) | reg.encoding() as u32,
+        );
+    }
+
+    fn emit_scvtf(
+        &mut self,
+        dst: Reg,
+        src: Reg,
+        int_bits: u32,
+        width: crate::value_plan::FloatWidth,
+    ) {
+        let base = match (int_bits, width) {
+            (64, crate::value_plan::FloatWidth::F32) => 0x9e220000,
+            (64, crate::value_plan::FloatWidth::F64) => 0x9e620000,
+            (_, crate::value_plan::FloatWidth::F32) => 0x1e220000,
+            (_, crate::value_plan::FloatWidth::F64) => 0x1e620000,
+        };
+        self.emit_u32(base | ((src.encoding() as u32) << 5) | dst.encoding() as u32);
+    }
+
+    fn emit_fcvtzs(
+        &mut self,
+        dst: Reg,
+        src: Reg,
+        int_bits: u32,
+        width: crate::value_plan::FloatWidth,
+    ) {
+        let base = match (int_bits, width) {
+            (64, crate::value_plan::FloatWidth::F32) => 0x9e380000,
+            (64, crate::value_plan::FloatWidth::F64) => 0x9e780000,
+            (_, crate::value_plan::FloatWidth::F32) => 0x1e380000,
+            (_, crate::value_plan::FloatWidth::F64) => 0x1e780000,
+        };
+        self.emit_u32(base | ((src.encoding() as u32) << 5) | dst.encoding() as u32);
+    }
+
+    fn emit_fcvt(
+        &mut self,
+        dst: Reg,
+        src: Reg,
+        from: crate::value_plan::FloatWidth,
+        to: crate::value_plan::FloatWidth,
+    ) {
+        let base = match (from, to) {
+            (crate::value_plan::FloatWidth::F32, crate::value_plan::FloatWidth::F64) => 0x1e22c000,
+            (crate::value_plan::FloatWidth::F64, crate::value_plan::FloatWidth::F32) => 0x1e624000,
+            _ => 0x1e204000,
+        };
+        self.emit_u32(base | ((src.encoding() as u32) << 5) | dst.encoding() as u32);
+    }
 
     fn emit_u32(&mut self, inst: u32) {
         self.code.extend_from_slice(&inst.to_le_bytes());
@@ -2623,6 +2992,137 @@ impl<'a> Emitter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::aarch64::mir::{FloatBinOp, FloatWidth};
+
+    #[test]
+    fn scalar_float_arithmetic_and_compare_encodings() {
+        assert_eq!(
+            emit_single(Aarch64Inst::FloatBin {
+                op: FloatBinOp::Add,
+                dst: Operand::Physical(Reg::V0),
+                lhs: Operand::Physical(Reg::V1),
+                rhs: Operand::Physical(Reg::V2),
+                width: FloatWidth::F64,
+            }),
+            0x1e622820_u32.to_le_bytes()
+        );
+        assert_eq!(
+            emit_single(Aarch64Inst::FloatCmp {
+                lhs: Operand::Physical(Reg::V0),
+                rhs: Operand::Physical(Reg::V1),
+                width: FloatWidth::F64,
+            }),
+            0x1e612000_u32.to_le_bytes()
+        );
+        assert_eq!(
+            emit_single(Aarch64Inst::FloatSqrt {
+                dst: Operand::Physical(Reg::V0),
+                src: Operand::Physical(Reg::V1),
+                width: FloatWidth::F32,
+            }),
+            0x1e21c020_u32.to_le_bytes()
+        );
+        assert_eq!(
+            emit_single(Aarch64Inst::FloatSqrt {
+                dst: Operand::Physical(Reg::V0),
+                src: Operand::Physical(Reg::V1),
+                width: FloatWidth::F64,
+            }),
+            0x1e61c020_u32.to_le_bytes()
+        );
+    }
+
+    #[test]
+    fn scalar_float_signed_conversion_encodings() {
+        assert_eq!(
+            emit_single(Aarch64Inst::IntToFloat {
+                dst: Operand::Physical(Reg::V0),
+                src: Operand::Physical(Reg::X1),
+                int_bits: 64,
+                width: FloatWidth::F64,
+            }),
+            0x9e620020_u32.to_le_bytes()
+        );
+        assert_eq!(
+            emit_single(Aarch64Inst::FloatToInt {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Physical(Reg::V1),
+                int_bits: 32,
+                width: FloatWidth::F32,
+            }),
+            0x1e380020_u32.to_le_bytes()
+        );
+    }
+
+    #[test]
+    fn scalar_float_bit_carrier_moves_cover_both_widths_and_classes() {
+        assert_eq!(
+            emit_single(Aarch64Inst::FloatToBits {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Physical(Reg::V1),
+                width: FloatWidth::F32,
+            }),
+            0x1e260020_u32.to_le_bytes()
+        );
+        assert_eq!(
+            emit_single(Aarch64Inst::BitsToFloat {
+                dst: Operand::Physical(Reg::V0),
+                src: Operand::Physical(Reg::X1),
+                width: FloatWidth::F32,
+            }),
+            0x1e270020_u32.to_le_bytes()
+        );
+        assert_eq!(
+            emit_single(Aarch64Inst::FloatToBits {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Physical(Reg::V1),
+                width: FloatWidth::F64,
+            }),
+            0x9e660020_u32.to_le_bytes()
+        );
+        assert_eq!(
+            emit_single(Aarch64Inst::BitsToFloat {
+                dst: Operand::Physical(Reg::V0),
+                src: Operand::Physical(Reg::X1),
+                width: FloatWidth::F64,
+            }),
+            0x9e670020_u32.to_le_bytes()
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "FloatCmp")]
+    fn float_encoder_rejects_gp_operands() {
+        let _ = emit_single(Aarch64Inst::FloatCmp {
+            lhs: Operand::Physical(Reg::V0),
+            rhs: Operand::Physical(Reg::X1),
+            width: FloatWidth::F64,
+        });
+    }
+
+    #[test]
+    fn scalar_float_memory_supports_scaled_and_large_frame_offsets() {
+        assert_eq!(
+            emit_single(Aarch64Inst::FloatLoad {
+                dst: Operand::Physical(Reg::V0),
+                base: Reg::X1,
+                offset: 16,
+                width: FloatWidth::F32,
+            }),
+            (0xbd401020_u32).to_le_bytes()
+        );
+        let code = emit_single(Aarch64Inst::FloatStore {
+            base: Reg::X1,
+            offset: -2048,
+            src: Operand::Physical(Reg::V1),
+            width: FloatWidth::F64,
+        });
+        assert_eq!(code.len(), 12);
+        let last = u32::from_le_bytes(code[8..12].try_into().unwrap());
+        assert_eq!(last & 0xffc00000, 0xfd000000);
+        assert_eq!((last >> 5) & 0x1f, SCRATCH_ADDRESS.encoding() as u32);
+        assert_eq!((last >> 10) & 0xfff, 0);
+    }
 
     /// Encode `mov rd, #imm` through the real encoder (via [`Aarch64Inst::MovImm`])
     /// and return the emitted bytes.
@@ -2757,8 +3257,8 @@ mod tests {
         let emitted = Emitter::new(&mir, 0, 0, 1, &[], &[])
             .with_param_homing(vec![crate::codegen_pipeline::ParamHoming {
                 start_slot: 0,
-                reg_count: 1,
-                abi_start: 8,
+                class: crate::call_plan::AbiSlotClass::Gp,
+                location: crate::call_plan::AbiSlotLocation::Stack(0),
             }])
             .emit_all()
             .expect("stack argument homing must emit");

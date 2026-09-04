@@ -114,7 +114,7 @@ pub use sema::{
     DurableReducedComptimeCall, DurableSignatureParameter, DurableTryProducer, FunctionInfo,
     ImplicitDropDependencySourceEvent, ImplicitNamedDestructorDependencyEvent, ImportResolution,
     MAX_COMPTIME_CALL_DEPTH, MemberCandidate, MemberKind, MethodInfo, NameCandidate,
-    NameResolution, NamedConstDependencyEvent, NamedConstDependencyTargetEvent,
+    NameResolution, NamedConstDependencyEvent, NamedConstDependencyTargetEvent, NativeArgClass,
     NominalWellFormedness, OperatorMemberCandidate, OperatorName, ParamSlotModes,
     ProviderAggregateFacts, ProviderAnonymousBody, ProviderBodyAnalysisState, ProviderBodyWork,
     ProviderCallFacts, ProviderDefinitionKind, ProviderEndpointFacts, ProviderIdentityContext,

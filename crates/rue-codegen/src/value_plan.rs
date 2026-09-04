@@ -79,7 +79,7 @@ pub enum ResidualValuePlan {
         op: ComparisonOp,
         lhs: MaterializedValue,
         rhs: MaterializedValue,
-        leaf_types: Vec<Type>,
+        equality_leaves: Vec<crate::aggregate_eq::EqualityLeaf>,
         runtime_call: Option<crate::runtime_call_plan::RuntimeCallPlan>,
     },
     Bitwise {
@@ -103,19 +103,27 @@ pub enum ResidualValuePlan {
         slot: u32,
         init: MaterializedValue,
         init_shape: ValueShape,
+        float_width: Option<FloatWidth>,
+        leaf_types: Vec<Type>,
     },
     Load {
         slot: u32,
+        float_width: Option<FloatWidth>,
+        leaf_types: Vec<Type>,
     },
     Store {
         destination: StoreDestination,
         value: MaterializedValue,
         value_shape: ValueShape,
+        float_width: Option<FloatWidth>,
+        leaf_types: Vec<Type>,
     },
     ParamStore {
         param_slot: u32,
         value: MaterializedValue,
         value_shape: ValueShape,
+        float_width: Option<FloatWidth>,
+        leaf_types: Vec<Type>,
     },
     StructInit {
         struct_id: StructId,
@@ -127,8 +135,12 @@ pub enum ResidualValuePlan {
     EnumVariant {
         enum_id: EnumId,
         variant_index: u32,
-        payload: Vec<(MaterializedValue, ValueShape)>,
+        payload: Vec<(MaterializedValue, ValueShape, Vec<Type>)>,
         total_slots: u32,
+        /// Canonical type of every decomposed enum slot. The discriminant and
+        /// union payload are GP values; payload floats cross the class boundary
+        /// through explicit bit-carrier moves selected by the active variant.
+        leaf_types: Vec<Type>,
         /// Under the compact layout (ADR-0052 ruling 5, RUE-1007/RUE-1014), the
         /// payload slots not written by this (shorter) variant are zeroed so a
         /// variant-independent memory image marshalled from this value carries no
@@ -140,6 +152,7 @@ pub enum ResidualValuePlan {
         base_slots: Vec<VReg>,
         field_offset: u32,
         field_slots: u32,
+        field_types: Vec<Type>,
     },
     IntCast {
         value: VReg,
@@ -164,6 +177,7 @@ pub enum ResidualValuePlan {
         place: PlacePlan,
         value: MaterializedValue,
         value_shape: ValueShape,
+        float_width: Option<FloatWidth>,
     },
 }
 
@@ -199,6 +213,30 @@ pub struct ArithmeticPlan {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArithmeticOperation {
+    FloatAdd {
+        lhs: VReg,
+        rhs: VReg,
+        width: FloatWidth,
+    },
+    FloatSub {
+        lhs: VReg,
+        rhs: VReg,
+        width: FloatWidth,
+    },
+    FloatMul {
+        lhs: VReg,
+        rhs: VReg,
+        width: FloatWidth,
+    },
+    FloatDiv {
+        lhs: VReg,
+        rhs: VReg,
+        width: FloatWidth,
+    },
+    FloatNeg {
+        value: VReg,
+        width: FloatWidth,
+    },
     Add {
         lhs: VReg,
         rhs: VReg,
@@ -250,6 +288,7 @@ pub struct IntrinsicArgPlan {
     pub integer_extension: IntegerExtension,
     pub place: Option<PlacePlan>,
     pub debug: DebugValuePlan,
+    pub ty: Type,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -395,6 +434,7 @@ pub trait ValueLowerAdapter:
 {
     fn value_is_lowered(&self, value: CfgValue) -> bool;
     fn reserve_value_result(&mut self) -> VReg;
+    fn reserve_typed_value_result(&mut self, ty: Type) -> VReg;
     fn resolve_symbol(&self, symbol: Spur) -> String;
     /// Whether `machine_symbol` (already resolved via
     /// [`resolve_symbol`](Self::resolve_symbol)) names an `extern "C"` foreign
@@ -404,7 +444,7 @@ pub trait ValueLowerAdapter:
     /// on AArch64. Names the classifier that governs a foreign-call boundary.
     fn target_c_flavor(&self) -> rue_air::TargetCAbiFlavor;
     fn resolve_named_symbol(&self, symbol: &str) -> String;
-    fn call_arg_register_budget(&self) -> usize;
+    fn call_arg_register_banks(&self) -> crate::call_plan::AbiRegisterBanks;
     fn return_register_budget(&self) -> u32;
     fn emit_value(&mut self, plan: ValueEmissionPlan) -> ValueResult;
     fn emit_call(&mut self, plan: CallPlan) -> ValueResult;
@@ -461,6 +501,76 @@ impl ValueShape {
 pub struct IntegerWidth {
     pub bits: u32,
     pub signed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatWidth {
+    F32,
+    F64,
+}
+
+pub fn float_width(ty: Type) -> Option<FloatWidth> {
+    match ty.kind() {
+        TypeKind::F32 => Some(FloatWidth::F32),
+        TypeKind::F64 => Some(FloatWidth::F64),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatToIntGuardRelation {
+    OrderedGreaterEqual,
+    OrderedLess,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FloatToIntGuard {
+    pub bound_bits: u64,
+    pub success: FloatToIntGuardRelation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedFloatToIntPlan {
+    pub guards: [FloatToIntGuard; 2],
+    pub trap_call: crate::runtime_call_plan::RuntimeCallPlan,
+}
+
+/// Plan the ordered guard sequence required before a truncating float-to-int
+/// instruction. The lower guard rejects NaN and values below the inclusive
+/// minimum; the upper guard rejects NaN and values at or above the exclusive
+/// maximum. Targets only select their branch spelling for these relations.
+pub fn checked_float_to_int_plan(
+    width: FloatWidth,
+    integer: IntegerWidth,
+) -> CheckedFloatToIntPlan {
+    assert!(
+        integer.signed,
+        "ADR-0065 phases 5-6 support signed integer conversion"
+    );
+    let lower = -(2.0f64).powi((integer.bits - 1) as i32);
+    let upper = (2.0f64).powi((integer.bits - 1) as i32);
+    let bounds = match width {
+        FloatWidth::F32 => (
+            (lower as f32).to_bits() as u64,
+            (upper as f32).to_bits() as u64,
+        ),
+        FloatWidth::F64 => (lower.to_bits(), upper.to_bits()),
+    };
+    CheckedFloatToIntPlan {
+        guards: [
+            FloatToIntGuard {
+                bound_bits: bounds.0,
+                success: FloatToIntGuardRelation::OrderedGreaterEqual,
+            },
+            FloatToIntGuard {
+                bound_bits: bounds.1,
+                success: FloatToIntGuardRelation::OrderedLess,
+            },
+        ],
+        trap_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+            rue_runtime_abi::RuntimeHelperId::Overflow,
+        ),
+    }
 }
 
 impl From<IntegerType> for IntegerWidth {
@@ -540,6 +650,7 @@ pub enum MaterializationRequirement {
 pub enum ComparisonPreparation {
     Unit,
     Scalar { width: IntegerWidth },
+    Float { width: FloatWidth },
     Aggregate { slot_count: u32 },
     StringContent { slot_count: u32 },
 }
@@ -642,6 +753,8 @@ impl ValuePlan {
                     })
                 } else if lhs_ty == Type::UNIT {
                     Some(ComparisonPreparation::Unit)
+                } else if let Some(width) = float_width(lhs_ty) {
+                    Some(ComparisonPreparation::Float { width })
                 } else {
                     Some(ComparisonPreparation::Scalar {
                         width: comparison_integer_width(lhs_ty),
@@ -752,8 +865,8 @@ fn comparison_plan<A: ValueLowerAdapter>(
     rhs: CfgValue,
 ) -> ResidualValuePlan {
     let lhs_ty = ctx.cfg.get_inst(lhs).ty;
-    let leaf_types = if ctx.is_multislot_aggregate(lhs_ty) {
-        crate::types::aggregate_leaf_types(ctx.type_pool, lhs_ty)
+    let equality_leaves = if ctx.is_multislot_aggregate(lhs_ty) {
+        crate::aggregate_eq::equality_leaves(ctx.type_pool, lhs_ty)
     } else {
         Vec::new()
     };
@@ -786,7 +899,7 @@ fn comparison_plan<A: ValueLowerAdapter>(
         op,
         lhs,
         rhs,
-        leaf_types,
+        equality_leaves,
         runtime_call,
     }
 }
@@ -1060,19 +1173,39 @@ fn residual_plan<A: ValueLowerAdapter>(
             slot: ctx.frame_slot(slot),
             init: operand(ctx, adapter, init),
             init_shape: ValuePlan::for_value(ctx, init).shape,
+            float_width: float_width(ctx.cfg.get_inst(init).ty),
+            leaf_types: crate::types::aggregate_leaf_types(
+                ctx.type_pool,
+                ctx.cfg.get_inst(init).ty,
+            ),
         },
         ResidualInput::Load { slot } => ResidualValuePlan::Load {
             slot: ctx.frame_slot(slot),
+            float_width: float_width(ctx.cfg.get_inst(value).ty),
+            leaf_types: crate::types::aggregate_leaf_types(
+                ctx.type_pool,
+                ctx.cfg.get_inst(value).ty,
+            ),
         },
         ResidualInput::Store { slot, value } => ResidualValuePlan::Store {
             destination: store_destination(ctx, slot),
             value: operand(ctx, adapter, value),
             value_shape: ValuePlan::for_value(ctx, value).shape,
+            float_width: float_width(ctx.cfg.get_inst(value).ty),
+            leaf_types: crate::types::aggregate_leaf_types(
+                ctx.type_pool,
+                ctx.cfg.get_inst(value).ty,
+            ),
         },
         ResidualInput::ParamStore { param_slot, value } => ResidualValuePlan::ParamStore {
             param_slot,
             value: operand(ctx, adapter, value),
             value_shape: ValuePlan::for_value(ctx, value).shape,
+            float_width: float_width(ctx.cfg.get_inst(value).ty),
+            leaf_types: crate::types::aggregate_leaf_types(
+                ctx.type_pool,
+                ctx.cfg.get_inst(value).ty,
+            ),
         },
         ResidualInput::StructInit { struct_id } => ResidualValuePlan::StructInit {
             struct_id,
@@ -1118,10 +1251,18 @@ fn residual_plan<A: ValueLowerAdapter>(
                     (
                         operand(ctx, adapter, field),
                         ValuePlan::for_value(ctx, field).shape,
+                        crate::types::aggregate_leaf_types(
+                            ctx.type_pool,
+                            ctx.cfg.get_inst(field).ty,
+                        ),
                     )
                 })
                 .collect(),
             total_slots: ctx.type_slot_count(ctx.cfg.get_inst(value).ty),
+            leaf_types: crate::types::aggregate_leaf_types(
+                ctx.type_pool,
+                ctx.cfg.get_inst(value).ty,
+            ),
             // ADR-0052 ruling 5: the compact image zeroes padding and unused
             // payload bytes deterministically on construction.
             zero_unused_payload: true,
@@ -1142,6 +1283,10 @@ fn residual_plan<A: ValueLowerAdapter>(
                     field_index,
                 ),
                 field_slots: ctx.type_slot_count(ctx.cfg.get_inst(value).ty),
+                field_types: crate::types::aggregate_leaf_types(
+                    ctx.type_pool,
+                    ctx.cfg.get_inst(value).ty,
+                ),
             }
         }
         ResidualInput::IntCast { value, from_ty } => ResidualValuePlan::IntCast {
@@ -1173,6 +1318,7 @@ fn residual_plan<A: ValueLowerAdapter>(
             },
             value: operand(ctx, adapter, stored),
             value_shape: ValuePlan::for_value(ctx, stored).shape,
+            float_width: float_width(ctx.cfg.get_inst(stored).ty),
         },
     }
 }
@@ -1247,11 +1393,19 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
     }
     match &inst.data {
         CfgInstData::Add(lhs, rhs) => {
-            let width = policy.integer_width.expect("add width");
             let lhs = operand(ctx, adapter, *lhs).primary;
             let rhs = operand(ctx, adapter, *rhs).primary;
+            let operation = if let Some(width) = float_width(inst.ty) {
+                ArithmeticOperation::FloatAdd { lhs, rhs, width }
+            } else {
+                ArithmeticOperation::Add {
+                    lhs,
+                    rhs,
+                    width: policy.integer_width.expect("add width"),
+                }
+            };
             let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
-                operation: ArithmeticOperation::Add { lhs, rhs, width },
+                operation,
                 overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
                     RuntimeHelperId::Overflow,
                 ),
@@ -1264,11 +1418,19 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
             Some(ValueKind::BinaryArithmetic)
         }
         CfgInstData::Sub(lhs, rhs) => {
-            let width = policy.integer_width.expect("sub width");
             let lhs = operand(ctx, adapter, *lhs).primary;
             let rhs = operand(ctx, adapter, *rhs).primary;
+            let operation = if let Some(width) = float_width(inst.ty) {
+                ArithmeticOperation::FloatSub { lhs, rhs, width }
+            } else {
+                ArithmeticOperation::Sub {
+                    lhs,
+                    rhs,
+                    width: policy.integer_width.expect("sub width"),
+                }
+            };
             let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
-                operation: ArithmeticOperation::Sub { lhs, rhs, width },
+                operation,
                 overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
                     RuntimeHelperId::Overflow,
                 ),
@@ -1281,9 +1443,27 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
             Some(ValueKind::BinaryArithmetic)
         }
         CfgInstData::Mul(lhs, rhs) => {
-            let width = policy.integer_width.expect("mul width");
             let lhs_result = operand(ctx, adapter, *lhs);
             let rhs_result = operand(ctx, adapter, *rhs);
+            if let Some(width) = float_width(inst.ty) {
+                let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
+                    operation: ArithmeticOperation::FloatMul {
+                        lhs: lhs_result.primary,
+                        rhs: rhs_result.primary,
+                        width,
+                    },
+                    overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                        RuntimeHelperId::Overflow,
+                    ),
+                    div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                        RuntimeHelperId::DivByZero,
+                    ),
+                    wrap: false,
+                });
+                cache_result(adapter, value, result);
+                return Some(ValueKind::BinaryArithmetic);
+            }
+            let width = policy.integer_width.expect("mul width");
             let shift = if width.bits >= 32 {
                 power_of_two_shift(ctx, *lhs)
                     .map(|shift| (rhs_result.primary, shift))
@@ -1372,11 +1552,19 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
             Some(ValueKind::BinaryArithmetic)
         }
         CfgInstData::Div(lhs, rhs) => {
-            let width = policy.integer_width.expect("div width");
             let lhs = operand(ctx, adapter, *lhs).primary;
             let rhs = operand(ctx, adapter, *rhs).primary;
+            let operation = if let Some(width) = float_width(inst.ty) {
+                ArithmeticOperation::FloatDiv { lhs, rhs, width }
+            } else {
+                ArithmeticOperation::Div {
+                    lhs,
+                    rhs,
+                    width: policy.integer_width.expect("div width"),
+                }
+            };
             let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
-                operation: ArithmeticOperation::Div { lhs, rhs, width },
+                operation,
                 overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
                     RuntimeHelperId::Overflow,
                 ),
@@ -1406,13 +1594,20 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
             Some(ValueKind::BinaryArithmetic)
         }
         CfgInstData::Neg(operand_value) => {
-            let width = policy.integer_width.expect("neg width");
             let operand_vreg = operand(ctx, adapter, *operand_value).primary;
-            let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
-                operation: ArithmeticOperation::Neg {
+            let operation = if let Some(width) = float_width(inst.ty) {
+                ArithmeticOperation::FloatNeg {
                     value: operand_vreg,
                     width,
-                },
+                }
+            } else {
+                ArithmeticOperation::Neg {
+                    value: operand_vreg,
+                    width: policy.integer_width.expect("neg width"),
+                }
+            };
+            let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
+                operation,
                 overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
                     RuntimeHelperId::Overflow,
                 ),
@@ -1481,7 +1676,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                         call_args,
                         adapter.target_c_flavor(),
                     );
-                    let result_vreg = adapter.reserve_value_result();
+                    let result_vreg = adapter.reserve_typed_value_result(inst.ty);
                     adapter.emit_foreign_call(foreign_inputs, result_vreg)
                 } else {
                     // An `extern "C"` scalar/pointer call (ADR-0064 P2): a scalar
@@ -1498,17 +1693,18 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     } else {
                         None
                     };
-                    let result_vreg = adapter.reserve_value_result();
+                    let result_vreg = adapter.reserve_typed_value_result(inst.ty);
                     let mut plan = crate::call_plan::CallPlan::from_inputs_with_result(
                         crate::call_plan::CallTarget::rue(symbol),
                         inputs.return_plan,
                         inputs.compact_return_image.clone(),
                         inputs.compact_return_dispatch.clone(),
                         &inputs.args,
-                        adapter.call_arg_register_budget(),
+                        adapter.call_arg_register_banks(),
                         adapter,
                         Some(result_vreg),
                     );
+                    plan.result_float_width = float_width(inst.ty);
                     plan.foreign_return_extension = foreign_return_extension;
                     adapter.emit_call(plan)
                 }
@@ -1535,6 +1731,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                         integer_extension: integer_extension(ctx.cfg.get_inst(arg).ty),
                         place: place_from_value(ctx, adapter, arg),
                         debug: debug_value_plan(ctx.cfg.get_inst(arg).ty),
+                        ty: ctx.cfg.get_inst(arg).ty,
                     }
                 })
                 .collect();
@@ -3284,6 +3481,7 @@ mod tests {
             integer_extension: IntegerExtension::None,
             place: None,
             debug: DebugValuePlan::Bool,
+            ty: Type::I32,
         };
         let string_arg = IntrinsicArgPlan {
             slots: vec![crate::vreg::VReg::new(0), crate::vreg::VReg::new(1)],

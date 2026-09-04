@@ -66,6 +66,7 @@ impl Backend for Aarch64CodegenBackend {
 
     const ARCH: rue_target::Arch = rue_target::Arch::Aarch64;
     const ARG_REG_COUNT: u32 = cfg_lower::ARG_REGS.len() as u32;
+    const FP_ARG_REG_COUNT: u32 = cfg_lower::FP_ARG_REGS.len() as u32;
     const RETURN_REG_COUNT: u32 = cfg_lower::RET_REGS.len() as u32;
     const SAVED_REG_SCHEME: crate::frame_layout::SavedRegScheme =
         crate::frame_layout::SavedRegScheme::Aarch64;

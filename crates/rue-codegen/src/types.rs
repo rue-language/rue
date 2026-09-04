@@ -140,11 +140,12 @@ pub fn slot_needs_wide_compare(ty: Type) -> bool {
 /// - **array**: the element leaf types repeated `length` times
 /// - **payload enum**: slot 0 is the discriminant (a narrow tag), followed by
 ///   the payload area sized to the widest variant. For each payload slot we
-///   pick a representative leaf type that is wide if *any* variant places a
-///   wide leaf there, so a mixed `i64`/`i32` payload slot is compared at 64
-///   bits (narrow values are zero-extended in their slot, so a wide compare of
-///   a narrow value is still correct). Padding slots beyond every variant's
-///   payload are zero and compare as narrow.
+///   use a canonical 64-bit GP bit carrier. A union slot may hold values from
+///   different register classes or FP widths depending on the active variant,
+///   so choosing any variant's semantic leaf type here would make the value's
+///   register class order-dependent. Construction and extraction perform the
+///   explicit class-safe bit moves, while equality uses the active variant's
+///   semantic payload types.
 /// - **unit / never**: zero slots (no entries)
 pub fn aggregate_leaf_types(type_pool: &FrozenTypeInternPool, ty: Type) -> Vec<Type> {
     let mut out = Vec::new();
@@ -172,25 +173,19 @@ fn push_leaf_types(type_pool: &FrozenTypeInternPool, ty: Type, out: &mut Vec<Typ
             // tag and any padding are materialized as clean (zero-extended)
             // values, so a narrow compare of the tag is correct.
             out.push(Type::I32);
-            // Payload area sized to the widest variant. For each slot position,
-            // prefer a wide leaf type if any variant carries one there.
+            // Payload area sized to the widest variant. Every union position is
+            // represented by a GP bit carrier; its semantic interpretation is
+            // selected by the runtime tag.
             let enum_def = type_pool.enum_def(enum_id);
-            let mut per_slot: Vec<Type> = Vec::new();
+            let mut payload_slots = 0usize;
             for v in 0..enum_def.variant_count() {
                 let mut variant_leaves: Vec<Type> = Vec::new();
                 for &pty in enum_def.variant_payload(v) {
                     push_leaf_types(type_pool, pty, &mut variant_leaves);
                 }
-                for (i, leaf) in variant_leaves.into_iter().enumerate() {
-                    if i >= per_slot.len() {
-                        per_slot.push(leaf);
-                    } else if slot_needs_wide_compare(leaf) && !slot_needs_wide_compare(per_slot[i])
-                    {
-                        per_slot[i] = leaf;
-                    }
-                }
+                payload_slots = payload_slots.max(variant_leaves.len());
             }
-            out.extend(per_slot);
+            out.extend(std::iter::repeat_n(Type::I64, payload_slots));
         }
         _ => out.push(ty),
     }
@@ -316,16 +311,18 @@ pub(crate) fn narrow_scalar_access(
 /// the compact gate. Full eight-byte leaves (`i64`/`u64`/pointers) report width
 /// 8; a load of them needs no narrowing. Returns `None` for aggregate,
 /// zero-sized, or compile-time-only types, which have no scalar leaf.
-fn scalar_physical_access(ty: Type) -> Option<(u8, bool)> {
+fn scalar_physical_access(ty: Type) -> Option<(u8, bool, Option<crate::value_plan::FloatWidth>)> {
     match ty.kind() {
-        TypeKind::I8 => Some((1, true)),
-        TypeKind::U8 | TypeKind::Bool => Some((1, false)),
-        TypeKind::I16 => Some((2, true)),
-        TypeKind::U16 => Some((2, false)),
-        TypeKind::I32 => Some((4, true)),
-        TypeKind::U32 => Some((4, false)),
+        TypeKind::I8 => Some((1, true, None)),
+        TypeKind::U8 | TypeKind::Bool => Some((1, false, None)),
+        TypeKind::I16 => Some((2, true, None)),
+        TypeKind::U16 => Some((2, false, None)),
+        TypeKind::I32 => Some((4, true, None)),
+        TypeKind::U32 => Some((4, false, None)),
+        TypeKind::F32 => Some((4, false, Some(crate::value_plan::FloatWidth::F32))),
+        TypeKind::F64 => Some((8, false, Some(crate::value_plan::FloatWidth::F64))),
         TypeKind::I64 | TypeKind::U64 | TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => {
-            Some((8, false))
+            Some((8, false, None))
         }
         _ => None,
     }
@@ -348,6 +345,10 @@ pub struct PhysicalEnumSlot {
     pub byte_offset: i32,
     /// Narrow (1/2/4-byte) access, or `None` for a full eight-byte slot.
     pub access: Option<NarrowScalar>,
+    pub float_width: Option<crate::value_plan::FloatWidth>,
+    /// This leaf occupies an enum union payload slot whose register value is a
+    /// canonical GP bit carrier, regardless of the active variant's semantics.
+    pub bit_carrier: bool,
 }
 
 /// The internal-slot → physical-byte map for whole-enum memory marshalling under
@@ -398,6 +399,8 @@ pub(crate) fn enum_physical_slot_map(
             width: tag_width,
             signed: false,
         }),
+        float_width: None,
+        bit_carrier: false,
     }];
 
     // Payload union positions, one per flattened scalar LEAF position across all
@@ -415,6 +418,7 @@ pub(crate) fn enum_physical_slot_map(
         offset: i32,
         width: u8,
         signed: bool,
+        float_width: Option<crate::value_plan::FloatWidth>,
     }
     let def = type_pool.enum_def(enum_id);
     let mut positions: Vec<Position> = Vec::new();
@@ -441,14 +445,25 @@ pub(crate) fn enum_physical_slot_map(
                     // Variant-dependent leaf offset: not a single memory image.
                     return None;
                 }
+                // FP width and register-class interpretation are semantic, not
+                // a widest-storage property. A mixed f32/f64 or float/integer
+                // union therefore requires tag-dispatched marshalling.
+                if pos.float_width != leaf.float_width {
+                    return None;
+                }
                 match width.cmp(&pos.width) {
                     std::cmp::Ordering::Greater => {
                         pos.width = width;
                         pos.signed = signed;
+                        pos.float_width = leaf.float_width;
                     }
                     // Equal widest widths must agree on signedness, or the load
                     // extension of the union slot would be ambiguous.
-                    std::cmp::Ordering::Equal if pos.signed != signed => return None,
+                    std::cmp::Ordering::Equal
+                        if pos.signed != signed || pos.float_width != leaf.float_width =>
+                    {
+                        return None;
+                    }
                     _ => {}
                 }
             } else {
@@ -456,6 +471,7 @@ pub(crate) fn enum_physical_slot_map(
                     offset,
                     width,
                     signed,
+                    float_width: leaf.float_width,
                 });
             }
         }
@@ -479,6 +495,8 @@ pub(crate) fn enum_physical_slot_map(
                     signed: pos.signed,
                 })
             },
+            float_width: pos.float_width,
+            bit_carrier: true,
         });
     }
 
@@ -556,6 +574,8 @@ fn push_physical_slots(
                 out.push(PhysicalEnumSlot {
                     byte_offset: base_offset + slot.byte_offset,
                     access: slot.access,
+                    float_width: slot.float_width,
+                    bit_carrier: slot.bit_carrier,
                 });
             }
             Some(())
@@ -575,10 +595,12 @@ fn push_physical_slots(
             Some(())
         }
         _ => {
-            let (width, signed) = scalar_physical_access(ty)?;
+            let (width, signed, float_width) = scalar_physical_access(ty)?;
             out.push(PhysicalEnumSlot {
                 byte_offset: base_offset,
                 access: (width != 8).then_some(NarrowScalar { width, signed }),
+                float_width,
+                bit_carrier: false,
             });
             Some(())
         }
@@ -773,6 +795,8 @@ fn push_image_segments(
                         phys: PhysicalEnumSlot {
                             byte_offset: base_offset + slot.byte_offset,
                             access: slot.access,
+                            float_width: slot.float_width,
+                            bit_carrier: slot.bit_carrier,
                         },
                     });
                     *slot_cursor += 1;
@@ -840,12 +864,14 @@ fn push_image_segments(
             Some(())
         }
         _ => {
-            let (width, signed) = scalar_physical_access(ty)?;
+            let (width, signed, float_width) = scalar_physical_access(ty)?;
             out.push(ImageSeg::Leaf {
                 slot: *slot_cursor,
                 phys: PhysicalEnumSlot {
                     byte_offset: base_offset,
                     access: (width != 8).then_some(NarrowScalar { width, signed }),
+                    float_width,
+                    bit_carrier: false,
                 },
             });
             *slot_cursor += 1;

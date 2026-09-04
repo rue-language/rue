@@ -75,7 +75,14 @@ pub(crate) trait PlaceLowerBackend: SlotBackend {
     /// AArch64 has separate base-only and base-plus-zero MIR variants. Keeping
     /// this leaf preserves the pre-extraction choice at simple and dynamically
     /// addressed place reads.
-    fn emit_load_ptr_base(&mut self, dst: VReg, ptr: VReg);
+    fn emit_load_ptr_base(
+        &mut self,
+        dst: VReg,
+        ptr: VReg,
+        float_width: Option<crate::value_plan::FloatWidth>,
+    );
+    fn emit_float_load_slot(&mut self, dst: VReg, slot: u32, width: crate::value_plan::FloatWidth);
+    fn emit_float_store_slot(&mut self, src: VReg, slot: u32, width: crate::value_plan::FloatWidth);
 }
 
 fn resolved_offsets<B: PlaceLowerBackend + ?Sized>(
@@ -261,6 +268,7 @@ pub(crate) fn lower_place_read_plan<B: PlaceLowerBackend>(
     place: &ResolvedPlace,
     ty: Type,
 ) {
+    let float_width = crate::value_plan::float_width(ty);
     if b.ctx().type_slot_count(ty) == 0 {
         resolved_offsets(b, place, true);
         b.emit_zero_sized_place(dst);
@@ -268,25 +276,45 @@ pub(crate) fn lower_place_read_plan<B: PlaceLowerBackend>(
     }
     if place.projections.is_empty() {
         match place.base {
-            crate::value_plan::PlaceBasePlan::Local(slot) => b.emit_load_slot(dst, slot),
+            crate::value_plan::PlaceBasePlan::Local(slot) => match float_width {
+                Some(width) => b.emit_float_load_slot(dst, slot, width),
+                None => b.emit_load_slot(dst, slot),
+            },
             crate::value_plan::PlaceBasePlan::Param { slot, by_ref: true } => {
                 let ptr = b.ensure_by_ref_param_ptr(slot);
-                b.emit_load_ptr_base(dst, ptr);
+                b.emit_load_ptr_base(dst, ptr, float_width);
             }
             crate::value_plan::PlaceBasePlan::Param {
                 slot,
                 by_ref: false,
-            } => b.emit_load_slot(dst, b.ctx().param_frame_slot(slot)),
-            crate::value_plan::PlaceBasePlan::Pointer(ptr) => b.emit_load_ptr_base(dst, ptr),
+            } => match float_width {
+                Some(width) => b.emit_float_load_slot(dst, b.ctx().param_frame_slot(slot), width),
+                None => b.emit_load_slot(dst, b.ctx().param_frame_slot(slot)),
+            },
+            crate::value_plan::PlaceBasePlan::Pointer(ptr) => {
+                b.emit_load_ptr_base(dst, ptr, float_width)
+            }
         }
         return;
     }
     let offsets = resolved_offsets(b, place, true);
     match resolved_access(b, place, offsets) {
-        ProjectedAccess::FrameSlot(slot) => b.emit_load_slot(dst, slot),
-        ProjectedAccess::PointerAddr(ptr) => b.emit_load_ptr_base(dst, ptr),
+        ProjectedAccess::FrameSlot(slot) => match float_width {
+            Some(width) => b.emit_float_load_slot(dst, slot, width),
+            None => b.emit_load_slot(dst, slot),
+        },
+        ProjectedAccess::PointerAddr(ptr) => b.emit_load_ptr_base(dst, ptr, float_width),
         ProjectedAccess::PointerOffset { ptr, byte_offset } => {
-            b.emit_load_through_ptr(dst, ptr, byte_offset)
+            if let Some(width) = float_width {
+                let addr = b.alloc_vreg();
+                b.emit_reg_move(addr, ptr);
+                if byte_offset != 0 {
+                    b.emit_addr_add_imm(addr, byte_offset);
+                }
+                b.emit_load_ptr_base(dst, addr, Some(width));
+            } else {
+                b.emit_load_through_ptr(dst, ptr, byte_offset)
+            }
         }
     }
 }
@@ -295,6 +323,7 @@ pub(crate) fn lower_place_write_plan<B: PlaceLowerBackend>(
     b: &mut B,
     place: &ResolvedPlace,
     vals: &[VReg],
+    float_width: Option<crate::value_plan::FloatWidth>,
 ) {
     if vals.is_empty() {
         resolved_offsets(b, place, true);
@@ -302,27 +331,64 @@ pub(crate) fn lower_place_write_plan<B: PlaceLowerBackend>(
     }
     if place.projections.is_empty() {
         match place.base {
+            crate::value_plan::PlaceBasePlan::Local(slot)
+                if vals.len() == 1 && float_width.is_some() =>
+            {
+                b.emit_float_store_slot(vals[0], slot, float_width.unwrap())
+            }
             crate::value_plan::PlaceBasePlan::Local(slot) => agg_slots::store_slots(b, vals, slot),
             crate::value_plan::PlaceBasePlan::Param { slot, by_ref: true } => {
                 let ptr = b.ensure_by_ref_param_ptr(slot);
-                agg_slots::store_slots_through_ptr(b, vals, ptr, 0);
+                if vals.len() == 1
+                    && let Some(width) = float_width
+                {
+                    b.emit_float_store_through_ptr(vals[0], ptr, 0, width);
+                } else {
+                    agg_slots::store_slots_through_ptr(b, vals, ptr, 0);
+                }
             }
+            crate::value_plan::PlaceBasePlan::Param {
+                slot,
+                by_ref: false,
+            } if vals.len() == 1 && float_width.is_some() => b.emit_float_store_slot(
+                vals[0],
+                b.ctx().param_frame_slot(slot),
+                float_width.unwrap(),
+            ),
             crate::value_plan::PlaceBasePlan::Param {
                 slot,
                 by_ref: false,
             } => agg_slots::store_slots(b, vals, b.ctx().param_frame_slot(slot)),
             crate::value_plan::PlaceBasePlan::Pointer(ptr) => {
-                agg_slots::store_slots_through_ptr(b, vals, ptr, 0)
+                if vals.len() == 1
+                    && let Some(width) = float_width
+                {
+                    b.emit_float_store_through_ptr(vals[0], ptr, 0, width)
+                } else {
+                    agg_slots::store_slots_through_ptr(b, vals, ptr, 0)
+                }
             }
         }
         return;
     }
     let offsets = resolved_offsets(b, place, true);
     match resolved_access(b, place, offsets) {
+        ProjectedAccess::FrameSlot(slot) if vals.len() == 1 && float_width.is_some() => {
+            b.emit_float_store_slot(vals[0], slot, float_width.unwrap())
+        }
         ProjectedAccess::FrameSlot(slot) => agg_slots::store_slots_at_low(b, vals, slot),
+        ProjectedAccess::PointerAddr(ptr) if vals.len() == 1 && float_width.is_some() => {
+            b.emit_float_store_through_ptr(vals[0], ptr, 0, float_width.unwrap())
+        }
         ProjectedAccess::PointerAddr(ptr) => agg_slots::store_slots_through_ptr(b, vals, ptr, 0),
         ProjectedAccess::PointerOffset { ptr, byte_offset } => {
-            agg_slots::store_slots_through_ptr(b, vals, ptr, byte_offset)
+            if vals.len() == 1
+                && let Some(width) = float_width
+            {
+                b.emit_float_store_through_ptr(vals[0], ptr, byte_offset, width)
+            } else {
+                agg_slots::store_slots_through_ptr(b, vals, ptr, byte_offset)
+            }
         }
     }
 }
@@ -562,6 +628,7 @@ mod tests {
                 start_slot: slot,
                 slot_count: 1,
                 crossing_regs: 1,
+                crossing_classes: vec![rue_air::NativeArgClass::Gp],
                 ty: None,
             })
             .collect()
