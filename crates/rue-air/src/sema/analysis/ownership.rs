@@ -153,6 +153,14 @@ struct ProjectionInfo {
     /// instead of stripping the index (RUE-279). None for field projections,
     /// dynamic indices, and negative constants.
     index_segment: Option<Spur>,
+    /// For index projections: the RIR instruction of the index expression, in
+    /// the body being analyzed. `check_traced_const_index_bounds` needs it to
+    /// evaluate the index at its own operand types and to place the E0902
+    /// label on the index rather than on the whole access (RUE-2006). None for
+    /// field projections and for projections copied from an accessor-inline
+    /// alias, whose index instructions belong to the caller's body and were
+    /// bounds-checked when the caller traced the receiver.
+    index_inst: Option<InstRef>,
 }
 
 /// Result of tracing a place expression in RIR.
@@ -415,6 +423,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let Some(mut trace) = self.try_trace_place(value, air, ctx)? else {
             return Ok(None);
         };
+        // A borrowing read is still a read: it may not go through a moved
+        // root, a moved ancestor path, or a moved-out element, and a constant
+        // index in the chain must be in bounds. These are the checks a
+        // value-context read makes for the same expression (RUE-2006).
+        self.check_traced_place_read(&trace, ctx, span)?;
         let ty = trace.result_type();
         let place = Self::build_place_ref(air, &trace)?;
         let value = air.add_inst(AirInst {
@@ -1262,6 +1275,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                 field_name: p.field_name,
                                 const_index: p.const_index,
                                 index_segment: p.index_segment,
+                                index_inst: None,
                             })
                             .collect(),
                         root_var: alias.root_var,
@@ -1352,6 +1366,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             field_name: Some(*field),
                             const_index: None,
                             index_segment: None,
+                            index_inst: None,
                         });
 
                         Ok(Some(trace))
@@ -1431,6 +1446,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             field_name: None,
                             const_index,
                             index_segment,
+                            index_inst: Some(*index),
                         });
 
                         Ok(Some(trace))
@@ -3424,22 +3440,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
             let field_type = trace.result_type();
 
-            // Check if the root variable was fully moved (applies regardless of field type)
-            if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
-                if let Some(moved_span) = state.full_move {
-                    let root_name = self.body_interner().resolve(&trace.root_var);
-                    return Err(CompileError::new(
-                        ErrorKind::UseAfterMove(root_name.to_string()),
-                        span,
-                    )
-                    .with_label("value moved here", moved_span)
-                    .with_help(super::borrow_instead_of_move_help(root_name)));
-                }
-            }
-
-            // A field read through an array element (`xs[0].f`) must not go
-            // through a moved-out element (RUE-186).
+            // The first three of the four read checks
+            // `check_traced_place_read` names: a fully moved root invalidates
+            // every place under it whatever the field type is (3.8:5), a field
+            // read through an array element must not go through a moved-out
+            // element (RUE-186, 3.8:70), and no constant index in the chain may
+            // leave its array (4.11:7). The fourth — the moved-ancestor path
+            // check — is per-branch below, because a move-out of a non-Copy
+            // field checks descendants too and is ordered after the rejections
+            // that come between.
+            self.reject_read_through_moved_root(&trace, ctx, span)?;
             self.check_read_through_moved_element(&trace, ctx, span)?;
+            self.check_traced_const_index_bounds(&trace, ctx)?;
 
             // Whole-value destructuring consumption (3.8:33) is the model for
             // a struct DECLARED `linear` only: its obligation belongs to the
@@ -3542,18 +3554,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // nested declared-`linear` access consumes (RUE-1632).
             let mut marker_depth = trace.projections.len();
             if is_byref_arg_use {
-                let field_path = trace.field_path();
-                if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
-                    if let Some(moved_span) = state.is_path_moved(&field_path) {
-                        return Err(super::use_after_move_path_error(
-                            self.body_interner(),
-                            trace.root_var,
-                            &field_path,
-                            span,
-                            moved_span,
-                        ));
-                    }
-                }
+                self.reject_read_through_moved_path(&trace, ctx, span)?;
             } else if is_declared_linear {
                 // For a declared-linear struct, field access destructures and
                 // so consumes that struct's whole value (3.8:33).
@@ -3696,21 +3697,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // Copy fields are read, not moved — but reading one THROUGH
                 // a moved ancestor (`o.f.x` after `o.f` was moved out) reads
                 // memory whose owner is gone: drops are move-aware, so the
-                // moved part is logically dead. `is_path_moved` checks the
-                // exact path and every ancestor prefix (the full-move case
-                // was already rejected above).
-                let field_path = trace.field_path();
-                if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
-                    if let Some(moved_span) = state.is_path_moved(&field_path) {
-                        return Err(super::use_after_move_path_error(
-                            self.body_interner(),
-                            trace.root_var,
-                            &field_path,
-                            span,
-                            moved_span,
-                        ));
-                    }
-                }
+                // moved part is logically dead (3.8:53). The full-move case
+                // was already rejected above.
+                self.reject_read_through_moved_path(&trace, ctx, span)?;
             }
 
             // Emit PlaceRead instruction
@@ -3894,6 +3883,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     field_name: Some(field),
                     const_index: None,
                     index_segment: None,
+                    index_inst: None,
                 }],
                 root_var: field,
                 is_root_mutable: false,
@@ -3962,10 +3952,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Check for constant out-of-bounds index early (before tracing)
-        // We need the array type for bounds checking, so peek at the base first
-        let _base_inst = self.body_rir_ref().get(base);
-
         // Try to trace this expression to a place (lvalue)
         if let Some(mut trace) = self.try_trace_place(inst_ref, air, ctx)? {
             if !trace.via_accessor && ctx.ownership.byref_arg_root != Some(trace.root_var) {
@@ -3993,20 +3979,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // moved field/element prefix, or this exact constant element,
             // without flagging a *sibling* element (`arr[1]` after `arr[0]`
             // moved has a disjoint path).
-            {
-                let field_path = trace.field_path();
-                if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
-                    if let Some(moved_span) = state.is_path_moved(&field_path) {
-                        return Err(super::use_after_move_path_error(
-                            self.body_interner(),
-                            trace.root_var,
-                            &field_path,
-                            span,
-                            moved_span,
-                        ));
-                    }
-                }
-            }
+            self.reject_read_through_moved_path(&trace, ctx, span)?;
 
             // Get array info from the parent type (before the last projection)
             let parent_type = if trace.projections.len() > 1 {
@@ -4015,37 +3988,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 trace.base_type
             };
 
-            let array_len = match parent_type.as_array() {
-                Some(type_id) => {
-                    let (_elem, len) = self.body_type_pool().array_def(type_id);
-                    len
-                }
-                None => {
-                    // This shouldn't happen if try_trace_place worked correctly
-                    return Err(CompileError::new(
-                        ErrorKind::IndexOnNonArray {
-                            found: self.format_type_name(parent_type),
-                        },
-                        span,
-                    ));
-                }
-            };
-
-            // Check for constant out-of-bounds index. Evaluate at the index's
-            // resolved operand types so an expression that overflows its own
-            // integer type (`arr[X + 1]`, X: i8 = 127) is a compile-time error
-            // rather than a folded-then-bounds-checked value (RUE-234).
-            if let Some(const_idx) = self.try_get_const_index_checked(index, ctx)? {
-                if const_idx < 0 || const_idx >= array_len as i128 {
-                    return Err(CompileError::new(
-                        ErrorKind::IndexOutOfBounds {
-                            index: const_idx,
-                            length: array_len,
-                        },
-                        self.body_rir_ref().get(index).span,
-                    ));
-                }
+            if parent_type.as_array().is_none() {
+                // This shouldn't happen if try_trace_place worked correctly
+                return Err(CompileError::new(
+                    ErrorKind::IndexOnNonArray {
+                        found: self.format_type_name(parent_type),
+                    },
+                    span,
+                ));
             }
+
+            // Constant out-of-bounds indices anywhere in the traced chain,
+            // this one included (4.11:7, RUE-234).
+            self.check_traced_const_index_bounds(&trace, ctx)?;
 
             // A use as a by-ref call argument (`f(borrow a[i])`, `f(inout
             // a[i])`) borrows the element in place rather than moving it out
@@ -4116,18 +4071,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 self.reject_field_move_out_of_destructor_type(&trace, span)?;
             }
             if is_byref_arg_use {
-                let field_path = trace.field_path();
-                if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
-                    if let Some(moved_span) = state.is_path_moved(&field_path) {
-                        return Err(super::use_after_move_path_error(
-                            self.body_interner(),
-                            trace.root_var,
-                            &field_path,
-                            span,
-                            moved_span,
-                        ));
-                    }
-                }
+                self.reject_read_through_moved_path(&trace, ctx, span)?;
                 self.check_read_through_moved_element(&trace, ctx, span)?;
             } else if let Some(declared_depth) = trackable_declared_depth {
                 self.reject_accessor_place_move(&trace, elem_type, span)?;
@@ -5100,6 +5044,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 field_name: Some(field),
                 const_index: None,
                 index_segment: None,
+                index_inst: None,
             });
 
             // A write through an element of a partially moved array
@@ -5327,6 +5272,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 field_name: None,
                 const_index,
                 index_segment,
+                index_inst: Some(index),
             });
 
             // Writing into an array with moved-out elements is rejected
@@ -6335,6 +6281,128 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty: elem_type,
             span,
         }))
+    }
+
+    /// Every legality check a **read** through a traced place performs, in the
+    /// order a value-context read reports them (spec 3.8:5, 3.8:53, 3.8:70,
+    /// 4.11:7).
+    ///
+    /// Reading a place is reading a place: the checks cannot depend on which
+    /// mode asked for the value. A projection-mode read — a comparison operand
+    /// (4.3:3f), a `borrow` argument, `@dbg`, an `@assert*` operand, string
+    /// concatenation — borrows what it reads instead of moving it, so it has
+    /// none of the move-out rejections `analyze_field_get` and
+    /// `analyze_index_get` interleave with these, and it calls the set as a
+    /// whole here. Those two call the same four functions individually, at the
+    /// points where their own move-out rejections order around them.
+    ///
+    /// Before RUE-2006 the traced reader ran none of them: `x.a == y.a` read
+    /// through a moved `x` (a read of memory a destructor may already have
+    /// freed, not merely a missing diagnostic), and `xs[5].a == ys[0].a`
+    /// reached codegen for a constant index outside its array.
+    fn check_traced_place_read(
+        &mut self,
+        trace: &PlaceTrace,
+        ctx: &mut AnalysisContext,
+        span: Span,
+    ) -> CompileResult<()> {
+        self.reject_read_through_moved_root(trace, ctx, span)?;
+        self.check_read_through_moved_element(trace, ctx, span)?;
+        self.check_traced_const_index_bounds(trace, ctx)?;
+        self.reject_read_through_moved_path(trace, ctx, span)
+    }
+
+    /// Reject any use of a place whose root binding has been moved as a whole
+    /// (spec 3.8:5). The root's full move invalidates every place under it,
+    /// whatever the read's own type is, and the diagnostic names the root.
+    fn reject_read_through_moved_root(
+        &self,
+        trace: &PlaceTrace,
+        ctx: &AnalysisContext,
+        span: Span,
+    ) -> CompileResult<()> {
+        let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) else {
+            return Ok(());
+        };
+        let Some(moved_span) = state.full_move else {
+            return Ok(());
+        };
+        let root_name = self.body_interner().resolve(&trace.root_var);
+        Err(
+            CompileError::new(ErrorKind::UseAfterMove(root_name.to_string()), span)
+                .with_label("value moved here", moved_span)
+                .with_help(super::borrow_instead_of_move_help(root_name)),
+        )
+    }
+
+    /// Reject a read through a moved ancestor path (spec 3.8:53): `o.f.x`
+    /// after `o.f` moved reads storage the binding no longer owns, even though
+    /// `x` is itself Copy. `is_path_moved` matches the exact path and every
+    /// ancestor prefix; a sibling's move (`o.g`) leaves a disjoint path and is
+    /// not affected.
+    fn reject_read_through_moved_path(
+        &self,
+        trace: &PlaceTrace,
+        ctx: &AnalysisContext,
+        span: Span,
+    ) -> CompileResult<()> {
+        let field_path = trace.field_path();
+        let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) else {
+            return Ok(());
+        };
+        let Some(moved_span) = state.is_path_moved(&field_path) else {
+            return Ok(());
+        };
+        Err(super::use_after_move_path_error(
+            self.body_interner(),
+            trace.root_var,
+            &field_path,
+            span,
+            moved_span,
+        ))
+    }
+
+    /// Reject a constant index that leaves its array anywhere in a traced
+    /// chain (spec 4.11:7).
+    ///
+    /// The whole chain is checked, not just its last index: `xs[5].a` is as
+    /// out of bounds as `xs[5]` is, and its projection is built from the same
+    /// trace. Each index is evaluated at its own resolved operand types, so an
+    /// index expression that overflows its integer type is a compile-time
+    /// error rather than a folded runtime panic (RUE-234), and the diagnostic
+    /// is labelled on the index expression, matching a direct element read.
+    fn check_traced_const_index_bounds(
+        &mut self,
+        trace: &PlaceTrace,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<()> {
+        for (position, projection) in trace.projections.iter().enumerate() {
+            let Some(index_inst) = projection.index_inst else {
+                continue;
+            };
+            let array_type = if position == 0 {
+                trace.base_type
+            } else {
+                trace.projections[position - 1].result_type
+            };
+            let Some(array_type_id) = array_type.as_array() else {
+                continue;
+            };
+            let (_element_type, length) = self.body_type_pool().array_def(array_type_id);
+            let Some(const_index) = self.try_get_const_index_checked(index_inst, ctx)? else {
+                continue;
+            };
+            if const_index < 0 || const_index >= length as i128 {
+                return Err(CompileError::new(
+                    ErrorKind::IndexOutOfBounds {
+                        index: const_index,
+                        length,
+                    },
+                    self.body_rir_ref().get(index_inst).span,
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Reject a read through an array element that is (or may be) moved out
