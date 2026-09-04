@@ -5,6 +5,8 @@ tree as a hidden input so the compiler executable, bundled libc descriptions,
 and archive implementation all participate in action keys and remote inputs.
 """
 
+load("@toolchains//:distribution.bzl", "toolchain_distribution")
+
 ZIG_VERSION = "0.16.0"
 
 ZIG_RELEASES = {
@@ -35,14 +37,19 @@ ZigToolchainInfo = provider(fields = [
 ])
 
 def zig_host_archive(name: str, platform: str):
-    """Declare one official, SHA-pinned Zig host distribution."""
+    """Declare one official, SHA-pinned Zig host distribution.
+
+    `toolchain_distribution` rather than `http_archive`: the unpacked tree is
+    19,546 files, and serving one from the remote CAS is what RUE-2003 traced
+    the merge queue's `materialize_inputs_failed` ejections to. See
+    toolchains/distribution.bzl.
+    """
     release = ZIG_RELEASES[platform]
-    native.http_archive(
+    toolchain_distribution(
         name = "dist-{}".format(name),
-        urls = [release.url],
+        url = release.url,
         sha256 = release.sha256,
         strip_prefix = "zig-{}-{}".format(platform, ZIG_VERSION),
-        type = "tar.xz",
         visibility = [],
     )
 

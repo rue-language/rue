@@ -5,6 +5,7 @@
 # archive also contains Cargo, rust-analyzer, LLVM tools, and large documentation
 # trees; materializing those unused payloads in every worktree is wasteful.
 
+load("@toolchains//:distribution.bzl", "toolchain_distribution")
 load(":defs.bzl", "RUST_VERSION", "RUST_STD_RELEASES", "hermetic_rust_toolchain", "rust_host_archives", "rustfmt", "host_rustfmt")
 load("@root//:test_defs.bzl", "rue_sh_test")
 
@@ -39,39 +40,39 @@ rust_host_archives("macos-x86_64", "x86_64-apple-darwin")
 # Standard-library components used by the host toolchains and fixed-target Rue
 # runtime rules. They are compiler-host agnostic: whichever hermetic rustc runs
 # consumes the same pinned target sysroot.
-http_archive(
+#
+# `toolchain_distribution` rather than `http_archive` for the reason in
+# toolchains/distribution.bzl: the unpacked tree never travels through the
+# remote CAS (RUE-2003).
+toolchain_distribution(
     name = "rust-std-x86_64-unknown-linux-gnu",
-    urls = [RUST_STD_RELEASES["x86_64-unknown-linux-gnu"].url],
+    url = RUST_STD_RELEASES["x86_64-unknown-linux-gnu"].url,
     sha256 = RUST_STD_RELEASES["x86_64-unknown-linux-gnu"].sha256,
     strip_prefix = "rust-std-{}-x86_64-unknown-linux-gnu".format(RUST_VERSION),
-    type = "tar.xz",
     visibility = ["PUBLIC"],
 )
 
-http_archive(
+toolchain_distribution(
     name = "rust-std-aarch64-unknown-linux-gnu",
-    urls = [RUST_STD_RELEASES["aarch64-unknown-linux-gnu"].url],
+    url = RUST_STD_RELEASES["aarch64-unknown-linux-gnu"].url,
     sha256 = RUST_STD_RELEASES["aarch64-unknown-linux-gnu"].sha256,
     strip_prefix = "rust-std-{}-aarch64-unknown-linux-gnu".format(RUST_VERSION),
-    type = "tar.xz",
     visibility = ["PUBLIC"],
 )
 
-http_archive(
+toolchain_distribution(
     name = "rust-std-aarch64-apple-darwin",
-    urls = [RUST_STD_RELEASES["aarch64-apple-darwin"].url],
+    url = RUST_STD_RELEASES["aarch64-apple-darwin"].url,
     sha256 = RUST_STD_RELEASES["aarch64-apple-darwin"].sha256,
     strip_prefix = "rust-std-{}-aarch64-apple-darwin".format(RUST_VERSION),
-    type = "tar.xz",
     visibility = ["PUBLIC"],
 )
 
-http_archive(
+toolchain_distribution(
     name = "rust-std-x86_64-apple-darwin",
-    urls = [RUST_STD_RELEASES["x86_64-apple-darwin"].url],
+    url = RUST_STD_RELEASES["x86_64-apple-darwin"].url,
     sha256 = RUST_STD_RELEASES["x86_64-apple-darwin"].sha256,
     strip_prefix = "rust-std-{}-x86_64-apple-darwin".format(RUST_VERSION),
-    type = "tar.xz",
     visibility = ["PUBLIC"],
 )
 

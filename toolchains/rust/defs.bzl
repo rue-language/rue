@@ -4,6 +4,7 @@
 # for use with Buck2's Rust rules.
 
 load("@prelude//rust:rust_toolchain.bzl", "PanicRuntime", "RustToolchainInfo")
+load("@toolchains//:distribution.bzl", "toolchain_distribution")
 
 # Rust 1.92.0 release info
 RUST_VERSION = "1.92.0"
@@ -70,34 +71,37 @@ RUST_STD_RELEASES = {
 }
 
 def rust_host_archives(name: str, triple: str):
-    """Declare the minimal official host components for one Rust platform."""
+    """Declare the minimal official host components for one Rust platform.
+
+    `toolchain_distribution` rather than `http_archive`: an unpacked component
+    tree is tens of thousands of small files, and serving one from the remote
+    CAS is what RUE-2003 traced the merge queue's `materialize_inputs_failed`
+    ejections to. See toolchains/distribution.bzl.
+    """
     release = RUST_RELEASES[triple]
-    native.http_archive(
+    toolchain_distribution(
         name = "rustc-{}".format(name),
-        urls = [release.rustc_url],
+        url = release.rustc_url,
         sha256 = release.rustc_sha256,
         strip_prefix = "rustc-{}-{}".format(RUST_VERSION, triple),
-        type = "tar.xz",
         visibility = [],
     )
-    native.http_archive(
+    toolchain_distribution(
         name = "clippy-{}".format(name),
-        urls = [release.clippy_url],
+        url = release.clippy_url,
         sha256 = release.clippy_sha256,
         strip_prefix = "clippy-{}-{}".format(RUST_VERSION, triple),
-        type = "tar.xz",
         visibility = [],
     )
-    native.http_archive(
+    toolchain_distribution(
         name = "rustfmt-dist-{}".format(name),
-        urls = [release.rustfmt_url],
+        url = release.rustfmt_url,
         sha256 = release.rustfmt_sha256,
         strip_prefix = "rustfmt-{}-{}".format(RUST_VERSION, triple),
-        type = "tar.xz",
         visibility = [],
     )
 
-# Paths within the extracted Rust component archives. After http_archive strips
+# Paths within the extracted Rust component archives. After extraction strips
 # each outer prefix, we have:
 #   rustc/bin/rustc, rustc/bin/rustdoc
 #   rustc/lib/rustlib/{triple}/bin/rust-lld (linker tools)
@@ -229,13 +233,13 @@ hermetic_rust_toolchain = rule(
         # for the execution platform. A target-configured dep would materialize
         # the same archive again for every debug/release target configuration.
         "rustc_distribution": attrs.exec_dep(
-            doc = "The downloaded rustc component (from http_archive)",
+            doc = "The downloaded rustc component (from toolchain_distribution)",
         ),
         "standard_library_distribution": attrs.exec_dep(
-            doc = "The downloaded rust-std component (from http_archive)",
+            doc = "The downloaded rust-std component (from toolchain_distribution)",
         ),
         "clippy_distribution": attrs.exec_dep(
-            doc = "The downloaded Clippy component (from http_archive)",
+            doc = "The downloaded Clippy component (from toolchain_distribution)",
         ),
         "merge_script": attrs.source(
             doc = "Portable script that assembles a relocatable Rust sysroot",
@@ -300,10 +304,10 @@ rustfmt = rule(
         # rustfmt runs on the execution host; keep its component archives out
         # of each target configuration for the same reason as the toolchain.
         "rustc_distribution": attrs.exec_dep(
-            doc = "The downloaded rustc component (from http_archive)",
+            doc = "The downloaded rustc component (from toolchain_distribution)",
         ),
         "rustfmt_distribution": attrs.exec_dep(
-            doc = "The downloaded rustfmt component (from http_archive)",
+            doc = "The downloaded rustfmt component (from toolchain_distribution)",
         ),
     },
 )

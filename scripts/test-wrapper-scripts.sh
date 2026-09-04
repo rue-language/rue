@@ -929,6 +929,8 @@ echo '✓ Pass: root//:ui-tests (7.5s)'
 echo '✗ Fail: root//:cli-tests (2s)'
 echo 'Skip: root//:stress-tests'
 echo 'cli-tests: measured 37 cases in /tmp/timings.jsonl'
+echo 'Network: Up: 214KiB  Down: 274MiB  (GRPC-SESSION-ID)'
+echo 'Network: Up: 1.0MiB  Down: 2.0GiB'
 exit "${FAKE_EXIT:-0}"
 EOF
   chmod +x "$sb/fake-command"
@@ -949,6 +951,10 @@ EOF
     "$(grep -Fq '| 81.750s |' "$sb/summary" && echo 0 || echo 1)"
   check "ci-timed: action-cache hit rate is reported" \
     "$(grep -Fq '| 66% |' "$sb/summary" && echo 0 || echo 1)"
+  # 274MiB + 2.0GiB down, 214KiB + 1.0MiB up, summed across invocations and
+  # both unit spellings.
+  check "ci-timed: network bytes are aggregated across invocations" \
+    "$(grep -Fq '| 2.3GiB | 1.2MiB |' "$sb/summary" && echo 0 || echo 1)"
 
   rc=0
   RUE_CI_REQUIRE_REMOTE_ACTIONS=1 "$sb/ci-timed" "remote wrapper" -- "$sb/fake-command" >/dev/null 2>&1 || rc=$?

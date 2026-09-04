@@ -43,6 +43,20 @@ engine_address = grpc://remote.buildbuddy.io
 action_cache_address = grpc://remote.buildbuddy.io
 cas_address = grpc://remote.buildbuddy.io
 tls = true
+# Bound one BatchReadBlobs response (RUE-2003). buck2 packs blobs up to this
+# many content bytes per request and takes min(this, the server's advertised
+# max_batch_total_size_bytes), so lowering it can only cost extra round trips.
+# During 2026-09-03/04 every response carrying thousands of small blobs came
+# back cut off mid-stream -- `missing grpc-status trailer` or `Unexpected EOF
+# decoding stream` -- and buck2's own CAS retry does not cover either, because
+# neither maps to Unavailable, ResourceExhausted, or Aborted. One megabyte
+# leaves an order of magnitude of headroom under the 4 MiB message size gRPC
+# servers and proxies commonly enforce.
+max_total_batch_size = 1000000
+# The client must never be the side that truncates: keep the decode ceiling
+# far above any response the bound above can produce. buck2 defaults this to
+# twice max_total_batch_size and refuses a value below it.
+max_decoding_message_size = 16000000
 CONFIG
         printf 'http_headers = x-buildbuddy-api-key:%s\n' "$key"
         cat <<'CONFIG'
