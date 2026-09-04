@@ -6,7 +6,7 @@
 
 use rue_error::{CompileError, CompileResult, ErrorKind};
 
-use super::aggregate_resolution::{resolve_visibility_module_ref, select_qualified_enum};
+use super::aggregate_resolution::{resolve_visibility_module_ref, select_module_type_member};
 use super::context::AnalysisContext;
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use crate::types::EnumId;
@@ -14,8 +14,12 @@ use crate::types::EnumId;
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Resolve an enum type through a module reference.
     ///
-    /// Used for qualified enum paths like `module.EnumName::Variant` in match patterns.
-    /// Checks visibility: private enums are only accessible from the same directory.
+    /// Used for qualified enum paths like `module.EnumName.Variant` in match
+    /// patterns and variant construction. The member is selected by the one
+    /// canonical [`select_module_type_member`], so a `const` type alias
+    /// (`pub const R = Result(u64, E);`) names its enum here exactly as a
+    /// declaration does (RUE-1956). Visibility is E0706, checked against the
+    /// alias binding when the name arrived through one.
     pub(crate) fn resolve_enum_through_module(
         &self,
         module_ref: rue_rir::InstRef,
@@ -35,32 +39,28 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // A qualified member is resolved only in the referenced module's
         // defining file. If the receiver has no module identity, it is not a
         // valid qualified type path.
-        let enum_id = module_file_id
-            .and_then(|module_id| {
-                let facts = self.aggregate_facts();
-                let file = facts.aggregate_module(module_id).file;
-                select_qualified_enum(facts, file, type_name)
-            })
-            .ok_or_else(|| {
-                CompileError::new(ErrorKind::UnknownEnumType(type_name_str.to_string()), span)
-            })?;
+        let unknown_enum =
+            || CompileError::new(ErrorKind::UnknownEnumType(type_name_str.to_string()), span);
+        let module_file = module_file_id
+            .map(|module_id| self.aggregate_facts().aggregate_module(module_id).file)
+            .ok_or_else(&unknown_enum)?;
+        let member = {
+            let facts = self.aggregate_facts();
+            select_module_type_member(facts, module_file, type_name)
+        };
+        let nominal = member.as_enum().ok_or_else(&unknown_enum)?;
 
-        // Check visibility
-        let enum_def = self.body_type_pool().enum_def(enum_id);
-        let accessing_file_id = span.file_id;
-        let target_file_id = enum_def.file_id;
+        let enum_def = self.body_type_pool().enum_def(nominal.id);
+        self.check_module_qualified_visibility(
+            nominal.alias,
+            module_file,
+            (enum_def.file_id, enum_def.is_pub),
+            "enum",
+            type_name_str,
+            span,
+        )?;
 
-        if !self.is_accessible(accessing_file_id, target_file_id, enum_def.is_pub) {
-            return Err(CompileError::new(
-                ErrorKind::PrivateMemberAccess {
-                    item_kind: "enum".to_string(),
-                    name: type_name_str.to_string(),
-                },
-                span,
-            ));
-        }
-
-        Ok(enum_id)
+        Ok(nominal.id)
     }
 
     fn module_file_for_ref(

@@ -2608,10 +2608,23 @@ fn provider_const_info_assembly_composes_durable_truth_with_exact_spans() {
                 calls.register_value_const(file, name, info.clone());
                 aggregate.register_value_const(file, name, info);
                 assert!(calls.value_const(file, name).is_some());
-                assert!(matches!(
-                    aggregate.select_module_type_member(file, name),
-                    rue_air::ProviderModuleMember::Const
-                ));
+                let rue_air::ProviderModuleMember::Const(alias) =
+                    aggregate.select_module_type_member(file, name)
+                else {
+                    panic!("the aggregate selects {name} as the const member");
+                };
+                // `const POINT_KIND: type = Point;` binds a nominal, so the one
+                // canonical selector reports it as a type member of the module
+                // as well (RUE-1956); the other value constants bind none.
+                assert_eq!(
+                    alias.is_some(),
+                    name == "POINT_KIND",
+                    "{name} reports the nominal it aliases"
+                );
+                if let Some(aliased) = alias {
+                    let display = aggregate.with_type_pool(|pool| endpoint_display(pool, aliased));
+                    assert_eq!(display, "Point", "{name} aliases the declared struct");
+                }
                 let aggregate_info = aggregate
                     .value_const(file, name)
                     .expect("aggregate preserves the assembled const");
@@ -2644,7 +2657,7 @@ fn provider_const_info_assembly_composes_durable_truth_with_exact_spans() {
             assert!(calls.module_binding(file, "dep").is_some());
             assert!(matches!(
                 aggregate.select_module_type_member(file, "dep"),
-                rue_air::ProviderModuleMember::Const
+                rue_air::ProviderModuleMember::Const(None)
             ));
             let aggregate_module = aggregate
                 .module_binding(file, "dep")
@@ -2729,9 +2742,9 @@ fn provider_const_info_assembly_composes_durable_truth_with_exact_spans() {
 // realization of the family-1D `AggregateFacts` seam) selects the declared
 // aggregate/field/variant winner. The selection ORDER lives in the
 // provider-generic free functions the driver merely supplies facts to
-// (`select_module_type_member`'s struct→enum→const short-circuit,
-// `select_qualified_type`'s enum→struct, `select_struct_literal_head`'s
-// const→struct→builtin) — the exact r1c candidate order. The driver reuses
+// (`select_module_type_member`'s struct→enum→const short-circuit and
+// `select_struct_literal_head`'s const→struct→builtin) — the exact r1c
+// candidate order. The driver reuses
 // the shared `DurableDeclSource` (the r4b-1 durable set) for its 2a pool;
 // each winner is pinned through its index-independent render.
 //
@@ -2750,20 +2763,10 @@ fn describe_member(
     match member {
         rue_air::ProviderModuleMember::Struct(ty) => ("struct", Some(endpoint_display(pool, *ty))),
         rue_air::ProviderModuleMember::Enum(ty) => ("enum", Some(endpoint_display(pool, *ty))),
-        rue_air::ProviderModuleMember::Const => ("const", None),
+        rue_air::ProviderModuleMember::Const(alias) => {
+            ("const", alias.map(|ty| endpoint_display(pool, ty)))
+        }
         rue_air::ProviderModuleMember::Absent => ("absent", None),
-    }
-}
-
-/// The tag + display of a [`rue_air::ProviderQualifiedType`].
-fn describe_qualified(
-    qualified: &rue_air::ProviderQualifiedType,
-    pool: &rue_air::TypeInternPool,
-) -> (&'static str, Option<String>) {
-    match qualified {
-        rue_air::ProviderQualifiedType::Enum(ty) => ("enum", Some(endpoint_display(pool, *ty))),
-        rue_air::ProviderQualifiedType::Struct(ty) => ("struct", Some(endpoint_display(pool, *ty))),
-        rue_air::ProviderQualifiedType::Absent => ("absent", None),
     }
 }
 
@@ -2891,22 +2894,14 @@ fn provider_aggregate_facts_selection_order_follows_the_candidate_ranking() {
             let member_color = facts.select_module_type_member(file, "Color");
             let member_limit = facts.select_module_type_member(file, "LIMIT");
             let member_absent = facts.select_module_type_member(file, "Ghost");
-            let qualified_color = facts.select_qualified_type(file, "Color");
-            let qualified_point = facts.select_qualified_type(file, "Point");
-            let qenum_color = facts.select_qualified_enum(file, "Color");
-            let qenum_point = facts.select_qualified_enum(file, "Point");
             let head_point = facts.select_struct_literal_head(file, "Point");
 
             facts.with_type_pool(|pool| {
                 (
                     describe_member(&member_point, pool),
                     describe_member(&member_color, pool),
-                    describe_member(&member_limit, pool).0,
+                    describe_member(&member_limit, pool),
                     describe_member(&member_absent, pool).0,
-                    describe_qualified(&qualified_color, pool),
-                    describe_qualified(&qualified_point, pool),
-                    qenum_color.is_some(),
-                    qenum_point.is_some(),
                     match head_point {
                         rue_air::ProviderStructHead::Named(ty) => Some(endpoint_display(pool, ty)),
                         _ => None,
@@ -2920,12 +2915,8 @@ fn provider_aggregate_facts_selection_order_follows_the_candidate_ranking() {
     let (
         (mp_tag, mp_disp),
         (mc_tag, mc_disp),
-        ml_tag,
+        (ml_tag, ml_alias),
         ma_tag,
-        (qc_tag, qc_disp),
-        (qp_tag, qp_disp),
-        qenum_color,
-        qenum_point,
         head_point,
         endpoint_limit_render,
         aggregate_limit_render,
@@ -2951,15 +2942,11 @@ fn provider_aggregate_facts_selection_order_follows_the_candidate_ranking() {
     assert_eq!(mc_tag, "enum");
     assert_eq!(mc_disp.as_deref(), Some("Color"));
     assert_eq!(ml_tag, "const", "the provider selects the const member");
+    assert_eq!(
+        ml_alias, None,
+        "a value constant binds no nominal, so it names no type member"
+    );
     assert_eq!(ma_tag, "absent");
-
-    // Qualified selection: enum→struct order.
-    assert_eq!((qc_tag, qc_disp.as_deref()), ("enum", Some("Color")));
-    assert_eq!((qp_tag, qp_disp.as_deref()), ("struct", Some("Point")));
-
-    // select_qualified_enum: enum resolves, struct does not.
-    assert!(qenum_color, "Color qualified-enum resolves");
-    assert!(!qenum_point, "Point is not a qualified enum");
 
     // select_struct_literal_head: unqualified struct head → Named.
     assert_eq!(head_point.as_deref(), Some("Point"));

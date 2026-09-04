@@ -621,3 +621,135 @@ pub struct Point {
 }
 """ }
 exit_code = 42
+
+# =============================================================================
+# Type alias members (10.4:21, 10.4:22, RUE-1956)
+# =============================================================================
+# A top-level `const` bound to a type is a type member of its module, usable in
+# every module-qualified form (10.4:15, 10.4:16). Before RUE-1956 the pattern
+# head, the bare variant expression, and the struct-literal head each resolved
+# `m.Name` through their own const-blind selector and rejected the alias while
+# the type annotation and the associated-function receiver accepted it.
+
+[[case]]
+name = "qualified_type_alias_pattern_head"
+spec = ["10.4:21", "4.7:2"]
+description = "A module-qualified const type alias is a match-pattern head: `lib.R.Ok(x)` matches the same variant `lib.Result.Ok(x)` does (RUE-1956)"
+source = """
+const lib = @import("lib.rue");
+
+fn main() -> i32 {
+    let n = match lib.one() {
+        lib.R.Ok(x) => x,
+        lib.R.Err(_e) => 0,
+    };
+    let m = match lib.one() {
+        lib.Answer.Ok(x) => x,
+        lib.Answer.Err(_e) => 0,
+    };
+    n + m
+}
+"""
+aux_files = { "lib.rue" = """
+pub enum Answer { Ok(i32), Err(i32), }
+pub const R = Answer;
+pub fn one() -> Answer { Answer.Ok(21) }
+""" }
+exit_code = 42
+
+[[case]]
+name = "qualified_type_alias_expression_and_literal_heads"
+spec = ["10.4:21"]
+description = "A module-qualified const type alias heads a bare variant expression, a payload-carrying variant expression, a struct literal, and an associated-function call (RUE-1956)"
+source = """
+const lib = @import("lib.rue");
+
+fn main() -> i32 {
+    let p = lib.P { x: 30, y: 2 };
+    let q = lib.P.origin();
+    let bare = lib.C.Red;
+    let payload = lib.C.Tagged(4);
+    let base = p.x + p.y + q.x + q.y;
+    match bare {
+        lib.C.Red => match payload {
+            lib.C.Tagged(v) => base + v,
+            lib.C.Red => 0,
+        },
+        lib.C.Tagged(_v) => 0,
+    }
+}
+"""
+aux_files = { "lib.rue" = """
+pub struct Point {
+    x: i32,
+    y: i32,
+    fn origin() -> Point { Point { x: 5, y: 1 } }
+}
+pub const P = Point;
+pub enum Color { Red, Tagged(i32), }
+pub const C = Color;
+""" }
+exit_code = 42
+
+[[case]]
+name = "pub_type_alias_re_exports_private_type"
+spec = ["10.4:22"]
+description = "A `pub const` alias of a private enum is accessible from another directory: the alias's own visibility governs, because the reference names the alias (RUE-1956)"
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    let h = lib.H.A;
+    match h {
+        lib.H.A => 42,
+        lib.H.B => 0,
+    }
+}
+"""
+aux_files = { "sub/lib.rue" = """
+enum Hidden { A, B, }
+pub const H = Hidden;
+""" }
+exit_code = 42
+
+[[case]]
+name = "private_type_alias_rejected_across_directories"
+spec = ["10.4:22"]
+description = "A non-`pub` type alias named through a module from another directory is E0706 reporting the constant, not the aliased declaration (RUE-1956)"
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    let h = lib.H.A;
+    match h {
+        lib.H.A => 42,
+        lib.H.B => 0,
+    }
+}
+"""
+aux_files = { "sub/lib.rue" = """
+pub enum Shown { A, B, }
+const H = Shown;
+pub fn touch() -> i32 { match H.A { Shown.A => 1, Shown.B => 2, } }
+""" }
+compile_fail = true
+error_contains = ["E0706", "const", "is private"]
+
+[[case]]
+name = "aliased_private_declaration_still_rejected"
+spec = ["10.4:22"]
+description = "The pub alias does not make the aliased declaration nameable: `lib.Hidden.A` remains E0706 on the enum (RUE-1956)"
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    let h = lib.Hidden.A;
+    0
+}
+"""
+aux_files = { "sub/lib.rue" = """
+enum Hidden { A, B, }
+pub const H = Hidden;
+""" }
+compile_fail = true
+error_contains = ["E0706", "enum", "is private"]
