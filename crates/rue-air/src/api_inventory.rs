@@ -4070,3 +4070,31 @@ fn intrinsic_semantics_have_one_typed_authority_across_sema_and_durable_air() {
         }
     }
 }
+
+#[test]
+fn copy_semantics_have_one_air_policy_owner() {
+    let types = include_str!("types.rs");
+    let pool = include_str!("intern_pool.rs");
+    let import = include_str!("semantic_import.rs");
+    let ordinary = include_str!("sema/ordinary_engine.rs");
+    let identity = include_str!("sema/body_identity.rs");
+
+    assert!(pool.contains("fn is_copy_type_inner("));
+    assert!(
+        !types.contains("pub fn is_copy(&self)"),
+        "a pool-free Type::is_copy would be an incomplete composite policy"
+    );
+    assert!(ordinary.contains("ty.is_copy_in_pool(self.body_type_pool())"));
+    assert!(identity.contains("ty.is_copy_in_pool(pool)"));
+    assert!(import.contains("matches!(key, NominalInstanceKey::Anonymous(_))"));
+    assert!(import.contains("field.ty.is_copy_in_pool(type_pool)"));
+    assert!(
+        !import.contains("NominalInstanceKey::Anonymous(_) => false"),
+        "anonymous import completion must not restore a hardcoded non-Copy policy"
+    );
+    assert_eq!(
+        ordinary.matches("fn is_type_copy(&self, ty: Type)").count(),
+        1,
+        "ordinary ownership must retain only its thin pool delegate"
+    );
+}

@@ -931,37 +931,7 @@ impl Type {
         )
     }
 
-    /// Check if this is a Copy type (can be implicitly duplicated).
-    ///
-    /// Copy types are:
-    /// - All integer types (i8-i64, u8-u64)
-    /// - Boolean
-    /// - Unit
-    /// - Enum types
-    /// - Never type and Error type (for convenience in error recovery)
-    ///
-    /// Non-Copy types (move types) are:
-    /// - Struct types (unless marked @copy, checked via StructDef.is_copy)
-    /// - Array types (unless element type is Copy, checked by the body host)
-    ///
-    /// Note: This method can't check struct's is_copy attribute or array element
-    /// types since it doesn't have access to StructDefs or array type information.
-    /// Use the body host's `is_type_copy` for full checking.
-    pub fn is_copy(&self) -> bool {
-        match type_encoding::decode(self.0) {
-            Some(Decoded::Primitive(_)) => true,
-            Some(Decoded::Composite {
-                kind: Composite::Enum | Composite::Module,
-                ..
-            }) => true,
-            Some(Decoded::Composite { .. }) | None => false,
-        }
-    }
-
-    /// Check if this type is Copy, with access to TypeInternPool for struct checking.
-    ///
-    /// This is used during anonymous struct creation to determine if the new struct
-    /// should be Copy based on its field types.
+    /// Check whether this type is Copy using the canonical pool-level policy.
     pub fn is_copy_in_pool(&self, type_pool: &crate::intern_pool::TypeInternPool) -> bool {
         type_pool.is_copy_type(*self)
     }
@@ -1380,42 +1350,6 @@ mod tests {
         assert_eq!(Type::new_struct(StructId(0)).as_array(), None);
     }
 
-    // ========== Type::is_copy() tests ==========
-
-    #[test]
-    fn test_is_copy_primitives() {
-        // All integer types are Copy
-        assert!(Type::I8.is_copy());
-        assert!(Type::I16.is_copy());
-        assert!(Type::I32.is_copy());
-        assert!(Type::I64.is_copy());
-        assert!(Type::U8.is_copy());
-        assert!(Type::U16.is_copy());
-        assert!(Type::U32.is_copy());
-        assert!(Type::U64.is_copy());
-
-        // Bool and Unit are Copy
-        assert!(Type::BOOL.is_copy());
-        assert!(Type::UNIT.is_copy());
-    }
-
-    #[test]
-    fn test_is_copy_special() {
-        // Enum types are Copy
-        assert!(Type::new_enum(EnumId(0)).is_copy());
-
-        // Never and Error are Copy for convenience
-        assert!(Type::NEVER.is_copy());
-        assert!(Type::ERROR.is_copy());
-    }
-
-    #[test]
-    fn test_is_copy_move_types() {
-        // Struct and Array are move types (String is a builtin struct now)
-        assert!(!Type::new_struct(StructId(0)).is_copy());
-        assert!(!Type::new_array(ArrayTypeId(0)).is_copy());
-    }
-
     // ========== Type::from_primitive_name() tests ==========
 
     #[test]
@@ -1786,7 +1720,7 @@ mod tests {
 
     #[test]
     fn test_comptime_type_is_copy() {
-        assert!(Type::COMPTIME_TYPE.is_copy());
+        assert!(Type::COMPTIME_TYPE.is_copy_in_pool(&crate::TypeInternPool::new()));
     }
 
     #[test]

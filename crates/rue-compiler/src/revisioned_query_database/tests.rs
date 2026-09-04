@@ -98,6 +98,7 @@ const EXPECTED_REVISIONED_QUERY_TESTS: &[&str] = &[
     "drop_glue_reads_the_shape_carried_by_type_facts_instead_of_requesting_it",
     "duplicate_occurrences_share_one_host_operation_and_fan_out_typed_results",
     "durable_callable_admission_pipeline_preserves_policy_table",
+    "durable_copy_facts_match_the_air_composite_policy",
     "durable_function_materialization_shares_the_canonical_parameter_payload",
     "durable_module_member_projection_preserves_order_types_and_dependencies",
     "durable_named_member_rejects_every_multi_candidate_shape",

@@ -2245,7 +2245,7 @@ where
                 SemanticImportFailure::NominalKindMismatch
             }
         })?;
-        let fields = fields
+        let fields: Vec<StructField> = fields
             .iter()
             .map(|(name, ty)| {
                 Ok(StructField {
@@ -2254,6 +2254,14 @@ where
                 })
             })
             .collect::<Result<_, _>>()?;
+        let is_copy = if matches!(key, NominalInstanceKey::Anonymous(_)) {
+            is_copy
+                && fields
+                    .iter()
+                    .all(|field| field.ty.is_copy_in_pool(type_pool))
+        } else {
+            is_copy
+        };
         type_pool.complete_declared_struct(
             id,
             StructDef {
