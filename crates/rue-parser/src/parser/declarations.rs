@@ -27,22 +27,29 @@ impl Parser {
     pub(super) fn item(&mut self) -> PResult<Item> {
         let start = self.start();
         let directives = self.directives()?;
-        let visibility = if self.eat(TokenKind::Pub) {
+        let visibility = if matches!(
+            recovery::classify_item_start(&self.kind(), self.at_test_item()),
+            Some(recovery::ItemStart::Public)
+        ) {
+            self.bump();
             Visibility::Public
         } else {
             Visibility::Private
         };
-        match self.kind() {
-            TokenKind::Unchecked | TokenKind::Fn => self
+        let item_start = recovery::classify_item_start(&self.kind(), self.at_test_item());
+        match item_start {
+            Some(recovery::ItemStart::UncheckedFunction | recovery::ItemStart::Function) => self
                 .function(start, directives, visibility)
                 .map(Item::Function),
-            TokenKind::Linear | TokenKind::Struct => self
+            Some(recovery::ItemStart::LinearStruct | recovery::ItemStart::Struct) => self
                 .struct_decl(start, directives, visibility)
                 .map(Item::Struct),
-            TokenKind::Enum => self
+            Some(recovery::ItemStart::Enum) => self
                 .enum_decl(start, directives, visibility)
                 .map(Item::Enum),
-            TokenKind::Drop if directives.is_empty() && visibility == Visibility::Private => {
+            Some(recovery::ItemStart::Drop)
+                if directives.is_empty() && visibility == Visibility::Private =>
+            {
                 self.drop_fn(start).map(Item::DropFn)
             }
             // `pub extern "C" fn name(...) { body }` is a Rue-to-C *export*
@@ -50,13 +57,18 @@ impl Parser {
             // callers under its unmangled name. It is distinguished from the
             // private import block below purely by its `pub` visibility and its
             // trailing `fn` (the block form has no `fn` after the ABI string).
-            TokenKind::Extern if directives.is_empty() && visibility == Visibility::Public => self
-                .extern_export_fn(start, directives, visibility)
-                .map(Item::Function),
-            TokenKind::Extern if directives.is_empty() && visibility == Visibility::Private => {
+            Some(recovery::ItemStart::Extern)
+                if directives.is_empty() && visibility == Visibility::Public =>
+            {
+                self.extern_export_fn(start, directives, visibility)
+                    .map(Item::Function)
+            }
+            Some(recovery::ItemStart::Extern)
+                if directives.is_empty() && visibility == Visibility::Private =>
+            {
                 self.extern_block(start).map(Item::Extern)
             }
-            TokenKind::Const => self
+            Some(recovery::ItemStart::Const) => self
                 .const_decl(start, directives, visibility)
                 .map(Item::Const),
             // `test "name" { .. }` (ADR-0083 §1). `test` is Rue's first
@@ -66,11 +78,11 @@ impl Parser {
             // their ordinary meaning. A `pub`/`unchecked` prefix is not part of
             // the production, so `pub test "x" {}` falls through to the
             // unexpected-token arm below.
-            _ if visibility == Visibility::Private && self.at_test_item() => {
+            Some(recovery::ItemStart::Test) if visibility == Visibility::Private => {
                 self.test_decl(start, directives).map(Item::Test)
             }
             _ => {
-                self.unexpected("'@' or 'pub' or 'unchecked' or 'fn' or 'test' or …");
+                self.unexpected(recovery::expected_item());
                 Err(())
             }
         }

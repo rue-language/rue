@@ -248,9 +248,11 @@ impl Parser {
             let token = self.tokens[self.cursor].clone();
             if brace_depth > 0 && token.span.start >= initial_span.start {
                 let expected = match token.kind {
-                    TokenKind::Fn | TokenKind::Struct | TokenKind::Const => Some("identifier"),
-                    TokenKind::Unchecked => Some("'fn'"),
-                    TokenKind::Pub => Some("'unchecked' or 'fn' or 'linear' or 'struct' or …"),
+                    TokenKind::Fn | TokenKind::Struct | TokenKind::Const => {
+                        Some("identifier".to_owned())
+                    }
+                    TokenKind::Unchecked => Some("'fn'".to_owned()),
+                    TokenKind::Pub => Some(recovery::expected_after_public()),
                     _ => None,
                 };
                 // The grammar diagnostic that triggered recovery already
