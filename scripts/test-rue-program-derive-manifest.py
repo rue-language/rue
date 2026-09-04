@@ -165,6 +165,38 @@ class DeriveManifestTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("incomplete", result.stderr)
 
+    def test_include_srcs_declares_unread_srcs_without_widening_the_boundary(self):
+        # ADR-0083 / RUE-2004: rue_test observes its candidate inventory under
+        # this manifest, so a test file nothing imports — never an accepted
+        # read — has to be declared or it reads back as unparsable.
+        env = envelope(
+            "/checkout/prog",
+            "/checkout/stdroot",
+            accepted=["/checkout/prog/main.rue"],
+            absent=[],
+        )
+        srcs = ["prog/main.rue", "prog/orphan_tests.rue"]
+        without = self.run_derive(env, srcs)
+        self.assertEqual(without.returncode, 0, without.stderr)
+        self.assertNotIn("orphan_tests.rue", self.read_out())
+
+        result = self.run_derive(
+            env, srcs, out="out/with-srcs.manifest", extra=["--include-srcs"]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("../prog/orphan_tests.rue", self.read_out("out/with-srcs.manifest"))
+
+    def test_include_srcs_still_fails_an_out_of_srcs_read(self):
+        env = envelope(
+            "/checkout/prog",
+            "/checkout/stdroot",
+            accepted=["/checkout/prog/main.rue", "/checkout/prog/extra.rue"],
+            absent=[],
+        )
+        result = self.run_derive(env, ["prog/main.rue"], extra=["--include-srcs"])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("prog/extra.rue", result.stderr)
+
     def test_expect_violation_succeeds_only_on_exact_match(self):
         env = envelope(
             "/checkout/prog",

@@ -145,10 +145,13 @@ Build integration adds exactly one optional input in the MVP: a declared
 candidate inventory (`--test-candidates`, which the `rue_program` build rule
 feeds from its `srcs`) powering the unimported-test-file warning of §1.
 Without it, that warning degrades to a one-line notice — nothing else
-changes. No discovery, scheduling, or execution behavior lives in the build
-system, and the deferred layers (§6) keep the same boundary. (The
-maintainers' `scripts/rue test` compiler-suite wrapper is an unrelated
-homonym; see Open Questions.)
+changes. The build-side producer is the `rue_test` rule (`rue_rules.bzl`,
+RUE-2004): it runs `rue test` over a declared closure, writes that inventory
+from the same `srcs`, and is what makes an unimported test file fail a build —
+the compiler warns and still exits `0`. No discovery, scheduling, or execution
+behavior lives in the build system, and the deferred layers (§6) keep the same
+boundary. (The maintainers' `scripts/rue test` compiler-suite wrapper is an
+unrelated homonym; see Open Questions.)
 
 ## Decision
 

@@ -324,6 +324,12 @@ filtered rerun pasted from a `repro:` line. The condition is presentation only:
 `test_candidates` still answers `"none"` for such a run, and no event carries the
 closure size.
 
+The inventory file is one path per line, each relative to the ROOT MODULE'S
+DIRECTORY — the compiler's project root — and its build-side producer is the
+`rue_test` rule (`rue_rules.bzl`, ADR-0083's boundary), which writes it from
+the target's declared `srcs` and fails the target when this array is non-empty,
+since `rue test` itself reports the orphan and still exits `0`.
+
 ### `test` (listing records)
 
 `--list --format json` emits one of these per inventory entry **and nothing
