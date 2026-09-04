@@ -732,6 +732,18 @@ compile_stdout_contains = ["E0802: Chained comparison", "Chain two comparisons:"
 compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
+# The bit-reinterpretation tranche covers the sole active code in E0950-E0959:
+# the same-width requirement of `@bitCast`. Invalid source pins the invocation
+# as a non-compiling metadata path.
+[[case]]
+name = "bit_cast_width_mismatch_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0950"]
+compile_only = true
+compile_stdout_contains = ["E0950: Bit cast width mismatch", "Reinterpret across a width change:", "Reinterpret at the same width:", "docs/spec/src/04-expressions/13-intrinsics.md (spec rule 4.13:120)", "docs/spec/src/04-expressions/13-intrinsics.md (spec rule 4.13:121)", "docs/spec/src/04-expressions/13-intrinsics.md (spec rule 4.13:26)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
 [[case]]
 name = "malformed_code_is_rejected"
 files = [{ path = "main.rue", source = "fn main() {}\n" }]
