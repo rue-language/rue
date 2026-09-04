@@ -407,6 +407,32 @@ fn main() -> i32 {
 """
 exit_code = 4
 
+# A whole array ELEMENT operand is borrowed on the same terms as the array
+# itself: the element is read through the array's place, not copied out of it
+# (RUE-1997). A copy would give a non-Copy element's owned resources a second
+# owner that destroys them at the end of the comparison, while the array still
+# holds them -- so each element must still be dropped exactly once, after both
+# arrays are read again.
+[[case]]
+name = "array_element_equality_borrows_operands"
+spec = ["4.3:3f", "3.8:76"]
+description = "Comparing whole non-Copy array elements borrows them; both arrays stay usable and every element is dropped exactly once"
+source = """
+struct D { v: i32 }
+
+drop fn D(self) { @dbg(self.v); }
+
+fn main() -> i32 {
+    let a = [D { v: 1 }, D { v: 2 }];
+    let b = [D { v: 1 }, D { v: 2 }];
+    let equal = a[0] == b[0] && a[1] == b[1];
+    @dbg(a[0].v + b[1].v);
+    if equal { 0 } else { 9 }
+}
+"""
+expected_stdout = "3\n1\n2\n1\n2\n"
+exit_code = 0
+
 # A raw-pointer leaf compares by ADDRESS (identity): two structs holding the
 # address of the same local are equal; one holding a different local is not.
 [[case]]

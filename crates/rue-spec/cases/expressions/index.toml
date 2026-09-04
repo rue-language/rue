@@ -178,3 +178,74 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Whole-Element Reads in a Place Context (RUE-1997)
+# =============================================================================
+#
+# In a place context (3.8:76) -- an equality operand, a `borrow`/`inout`
+# argument, the base of a further projection -- `a[i]` names the element in the
+# array rather than producing a copy of it. Copying the array into a temporary
+# and projecting that temporary would give every non-Copy element a second
+# owner whose scope ends with the expression, destroying resources the array
+# still holds.
+
+[[case]]
+name = "whole_element_place_read_leaves_the_array_live"
+spec = ["4.11:14", "3.8:76"]
+description = "A whole non-Copy element read as an equality operand reads through the array; the same element is still live afterwards and drops exactly once"
+source = """
+struct D { v: i32 }
+
+drop fn D(self) { @dbg(self.v); }
+
+fn main() -> i32 {
+    let a = [D { v: 7 }, D { v: 8 }];
+    let b = [D { v: 7 }, D { v: 8 }];
+    let equal = a[1] == b[1];
+    @dbg(a[1].v);
+    if equal { 0 } else { 9 }
+}
+"""
+expected_stdout = "8\n7\n8\n7\n8\n"
+exit_code = 0
+
+[[case]]
+name = "whole_element_place_read_with_runtime_index"
+spec = ["4.11:8", "4.11:14", "3.8:76"]
+description = "A runtime-indexed whole-element read in a place context keeps its bounds check and does not consume the array"
+source = """
+struct D { v: i32 }
+
+drop fn D(self) { @dbg(self.v); }
+
+fn pick() -> u64 { 1 }
+
+fn main() -> i32 {
+    let a = [D { v: 4 }, D { v: 5 }];
+    let i = pick();
+    let j = pick();
+    let same = a[i] == a[j];
+    @dbg(a[1].v);
+    if same { 0 } else { 9 }
+}
+"""
+expected_stdout = "5\n4\n5\n"
+exit_code = 0
+
+[[case]]
+name = "whole_element_place_read_out_of_bounds_traps"
+spec = ["4.11:8", "4.11:9", "4.11:14"]
+description = "The bounds check on a whole-element place read still traps for an out-of-range runtime index"
+source = """
+struct D { v: i32 }
+
+fn pick() -> u64 { 5 }
+
+fn main() -> i32 {
+    let a = [D { v: 4 }, D { v: 5 }];
+    let i = pick();
+    if a[i] == a[0] { 0 } else { 9 }
+}
+"""
+exit_code = 101
