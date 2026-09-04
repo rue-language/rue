@@ -12,8 +12,9 @@ for an in-place read or `pop`
 body, demand-driven analysis (ADR-0045) fires it only when a by-copy read is
 actually called — storing/pushing/popping/dropping a drop-glue element stays legal
 (RUE-646). Mirrors Swift's rule that a non-copyable element cannot use a by-value
-`get` subscript. These cases use a self-contained minimal container so the gate is
-tested independent of the std `ArrayBuf` source.
+`get` subscript. Most cases here use a self-contained minimal container so the gate
+is tested independent of the std `ArrayBuf` source; the `real_std` cases at the end
+pin the same gate where `std/grid.rue` states it for a whole element type.
 """
 
 [[case]]
@@ -290,3 +291,110 @@ fn main() {}
 """
 compile_fail = true
 error_contains = ["E0711", "Outer"]
+
+# `std/grid.rue` states the gate for the whole element type rather than for one
+# by-copy read. `Grid2D.new(rows, cols, fill)` pushes `fill` once per cell, so
+# each use of `fill` has to duplicate it and the element type must be Copy
+# (3.8:1, RUE-2014). Rue has no Copy gate, so `new` checks the drop-glue half
+# with `@require_trivially_droppable(T)`, ahead of the fill loop: an owning
+# element type gets one E0711 naming it, instead of the moved-value error the
+# loop would otherwise raise. The two sets are not the same, and the last pair
+# of cases pins the gap — a struct that is not `@copy` has no drop glue, passes
+# the gate, and is rejected at the loop with E0205.
+[[case]]
+name = "e0711_grid2d_owning_element_rejected_at_new"
+description = "Constructing `Grid2D(StrBuf)` is rejected with E0711 naming `StrBuf`, not a moved-value error against `fill` inside std."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let G = std.grid.Grid2D(StrBuf);
+    let mut g = G.new(1, 1, "fill");
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "element of type `StrBuf`",
+]
+
+[[case]]
+name = "grid2d_copy_element_compiles"
+description = "The same constructor compiles and runs for a trivially-droppable (Copy) element type."
+source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let OI = std.option.Option(i64);
+    let G = std.grid.Grid2D(i64);
+    let mut g = G.new(3, 3, 0);
+    g.set(1, 2, 42);
+    match g.get(1, 2) { OI.Some(v) => @intCast(v), OI.None => 0 }
+}
+"""
+compile_fail = false
+real_std = true
+exit_code = 42
+
+[[case]]
+name = "grid2d_owning_element_unconstructed_compiles"
+description = "Naming `Grid2D(StrBuf)` without constructing one is legal; the constructor's gate is demand-driven (ADR-0045)."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let G = std.grid.Grid2D(StrBuf);
+    5
+}
+"""
+compile_fail = false
+real_std = true
+exit_code = 5
+
+# The gate is drop-glue, not Copy, and these two pin the difference. A struct
+# with no `drop fn` and no `@copy` is a move type (3.8:3) with no drop glue: it
+# passes the gate and is then rejected at the fill loop. Marking it `@copy`
+# (legal because its fields are Copy, 3.8:18) is the remedy the header names.
+[[case]]
+name = "grid2d_move_only_element_without_drop_glue_hits_fill_loop"
+description = "A struct that is neither `@copy` nor drop-glue passes the E0711 gate and is rejected at the fill loop with E0205 — the residual gap while Rue has no Copy gate."
+source = """
+const std = @import("std");
+
+struct Cell { a: i64, b: i64 }
+
+fn main() -> i32 {
+    let G = std.grid.Grid2D(Cell);
+    let mut g = G.new(2, 2, Cell { a: 1, b: 2 });
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0205"
+error_contains = ["E0205", "fill"]
+
+[[case]]
+name = "grid2d_copy_marked_struct_element_compiles"
+description = "Marking the same struct `@copy` makes it a Copy type, and the grid builds and reads back."
+source = """
+const std = @import("std");
+
+@copy
+struct Cell { a: i64, b: i64 }
+
+fn main() -> i32 {
+    let OC = std.option.Option(Cell);
+    let G = std.grid.Grid2D(Cell);
+    let mut g = G.new(2, 2, Cell { a: 1, b: 2 });
+    match g.get(1, 1) { OC.Some(c) => @intCast(c.a + c.b), OC.None => 0 }
+}
+"""
+compile_fail = false
+real_std = true
+exit_code = 3
