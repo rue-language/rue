@@ -1867,9 +1867,44 @@ define_error_codes! {
     // ========================================================================
     // Literal/operator errors (E0800-E0899)
     // ========================================================================
-    LITERAL_OUT_OF_RANGE = 800;
-    CANNOT_NEGATE = 801;
-    CHAINED_COMPARISON = 802;
+    LITERAL_OUT_OF_RANGE = 800 => {
+        explanation: "An integer literal must denote a value representable in the type it is given. Rue takes that type from the surrounding annotation, parameter, return position, struct field, `match` scrutinee, or constant declaration and range-checks the literal against it, so an out-of-range value is rejected rather than silently truncated or wrapped. The deliberate exception is a negated literal that denotes a signed type's minimum, such as `-128` for `i8`. Comptime evaluation applies the same check to a non-negative computed result that does not fit its target type. Float literals are governed by their own finite-value rule and do not report this code.",
+        likely_cause: "An annotation, field type, parameter, scrutinee, or constant is narrower than the literal written for it, as in `let small: u8 = 300;` or `const BAD: u8 = 300;`. Widen the target type, or write a value inside its range. An unannotated literal takes its type from its uses, so a wrong or missing annotation is the usual source.",
+        examples: [
+            ErrorCodeExample { title: "Assign a literal too large for its type", source: "fn main() -> i32 {\n    let small: u8 = 300;\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Widen the annotated type", source: "fn main() -> i32 {\n    let small: u16 = 300;\n    @intCast(small)\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Integer literal range validation", path: "docs/spec/src/03-types/01-integer-types.md", rule: Some("3.1:17") },
+            ErrorCodeReference { title: "Negated literals at a signed type's minimum", path: "docs/spec/src/03-types/01-integer-types.md", rule: Some("3.1:18") },
+            ErrorCodeReference { title: "Constant values must fit their annotation", path: "docs/spec/src/06-items/05-constants.md", rule: Some("6.5:5") },
+        ],
+    };
+    CANNOT_NEGATE = 801 => {
+        explanation: "Unary `-` requires a signed integer or floating-point operand. Unsigned integer types have no negative range, and non-numeric types such as `bool` or `()` are not negatable at all, so applying `-` to either is a compile-time error. The same rule rejects a negative integer literal pattern whose `match` scrutinee has an unsigned type, because such an arm could never match.",
+        likely_cause: "The operand's annotated or inferred type is an unsigned integer (`u8` through `u64`, `usize`) or a non-numeric type. Give the value a signed integer or floating-point type, or compute the quantity you meant with subtraction on the unsigned type instead of negating it.",
+        examples: [
+            ErrorCodeExample { title: "Negate an unsigned value", source: "fn main() -> i32 {\n    let count: u32 = 5;\n    let negated = -count;\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Negate a signed value", source: "fn main() -> i32 {\n    let count: i32 = 5;\n    -count\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Unary negation operand types", path: "docs/spec/src/04-expressions/02-arithmetic-operators.md", rule: Some("4.2:14") },
+            ErrorCodeReference { title: "Unary negation semantics", path: "docs/spec/src/04-expressions/02-arithmetic-operators.md", rule: Some("4.2:6") },
+            ErrorCodeReference { title: "Negative patterns on unsigned scrutinees", path: "docs/spec/src/04-expressions/07-match-expressions.md", rule: Some("4.7:24") },
+        ],
+    };
+    CHAINED_COMPARISON = 802 => {
+        explanation: "Comparison operators cannot be chained. They share one precedence level and associate to the left, so `a < b < c` would parse as `(a < b) < c` and compare a boolean against `c` rather than testing an ordering. The parser rejects the chain syntactically whenever a comparison expression is directly the left operand of another comparison; explicit parentheses break the chain, so `(a < b) == c` stays an ordinary boolean equality and is typed like any other.",
+        likely_cause: "A range test was written in mathematical notation, such as `low < value < high`. Combine two complete comparisons with `&&`, or parenthesize the boolean operand when a comparison against a boolean is what was actually meant.",
+        examples: [
+            ErrorCodeExample { title: "Chain two comparisons", source: "fn main() -> i32 {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    if a < b < c { 1 } else { 0 }\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Combine comparisons with a logical operator", source: "fn main() -> i32 {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    if a < b && b < c { 1 } else { 0 }\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Comparison operators cannot be chained", path: "docs/spec/src/04-expressions/03-comparison-operators.md", rule: Some("4.3:12") },
+            ErrorCodeReference { title: "Combining comparisons with logical operators", path: "docs/spec/src/04-expressions/03-comparison-operators.md", rule: Some("4.3:13") },
+        ],
+    };
 
     // ========================================================================
     // Array errors (E0900-E0999)
@@ -4507,6 +4542,38 @@ mod tests {
         assert_eq!(
             retired.to_string().parse::<ErrorCode>(),
             Err(ParseErrorCodeError::Unknown(retired))
+        );
+    }
+
+    #[test]
+    fn active_literal_and_operator_explanation_band_is_complete_and_bounded() {
+        let expected = [
+            ErrorCode::LITERAL_OUT_OF_RANGE,
+            ErrorCode::CANNOT_NEGATE,
+            ErrorCode::CHAINED_COMPARISON,
+        ];
+        let active = error_code_metadata()
+            .iter()
+            .filter(|metadata| (800..=802).contains(&metadata.code.0))
+            .map(|metadata| {
+                assert_eq!(metadata.source_path, "crates/rue-error/src/lib.rs");
+                metadata.code
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(active, expected);
+        let explained = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (800..=802)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(explained, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
         );
     }
 

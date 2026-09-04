@@ -112,10 +112,10 @@ rue_rust_test(
 # consumer verifies the bounded documented lexer, parser, semantic-foundation,
 # struct-foundation, method/item, enum/place, place/borrow, and
 # const/item/ownership, single-file destructor/const, slice/string/container,
-# match, and single-file intrinsic/inference/ownership/alignment tranches
-# through the real one-shot compiler path without copying the examples into a
-# second fixture. Multi-file E0460 and import/module examples are validated by
-# compiler unit tests.
+# match, single-file intrinsic/inference/ownership/alignment, and
+# literal/operator tranches through the real one-shot compiler path without
+# copying the examples into a second fixture. Multi-file E0460 and
+# import/module examples are validated by compiler unit tests.
 rue_rust_test(
     name = "error-explanation-examples-test",
     srcs = ["tests/error_explanation_examples.rs"],
