@@ -187,7 +187,98 @@ test_cache_install() {
     rc=0
     HOME="$sb/home" XDG_CONFIG_HOME="$sb/config" \
         "$SRC_ROOT/scripts/provision-build-cache" apply >/dev/null 2>&1 || rc=$?
-    check "cache: install is the only subcommand" "$([ "$rc" -eq 2 ] && echo 0 || echo 1)"
+    check "cache: an unknown subcommand is refused" "$([ "$rc" -eq 2 ] && echo 0 || echo 1)"
+    rm -rf "$sb"
+}
+
+# RUE-2009: provisioning is lazy, so a job can reach its build with a daemon
+# that never loaded the BuildBuddy config -- no remote cache, everything built
+# locally, nothing red. `verify` asks Buck itself, before the build, and fails
+# the setup step when the secret is present and the daemon has no engine
+# address. The fake buck2 stands in for that answer; no daemon runs here.
+test_cache_verify() {
+    local sb key out rc
+    sb="$(mktemp -d)"
+    key='test-secret-that-must-not-be-printed'
+    mkdir -p "$sb/scripts"
+    cp "$SRC_ROOT/scripts/provision-build-cache" "$sb/scripts/provision-build-cache"
+    chmod +x "$sb/scripts/provision-build-cache"
+    cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"$BUCK_AUDIT_ARGS"
+if [[ -f "$BUCK_AUDIT_OUTPUT" ]]; then cat "$BUCK_AUDIT_OUTPUT"; fi
+exit "${BUCK_AUDIT_STATUS:-0}"
+EOF
+    chmod +x "$sb/buck2"
+
+    # A daemon that loaded the config reports the address, and the check asks
+    # for that one key: the section as a whole carries the credential header.
+    printf 'buck2_re_client.engine_address = grpc://remote.buildbuddy.io\n' >"$sb/audit.out"
+    rc=0
+    out="$(cd "$sb" && HOME="$sb/home" XDG_CONFIG_HOME="$sb/config" BUILDBUDDY_API_KEY="$key" \
+        BUCK_AUDIT_ARGS="$sb/audit.args" BUCK_AUDIT_OUTPUT="$sb/audit.out" \
+        scripts/provision-build-cache verify 2>&1)" || rc=$?
+    check "cache: a daemon with an engine address passes verification" \
+        "$([ "$rc" -eq 0 ] && grep -Fq 'Remote action cache verified' <<<"$out" && echo 0 || echo 1)"
+    check "cache: verification asks Buck for the address key alone" \
+        "$([ "$(cat "$sb/audit.args")" = 'audit config buck2_re_client.engine_address' ] && echo 0 || echo 1)"
+
+    # The RUE-2009 signature: the secret is present, the daemon is not
+    # configured, and every build would silently be a local one.
+    : >"$sb/audit.out"
+    rc=0
+    out="$(cd "$sb" && HOME="$sb/home" XDG_CONFIG_HOME="$sb/config" BUILDBUDDY_API_KEY="$key" \
+        BUCK_AUDIT_ARGS="$sb/audit.args" BUCK_AUDIT_OUTPUT="$sb/audit.out" \
+        scripts/provision-build-cache verify 2>&1)" || rc=$?
+    check "cache: a daemon with no engine address fails verification" \
+        "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+    check "cache: the failure names the missing engine address and its consequence" \
+        "$(grep -Fq 'no buck2_re_client.engine_address' <<<"$out" &&
+           grep -Fq 'pass silently' <<<"$out" && echo 0 || echo 1)"
+
+    # Whatever Buck prints, the credential never reaches the log.
+    printf 'buck2_re_client.http_headers = x-buildbuddy-api-key:%s\n' "$key" >"$sb/audit.out"
+    rc=0
+    out="$(cd "$sb" && HOME="$sb/home" XDG_CONFIG_HOME="$sb/config" BUILDBUDDY_API_KEY="$key" \
+        BUCK_AUDIT_ARGS="$sb/audit.args" BUCK_AUDIT_OUTPUT="$sb/audit.out" \
+        scripts/provision-build-cache verify 2>&1)" || rc=$?
+    check "cache: verification never echoes Buck's configuration or the key" \
+        "$([ "$rc" -ne 0 ] && [[ "$out" != *"$key"* ]] && echo 0 || echo 1)"
+
+    printf 'buck2_re_client.engine_address = grpc://remote.buildbuddy.io\n' >>"$sb/audit.out"
+    rc=0
+    out="$(cd "$sb" && HOME="$sb/home" XDG_CONFIG_HOME="$sb/config" BUILDBUDDY_API_KEY="$key" \
+        BUCK_AUDIT_ARGS="$sb/audit.args" BUCK_AUDIT_OUTPUT="$sb/audit.out" \
+        scripts/provision-build-cache verify 2>&1)" || rc=$?
+    check "cache: a passing verification does not echo the key either" \
+        "$([ "$rc" -eq 0 ] && [[ "$out" != *"$key"* ]] && echo 0 || echo 1)"
+
+    # An audit that cannot answer is not an answer.
+    printf 'buck2_re_client.engine_address = grpc://remote.buildbuddy.io\n' >"$sb/audit.out"
+    rc=0
+    out="$(cd "$sb" && HOME="$sb/home" XDG_CONFIG_HOME="$sb/config" BUILDBUDDY_API_KEY="$key" \
+        BUCK_AUDIT_ARGS="$sb/audit.args" BUCK_AUDIT_OUTPUT="$sb/audit.out" BUCK_AUDIT_STATUS=2 \
+        scripts/provision-build-cache verify 2>&1)" || rc=$?
+    check "cache: a failed audit fails verification rather than passing it" \
+        "$([ "$rc" -ne 0 ] && grep -Fq 'cannot confirm' <<<"$out" && echo 0 || echo 1)"
+
+    # Fork pull requests have no secret by design, and the reproducibility job
+    # opts out on purpose. Both are passes with an explanation, not failures.
+    : >"$sb/audit.out"
+    rc=0
+    out="$(cd "$sb" && HOME="$sb/home" XDG_CONFIG_HOME="$sb/config" BUILDBUDDY_API_KEY= \
+        BUCK_AUDIT_ARGS="$sb/audit.args" BUCK_AUDIT_OUTPUT="$sb/audit.out" \
+        scripts/provision-build-cache verify 2>&1)" || rc=$?
+    check "cache: a missing secret passes with the fork explanation" \
+        "$([ "$rc" -eq 0 ] && grep -Fq 'fork PR or unset' <<<"$out" && echo 0 || echo 1)"
+
+    rc=0
+    out="$(cd "$sb" && HOME="$sb/home" XDG_CONFIG_HOME="$sb/config" BUILDBUDDY_API_KEY="$key" \
+        RUE_NO_REMOTE_CACHE=1 BUCK_AUDIT_ARGS="$sb/audit.args" BUCK_AUDIT_OUTPUT="$sb/audit.out" \
+        scripts/provision-build-cache verify 2>&1)" || rc=$?
+    check "cache: a deliberately cache-free run passes with its own explanation" \
+        "$([ "$rc" -eq 0 ] && grep -Fq 'cache-free' <<<"$out" && echo 0 || echo 1)"
+
     rm -rf "$sb"
 }
 
@@ -234,9 +325,20 @@ test_buck_wrapper_links_installed_config() {
     config="$sb/config/rue/buildbuddy.buckconfig"
     write_central_config "$config"
 
-    run_wrapper "$sb" audit.args audit config build.execution_platforms
-    check "buck wrapper: non-execution commands never provision" \
+    run_wrapper "$sb" clean.args clean
+    check "buck wrapper: a command that neither builds nor reports configuration never provisions" \
         "$([ ! -e "$sb/.buckconfig.local" ] && [ ! -L "$sb/.buckconfig.local" ] && echo 0 || echo 1)"
+
+    # RUE-2009: `provision-build-cache verify` reads the daemon's remote-cache
+    # engine address through `buck2 audit config` before a job's first build, so
+    # an audit must see the configuration that build will get -- otherwise the
+    # check reports exactly the absence it exists to detect.
+    run_wrapper "$sb" audit.args audit config buck2_re_client.engine_address
+    check "buck wrapper: an audit is configured like the build it precedes" \
+        "$([[ -L "$sb/.buckconfig.local" ]] && [ "$(readlink "$sb/.buckconfig.local")" = "$config" ] && echo 0 || echo 1)"
+    check "buck wrapper: an audit still receives no execution preference" \
+        "$(! grep -Fxq -- '--prefer-local' "$sb/audit.args" && echo 0 || echo 1)"
+    rm "$sb/.buckconfig.local"
 
     run_wrapper "$sb" build.args build //:probe
     check "buck wrapper: the first execution command links .buckconfig.local to the installed config" \
@@ -506,6 +608,7 @@ EOF
 }
 
 test_cache_install
+test_cache_verify
 test_buck_wrapper_prefers_local_cache_misses
 test_buck_wrapper_links_installed_config
 test_buck_wrapper_retries_only_truncated_cas_materialization

@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
-# Install one private BuildBuddy Buck config for the current user. The
-# repository ./buck2 wrapper links .buckconfig.local to that file in any
-# worktree on the first execution command there, so installing it is the whole
-# provisioning step.
+# Install one private BuildBuddy Buck config for the current user, and verify
+# that Buck actually picked it up. The repository ./buck2 wrapper links
+# .buckconfig.local to that file in any worktree on the first command there
+# that needs it, so installing it is the whole provisioning step; `verify`
+# exists because that link is lazy and a daemon without it is silent.
 set -euo pipefail
 
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 config_home="${XDG_CONFIG_HOME:-${HOME:?HOME must be set}/.config}"
 central_config="${RUE_BUILDBUDDY_CONFIG:-$config_home/rue/buildbuddy.buckconfig}"
+local_config="$repo_root/.buckconfig.local"
+
+# The engine address is the one [buck2_re_client] key that says the daemon can
+# reach BuildBuddy at all. Ask Buck for exactly it: the section as a whole
+# carries the credential header.
+engine_address_key='buck2_re_client.engine_address'
 
 usage() {
     cat <<'USAGE'
 usage: scripts/provision-build-cache install
+       scripts/provision-build-cache verify
 
 install reads BUILDBUDDY_API_KEY, or prompts without echo on a terminal, and
 atomically writes the private config with mode 0600 to
@@ -18,6 +27,11 @@ ${XDG_CONFIG_HOME:-~/.config}/rue/buildbuddy.buckconfig (RUE_BUILDBUDDY_CONFIG
 names another path). Re-run it to replace an existing config. The credential
 is never printed. Remove the file to stop using the remote cache, or set
 RUE_NO_REMOTE_CACHE=1 to keep one command cache-free.
+
+verify asks the Buck daemon whether it actually has a remote-cache engine
+address and fails when BUILDBUDDY_API_KEY is set but the daemon has none. It
+passes with an explanatory line where no cache is expected: a fork pull
+request without the secret, or RUE_NO_REMOTE_CACHE=1.
 USAGE
 }
 
@@ -77,10 +91,72 @@ CONFIG
     echo "Installed private BuildBuddy config at $central_config"
 }
 
+# A daemon that never loaded the BuildBuddy config builds everything locally
+# and turns nothing red: CI run 33774551666 had seventeen such jobs, reporting
+# `Internal error (stage: remote_action_cache) ... Error: (No engine address)`
+# in their logs while every one of them went green (RUE-2009). Provisioning is
+# lazy -- the ./buck2 wrapper links .buckconfig.local on the first command that
+# needs it -- so the only trustworthy answer comes from Buck itself. This runs
+# before a job's first build, and the wrapper links the config for `audit` too,
+# so the daemon that answers is configured exactly as the build will be.
+verify_daemon_cache() {
+    if [[ "${RUE_NO_REMOTE_CACHE:-}" == 1 ]]; then
+        echo "RUE_NO_REMOTE_CACHE=1: this run is deliberately cache-free, so there is no remote cache to verify."
+        return 0
+    fi
+    if [[ -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+        echo "BUILDBUDDY_API_KEY unavailable (fork PR or unset); building without the remote cache, so there is nothing to verify."
+        return 0
+    fi
+
+    local prefix='error: '
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+        prefix='::error::'
+    fi
+
+    local audit_output status=0
+    audit_output="$(mktemp "${TMPDIR:-/tmp}/rue-cache-verify.XXXXXX")"
+    trap 'rm -f "$audit_output"' EXIT
+    # Only Buck's stdout is captured, and it holds nothing but the requested
+    # key. Buck's own progress and diagnostics stay on stderr, where the job
+    # log shows them as they happen.
+    "$repo_root/buck2" audit config "$engine_address_key" >"$audit_output" || status=$?
+
+    if [[ "$status" -ne 0 ]]; then
+        {
+            printf '%sbuck2 audit config %s failed (exit %s), so this job cannot confirm it has a remote action cache.\n' \
+                "$prefix" "$engine_address_key" "$status"
+            printf "Re-run it by hand to see Buck's own diagnosis.\n"
+        } >&2
+        exit 1
+    fi
+
+    # Match the address key only, and never echo the audit output.
+    if ! grep -Eq '(^|[.[:space:]])engine_address[[:space:]]*=[[:space:]]*[^[:space:]]' "$audit_output" &&
+       ! grep -Eq '^[[:space:]]*grpc://[^[:space:]]+[[:space:]]*$' "$audit_output"; then
+        {
+            printf '%sthe Buck daemon reports no %s while BUILDBUDDY_API_KEY is set: this job has no remote action cache, would rebuild everything locally, and would pass silently.\n' \
+                "$prefix" "$engine_address_key"
+            printf 'Provisioning writes %s, and the ./buck2 wrapper links %s to it. Check that scripts/provision-build-cache install ran in this job and that the link exists.\n' \
+                "$central_config" "$local_config"
+            printf 'Set RUE_NO_REMOTE_CACHE=1 for a deliberately cache-free run.\n'
+        } >&2
+        exit 1
+    fi
+
+    rm -f "$audit_output"
+    trap - EXIT
+    echo "Remote action cache verified: the Buck daemon reports a $engine_address_key."
+}
+
 case "${1:-}" in
     install)
         [[ $# -eq 1 ]] || { usage >&2; exit 2; }
         install_config
+        ;;
+    verify)
+        [[ $# -eq 1 ]] || { usage >&2; exit 2; }
+        verify_daemon_cache
         ;;
     -h|--help|help)
         usage

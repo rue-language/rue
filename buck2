@@ -6,6 +6,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 args=("$@")
 
 execution_command=0
+audit_command=0
 explicit_preference=0
 remote_cache_disabled=0
 if [[ "${#args[@]}" -gt 0 ]]; then
@@ -13,6 +14,7 @@ if [[ "${#args[@]}" -gt 0 ]]; then
         [[ "$arg" == "--" ]] && break
         case "$arg" in
             build|test|run|install) execution_command=1 ;;
+            audit) audit_command=1 ;;
             --prefer-local|--prefer-remote|--remote-only) explicit_preference=1 ;;
             --local-only) explicit_preference=1; remote_cache_disabled=1 ;;
             --no-remote-cache) remote_cache_disabled=1 ;;
@@ -61,9 +63,16 @@ fi
 # symlink or file, belongs to the user and is left alone, and a config another
 # account can read is refused with a warning rather than linked; neither ever
 # blocks a local build.
+#
+# `audit` links too, because it is how the configuration is read back:
+# `scripts/provision-build-cache verify` asks the daemon for its remote-cache
+# engine address before a job's first build (RUE-2009), and an audit that saw a
+# different configuration than the following build would report exactly the
+# absence it exists to detect. Commands that neither execute actions nor report
+# configuration still write nothing into the checkout.
 central_config="${RUE_BUILDBUDDY_CONFIG:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/rue/buildbuddy.buckconfig}"
 local_config="$repo_root/.buckconfig.local"
-if [[ "$execution_command" -eq 1 ]] && [[ "${RUE_NO_REMOTE_CACHE:-}" != 1 ]] &&
+if [[ "$execution_command" -eq 1 || "$audit_command" -eq 1 ]] && [[ "${RUE_NO_REMOTE_CACHE:-}" != 1 ]] &&
    [[ -f "$central_config" ]] && [[ ! -e "$local_config" ]] && [[ ! -L "$local_config" ]]; then
     # GNU stat first, then the BSD spelling.
     mode="$(stat -c '%a' "$central_config" 2>/dev/null || stat -f '%Lp' "$central_config" 2>/dev/null || true)"

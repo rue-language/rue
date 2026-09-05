@@ -182,6 +182,10 @@ jobs:
       # merge_group and workflow_dispatch runs. That is where it matters: the
       # merge queue serializes on this workflow. The cold fallback is
       # mandatory; this step must never fail because the secret is absent.
+      # With the secret present it must fail rather than build cache-free:
+      # `verify` asks the daemon for its remote-cache engine address, because
+      # provisioning is lazy and a daemon that loaded none is invisible in a
+      # green job (RUE-2009). Every other job below follows the same shape.
       - name: Provision remote build cache
         if: steps.sel.outputs.run == 'true'
         env:
@@ -192,6 +196,7 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
+          scripts/provision-build-cache verify
 
       - name: Run clippy
         if: steps.sel.outputs.run == 'true'
@@ -247,6 +252,7 @@ jobs:
             exit 1
           fi
           scripts/provision-build-cache install
+          scripts/provision-build-cache verify
 
       - name: Build compiler remotely
         env:
@@ -326,6 +332,7 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
+          scripts/provision-build-cache verify
 
       # RUE-1130: materialize the determinator's impacted-target closure so the
       # heavy steps below can run exactly it. `narrowed` is the determinator's
@@ -634,6 +641,7 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
+          scripts/provision-build-cache verify
 
       - name: Check the performance series is still advancing
         # Is the series *already* stalled? A repository-wide condition, so this
@@ -810,6 +818,7 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
+          scripts/provision-build-cache verify
 
       - name: Build native compiler and linker
         if: steps.sel.outputs.run == 'true'
@@ -963,6 +972,7 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
+          scripts/provision-build-cache verify
 
       - name: Check rue_program digest sensitivity
         if: steps.sel.outputs.run == 'true'
@@ -1031,6 +1041,7 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
+          scripts/provision-build-cache verify
 
       - name: Decide affected corpus targets
         # Fail-open: the script always exits 0 with a decision (full on any
@@ -1105,6 +1116,7 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
+          scripts/provision-build-cache verify
 
       - name: Run ${{ matrix.name }} corpus
         if: steps.sel.outputs.run == 'true'
@@ -1171,6 +1183,7 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
+          scripts/provision-build-cache verify
 
       # Direct RUE-277 guard: inspect Buck's analyzed rustc_cfg actions instead
       # of inferring optimization from complete binary bytes. This performs no
@@ -1223,6 +1236,7 @@ jobs:
             exit 0
           fi
           scripts/provision-build-cache install
+          scripts/provision-build-cache verify
 
       - name: Install valgrind
         if: steps.sel.outputs.run == 'true'

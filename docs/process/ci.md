@@ -186,6 +186,15 @@ compiler-reproducibility job is the deliberate exception: its two independently
 materialized compiler builds stay local and cache-free, while the ordinary
 linux-x64 test lane may use BuildBuddy.
 
+Each provisioning step runs `scripts/provision-build-cache verify` after
+`install`. Provisioning is a lazy `.buckconfig.local` link, so a daemon can
+reach the build having loaded none of it — seventeen jobs in run 33774551666
+built with no remote cache and went green (RUE-2009). `verify` asks Buck for
+`buck2_re_client.engine_address` and fails the setup step when the secret is
+present and the daemon has none; where no cache is expected — a fork pull
+request without the secret, or `RUE_NO_REMOTE_CACHE=1` — it passes with an
+explanatory line.
+
 Required release coverage is intentionally focused (RUE-1129). The
 `release (linux-x64)` job analyzes Buck's configured `rustc_cfg` actions and
 fails unless `//platforms:release` supplies `-Copt-level=3 -Clto=thin` while
@@ -760,8 +769,9 @@ shard summaries also show the number of measured cases next to wall time. Read
 wall time together with hit count: a small number of invalidated ThinLTO actions
 can dominate a release build even when its hit rate is above 90 percent.
 
-Each summary also reports the action-cache hit rate and the summed duration of
-the test processes themselves. That last figure is deliberately separate from
+Each summary also reports whether the step had an action cache at all
+(`used`, `unused`, or `off`), the action-cache hit rate, and the summed duration
+of the test processes themselves. That last figure is deliberately separate from
 the cached/remote/local counters, which describe only how Buck *obtained* each
 action: a corpus lane whose wall time is one harness process is a sharding
 problem, and a lane whose wall time is uncached actions is a cache problem.

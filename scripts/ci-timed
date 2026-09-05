@@ -116,6 +116,39 @@ if [[ -n "$network" ]]; then
     network_down="${network##* }"
 fi
 
+# Whether this step had an action cache at all. A daemon that never loaded the
+# BuildBuddy config builds everything locally and turns nothing red: seventeen
+# jobs in CI run 33774551666 did exactly that, and only a raw log said so
+# (RUE-2009). `scripts/provision-build-cache verify` fails a job's setup when
+# the secret is present and the daemon has no engine address; this column
+# reports the same fact per step, for the lanes where no cache is expected too.
+# The configuration is read from the checkout's .buckconfig.local -- the
+# wrapper links it lazily, so it is read after the command rather than before,
+# and only the address key is matched, never the credential header beside it.
+action_cache="off"
+cache_configured=0
+if [[ "${RUE_NO_REMOTE_CACHE:-}" != 1 ]] && [[ -r "$PWD/.buckconfig.local" ]] &&
+   grep -Eq '^[[:space:]]*engine_address[[:space:]]*=[[:space:]]*[^[:space:]]' "$PWD/.buckconfig.local"; then
+    cache_configured=1
+fi
+# Buck's own cache opt-outs are part of the step's identity: the merge-group
+# remote-execution canary runs --no-remote-cache deliberately.
+for arg in "$@"; do
+    [[ "$arg" == "--" ]] && break
+    case "$arg" in
+        --no-remote-cache|--local-only) cache_configured=0 ;;
+    esac
+done
+if [[ "$cache_configured" -eq 1 ]]; then
+    if [[ "$invocations" -eq 0 ]]; then
+        action_cache="configured"
+    elif [[ $((cached + remote)) -gt 0 ]]; then
+        action_cache="used"
+    else
+        action_cache="unused"
+    fi
+fi
+
 if [[ "$status" -eq 0 && "${RUE_CI_REQUIRE_REMOTE_ACTIONS:-0}" == "1" && "$remote" -eq 0 ]]; then
     echo "::error::remote-execution canary completed without any remotely executed Buck actions" >&2
     status=1
@@ -132,11 +165,16 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     {
         echo "### CI timing: $safe_label"
         echo
-        echo "| Result | Wall time | Test time | Cache hits | CLI cases | Buck invocations | Commands | Cached | Remote | Local | Net down | Net up |"
-        echo "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
-        echo "| $result | ${elapsed}s | $test_time | $hit_rate | $cli_cases | $invocations | $commands | $cached | $remote | $local_actions | $network_down | $network_up |"
+        echo "| Result | Wall time | Test time | Cache hits | Action cache | CLI cases | Buck invocations | Commands | Cached | Remote | Local | Net down | Net up |"
+        echo "| --- | ---: | ---: | ---: | :---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+        echo "| $result | ${elapsed}s | $test_time | $hit_rate | $action_cache | $cli_cases | $invocations | $commands | $cached | $remote | $local_actions | $network_down | $network_up |"
         echo
-        echo "<sup>Cached/Remote/Local count Buck actions by how each was obtained."
+        echo "<sup>Action cache: <code>used</code> is a step whose Buck invocations"
+        echo "obtained actions from BuildBuddy, <code>unused</code> a step configured"
+        echo "for it that obtained none, <code>off</code> a step with no engine address"
+        echo "at all — a fork pull request, or a deliberately cache-free lane — and"
+        echo "<code>configured</code> a step that ran no Buck invocation to measure."
+        echo "Cached/Remote/Local count Buck actions by how each was obtained."
         echo "Test time is the summed duration Buck reports for the test processes"
         echo "themselves — opaque to those counters, and where a corpus lane's wall"
         echo "time actually goes. Net down/up is Buck's own byte count for the"

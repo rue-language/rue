@@ -27,6 +27,7 @@
 #                                  (status | plan [age] | clean [age] | reset ROOT ...)
 #   scripts/rue gc [age]           Compatibility alias for host-wide stale cleanup
 #   scripts/rue cache install      Install the private BuildBuddy cache config
+#   scripts/rue cache verify       Check that the Buck daemon has a cache engine address
 #   scripts/rue path               Print the absolute binary path (build if needed)
 #
 set -euo pipefail
