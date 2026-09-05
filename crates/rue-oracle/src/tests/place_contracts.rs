@@ -187,10 +187,21 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
         small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
         heap_metadata_bytes: 0,
     };
-    let inout = expect_flow_unsupported(ordinary_interp.lvalue_of(ordinary_cfg, ordinary_param));
-    assert_eq!(
-        inout.kind(),
-        UnsupportedKind::ContractViolation(ContractViolationKind::InoutArgumentNotLvalue)
+    // A by-value parameter is the frame's own mutable storage, so passing it
+    // `inout` to a nested call is an ordinary write-back to its slot
+    // (RUE-2042); only a projection of one, above, is not caller-writable.
+    let Ok(inout) = ordinary_interp.lvalue_of(ordinary_cfg, ordinary_param) else {
+        panic!("a by-value parameter slot is an inout lvalue");
+    };
+    assert!(
+        matches!(
+            inout,
+            WritebackPlace::Simple {
+                base: PlaceBase::Param(0),
+                ..
+            }
+        ),
+        "the write-back place is the parameter slot itself"
     );
 }
 

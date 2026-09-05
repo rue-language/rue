@@ -1,18 +1,12 @@
-diff --git a/crates/rue-cfg/src/opt/cse.rs b/crates/rue-cfg/src/opt/cse.rs
---- a/crates/rue-cfg/src/opt/cse.rs
-+++ b/crates/rue-cfg/src/opt/cse.rs
-@@ -207,13 +207,13 @@ fn never_written_params(cfg: &Cfg) -> Vec<bool> {
+diff --git a/crates/rue-cfg/src/opt/slot_facts.rs b/crates/rue-cfg/src/opt/slot_facts.rs
+--- a/crates/rue-cfg/src/opt/slot_facts.rs
++++ b/crates/rue-cfg/src/opt/slot_facts.rs
+@@ -421,7 +421,7 @@ pub(super) fn classify_slot_writes(cfg: &Cfg, reachable: Option<&BitSet>) -> Vec
+ pub(super) fn classify_never_written_params(cfg: &Cfg) -> Vec<bool> {
      let num_params = cfg.num_params() as usize;
-     let mut never_written = vec![false; num_params];
-     for (slot, flag) in never_written.iter_mut().enumerate() {
-         // A parameter whose ADDRESS escapes through @raw/@raw_mut/@field_ptr
-         // is mutable through the raw pointer (@ptr_write), so its reads are
-         // NOT interchangeable even though nothing writes it directly — keying
-         // such reads merged a post-write read into the stale pre-write value
-         // (found by the 2026-07-16 optimizer hunt).
--        *flag = !cfg.is_param_writable(slot as u32) && !cfg.is_param_address_taken(slot as u32);
-+        *flag = !cfg.is_param_writable(slot as u32);
-     }
-
-     for block in cfg.blocks() {
-         for &value in &block.insts {
+     let mut never_written: Vec<bool> = (0..num_params as u32)
+-        .map(|slot| !cfg.is_param_writable(slot) && !cfg.is_param_address_taken(slot))
++        .map(|slot| !cfg.is_param_writable(slot))
+         .collect();
+ 
+     // Out-of-range slots are skipped rather than panicking, matching

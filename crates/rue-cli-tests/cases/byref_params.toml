@@ -29,11 +29,16 @@
 # (`g(inout v)` inside `fn f(inout v: T)`, and since RUE-143 also
 # `g(borrow v)` inside `fn f(borrow v: T)`) is a re-borrow, not a move, and
 # must keep working.
+#
+# The caller's side of the same boundary closes the file (RUE-2042): once a
+# place is passed by reference, every later read of its root observes what the
+# callee wrote — including when that root is the caller's own by-value
+# parameter.
 
 [section]
 id = "cli.byref_params"
 name = "By-ref parameter soundness"
-description = "Field/element by-ref arguments and moves out of inout parameters (RUE-127, RUE-143)."
+description = "Field/element by-ref arguments, moves out of inout parameters, and re-reading a by-ref argument's root after the call (RUE-127, RUE-143, RUE-2042)."
 
 # ---------------------------------------------------------------------------
 # By-ref arguments accept place projections (RUE-143): the callee must see
@@ -642,3 +647,154 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 42
+
+# ---------------------------------------------------------------------------
+# The CALLER's own parameter passed by reference (RUE-2042).
+#
+# Passing a place by reference hands the callee that place's ADDRESS, so every
+# read of the same root after the call must observe what the callee wrote.
+# That holds whatever the root is, and a caller's own by-value parameter is a
+# root like any other: `fn f(v: i64) { bump(inout v); v }` returns 6, not 5.
+#
+# A parameter read is materialized as a `Param { index }` instruction rather
+# than a `Load`, and the optimizer keys repeated reads of a never-written
+# parameter slot to one value so expressions over parameters deduplicate. The
+# by-ref call argument is one of the channels that writes such a slot, so the
+# post-call read is a distinct value; the classification lives with the local
+# one in rue-cfg's `opt::slot_facts`. Every case here is `differential_opt`:
+# -O2/-O3 must agree with the -O0 baseline, which is where the divergence was.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "inout_param_arg_reread_after_call"
+differential_opt = true
+description = "RUE-2042 repro: a scalar by-value parameter passed `inout` reads the callee's write afterwards, not its entry value."
+files = [{ path = "main.rue", source = """
+fn bump(inout x: i64) { x = x + 1; }
+fn f(v: i64) -> i64 { bump(inout v); v }
+fn main() -> i32 { @intCast(f(5)) }
+""" }]
+stdout = ""
+exit_code = 6
+
+[[case]]
+name = "inout_param_arg_raw_pointer_write_reread"
+differential_opt = true
+description = "The callee writes through a raw pointer into the `inout` parameter instead of assigning it; the caller's post-call read still observes the write."
+files = [{ path = "main.rue", source = """
+fn poke(inout x: i64) {
+    let p: ptr mut i64 = checked { @raw_mut(x) };
+    checked { @ptr_write(p, 42); };
+}
+fn f(v: i64) -> i64 { poke(inout v); v }
+fn main() -> i32 { @intCast(f(5)) }
+""" }]
+stdout = ""
+exit_code = 42
+
+[[case]]
+name = "inout_param_arg_in_loop_reread"
+differential_opt = true
+description = "The call sits in a loop body: each iteration's read must observe the previous iteration's write, so three iterations add three."
+files = [{ path = "main.rue", source = """
+fn bump(inout x: i64) { x = x + 1; }
+fn f(v: i64) -> i64 {
+    let mut i: i64 = 0;
+    while i < 3 {
+        bump(inout v);
+        i = i + 1;
+    }
+    v
+}
+fn main() -> i32 { @intCast(f(5)) }
+""" }]
+stdout = ""
+exit_code = 8
+
+[[case]]
+name = "inout_param_arg_in_branch_reread"
+differential_opt = true
+description = "The call sits in one arm of an `if` and the read is after the join, so the taken arm reports 6 and the untaken one reports 5."
+files = [{ path = "main.rue", source = """
+fn bump(inout x: i64) { x = x + 1; }
+fn f(v: i64, c: bool) -> i64 {
+    if c { bump(inout v); }
+    v
+}
+fn main() -> i32 {
+    @dbg(f(5, true));
+    @dbg(f(5, false));
+    0
+}
+""" }]
+stdout = """
+6
+5
+"""
+exit_code = 0
+
+[[case]]
+name = "inout_param_arg_passed_twice_reread"
+differential_opt = true
+description = "Two by-ref passes of the same parameter: the second call's argument reads the first call's write, and so does the final read."
+files = [{ path = "main.rue", source = """
+fn bump(inout x: i64) { x = x + 1; }
+fn f(v: i64) -> i64 { bump(inout v); bump(inout v); v }
+fn main() -> i32 { @intCast(f(5)) }
+""" }]
+stdout = ""
+exit_code = 7
+
+[[case]]
+name = "inout_param_arg_subword_and_float_scalars"
+differential_opt = true
+description = "The rule is per ABI slot, not per width: `u8`, `bool`, and `f64` parameters passed `inout` all re-read the callee's write."
+files = [{ path = "main.rue", source = """
+fn bump8(inout x: u8) { x = x + 1; }
+fn flip(inout b: bool) { b = !b; }
+fn bumpf(inout x: f64) { x = x + 1.0; }
+fn u8_case(v: u8) -> u8 { bump8(inout v); v }
+fn bool_case(v: bool) -> bool { flip(inout v); v }
+fn f64_case(v: f64) -> f64 { bumpf(inout v); v }
+fn main() -> i32 {
+    @dbg(u8_case(5));
+    @dbg(bool_case(false));
+    @dbg(f64_case(5.0));
+    0
+}
+""" }]
+stdout = """
+6
+true
+6.0
+"""
+exit_code = 0
+
+[[case]]
+name = "inout_local_arg_reread_control"
+differential_opt = true
+description = "Control: the same callee on a LOCAL root, which reads through a `Load` rather than a parameter read and was always correct."
+files = [{ path = "main.rue", source = """
+fn bump(inout x: i64) { x = x + 1; }
+fn f(v: i64) -> i64 {
+    let mut l = v;
+    bump(inout l);
+    l
+}
+fn main() -> i32 { @intCast(f(5)) }
+""" }]
+stdout = ""
+exit_code = 6
+
+[[case]]
+name = "inout_aggregate_param_arg_reread_control"
+differential_opt = true
+description = "Control: a multi-slot aggregate parameter passed `inout` reads through a projection rather than a whole-slot parameter read, and was always correct."
+files = [{ path = "main.rue", source = """
+struct P { a: i64, b: i64 }
+fn poke(inout p: P) { p.a = 9; }
+fn f(v: P) -> i64 { poke(inout v); v.a }
+fn main() -> i32 { @intCast(f(P { a: 1, b: 2 })) }
+""" }]
+stdout = ""
+exit_code = 9

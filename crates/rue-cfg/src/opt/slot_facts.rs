@@ -7,8 +7,18 @@
 //! that nothing else can write. Each pass used to restate the scan that
 //! decides this; a rule learned in one (a new escape channel, a new write
 //! form) could silently miss the other. Following the [`super::classify`]
-//! precedent (ADR-0054 §2), this module names the discipline once and both
-//! passes consume it.
+//! precedent (ADR-0054 §2), this module names the discipline once and every
+//! consumer reads it from here.
+//!
+//! The same discipline covers both slot kinds, and deliberately in one place:
+//! [`classify_slot_writes`] classifies *local* slots for constopt and
+//! forwarding, [`classify_never_written_params`] classifies *parameter* ABI
+//! slots for CSE's parameter-read keying, and
+//! [`LoopSlotFactsWorkspace::classify_loop_slot_invariance`] classifies both
+//! per loop for LICM. A local and a parameter have the same write channels —
+//! a direct write, a projected write, an address escape, and a by-ref call
+//! argument that hands the callee the slot's address — so the parameter side
+//! must never be the weaker analysis.
 //!
 //! ## What qualifies a slot
 //!
@@ -357,6 +367,117 @@ pub(super) fn classify_slot_writes(cfg: &Cfg, reachable: Option<&BitSet>) -> Vec
     }
 
     slot_writes
+}
+
+/// Classify every parameter ABI slot as *never written*: `true` means every
+/// `Param { index }` read of that slot observes the identical value for the
+/// whole function body, so the reads are interchangeable.
+///
+/// [`super::cse`] keys such reads by slot so that expressions built over
+/// parameters deduplicate (RUE-914). The classification lives here, beside
+/// [`classify_slot_writes`], because a parameter slot has exactly the same
+/// write channels as a local one and the two must not drift apart: a channel
+/// learned for locals is a channel for parameters.
+///
+/// Indexing is by ABI slot — the numbering shared by `Param { index }`,
+/// `ParamStore`'s `param_slot`, [`Cfg::is_param_writable`], and
+/// `PlaceBase::Param`, all of which flow from sema's `abi_slot`.
+///
+/// A slot is disqualified by any of these channels:
+///
+/// - **Logically writable slots** (`inout`, or a `mut self` receiver): the
+///   callee body assigns them. A plain by-value (`Normal`) parameter cannot be
+///   assigned in its own body (E0203), and neither can a `borrow` one.
+/// - **Address-taken slots** (`@raw`/`@raw_mut`/`@field_ptr`, recorded by
+///   CfgBuilder): a raw pointer may store into the slot between two reads.
+/// - **A `ParamStore` targeting the slot, or a projected `PlaceWrite` rooted at
+///   it**: a direct whole or partial write.
+/// - **A by-ref (`inout`/`borrow`) call argument rooted at the slot**, on
+///   either call form. This is the channel that makes a *caller's* own
+///   parameter mutable without the caller ever writing it: passing the slot
+///   by reference hands its ADDRESS to the callee for the duration of the
+///   call, and the callee writes through that address (an `inout` assignment,
+///   or `@raw_mut` plus `@ptr_write` — which the frontend also allows on a
+///   `borrow` parameter, so a `borrow` argument counts as a write here until
+///   RUE-2047 rules on that). A read after such a call is therefore not
+///   interchangeable with a read before it. This is the same rule
+///   [`classify_slot_writes`] applies to a local passed by reference, and the
+///   same one [`LoopSlotFactsWorkspace::classify_loop_slot_invariance`]
+///   applies per loop.
+///
+/// A by-ref argument whose root this scan cannot resolve to a specific slot
+/// (an accessor-yielded or indirect place) disqualifies every parameter for
+/// the whole function. That is deliberately stricter than
+/// [`classify_slot_writes`], which ignores such roots for locals, and than
+/// [`super::forward`]'s block-local clear: an indirect place can only alias a
+/// parameter slot whose address was taken, which is already recorded, so the
+/// clear is redundant in principle, and it is kept because a parameter read
+/// is re-materialized at every use and the cost of being wrong is a wrong
+/// value, not a missed dedupe.
+///
+/// All blocks are scanned, reachable or not: an unreachable write can only
+/// narrow the result (disqualify a slot that would otherwise key), never
+/// unsoundly widen it.
+pub(super) fn classify_never_written_params(cfg: &Cfg) -> Vec<bool> {
+    let num_params = cfg.num_params() as usize;
+    let mut never_written: Vec<bool> = (0..num_params as u32)
+        .map(|slot| !cfg.is_param_writable(slot) && !cfg.is_param_address_taken(slot))
+        .collect();
+
+    // Out-of-range slots are skipped rather than panicking, matching
+    // `record_write` above.
+    fn mark_written(never_written: &mut [bool], slot: u32) {
+        if let Some(flag) = never_written.get_mut(slot as usize) {
+            *flag = false;
+        }
+    }
+
+    for block in cfg.blocks() {
+        for &value in &block.insts {
+            match &cfg.get_inst(value).data {
+                CfgInstData::ParamStore { param_slot, .. } => {
+                    mark_written(&mut never_written, *param_slot);
+                }
+                CfgInstData::PlaceWrite { place, .. } => {
+                    if let PlaceBase::Param(slot) = place.base {
+                        mark_written(&mut never_written, slot);
+                    }
+                }
+                CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
+                    for arg in cfg.call_args(args) {
+                        if !arg.is_by_ref() {
+                            continue;
+                        }
+                        match &cfg.get_inst(arg.value).data {
+                            // The two shapes that root a by-ref argument at a
+                            // parameter slot: a materialized read of the whole
+                            // slot, and a projection out of it.
+                            CfgInstData::Param { index } => {
+                                mark_written(&mut never_written, *index);
+                            }
+                            CfgInstData::PlaceRead { place } => match place.base {
+                                PlaceBase::Param(slot) => {
+                                    mark_written(&mut never_written, slot);
+                                }
+                                // A local root hands the callee a local slot's
+                                // address, which cannot alias a parameter slot.
+                                PlaceBase::Local(_) => {}
+                                PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => {
+                                    never_written.fill(false);
+                                }
+                            },
+                            // A `Load` roots the argument at a local slot.
+                            CfgInstData::Load { .. } => {}
+                            _ => never_written.fill(false),
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    never_written
 }
 
 #[cfg(test)]

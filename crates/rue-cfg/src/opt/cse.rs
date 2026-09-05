@@ -44,19 +44,14 @@
 //! parameter to their first occurrence, which in turn lets the adds dedupe.
 //!
 //! This is sound ONLY for a parameter that is never written, so its every read
-//! yields the identical value. A `Param { index }`'s `index` is the parameter's
-//! ABI slot (the same numbering as [`Cfg::is_param_writable`] and a
-//! `ParamStore`'s `param_slot`; both flow from sema's `abi_slot`). A slot is
-//! treated as never-written when it is (a) not logically writable
-//! (`is_param_writable(slot) == false`, i.e. `borrow` or plain by-value —
-//! never `inout`, and never a `mut self` receiver slot) and (b) receives no
-//! `ParamStore` anywhere among the block-attached instructions. Plain
-//! by-value (`Normal`) parameters are immutable in the callee (assignment is
-//! rejected, E0203) and `borrow` parameters cannot be written, so only
-//! writable slots — excluded by (a) — and any slot a `ParamStore` targets —
-//! excluded by (b) — are left out. (As defense in depth, a projected
-//! `PlaceWrite` whose base is a parameter slot also excludes it, though such a
-//! write only ever targets an already-excluded `inout` slot.)
+//! yields the identical value. Which slots those are is not decided here:
+//! [`super::slot_facts::classify_never_written_params`] owns the write/escape
+//! discipline for parameter slots exactly as it owns it for local slots, so
+//! the two cannot drift apart. Its answer covers direct writes, address
+//! escapes, and — the channel that makes a parameter mutable without its own
+//! function ever writing it — a by-ref (`inout`/`borrow`) call argument
+//! rooted at the slot, which hands the callee the slot's address for the
+//! duration of the call.
 //!
 //! Constants MUST be keyed: two separately materialized `Const(1)` instructions
 //! would otherwise give `x + 1` and `x + 1` different operand ids, defeating the
@@ -93,6 +88,8 @@
 
 use crate::{BlockId, Cfg, CfgInstData, CfgValue, Type};
 use ahash::AHashMap;
+
+use super::slot_facts;
 
 /// Work counters for one run (RUE-794 convention): a single forward scan of
 /// every block, then one batched use-rewrite. There is no fixpoint loop.
@@ -209,47 +206,6 @@ fn key_of(
     })
 }
 
-/// Compute, per parameter ABI slot, whether the parameter is never written and
-/// so its reads are all the identical pure value (RUE-914). A slot is
-/// never-written when it is not logically writable by-ref (`inout`) and receives
-/// no `ParamStore` (nor, defensively, a projected `PlaceWrite`) among the
-/// block-attached instructions. Indexed by ABI slot; `Param { index }`'s `index`
-/// is exactly that slot.
-fn never_written_params(cfg: &Cfg) -> Vec<bool> {
-    let num_params = cfg.num_params() as usize;
-    let mut never_written = vec![false; num_params];
-    for (slot, flag) in never_written.iter_mut().enumerate() {
-        // A parameter whose ADDRESS escapes through @raw/@raw_mut/@field_ptr
-        // is mutable through the raw pointer (@ptr_write), so its reads are
-        // NOT interchangeable even though nothing writes it directly — keying
-        // such reads merged a post-write read into the stale pre-write value
-        // (found by the 2026-07-16 optimizer hunt).
-        *flag = !cfg.is_param_writable(slot as u32) && !cfg.is_param_address_taken(slot as u32);
-    }
-
-    for block in cfg.blocks() {
-        for &value in &block.insts {
-            match &cfg.get_inst(value).data {
-                CfgInstData::ParamStore { param_slot, .. } => {
-                    if let Some(flag) = never_written.get_mut(*param_slot as usize) {
-                        *flag = false;
-                    }
-                }
-                CfgInstData::PlaceWrite { place, .. } => {
-                    if let crate::PlaceBase::Param(slot) = place.base {
-                        if let Some(flag) = never_written.get_mut(slot as usize) {
-                            *flag = false;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    never_written
-}
-
 /// Scan one block in program order. Returns the keys introduced by this block,
 /// which the dominator-tree walk removes when it exits the block's subtree.
 fn scan_block(
@@ -294,7 +250,7 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     // `subst[dup] = first` for every replaced duplicate. Each entry points to a
     // definition that dominates it, so global chain resolution stays valid.
     let mut subst: Vec<Option<CfgValue>> = vec![None; cfg.value_count()];
-    let never_written_param = never_written_params(cfg);
+    let never_written_param = slot_facts::classify_never_written_params(cfg);
 
     stats.dominator_computations += 1;
     let dominators = crate::dominators::DominatorTree::compute(cfg);
@@ -383,7 +339,8 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CfgInst, Terminator, Type};
+    use crate::{CfgArgMode, CfgCallArg, CfgInst, Terminator, Type};
+    use lasso::{Key, Spur};
     use rue_span::Span;
 
     fn make_cfg() -> Cfg {
@@ -873,6 +830,91 @@ mod tests {
         // The add now reads the first parameter value twice.
         assert!(matches!(cfg.get_inst(sum).data, CfgInstData::Add(x, y) if x == a1 && y == a1));
         assert!(matches!(cfg.get_inst(a2).data, CfgInstData::Const(0)));
+    }
+
+    #[test]
+    fn test_byref_call_argument_ends_param_read_dedupe() {
+        // `fn f(v) { g(inout v); v }`: the by-value parameter is not writable
+        // in `f`'s own body, but passing it `inout` hands `g` the slot's
+        // address, so the read after the call is a different value from the
+        // read before it (RUE-2042).
+        for mode in [CfgArgMode::Inout, CfgArgMode::Borrow] {
+            let mut cfg = Cfg::new(Type::I32, 0, 1, "f".to_string(), vec![false]);
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let before = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+            let args = cfg
+                .push_call_args([CfgCallArg {
+                    value: before,
+                    mode,
+                }])
+                .unwrap();
+            push(
+                &mut cfg,
+                CfgInstData::Call {
+                    runtime: None,
+                    name: Spur::try_from_usize(0).unwrap(),
+                    args,
+                },
+                Type::UNIT,
+            );
+            let after = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+            cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(after) });
+
+            let stats = run(&mut cfg).unwrap();
+            assert_eq!(stats.duplicates_replaced, 0, "mode {mode:?}");
+            assert!(
+                matches!(cfg.get_inst(after).data, CfgInstData::Param { index: 0 }),
+                "the post-call read must survive as a read ({mode:?})"
+            );
+            assert!(
+                matches!(
+                    cfg.get_block(cfg.entry).terminator,
+                    Terminator::Return { value: Some(v) } if v == after
+                ),
+                "the return must still read the post-call value ({mode:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn test_byref_call_argument_on_other_root_keeps_param_read_dedupe() {
+        // The over-correction control: a by-ref argument rooted at a LOCAL
+        // slot cannot alias a parameter slot, so parameter reads still dedupe.
+        let mut cfg = Cfg::new(Type::I32, 1, 1, "f".to_string(), vec![false]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let before = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: before,
+            },
+            Type::UNIT,
+        );
+        let arg = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
+        let args = cfg
+            .push_call_args([CfgCallArg {
+                value: arg,
+                mode: CfgArgMode::Inout,
+            }])
+            .unwrap();
+        push(
+            &mut cfg,
+            CfgInstData::Call {
+                runtime: None,
+                name: Spur::try_from_usize(0).unwrap(),
+                args,
+            },
+            Type::UNIT,
+        );
+        let after = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(after) });
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.duplicates_replaced, 1);
+        assert!(matches!(cfg.get_inst(after).data, CfgInstData::Const(0)));
     }
 
     #[test]
