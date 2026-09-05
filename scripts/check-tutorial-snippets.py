@@ -1,14 +1,25 @@
 #!/usr/bin/env python3
-"""Check opted-in Rue code fences from the website tutorial.
+"""Check every Rue code fence in the website tutorial.
 
-Tutorial fences are prose first, so the checker is intentionally marker-driven:
+Each ```rue fence names how it is verified in its info string:
 
-* ```rue check        compiles successfully
-* ```rue compile-fail Edddd must fail with the named diagnostic code
-* ```rue skip         ignored with an explicit reason in prose nearby
+* ```rue check                 compiles successfully
+* ```rue run                   compiles, runs, exits 0, and prints exactly the
+                               next ```text fence (see below)
+* ```rue compile-fail Edddd    must fail with the named diagnostic code(s)
+* ```rue file=lib/math.rue     is written to that path next to the chapter's
+                               later snippets instead of being compiled itself
+* ```rue skip                  is not verified; the prose should say why
 
-Unmarked ```rue fences are left alone. This lets chapter-refresh work opt
-snippets in as they become complete, self-contained examples.
+A `run` fence may also carry `stdin="..."` (with `\\n` escapes) to feed the
+program input and `exit=N` when the program is expected to exit nonzero. The
+expected output is the next ```text fence after the program; shell fences in
+between (```bash, ```sh, ```console) are skipped, since they only show the
+reader how to run the program.
+
+Unmarked ```rue fences are an error: the tutorial's whole point is that what it
+shows is what the compiler does today, so every fence must say how it is
+checked or why it is not.
 """
 
 from __future__ import annotations
@@ -18,17 +29,21 @@ import json
 import math
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
 FENCE_RE = re.compile(r"^```(?P<info>.*)$")
 DIAGNOSTIC_CODE_RE = re.compile(r"^E\d{4}$")
-CHECK_ATTRS = {"check", "compile-fail", "skip"}
+CHECK_ATTRS = {"check", "run", "compile-fail", "skip"}
+VALUE_ATTRS = {"file", "stdin", "exit"}
+OUTPUT_LANGUAGES = {"text", "output"}
+SHELL_LANGUAGES = {"bash", "sh", "shell", "console"}
 DEFAULT_TIMEOUT_SECONDS = 10.0
 ICE_MARKERS = ("panicked at", "internal compiler error")
 
@@ -40,102 +55,206 @@ class Snippet:
     action: str
     source: str
     expected_codes: frozenset[str] = frozenset()
+    stdin: str = ""
+    exit_code: int = 0
+    expected_output: str | None = None
+    # Files declared by earlier `file=` fences in the same chapter, written
+    # next to this snippet before it is compiled.
+    files: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
     @property
     def label(self) -> str:
         return f"{self.path}:{self.line}"
 
 
-def parse_info_string(info: str) -> tuple[str, set[str]]:
-    parts = re.split(r"[\s,]+", info.strip())
-    parts = [part for part in parts if part]
-    if not parts:
-        return "", set()
-
-    language = parts[0]
-    attrs = set(parts[1:])
-    return language, attrs
+def unescape_attr(value: str) -> str:
+    return (
+        value.replace("\\\\", "\0")
+        .replace("\\n", "\n")
+        .replace("\\t", "\t")
+        .replace("\0", "\\")
+    )
 
 
-def collect_snippets(root: Path) -> tuple[list[Snippet], int]:
+def parse_info_string(info: str) -> tuple[str, set[str], dict[str, str]]:
+    """Split a fence info string into (language, flag attrs, key=value attrs)."""
+    try:
+        tokens = shlex.split(info.strip(), posix=True)
+    except ValueError as error:
+        raise ValueError(f"malformed fence info string {info!r}: {error}") from error
+    if not tokens:
+        return "", set(), {}
+
+    language = tokens[0]
+    flags: set[str] = set()
+    values: dict[str, str] = {}
+    for token in tokens[1:]:
+        if "=" in token:
+            key, _, value = token.partition("=")
+            if key in values:
+                raise ValueError(f"duplicate fence attribute {key}=")
+            values[key] = unescape_attr(value)
+            continue
+        for part in token.split(","):
+            if part:
+                flags.add(part)
+    return language, flags, values
+
+
+@dataclass
+class Fence:
+    path: Path
+    line: int
+    language: str
+    flags: set[str]
+    values: dict[str, str]
+    body: str
+
+
+def read_fences(path: Path) -> list[Fence]:
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    fences: list[Fence] = []
+    i = 0
+    while i < len(lines):
+        match = FENCE_RE.match(lines[i])
+        if not match:
+            i += 1
+            continue
+
+        fence_line = i + 1
+        try:
+            language, flags, values = parse_info_string(match.group("info"))
+        except ValueError as error:
+            raise ValueError(f"{path}:{fence_line}: {error}") from error
+        i += 1
+        body: list[str] = []
+        while i < len(lines) and not lines[i].startswith("```"):
+            body.append(lines[i])
+            i += 1
+        fences.append(Fence(path, fence_line, language, flags, values, "".join(body)))
+        # Skip the closing fence if present.
+        if i < len(lines):
+            i += 1
+    return fences
+
+
+def expected_output_for(fences: list[Fence], index: int) -> str:
+    """Find the ```text fence that states a run snippet's expected output."""
+    program = fences[index]
+    for later in fences[index + 1 :]:
+        if later.language in OUTPUT_LANGUAGES:
+            return later.body
+        if later.language in SHELL_LANGUAGES:
+            continue
+        break
+    raise ValueError(
+        f"{program.path}:{program.line}: a `rue run` fence must be followed by a "
+        "```text fence holding its expected output"
+    )
+
+
+def collect_snippets(root: Path) -> list[Snippet]:
     snippets: list[Snippet] = []
-    unmarked_rue_fences = 0
 
     for path in sorted(root.glob("*.md")):
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-        i = 0
-        while i < len(lines):
-            match = FENCE_RE.match(lines[i])
-            if not match:
-                i += 1
+        fences = read_fences(path)
+        chapter_files: list[tuple[str, str]] = []
+        for index, fence in enumerate(fences):
+            if fence.language != "rue":
+                continue
+            where = f"{path}:{fence.line}"
+            flags = fence.flags
+            values = fence.values
+
+            unknown_values = set(values) - VALUE_ATTRS
+            if unknown_values:
+                raise ValueError(
+                    f"{where}: unknown rue fence attribute(s): "
+                    f"{', '.join(sorted(unknown_values))}"
+                )
+
+            actions = flags & CHECK_ATTRS
+            expected_codes = frozenset(
+                attr for attr in flags if DIAGNOSTIC_CODE_RE.fullmatch(attr)
+            )
+            unknown_flags = flags - CHECK_ATTRS - expected_codes
+            if unknown_flags:
+                raise ValueError(
+                    f"{where}: unknown rue fence attribute(s): "
+                    f"{', '.join(sorted(unknown_flags))}"
+                )
+            if len(actions) > 1:
+                raise ValueError(f"{where}: use only one of {sorted(CHECK_ATTRS)}")
+
+            if "file" in values:
+                if actions or expected_codes or "stdin" in values or "exit" in values:
+                    raise ValueError(
+                        f"{where}: a file= fence takes no other attributes"
+                    )
+                relative = values["file"]
+                if not relative or Path(relative).is_absolute() or ".." in Path(relative).parts:
+                    raise ValueError(
+                        f"{where}: file= must be a relative path inside the chapter"
+                    )
+                chapter_files.append((relative, fence.body))
                 continue
 
-            language, attrs = parse_info_string(match.group("info"))
-            fence_line = i + 1
-            i += 1
-            body: list[str] = []
-            while i < len(lines) and not lines[i].startswith("```"):
-                body.append(lines[i])
-                i += 1
-
-            if language == "rue":
-                actions = attrs & CHECK_ATTRS
-                expected_codes = frozenset(
-                    attr for attr in attrs if DIAGNOSTIC_CODE_RE.fullmatch(attr)
+            if not actions:
+                raise ValueError(
+                    f"{where}: unmarked rue fence; mark it with one of "
+                    f"{sorted(CHECK_ATTRS)} or file=<path>"
                 )
-                unknown_attrs = attrs - CHECK_ATTRS - expected_codes
-                if unknown_attrs:
-                    raise ValueError(
-                        f"{path}:{fence_line}: unknown rue fence attribute(s): "
-                        f"{', '.join(sorted(unknown_attrs))}"
-                    )
-                if len(actions) > 1:
-                    raise ValueError(
-                        f"{path}:{fence_line}: use only one of {sorted(CHECK_ATTRS)}"
-                    )
-                if actions:
-                    action = next(iter(actions))
-                    if action == "compile-fail" and not expected_codes:
-                        raise ValueError(
-                            f"{path}:{fence_line}: compile-fail requires at least "
-                            "one expected diagnostic code (for example E0203)"
-                        )
-                    internal_codes = sorted(
-                        code for code in expected_codes if code.startswith("E9")
-                    )
-                    if internal_codes:
-                        raise ValueError(
-                            f"{path}:{fence_line}: compile-fail cannot expect internal "
-                            f"compiler diagnostic code(s): {', '.join(internal_codes)}"
-                        )
-                    if action != "compile-fail" and expected_codes:
-                        raise ValueError(
-                            f"{path}:{fence_line}: diagnostic codes are only valid "
-                            "with compile-fail"
-                        )
-                    if action != "skip":
-                        snippets.append(
-                            Snippet(
-                                path=path,
-                                line=fence_line,
-                                action=action,
-                                source="".join(body),
-                                expected_codes=expected_codes,
-                            )
-                        )
-                else:
-                    if attrs:
-                        raise ValueError(
-                            f"{path}:{fence_line}: rue fence attributes require one of "
-                            f"{sorted(CHECK_ATTRS)}"
-                        )
-                    unmarked_rue_fences += 1
+            action = next(iter(actions))
 
-            # Skip the closing fence if present.
-            if i < len(lines):
-                i += 1
+            if action == "compile-fail" and not expected_codes:
+                raise ValueError(
+                    f"{where}: compile-fail requires at least "
+                    "one expected diagnostic code (for example E0203)"
+                )
+            internal_codes = sorted(code for code in expected_codes if code.startswith("E9"))
+            if internal_codes:
+                raise ValueError(
+                    f"{where}: compile-fail cannot expect internal "
+                    f"compiler diagnostic code(s): {', '.join(internal_codes)}"
+                )
+            if action != "compile-fail" and expected_codes:
+                raise ValueError(
+                    f"{where}: diagnostic codes are only valid with compile-fail"
+                )
+            if action != "run" and ("stdin" in values or "exit" in values):
+                raise ValueError(f"{where}: stdin= and exit= are only valid with run")
 
-    return snippets, unmarked_rue_fences
+            if action == "skip":
+                continue
+
+            exit_code = 0
+            if "exit" in values:
+                try:
+                    exit_code = int(values["exit"])
+                except ValueError as error:
+                    raise ValueError(f"{where}: exit= must be an integer") from error
+                if not 0 <= exit_code <= 255:
+                    raise ValueError(f"{where}: exit= must be between 0 and 255")
+
+            expected_output = None
+            if action == "run":
+                expected_output = expected_output_for(fences, index)
+
+            snippets.append(
+                Snippet(
+                    path=path,
+                    line=fence.line,
+                    action=action,
+                    source=fence.body,
+                    expected_codes=expected_codes,
+                    stdin=values.get("stdin", ""),
+                    exit_code=exit_code,
+                    expected_output=expected_output,
+                    files=tuple(chapter_files),
+                )
+            )
+
+    return snippets
 
 
 def snippet_env() -> dict[str, str]:
@@ -150,35 +269,23 @@ def snippet_env() -> dict[str, str]:
     return env
 
 
-def compile_snippet(
-    rue_binary: str,
-    snippet: Snippet,
-    tempdir: Path,
+def run_with_timeout(
+    command: list[str],
     env: dict[str, str],
     timeout_seconds: float,
+    stdin: str = "",
 ) -> subprocess.CompletedProcess[str]:
-    source_path = tempdir / f"{snippet.path.stem}-{snippet.line}.rue"
-    output_path = tempdir / f"{snippet.path.stem}-{snippet.line}"
-    source_path.write_text(snippet.source, encoding="utf-8")
-
-    command = [
-        rue_binary,
-        "--error-format",
-        "json",
-        str(source_path),
-        "-o",
-        str(output_path),
-    ]
     process = subprocess.Popen(
         command,
         text=True,
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
         start_new_session=True,
     )
     try:
-        stdout, stderr = process.communicate(timeout=timeout_seconds)
+        stdout, stderr = process.communicate(input=stdin, timeout=timeout_seconds)
     except subprocess.TimeoutExpired as error:
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -193,6 +300,49 @@ def compile_snippet(
         ) from error
 
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def snippet_paths(snippet: Snippet, tempdir: Path) -> tuple[Path, Path]:
+    chapter_dir = tempdir / snippet.path.stem
+    source_path = chapter_dir / f"{snippet.path.stem}-{snippet.line}.rue"
+    output_path = chapter_dir / f"{snippet.path.stem}-{snippet.line}"
+    return source_path, output_path
+
+
+def compile_snippet(
+    rue_binary: str,
+    snippet: Snippet,
+    tempdir: Path,
+    env: dict[str, str],
+    timeout_seconds: float,
+) -> subprocess.CompletedProcess[str]:
+    source_path, output_path = snippet_paths(snippet, tempdir)
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    for relative, content in snippet.files:
+        target = source_path.parent / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    source_path.write_text(snippet.source, encoding="utf-8")
+
+    command = [
+        rue_binary,
+        "--error-format",
+        "json",
+        str(source_path),
+        "-o",
+        str(output_path),
+    ]
+    return run_with_timeout(command, env, timeout_seconds)
+
+
+def run_snippet(
+    snippet: Snippet,
+    tempdir: Path,
+    env: dict[str, str],
+    timeout_seconds: float,
+) -> subprocess.CompletedProcess[str]:
+    _, output_path = snippet_paths(snippet, tempdir)
+    return run_with_timeout([str(output_path)], env, timeout_seconds, snippet.stdin)
 
 
 def diagnostic_codes(stderr: str) -> frozenset[str]:
@@ -246,7 +396,7 @@ def snippet_failure(
                     + ", ".join(internal_codes)
                 )
 
-    if snippet.action == "check":
+    if snippet.action in {"check", "run"}:
         if result.returncode == 0:
             return None
         return f"expected snippet to compile, but compiler exited {result.returncode}"
@@ -266,6 +416,27 @@ def snippet_failure(
         return (
             f"missing expected diagnostic code(s) {', '.join(missing)}; "
             f"compiler emitted: {actual}"
+        )
+    return None
+
+
+def run_failure(
+    snippet: Snippet, result: subprocess.CompletedProcess[str]
+) -> str | None:
+    """Return a failure reason for a run snippet, or None when it behaved."""
+    if result.returncode < 0:
+        return f"program terminated by signal {-result.returncode}"
+    if result.returncode != snippet.exit_code:
+        return (
+            f"expected the program to exit {snippet.exit_code}, but it exited "
+            f"{result.returncode}"
+        )
+    expected = (snippet.expected_output or "").rstrip("\n")
+    actual = (result.stdout or "").rstrip("\n")
+    if expected != actual:
+        return (
+            "program output did not match the ```text fence\n"
+            f"--- expected ---\n{expected}\n--- actual ---\n{actual}"
         )
     return None
 
@@ -312,12 +483,12 @@ def main() -> int:
         "--timeout",
         type=positive_seconds,
         default=DEFAULT_TIMEOUT_SECONDS,
-        help=f"per-snippet compiler timeout in seconds (default: {DEFAULT_TIMEOUT_SECONDS:g})",
+        help=f"per-snippet compiler and program timeout in seconds (default: {DEFAULT_TIMEOUT_SECONDS:g})",
     )
     args = parser.parse_args()
 
     try:
-        snippets, unmarked = collect_snippets(args.root)
+        snippets = collect_snippets(args.root)
     except (OSError, UnicodeError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
@@ -331,6 +502,7 @@ def main() -> int:
     rue_binary = find_rue_binary()
 
     failures = 0
+    counts = {"check": 0, "run": 0, "compile-fail": 0}
     env = snippet_env()
     with tempfile.TemporaryDirectory(prefix="rue-tutorial-snippets-") as temp:
         tempdir = Path(temp)
@@ -351,15 +523,27 @@ def main() -> int:
                     print(error.stderr, file=sys.stderr)
                 continue
             except OSError as error:
-                failures += 1
                 print(
-                    f"FAIL {snippet.label}: could not start compiler: {error}",
+                    f"error: could not start compiler {rue_binary}: {error}",
                     file=sys.stderr,
                 )
-                continue
+                return 1
 
             failure = snippet_failure(snippet, result)
+            if failure is None and snippet.action == "run":
+                try:
+                    outcome = run_snippet(snippet, tempdir, env, args.timeout)
+                except subprocess.TimeoutExpired:
+                    failure = f"program timed out after {args.timeout:g}s"
+                except OSError as error:
+                    failure = f"could not start the compiled program: {error}"
+                else:
+                    failure = run_failure(snippet, outcome)
+                    if failure is not None and outcome.stderr:
+                        failure += f"\n--- program stderr ---\n{outcome.stderr}"
+
             if failure is None:
+                counts[snippet.action] += 1
                 if not args.quiet:
                     print(f"ok {snippet.label} ({snippet.action})")
                 continue
@@ -371,14 +555,16 @@ def main() -> int:
             if result.stderr:
                 print(result.stderr, file=sys.stderr)
 
+    summary = (
+        f"checked {len(snippets)} tutorial snippet(s): "
+        f"{counts['run']} run, {counts['check']} compiled, "
+        f"{counts['compile-fail']} failed as expected"
+    )
     if failures:
+        print(f"{summary}; {failures} failure(s)", file=sys.stderr)
         return 1
-
     if not args.quiet:
-        print(
-            f"checked {len(snippets)} tutorial snippet(s); "
-            f"{unmarked} unmarked rue fence(s) left prose-only"
-        )
+        print(summary)
     return 0
 
 

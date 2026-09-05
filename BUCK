@@ -258,8 +258,9 @@ filegroup(
     srcs = glob(["reproducibility/fixture/**"]),
 )
 
-# Tutorial markdown is an input to the snippet checker. The checker only
-# compiles fences explicitly marked with `rue check` or `rue compile-fail`.
+# Tutorial markdown is an input to the snippet checker. Every `rue` fence
+# carries a marker (`check`, `run`, `compile-fail`, `file=`, or `skip`) that
+# says how it is verified; `run` fences also execute and compare output.
 filegroup(
     name = "tutorial",
     srcs = glob(["website/content/tutorial/**"]),

@@ -14,7 +14,7 @@ that name to access public declarations.
 
 Create a directory named `lib`, then create `lib/math.rue`:
 
-```rue
+```rue file=lib/math.rue
 pub fn double(x: i32) -> i32 {
     x * 2
 }
@@ -26,7 +26,7 @@ fn secret() -> i32 {
 
 Then create `main.rue` next to the `lib` directory:
 
-```rue
+```rue check
 const math = @import("lib/math.rue");
 
 fn main() -> i32 {
@@ -55,7 +55,7 @@ through a module object. In the example above, `math.double(21)` works because
 
 This does not compile:
 
-```rue
+```rue compile-fail E0706
 const math = @import("lib/math.rue");
 
 fn main() -> i32 {
@@ -71,7 +71,7 @@ only for declarations that are part of the imported file's interface.
 
 Relative import paths are resolved from the importing file's directory:
 
-```rue
+```rue skip
 const math = @import("lib/math.rue");
 ```
 
@@ -82,7 +82,7 @@ dynamically load modules at runtime; imports are part of compilation.
 
 Rue's accepted standard-library direction is an explicit standard module:
 
-```rue
+```rue skip
 const std = @import("std");
 ```
 
