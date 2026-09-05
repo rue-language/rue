@@ -1,13 +1,22 @@
-//! Rue-to-C export thunks (ADR-0064 P4).
+//! Rue-to-C export entries (ADR-0064 P4, ADR-0084 phase 2).
 //!
 //! The mirror of the foreign-call path. A foreign *call* adapts the native
 //! convention to the target-C convention on the way *out* to a C callee; an
-//! *export* thunk adapts the target-C convention to the native convention on the
-//! way *in* from a C caller. A `pub extern "C" fn` is compiled like any other
-//! Rue function (a native-conventioned body under a mangled symbol); this module
-//! emits an additional, globally-visible, **unmangled** entry symbol — the C
-//! symbol — whose body receives arguments per the psABI and forwards to the
-//! native body.
+//! *export* adapts the target-C convention to the native convention on the way
+//! *in* from a C caller. A `pub extern "C" fn` is compiled like any other Rue
+//! function (a native-conventioned body under a mangled symbol) and reached
+//! under an additional, globally-visible, **unmangled** entry symbol — the C
+//! symbol.
+//!
+//! That entry is one of two things, and [`ExportSignature::c_entry`] is the one
+//! predicate that decides which:
+//!
+//! - an **alias**: a second global name at the native body's own entry, so a C
+//!   caller enters the body directly and this module emits no code at all. Both
+//!   object containers define it (`rue_linker::ObjectBuilder::alias`,
+//!   `rue_linker::StructuredObject::with_alias`).
+//! - a **thunk**: a body of its own, generated here, that receives arguments
+//!   per the psABI and forwards to the native body.
 //!
 //! ## One lowered signature, read in the callee direction
 //!
@@ -25,10 +34,11 @@
 //! answers where its result comes back. The two conventions therefore agree
 //! about every argument whenever the export names the target's own C row, and —
 //! because C's result registers are a prefix of the native bank — about every
-//! result within C's own bank. What remains of the thunk is the re-extension a
-//! narrow scalar needs and the adaptation of a result the two banks place
-//! differently. [`ExportSignature`] is the pairing of the two views, built once
-//! from the type pool by [`ExportSignature::for_types`].
+//! result within C's own bank. What is left for a thunk — and therefore what
+//! keeps one — is the re-extension a narrow scalar needs and the adaptation of
+//! a result the two banks place differently. [`ExportSignature`] is the pairing
+//! of the two views, built once from the type pool by
+//! [`ExportSignature::for_types`].
 //!
 //! ## Why the compact image is the C image
 //!
@@ -236,6 +246,193 @@ impl ExportSignature {
             LoweredReturn::Sret { .. } => NativeReturn::Sret,
         }
     }
+
+    /// Where the native side of this export's crossing puts every argument on
+    /// `target`.
+    ///
+    /// The one native lowering both the thunk plan and [`Self::c_entry`] read,
+    /// so the decision to emit an alias and the code emitted when a thunk is
+    /// kept cannot disagree about a placement. `native_return` is an input
+    /// because only one consequence of a result reaches argument placement —
+    /// the hidden indirect-result pointer's register — and the caller has
+    /// already classified the result.
+    fn native_lowering(&self, target: Target, native_return: &NativeReturn) -> LoweredSignature {
+        let pairing = ConventionSpec::native(target);
+        let spec = pairing.spec();
+        let parameters = self
+            .parameters
+            .iter()
+            .map(|parameter| (parameter.c, ArgConvention::ByValue))
+            .collect::<Vec<_>>();
+        lower_native_signature(
+            pairing,
+            &parameters,
+            if matches!(native_return, NativeReturn::Sret) {
+                LoweredReturn::Sret {
+                    register: spec.sret_register,
+                    echoed: spec.sret_pointer_echoed_in_result_register,
+                    size: 8,
+                    align: 8,
+                }
+            } else {
+                LoweredReturn::Void
+            },
+        )
+    }
+
+    /// How this export's C entry is reached on `target`: as an alias of the
+    /// native body, or through a thunk, and then why one is still needed.
+    ///
+    /// The two conventions place arguments by one row (ADR-0084 phase 1) and
+    /// results through one lowering whose C registers are a prefix of the
+    /// native bank (phase 2), so most exports leave nothing for a thunk to do
+    /// and the C symbol is emitted as a second name for the native body. What
+    /// still needs one is exactly the three disagreements this walk looks for:
+    /// a narrow scalar whose canonical 64-bit form no C caller promises, a
+    /// placement the wider return bank shifts, and a result the two banks carry
+    /// differently.
+    pub fn c_entry(&self, target: Target) -> CEntry {
+        let c = self.lowered();
+        let native_return = self.native_return(target);
+        let native = self.native_lowering(target, &native_return);
+        for (index, (parameter, (c_argument, native_argument))) in self
+            .parameters
+            .iter()
+            .zip(c.arguments().iter().zip(native.arguments()))
+            .enumerate()
+        {
+            if c_argument.location != native_argument.location {
+                return CEntry::Thunk(ThunkReason::ParameterPlacement { parameter: index });
+            }
+            // Only a value whose leaves cross as themselves reaches the body as
+            // canonically extended vregs; an eightbyte-packed image and an
+            // indirect pointer cross as whole registers, which a C caller
+            // defines in full.
+            let crosses_by_leaf = matches!(
+                c_argument.location,
+                ArgLocation::Registers { .. } | ArgLocation::Stack { .. }
+            ) && parameter.native.leaves_are_eightbytes;
+            if crosses_by_leaf && parameter.native.leaves.iter().any(|leaf| leaf.width < 8) {
+                return CEntry::Thunk(ThunkReason::NarrowParameter { parameter: index });
+            }
+        }
+        if self.return_needs_adaptation(c.ret(), target, &native_return) {
+            return CEntry::Thunk(ThunkReason::ReturnAdaptation);
+        }
+        CEntry::Alias
+    }
+
+    /// Whether the result the native body leaves behind is not already the
+    /// result a C caller reads.
+    fn return_needs_adaptation(
+        &self,
+        c_return: LoweredReturn,
+        target: Target,
+        native_return: &NativeReturn,
+    ) -> bool {
+        let native = lower_native_return(ConventionSpec::native(target), self.result);
+        match (c_return, native) {
+            (LoweredReturn::Void, LoweredReturn::Void) => false,
+            (
+                LoweredReturn::Registers { pieces: c, .. },
+                LoweredReturn::Registers { pieces: native, .. },
+            ) => {
+                if c != native {
+                    return true;
+                }
+                match native_return {
+                    // A scalar comes back in Rue's canonical 64-bit form, which
+                    // is at least as defined as any C row asks of a callee.
+                    NativeReturn::Scalar => false,
+                    // The image's eightbytes *are* the C image's eightbytes.
+                    NativeReturn::Eightbytes { .. } => false,
+                    // One register per leaf is the C image only when every leaf
+                    // fills its own eightbyte, leaving no padding byte for the
+                    // thunk to zero and no narrow slot to place inside a wider
+                    // one (ADR-0052 ruling 5).
+                    NativeReturn::Registers { leaves } => {
+                        !self.return_padding.is_empty()
+                            || leaves.iter().enumerate().any(|(index, leaf)| {
+                                leaf.width != 8 || leaf.byte_offset != (index as u32) * 8
+                            })
+                    }
+                    NativeReturn::Void | NativeReturn::Sret => true,
+                }
+            }
+            (
+                LoweredReturn::Sret {
+                    register: c_register,
+                    echoed: c_echoed,
+                    ..
+                },
+                LoweredReturn::Sret {
+                    register: native_register,
+                    echoed: native_echoed,
+                    ..
+                },
+            ) => c_register != native_register || c_echoed != native_echoed,
+            _ => true,
+        }
+    }
+}
+
+/// How a `pub extern "C" fn` export's C symbol is reached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CEntry {
+    /// A second global name for the native body itself, defined at its entry.
+    /// The two conventions place every value identically, so there is nothing
+    /// to forward.
+    Alias,
+    /// A separate entry that adapts what the two conventions disagree about
+    /// and forwards to the native body, for the reason it carries.
+    Thunk(ThunkReason),
+}
+
+impl CEntry {
+    /// Whether this entry is emitted as a thunk object rather than as a second
+    /// name for the native body.
+    pub fn is_thunk(&self) -> bool {
+        matches!(self, Self::Thunk(_))
+    }
+}
+
+/// What one export's C entry still has to do, and therefore why it is a thunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThunkReason {
+    /// Parameter `parameter` reaches the native body as a canonically
+    /// 64-bit-extended value, and its declared width is narrower than that; a C
+    /// caller leaves the bits above the declared width unspecified, so the
+    /// entry re-extends it.
+    NarrowParameter {
+        /// The parameter's source position.
+        parameter: usize,
+    },
+    /// The two conventions place parameter `parameter` in different places,
+    /// which under ADR-0084 happens only when their results disagree about the
+    /// hidden indirect-result pointer.
+    ParameterPlacement {
+        /// The parameter's source position.
+        parameter: usize,
+    },
+    /// The result crosses back differently under the two conventions: the
+    /// native return bank is wider than C's, so a value C returns through
+    /// caller storage may come back in registers, and one the body hands over
+    /// leaf by leaf still has to be assembled into the C image.
+    ReturnAdaptation,
+}
+
+impl std::fmt::Display for ThunkReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NarrowParameter { parameter } => {
+                write!(f, "parameter {parameter} is re-extended")
+            }
+            Self::ParameterPlacement { parameter } => {
+                write!(f, "parameter {parameter} is placed differently")
+            }
+            Self::ReturnAdaptation => write!(f, "the result is adapted"),
+        }
+    }
 }
 
 /// The flattened compact-image leaves of `ty`, one per native ABI slot.
@@ -281,6 +478,10 @@ fn native_leaves_are_eightbytes(type_pool: &FrozenTypeInternPool, ty: Type) -> b
 /// `native_symbol` is the mangled symbol of the natively-conventioned body the
 /// thunk forwards to. The returned [`MachineCode`] carries one call/branch
 /// relocation targeting `native_symbol` and no string data.
+///
+/// Only an export whose [`ExportSignature::c_entry`] is a thunk needs this; one
+/// that reduces to an alias is emitted as a second name on the native body's
+/// own object instead.
 pub fn generate_export_thunk(
     target: Target,
     native_symbol: &str,
@@ -428,27 +629,7 @@ impl ThunkPlan {
         // consumes, against the very facts the C side was placed by: the two
         // conventions classify the same compact image, and the native row is
         // this target's own C row with a wider return bank (ADR-0084).
-        let native_pairing = rue_target::ConventionSpec::native(target);
-        let native_parameters = signature
-            .parameters
-            .iter()
-            .map(|parameter| (parameter.c, ArgConvention::ByValue))
-            .collect::<Vec<_>>();
-        let native_spec = native_pairing.spec();
-        let native = lower_native_signature(
-            native_pairing,
-            &native_parameters,
-            if matches!(native_return, NativeReturn::Sret) {
-                LoweredReturn::Sret {
-                    register: native_spec.sret_register,
-                    echoed: native_spec.sret_pointer_echoed_in_result_register,
-                    size: 8,
-                    align: 8,
-                }
-            } else {
-                LoweredReturn::Void
-            },
-        );
+        let native = signature.native_lowering(target, &native_return);
 
         // Every incoming general-purpose argument register is saved to a
         // contiguous cell block, so a register-passed value's eightbytes are
@@ -545,7 +726,25 @@ impl ThunkPlan {
         // and therefore the stack at the call — 16-byte aligned.
         let native_stack_bytes = native.stack_bytes();
 
-        let stage_base = native_stack_bytes;
+        // Each stacked value is written as a whole eightbyte, so a slot the
+        // convention packs narrower than eight bytes — Apple's natural-size
+        // amendment is the only row that does — writes up to seven bytes past
+        // its own footprint, and a long enough narrow tail would run past the
+        // area itself. The callee reads every slot at its own width, so those
+        // bytes are never observed; what matters is that they land in slack
+        // rather than in the staging cells, which already hold values. The
+        // slack is the reach of the widest store, so a signature that stacks
+        // nothing narrow reserves none of it.
+        let stacked_store_end = slots
+            .iter()
+            .filter_map(|(_, destination)| match destination {
+                NativeSlotDestination::Stack { offset } => Some(offset + 8),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+
+        let stage_base = align_up(native_stack_bytes.max(stacked_store_end), 16);
         let save_base = stage_base + register_slots * 8;
         let mut next = save_base + save_cells * 8;
 
@@ -583,15 +782,17 @@ impl ThunkPlan {
             }),
             (LoweredReturn::Registers { pieces, .. }, NativeReturn::Registers { .. })
             | (LoweredReturn::Registers { pieces, .. }, NativeReturn::Sret)
-                if !matches!(signature.result, CAbiTypeFacts::Scalar { .. }) =>
+                if !matches!(signature.result, CAbiTypeFacts::Scalar { .. })
+                    && signature.return_needs_adaptation(c.ret(), target, &native_return) =>
             {
                 let offset = align_up(next, 16);
                 next = offset + align_up(pieces.len() * 8, 16);
                 Some(ReturnImage::Scratch { offset })
             }
-            // The native body returned the compact image's eightbytes and the C
-            // return is those same eightbytes in the same registers: C's result
-            // registers are a prefix of the native bank, so nothing crosses.
+            // Nothing crosses: the native body already left the result where a
+            // C caller reads it, whether that is the image's own eightbytes in
+            // C's result registers — which are a prefix of the native bank — or
+            // one leaf per register when every leaf fills its own eightbyte.
             _ => None,
         };
 
@@ -670,6 +871,19 @@ impl ThunkPlan {
             return_image,
             frame_bytes,
         }
+    }
+
+    /// Whether the emitted body moves the result at all, rather than leaving
+    /// what the native body returned exactly where a C caller reads it. An
+    /// indirect result under both conventions travels through the C caller's
+    /// own storage, which the native body wrote directly.
+    #[cfg(test)]
+    fn adapts_result(&self) -> bool {
+        self.return_image.is_some()
+            && !matches!(
+                (self.c.ret(), &self.native_return),
+                (LoweredReturn::Sret { .. }, NativeReturn::Sret)
+            )
     }
 
     /// Whether a parameter's image is reached through a pointer that itself
@@ -2059,6 +2273,290 @@ mod tests {
                 if target.arch() == Arch::Aarch64 {
                     assert_eq!(code.code.len() % 4, 0);
                 }
+            }
+        }
+    }
+
+    /// `count` eightbyte-wide integer leaves, in ascending image order: the
+    /// shape whose leaves are exactly the eightbytes of its image.
+    fn word_leaves(count: u32) -> Vec<ImageLeaf> {
+        (0..count)
+            .map(|index| ImageLeaf {
+                byte_offset: index * 8,
+                width: 8,
+                signed: false,
+            })
+            .collect()
+    }
+
+    /// An export of `parameters` returning an all-integer aggregate of `bytes`,
+    /// whose leaves are its eightbytes.
+    fn word_aggregate_result(parameters: Vec<ExportParameter>, bytes: u32) -> ExportSignature {
+        ExportSignature {
+            convention: CallingConvention::X86_64SysV,
+            parameters,
+            result: CAbiTypeFacts::integer_aggregate(u64::from(bytes), 8),
+            result_is_aggregate: true,
+            return_leaves_are_eightbytes: true,
+            return_bytes: bytes,
+            return_leaves: word_leaves(bytes / 8),
+            return_padding: Vec::new(),
+        }
+    }
+
+    /// An export of `parameters` returning one scalar.
+    fn scalar_result(
+        parameters: Vec<ExportParameter>,
+        kind: rue_air::CAbiScalarKind,
+        width: u32,
+        signed: bool,
+    ) -> ExportSignature {
+        ExportSignature {
+            convention: CallingConvention::X86_64SysV,
+            parameters,
+            result: scalar_facts(kind),
+            result_is_aggregate: false,
+            return_leaves_are_eightbytes: true,
+            return_bytes: width,
+            return_leaves: vec![scalar_leaf(width, signed)],
+            return_padding: Vec::new(),
+        }
+    }
+
+    /// Every row's answer for one signature, so a case reads as one line.
+    fn entries(signature: &ExportSignature) -> Vec<(Target, CEntry)> {
+        Target::all()
+            .iter()
+            .map(|&target| (target, on(target, signature).c_entry(target)))
+            .collect()
+    }
+
+    #[test]
+    fn a_signature_both_rows_place_identically_needs_no_thunk() {
+        // Register-width scalars in, a register-width scalar out: every value
+        // is where the other convention would have put it, so the C symbol is
+        // a second name for the native body on every row.
+        for (target, entry) in entries(&scalar_result(
+            vec![word_parameter(); 3],
+            rue_air::CAbiScalarKind::RegisterWidth,
+            8,
+            false,
+        )) {
+            assert_eq!(entry, CEntry::Alias, "{target:?}");
+        }
+        // A stacked tail is still the same stack: nine arguments exhaust every
+        // row's roster and the rest sit at the same offsets of the same area.
+        for (target, entry) in entries(&void_signature(vec![word_parameter(); 9])) {
+            assert_eq!(entry, CEntry::Alias, "{target:?}");
+        }
+    }
+
+    #[test]
+    fn a_narrow_scalar_parameter_keeps_its_thunk_on_every_row() {
+        // A C caller leaves the bits above a narrow argument's declared width
+        // unspecified — including Apple's row, whose stacked natural-size
+        // packing Rue does not rely on for a rule that must hold everywhere —
+        // while the native body reads the register as a canonical 64-bit value.
+        for width in [1_u32, 2, 4] {
+            let kind = match width {
+                1 => rue_air::CAbiScalarKind::I8,
+                2 => rue_air::CAbiScalarKind::I16,
+                _ => rue_air::CAbiScalarKind::I32,
+            };
+            let signature =
+                void_signature(vec![word_parameter(), scalar_parameter(kind, width, true)]);
+            for (target, entry) in entries(&signature) {
+                assert_eq!(
+                    entry,
+                    CEntry::Thunk(ThunkReason::NarrowParameter { parameter: 1 }),
+                    "{target:?} {kind:?}"
+                );
+            }
+        }
+        // The same narrow scalar past the register roster, where Apple's row
+        // packs it at its natural size and the others give it a whole slot.
+        let mut parameters = vec![word_parameter(); 9];
+        parameters.push(scalar_parameter(rue_air::CAbiScalarKind::U8, 1, false));
+        for (target, entry) in entries(&void_signature(parameters)) {
+            assert_eq!(
+                entry,
+                CEntry::Thunk(ThunkReason::NarrowParameter { parameter: 9 }),
+                "{target:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_narrow_scalar_result_still_needs_no_thunk() {
+        // The other direction of the extension invariant: a native body leaves
+        // a narrow result already extended, which is at least as defined as the
+        // C row asks of a callee, so nothing is adapted on the way out.
+        for (target, entry) in entries(&scalar_result(
+            vec![word_parameter()],
+            rue_air::CAbiScalarKind::I16,
+            2,
+            true,
+        )) {
+            assert_eq!(entry, CEntry::Alias, "{target:?}");
+        }
+    }
+
+    #[test]
+    fn an_aggregate_within_cs_own_bank_needs_no_thunk() {
+        // Two eightbytes in and two out: C's result registers are a prefix of
+        // the native bank, so the leaves come back in the very registers a C
+        // caller reads.
+        let sixteen = ExportParameter {
+            c: CAbiTypeFacts::integer_aggregate(16, 8),
+            native: NativeParameter {
+                leaves: word_leaves(2),
+                leaves_are_eightbytes: true,
+            },
+        };
+        for (target, entry) in entries(&word_aggregate_result(vec![sixteen], 16)) {
+            assert_eq!(entry, CEntry::Alias, "{target:?}");
+        }
+        // A packed pair is one eightbyte of its image each way, and the image
+        // is the C image, so its narrow leaves never cross as themselves.
+        for (target, entry) in entries(&pair_signature()) {
+            assert_eq!(entry, CEntry::Alias, "{target:?}");
+        }
+    }
+
+    #[test]
+    fn a_result_only_the_native_bank_holds_keeps_its_thunk() {
+        // 24 bytes: three eightbytes fit the native bank and exceed C's, so the
+        // body returns in registers where a C caller expects caller storage.
+        for (target, entry) in entries(&triple_signature()) {
+            assert_eq!(
+                entry,
+                CEntry::Thunk(ThunkReason::ReturnAdaptation),
+                "{target:?}"
+            );
+        }
+        // 20 bytes of narrow leaves: the same disagreement, reached through the
+        // packed-eightbyte shape rather than the leaf-per-register one.
+        for (target, entry) in entries(&wide_packed_signature()) {
+            assert_eq!(
+                entry,
+                CEntry::Thunk(ThunkReason::ReturnAdaptation),
+                "{target:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_result_past_both_banks_needs_no_thunk() {
+        // Nine eightbytes exceed the native bank as well, so both rows return
+        // it through the same indirect-result register with the same echo — the
+        // native convention took the C row's sret rule whole (ADR-0084).
+        for (target, entry) in entries(&word_aggregate_result(vec![word_parameter()], 72)) {
+            assert_eq!(entry, CEntry::Alias, "{target:?}");
+        }
+    }
+
+    #[test]
+    fn a_leaf_per_register_result_with_padding_keeps_its_thunk() {
+        // `{i32, i64}`: each leaf starts its own eightbyte, so the body hands
+        // back the *leaves*, and the low eightbyte of the C image is the narrow
+        // leaf beside four padding bytes the image must have zeroed.
+        let signature = ExportSignature {
+            convention: CallingConvention::X86_64SysV,
+            parameters: Vec::new(),
+            result: CAbiTypeFacts::integer_aggregate(16, 8),
+            result_is_aggregate: true,
+            return_leaves_are_eightbytes: true,
+            return_bytes: 16,
+            return_leaves: vec![
+                ImageLeaf {
+                    byte_offset: 0,
+                    width: 4,
+                    signed: true,
+                },
+                ImageLeaf {
+                    byte_offset: 8,
+                    width: 8,
+                    signed: false,
+                },
+            ],
+            return_padding: vec![PaddingRange { start: 4, end: 8 }],
+        };
+        for (target, entry) in entries(&signature) {
+            assert_eq!(
+                entry,
+                CEntry::Thunk(ThunkReason::ReturnAdaptation),
+                "{target:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_thunk_is_emitted_exactly_for_the_signatures_that_need_one() {
+        // The decision and the emitter read one plan: whenever the entry is an
+        // alias the thunk the emitter would have produced does nothing but
+        // forward, which is what makes dropping it sound.
+        for signature in [
+            scalar_result(
+                vec![word_parameter(); 2],
+                rue_air::CAbiScalarKind::RegisterWidth,
+                8,
+                false,
+            ),
+            pair_signature(),
+            triple_signature(),
+            wide_packed_signature(),
+            void_signature(vec![scalar_parameter(
+                rue_air::CAbiScalarKind::I32,
+                4,
+                true,
+            )]),
+        ] {
+            for &target in Target::all() {
+                let signature = on(target, &signature);
+                let plan = ThunkPlan::new(target, &signature);
+                let identity = plan.slots.iter().all(|(source, _)| {
+                    !matches!(source, NativeSlotSource::Leaf { parameter, leaf }
+                        if plan.leaves[*parameter][*leaf].width < 8)
+                }) && !plan.adapts_result();
+                assert_eq!(
+                    identity,
+                    signature.c_entry(target) == CEntry::Alias,
+                    "{target:?} {signature:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_stacked_narrow_tail_stays_inside_the_outgoing_argument_area() {
+        // Every native value is written as a whole eightbyte, so a stacked slot
+        // narrower than eight bytes writes past its own footprint. Under
+        // Apple's natural-size packing that footprint is one byte, and a long
+        // enough narrow tail would otherwise run out of the outgoing argument
+        // area and into the staging cells above it, which already hold the
+        // register-passed values.
+        let mut parameters = vec![word_parameter(); 8];
+        parameters.extend(std::iter::repeat_n(
+            scalar_parameter(rue_air::CAbiScalarKind::I8, 1, true),
+            12,
+        ));
+        for target in Target::all() {
+            let signature = on(*target, &void_signature(parameters.clone()));
+            let plan = ThunkPlan::new(*target, &signature);
+            let stage_base = plan
+                .register_loads
+                .iter()
+                .map(|(_, offset)| *offset)
+                .min()
+                .expect("the register-passed arguments stage");
+            for (index, (_, destination)) in plan.slots.iter().enumerate() {
+                let NativeSlotDestination::Stack { offset } = destination else {
+                    continue;
+                };
+                assert!(
+                    offset + 8 <= stage_base,
+                    "{target:?} slot {index} at +{offset} writes into the staging cells at +{stage_base}"
+                );
             }
         }
     }

@@ -477,6 +477,36 @@ compile_stdout_contains = [
     "convention aarch64-aapcs-darwin, symbol answer",
 ]
 
+# ADR-0084 phase 2: an export block is headed by how its C symbol is reached.
+# `wide` places identically under both conventions and is therefore an alias of
+# its native body; `narrow` takes an `i32`, whose canonical 64-bit form no C
+# caller promises, so it keeps an entry thunk and the report says which
+# parameter kept it.
+[[case]]
+name = "emit_abi_names_each_export_entry"
+description = "ADR-0084: --emit abi reports whether an export's C symbol is an alias of the native body or a thunk, and why a thunk is kept."
+files = [{ path = "main.rue", source = """
+pub extern "C" fn wide(a: i64, b: i64) -> i64 {
+    a + b
+}
+
+pub extern "C" fn narrow(a: i32) -> i32 {
+    a + a
+}
+
+fn main() -> i32 {
+    0
+}
+""" }]
+args = ["--emit", "abi", "--preview", "c_ffi", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "export wide",
+    "c entry: alias of the native body",
+    "export narrow",
+    "c entry: thunk, because parameter 0 is re-extended",
+]
+
 # The `--emit` help text renders the stage table, so this is what makes a stage
 # that exists but is undocumented impossible.
 [[case]]

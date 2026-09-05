@@ -428,20 +428,19 @@ pub(crate) fn compile_rooted_with_session_with_cancellation(
     let provider_observations = crate::unstable::provider_observation_metrics(session);
     let mut output = match rooted.input {
         crate::session::RootedCodegenInput::Structured => {
-            let mut export_thunk_objects = Vec::with_capacity(rooted.exports.len());
+            let mut export_entries = Vec::with_capacity(rooted.exports.len());
             for export in &rooted.exports {
                 check_cancellation()?;
-                export_thunk_objects.push(crate::backend::generate_export_thunk_object(
+                export_entries.push(crate::backend::generate_export_entry(
                     options.target,
-                    &export.exported_symbol,
-                    &export.native_symbol,
-                    &export.signature,
+                    export,
                 ));
             }
             crate::linking::link_internal_structured_units_with_warnings_and_cancellation(
                 options,
                 &rooted.units,
-                &export_thunk_objects,
+                &crate::backend::export_alias_names(&export_entries),
+                &crate::backend::export_thunk_objects(&export_entries),
                 &rooted.warnings,
                 cancellation,
             )?

@@ -6209,8 +6209,8 @@ fn an_excluded_test_lowers_no_body() {
     assert_eq!(errors.len(), 1);
 }
 
-/// `extern "C"` exports are executable-only (ADR-0083 §1). A test image links
-/// no export thunk, because a test request roots no c-export.
+/// `extern "C"` exports are executable-only (ADR-0083 §1). A test image carries
+/// no C entry, because a test request roots no c-export.
 #[test]
 fn a_test_request_roots_no_c_export() {
     let source = SourceSnapshot::single(
@@ -6235,10 +6235,10 @@ fn a_test_request_roots_no_c_export() {
     assert_eq!(
         exported
             .iter()
-            .map(|thunk| thunk.exported_symbol.as_str())
+            .map(|export| export.exported_symbol.as_str())
             .collect::<Vec<_>>(),
         vec!["rue_add"],
-        "an executable request links its c-export thunk"
+        "an executable request links its c-export entry"
     );
 
     let tests = session

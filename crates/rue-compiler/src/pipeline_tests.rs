@@ -2434,7 +2434,9 @@ mod tests {
         let canonical_objects = cold
             .units
             .iter()
-            .map(|unit| crate::backend::project_backend_object(&unit.unit, options.target).unwrap())
+            .map(|unit| {
+                crate::backend::project_backend_object(&unit.unit, options.target, &[]).unwrap()
+            })
             .collect::<Vec<_>>();
         let cold_image = crate::program_image_plan::ProgramImage::from_rooted(
             cold.objects,

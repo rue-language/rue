@@ -1157,7 +1157,7 @@ impl PresentationOutput {
 ///    function order; a signature disagreement between two call sites of one
 ///    symbol is already a semantic error, so one block per symbol is complete.
 fn write_abi_presentation(text: &mut String, rooted: &RootedCfgOutput, target: crate::Target) {
-    let exports = rooted.c_export_thunks();
+    let exports = rooted.c_exports();
     let mut imports = std::collections::BTreeMap::new();
     for function in rooted.functions() {
         let record = &function.record;
@@ -2223,7 +2223,7 @@ pub fn Buf(comptime T: type) -> type {{
             let objects = units
                 .iter()
                 .map(|unit| {
-                    crate::backend::project_backend_object(&unit.unit, options.target).unwrap()
+                    crate::backend::project_backend_object(&unit.unit, options.target, &[]).unwrap()
                 })
                 .collect::<Vec<_>>();
             (unit_identity, objects)

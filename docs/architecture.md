@@ -33,7 +33,7 @@ boundary, `NativeCallAbi` plus the shared slot plan for the native convention �
 and asks each backend for the name of a roster index, so it cannot describe a
 placement the compiler does not emit. `--target` selects the row, so a Darwin
 placement is readable on any host, and a `pub extern "C" fn` export prints both
-its C entry and the native body its thunk forwards to. See
+its C entry and the native body that entry names or forwards to. See
 `docs/notes/ffi-abi-conformance-audit.md`.
 
 The `stackframe` view reports each frame's byte-based layout — per-slot offsets
@@ -102,7 +102,7 @@ aggregate rule applies. `rue_air::lower_c_signature` is the one function that
 reads that data against a type's facts and answers where every argument and the
 result of a `"C"` signature lives. All three C crossing sites consume its
 `LoweredSignature`: the `extern "C"` import planner (`foreign_call`), the
-`pub extern "C" fn` export thunk (`export_thunk`), and the stable query plane's
+`pub extern "C" fn` export entry (`export_thunk`), and the stable query plane's
 `compiler.call-abi`. The backends contribute only physical leaves — mapping a
 roster index to a register name, and emitting the loads, stores, and calls.
 Calls between Rue functions use the separate native convention, whose classifier

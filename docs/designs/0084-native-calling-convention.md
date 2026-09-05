@@ -350,12 +350,16 @@ moves in the same change as the convention it models, never in a follow-up.
   scalars-only `extern "C"` calls through the lowering, the last C crossing that
   still takes the native path — is a preliminary of this phase and may land
   earlier.
-- [ ] **Phase 2: Native returns through the shared lowering** — RUE-2038. Returns
+- [x] **Phase 2: Native returns through the shared lowering** — RUE-2038. Returns
   classify through the same lowered signature, with the wider bank and the psABI
   sret register and echo; the hidden-first-ordinary-argument sret and the
   `StrBuf` special case retire; RUE-2010 closes by construction, with its
   preview-gated spec cases landing here; export thunks reduce to aliases wherever
-  the convention allows.
+  the convention allows. An alias is a second global symbol at the native body's
+  own entry, defined by that body's object in both containers
+  (`ObjectBuilder::alias`, `StructuredObject::with_alias`), so an export that
+  reduces emits no object of its own; `--emit abi` names each export's entry and,
+  for a thunk, the disagreement that keeps it.
 - [ ] **Phase 3: One classifier, and the docs describe it** — RUE-2039. The CFG
   parameter contract drops `NativeArgClass` and the slot-oriented description;
   the native/runtime/C branching in call planning and both backends' CFG lowering

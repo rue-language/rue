@@ -155,12 +155,12 @@ impl RootedCfgOutput {
     }
 
     /// The `pub extern "C" fn` exports this rooted set carries, each with the
-    /// signature the entry thunk is generated from.
+    /// signature its C entry is decided and generated from.
     ///
     /// This is the same [`collect_rooted_exports`] intersection the codegen
     /// projection publishes, so an ABI presentation and a real link describe one
     /// export set.
-    pub(crate) fn c_export_thunks(&self) -> Vec<crate::program_image_plan::RootedExportThunk> {
+    pub(crate) fn c_exports(&self) -> Vec<crate::program_image_plan::RootedExport> {
         collect_rooted_exports(&self.graph, &self.cfgs)
     }
 
@@ -244,7 +244,7 @@ pub(crate) struct RootedCodegenOutput {
     pub(crate) objects: Vec<crate::object_query::CollectedObjectProjection>,
     #[allow(dead_code)]
     pub(crate) cfgs: Vec<RootedCfgUnit>,
-    pub(crate) exports: Vec<crate::program_image_plan::RootedExportThunk>,
+    pub(crate) exports: Vec<crate::program_image_plan::RootedExport>,
     pub(crate) warnings: Vec<CompileWarning>,
     pub(crate) work: crate::CanonicalSemanticWork,
     pub(crate) cfg_work: BackendQueryWork,
@@ -308,7 +308,7 @@ pub(super) struct RootedBodyGraph {
     pub(super) work: crate::CanonicalSemanticWork,
 }
 
-/// The C-ABI export thunks a request's image must carry.
+/// The C-ABI exports a request's image must carry an entry for.
 ///
 /// `extern "C"` exports are executable-only. The nucleus records them for every
 /// request, but only `RootSelection::Executable` roots them (ADR-0083 §1), so a
@@ -319,7 +319,7 @@ pub(super) struct RootedBodyGraph {
 pub(super) fn collect_rooted_exports(
     graph: &RootedBodyGraph,
     cfgs: &[RootedCfgUnit],
-) -> Vec<crate::program_image_plan::RootedExportThunk> {
+) -> Vec<crate::program_image_plan::RootedExport> {
     let export_roots = graph
         .c_export_roots
         .iter()
@@ -333,7 +333,7 @@ pub(super) fn collect_rooted_exports(
     cfgs.iter()
         .filter_map(|cfg| {
             let convention = *export_roots.get(&cfg.function)?;
-            Some(crate::program_image_plan::RootedExportThunk {
+            Some(crate::program_image_plan::RootedExport {
                 function: cfg.function.clone(),
                 exported_symbol: match &cfg.function {
                     crate::FunctionInstanceKey::Definition(key) => key.name().to_owned(),
