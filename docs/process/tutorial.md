@@ -122,12 +122,16 @@ future library ergonomics already exist.
 Recorded here so the next author does not rediscover them. Remove an entry
 when the limitation is lifted and update the chapter that mentions it.
 
-- `[T]` slice parameters accept only 64-bit element types (E0908); the slice
-  examples use `i64`.
-- `for` over a `borrow` `StrBuf` parameter is rejected (E0429); the examples
-  iterate a clone or take the string by value.
+- `[T]` slice parameters accept only 64-bit element types (E0908, RUE-2055);
+  the slice examples use `i64`.
+- `for` over a `borrow` `StrBuf` parameter is rejected (E0429, RUE-2052); the
+  examples iterate a clone or take the string by value.
 - A qualified enum path cannot appear inside another variant's payload
-  pattern (`R.Err(E.A(x))` does not parse); the examples use a nested `match`.
+  pattern (`R.Err(E.A(x))` does not parse, RUE-2053); the examples use a
+  nested `match`.
 - `?` inside a function returning `Result(T, StrBuf)` hits an internal
-  compiler error; the examples use enum error types.
+  compiler error (RUE-2051); the examples use enum error types.
+- An immutable `let` binding is accepted as an `inout` argument to a free
+  function (RUE-2054); the ownership chapter says the caller "declares" the
+  binding `let mut` rather than "must" until that is enforced.
 - `for` does not iterate `ArrayBuf`; the examples index over `len()`.
