@@ -1946,8 +1946,33 @@ define_error_codes! {
     // ========================================================================
     // Linker/target errors (E1000-E1099)
     // ========================================================================
-    LINK_ERROR = 1000;
-    UNSUPPORTED_TARGET = 1001;
+    /// The link step failed: the objects Rue generated, the embedded
+    /// per-target runtime archive, and any `--link-archive` inputs could not
+    /// be turned into an executable. Carries no span, because linking operates
+    /// on objects rather than on source text. The two register-allocator sites
+    /// that reuse [`ErrorKind::LinkError`] report an internal invariant
+    /// failure rather than a link failure, and say so in their message.
+    LINK_ERROR = 1000 => {
+        explanation: "E1000 reports a failure in the last stage of a compile: turning the generated objects, the embedded per-target Rue runtime archive, and any `--link-archive` inputs into an executable. One code covers the whole link step, and the message carries the specific failure — a symbol no linked archive defines, an archive that cannot be opened or parsed, a relocation the linker cannot apply, an invalid or empty embedded runtime archive, or a failure to spawn, wait on, or read the output of the external linker selected with `--linker <command>`. Rue links with its own internal linker by default, so most E1000 text comes from that linker rather than from a host toolchain; when a system linker is selected instead, its stderr is captured and forwarded verbatim inside the message. E1000 carries no source span, because the link step operates on objects rather than on source text and there is no expression to point at.",
+        likely_cause: "The common cause is an `extern \"C\"` foreign declaration (preview feature `c_ffi`) whose symbol nothing linked defines. The message names the symbol and lists everything searched — the bundled Rue runtime archive followed by each `--link-archive <path>` in the order given — so supply the archive that defines the symbol, or correct the symbol's spelling. A `--link-archive` path that cannot be opened, and an archive whose members cannot be parsed, report under the same code and name the path. When `--linker <command>` selects a system linker, the text quoted after `linker '<command>' failed:` is that linker's own stderr and states the real cause. An E1000 whose message begins `internal codegen error:` comes from register allocation rather than from linking; it is a compiler bug to report, not something to fix in the program.",
+        examples: [],
+        references: [
+            ErrorCodeReference { title: "Foreign declarations link one definition", path: "docs/spec/src/09-unchecked-code/03-foreign-boundary.md", rule: Some("9.3:5") },
+            ErrorCodeReference { title: "Per-target runtime archives", path: "docs/designs/0034-cross-target-runtime.md", rule: None },
+            ErrorCodeReference { title: "Typed compiler-runtime ABI manifest", path: "docs/designs/0055-typed-runtime-abi-manifest.md", rule: None },
+        ],
+    };
+    /// Reserved for a compilation target this compiler cannot serve. No path
+    /// constructs [`ErrorKind::UnsupportedTarget`] today: `--target` is
+    /// validated against the supported set while arguments are parsed, and a
+    /// host outside that set is refused in the same place, both as plain
+    /// driver errors on stderr rather than as diagnostics.
+    UNSUPPORTED_TARGET = 1001 => {
+        explanation: "E1001 is the permanent code for a compilation target Rue cannot serve. Rue supports exactly three targets — `x86-64-linux`, `aarch64-linux`, and `aarch64-macos` — each served by its own embedded runtime archive (ADR-0034). Target selection happens in the driver before any compilation begins: `--target <name>` is checked against that set, and with no `--target` the compiler uses its host and refuses to guess when that host is not one of the three. Both refusals are argument-parsing failures, printed on stderr as a plain `Error:` line with the list of valid targets and exiting unsuccessfully; neither is reported as E1001, so no compilation reaches this code today. It stays reserved and permanent for a target rejection raised from inside a compilation. The adjacent case that is real belongs to E1000: a target whose code Rue can generate but whose executable it cannot link is a link failure, not an unsupported target.",
+        likely_cause: "A target refusal seen from the command line is the driver's, not E1001. `--target <name>` for a name outside `x86-64-linux`, `aarch64-linux`, and `aarch64-macos` prints `Error: unknown target '<name>'` followed by the valid list, and a compiler built for an unsupported host prints `Error: no --target specified and this host (...) is not a supported Rue target`. Name one of the supported targets, or, when the goal is to inspect generated code for a target rather than to link an executable for it, use `--emit asm`, which never reaches the linker.",
+        examples: [],
+        references: [ErrorCodeReference { title: "Per-target runtime archives", path: "docs/designs/0034-cross-target-runtime.md", rule: None }],
+    };
 
     // ========================================================================
     // Preview feature errors (E1100-E1199)
@@ -4334,7 +4359,18 @@ mod tests {
             assert!(std::ptr::eq(explanation.metadata, metadata));
             assert!(!explanation.explanation.is_empty());
             assert!(!explanation.likely_cause.is_empty());
-            assert!((1..=2).contains(&explanation.examples.len()));
+            // Every explanation carries at most two worked examples. The
+            // linker/target tranche is the one band that carries none: E1000
+            // is raised by the linker over objects and archives, and no path
+            // constructs the kind behind E1001 at all, so neither has a Rue
+            // program the example harness could compile.
+            assert!(explanation.examples.len() <= 2);
+            assert_eq!(
+                explanation.examples.is_empty(),
+                (1000..=1001).contains(&declaration.code.0),
+                "{} example presence must match its tranche",
+                declaration.code
+            );
             assert!(!explanation.references.is_empty());
             for example in explanation.examples {
                 assert!(!example.title.is_empty());
@@ -4605,6 +4641,34 @@ mod tests {
             .iter()
             .filter_map(|declaration| {
                 (950..=959)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(explained, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
+        );
+    }
+
+    #[test]
+    fn active_linker_and_target_explanation_band_is_complete_and_bounded() {
+        let expected = [ErrorCode::LINK_ERROR, ErrorCode::UNSUPPORTED_TARGET];
+        let active = error_code_metadata()
+            .iter()
+            .filter(|metadata| (1000..=1099).contains(&metadata.code.0))
+            .map(|metadata| {
+                assert_eq!(metadata.source_path, "crates/rue-error/src/lib.rs");
+                metadata.code
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(active, expected);
+        let explained = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (1000..=1099)
                     .contains(&declaration.code.0)
                     .then_some(declaration.code)
             })

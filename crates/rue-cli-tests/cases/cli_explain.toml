@@ -744,6 +744,28 @@ compile_stdout_contains = ["E0950: Bit cast width mismatch", "Reinterpret across
 compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
+# The linker/target tranche covers both active codes in E1000-E1099. Neither
+# has a Rue program that produces it — E1000 is raised by the linker over
+# objects and archives, and nothing constructs E1001's kind — so both pages
+# omit the examples section and state their reproduction controls in prose.
+[[case]]
+name = "link_error_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E1000"]
+compile_only = true
+compile_stdout_contains = ["E1000: Link error", "--link-archive", "internal codegen error:", "docs/spec/src/09-unchecked-code/03-foreign-boundary.md (spec rule 9.3:5)", "docs/designs/0034-cross-target-runtime.md", "docs/designs/0055-typed-runtime-abi-manifest.md"]
+compile_stdout_not_contains = ["Compiled", "Examples:"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "unsupported_target_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E1001"]
+compile_only = true
+compile_stdout_contains = ["E1001: Unsupported target", "x86-64-linux", "aarch64-macos", "no compilation reaches this code today", "docs/designs/0034-cross-target-runtime.md"]
+compile_stdout_not_contains = ["Compiled", "Examples:"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
 [[case]]
 name = "malformed_code_is_rejected"
 files = [{ path = "main.rue", source = "fn main() {}\n" }]

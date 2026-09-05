@@ -1102,11 +1102,16 @@ fn render_error_code_explanation(explanation: &ErrorCodeExplanation) -> String {
     );
     writeln!(output, "\nLikely cause:\n{}", explanation.likely_cause)
         .expect("writing to a String cannot fail");
-    output.push_str("\nExamples:\n");
-    for example in explanation.examples {
-        writeln!(output, "\n{}:", example.title).expect("writing to a String cannot fail");
-        for line in example.source.lines() {
-            writeln!(output, "    {line}").expect("writing to a String cannot fail");
+    // A diagnostic that no Rue program can produce — a link failure over
+    // objects, an unservable target — declares no examples, so the heading is
+    // omitted rather than printed empty.
+    if !explanation.examples.is_empty() {
+        output.push_str("\nExamples:\n");
+        for example in explanation.examples {
+            writeln!(output, "\n{}:", example.title).expect("writing to a String cannot fail");
+            for line in example.source.lines() {
+                writeln!(output, "    {line}").expect("writing to a String cannot fail");
+            }
         }
     }
     output.push_str("\nReferences:\n");

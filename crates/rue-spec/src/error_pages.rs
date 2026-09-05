@@ -142,8 +142,12 @@ pub fn generate(spec_dir: &Path, designs_dir: &Path) -> Result<Vec<GeneratedPage
             page.push_str(explanation.explanation);
             page.push_str("\n\n## Likely cause\n\n");
             page.push_str(explanation.likely_cause);
+            // Close the likely-cause paragraph here so the next heading is
+            // preceded by a blank line whether or not examples follow: a
+            // diagnostic no Rue program can produce declares none.
+            page.push('\n');
             if !explanation.examples.is_empty() {
-                page.push_str("\n\n## Examples\n");
+                page.push_str("\n## Examples\n");
                 for example in explanation.examples {
                     if example.source.contains("```") {
                         return Err(format!(
