@@ -123,6 +123,26 @@ pub fn checked_incoming_stack_arg_offset(
     .map_err(|_| FrameBudgetExceeded)
 }
 
+/// Checked positive FP-relative offset of an incoming stack argument at
+/// `area_offset` bytes into the incoming argument area.
+///
+/// `entry_base_bytes` is the ABI-specific distance from the frame pointer to
+/// the base of that area — the x86 return-address base (16) and the AArch64
+/// entry base (16). The offset within it is the placement's own, so the
+/// prologue reads exactly where the caller's assignment wrote.
+#[inline]
+pub fn checked_incoming_stack_arg_byte_offset(
+    entry_base_bytes: u64,
+    area_offset: u32,
+) -> Result<i32, FrameBudgetExceeded> {
+    i32::try_from(
+        entry_base_bytes
+            .checked_add(u64::from(area_offset))
+            .ok_or(FrameBudgetExceeded)?,
+    )
+    .map_err(|_| FrameBudgetExceeded)
+}
+
 /// Validate one outgoing call's simultaneous stack reservation: hidden return
 /// storage, compact by-value argument copies, and stack-passed ABI slots.
 pub fn checked_call_area_bytes(

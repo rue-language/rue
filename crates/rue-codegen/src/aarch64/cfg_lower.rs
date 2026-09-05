@@ -43,6 +43,22 @@ pub(super) const FP_ARG_REGS: [Reg; 8] = [
     Reg::V7,
 ];
 
+/// The physical register a foreign call's classified register piece names.
+///
+/// A foreign argument is marshaled through its compact memory image, whose
+/// pieces are whole eightbytes in general-purpose vregs, so a floating-point
+/// piece has no value to move: the C boundary rejects `f32`/`f64`
+/// (`c_passable_by_value`), which is what keeps every piece integer-classed.
+fn foreign_argument_register(class: rue_target::CRegisterClass, index: u32) -> Reg {
+    assert_eq!(
+        class,
+        rue_target::CRegisterClass::Gp,
+        "a foreign argument crosses through its eightbyte image in the \
+         general-purpose bank"
+    );
+    ARG_REGS[index as usize]
+}
+
 /// Return value registers for the internal Rue convention (AAPCS64 only
 /// defines x0/x1; we extend with the remaining arg registers for multi-slot
 /// aggregate returns). Aggregates with more slots than this — and builtin
@@ -139,6 +155,10 @@ pub struct CfgLower<'a> {
 impl crate::call_plan::CallMaterializer for CfgLower<'_> {
     fn target_c_convention(&self) -> rue_target::CallingConvention {
         self.target.c_calling_convention()
+    }
+
+    fn native_convention(&self) -> rue_target::ConventionSpec {
+        rue_target::ConventionSpec::native(self.target)
     }
 
     fn materialize_scalar(&mut self, value: CfgValue) -> VReg {
@@ -598,6 +618,7 @@ impl<'a> CfgLower<'a> {
         let plan = crate::call_plan::CallPlan::from_slot_values(
             crate::call_plan::CallTarget::rue(symbol),
             arg_vregs,
+            rue_target::ConventionSpec::native(self.target),
             crate::call_plan::AbiRegisterBanks {
                 gp: ARG_REGS.len(),
                 fp: FP_ARG_REGS.len(),
@@ -1022,10 +1043,10 @@ impl<'a> CfgLower<'a> {
             .zip(&plan.abi_classes)
             .zip(&plan.abi_locations)
         {
-            let crate::call_plan::AbiSlotLocation::Stack(index) = location else {
+            let crate::call_plan::AbiSlotLocation::Stack { offset, .. } = location else {
                 continue;
             };
-            let offset = checked_cell_byte_offset(*index as u64)
+            let offset = checked_displacement_bytes(u64::from(*offset))
                 .expect("call stack slot offset must fit displacement");
             if let crate::call_plan::AbiSlotClass::Fp(width) = class {
                 self.mir.push(Aarch64Inst::FloatStore {
@@ -4107,11 +4128,14 @@ impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
         }
     }
 
-    fn foreign_emit_register_args(&mut self, int_ops: &[VReg]) {
-        for (index, v) in int_ops.iter().enumerate() {
+    fn foreign_emit_register_args(
+        &mut self,
+        register_args: &[crate::foreign_call::ForeignRegisterArg],
+    ) {
+        for arg in register_args {
             self.mir.push(Aarch64Inst::MovRR {
-                dst: Operand::Physical(ARG_REGS[index]),
-                src: Operand::Virtual(*v),
+                dst: Operand::Physical(foreign_argument_register(arg.class, arg.index)),
+                src: Operand::Virtual(arg.value),
             });
         }
     }
@@ -4778,6 +4802,12 @@ mod tests {
     use rue_cfg::{CfgArgMode, CfgCallArg, CfgInst, CfgInstData, PlaceBase, Projection};
     use rue_span::{FileId, Span};
 
+    /// The convention a test's parameter-storage plan places by: this
+    /// backend's own target, whose native pairing decides how the incoming
+    /// argument area is packed.
+    const PLAN_CONVENTION: rue_target::ConventionSpec =
+        rue_target::ConventionSpec::native(rue_target::Target::Aarch64Linux);
+
     #[test]
     fn zero32_consumers_use_canonical_uxtw_not_shift_pair() {
         let source = include_str!("cfg_lower.rs");
@@ -5157,6 +5187,7 @@ mod tests {
                 &cfg,
                 self.pool,
                 false,
+                PLAN_CONVENTION,
                 ARG_REGS.len() as u32,
             );
             CfgLower::new(&cfg, self.pool, self.interner, Target::Aarch64Linux)
@@ -6943,6 +6974,7 @@ mod tests {
                 size: 8,
                 align: 8,
                 storage_bytes: 16,
+                leaves: rue_air::AggregateLeaves::all_integer(8),
             },
         }];
         args.extend((1..8).map(|index| ForeignArg::Scalar {

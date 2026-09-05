@@ -1874,10 +1874,14 @@ pub(super) fn stable_c_abi_type_facts(
     ty: &crate::TypeInstanceKey,
 ) -> rue_air::CAbiTypeFacts {
     if stable_type_is_aggregate(ty) {
-        return rue_air::CAbiTypeFacts::Aggregate {
-            size: layout.size,
-            align: layout.alignment,
-        };
+        // The canonical layout carries every byte offset of the aggregate but
+        // not the *kind* of the scalar at each one, which is what an eightbyte
+        // classification and the homogeneous-float rule read. The stable plane
+        // reports every leaf an integer, which is exact for every type that
+        // reaches a C boundary: the boundary rejects `f32`/`f64`
+        // (`c_passable_by_value`), and this projection classifies C boundaries
+        // only — a native signature keeps the native decision tree below.
+        return rue_air::CAbiTypeFacts::integer_aggregate(layout.size, layout.alignment);
     }
     if layout.abi_slots == 0 {
         return rue_air::CAbiTypeFacts::ZeroSized;
@@ -2062,9 +2066,9 @@ pub(super) fn evaluate_call_abi(
                     _ if !stable_type_is_aggregate(ty) => A::CScalar {
                         extension: argument.extension,
                     },
-                    rue_air::ArgLocation::Registers { count, .. } => {
-                        A::CIntegerRegisters { eightbytes: count }
-                    }
+                    rue_air::ArgLocation::Registers { pieces } => A::CIntegerRegisters {
+                        eightbytes: pieces.len(),
+                    },
                     rue_air::ArgLocation::Stack { size, align, .. } => A::CByValueStack {
                         size,
                         alignment: align,

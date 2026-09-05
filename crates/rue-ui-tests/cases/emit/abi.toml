@@ -47,8 +47,8 @@ function __rue_fn_test_2erue__through
     slot 4: gp register 3 (rcx)
     slot 3: gp register 4 (r8)
     slot 2: gp register 5 (r9)
-    slot 1: stack slot 0
-    slot 0: stack slot 1
+    slot 1: stack +0 (8 bytes, align 8)
+    slot 0: stack +8 (8 bytes, align 8)
   return: Wide$test_2erue, sret: pointer in gp register 0 (rdi) to 7 slots (64 bytes of caller storage)
 
 function main

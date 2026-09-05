@@ -466,20 +466,18 @@ impl ThunkPlan {
             .iter()
             .zip(c.arguments())
             .map(|(_, argument)| match argument.location {
-                ArgLocation::Registers {
-                    class, first_index, ..
-                } => {
+                ArgLocation::Registers { pieces } => {
                     // The register save block holds the general-purpose roster,
                     // and a register-passed value's eightbytes are contiguous in
                     // it, so its image needs no repacking. Nothing reaches the
                     // floating-point roster while the C boundary rejects floats.
                     assert_eq!(
-                        class,
-                        CRegisterClass::Gp,
+                        pieces.uniform_class(),
+                        Some(CRegisterClass::Gp),
                         "an export argument still crosses only in general-purpose registers"
                     );
                     ImageBase::Frame {
-                        offset: save_base + first_index * 8,
+                        offset: save_base + pieces.first_index().unwrap_or(0) * 8,
                     }
                 }
                 ArgLocation::Stack { offset, .. } => ImageBase::Incoming { offset },
@@ -1302,13 +1300,13 @@ mod tests {
         ExportSignature {
             convention: CallingConvention::X86_64SysV,
             parameters: vec![ExportParameter {
-                c: CAbiTypeFacts::Aggregate { size: 24, align: 8 },
+                c: CAbiTypeFacts::integer_aggregate(24, 8),
                 native: NativeParameter::Direct {
                     leaves: leaves.clone(),
                     reversed: true,
                 },
             }],
-            result: CAbiTypeFacts::Aggregate { size: 24, align: 8 },
+            result: CAbiTypeFacts::integer_aggregate(24, 8),
             return_facts: NativeAbiTypeFacts {
                 abi_slots: 3,
                 aggregate: true,
@@ -1339,10 +1337,10 @@ mod tests {
         ExportSignature {
             convention: CallingConvention::X86_64SysV,
             parameters: vec![ExportParameter {
-                c: CAbiTypeFacts::Aggregate { size: 8, align: 4 },
+                c: CAbiTypeFacts::integer_aggregate(8, 4),
                 native: NativeParameter::Indirect,
             }],
-            result: CAbiTypeFacts::Aggregate { size: 8, align: 4 },
+            result: CAbiTypeFacts::integer_aggregate(8, 4),
             return_facts: NativeAbiTypeFacts {
                 abi_slots: 2,
                 aggregate: true,
@@ -1734,19 +1732,13 @@ mod tests {
             let signature = ExportSignature {
                 convention: CallingConvention::X86_64SysV,
                 parameters: vec![ExportParameter {
-                    c: CAbiTypeFacts::Aggregate {
-                        size: width.into(),
-                        align: width.into(),
-                    },
+                    c: CAbiTypeFacts::integer_aggregate(width.into(), width.into()),
                     native: NativeParameter::Direct {
                         leaves: leaves.clone(),
                         reversed: true,
                     },
                 }],
-                result: CAbiTypeFacts::Aggregate {
-                    size: width.into(),
-                    align: width.into(),
-                },
+                result: CAbiTypeFacts::integer_aggregate(width.into(), width.into()),
                 return_facts: NativeAbiTypeFacts {
                     abi_slots: 1,
                     aggregate: true,

@@ -72,6 +72,7 @@ impl ParamStoragePlan {
     pub(crate) fn all_homed(
         num_params: u32,
         has_sret: bool,
+        native_convention: rue_target::ConventionSpec,
         register_banks: crate::call_plan::AbiRegisterBanks,
     ) -> Self {
         let mut classes = Vec::with_capacity(num_params as usize + has_sret as usize);
@@ -82,7 +83,8 @@ impl ParamStoragePlan {
             crate::call_plan::AbiSlotClass::Gp,
             num_params as usize,
         ));
-        let locations = crate::call_plan::assign_abi_slots(classes, register_banks);
+        let locations =
+            crate::call_plan::assign_abi_slots(native_convention, classes, register_banks);
         let abi_shift = has_sret as usize;
         Self {
             slots: (0..num_params)
@@ -106,13 +108,14 @@ impl ParamStoragePlan {
         cfg: &Cfg,
         type_pool: &FrozenTypeInternPool,
         has_sret: bool,
+        native_convention: rue_target::ConventionSpec,
         register_banks: impl Into<crate::call_plan::AbiRegisterBanks>,
     ) -> Self {
         let register_banks = register_banks.into();
         let num_params = cfg.num_params();
         let descriptors = cfg.source_param_abi();
         if descriptors.is_empty() {
-            return Self::all_homed(num_params, has_sret, register_banks);
+            return Self::all_homed(num_params, has_sret, native_convention, register_banks);
         }
         assert!(
             descriptors
@@ -131,7 +134,7 @@ impl ParamStoragePlan {
                 .any(|(a, b)| a.start_slot + a.slot_count != b.start_slot)
             || descriptors.first().is_some_and(|d| d.start_slot != 0)
         {
-            return Self::all_homed(num_params, has_sret, register_banks);
+            return Self::all_homed(num_params, has_sret, native_convention, register_banks);
         }
 
         let scan = scan_param_references(cfg, type_pool);
@@ -149,7 +152,11 @@ impl ParamStoragePlan {
                     .map(crate::call_plan::AbiSlotClass::from),
             );
         }
-        let locations = crate::call_plan::assign_abi_slots(classes.iter().copied(), register_banks);
+        let locations = crate::call_plan::assign_abi_slots(
+            native_convention,
+            classes.iter().copied(),
+            register_banks,
+        );
         let mut crossing_index = has_sret as usize;
         let mut area = 0u32;
         for d in descriptors {
@@ -168,7 +175,7 @@ impl ParamStoragePlan {
                 && d.crossing_regs == 1
                 && !matches!(
                     parameter_locations[0],
-                    crate::call_plan::AbiSlotLocation::Stack(_)
+                    crate::call_plan::AbiSlotLocation::Stack { .. }
                 )
                 && !scan.needs_home[slot as usize]
                 && (cfg.is_param_by_ref(slot)
@@ -429,6 +436,14 @@ mod tests {
 
     use super::{ParamSlotStorage, ParamStoragePlan};
 
+    /// The two native pairings a plan is exercised under: the plan's stacked
+    /// slots are packed by the convention, so a test names the row whose
+    /// argument roster it is filling.
+    const SYSV: rue_target::ConventionSpec =
+        rue_target::ConventionSpec::native(rue_target::Target::X86_64Linux);
+    const AAPCS: rue_target::ConventionSpec =
+        rue_target::ConventionSpec::native(rue_target::Target::Aarch64Linux);
+
     fn pool() -> rue_air::FrozenTypeInternPool {
         TypeInternPool::new().freeze()
     }
@@ -459,7 +474,7 @@ mod tests {
     #[test]
     fn synthetic_cfg_without_descriptors_homes_every_slot() {
         let cfg = Cfg::new(Type::UNIT, 1, 2, "synthetic".into(), vec![false, false]);
-        let plan = ParamStoragePlan::plan(&cfg, &pool(), false, 6);
+        let plan = ParamStoragePlan::plan(&cfg, &pool(), false, SYSV, 6);
         assert_eq!(plan.homed_area_slots(), 2);
         assert_eq!(plan.slot(0), ParamSlotStorage::Frame { area_slot: 0 });
         assert_eq!(plan.slot(1), ParamSlotStorage::Frame { area_slot: 1 });
@@ -477,6 +492,7 @@ mod tests {
             &cfg,
             &pool(),
             false,
+            AAPCS,
             crate::call_plan::AbiRegisterBanks { gp: 8, fp: 8 },
         );
         assert_eq!(arm.homing().len(), 8);
@@ -493,15 +509,16 @@ mod tests {
             &cfg,
             &pool(),
             false,
+            SYSV,
             crate::call_plan::AbiRegisterBanks { gp: 6, fp: 8 },
         );
         assert_eq!(
             x86.homing()[6].location,
-            crate::call_plan::AbiSlotLocation::Stack(0)
+            crate::call_plan::AbiSlotLocation::stack_slot(0)
         );
         assert_eq!(
             x86.homing()[7].location,
-            crate::call_plan::AbiSlotLocation::Stack(1)
+            crate::call_plan::AbiSlotLocation::stack_slot(1)
         );
     }
 
@@ -514,7 +531,7 @@ mod tests {
         // Param 0 is read; param 1 is never referenced.
         push_param(&mut cfg, entry, 0);
 
-        let plan = ParamStoragePlan::plan(&cfg, &pool(), false, 6);
+        let plan = ParamStoragePlan::plan(&cfg, &pool(), false, SYSV, 6);
         assert!(matches!(plan.slot(0), ParamSlotStorage::Register { .. }));
         assert!(matches!(plan.slot(1), ParamSlotStorage::Register { .. }));
         assert!(plan.is_used(0));
@@ -535,7 +552,7 @@ mod tests {
         cfg.entry = entry;
         push_param(&mut cfg, entry, 0);
 
-        let plan = ParamStoragePlan::plan(&cfg, &pool(), true, 6);
+        let plan = ParamStoragePlan::plan(&cfg, &pool(), true, SYSV, 6);
         assert!(matches!(
             plan.slot(0),
             ParamSlotStorage::Register {
@@ -563,7 +580,7 @@ mod tests {
         }
 
         // Six argument registers: slots 6 and 7 are stack-passed.
-        let plan = ParamStoragePlan::plan(&cfg, &pool(), false, 6);
+        let plan = ParamStoragePlan::plan(&cfg, &pool(), false, SYSV, 6);
         for slot in 0..6 {
             assert!(matches!(plan.slot(slot), ParamSlotStorage::Register { .. }));
         }
@@ -573,15 +590,15 @@ mod tests {
         // The homed entries still name their original incoming ABI indices.
         assert_eq!(
             plan.homing()[0].location,
-            crate::call_plan::AbiSlotLocation::Stack(0)
+            crate::call_plan::AbiSlotLocation::stack_slot(0)
         );
         assert_eq!(
             plan.homing()[1].location,
-            crate::call_plan::AbiSlotLocation::Stack(1)
+            crate::call_plan::AbiSlotLocation::stack_slot(1)
         );
 
         // With eight argument registers (AArch64) everything is register-only.
-        let plan = ParamStoragePlan::plan(&cfg, &pool(), false, 8);
+        let plan = ParamStoragePlan::plan(&cfg, &pool(), false, AAPCS, 8);
         assert_eq!(plan.homed_area_slots(), 0);
     }
 
@@ -628,7 +645,7 @@ mod tests {
         // Param 2: plain read.
         push_param(&mut cfg, entry, 2);
 
-        let plan = ParamStoragePlan::plan(&cfg, &pool(), false, 6);
+        let plan = ParamStoragePlan::plan(&cfg, &pool(), false, SYSV, 6);
         assert_eq!(plan.slot(0), ParamSlotStorage::Frame { area_slot: 0 });
         assert_eq!(plan.slot(1), ParamSlotStorage::Frame { area_slot: 1 });
         assert!(matches!(
@@ -657,7 +674,7 @@ mod tests {
         push_param(&mut cfg, entry, 0);
         push_param(&mut cfg, entry, 1);
 
-        let plan = ParamStoragePlan::plan(&cfg, &pool(), false, 6);
+        let plan = ParamStoragePlan::plan(&cfg, &pool(), false, SYSV, 6);
         assert_eq!(plan.slot(0), ParamSlotStorage::Frame { area_slot: 0 });
         assert_eq!(plan.slot(1), ParamSlotStorage::Frame { area_slot: 1 });
     }
@@ -696,7 +713,7 @@ mod tests {
             },
         );
 
-        let plan = ParamStoragePlan::plan(&cfg, &pool(), false, 6);
+        let plan = ParamStoragePlan::plan(&cfg, &pool(), false, SYSV, 6);
         assert!(matches!(
             plan.slot(0),
             ParamSlotStorage::Register {
@@ -763,7 +780,7 @@ mod tests {
             },
         );
 
-        let plan = ParamStoragePlan::plan(&cfg, &pool, false, 6);
+        let plan = ParamStoragePlan::plan(&cfg, &pool, false, SYSV, 6);
         assert_eq!(plan.slot(0), ParamSlotStorage::Frame { area_slot: 0 });
         assert_eq!(
             plan.slot(1),
@@ -805,7 +822,7 @@ mod tests {
             },
         );
 
-        let plan = ParamStoragePlan::plan(&cfg, &pool(), false, 6);
+        let plan = ParamStoragePlan::plan(&cfg, &pool(), false, SYSV, 6);
         assert_eq!(plan.slot(0), ParamSlotStorage::Frame { area_slot: 0 });
         assert_eq!(plan.slot(1), ParamSlotStorage::Frame { area_slot: 1 });
         assert_eq!(plan.slot(2), ParamSlotStorage::Frame { area_slot: 2 });

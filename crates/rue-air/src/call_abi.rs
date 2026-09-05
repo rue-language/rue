@@ -735,6 +735,7 @@ pub fn c_abi_type_facts(type_pool: &FrozenTypeInternPool, ty: Type) -> CAbiTypeF
         return CAbiTypeFacts::Aggregate {
             size: layout.size,
             align: layout.alignment,
+            leaves: aggregate_leaves(type_pool, ty, layout.size),
         };
     }
     if type_pool.abi_slot_count(ty) == 0 {
@@ -753,13 +754,183 @@ pub fn c_abi_type_facts(type_pool: &FrozenTypeInternPool, ty: Type) -> CAbiTypeF
     }
 }
 
+/// The live plane's projection of an aggregate's scalar leaves.
+///
+/// Classification asks which bank each eightbyte belongs to and whether the
+/// whole aggregate is a homogeneous floating-point aggregate, and both answers
+/// come from the leaves: a scalar field's byte offset, its width, and whether
+/// it is an integer, an `f32` or an `f64`. The walk reads the same canonical
+/// layout every other physical consumer reads — struct field offsets, array
+/// element stride, the enum tag and per-variant payload offsets — so the leaves
+/// describe the type's actual memory image.
+///
+/// An aggregate larger than [`crate::MAX_LEAF_CLASSIFIED_BYTES`] is reported all
+/// integer without a walk: no supported row's answer for one that large depends
+/// on its leaves, so this bounds the cost of a large array.
+pub fn aggregate_leaves(
+    type_pool: &FrozenTypeInternPool,
+    ty: Type,
+    size: u64,
+) -> crate::AggregateLeaves {
+    if size > crate::MAX_LEAF_CLASSIFIED_BYTES {
+        return crate::AggregateLeaves::all_integer(size);
+    }
+    let mut leaves = Vec::new();
+    push_leaves(type_pool, ty, 0, &mut leaves);
+    crate::AggregateLeaves::from_leaves(size, leaves)
+}
+
+/// The classification kind of one scalar leaf: the floats are told apart from
+/// each other because AAPCS64's homogeneous rule is keyed by member width, and
+/// everything else — integers, `bool`, pointers — is one kind.
+fn leaf_kind(ty: Type) -> crate::CAbiLeafKind {
+    match ty.kind() {
+        TypeKind::F32 => crate::CAbiLeafKind::F32,
+        TypeKind::F64 => crate::CAbiLeafKind::F64,
+        _ => crate::CAbiLeafKind::Integer,
+    }
+}
+
+/// Append every scalar leaf of `ty`, placed at `base` bytes, to `out`.
+///
+/// An enum contributes its tag as an integer leaf and then the *union* of every
+/// variant's payload leaves, each at that variant's own offsets: a union's
+/// eightbyte is classified by every leaf that can occupy it, which is the same
+/// merge SysV AMD64 section 3.2.3 applies to a C union.
+fn push_leaves(
+    type_pool: &FrozenTypeInternPool,
+    ty: Type,
+    base: u64,
+    out: &mut Vec<crate::CAbiLeaf>,
+) {
+    match ty.kind() {
+        TypeKind::Unit | TypeKind::Never => {}
+        TypeKind::Struct(struct_id) => {
+            let layout = type_pool.layout(ty);
+            let crate::LayoutKind::Struct { field_offsets, .. } = &layout.kind else {
+                return;
+            };
+            let struct_def = type_pool.struct_def(struct_id);
+            for (field, offset) in struct_def.fields.iter().zip(field_offsets) {
+                push_leaves(type_pool, field.ty, base.saturating_add(*offset), out);
+            }
+        }
+        TypeKind::Array(array_id) => {
+            let (element, count) = type_pool.array_def(array_id);
+            let stride = type_pool.layout(element).stride;
+            for index in 0..count {
+                push_leaves(
+                    type_pool,
+                    element,
+                    base.saturating_add(index.saturating_mul(stride)),
+                    out,
+                );
+            }
+        }
+        TypeKind::Enum(enum_id) => {
+            let layout = type_pool.layout(ty);
+            let crate::LayoutKind::Enum { tag, variants, .. } = &layout.kind else {
+                return;
+            };
+            out.push(crate::CAbiLeaf::integer(base, tag.size));
+            let enum_def = type_pool.enum_def(enum_id);
+            for (variant, offsets) in variants.iter().enumerate() {
+                for (payload, offset) in enum_def.variant_payload(variant).iter().zip(offsets) {
+                    push_leaves(type_pool, *payload, base.saturating_add(*offset), out);
+                }
+            }
+        }
+        _ => out.push(crate::CAbiLeaf {
+            offset: base,
+            width: type_pool.layout(ty).size,
+            kind: leaf_kind(ty),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     // Behavioral coverage that exercises the classifier against a real type
     // pool lives with the backend ABI/oracle suites (which own program
-    // fixtures); these unit checks pin the pure classification algebra.
+    // fixtures); these unit checks pin the pure classification algebra, and the
+    // leaf projection against a small pool of its own.
+
+    fn pool_with_struct(fields: &[(&str, Type)]) -> (crate::FrozenTypeInternPool, Type) {
+        let interner = lasso::ThreadedRodeo::new();
+        let pool = crate::TypeInternPool::new();
+        let (id, _) = pool.register_struct(
+            interner.get_or_intern("Probe"),
+            crate::StructDef {
+                name: "Probe".into(),
+                fields: fields
+                    .iter()
+                    .map(|(name, ty)| crate::StructField {
+                        name: (*name).to_string(),
+                        ty: *ty,
+                    })
+                    .collect(),
+                is_copy: true,
+                is_linear: false,
+                declared_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: rue_span::FileId::DEFAULT,
+            },
+        );
+        let ty = Type::new_struct(id);
+        let pool = pool.freeze();
+        (pool, ty)
+    }
+
+    #[test]
+    fn the_live_plane_projects_each_leaf_at_its_own_offset_and_kind() {
+        let (pool, mixed) = pool_with_struct(&[("a", Type::F64), ("b", Type::I64)]);
+        let facts = c_abi_type_facts(&pool, mixed);
+        let CAbiTypeFacts::Aggregate { size, leaves, .. } = facts else {
+            panic!("a struct projects aggregate facts, got {facts:?}");
+        };
+        assert_eq!(
+            leaves.eightbyte_class(0),
+            crate::EightbyteClass::Sse,
+            "the `f64` field's eightbyte carries no integer leaf"
+        );
+        assert_eq!(
+            leaves.eightbyte_class(size.div_ceil(8) as u32 - 1),
+            crate::EightbyteClass::Integer
+        );
+        assert_eq!(leaves.homogeneous_floats(), None);
+        assert!(!leaves.has_unaligned_leaf());
+
+        // Two floats of one width are a homogeneous floating-point aggregate,
+        // whatever the layout in force spaces them at.
+        let (pool, floats) = pool_with_struct(&[("a", Type::F64), ("b", Type::F64)]);
+        let facts = c_abi_type_facts(&pool, floats);
+        let CAbiTypeFacts::Aggregate { leaves, .. } = facts else {
+            panic!("a struct projects aggregate facts, got {facts:?}");
+        };
+        assert_eq!(leaves.homogeneous_floats(), Some((8, 2)));
+        assert_eq!(leaves.eightbyte_class(0), crate::EightbyteClass::Sse);
+        assert_eq!(leaves.eightbyte_class(1), crate::EightbyteClass::Sse);
+    }
+
+    #[test]
+    fn an_aggregate_past_the_leaf_bound_is_projected_all_integer() {
+        // Nothing any row does with an aggregate this large depends on its
+        // leaves, so the projection stops rather than walking it.
+        let pool = crate::TypeInternPool::new();
+        let array = pool.intern_array_from_type(Type::F64, 64);
+        let pool = pool.freeze();
+        let ty = Type::new_array(array);
+        assert!(pool.layout(ty).size > crate::MAX_LEAF_CLASSIFIED_BYTES);
+        let facts = c_abi_type_facts(&pool, ty);
+        let CAbiTypeFacts::Aggregate { size, leaves, .. } = facts else {
+            panic!("an array projects aggregate facts, got {facts:?}");
+        };
+        assert_eq!(leaves, crate::AggregateLeaves::all_integer(size));
+    }
 
     #[test]
     fn target_c_scalar_return_extension_table() {
