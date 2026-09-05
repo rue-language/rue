@@ -1490,10 +1490,9 @@ fn call_abi_target_c_classification_matches_the_live_classifier_on_both_targets(
             live_facts,
         );
         match (facts.arguments[0].class, lowered.arguments()[0].location) {
-            (
-                A::CIntegerRegisters { eightbytes },
-                rue_air::ArgLocation::Registers { count, .. },
-            ) => assert_eq!(eightbytes, count, "eightbyte parity for {name}"),
+            (A::CIntegerRegisters { eightbytes }, rue_air::ArgLocation::Registers { pieces }) => {
+                assert_eq!(eightbytes, pieces.len(), "eightbyte parity for {name}")
+            }
             (
                 A::CByValueStack { size, alignment },
                 rue_air::ArgLocation::Stack {

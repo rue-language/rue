@@ -215,6 +215,7 @@ pub(crate) fn prepare_mir_with_backend<B: crate::backend::Backend>(
         cfg,
         type_pool,
         has_sret,
+        rue_target::ConventionSpec::native(target),
         crate::call_plan::AbiRegisterBanks {
             gp: B::ARG_REG_COUNT as usize,
             fp: B::FP_ARG_REG_COUNT as usize,

@@ -10,7 +10,7 @@ use rue_air::{ArgClass, ArgConvention, FrozenTypeInternPool, NativeCallAbi, Retu
 // stays visible to readers of the field; no direct import is needed.
 use rue_cfg::{Cfg, CfgArgMode, CfgCallArg, Type};
 use rue_runtime_abi::{ReservedExportClass, ReservedExportId};
-use rue_target::CallingConvention;
+use rue_target::{CallingConvention, ConventionSpec};
 
 use crate::types;
 use crate::vreg::VReg;
@@ -185,47 +185,90 @@ impl From<rue_air::NativeArgClass> for AbiSlotClass {
     }
 }
 
+/// Where one native ABI slot travels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AbiSlotLocation {
+    /// Argument register `index` of the general-purpose bank.
     GpReg(usize),
+    /// Argument register `index` of the floating-point bank.
     FpReg(usize),
-    Stack(usize),
+    /// In the outgoing argument area: `size` bytes at `offset`, whose
+    /// alignment the placement already satisfied — the same description a
+    /// stacked C argument carries (`rue_air::ArgLocation::Stack`).
+    Stack { offset: u32, size: u32, align: u32 },
 }
 
+impl AbiSlotLocation {
+    /// The `index`-th eight-byte slot of the outgoing argument area.
+    ///
+    /// A native ABI slot carries a canonically 64-bit-extended value
+    /// (ADR-0084), so it occupies one whole eightbyte at eight-byte alignment
+    /// under every supported row's stacked-argument packing — Apple's
+    /// natural-size amendment included, since eight bytes *is* the slot's
+    /// natural size. That is what lets a caller holding only a slot index name
+    /// the same place [`assign_abi_slots`] gives it.
+    pub const fn stack_slot(index: usize) -> Self {
+        Self::Stack {
+            offset: (index * rue_air::SLOT_BYTES as usize) as u32,
+            size: rue_air::SLOT_BYTES as u32,
+            align: rue_air::SLOT_BYTES as u32,
+        }
+    }
+}
+
+/// Assign every native ABI slot to a register of its bank, or to the outgoing
+/// argument area once that bank's roster is spent.
+///
+/// `banks` is the roster this assignment draws on — the argument banks for a
+/// call or a prologue, the wider return banks for
+/// [`return_slot_regs`] — and `convention` is the convention whose
+/// argument-area packing the stacked slots follow, claimed through the one
+/// cursor every stacked placement in the tree claims through
+/// (`rue_air::ArgumentArea`).
 pub fn assign_abi_slots(
+    convention: ConventionSpec,
     classes: impl IntoIterator<Item = AbiSlotClass>,
     banks: AbiRegisterBanks,
 ) -> Vec<AbiSlotLocation> {
-    let mut gp = 0usize;
-    let mut fp = 0usize;
-    let mut stack = 0usize;
-    classes
-        .into_iter()
-        .map(|class| match class {
-            AbiSlotClass::Gp if gp < banks.gp => {
-                let index = gp;
-                gp += 1;
-                AbiSlotLocation::GpReg(index)
-            }
-            AbiSlotClass::Fp(_) if fp < banks.fp => {
-                let index = fp;
-                fp += 1;
-                AbiSlotLocation::FpReg(index)
-            }
-            AbiSlotClass::Gp => {
-                gp += 1;
-                let index = stack;
-                stack += 1;
-                AbiSlotLocation::Stack(index)
-            }
-            AbiSlotClass::Fp(_) => {
-                fp += 1;
-                let index = stack;
-                stack += 1;
-                AbiSlotLocation::Stack(index)
-            }
+    // A native ABI slot carries a canonically 64-bit-extended value, so every
+    // slot the roster cannot hold claims one whole eightbyte from the
+    // convention's own argument area.
+    let mut area = rue_air::ArgumentArea::new(convention.spec());
+    claim_bank_registers(classes, banks)
+        .map(|assigned| {
+            assigned.unwrap_or_else(|| {
+                let placement = area.claim_scalar(rue_air::SLOT_BYTES);
+                AbiSlotLocation::Stack {
+                    offset: placement.offset,
+                    size: placement.size,
+                    align: placement.align,
+                }
+            })
         })
         .collect()
+}
+
+/// Assign each slot class a register of its own bank, in order, or `None` once
+/// that bank's roster is spent. A spent roster still counts the slot, so the
+/// banks stay independent of each other.
+fn claim_bank_registers(
+    classes: impl IntoIterator<Item = AbiSlotClass>,
+    banks: AbiRegisterBanks,
+) -> impl Iterator<Item = Option<AbiSlotLocation>> {
+    let mut gp = 0usize;
+    let mut fp = 0usize;
+    classes.into_iter().map(move |class| match class {
+        AbiSlotClass::Gp => {
+            let index = gp;
+            gp += 1;
+            (index < banks.gp).then_some(AbiSlotLocation::GpReg(index))
+        }
+        AbiSlotClass::Fp(_) => {
+            let index = fp;
+            fp += 1;
+            (index < banks.fp).then_some(AbiSlotLocation::FpReg(index))
+        }
+    })
 }
 
 /// Where one logical slot of a REGISTER-RETURNED aggregate travels.
@@ -274,12 +317,14 @@ pub fn return_slot_regs(
     banks: AbiRegisterBanks,
 ) -> Vec<ReturnSlotReg> {
     let classes = aggregate_slot_classes(type_pool, ty);
-    assign_abi_slots(classes.iter().copied(), banks)
-        .into_iter()
+    // A result has no argument area to overflow into, so the bank assignment
+    // is the whole answer and a slot that does not fit is a classification
+    // error rather than a stacked slot.
+    claim_bank_registers(classes.clone(), banks)
         .zip(classes)
         .map(|(location, class)| match (location, class) {
-            (AbiSlotLocation::GpReg(index), _) => ReturnSlotReg::Gp(index),
-            (AbiSlotLocation::FpReg(index), AbiSlotClass::Fp(width)) => {
+            (Some(AbiSlotLocation::GpReg(index)), _) => ReturnSlotReg::Gp(index),
+            (Some(AbiSlotLocation::FpReg(index)), AbiSlotClass::Fp(width)) => {
                 ReturnSlotReg::Fp { index, width }
             }
             _ => panic!("a register-returned aggregate slot must fit a return register bank"),
@@ -568,6 +613,12 @@ pub trait CallMaterializer {
     /// comes from the target rather than the architecture, so AArch64 Linux and
     /// AArch64 macOS answer differently.
     fn target_c_convention(&self) -> CallingConvention;
+
+    /// The native convention on this backend's compilation target, paired with
+    /// the description it places by: the target's own C description with the
+    /// native amendments (`ConventionSpec::native`). It is what decides how the
+    /// outgoing argument area is packed once the register rosters are spent.
+    fn native_convention(&self) -> ConventionSpec;
     fn materialize_scalar(&mut self, value: rue_cfg::CfgValue) -> VReg;
     fn materialize_aggregate(&mut self, value: rue_cfg::CfgValue) -> Vec<VReg>;
     fn materialize_by_ref(&mut self, plan: &crate::value_plan::ByRefAddressPlan) -> VReg;
@@ -757,8 +808,11 @@ impl CallPlan {
             abi_classes.len(),
             "call ABI slots and classes must have equal cardinality"
         );
-        let abi_locations =
-            assign_abi_slots(abi_classes.iter().copied(), arg_register_banks.into());
+        let abi_locations = assign_abi_slots(
+            materializer.native_convention(),
+            abi_classes.iter().copied(),
+            arg_register_banks.into(),
+        );
         assert_eq!(
             abi_slots.len(),
             abi_locations.len(),
@@ -766,7 +820,7 @@ impl CallPlan {
         );
         let stack_slot_count = abi_locations
             .iter()
-            .filter(|location| matches!(location, AbiSlotLocation::Stack(_)))
+            .filter(|location| matches!(location, AbiSlotLocation::Stack { .. }))
             .count();
         let stack_bytes = checked_aligned_cell_region_bytes(
             u64::try_from(stack_slot_count).expect("call stack slot count must fit u64"),
@@ -800,15 +854,19 @@ impl CallPlan {
     pub fn from_slot_values(
         target: CallTarget,
         slots: &[VReg],
+        native_convention: ConventionSpec,
         arg_register_banks: impl Into<AbiRegisterBanks>,
         c_convention: CallingConvention,
     ) -> Self {
         let abi_classes = vec![AbiSlotClass::Gp; slots.len()];
-        let abi_locations =
-            assign_abi_slots(abi_classes.iter().copied(), arg_register_banks.into());
+        let abi_locations = assign_abi_slots(
+            native_convention,
+            abi_classes.iter().copied(),
+            arg_register_banks.into(),
+        );
         let stack_slot_count = abi_locations
             .iter()
-            .filter(|location| matches!(location, AbiSlotLocation::Stack(_)))
+            .filter(|location| matches!(location, AbiSlotLocation::Stack { .. }))
             .count();
         Self {
             callee_convention: callee_convention(&target, c_convention),
@@ -863,6 +921,10 @@ mod tests {
     struct TestMaterializer;
 
     impl CallMaterializer for TestMaterializer {
+        fn native_convention(&self) -> ConventionSpec {
+            ConventionSpec::native(rue_target::Target::X86_64Linux)
+        }
+
         fn target_c_convention(&self) -> CallingConvention {
             CallingConvention::X86_64SysV
         }
@@ -967,6 +1029,7 @@ mod tests {
         let plan = CallPlan::from_slot_values(
             CallTarget::rue("drop"),
             &slots,
+            ConventionSpec::native(rue_target::Target::X86_64Linux),
             6,
             CallingConvention::X86_64SysV,
         );
@@ -988,16 +1051,46 @@ mod tests {
             AbiSlotClass::Fp(crate::value_plan::FloatWidth::F32),
         ];
         assert_eq!(
-            assign_abi_slots(classes, AbiRegisterBanks { gp: 2, fp: 2 }),
+            assign_abi_slots(
+                ConventionSpec::native(rue_target::Target::X86_64Linux),
+                classes,
+                AbiRegisterBanks { gp: 2, fp: 2 }
+            ),
             vec![
                 AbiSlotLocation::FpReg(0),
                 AbiSlotLocation::GpReg(0),
                 AbiSlotLocation::GpReg(1),
                 AbiSlotLocation::FpReg(1),
-                AbiSlotLocation::Stack(0),
-                AbiSlotLocation::Stack(1),
+                AbiSlotLocation::stack_slot(0),
+                AbiSlotLocation::stack_slot(1),
             ]
         );
+    }
+
+    #[test]
+    fn every_row_places_a_native_stack_slot_in_whole_ascending_eightbytes() {
+        // A native ABI slot carries a canonically 64-bit-extended value, so it
+        // claims one whole eightbyte from its convention's argument area —
+        // under Apple's natural-size packing as much as under the eight-byte
+        // slot rows, because eight bytes is the slot's natural size.
+        let classes = [AbiSlotClass::Gp; 4];
+        for target in rue_target::Target::all() {
+            let locations = assign_abi_slots(
+                ConventionSpec::native(*target),
+                classes,
+                AbiRegisterBanks { gp: 1, fp: 0 },
+            );
+            assert_eq!(
+                locations,
+                vec![
+                    AbiSlotLocation::GpReg(0),
+                    AbiSlotLocation::stack_slot(0),
+                    AbiSlotLocation::stack_slot(1),
+                    AbiSlotLocation::stack_slot(2),
+                ],
+                "{target:?}: native stack slots are whole ascending eightbytes"
+            );
+        }
     }
 
     #[test]
@@ -1080,9 +1173,9 @@ mod tests {
                 AbiSlotLocation::GpReg(3),
                 AbiSlotLocation::GpReg(4),
                 AbiSlotLocation::GpReg(5),
-                AbiSlotLocation::Stack(0),
-                AbiSlotLocation::Stack(1),
-                AbiSlotLocation::Stack(2),
+                AbiSlotLocation::stack_slot(0),
+                AbiSlotLocation::stack_slot(1),
+                AbiSlotLocation::stack_slot(2),
             ]
         );
         assert_eq!(plan.stack_slot_count, 3);

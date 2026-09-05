@@ -24,7 +24,7 @@ use rue_air::{
     LoweredSignature, PointerLocation, ScalarAbiExtension, Type, lower_c_signature,
 };
 use rue_cfg::{Cfg, CfgCallArg, CfgValue};
-use rue_target::CallingConvention;
+use rue_target::{CRegisterClass, CallingConvention};
 
 use crate::frame_layout::{
     FrameBudgetExceeded, checked_aligned_region_bytes, checked_call_area_from_stack_bytes,
@@ -55,6 +55,9 @@ pub struct AggregateImage {
     /// Backing-buffer size: `size` rounded up to the 16-byte call-stack
     /// alignment, so whole-eightbyte loads/stores never run past the buffer.
     pub storage_bytes: u32,
+    /// The scalar leaves of the image, which is what classifies its eightbytes
+    /// and answers the homogeneous-float rule.
+    pub leaves: rue_air::AggregateLeaves,
 }
 
 impl AggregateImage {
@@ -73,6 +76,7 @@ impl AggregateImage {
                 .expect("foreign aggregate alignment must fit u32"),
             storage_bytes: checked_aligned_region_bytes(layout.size)
                 .expect("foreign aggregate storage must pass frame-budget preflight"),
+            leaves: rue_air::aggregate_leaves(type_pool, ty, layout.size),
         }
     }
 
@@ -87,6 +91,7 @@ impl AggregateImage {
         CAbiTypeFacts::Aggregate {
             size: u64::from(self.size),
             align: u64::from(self.align),
+            leaves: self.leaves,
         }
     }
 }
@@ -342,6 +347,22 @@ impl ForeignCallPlan {
     }
 }
 
+/// One value crossing in a register: which bank, which roster index within it,
+/// and the vreg holding the value.
+///
+/// The roster index is the lowered signature's, not the position of this entry:
+/// a value's register is decided by the classification, and a backend maps the
+/// pair to a physical register rather than counting the values it has seen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ForeignRegisterArg {
+    /// The register bank.
+    pub(crate) class: CRegisterClass,
+    /// Roster index within that bank's argument registers.
+    pub(crate) index: u32,
+    /// The vreg holding the value.
+    pub(crate) value: VReg,
+}
+
 /// Target-specific leaves for the shared foreign-call lowering driver.
 ///
 /// The driver below owns the call's event order and all target-independent
@@ -364,7 +385,9 @@ pub(crate) trait ForeignCallLoweringBackend {
     /// decision, made once by the lowered signature; the backend chooses only
     /// the instructions.
     fn foreign_emit_stack_args(&mut self, stack: &ForeignStackArea);
-    fn foreign_emit_register_args(&mut self, int_ops: &[VReg]);
+    /// Move every register-passed value into the register the classification
+    /// named for it.
+    fn foreign_emit_register_args(&mut self, register_args: &[ForeignRegisterArg]);
     fn foreign_assign_sret(&mut self, sret_ptr: VReg);
     fn foreign_issue_call(&mut self, symbol: &str);
     /// Release the outgoing argument area reserved by
@@ -416,13 +439,20 @@ pub(crate) fn lower_foreign_call<B: ForeignCallLoweringBackend>(
         _ => None,
     };
 
-    let mut int_ops = Vec::new();
+    let mut register_args: Vec<ForeignRegisterArg> = Vec::new();
     let mut stack = ForeignStackArea {
         stores: Vec::new(),
         bytes: stack_area_bytes,
     };
     if sret_in_argument_register {
-        int_ops.push(sret_ptr.expect("SysV sret placement requires storage"));
+        // The hidden indirect-result pointer is the hidden first argument, so
+        // it takes the first general-purpose argument register and the
+        // classification already shifted every user argument past it.
+        register_args.push(ForeignRegisterArg {
+            class: CRegisterClass::Gp,
+            index: 0,
+            value: sret_ptr.expect("SysV sret placement requires storage"),
+        });
     }
     for (arg_index, (arg, argument)) in inputs
         .args
@@ -441,11 +471,28 @@ pub(crate) fn lower_foreign_call<B: ForeignCallLoweringBackend>(
             }
         };
         match argument.location {
-            ArgLocation::Registers { .. } => int_ops.extend(values),
+            ArgLocation::Registers { pieces } => {
+                assert_eq!(
+                    pieces.len() as usize,
+                    values.len(),
+                    "one value per register the classification named"
+                );
+                register_args.extend(pieces.as_slice().iter().zip(&values).map(
+                    |(piece, value)| ForeignRegisterArg {
+                        class: piece.class,
+                        index: piece.index,
+                        value: *value,
+                    },
+                ));
+            }
             ArgLocation::Indirect {
-                pointer: PointerLocation::Register { .. },
+                pointer: PointerLocation::Register { index },
                 ..
-            } => int_ops.extend(values),
+            } => register_args.push(ForeignRegisterArg {
+                class: CRegisterClass::Gp,
+                index,
+                value: values[0],
+            }),
             ArgLocation::Stack { .. } => stack.stores.extend(plan.stack_stores(arg_index, &values)),
             ArgLocation::Indirect {
                 pointer: PointerLocation::Stack { offset },
@@ -463,7 +510,7 @@ pub(crate) fn lower_foreign_call<B: ForeignCallLoweringBackend>(
     // driver fixes the shared boundary order: outgoing stack, integer args,
     // hidden sret assignment, call, then stack/byref cleanup.
     backend.foreign_emit_stack_args(&stack);
-    backend.foreign_emit_register_args(&int_ops);
+    backend.foreign_emit_register_args(&register_args);
     if let Some(sret_ptr) = sret_ptr {
         if !sret_in_argument_register {
             backend.foreign_assign_sret(sret_ptr);
@@ -666,6 +713,7 @@ mod tests {
             size,
             align,
             storage_bytes: size.div_ceil(16) * 16,
+            leaves: rue_air::AggregateLeaves::all_integer(u64::from(size)),
         }
     }
 
@@ -967,8 +1015,12 @@ mod tests {
             self.record(format!("stack[{}]:{}", stack.bytes, stores.join(",")));
         }
 
-        fn foreign_emit_register_args(&mut self, int_ops: &[VReg]) {
-            self.record(format!("registers:{int_ops:?}"));
+        fn foreign_emit_register_args(&mut self, register_args: &[ForeignRegisterArg]) {
+            let moves = register_args
+                .iter()
+                .map(|arg| format!("{:?}{}={}", arg.class, arg.index, arg.value))
+                .collect::<Vec<_>>();
+            self.record(format!("registers:{}", moves.join(",")));
         }
 
         fn foreign_assign_sret(&mut self, _sret_ptr: VReg) {
@@ -1055,7 +1107,7 @@ mod tests {
                 "get:CfgValue(3)",
                 "get:CfgValue(4)",
                 "stack[16]:v106@0+8",
-                "registers:[VReg(100), VReg(101), VReg(102), VReg(103), VReg(104), VReg(105)]",
+                "registers:Gp0=v100,Gp1=v101,Gp2=v102,Gp3=v103,Gp4=v104,Gp5=v105",
                 "call:sysv_fn",
                 "cleanup_stack:16",
                 "cleanup_byref:0",
@@ -1099,7 +1151,7 @@ mod tests {
                 "get:CfgValue(8)",
                 "get:CfgValue(9)",
                 "stack[16]:v109@0+8,v110@8+8",
-                "registers:[VReg(101), VReg(102), VReg(103), VReg(104), VReg(105), VReg(106), VReg(107), VReg(108)]",
+                "registers:Gp0=v101,Gp1=v102,Gp2=v103,Gp3=v104,Gp4=v105,Gp5=v106,Gp6=v107,Gp7=v108",
                 "assign_sret",
                 "call:aapcs_fn",
                 "cleanup_stack:16",
@@ -1123,7 +1175,7 @@ mod tests {
             register_return.events,
             vec![
                 "stack[0]:",
-                "registers:[]",
+                "registers:",
                 "call:aapcs_register_fn",
                 "cleanup_stack:0",
                 "cleanup_byref:0",

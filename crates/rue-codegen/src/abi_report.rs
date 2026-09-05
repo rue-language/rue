@@ -221,14 +221,12 @@ impl From<ArgLocation> for CPlacement {
     fn from(location: ArgLocation) -> Self {
         match location {
             ArgLocation::Omitted => Self::Omitted,
-            ArgLocation::Registers {
-                class,
-                first_index,
-                count,
-            } => Self::Registers {
-                class,
-                first: first_index,
-                count,
+            ArgLocation::Registers { pieces } => Self::Registers {
+                class: pieces.uniform_class().expect(
+                    "a C argument's registers are one bank while the boundary rejects floats",
+                ),
+                first: pieces.first_index().unwrap_or(0),
+                count: pieces.len(),
             },
             ArgLocation::Stack {
                 offset,
@@ -499,7 +497,11 @@ fn native_side(
                 .map(AbiSlotClass::from),
         );
     }
-    let locations = assign_abi_slots(classes.iter().copied(), registers.argument_banks());
+    let locations = assign_abi_slots(
+        rue_target::ConventionSpec::native(target),
+        classes.iter().copied(),
+        registers.argument_banks(),
+    );
 
     // Two recoveries, because a body records the two parameter kinds
     // differently: a by-value parameter through its drop entry or `Param`
@@ -872,7 +874,11 @@ fn native_slot_text(registers: TargetRegisters, location: AbiSlotLocation) -> St
             1,
             "register",
         ),
-        AbiSlotLocation::Stack(index) => format!("stack slot {index}"),
+        AbiSlotLocation::Stack {
+            offset,
+            size,
+            align,
+        } => format!("stack +{offset} ({}, align {align})", bytes(size)),
     }
 }
 
@@ -1272,7 +1278,7 @@ mod tests {
                     },
                     NativeSlot {
                         logical: 0,
-                        location: AbiSlotLocation::Stack(0),
+                        location: AbiSlotLocation::stack_slot(0),
                     },
                 ],
                 reversed: true,
@@ -1284,7 +1290,7 @@ mod tests {
             [
                 "slot 2: gp register 0 (rdi)",
                 "slot 1: gp register 1 (rsi)",
-                "slot 0: stack slot 0",
+                "slot 0: stack +0 (8 bytes, align 8)",
             ]
         );
     }

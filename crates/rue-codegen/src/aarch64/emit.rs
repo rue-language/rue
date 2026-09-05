@@ -570,7 +570,9 @@ impl<'a> Emitter<'a> {
                     location: if (slot + abi_shift) < 8 {
                         crate::call_plan::AbiSlotLocation::GpReg((slot + abi_shift) as usize)
                     } else {
-                        crate::call_plan::AbiSlotLocation::Stack((slot + abi_shift - 8) as usize)
+                        crate::call_plan::AbiSlotLocation::stack_slot(
+                            (slot + abi_shift - 8) as usize,
+                        )
                     },
                 })
                 .collect()
@@ -970,16 +972,11 @@ impl<'a> Emitter<'a> {
                         offset
                     );
                 }
-                (_, crate::call_plan::AbiSlotLocation::Stack(stack_index)) => {
+                (_, crate::call_plan::AbiSlotLocation::Stack { offset: area, .. }) => {
                     // Stack-passed arg: copy from above the frame into the param area
-                    let src_offset = crate::frame_layout::checked_incoming_stack_arg_offset(
-                        16,
-                        u32::try_from(param_regs.len() + stack_index)
-                            .expect("ABI index must fit u32"),
-                        u32::try_from(param_regs.len())
-                            .expect("argument register count must fit u32"),
-                    )
-                    .expect("incoming stack argument offset must fit displacement");
+                    let src_offset =
+                        crate::frame_layout::checked_incoming_stack_arg_byte_offset(16, area)
+                            .expect("incoming stack argument offset must fit displacement");
                     self.begin_inst();
                     self.emit_ldr(Reg::X9, Reg::Fp, src_offset);
                     end_inst!(self, "ldr x9, [x29, #{}]", src_offset);
@@ -3605,7 +3602,7 @@ mod tests {
             .with_param_homing(vec![crate::codegen_pipeline::ParamHoming {
                 start_slot: 0,
                 class: crate::call_plan::AbiSlotClass::Gp,
-                location: crate::call_plan::AbiSlotLocation::Stack(0),
+                location: crate::call_plan::AbiSlotLocation::stack_slot(0),
             }])
             .emit_all()
             .expect("stack argument homing must emit");

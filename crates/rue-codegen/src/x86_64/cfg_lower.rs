@@ -57,6 +57,7 @@ pub(super) const fn x86_64_target_c_convention() -> rue_target::CallingConventio
 }
 
 pub(super) const ARG_REGS: [Reg; 6] = [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9];
+
 pub(super) const FP_ARG_REGS: [Reg; 8] = [
     Reg::Xmm0,
     Reg::Xmm1,
@@ -67,6 +68,22 @@ pub(super) const FP_ARG_REGS: [Reg; 8] = [
     Reg::Xmm6,
     Reg::Xmm7,
 ];
+
+/// The physical register a foreign call's classified register piece names.
+///
+/// A foreign argument is marshaled through its compact memory image, whose
+/// pieces are whole eightbytes in general-purpose vregs, so an SSE-classed
+/// piece has no value to move: the C boundary rejects `f32`/`f64`
+/// (`c_passable_by_value`), which is what keeps every piece integer-classed.
+fn foreign_argument_register(class: rue_target::CRegisterClass, index: u32) -> Reg {
+    assert_eq!(
+        class,
+        rue_target::CRegisterClass::Gp,
+        "a foreign argument crosses through its eightbyte image in the \
+         general-purpose bank"
+    );
+    ARG_REGS[index as usize]
+}
 
 /// Return value registers for the internal Rue convention (SysV only defines
 /// rax/rdx; the rest are caller-saved scratch regs we extend the convention
@@ -158,6 +175,10 @@ pub struct CfgLower<'a> {
 impl crate::call_plan::CallMaterializer for CfgLower<'_> {
     fn target_c_convention(&self) -> rue_target::CallingConvention {
         x86_64_target_c_convention()
+    }
+
+    fn native_convention(&self) -> rue_target::ConventionSpec {
+        rue_target::ConventionSpec::native(X86_64_TARGET)
     }
 
     fn materialize_scalar(&mut self, value: CfgValue) -> VReg {
@@ -613,6 +634,7 @@ impl<'a> CfgLower<'a> {
         let plan = crate::call_plan::CallPlan::from_slot_values(
             crate::call_plan::CallTarget::rue(symbol),
             arg_vregs,
+            rue_target::ConventionSpec::native(X86_64_TARGET),
             crate::call_plan::AbiRegisterBanks {
                 gp: ARG_REGS.len(),
                 fp: FP_ARG_REGS.len(),
@@ -1211,7 +1233,7 @@ impl<'a> CfgLower<'a> {
                 .zip(&plan.abi_locations)
                 .any(|(class, location)| {
                     matches!(class, crate::call_plan::AbiSlotClass::Fp(_))
-                        && matches!(location, crate::call_plan::AbiSlotLocation::Stack(_))
+                        && matches!(location, crate::call_plan::AbiSlotLocation::Stack { .. })
                 });
         let stack_cell_bytes = checked_cell_region_bytes(
             u64::try_from(num_stack_args).expect("call stack slot count must fit u64"),
@@ -1230,10 +1252,10 @@ impl<'a> CfgLower<'a> {
                 .zip(&plan.abi_classes)
                 .zip(&plan.abi_locations)
             {
-                let crate::call_plan::AbiSlotLocation::Stack(index) = location else {
+                let crate::call_plan::AbiSlotLocation::Stack { offset, .. } = location else {
                     continue;
                 };
-                let offset = checked_cell_byte_offset(*index as u64)
+                let offset = checked_displacement_bytes(u64::from(*offset))
                     .expect("call stack slot offset must fit displacement");
                 if let crate::call_plan::AbiSlotClass::Fp(width) = class {
                     self.mir.push(X86Inst::FloatStore {
@@ -1264,9 +1286,18 @@ impl<'a> CfgLower<'a> {
         }
         if !has_fp_stack_arg {
             for (arg, location) in plan.abi_slots.iter().zip(&plan.abi_locations).rev() {
-                if !matches!(location, crate::call_plan::AbiSlotLocation::Stack(_)) {
+                let crate::call_plan::AbiSlotLocation::Stack { offset, size, .. } = location else {
                     continue;
-                }
+                };
+                // Pushing the stacked slots in reverse leaves slot 0 nearest
+                // `rsp`, which is the offset the assignment gave it: the push
+                // sequence is only correct while the area is whole ascending
+                // eightbytes, which is what a native slot claims.
+                assert_eq!(
+                    (*size, offset % 8),
+                    (8, 0),
+                    "a pushed native stack slot occupies one whole eightbyte"
+                );
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Physical(Reg::Rax),
                     src: Operand::Virtual(*arg),
@@ -4189,19 +4220,25 @@ impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
         }
     }
 
-    fn foreign_emit_register_args(&mut self, int_ops: &[VReg]) {
-        for v in int_ops.iter().rev() {
+    fn foreign_emit_register_args(
+        &mut self,
+        register_args: &[crate::foreign_call::ForeignRegisterArg],
+    ) {
+        // Staging every value on the stack first and popping it into its
+        // register afterwards keeps one argument's move from clobbering
+        // another's source, whatever order the classification named.
+        for arg in register_args.iter().rev() {
             self.mir.push(X86Inst::MovRR {
                 dst: Operand::Physical(Reg::Rax),
-                src: Operand::Virtual(*v),
+                src: Operand::Virtual(arg.value),
             });
             self.mir.push(X86Inst::Push {
                 src: Operand::Physical(Reg::Rax),
             });
         }
-        for (index, _) in int_ops.iter().enumerate() {
+        for arg in register_args {
             self.mir.push(X86Inst::Pop {
-                dst: Operand::Physical(ARG_REGS[index]),
+                dst: Operand::Physical(foreign_argument_register(arg.class, arg.index)),
             });
         }
     }
@@ -4885,6 +4922,12 @@ mod tests {
     use rue_cfg::{CfgArgMode, CfgCallArg, CfgInst, CfgInstData, PlaceBase, Projection};
     use rue_span::{FileId, Span};
 
+    /// The convention a test's parameter-storage plan places by: this
+    /// backend's own target, whose native pairing decides how the incoming
+    /// argument area is packed.
+    const PLAN_CONVENTION: rue_target::ConventionSpec =
+        rue_target::ConventionSpec::native(X86_64_TARGET);
+
     #[test]
     fn zero32_consumers_use_canonical_move_not_shift_pair() {
         let source = include_str!("cfg_lower.rs");
@@ -5244,6 +5287,7 @@ mod tests {
                 &cfg,
                 self.pool,
                 false,
+                PLAN_CONVENTION,
                 ARG_REGS.len() as u32,
             );
             CfgLower::new(&cfg, self.pool, self.interner)
@@ -6377,7 +6421,8 @@ mod tests {
         let sum = fixture.value(CfgInstData::Add(b, q), Type::I32);
         fixture.ret(Some(sum));
         let cfg = fixture.cfg.finish(&pool).expect("test CFG must verify");
-        let plan = crate::param_storage::ParamStoragePlan::plan(&cfg, &pool, false, 6);
+        let plan =
+            crate::param_storage::ParamStoragePlan::plan(&cfg, &pool, false, PLAN_CONVENTION, 6);
 
         // The compact struct parameter collapses to one incoming pointer
         // register while its three frame slots stay reserved. The scalar `q`
@@ -7230,6 +7275,7 @@ mod tests {
                 size: 8,
                 align: 8,
                 storage_bytes: 16,
+                leaves: rue_air::AggregateLeaves::all_integer(8),
             },
         }];
         args.extend((1..6).map(|index| ForeignArg::Scalar {

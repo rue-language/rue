@@ -597,7 +597,9 @@ impl<'a> Emitter<'a> {
                     location: if (slot + abi_shift) < 6 {
                         crate::call_plan::AbiSlotLocation::GpReg((slot + abi_shift) as usize)
                     } else {
-                        crate::call_plan::AbiSlotLocation::Stack((slot + abi_shift) as usize - 6)
+                        crate::call_plan::AbiSlotLocation::stack_slot(
+                            (slot + abi_shift) as usize - super::cfg_lower::ARG_REGS.len(),
+                        )
                     },
                 })
                 .collect()
@@ -729,16 +731,11 @@ impl<'a> Emitter<'a> {
                     );
                     end_inst!(self, "mov float [rbp{}], {}", offset, FP_ARG_REGS[index]);
                 }
-                (_, crate::call_plan::AbiSlotLocation::Stack(stack_index)) => {
+                (_, crate::call_plan::AbiSlotLocation::Stack { offset: area, .. }) => {
                     // Stack-passed arg: copy from above the frame into the param area
-                    let src_offset = crate::frame_layout::checked_incoming_stack_arg_offset(
-                        16,
-                        u32::try_from(ARG_REGS.len() + stack_index)
-                            .expect("incoming stack argument index must fit u32"),
-                        u32::try_from(ARG_REGS.len())
-                            .expect("argument register count must fit u32"),
-                    )
-                    .expect("incoming stack argument offset must fit displacement");
+                    let src_offset =
+                        crate::frame_layout::checked_incoming_stack_arg_byte_offset(16, area)
+                            .expect("incoming stack argument offset must fit displacement");
                     self.begin_inst();
                     self.emit_mov_rm(Reg::Rax, Reg::Rbp, src_offset);
                     end_inst!(self, "mov rax, [rbp+{}]", src_offset);
@@ -3631,7 +3628,7 @@ mod tests {
             .with_param_homing(vec![crate::codegen_pipeline::ParamHoming {
                 start_slot: 0,
                 class: crate::call_plan::AbiSlotClass::Gp,
-                location: crate::call_plan::AbiSlotLocation::Stack(0),
+                location: crate::call_plan::AbiSlotLocation::stack_slot(0),
             }])
             .emit_all()
             .expect("stack argument homing must emit");
