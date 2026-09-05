@@ -15,7 +15,8 @@
 #   scripts/rue all                Canonical union of every tier
 #   scripts/rue unit <crate> [args] One crate's Rust unit tests, case-filtered
 #                                  (crate name with or without the rue- prefix,
-#                                  or an explicit <crate>:<target>; forwards
+#                                  `rue` for the driver, or an explicit
+#                                  <crate>:<target>; forwards
 #                                  <pattern>/--exact/--nocapture to libtest)
 #   scripts/rue spec [pattern]     Spec tests, optional filter
 #   scripts/rue cli [pattern]      CLI integration tests, optional filter
@@ -124,16 +125,41 @@ case "$cmd" in
             crate="$sel"
             unit_target=""
         fi
-        # Map the friendly crate name to its package, accepting it with or
-        # without the rue- prefix (`compiler` -> `rue-compiler`).
+        # Map the friendly crate name to its package against the source tree.
+        # A package spelled exactly like the token wins, so `rue` reaches
+        # crates/rue — where the driver and the `rue test` runner live — and
+        # only then is the rue- prefix supplied, so `compiler` still reaches
+        # crates/rue-compiler (RUE-2040). A token that already carries the
+        # prefix has just the one spelling; nothing is named `rue-rue-*`.
+        # A token is a bare package name: a path separator or a dot-relative
+        # spelling would probe outside crates/ and then hand buck2 a malformed
+        # label, so it is refused up front.
         case "$crate" in
-            rue-*) pkg="$crate" ;;
-            *)     pkg="rue-$crate" ;;
+            */*|.|..|"")
+                echo "scripts/rue unit: crate '$crate' must be a bare package name" >&2
+                exit 2
+                ;;
         esac
-        # Validate against the source tree so an unknown crate produces a clear
-        # message instead of a raw buck2 target-not-found dump.
-        if [[ ! -f "crates/$pkg/BUCK" ]]; then
-            echo "scripts/rue unit: unknown crate '$crate' (no crates/$pkg)" >&2
+        candidates=("$crate")
+        case "$crate" in
+            rue-*) ;;
+            *) candidates+=("rue-$crate") ;;
+        esac
+        pkg=""
+        for candidate in "${candidates[@]}"; do
+            if [[ -f "crates/$candidate/BUCK" ]]; then
+                pkg="$candidate"
+                break
+            fi
+        done
+        # An unknown crate produces a clear message naming every package that
+        # was probed, instead of a raw buck2 target-not-found dump.
+        if [[ -z "$pkg" ]]; then
+            tried=""
+            for candidate in "${candidates[@]}"; do
+                tried="${tried:+$tried or }crates/$candidate"
+            done
+            echo "scripts/rue unit: unknown crate '$crate' (no $tried)" >&2
             exit 2
         fi
         [[ -n "$unit_target" ]] || unit_target="$pkg-test"
