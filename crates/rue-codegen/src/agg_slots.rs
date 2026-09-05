@@ -51,6 +51,9 @@ pub(crate) trait SlotBackend: BoundsCheckBackend {
     /// Emit a load of frame slot `slot` into `dst`.
     fn emit_load_slot(&mut self, dst: VReg, slot: u32);
 
+    /// Emit the address of frame slot `slot` into `dst`.
+    fn emit_slot_addr(&mut self, dst: VReg, slot: u32);
+
     fn emit_typed_float_load_slot(
         &mut self,
         dst: VReg,
@@ -264,27 +267,48 @@ pub(crate) fn load_enum_slots_through_ptr<B: SlotBackend>(
     vregs
 }
 
-/// Unmarshal a by-value indirect compact aggregate parameter into its frame
-/// slots at function entry (ADR-0052 phase 5.8, RUE-1005).
+/// Read one by-value aggregate parameter's leaves back out of its compact image
+/// at function entry (ADR-0084).
 ///
-/// The callee prologue homed a single incoming pointer to the parameter's base
-/// frame slot `base_slot`. This reads that pointer, loads the aggregate's
-/// compact memory image through it (each slot extended from its physical width
-/// at its compact byte offset), and stores the resulting slot-shaped values back
-/// into the parameter's frame region in the ascending layout every consumer
-/// reads — so ordinary field projection and whole-value materialization both see
-/// the correct decomposition without a special parameter path. The pointer is
-/// fully consumed (its loads emitted) before the frame stores overwrite
-/// `base_slot`.
-pub(crate) fn unmarshal_indirect_value_param<B: SlotBackend>(
+/// The prologue has already laid the argument down as an image: for a
+/// register- or stack-placed aggregate it copied the eightbytes the convention
+/// placed it in into the parameter's own frame slots, and for a by-reference
+/// copy it homed the caller's pointer into the first of them. This reads every
+/// leaf out of that image at its compact byte offset and width — sign- or
+/// zero-extending a narrow one into Rue's canonical 64-bit form — and stores
+/// the leaves back into the frame region in the ascending order every consumer
+/// reads, so ordinary field projection and whole-value materialization both see
+/// the correct decomposition without a special parameter path.
+///
+/// Every load precedes every store, which is what makes reading and writing the
+/// same frame region safe: the image spans at most as many eightbytes as the
+/// value has leaves.
+pub(crate) fn unmarshal_param_image<B: SlotBackend>(
     b: &mut B,
     base_slot: u32,
-    map: &[crate::types::PhysicalEnumSlot],
+    image_slot_offset: u32,
+    through_pointer: bool,
+    image: &crate::native_abi::NativeImage,
 ) {
     let ptr = b.alloc_vreg();
-    b.emit_load_slot(ptr, base_slot);
-    let vals = load_enum_slots_through_ptr(b, ptr, map);
-    store_slots(b, &vals, base_slot);
+    if through_pointer {
+        b.emit_load_slot(ptr, base_slot);
+    } else {
+        // The frame parameter area addresses descend with the slot index, so
+        // the image the prologue laid down starts at the last of the slots it
+        // used and runs upward from there.
+        b.emit_slot_addr(ptr, base_slot + image_slot_offset);
+    }
+    match &image.kind {
+        crate::native_abi::NativeImageKind::Map { map, .. } => {
+            let vals = load_enum_slots_through_ptr(b, ptr, map);
+            store_slots(b, &vals, base_slot);
+        }
+        crate::native_abi::NativeImageKind::Dispatch(dispatch) => {
+            let vals = load_dispatch_image(b, ptr, dispatch);
+            store_slots(b, &vals, base_slot);
+        }
+    }
 }
 
 /// Get or compute the slot vregs for a multi-slot aggregate value
@@ -731,20 +755,6 @@ pub(crate) fn store_dispatch_image_to_sret<B: SlotBackend>(
     let sret_slot = b.ctx().sret_ptr_slot();
     b.emit_load_slot(ptr, sret_slot);
     store_dispatch_image(b, vals, ptr, image);
-}
-
-/// Tag-dispatched counterpart of [`unmarshal_indirect_value_param`] (RUE-1037):
-/// read the homed pointer, load the aggregate's tag-dispatched compact image
-/// through it, and store the slot-shaped values into the parameter's frame region.
-pub(crate) fn unmarshal_indirect_value_param_dispatch<B: SlotBackend>(
-    b: &mut B,
-    base_slot: u32,
-    image: &crate::types::DispatchImage,
-) {
-    let ptr = b.alloc_vreg();
-    b.emit_load_slot(ptr, base_slot);
-    let vals = load_dispatch_image(b, ptr, image);
-    store_slots(b, &vals, base_slot);
 }
 
 /// Load `count` slots through `ptr` at ASCENDING byte offsets (slot k at

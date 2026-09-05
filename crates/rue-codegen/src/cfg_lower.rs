@@ -537,6 +537,13 @@ impl<'a> CfgLowerContext<'a> {
 
     /// The emitted frame slot of parameter ABI slot `index`, which must be
     /// homed (RUE-1170).
+    /// The by-value aggregate parameters whose leaves must be read back out of
+    /// their compact image at entry (ADR-0084). Empty when no storage plan was
+    /// supplied.
+    pub(crate) fn param_unmarshals(&self) -> &[crate::param_storage::ParamUnmarshal] {
+        self.param_storage.map_or(&[], |plan| plan.unmarshals())
+    }
+
     pub fn param_frame_slot(&self, index: u32) -> u32 {
         let area_slot = match self.param_storage {
             None => index,

@@ -1162,8 +1162,6 @@ impl Cfg {
                 Ok(rue_air::SourceParamAbi {
                     start_slot: param.start_slot,
                     slot_count: param.slot_count,
-                    crossing_regs: param.crossing_regs,
-                    crossing_classes: param.crossing_classes.clone(),
                     ty: match param.ty {
                         Some(t) => Some(ty(t).map_err(CfgRemapError::Domain)?),
                         None => None,

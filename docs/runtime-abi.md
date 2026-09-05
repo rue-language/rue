@@ -45,9 +45,13 @@ This document describes only the typed C boundary from generated Rue code to
 that is intentionally not C-compatible or stable across compiler revisions.
 [ADR-0084](designs/0084-native-calling-convention.md) is the reference for that
 convention: it stays unspecified and free to change between revisions, and it is
-being migrated to the compilation target's C convention plus a return bank wider
-than C's. The runtime helper boundary below is unaffected — its helpers are C
-calls and already follow the target's C row.
+the compilation target's C convention plus a return bank wider than C's. Its
+*arguments* are already placed by exactly those C rules, computed by
+`rue_air::lower_native_signature` — the same placement walk `lower_c_signature`
+runs, with the return handed in rather than decided, because the native return
+bank is wider than any `CConventionSpec` describes. Its *returns* still classify
+natively, which RUE-2038 finishes. The runtime helper boundary below is
+unaffected — its helpers are C calls and already follow the target's C row.
 
 Both boundaries name their convention with one value type,
 `rue_target::CallingConvention`, whose members are concrete conventions:
@@ -138,14 +142,16 @@ query plane cannot disagree about a placement:
 
 - the `extern "C"` import planner, which writes the places and calls;
 - the `pub extern "C" fn` export thunk, which reads the same places in the
-  callee direction and adapts them to the native convention its body follows;
-  and
+  callee direction and adapts them to the native convention its body follows —
+  itself placed by `lower_native_signature` against the same facts, so the two
+  halves usually agree outright; and
 - the stable query plane's `compiler.call-abi`, which projects the same facts
   from canonical layout values and revision-stable type keys.
 
-Floating-point rosters and the classifier's SSE eightbyte class are carried but
-unreached: the C boundary still rejects `f32`/`f64`, so every eightbyte
-classifies INTEGER and every scalar is general-purpose today.
+The floating-point rosters and the classifier's SSE eightbyte class are reached
+by the *native* convention, which has floats to place; no `"C"` signature reaches
+them, because the C boundary still rejects `f32`/`f64`, so every eightbyte of a C
+crossing classifies INTEGER and every C scalar is general-purpose today.
 
 ## Target C calling conventions
 

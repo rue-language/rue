@@ -1110,9 +1110,25 @@ pub(super) fn scalar_layout(ty: &crate::TypeInstanceKey) -> crate::type_queries:
         T::I8 | T::U8 | T::Bool => 1,
         T::I16 | T::U16 => 2,
         T::I32 | T::U32 => 4,
-        T::I64 | T::U64 => 8,
+        T::F32 => 4,
+        T::I64 | T::U64 | T::F64 => 8,
         T::Unit | T::Never => 0,
         _ => 8,
+    };
+    // A zero-sized scalar contributes no leaf; every other one is a single leaf
+    // at offset zero, and its kind is what an eightbyte's bank is decided by.
+    let leaves: Vec<rue_air::CAbiLeaf> = if size == 0 {
+        Vec::new()
+    } else {
+        vec![rue_air::CAbiLeaf {
+            offset: 0,
+            width: size,
+            kind: match ty {
+                T::F32 => rue_air::CAbiLeafKind::F32,
+                T::F64 => rue_air::CAbiLeafKind::F64,
+                _ => rue_air::CAbiLeafKind::Integer,
+            },
+        }]
     };
     crate::type_queries::CanonicalLayout {
         size,
@@ -1120,8 +1136,39 @@ pub(super) fn scalar_layout(ty: &crate::TypeInstanceKey) -> crate::type_queries:
         stride: size,
         abi_slots: u32::from(size != 0),
         slot_identical: matches!(ty, T::I64 | T::U64 | T::Unit | T::Never),
+        leaves: leaves.into(),
         kind: crate::type_queries::CanonicalLayoutKind::Scalar,
     }
+}
+
+/// Rebase a component's leaves into an enclosing aggregate at `base`, dropping
+/// the whole projection once the aggregate is larger than any row's answer
+/// depends on.
+///
+/// Past [`rue_air::MAX_LEAF_CLASSIFIED_BYTES`] every supported row places an
+/// aggregate through memory whatever its leaves are, so the walk stops rather
+/// than carrying a leaf per element of a large array — the same bound the live
+/// projection (`rue_air::aggregate_leaves`) takes.
+fn extend_leaves(out: &mut Vec<rue_air::CAbiLeaf>, base: u64, leaves: &[rue_air::CAbiLeaf]) {
+    if base > rue_air::MAX_LEAF_CLASSIFIED_BYTES {
+        return;
+    }
+    out.extend(leaves.iter().map(|leaf| rue_air::CAbiLeaf {
+        offset: leaf.offset.saturating_add(base),
+        ..*leaf
+    }));
+}
+
+/// The leaves of an aggregate of `size` bytes, or none when the aggregate is
+/// past the bound above and classifies all-integer regardless.
+fn classified_leaves(
+    size: u64,
+    leaves: Vec<rue_air::CAbiLeaf>,
+) -> std::sync::Arc<[rue_air::CAbiLeaf]> {
+    if size > rue_air::MAX_LEAF_CLASSIFIED_BYTES {
+        return std::sync::Arc::from([]);
+    }
+    leaves.into()
 }
 
 pub(super) fn layout_from_terminal(
@@ -1155,6 +1202,7 @@ pub(super) fn evaluate_layout(
                 stride: 8,
                 abi_slots: 1,
                 slot_identical: true,
+                leaves: Arc::from([rue_air::CAbiLeaf::integer(0, 8)]),
                 kind: CanonicalLayoutKind::Pointer,
             },
         )));
@@ -1169,6 +1217,10 @@ pub(super) fn evaluate_layout(
                 stride: 16,
                 abi_slots: 2,
                 slot_identical: true,
+                leaves: Arc::from([
+                    rue_air::CAbiLeaf::integer(0, 8),
+                    rue_air::CAbiLeaf::integer(8, 8),
+                ]),
                 kind: CanonicalLayoutKind::Slice,
             },
         )));
@@ -1209,6 +1261,7 @@ pub(super) fn evaluate_layout(
                         stride: 0,
                         abi_slots: 0,
                         slot_identical: true,
+                        leaves: Arc::from([]),
                         kind: CanonicalLayoutKind::Array {
                             element: None,
                             count: 0,
@@ -1226,6 +1279,22 @@ pub(super) fn evaluate_layout(
             match layout_from_terminal(&element) {
                 Ok(element) => {
                     let size = element.stride.saturating_mul(*len);
+                    // Only the elements inside the leaf bound can change any
+                    // row's answer, so the walk stops there rather than running
+                    // the length of a large array.
+                    let classified = if element.stride == 0 || element.leaves.is_empty() {
+                        0
+                    } else {
+                        (*len).min(rue_air::MAX_LEAF_CLASSIFIED_BYTES / element.stride + 1)
+                    };
+                    let mut leaves = Vec::new();
+                    for index in 0..classified {
+                        extend_leaves(
+                            &mut leaves,
+                            element.stride.saturating_mul(index),
+                            &element.leaves,
+                        );
+                    }
                     LayoutValue::Available(CanonicalLayout {
                         size,
                         alignment: element.alignment,
@@ -1233,6 +1302,7 @@ pub(super) fn evaluate_layout(
                         abi_slots: u32::try_from(u64::from(element.abi_slots).saturating_mul(*len))
                             .unwrap_or(u32::MAX),
                         slot_identical: element.slot_identical,
+                        leaves: classified_leaves(size, leaves),
                         kind: CanonicalLayoutKind::Array {
                             element: Some(Box::new(element.clone())),
                             count: *len,
@@ -1258,6 +1328,7 @@ pub(super) fn evaluate_layout(
             let mut slot_identical = true;
             let mut offsets = Vec::with_capacity(terminals.len());
             let mut padding_ranges = Vec::new();
+            let mut leaves = Vec::new();
             for terminal in &terminals {
                 let layout = match layout_from_terminal(terminal) {
                     Ok(layout) => layout,
@@ -1274,6 +1345,7 @@ pub(super) fn evaluate_layout(
                     });
                 }
                 offsets.push(placed);
+                extend_leaves(&mut leaves, placed, &layout.leaves);
                 offset = placed.saturating_add(layout.size);
                 alignment = alignment.max(layout.alignment);
                 slots = slots.saturating_add(layout.abi_slots);
@@ -1292,6 +1364,7 @@ pub(super) fn evaluate_layout(
                 stride: size,
                 abi_slots: slots,
                 slot_identical,
+                leaves: classified_leaves(size, leaves),
                 kind: CanonicalLayoutKind::Struct {
                     field_offsets: offsets.into(),
                     padding_ranges: padding_ranges.into(),
@@ -1319,6 +1392,13 @@ pub(super) fn evaluate_layout(
             let mut payload_alignment = 1u64;
             let mut max_slots = 0u32;
             let mut projected = Vec::with_capacity(variants.len());
+            // The tag is an integer leaf at offset zero, and the payload is the
+            // *union* of every variant's leaves at that variant's own offsets:
+            // a union's eightbyte is classified by every leaf that can occupy
+            // it, which is the merge SysV AMD64 section 3.2.3 applies to a C
+            // union. The payload offsets below are relative to the payload, and
+            // are rebased once the payload's own offset is known.
+            let mut payload_leaves: Vec<rue_air::CAbiLeaf> = Vec::new();
             for (_, fields) in variants.iter() {
                 let mut offset = 0u64;
                 let mut variant_slots = 0u32;
@@ -1334,6 +1414,7 @@ pub(super) fn evaluate_layout(
                     cursor += 1;
                     offset = crate::type_queries::align_to(offset, layout.alignment);
                     offsets.push(offset);
+                    extend_leaves(&mut payload_leaves, offset, &layout.leaves);
                     offset = offset.saturating_add(layout.size);
                     payload_alignment = payload_alignment.max(layout.alignment);
                     variant_slots = variant_slots.saturating_add(layout.abi_slots);
@@ -1348,6 +1429,8 @@ pub(super) fn evaluate_layout(
                 payload_offset.saturating_add(payload_size),
                 alignment,
             );
+            let mut leaves = vec![rue_air::CAbiLeaf::integer(0, tag_size)];
+            extend_leaves(&mut leaves, payload_offset, &payload_leaves);
             LayoutValue::Available(CanonicalLayout {
                 size,
                 alignment,
@@ -1356,6 +1439,7 @@ pub(super) fn evaluate_layout(
                 // Compact enums always carry a narrow tag rather than the
                 // eight-byte discriminant slot used by value decomposition.
                 slot_identical: false,
+                leaves: classified_leaves(size, leaves),
                 kind: CanonicalLayoutKind::Enum {
                     tag_size,
                     payload_offset,
@@ -1855,6 +1939,8 @@ pub(super) fn c_scalar_kind(ty: &crate::TypeInstanceKey) -> rue_air::CAbiScalarK
         T::Bool => K::Bool,
         T::U16 => K::U16,
         T::U32 => K::U32,
+        T::F32 => K::F32,
+        T::F64 => K::F64,
         // Register-width scalars (i64/u64, pointers) and every remaining key
         // this projection can see need no extension.
         _ => K::RegisterWidth,
@@ -1874,14 +1960,20 @@ pub(super) fn stable_c_abi_type_facts(
     ty: &crate::TypeInstanceKey,
 ) -> rue_air::CAbiTypeFacts {
     if stable_type_is_aggregate(ty) {
-        // The canonical layout carries every byte offset of the aggregate but
-        // not the *kind* of the scalar at each one, which is what an eightbyte
-        // classification and the homogeneous-float rule read. The stable plane
-        // reports every leaf an integer, which is exact for every type that
-        // reaches a C boundary: the boundary rejects `f32`/`f64`
-        // (`c_passable_by_value`), and this projection classifies C boundaries
-        // only — a native signature keeps the native decision tree below.
-        return rue_air::CAbiTypeFacts::integer_aggregate(layout.size, layout.alignment);
+        // The canonical layout carries the aggregate's scalar leaves — each at
+        // its own byte offset, width, and kind — which is exactly what an
+        // eightbyte classification and the homogeneous-float rule read. An
+        // aggregate past the leaf bound carries none and classifies all-integer,
+        // the same answer the live projection gives it.
+        return rue_air::CAbiTypeFacts::Aggregate {
+            size: layout.size,
+            align: layout.alignment,
+            leaves: if layout.leaves.is_empty() {
+                rue_air::AggregateLeaves::all_integer(layout.size)
+            } else {
+                rue_air::AggregateLeaves::from_leaves(layout.size, layout.leaves.iter().copied())
+            },
+        };
     }
     if layout.abi_slots == 0 {
         return rue_air::CAbiTypeFacts::ZeroSized;
@@ -2011,35 +2103,65 @@ pub(super) fn evaluate_call_abi(
         }
     };
 
-    // A C boundary is placed by the one classification function every crossing
-    // site consumes; the native convention keeps its own decision tree. The
-    // stable plane projects the facts from canonical layout values and stable
-    // type keys, and the live classifier projects the same facts from the
+    // Every argument of every convention is placed by the one classification
+    // function each crossing site consumes: a C boundary through
+    // `lower_c_signature`, and the native convention — which places arguments by
+    // exactly the compilation target's own C rules (ADR-0084) — through
+    // `lower_native_signature` against the return the native tree still decides.
+    // The stable plane projects the facts from canonical layout values and
+    // stable type keys, and the live classifier projects the same facts from the
     // request-scoped type pool, so the two planes classify identically.
-    let lowered = (!convention.is_rue()).then(|| {
-        let parameters = signature
-            .parameters
-            .iter()
-            .zip(&layouts)
-            .map(|((mode, ty), layout)| match (mode, layout) {
-                (DurableParameterMode::Value, Some(layout)) => (
-                    stable_c_abi_type_facts(layout, ty),
-                    rue_air::ArgConvention::ByValue,
-                ),
-                // A reference parameter is one pointer whatever it points at,
-                // so it contributes no layout and needs none.
-                _ => (
-                    rue_air::CAbiTypeFacts::by_reference_pointer(),
-                    rue_air::ArgConvention::ByReference,
-                ),
-            })
-            .collect::<Vec<_>>();
+    let parameters = signature
+        .parameters
+        .iter()
+        .zip(&layouts)
+        .map(|((mode, ty), layout)| match (mode, layout) {
+            (DurableParameterMode::Value, Some(layout)) => (
+                stable_c_abi_type_facts(layout, ty),
+                rue_air::ArgConvention::ByValue,
+            ),
+            // A reference parameter is one pointer whatever it points at,
+            // so it contributes no layout and needs none.
+            _ => (
+                rue_air::CAbiTypeFacts::by_reference_pointer(),
+                rue_air::ArgConvention::ByReference,
+            ),
+        })
+        .collect::<Vec<_>>();
+    let native_return_budget =
+        rue_air::native_return_register_budget(key.configuration.target.arch());
+    let native_return = stable_native_abi_facts(return_layout, &signature.result)
+        .classify_return(native_return_budget);
+    let lowered = if convention.is_rue() {
+        let pairing = rue_target::ConventionSpec::native(key.configuration.target);
+        let spec = pairing.spec();
+        // Only one fact about the return reaches argument placement: whether a
+        // hidden indirect-result pointer takes an ordinary argument register
+        // ahead of every user argument. Phase 2 (RUE-2038) replaces the rest.
+        let ret = match native_return {
+            rue_air::ReturnClass::ZeroSized => rue_air::LoweredReturn::Void,
+            rue_air::ReturnClass::Scalar | rue_air::ReturnClass::Registers { .. } => {
+                rue_air::LoweredReturn::Registers {
+                    class: rue_target::CRegisterClass::Gp,
+                    count: native_return.slot_count().max(1),
+                    extension: rue_air::ScalarAbiExtension::None,
+                }
+            }
+            rue_air::ReturnClass::Indirect { slot_count } => rue_air::LoweredReturn::Sret {
+                register: spec.sret_register,
+                echoed: spec.sret_pointer_echoed_in_result_register,
+                size: slot_count.saturating_mul(rue_air::SLOT_BYTES as u32),
+                align: rue_air::SLOT_BYTES as u32,
+            },
+        };
+        rue_air::lower_native_signature(pairing, &parameters, ret)
+    } else {
         rue_air::lower_c_signature(
             convention,
             &parameters,
             stable_c_abi_type_facts(return_layout, &signature.result),
         )
-    });
+    };
 
     let mut arguments = Vec::with_capacity(signature.parameters.len());
     for (index, ((mode, ty), layout)) in signature.parameters.iter().zip(&layouts).enumerate() {
@@ -2051,34 +2173,23 @@ pub(super) fn evaluate_call_abi(
             });
             continue;
         };
-        let class = match &lowered {
-            None => match stable_native_abi_facts(layout, ty)
-                .classify_arg(rue_air::ArgConvention::ByValue)
-            {
-                rue_air::ArgClass::Omitted => A::Omitted,
-                rue_air::ArgClass::Direct { slot_count } => A::NativeDirect { slots: slot_count },
-                rue_air::ArgClass::Indirect => A::NativeIndirect,
+        let argument = lowered.arguments()[index];
+        let class = match argument.location {
+            rue_air::ArgLocation::Omitted => A::Omitted,
+            _ if !stable_type_is_aggregate(ty) => A::ScalarRegister {
+                extension: argument.extension,
             },
-            Some(lowered) => {
-                let argument = lowered.arguments()[index];
-                match argument.location {
-                    rue_air::ArgLocation::Omitted => A::Omitted,
-                    _ if !stable_type_is_aggregate(ty) => A::CScalar {
-                        extension: argument.extension,
-                    },
-                    rue_air::ArgLocation::Registers { pieces } => A::CIntegerRegisters {
-                        eightbytes: pieces.len(),
-                    },
-                    rue_air::ArgLocation::Stack { size, align, .. } => A::CByValueStack {
-                        size,
-                        alignment: align,
-                    },
-                    rue_air::ArgLocation::Indirect { size, align, .. } => A::CByReferenceCopy {
-                        size,
-                        alignment: align,
-                    },
-                }
-            }
+            rue_air::ArgLocation::Registers { pieces } => A::Registers {
+                eightbytes: pieces.len(),
+            },
+            rue_air::ArgLocation::Stack { size, align, .. } => A::ByValueStack {
+                size,
+                alignment: align,
+            },
+            rue_air::ArgLocation::Indirect { size, align, .. } => A::ByReferenceCopy {
+                size,
+                alignment: align,
+            },
         };
         arguments.push(CallAbiArgument {
             mode: *mode,
@@ -2086,24 +2197,23 @@ pub(super) fn evaluate_call_abi(
             class,
         });
     }
-    let return_class = match &lowered {
-        None => {
-            let budget = rue_air::native_return_register_budget(key.configuration.target.arch());
-            match stable_native_abi_facts(return_layout, &signature.result).classify_return(budget)
-            {
-                rue_air::ReturnClass::ZeroSized => R::ZeroSized,
-                rue_air::ReturnClass::Scalar => R::Scalar {
-                    extension: rue_air::ScalarAbiExtension::None,
-                },
-                rue_air::ReturnClass::Registers { slot_count } => {
-                    R::NativeRegisters { slots: slot_count }
-                }
-                rue_air::ReturnClass::Indirect { slot_count } => {
-                    R::NativeIndirect { slots: slot_count }
-                }
+    // The return still classifies by convention: the native bank is wider than
+    // any C row's and the phase that unifies them is RUE-2038.
+    let return_class = if convention.is_rue() {
+        match native_return {
+            rue_air::ReturnClass::ZeroSized => R::ZeroSized,
+            rue_air::ReturnClass::Scalar => R::Scalar {
+                extension: rue_air::ScalarAbiExtension::None,
+            },
+            rue_air::ReturnClass::Registers { slot_count } => {
+                R::NativeRegisters { slots: slot_count }
+            }
+            rue_air::ReturnClass::Indirect { slot_count } => {
+                R::NativeIndirect { slots: slot_count }
             }
         }
-        Some(lowered) => match lowered.ret() {
+    } else {
+        match lowered.ret() {
             rue_air::LoweredReturn::Void => R::ZeroSized,
             rue_air::LoweredReturn::Registers {
                 count, extension, ..
@@ -2118,7 +2228,7 @@ pub(super) fn evaluate_call_abi(
                 size,
                 alignment: align,
             },
-        },
+        }
     };
     Ok(QueryOutput::success(CallAbiValue::Available(
         CallAbiFacts {

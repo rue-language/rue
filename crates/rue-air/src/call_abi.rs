@@ -1,17 +1,21 @@
 //! Canonical native call-ABI classifier (ADR-0052 phase 5).
 //!
 //! One authority that answers a single question: *how does a value of a given
-//! type cross a call boundary on this target* — returned in registers, returned
-//! indirectly through caller storage (sret), passed by value across argument
-//! slots, or passed as one by-reference pointer. ADR-0052's third
-//! representation ("call ABI classification") is deliberately separate from the
-//! physical slot *count*: today the two coincide (an aggregate return uses sret
-//! exactly when its flattened slot count exceeds the return-register budget, and
-//! an argument occupies one slot per leaf), and this authority reproduces that
-//! decision byte-for-byte. Its value is that both code-generation backends, the
+//! type come back from a call on this target* — in registers, or indirectly
+//! through caller storage (sret). ADR-0052's third representation ("call ABI
+//! classification") is deliberately separate from the physical slot *count*: an
+//! aggregate return uses sret exactly when its flattened slot count exceeds the
+//! return-register budget. Its value is that both code-generation backends, the
 //! sret/return-budget decision sites, and the oracle's model of the call
 //! contract consult *one* place instead of each rediscovering
 //! `slot_count > budget`.
+//!
+//! *Arguments* are not classified here. The native convention places them
+//! exactly where the compilation target's C row places them (ADR-0084), which
+//! is [`lower_native_signature`](crate::lower_native_signature)'s answer against
+//! the same [`CAbiTypeFacts`] a C crossing presents; this module keeps the
+//! physical parameter-slot width the CFG contract and the oracle track
+//! ([`NativeCallAbi::arg_slot_width`]). The return joins them in RUE-2038.
 //!
 //! Which convention governs a boundary is named by exactly one value type,
 //! [`rue_target::CallingConvention`], whose rows are the native Rue convention
@@ -37,16 +41,10 @@
 //!
 //! ## Memory-first transitional rule (ADR-0052 ratified ruling 9)
 //!
-//! The preserved slot call convention stays in force unchanged while memory
-//! layout migrates. Under the compact layout preview an aggregate whose compact
-//! representation is *not* slot-identical cannot be expressed by the preserved
-//! register convention, so this classifier rules it **indirect** (by-reference /
-//! sret). That composes with RUE-974's loud refusal: a compact aggregate
-//! crossing a call is either expressible slot-identically (classified and
-//! marshaled exactly as today), passed indirectly (this rule), or refused
-//! loudly by code generation because the narrow indirect marshaling is not yet
-//! implemented — never silently wrong. Slot-identical aggregates keep the
-//! historical register classification byte-for-byte.
+//! The rule survives on the *return* only, until RUE-2038 places returns through
+//! the shared lowering as well: a multi-slot aggregate whose compact
+//! representation is not slot-identical cannot be expressed by the register
+//! return bank, so this classifier rules it indirect (sret).
 
 use crate::lowered_signature::CAbiTypeFacts;
 use crate::{FrozenTypeInternPool, Type, TypeKind};
@@ -120,27 +118,6 @@ impl NativeAbiTypeFacts {
         }
     }
 
-    /// Classify one argument: a by-reference `inout` / `borrow` is one pointer
-    /// slot; a by-value argument is omitted when zero-sized, forced indirect
-    /// when the compact layout cannot express it slot-identically, and passed
-    /// directly across its flattened slots otherwise.
-    pub const fn classify_arg(self, convention: ArgConvention) -> ArgClass {
-        match convention {
-            ArgConvention::ByReference => ArgClass::Indirect,
-            ArgConvention::ByValue => {
-                if self.abi_slots == 0 {
-                    ArgClass::Omitted
-                } else if self.crosses_indirectly_under_compact() {
-                    ArgClass::Indirect
-                } else {
-                    ArgClass::Direct {
-                        slot_count: self.abi_slots,
-                    }
-                }
-            }
-        }
-    }
-
     /// Physical parameter-slot width of one argument (ADR-0052
     /// representation 2): one pointer slot by reference, the flattened slot
     /// count by value. Deliberately independent of the compact transitional
@@ -152,11 +129,12 @@ impl NativeAbiTypeFacts {
         }
     }
 
-    /// The memory-first rule (ADR-0052 ruling 9): a multi-slot aggregate whose
-    /// compact representation is not slot-identical cannot cross the preserved
-    /// register convention and must go indirect — *unless it occupies exactly
-    /// one ABI slot* (RUE-1035), where one register transports the compact
-    /// image losslessly and the one-slot path stays byte-for-byte correct.
+    /// The memory-first rule (ADR-0052 ruling 9) as the *return* still applies
+    /// it: a multi-slot aggregate whose compact representation is not
+    /// slot-identical cannot come back through the register return bank and must
+    /// use sret — unless it occupies exactly one ABI slot (RUE-1035), where one
+    /// register transports the compact image losslessly. RUE-2038 replaces this
+    /// with the shared lowering, as ADR-0084 replaced the argument half.
     const fn crosses_indirectly_under_compact(self) -> bool {
         self.abi_slots > 1 && self.aggregate && !self.slot_identical
     }
@@ -209,41 +187,6 @@ pub enum ArgConvention {
     ByValue,
     /// An `inout` or `borrow` argument, represented by one caller pointer.
     ByReference,
-}
-
-/// How one argument crosses the call boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArgClass {
-    /// Occupies no ABI slot (a zero-sized by-value argument).
-    Omitted,
-    /// Passed by value across `slot_count` flattened ABI slots: the first
-    /// `arg_reg_budget` in argument registers, the remainder on the stack.
-    Direct {
-        /// Number of flattened ABI slots the value occupies.
-        slot_count: u32,
-    },
-    /// Passed as one caller-provided pointer slot: a by-reference `inout` /
-    /// `borrow`, or — transitionally under the compact layout — a by-value
-    /// aggregate the preserved slot convention cannot express directly (see the
-    /// module memory-first rule).
-    Indirect,
-}
-
-impl ArgClass {
-    /// Number of ABI *crossing* slots this classification presents: a direct
-    /// value's slot count, one pointer for indirect, none when omitted.
-    ///
-    /// This is the representation-3 crossing width. The physical
-    /// value-decomposition width the CFG and the oracle track is
-    /// [`NativeCallAbi::arg_slot_width`], which is unaffected by the compact
-    /// transitional rule.
-    pub const fn crossing_slots(self) -> u32 {
-        match self {
-            Self::Omitted => 0,
-            Self::Direct { slot_count } => slot_count,
-            Self::Indirect => 1,
-        }
-    }
 }
 
 /// The native call-ABI classifier: the [`CallingConvention::Rue`] implementation.
@@ -322,21 +265,6 @@ impl<'a> NativeCallAbi<'a> {
     /// the boolean.
     pub fn return_is_sret(&self, ty: Type) -> bool {
         self.classify_return(ty).uses_sret()
-    }
-
-    /// Classify how one argument crosses the boundary.
-    ///
-    /// A by-reference `inout` / `borrow` is one pointer slot. A by-value
-    /// argument is omitted when zero-sized, otherwise passed directly across its
-    /// flattened slots — except that under the compact layout a non-slot-
-    /// identical aggregate is forced indirect (memory-first rule).
-    pub fn classify_arg(&self, ty: Type, convention: ArgConvention) -> ArgClass {
-        match convention {
-            // The kernel's by-reference rule is convention-only, so the facts
-            // projection (a pool walk) is skipped for it.
-            ArgConvention::ByReference => ArgClass::Indirect,
-            ArgConvention::ByValue => self.facts(ty).classify_arg(ArgConvention::ByValue),
-        }
     }
 
     /// Physical parameter-slot width of one argument: the value-decomposition
@@ -438,6 +366,10 @@ pub enum CAbiScalarKind {
     U32,
     /// The 1-byte C `_Bool` whose byte is 0/1 by contract.
     Bool,
+    /// A 32-bit binary floating-point value.
+    F32,
+    /// A 64-bit binary floating-point value.
+    F64,
     /// A value that already fills its 64-bit register: `i64`/`u64`, pointers,
     /// and the recovery scalar.
     RegisterWidth,
@@ -445,9 +377,13 @@ pub enum CAbiScalarKind {
 
 impl CAbiScalarKind {
     /// The live plane's projection of a type onto its width-and-signedness
-    /// class, or `None` when the type is not a target-C-passable scalar (an
-    /// aggregate, or a type `c_passable_by_value` rejects). The stable query
-    /// plane makes the same projection from its own type keys.
+    /// class, or `None` when the type is not a scalar (an aggregate, or a
+    /// compile-time-only type). The stable query plane makes the same
+    /// projection from its own type keys.
+    ///
+    /// The float classes are part of the projection because the native
+    /// convention places floats by these same rules (ADR-0084); the C boundary
+    /// rejects them earlier, in `c_passable_by_value`.
     pub fn for_live_type(ty: Type) -> Option<Self> {
         Some(match ty.kind() {
             TypeKind::I8 => Self::I8,
@@ -457,6 +393,8 @@ impl CAbiScalarKind {
             TypeKind::U16 => Self::U16,
             TypeKind::U32 => Self::U32,
             TypeKind::Bool => Self::Bool,
+            TypeKind::F32 => Self::F32,
+            TypeKind::F64 => Self::F64,
             TypeKind::I64
             | TypeKind::U64
             | TypeKind::PtrConst(_)
@@ -466,11 +404,32 @@ impl CAbiScalarKind {
         })
     }
 
-    /// The register bank this scalar travels in. Every scalar the C boundary
-    /// currently admits is an integer or a pointer, so every one is
-    /// general-purpose; floats join this projection when they cross.
+    /// The register bank this scalar travels in: the floating-point file for a
+    /// float, the general-purpose one for every integer, `bool`, and pointer.
     pub const fn register_class(self) -> CRegisterClass {
-        CRegisterClass::Gp
+        match self {
+            Self::F32 | Self::F64 => CRegisterClass::Fp,
+            Self::I8
+            | Self::I16
+            | Self::I32
+            | Self::U8
+            | Self::U16
+            | Self::U32
+            | Self::Bool
+            | Self::RegisterWidth => CRegisterClass::Gp,
+        }
+    }
+
+    /// The scalar's own width in bytes: the footprint a stacked copy takes
+    /// under a row that packs the outgoing argument area at natural size
+    /// ([`StackedArgumentPacking::NaturalSize`]).
+    pub const fn natural_bytes(self) -> u32 {
+        match self {
+            Self::I8 | Self::U8 | Self::Bool => 1,
+            Self::I16 | Self::U16 => 2,
+            Self::I32 | Self::U32 | Self::F32 => 4,
+            Self::F64 | Self::RegisterWidth => 8,
+        }
     }
 
     /// The canonical 64-bit extension for this scalar at a target-C boundary.
@@ -485,7 +444,8 @@ impl CAbiScalarKind {
             Self::U8 | Self::Bool => ScalarAbiExtension::Unsigned { from_bits: 8 },
             Self::U16 => ScalarAbiExtension::Unsigned { from_bits: 16 },
             Self::U32 => ScalarAbiExtension::Unsigned { from_bits: 32 },
-            Self::RegisterWidth => ScalarAbiExtension::None,
+            // A float fills its register: nothing is extended into or out of it.
+            Self::F32 | Self::F64 | Self::RegisterWidth => ScalarAbiExtension::None,
         }
     }
 }
@@ -1148,18 +1108,9 @@ mod tests {
                 slot_identical: true,
             };
             assert_eq!(zero.classify_return(budget), ReturnClass::ZeroSized);
-            assert_eq!(zero.classify_arg(ArgConvention::ByValue), ArgClass::Omitted);
 
             assert_eq!(scalar.classify_return(budget), ReturnClass::Scalar);
-            assert_eq!(
-                scalar.classify_arg(ArgConvention::ByValue),
-                ArgClass::Direct { slot_count: 1 }
-            );
             // By-reference is one pointer slot regardless of the facts.
-            assert_eq!(
-                aggregate(budget + 1, true).classify_arg(ArgConvention::ByReference),
-                ArgClass::Indirect
-            );
             assert_eq!(
                 aggregate(budget + 1, true).arg_slot_width(ArgConvention::ByReference),
                 1
@@ -1183,31 +1134,17 @@ mod tests {
                     slot_count: budget + 1
                 }
             );
-            assert_eq!(
-                aggregate(budget + 1, true).classify_arg(ArgConvention::ByValue),
-                ArgClass::Direct {
-                    slot_count: budget + 1
-                }
-            );
 
-            // The compact memory-first rule: a multi-slot non-slot-identical
-            // aggregate goes indirect in both positions; a single-slot one
-            // stays direct (RUE-1035).
+            // The compact memory-first rule on the return: a multi-slot
+            // non-slot-identical aggregate comes back through sret; a
+            // single-slot one still fits one register (RUE-1035).
             assert_eq!(
                 aggregate(2, false).classify_return(budget),
                 ReturnClass::Indirect { slot_count: 2 }
             );
             assert_eq!(
-                aggregate(2, false).classify_arg(ArgConvention::ByValue),
-                ArgClass::Indirect
-            );
-            assert_eq!(
                 aggregate(1, false).classify_return(budget),
                 ReturnClass::Registers { slot_count: 1 }
-            );
-            assert_eq!(
-                aggregate(1, false).classify_arg(ArgConvention::ByValue),
-                ArgClass::Direct { slot_count: 1 }
             );
 
             // Canonical StrBuf always returns through sret, even under budget.
@@ -1221,10 +1158,7 @@ mod tests {
                 strbuf.classify_return(budget),
                 ReturnClass::Indirect { slot_count: 3 }
             );
-            assert_eq!(
-                strbuf.classify_arg(ArgConvention::ByValue),
-                ArgClass::Direct { slot_count: 3 }
-            );
+            assert_eq!(strbuf.arg_slot_width(ArgConvention::ByValue), 3);
         }
     }
 
@@ -1261,14 +1195,5 @@ mod tests {
             ScalarAbiExtension::Unsigned { from_bits: 8 }
         );
         assert!(K::RegisterWidth.extension().is_noop());
-    }
-
-    #[test]
-    fn arg_class_crossing_width_matches_the_slot_contract() {
-        assert_eq!(ArgClass::Omitted.crossing_slots(), 0);
-        assert_eq!(ArgClass::Direct { slot_count: 4 }.crossing_slots(), 4);
-        // A by-reference argument and a transitional indirect aggregate both
-        // cross as one pointer.
-        assert_eq!(ArgClass::Indirect.crossing_slots(), 1);
     }
 }

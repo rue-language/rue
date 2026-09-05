@@ -646,8 +646,6 @@ mod tests {
             .map(|slot| SourceParamAbi {
                 start_slot: slot,
                 slot_count: 1,
-                crossing_regs: 1,
-                crossing_classes: vec![rue_air::NativeArgClass::Gp],
                 ty: None,
             })
             .collect()

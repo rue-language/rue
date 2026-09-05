@@ -17,13 +17,15 @@
 //! signature and an export of the same signature agree by construction, which
 //! is ADR-0064's ratified acceptance criterion.
 //!
-//! The native side is the *other* convention, and it is unchanged by this
-//! module: a by-value aggregate the native classifier rules indirect crosses as
-//! one pointer to its compact memory image; a direct multi-slot aggregate
-//! crosses one slot per flattened leaf with the slots **reversed**; a hidden
-//! sret pointer is native ABI slot 0; every scalar slot carries Rue's canonical
-//! 64-bit extension. [`ExportSignature`] is the pairing of the two views, built
-//! once from the type pool by [`ExportSignature::for_types`].
+//! The native side is placed by the *same* function, against the same facts:
+//! the native convention is the compilation target's C convention with a wider
+//! return bank (ADR-0084), so [`rue_air::lower_native_signature`] answers where
+//! the native body expects each argument, exactly as the callee's own parameter
+//! plan (`crate::param_storage`) asks it. The two conventions therefore agree
+//! about every argument whenever the export names the target's own C row, and
+//! what remains of the thunk is the re-extension a narrow scalar needs and the
+//! return adaptation phase 2 owns. [`ExportSignature`] is the pairing of the two
+//! views, built once from the type pool by [`ExportSignature::for_types`].
 //!
 //! ## Why the compact image is the C image
 //!
@@ -33,8 +35,8 @@
 //! exact image through memory. So the thunk never repacks those: it hands the C
 //! caller's own bytes to the native body, and hands the native body's sret
 //! storage — the C caller's storage, when the C return is also indirect — back.
-//! Only a *direct* native crossing needs marshaling, and then only the leaf
-//! loads and stores the compact image map already describes.
+//! Only a native crossing that reads the value apart needs marshaling, and then
+//! only the leaf loads and stores the compact image map already describes.
 //!
 //! ## Abort at the boundary (ratified, ADR-0064 ruling 3)
 //!
@@ -51,8 +53,8 @@
 
 use rue_air::{
     ArgConvention, ArgLocation, CAbiTypeFacts, FrozenTypeInternPool, LoweredReturn,
-    LoweredSignature, NativeAbiTypeFacts, NativeCallAbi, PaddingRange, PointerLocation, Type,
-    lower_c_signature, native_return_register_budget,
+    LoweredSignature, NativeAbiTypeFacts, PaddingRange, PointerLocation, Type, lower_c_signature,
+    lower_native_signature, native_return_register_budget,
 };
 use rue_target::{Arch, CRegisterClass, CallingConvention, SretRegisterKind, Target};
 
@@ -76,21 +78,20 @@ pub struct ImageLeaf {
     pub signed: bool,
 }
 
-/// How the native body receives one parameter.
+/// How the native body reads one parameter apart.
+///
+/// *Where* the parameter travels is the native lowering's answer, the same one
+/// the callee's own parameter plan reads; this is the other half — whether the
+/// value's leaves are its eightbytes, and where each leaf sits in the compact
+/// image either way.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NativeParameter {
-    /// One native ABI slot per flattened leaf, in ascending image order. A
-    /// multi-slot aggregate's slots are **reversed** before placement, which is
-    /// the native convention's rule.
-    Direct {
-        /// The value's flattened leaves, in ascending image order.
-        leaves: Vec<ImageLeaf>,
-        /// Whether the native convention reverses this value's slots.
-        reversed: bool,
-    },
-    /// One pointer to the value's compact memory image, which the callee
-    /// unmarshals at entry.
-    Indirect,
+pub struct NativeParameter {
+    /// The value's flattened leaves, in ascending image order.
+    pub leaves: Vec<ImageLeaf>,
+    /// Whether each leaf starts its own eightbyte, so the leaves themselves
+    /// cross in Rue's canonical 64-bit form rather than the image's eightbytes
+    /// crossing whole (`crate::native_abi::NativeImage::direct_leaves`).
+    pub leaves_are_eightbytes: bool,
 }
 
 /// How the native body returns.
@@ -158,25 +159,13 @@ impl ExportSignature {
         param_types: &[Type],
         return_type: Type,
     ) -> Self {
-        let native = NativeCallAbi::for_arguments(type_pool);
         let parameters = param_types
             .iter()
             .map(|&ty| ExportParameter {
                 c: rue_air::c_abi_type_facts(type_pool, ty),
-                native: match native.classify_arg(ty, ArgConvention::ByValue) {
-                    rue_air::ArgClass::Indirect => NativeParameter::Indirect,
-                    // A zero-sized by-value parameter still occupies one
-                    // incoming argument slot in the callee's parameter layout
-                    // (`SourceParamAbi` clamps its width to one), so the thunk
-                    // supplies one, holding no meaningful value.
-                    rue_air::ArgClass::Omitted => NativeParameter::Direct {
-                        leaves: Vec::new(),
-                        reversed: false,
-                    },
-                    rue_air::ArgClass::Direct { .. } => NativeParameter::Direct {
-                        leaves: image_leaves(type_pool, ty),
-                        reversed: crate::types::is_multislot_aggregate(type_pool, ty),
-                    },
+                native: NativeParameter {
+                    leaves: image_leaves(type_pool, ty),
+                    leaves_are_eightbytes: native_leaves_are_eightbytes(type_pool, ty),
                 },
             })
             .collect();
@@ -241,6 +230,21 @@ fn image_leaves(type_pool: &FrozenTypeInternPool, ty: Type) -> Vec<ImageLeaf> {
         .collect()
 }
 
+/// Whether the native convention hands `ty`'s leaves over as themselves rather
+/// than packing them into the image's eightbytes.
+///
+/// This is the one predicate both ends of a native crossing consult
+/// (`crate::native_abi::NativeImage::direct_leaves`); a scalar is trivially its
+/// own eightbyte. Every export type is C-passable, so every leaf is
+/// general-purpose and the bank agreement the predicate also checks is
+/// automatic.
+fn native_leaves_are_eightbytes(type_pool: &FrozenTypeInternPool, ty: Type) -> bool {
+    match crate::native_abi::native_by_value_arg(type_pool, ty) {
+        crate::native_abi::NativeArg::Aggregate { image } => image.direct_leaves().is_some(),
+        _ => true,
+    }
+}
+
 /// The native classification kernel input for an export's return type.
 fn native_return_facts(type_pool: &FrozenTypeInternPool, ty: Type) -> NativeAbiTypeFacts {
     let abi_slots = type_pool.abi_slot_count(ty);
@@ -283,18 +287,28 @@ pub fn generate_export_thunk(
 // The target-independent thunk plan
 // ============================================================================
 
-/// Where one native ABI slot's value comes from.
+/// Where one value the native convention places comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeSlotSource {
     /// The address of the hidden return storage the native body writes.
     ReturnStorage,
     /// The address of parameter `parameter`'s compact image.
     ImageAddress { parameter: usize },
-    /// Leaf `leaf` of parameter `parameter`'s compact image.
+    /// Leaf `leaf` of parameter `parameter`'s compact image, extended to Rue's
+    /// canonical 64-bit form.
     Leaf { parameter: usize, leaf: usize },
-    /// A slot the callee's parameter layout reserves for a zero-sized by-value
-    /// parameter, which holds no value.
-    Empty,
+    /// Eightbyte `index` of parameter `parameter`'s compact image, whole.
+    Eightbyte { parameter: usize, index: usize },
+}
+
+/// Where the native convention puts one of those values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeSlotDestination {
+    /// Native argument register `index` of the general-purpose roster. Every
+    /// export type is C-passable, so no value reaches the floating-point one.
+    Register { index: u32 },
+    /// Byte `offset` of the outgoing native argument area.
+    Stack { offset: u32 },
 }
 
 /// How to reach one parameter's compact image.
@@ -328,16 +342,19 @@ struct ThunkPlan {
     bases: Vec<ImageBase>,
     /// The leaves of each parameter, in source order.
     leaves: Vec<Vec<ImageLeaf>>,
-    /// Every native ABI slot, in native order.
-    slots: Vec<NativeSlotSource>,
+    /// Every value the native convention places, in native order, and where it
+    /// places it.
+    slots: Vec<(NativeSlotSource, NativeSlotDestination)>,
     /// The return value's leaves, when the native body returns in registers.
     return_leaves: Vec<ImageLeaf>,
     return_padding: Vec<PaddingRange>,
-    /// Frame offset of the staging cell for native slot `k` (`k` < the native
-    /// argument roster), or the outgoing native stack offset otherwise.
+    /// Frame offset each native value is assembled at: a staging cell for a
+    /// register-passed one, its own position in the outgoing native argument
+    /// area for a stacked one.
     slot_offsets: Vec<u32>,
-    /// How many native slots travel in argument registers.
-    register_slots: u32,
+    /// `(native argument register, staging cell)` for every register-passed
+    /// value, in placement order.
+    register_loads: Vec<(u32, u32)>,
     /// Frame offset of the incoming C argument register save block.
     save_base: u32,
     /// Frame offset holding the C caller's indirect-result pointer, when the C
@@ -374,61 +391,125 @@ impl ThunkPlan {
         let c = signature.lowered();
         let spec = c.spec();
         let native_return = signature.native_return(target);
-        let native_arg_registers = native_argument_register_count(target);
+
+        // The native side is placed by the one lowering every crossing
+        // consumes, against the very facts the C side was placed by: the two
+        // conventions classify the same compact image, and the native row is
+        // this target's own C row with a wider return bank (ADR-0084).
+        let native_pairing = rue_target::ConventionSpec::native(target);
+        let native_parameters = signature
+            .parameters
+            .iter()
+            .map(|parameter| (parameter.c, ArgConvention::ByValue))
+            .collect::<Vec<_>>();
+        let native_spec = native_pairing.spec();
+        let native = lower_native_signature(
+            native_pairing,
+            &native_parameters,
+            if matches!(native_return, NativeReturn::Sret) {
+                LoweredReturn::Sret {
+                    register: native_spec.sret_register,
+                    echoed: native_spec.sret_pointer_echoed_in_result_register,
+                    size: 8,
+                    align: 8,
+                }
+            } else {
+                LoweredReturn::Void
+            },
+        );
 
         // Every incoming general-purpose argument register is saved to a
         // contiguous cell block, so a register-passed value's eightbytes are
         // addressable as one image with no repacking.
         let save_cells = spec.gp_argument_registers + 1;
 
-        let mut slots = Vec::new();
+        let mut slots: Vec<(NativeSlotSource, NativeSlotDestination)> = Vec::new();
         if matches!(native_return, NativeReturn::Sret) {
-            slots.push(NativeSlotSource::ReturnStorage);
+            assert!(
+                native.sret_in_argument_register(),
+                "the native convention passes its indirect-result pointer as the \
+                 hidden first ordinary argument"
+            );
+            slots.push((
+                NativeSlotSource::ReturnStorage,
+                NativeSlotDestination::Register { index: 0 },
+            ));
         }
         let mut leaves = Vec::with_capacity(signature.parameters.len());
-        for (parameter, description) in signature.parameters.iter().enumerate() {
-            match &description.native {
-                NativeParameter::Indirect => {
-                    slots.push(NativeSlotSource::ImageAddress { parameter });
-                    leaves.push(Vec::new());
-                }
-                NativeParameter::Direct {
-                    leaves: value_leaves,
-                    reversed,
-                } => {
-                    if value_leaves.is_empty() {
-                        slots.push(NativeSlotSource::Empty);
-                    } else {
-                        let indices = 0..value_leaves.len();
-                        let ordered: Vec<usize> = if *reversed {
-                            indices.rev().collect()
-                        } else {
-                            indices.collect()
-                        };
-                        slots.extend(
-                            ordered
-                                .into_iter()
-                                .map(|leaf| NativeSlotSource::Leaf { parameter, leaf }),
-                        );
+        for (parameter, (description, placement)) in signature
+            .parameters
+            .iter()
+            .zip(native.arguments())
+            .enumerate()
+        {
+            let value_leaves = &description.native.leaves;
+            let source = |index: usize| {
+                if description.native.leaves_are_eightbytes {
+                    NativeSlotSource::Leaf {
+                        parameter,
+                        leaf: index,
                     }
-                    leaves.push(value_leaves.clone());
+                } else {
+                    NativeSlotSource::Eightbyte { parameter, index }
                 }
+            };
+            match placement.location {
+                ArgLocation::Omitted => {}
+                ArgLocation::Registers { pieces } => {
+                    assert_eq!(
+                        pieces.uniform_class(),
+                        Some(CRegisterClass::Gp),
+                        "an export argument still crosses only in general-purpose registers"
+                    );
+                    for (index, piece) in pieces.as_slice().iter().enumerate() {
+                        slots.push((
+                            source(index),
+                            NativeSlotDestination::Register { index: piece.index },
+                        ));
+                    }
+                }
+                ArgLocation::Stack { offset, size, .. } => {
+                    let count = if value_leaves.len() == 1 && size < 8 {
+                        1
+                    } else {
+                        (size as usize).div_ceil(8)
+                    };
+                    for index in 0..count {
+                        slots.push((
+                            source(index),
+                            NativeSlotDestination::Stack {
+                                offset: offset + (index as u32) * 8,
+                            },
+                        ));
+                    }
+                }
+                ArgLocation::Indirect { pointer, .. } => slots.push((
+                    NativeSlotSource::ImageAddress { parameter },
+                    match pointer {
+                        PointerLocation::Register { index } => {
+                            NativeSlotDestination::Register { index }
+                        }
+                        PointerLocation::Stack { offset } => {
+                            NativeSlotDestination::Stack { offset }
+                        }
+                    },
+                )),
             }
+            leaves.push(value_leaves.clone());
         }
 
-        let slot_count = u32::try_from(slots.len()).expect("an export has fewer than 2^32 slots");
-        let register_slots = slot_count.min(native_arg_registers);
-        let stack_slots = slot_count - register_slots;
+        let register_slots = slots
+            .iter()
+            .filter(|(_, destination)| {
+                matches!(destination, NativeSlotDestination::Register { .. })
+            })
+            .count() as u32;
         // The outgoing native argument area sits at the base of the frame, so
         // it is the block the native callee addresses from its own entry stack
-        // pointer. Rounding it to the call-boundary alignment is what keeps the
-        // whole frame, and therefore the stack at the call, 16-byte aligned.
-        let native_stack_bytes = align_up(
-            stack_slots
-                .checked_mul(8)
-                .expect("an export thunk frame fits u32"),
-            16,
-        );
+        // pointer. Its size is the native lowering's own answer, already rounded
+        // to the call-boundary alignment, which is what keeps the whole frame —
+        // and therefore the stack at the call — 16-byte aligned.
+        let native_stack_bytes = native.stack_bytes();
 
         let stage_base = native_stack_bytes;
         let save_base = stage_base + register_slots * 8;
@@ -495,15 +576,23 @@ impl ThunkPlan {
             })
             .collect::<Vec<_>>();
 
-        let slot_offsets = (0..slot_count)
-            .map(|index| {
-                if index < register_slots {
-                    stage_base + index * 8
-                } else {
-                    (index - register_slots) * 8
+        // A register-passed value is assembled in its own staging cell and
+        // loaded into its register once every image read is done; a stacked one
+        // is written straight into the outgoing argument area.
+        let mut staged = 0u32;
+        let mut slot_offsets = Vec::with_capacity(slots.len());
+        let mut register_loads = Vec::new();
+        for (_, destination) in &slots {
+            match *destination {
+                NativeSlotDestination::Register { index } => {
+                    let offset = stage_base + staged * 8;
+                    staged += 1;
+                    register_loads.push((index, offset));
+                    slot_offsets.push(offset);
                 }
-            })
-            .collect();
+                NativeSlotDestination::Stack { offset } => slot_offsets.push(offset),
+            }
+        }
 
         Self {
             c,
@@ -514,7 +603,7 @@ impl ThunkPlan {
             return_leaves: signature.return_leaves.clone(),
             return_padding: signature.return_padding.clone(),
             slot_offsets,
-            register_slots,
+            register_loads,
             save_base,
             c_sret_offset,
             return_image,
@@ -554,10 +643,9 @@ impl ThunkPlan {
             emitter.save_sret_register(save_base + spec.gp_argument_registers * 8);
         }
 
-        for (index, source) in self.slots.iter().enumerate() {
+        for (index, (source, _)) in self.slots.iter().enumerate() {
             let destination = self.slot_offsets[index];
             match *source {
-                NativeSlotSource::Empty => emitter.zero_slot(destination),
                 NativeSlotSource::ReturnStorage => {
                     match self.return_image.expect("an sret return names its storage") {
                         ReturnImage::CallerStorage { pointer_offset } => {
@@ -576,11 +664,24 @@ impl ThunkPlan {
                     let leaf = self.leaves[parameter][leaf];
                     emitter.load_leaf(leaf, destination);
                 }
+                NativeSlotSource::Eightbyte { parameter, index } => {
+                    // The leaves pack together, so the image's eightbyte crosses
+                    // whole and the callee reads the leaves back out of it.
+                    self.set_base(emitter, parameter);
+                    emitter.load_leaf(
+                        ImageLeaf {
+                            byte_offset: (index as u32) * 8,
+                            width: 8,
+                            signed: false,
+                        },
+                        destination,
+                    );
+                }
             }
         }
 
-        for index in 0..self.register_slots {
-            emitter.load_argument_register(index, self.slot_offsets[index as usize]);
+        for (register, offset) in &self.register_loads {
+            emitter.load_argument_register(*register, *offset);
         }
         emitter.call(native_symbol);
 
@@ -656,16 +757,6 @@ impl ThunkPlan {
     }
 }
 
-/// How many general-purpose argument registers the native convention uses on
-/// `target`. The native roster is the target's ordinary integer argument
-/// roster, which is the same size as the platform C one.
-fn native_argument_register_count(target: Target) -> u32 {
-    match target.arch() {
-        Arch::X86_64 => 6,
-        Arch::Aarch64 => 8,
-    }
-}
-
 // ============================================================================
 // The per-target instruction leaves
 // ============================================================================
@@ -704,8 +795,6 @@ trait ThunkEmitter {
     fn load_leaf(&mut self, leaf: ImageLeaf, destination: u32);
     /// frame + `destination` := base.
     fn store_base(&mut self, destination: u32);
-    /// frame + `destination` := 0.
-    fn zero_slot(&mut self, destination: u32);
     /// Native argument register `index` := frame + `offset`.
     fn load_argument_register(&mut self, index: u32, offset: u32);
     /// Call the native body.
@@ -897,19 +986,6 @@ impl ThunkEmitter for X86Emitter {
 
     fn store_base(&mut self, destination: u32) {
         self.store_frame(X86_BASE, destination);
-    }
-
-    fn zero_slot(&mut self, destination: u32) {
-        // mov qword [rsp + destination], 0
-        self.mem(
-            &[0xC7],
-            0,
-            X86_RSP,
-            Self::frame_disp(destination),
-            true,
-            false,
-        );
-        self.code.extend_from_slice(&0u32.to_le_bytes());
     }
 
     fn load_argument_register(&mut self, index: u32, offset: u32) {
@@ -1143,10 +1219,6 @@ impl ThunkEmitter for Aarch64Emitter {
         self.store64(A64_BASE, A64_SP, destination);
     }
 
-    fn zero_slot(&mut self, destination: u32) {
-        self.store64(A64_SP, A64_SP, destination); // `xzr` shares the encoding
-    }
-
     fn load_argument_register(&mut self, index: u32, offset: u32) {
         self.load64(index, A64_SP, offset);
     }
@@ -1235,9 +1307,9 @@ mod tests {
     ) -> ExportParameter {
         ExportParameter {
             c: scalar_facts(kind),
-            native: NativeParameter::Direct {
+            native: NativeParameter {
                 leaves: vec![scalar_leaf(width, signed)],
-                reversed: false,
+                leaves_are_eightbytes: true,
             },
         }
     }
@@ -1276,9 +1348,9 @@ mod tests {
         }
     }
 
-    /// A `{i64, i64, i64}`-shaped export: 24 bytes, three slot-identical
-    /// leaves, so the native side is direct-and-reversed and the C side is
-    /// byval-on-stack (SysV) or by-reference (AAPCS64), returning through sret.
+    /// A `{i64, i64, i64}`-shaped export: 24 bytes, three leaves that are its
+    /// own eightbytes, so both sides place it byval-on-stack (SysV) or
+    /// by-reference (AAPCS64), returning through sret.
     fn triple_signature() -> ExportSignature {
         let leaves = vec![
             ImageLeaf {
@@ -1301,9 +1373,9 @@ mod tests {
             convention: CallingConvention::X86_64SysV,
             parameters: vec![ExportParameter {
                 c: CAbiTypeFacts::integer_aggregate(24, 8),
-                native: NativeParameter::Direct {
+                native: NativeParameter {
                     leaves: leaves.clone(),
-                    reversed: true,
+                    leaves_are_eightbytes: true,
                 },
             }],
             result: CAbiTypeFacts::integer_aggregate(24, 8),
@@ -1338,7 +1410,10 @@ mod tests {
             convention: CallingConvention::X86_64SysV,
             parameters: vec![ExportParameter {
                 c: CAbiTypeFacts::integer_aggregate(8, 4),
-                native: NativeParameter::Indirect,
+                native: NativeParameter {
+                    leaves: leaves.clone(),
+                    leaves_are_eightbytes: false,
+                },
             }],
             result: CAbiTypeFacts::integer_aggregate(8, 4),
             return_facts: NativeAbiTypeFacts {
@@ -1398,9 +1473,9 @@ mod tests {
                     .iter()
                     .map(|&kind| ExportParameter {
                         c: scalar_facts(kind),
-                        native: NativeParameter::Direct {
-                            leaves: vec![scalar_leaf(kind.extension().natural_bytes(), false)],
-                            reversed: false,
+                        native: NativeParameter {
+                            leaves: vec![scalar_leaf(kind.natural_bytes(), false)],
+                            leaves_are_eightbytes: true,
                         },
                     })
                     .collect(),
@@ -1515,9 +1590,12 @@ mod tests {
         for target in [Target::X86_64Linux, Target::Aarch64Linux] {
             let plan = ThunkPlan::new(target, &on(target, &signature));
             assert_eq!(plan.slots.len(), 9);
-            let registers = native_argument_register_count(target);
-            assert_eq!(plan.register_slots, registers);
-            // The stacked native slots start at the base of the outgoing area.
+            let registers = plan.register_loads.len() as u32;
+            assert_eq!(
+                registers,
+                u32::from(target.c_calling_convention().c_spec().gp_argument_registers)
+            );
+            // The stacked native values start at the base of the outgoing area.
             assert_eq!(plan.slot_offsets[registers as usize], 0);
             // Every C argument beyond the roster is read from the caller's own
             // outgoing area.
@@ -1534,7 +1612,7 @@ mod tests {
     }
 
     #[test]
-    fn a_direct_multislot_parameter_reaches_the_body_in_reversed_slot_order() {
+    fn a_direct_multislot_parameter_reaches_the_body_in_ascending_memory_order() {
         for target in [Target::X86_64Linux, Target::Aarch64Linux] {
             let plan = ThunkPlan::new(target, &on(target, &triple_signature()));
             // The native return is three slot-identical slots, under both
@@ -1546,23 +1624,35 @@ mod tests {
                     leaves: plan.return_leaves.clone()
                 }
             );
-            assert_eq!(
-                plan.slots,
+            // 24 bytes: SysV stacks the value byval, so its three leaves cross
+            // in ascending memory order; AAPCS64 passes one pointer to a
+            // caller-owned copy, so only the image address crosses.
+            let sources = plan
+                .slots
+                .iter()
+                .map(|(source, _)| *source)
+                .collect::<Vec<_>>();
+            let expected = if target == Target::X86_64Linux {
                 vec![
                     NativeSlotSource::Leaf {
                         parameter: 0,
-                        leaf: 2
+                        leaf: 0,
                     },
                     NativeSlotSource::Leaf {
                         parameter: 0,
-                        leaf: 1
+                        leaf: 1,
                     },
                     NativeSlotSource::Leaf {
                         parameter: 0,
-                        leaf: 0
+                        leaf: 2,
                     },
-                ],
-                "the native convention reverses a multi-slot value's slots"
+                ]
+            } else {
+                vec![NativeSlotSource::ImageAddress { parameter: 0 }]
+            };
+            assert_eq!(
+                sources, expected,
+                "the native convention places a value's leaves in ascending memory order"
             );
             // The C return is 24 bytes, so it crosses through caller storage,
             // which is where the thunk assembles the image.
@@ -1591,19 +1681,27 @@ mod tests {
     }
 
     #[test]
-    fn an_indirect_native_pair_forwards_the_caller_bytes_and_its_own_storage() {
+    fn a_packed_pair_crosses_as_one_eightbyte_of_its_image() {
         for target in [Target::X86_64Linux, Target::Aarch64Linux] {
             let plan = ThunkPlan::new(target, &on(target, &pair_signature()));
-            // Eight bytes of narrow fields: the native convention cannot express
-            // it in registers, so both directions cross through memory.
+            // Eight bytes of narrow fields: the return still crosses through
+            // caller storage, and the argument's two leaves pack into the one
+            // eightbyte the convention gives them.
             assert_eq!(plan.native_return, NativeReturn::Sret);
             assert_eq!(
-                plan.slots,
+                plan.slots
+                    .iter()
+                    .map(|(source, _)| *source)
+                    .collect::<Vec<_>>(),
                 vec![
                     NativeSlotSource::ReturnStorage,
-                    NativeSlotSource::ImageAddress { parameter: 0 },
+                    NativeSlotSource::Eightbyte {
+                        parameter: 0,
+                        index: 0
+                    },
                 ],
-                "the hidden return pointer is native ABI slot zero"
+                "the hidden return pointer takes the first argument register, and \
+                 the packed pair the second"
             );
             // The C side returns the eight bytes in one register, so the image
             // is assembled in the thunk's own frame.
@@ -1733,9 +1831,9 @@ mod tests {
                 convention: CallingConvention::X86_64SysV,
                 parameters: vec![ExportParameter {
                     c: CAbiTypeFacts::integer_aggregate(width.into(), width.into()),
-                    native: NativeParameter::Direct {
+                    native: NativeParameter {
                         leaves: leaves.clone(),
-                        reversed: true,
+                        leaves_are_eightbytes: true,
                     },
                 }],
                 result: CAbiTypeFacts::integer_aggregate(width.into(), width.into()),

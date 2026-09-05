@@ -1041,13 +1041,10 @@ pub(crate) fn compact_physical_access_unsupported(
             }
             // An aggregate crossing a call boundary. A by-reference (`inout` /
             // `borrow`) argument uses the same slot-shaped by-ref transport as a
-            // by-ref parameter (RUE-1004). A by-value non-slot-identical aggregate
-            // crosses indirectly by the classifier (RUE-976): the caller writes
-            // its compact image to a caller-owned buffer and passes one pointer,
-            // and the callee prologue homes that pointer and unmarshals the image
-            // (RUE-1005, per-source-parameter ABI descriptors now plumbed). Both
-            // are allowed exactly when the aggregate has a variant-independent
-            // compact image; arrays and imageless enums stay refused.
+            // by-ref parameter (RUE-1004). A by-value aggregate is classified by
+            // its compact image (ADR-0084) and marshaled through it, so it is
+            // allowed exactly when it has a variant-independent or
+            // tag-dispatched one; an array without an image stays refused.
             CfgInstData::Call { .. } => {
                 for arg in cfg.get_call_args(&inst.data) {
                     let arg_ty = cfg.get_inst(arg.value).ty;

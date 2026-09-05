@@ -736,8 +736,6 @@ mod tests {
             .map(|slot| SourceParamAbi {
                 start_slot: slot,
                 slot_count: 1,
-                crossing_regs: 1,
-                crossing_classes: vec![rue_air::NativeArgClass::Gp],
                 ty: None,
             })
             .collect()
@@ -1607,8 +1605,6 @@ mod tests {
         cfg.set_source_param_abi(vec![SourceParamAbi {
             start_slot: 0,
             slot_count: 3,
-            crossing_regs: 1,
-            crossing_classes: vec![rue_air::NativeArgClass::Gp],
             ty: Some(shape_ty),
         }]);
         let entry = cfg.new_block();
@@ -1758,9 +1754,9 @@ mod tests {
         //         x
         //     }
         //
-        // The two-slot `Pair` parameter crosses as one indirect pointer
-        // (`crossing_regs: 1` over `slot_count: 2`), so the callee unmarshals
-        // it into homed frame slots at entry.
+        // The two-slot `Pair` is eight bytes, so it crosses in ONE register and
+        // the callee reads its two leaves back out of the image the prologue
+        // laid down in its frame slots (ADR-0084).
         let interner = ThreadedRodeo::new();
         let pool = TypeInternPool::new();
         let pair_id = register_struct(
@@ -1781,8 +1777,6 @@ mod tests {
         cfg.set_source_param_abi(vec![SourceParamAbi {
             start_slot: 0,
             slot_count: 2,
-            crossing_regs: 1,
-            crossing_classes: vec![rue_air::NativeArgClass::Gp],
             ty: Some(pair_ty),
         }]);
         let entry = cfg.new_block();

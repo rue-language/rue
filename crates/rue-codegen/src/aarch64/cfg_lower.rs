@@ -188,22 +188,51 @@ impl crate::call_plan::CallMaterializer for CfgLower<'_> {
         pointer
     }
 
-    fn materialize_indirect_value_arg(
+    fn materialize_image_eightbytes(
         &mut self,
         value: CfgValue,
-        image: &[crate::types::PhysicalEnumSlot],
-        padding: &[rue_air::layout::PaddingRange],
-        storage_bytes: u32,
+        image: &crate::native_abi::NativeImage,
+    ) -> Vec<VReg> {
+        // Reserve a scratch buffer, write the aggregate's compact image into it
+        // — each leaf truncated to its physical width at its compact byte
+        // offset — and read the eightbytes the convention places back out. The
+        // buffer is released immediately: only the eightbytes cross.
+        self.mir.push(Aarch64Inst::SubImm {
+            dst: Operand::Physical(Reg::Sp),
+            src: Operand::Physical(Reg::Sp),
+            imm: checked_displacement_bytes(u64::from(image.storage_bytes))
+                .expect("native argument image must fit displacement"),
+        });
+        let pointer = self.mir.alloc_vreg();
+        self.mir.push(Aarch64Inst::MovRR {
+            dst: Operand::Virtual(pointer),
+            src: Operand::Physical(Reg::Sp),
+        });
+        self.write_native_image(value, pointer, image);
+        let eightbytes =
+            crate::agg_slots::load_slots_through_ptr(self, pointer, image.eightbytes());
+        self.mir.push(Aarch64Inst::AddImm {
+            dst: Operand::Physical(Reg::Sp),
+            src: Operand::Physical(Reg::Sp),
+            imm: checked_displacement_bytes(u64::from(image.storage_bytes))
+                .expect("native argument image must fit displacement"),
+        });
+        eightbytes
+    }
+
+    fn materialize_indirect_image(
+        &mut self,
+        value: CfgValue,
+        image: &crate::native_abi::NativeImage,
     ) -> VReg {
-        // Reserve a caller-owned buffer just below the sret storage (RUE-1005),
-        // capture its address, and write the aggregate's compact image into it —
-        // each slot truncated to its physical width at its compact byte offset,
-        // exactly the image the callee prologue unmarshals. The image's padding is
+        // Reserve a caller-owned buffer just below the sret storage, capture its
+        // address, and write the aggregate's compact image into it — exactly the
+        // image the callee reads through the pointer. The image's padding is
         // zeroed first (ADR-0052 ruling 5) so the buffer is fully initialized.
         self.mir.push(Aarch64Inst::SubImm {
             dst: Operand::Physical(Reg::Sp),
             src: Operand::Physical(Reg::Sp),
-            imm: checked_displacement_bytes(u64::from(storage_bytes))
+            imm: checked_displacement_bytes(u64::from(image.storage_bytes))
                 .expect("indirect argument storage must fit displacement"),
         });
         let pointer = self.mir.alloc_vreg();
@@ -211,33 +240,18 @@ impl crate::call_plan::CallMaterializer for CfgLower<'_> {
             dst: Operand::Virtual(pointer),
             src: Operand::Physical(Reg::Sp),
         });
-        let slots = self.require_aggregate_slots(value);
-        crate::agg_slots::store_enum_slots_through_ptr(self, &slots, pointer, image, padding);
+        self.write_native_image(value, pointer, image);
         pointer
     }
 
-    fn materialize_indirect_value_arg_dispatch(
-        &mut self,
-        value: CfgValue,
-        image: &crate::types::DispatchImage,
-        storage_bytes: u32,
-    ) -> VReg {
-        // As `materialize_indirect_value_arg`, but the caller-owned buffer is
-        // written with a per-variant tag dispatch (RUE-1037).
-        self.mir.push(Aarch64Inst::SubImm {
-            dst: Operand::Physical(Reg::Sp),
-            src: Operand::Physical(Reg::Sp),
-            imm: checked_displacement_bytes(u64::from(storage_bytes))
-                .expect("indirect argument storage must fit displacement"),
+    fn materialize_eightbyte_as_float(&mut self, bits: VReg) -> VReg {
+        let dst = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
+        self.mir.push(Aarch64Inst::BitsToFloat {
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(bits),
+            width: FloatWidth::F64,
         });
-        let pointer = self.mir.alloc_vreg();
-        self.mir.push(Aarch64Inst::MovRR {
-            dst: Operand::Virtual(pointer),
-            src: Operand::Physical(Reg::Sp),
-        });
-        let slots = self.require_aggregate_slots(value);
-        crate::agg_slots::store_dispatch_image(self, &slots, pointer, image);
-        pointer
+        dst
     }
 }
 
@@ -1264,10 +1278,30 @@ impl<'a> CfgLower<'a> {
         }
     }
 
-    /// Materialize an aggregate argument's eightbytes (ADR-0064 P3): write its
-    /// native slots into a scratch buffer as the compact C image, then load the
-    /// whole eightbytes back so they pack in ascending C field order. rsp-neutral
-    /// — a register aggregate argument's bytes live only in the returned vregs.
+    /// Write the aggregate `value`'s leaves into the compact image at
+    /// `pointer`, through whichever of the two image shapes the type has.
+    fn write_native_image(
+        &mut self,
+        value: CfgValue,
+        pointer: VReg,
+        image: &crate::native_abi::NativeImage,
+    ) {
+        let slots = self.require_aggregate_slots(value);
+        match &image.kind {
+            crate::native_abi::NativeImageKind::Map { map, padding } => {
+                crate::agg_slots::store_enum_slots_through_ptr(self, &slots, pointer, map, padding);
+            }
+            crate::native_abi::NativeImageKind::Dispatch(dispatch) => {
+                crate::agg_slots::store_dispatch_image(self, &slots, pointer, dispatch);
+            }
+        }
+    }
+
+    /// Materialize a foreign aggregate argument's eightbytes (ADR-0064 P3):
+    /// write its native slots into a scratch buffer as the compact C image, then
+    /// load the whole eightbytes back so they pack in ascending C field order.
+    /// sp-neutral — a register aggregate argument's bytes live only in the
+    /// returned vregs.
     fn image_arg_eightbytes(
         &mut self,
         value: CfgValue,
@@ -3791,16 +3825,20 @@ impl crate::terminator_plan::TerminatorAdapter for CfgLower<'_> {
 impl crate::terminator_plan::CfgLowerAdapter for CfgLower<'_> {
     fn preload_by_ref_params(&mut self) {
         self.preload_by_ref_param_ptrs();
-        // Unmarshal each by-value indirect compact aggregate parameter from the
-        // homed pointer into its frame slots at entry (RUE-1005), so field
-        // projection and whole-value reads see the correct decomposition.
-        for (base_slot, map) in crate::value_plan::indirect_value_params(&self.ctx) {
-            crate::agg_slots::unmarshal_indirect_value_param(self, base_slot, &map);
-        }
-        // Heterogeneous by-value indirect params unmarshal with a tag dispatch
-        // (RUE-1037).
-        for (base_slot, image) in crate::value_plan::indirect_value_params_dispatch(&self.ctx) {
-            crate::agg_slots::unmarshal_indirect_value_param_dispatch(self, base_slot, &image);
+        // Read each by-value aggregate parameter whose leaves are not its
+        // eightbytes back out of the compact image the prologue laid down, so
+        // field projection and whole-value reads see the correct decomposition
+        // (ADR-0084).
+        for (base_slot, image_slot_offset, through_pointer, image) in
+            crate::value_plan::param_image_unmarshals(&self.ctx)
+        {
+            crate::agg_slots::unmarshal_param_image(
+                self,
+                base_slot,
+                image_slot_offset,
+                through_pointer,
+                &image,
+            );
         }
     }
 
@@ -4281,6 +4319,15 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
                 offset,
             });
         }
+    }
+
+    fn emit_slot_addr(&mut self, dst: VReg, slot: u32) {
+        let offset = self.ctx.local_offset(slot);
+        self.mir.push(Aarch64Inst::AddImm {
+            dst: Operand::Virtual(dst),
+            src: Operand::Physical(Reg::Fp),
+            imm: offset,
+        });
     }
     fn emit_typed_float_load_slot(&mut self, dst: VReg, slot: u32, width: FloatWidth) {
         self.mir.push(Aarch64Inst::FloatLoad {
@@ -4989,8 +5036,6 @@ mod tests {
             .map(|slot| SourceParamAbi {
                 start_slot: slot,
                 slot_count: 1,
-                crossing_regs: 1,
-                crossing_classes: vec![rue_air::NativeArgClass::Gp],
                 ty: None,
             })
             .collect()
@@ -6210,13 +6255,14 @@ mod tests {
         );
     }
 
-    /// RUE-1005 callee side on AArch64: the receiving function unmarshals the
-    /// compact image (narrow loads) from the homed pointer into its frame slots
-    /// at entry.
+    /// ADR-0084 callee side on AArch64: the receiving function reads its
+    /// by-value aggregate's leaves back out of the compact image (narrow loads)
+    /// the prologue laid down in its frame slots.
     #[test]
     fn aggregate_layout_allows_by_value_compact_struct_arg_callee() {
-        // The callee side: `fn sum(p: Padded) -> i32 { p.b }`, whose by-value
-        // indirect parameter reserves three frame slots behind one pointer.
+        // The callee side: `fn sum(p: Padded) -> i32 { p.b }`. `Padded` is 12
+        // bytes whose leaves sit at 0, 4 and 8, so it crosses as two eightbytes
+        // and the entry unmarshal recovers the three leaves from them.
         let interner = ThreadedRodeo::new();
         let pool = TypeInternPool::new();
         let padded_id = register_struct(
@@ -6235,8 +6281,6 @@ mod tests {
             vec![SourceParamAbi {
                 start_slot: 0,
                 slot_count: 3,
-                crossing_regs: 1,
-                crossing_classes: vec![rue_air::NativeArgClass::Gp],
                 ty: Some(padded_ty),
             }],
             &pool,
@@ -6252,14 +6296,12 @@ mod tests {
             Type::I32,
         );
         fixture.ret(Some(b));
-        let mir = fixture
-            .lower()
-            .expect("the callee of a by-value compact struct argument must lower");
+        let mir = fixture.lower_with_plan();
         assert!(
             mir.instructions()
                 .iter()
                 .any(|inst| matches!(inst, Aarch64Inst::NarrowLoadIndexed { width: 1, .. })),
-            "the callee must unmarshal the u8 fields narrow from the homed pointer"
+            "the callee must read the u8 leaves narrow out of the frame image"
         );
     }
 

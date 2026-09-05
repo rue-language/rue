@@ -104,8 +104,8 @@ pub use output::{
     DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind,
     DeclarationTypeDependencyTargetKind, ImplicitDropDependencySourceEvent,
     ImplicitNamedDestructorDependencyEvent, NamedConstDependencyEvent,
-    NamedConstDependencyTargetEvent, NativeArgClass, ParamSlotModes, SourceParamAbi,
-    body_parameter_types, by_reference_parameter_pointee_types,
+    NamedConstDependencyTargetEvent, ParamSlotModes, SourceParamAbi, body_parameter_types,
+    by_reference_parameter_pointee_types, occupying_body_parameter_types,
 };
 pub use provider::{
     BodyFactProvider, DropCopyMetadata, ImportResolution, MemberCandidate, MemberKind,

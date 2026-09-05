@@ -228,53 +228,31 @@ pub struct ImplicitNamedDestructorDependencyEvent {
     pub target_owner_name: String,
 }
 
-/// Per-source-parameter native ABI descriptor carried from semantic analysis
-/// into code generation (ADR-0052 phase 5.8, RUE-1005).
+/// Per-source-parameter descriptor carried from semantic analysis into code
+/// generation.
 ///
 /// The per-ABI-slot [`ParamSlotModes::by_ref`] vector tells code generation
 /// which *slots* transport a pointer, but not how a *source parameter* groups
-/// its slots — which the callee prologue needs to map incoming argument
-/// registers onto frame parameter slots. A by-value non-slot-identical compact
-/// aggregate crosses as one [`ArgClass::Indirect`] pointer (one incoming
-/// register) while occupying `slot_count` frame slots, so the prologue cannot
-/// assume one incoming register per parameter slot. This descriptor carries the
-/// classifier's decision plus the parameter's slot span so the prologue can
-/// compute per-parameter incoming-register widths from the classifier authority
-/// rather than re-deriving them. With the gate off every parameter is
-/// [`ArgClass::Direct`] (or a single by-reference pointer slot) and
-/// `arg_class.crossing_slots() == slot_count`, so the plumbing is behaviourally
-/// inert and the emitted prologue is byte-identical.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeArgClass {
-    Gp,
-    Fp32,
-    Fp64,
-}
-
+/// its slots — which the callee prologue needs, because a parameter is placed as
+/// a whole and its eightbytes are what arrive. This descriptor is that grouping
+/// plus the parameter's type; where the value lands is code generation's own
+/// question, asked of the one placement function (ADR-0084).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceParamAbi {
     /// First parameter ABI slot this source parameter occupies.
     pub start_slot: u32,
-    /// Physical value-decomposition width (frame slots reserved), equal to
-    /// [`crate::NativeCallAbi::arg_slot_width`].
+    /// Physical value-decomposition width: the frame slots the parameter's
+    /// leaves occupy, equal to [`crate::NativeCallAbi::arg_slot_width`].
     pub slot_count: u32,
-    /// Number of incoming argument registers this parameter consumes, equal to
-    /// the classifier's [`crate::ArgClass::crossing_slots`]. For a direct
-    /// parameter this equals `slot_count`; for a by-reference pointer or a
-    /// by-value indirect compact aggregate it is one (the pointer), which is why
-    /// `crossing_regs < slot_count` distinguishes exactly the by-value indirect
-    /// aggregate the callee must unmarshal.
-    pub crossing_regs: u32,
-    /// Register-bank class of each crossing slot, in source order. Pointer
-    /// transports are GP; direct scalar float leaves retain their width.
-    pub crossing_classes: Vec<NativeArgClass>,
-    /// The aggregate type — carried *only* for a by-value indirect parameter, so
-    /// code generation can build its compact memory image; `None` for every
-    /// direct parameter and every by-reference pointer. Withholding the type
-    /// from a pointer-only or direct parameter keeps that CFG layout-independent
-    /// and reusable when an unrelated pointee struct's layout changes; a by-value
-    /// indirect aggregate already depends on its own layout (it reads its
-    /// fields), so carrying the type adds no new dependency.
+    /// The parameter's source type, or `None` when the analyzed body recovered
+    /// none for it (a by-reference pointer, whose pointee the convention never
+    /// consults, and a slot no `Param` instruction or drop entry names).
+    ///
+    /// Where the parameter's incoming value travels is not recorded here: code
+    /// generation recomputes it from this type through the one placement
+    /// function every crossing consumes
+    /// ([`crate::lower_native_signature`], ADR-0084), so a caller and its
+    /// callee cannot classify one signature two ways.
     pub ty: Option<crate::Type>,
 }
 
@@ -289,14 +267,35 @@ pub struct SourceParamAbi {
 /// be rediscovered two different ways — the export thunk in particular must see
 /// exactly the types the callee's own parameter layout was derived from.
 pub fn body_parameter_types(air: &crate::Air) -> ahash::AHashMap<u32, crate::Type> {
+    occupying_body_parameter_types(air, |_| true)
+}
+
+/// [`body_parameter_types`] restricted to the parameters that actually occupy
+/// an ABI slot.
+///
+/// A zero-sized by-value parameter occupies no slot, so the slot it is recorded
+/// against is the *next* parameter's. `occupies_slot` reports whether a type has
+/// any slot at all, and a parameter it rejects never claims one — which leaves
+/// each slot to the parameter that owns it. Every consumer that derives a
+/// physical layout from these types asks this way; the unrestricted spelling
+/// above is for presentation, where naming a zero-sized parameter is the point.
+pub fn occupying_body_parameter_types(
+    air: &crate::Air,
+    occupies_slot: impl Fn(crate::Type) -> bool,
+) -> ahash::AHashMap<u32, crate::Type> {
     let mut types: ahash::AHashMap<u32, crate::Type> = ahash::AHashMap::new();
+    let record = |slot: u32, ty: crate::Type, types: &mut ahash::AHashMap<u32, crate::Type>| {
+        if occupies_slot(ty) {
+            types.entry(slot).or_insert(ty);
+        }
+    };
     for &(slot, ty) in air.param_drops() {
-        types.entry(slot).or_insert(ty);
+        record(slot, ty, &mut types);
     }
     for index in 0..air.len() {
         let inst = air.get(crate::AirRef::from_raw(index as u32));
         if let crate::AirInstData::Param { index } = inst.data {
-            types.entry(index).or_insert(inst.ty);
+            record(index, inst.ty, &mut types);
         }
     }
     types
@@ -324,17 +323,6 @@ pub fn by_reference_parameter_pointee_types(air: &crate::Air) -> ahash::AHashMap
         }
     }
     types
-}
-
-impl SourceParamAbi {
-    /// Whether this parameter is a by-value aggregate the classifier forced
-    /// indirect: it reserves `slot_count` frame slots but arrives as one pointer
-    /// register, so the callee unmarshals its compact image at entry (RUE-1005).
-    /// A by-reference pointer (`crossing_regs == slot_count == 1`) and a direct
-    /// parameter (`crossing_regs == slot_count`) are both excluded.
-    pub const fn is_by_value_indirect(&self) -> bool {
-        self.crossing_regs < self.slot_count
-    }
 }
 
 /// Per-ABI-slot parameter access metadata preserved into CFG.

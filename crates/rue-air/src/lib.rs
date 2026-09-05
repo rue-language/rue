@@ -44,7 +44,7 @@ mod type_properties;
 mod types;
 
 pub use call_abi::{
-    ArgClass, ArgConvention, CAbiScalarKind, NativeAbiTypeFacts, NativeCallAbi, ReturnClass,
+    ArgConvention, CAbiScalarKind, NativeAbiTypeFacts, NativeCallAbi, ReturnClass,
     ScalarAbiExtension, TargetCCallAbi, aggregate_leaves, c_abi_type_facts,
     is_slot_identical_layout, native_return_register_budget,
 };
@@ -124,19 +124,19 @@ pub use sema::{
     DurableSignatureParameter, DurableTryProducer, FunctionInfo, ImplicitDropDependencySourceEvent,
     ImplicitNamedDestructorDependencyEvent, ImportResolution, MAX_COMPTIME_CALL_DEPTH,
     MemberCandidate, MemberKind, MethodInfo, NameCandidate, NameResolution,
-    NamedConstDependencyEvent, NamedConstDependencyTargetEvent, NativeArgClass,
-    NominalWellFormedness, OperatorMemberCandidate, OperatorName, ParamSlotModes,
-    ProviderAggregateFacts, ProviderAnonymousBody, ProviderBodyAnalysisState, ProviderBodyWork,
-    ProviderCallFacts, ProviderDefinitionKind, ProviderEndpointFacts, ProviderIdentityContext,
-    ProviderModuleMember, ProviderNamespace, ProviderOrdinaryBody, ProviderSpecializedBody,
-    ProviderStructHead, ProviderWellKnownOptionFacts, RirDeclarationIndexWork,
-    SemanticAnonymousNominalIdentity, SemanticBindingManifestWork, SemanticDeclarationShell,
-    SemanticDeclarationShellIdentity, SemanticDefinitionIdentity, SemanticExportType,
-    SemanticNominalIdentity, SemanticParameterMode, SemanticProducedAnonymousMethodSignature,
-    SemanticProducedAnonymousMethodType, SemanticProducedAnonymousNominal,
-    SemanticProducedAnonymousNominalShape, SourceParamAbi, analyze_provider_anonymous_body,
-    analyze_provider_ordinary_body, analyze_provider_specialized_body, body_parameter_types,
-    by_reference_parameter_pointee_types, comptime_depth_over_limit, next_comptime_depth,
+    NamedConstDependencyEvent, NamedConstDependencyTargetEvent, NominalWellFormedness,
+    OperatorMemberCandidate, OperatorName, ParamSlotModes, ProviderAggregateFacts,
+    ProviderAnonymousBody, ProviderBodyAnalysisState, ProviderBodyWork, ProviderCallFacts,
+    ProviderDefinitionKind, ProviderEndpointFacts, ProviderIdentityContext, ProviderModuleMember,
+    ProviderNamespace, ProviderOrdinaryBody, ProviderSpecializedBody, ProviderStructHead,
+    ProviderWellKnownOptionFacts, RirDeclarationIndexWork, SemanticAnonymousNominalIdentity,
+    SemanticBindingManifestWork, SemanticDeclarationShell, SemanticDeclarationShellIdentity,
+    SemanticDefinitionIdentity, SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
+    SemanticProducedAnonymousMethodSignature, SemanticProducedAnonymousMethodType,
+    SemanticProducedAnonymousNominal, SemanticProducedAnonymousNominalShape, SourceParamAbi,
+    analyze_provider_anonymous_body, analyze_provider_ordinary_body,
+    analyze_provider_specialized_body, body_parameter_types, by_reference_parameter_pointee_types,
+    comptime_depth_over_limit, next_comptime_depth, occupying_body_parameter_types,
 };
 pub use sema::{
     ComptimeDiagnosticSite, ComptimeIntegerOperation, ComptimeMatchPattern,

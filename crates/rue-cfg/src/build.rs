@@ -7,8 +7,8 @@ use ahash::{AHashMap, AHashSet};
 use lasso::{Spur, ThreadedRodeo};
 use rue_air::{
     AirArgMode, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection, AirRef,
-    AnalyzedCallableKind, ArgConvention, FrozenTypeInternPool, NativeArgClass, NativeCallAbi,
-    ParamSlotModes, SourceParamAbi, StructId, Type, TypeKind, ValidatedAir,
+    AnalyzedCallableKind, FrozenTypeInternPool, ParamSlotModes, SourceParamAbi, StructId, Type,
+    TypeKind, ValidatedAir,
 };
 use rue_error::{CompileError, CompileWarning, ErrorKind, WarningKind};
 use std::cell::RefCell;
@@ -779,130 +779,80 @@ fn accessor_yield_spine(
     spine
 }
 
-/// Derive the grouped per-source-parameter ABI descriptors (ADR-0052 phase 5.8,
-/// RUE-1005) from the AIR and the per-slot by-reference vector.
+/// Derive the grouped per-source-parameter ABI descriptors from the AIR and the
+/// per-slot by-reference vector.
 ///
 /// The parameter type at each slot span comes from the AIR: every by-value
 /// (`Normal`) parameter — used or not — is recorded in `param_drops` with its
-/// start slot and type, and any additional used parameter (a destructor `self`,
-/// whose drops are cleared) is recovered from its `Param` instruction. Each
-/// parameter's incoming-register crossing width is decided by the native
-/// call-ABI classifier and stored as a plain integer; the descriptor carries no
-/// `Type`, so a pointer-only consumer's CFG stays layout-independent and
-/// reusable when a pointee struct's layout changes. Walking the slots and
-/// advancing by each parameter's decomposition width reconstructs the exact
-/// grouping identically for a fresh analysis and a durable/imported body, since
-/// both rebuild from the same AIR.
+/// start slot and type, any additional used parameter (a destructor `self`,
+/// whose drops are cleared) is recovered from its `Param` instruction, and one
+/// the body only forwards is recovered from the place that reads it. Each
+/// parameter spans its type's value-decomposition width, so walking the slots
+/// and advancing by that width reconstructs the exact grouping identically for
+/// a fresh analysis and a durable/imported body, since both rebuild from the
+/// same AIR.
+///
+/// The descriptor says *what* each parameter is, never where it arrives: code
+/// generation asks `rue_air::lower_native_signature` where the incoming value
+/// travels, so the callee's prologue and its callers read one placement
+/// (ADR-0084).
 fn derive_source_param_abi(builder: &CfgBuilder<'_>) -> Vec<SourceParamAbi> {
     let air = builder.air;
     let type_pool = builder.type_pool;
     let num_params = builder.cfg.num_params();
     let by_ref: Vec<bool> = builder.cfg.param_modes().to_vec();
-    let abi = NativeCallAbi::for_arguments(type_pool);
 
-    // Drop glue and destructors are invoked exclusively through the cleanup
-    // call convention (`CallPlan::from_slot_values`), which passes an
-    // aggregate's already-materialized slots DIRECTLY and flattened (RUE-998 /
-    // RUE-311), never the ordinary indirect compact-aggregate transport
-    // (RUE-1005). Their by-value parameters must therefore home one incoming
-    // register per slot; letting the compact classifier force a multi-slot
-    // element parameter indirect (one pointer) desynchronizes the direct-slot
-    // caller from an indirect-unmarshalling callee and miscompiles — an array
-    // drop glue dereferenced its element values as addresses and overflowed the
-    // stack (RUE-1035 M3). These synthetic symbols are compiler-reserved
-    // (`__rue_drop_*` glue, `<Type>.__drop` destructors), so this is the same
-    // identity codegen already resolves them by. Gate-off the classifier is
-    // already Direct, so this is inert there.
+    // Destructors and drop glue are invoked exclusively through the cleanup
+    // convention (`CallPlan::from_slot_values`), which passes an aggregate's
+    // already-materialized leaves DIRECTLY and flattened (RUE-998 / RUE-311):
+    // the callee walks those leaves rather than reconstructing a value, so it
+    // must receive one register-width leaf per slot. Withholding the type is
+    // what selects that arm on the callee side; these synthetic symbols are
+    // compiler-reserved (`__rue_drop_*` glue, `<Type>.__drop` destructors), the
+    // same identity code generation already resolves them by. Retires with
+    // RUE-2039.
     let direct_slot_abi = builder.callable_kind.uses_direct_slot_abi();
 
-    // Slot -> source type, from the one recovery the C-export thunk also reads,
-    // so a callee's parameter layout and the thunk that calls it cannot derive
-    // a parameter's type differently.
-    let ty_at: AHashMap<u32, Type> = rue_air::body_parameter_types(air);
+    // Slot -> source type. A parameter's own extent is what groups the slots,
+    // so every by-value parameter needs one: the drop schedule and the body's
+    // `Param` instructions name most of them, and a parameter the body only
+    // ever *forwards* — a `borrow` of it as a call argument, say — is named by
+    // the place that reads it. A zero-sized parameter occupies no slot, so it
+    // never claims the slot it shares with the parameter that follows it.
+    let occupies = |ty: Type| type_pool.abi_slot_count(ty) > 0;
+    let mut ty_at: AHashMap<u32, Type> = rue_air::occupying_body_parameter_types(air, occupies);
+    for (slot, ty) in rue_air::by_reference_parameter_pointee_types(air) {
+        if occupies(ty) {
+            ty_at.entry(slot).or_insert(ty);
+        }
+    }
 
     let mut descriptors = Vec::new();
     let mut slot = 0u32;
     while slot < num_params {
         let is_by_ref = by_ref.get(slot as usize).copied().unwrap_or(false);
-        let (slot_count, crossing_regs, ty, crossing_classes) = if is_by_ref {
-            // A by-reference parameter is always one pointer slot; its type is
-            // never consulted by code generation.
-            (1, 1, None, vec![NativeArgClass::Gp])
-        } else if let Some(&ty) = ty_at.get(&slot) {
-            let width = type_pool.abi_slot_count(ty).max(1);
-            let crossing = if direct_slot_abi {
-                // Cleanup-slot callees receive every slot directly (see above),
-                // so the incoming-register width is the full decomposition.
-                width
-            } else {
-                abi.classify_arg(ty, ArgConvention::ByValue)
-                    .crossing_slots()
-                    .max(1)
-            };
-            // Carry the type only when the parameter crosses indirectly (one
-            // pointer over a multi-slot span), so a direct parameter's CFG stays
-            // layout-independent.
-            let carried_ty = (crossing < width).then_some(ty);
-            let crossing_classes = if crossing < width {
-                vec![NativeArgClass::Gp]
-            } else {
-                let mut classes = native_arg_leaf_classes(type_pool, ty);
-                classes.reverse();
-                // Unit occupies one historical parameter slot even though it
-                // has no ABI leaf. Keep that synthetic slot in the GP bank so
-                // the parameter metadata remains a total description of the
-                // existing slot-oriented CFG contract.
-                if classes.is_empty() && crossing == 1 {
-                    classes.push(NativeArgClass::Gp);
-                }
-                classes
-            };
-            (width, crossing, carried_ty, crossing_classes)
-        } else {
-            // No recorded type for a by-value slot: a single direct slot, which
-            // homes exactly as the historical prologue.
-            (1, 1, None, vec![NativeArgClass::Gp])
+        // A by-reference parameter is always one pointer slot; its type is
+        // never consulted by code generation. A by-value slot with no recorded
+        // type is a single register-width slot: the recoveries above name every
+        // parameter the body can observe, so an unrecovered one is unread, and
+        // the only shape that reaches this arm is the `str` view a `borrow str`
+        // parameter is passed by value as — two register-width slots either way,
+        // so the split leaves every later parameter's placement unchanged.
+        let (slot_count, ty) = match (is_by_ref, ty_at.get(&slot)) {
+            (false, Some(&ty)) => {
+                let width = type_pool.abi_slot_count(ty).max(1);
+                (width, (!direct_slot_abi).then_some(ty))
+            }
+            _ => (1, None),
         };
         descriptors.push(SourceParamAbi {
             start_slot: slot,
             slot_count,
-            crossing_regs,
-            crossing_classes,
             ty,
         });
         slot += slot_count;
     }
     descriptors
-}
-
-fn native_arg_leaf_classes(type_pool: &FrozenTypeInternPool, ty: Type) -> Vec<NativeArgClass> {
-    fn push(type_pool: &FrozenTypeInternPool, ty: Type, out: &mut Vec<NativeArgClass>) {
-        match ty.kind() {
-            TypeKind::Unit | TypeKind::Never => {}
-            TypeKind::F32 => out.push(NativeArgClass::Fp32),
-            TypeKind::F64 => out.push(NativeArgClass::Fp64),
-            TypeKind::Struct(id) => {
-                for field in &type_pool.struct_def(id).fields {
-                    push(type_pool, field.ty, out);
-                }
-            }
-            TypeKind::Array(id) => {
-                let (element, len) = type_pool.array_def(id);
-                for _ in 0..len {
-                    push(type_pool, element, out);
-                }
-            }
-            // Enums always carry an integer tag and may overlay unlike payload
-            // classes, so their stable internal call image remains GP-shaped.
-            TypeKind::Enum(_) => {
-                out.extend((0..type_pool.abi_slot_count(ty)).map(|_| NativeArgClass::Gp));
-            }
-            _ => out.push(NativeArgClass::Gp),
-        }
-    }
-    let mut out = Vec::new();
-    push(type_pool, ty, &mut out);
-    out
 }
 
 impl<'a> CfgBuilder<'a> {
