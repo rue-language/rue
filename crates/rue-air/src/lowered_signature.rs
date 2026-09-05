@@ -403,6 +403,16 @@ impl Placer {
         }
     }
 
+    /// Mark every remaining register of `class` used, so no later argument
+    /// takes one (AAPCS64 rule C.11 after a composite fails to fit).
+    fn exhaust(&mut self, class: CRegisterClass) {
+        let all = self.spec.argument_registers(class);
+        match class {
+            CRegisterClass::Gp => self.gp = all,
+            CRegisterClass::Fp => self.fp = all,
+        }
+    }
+
     /// Claim `count` consecutive registers of `class`, or `None` when the
     /// roster cannot hold the whole value. Register assignment is
     /// all-or-nothing: a two-eightbyte aggregate with one register left goes to
@@ -538,7 +548,14 @@ fn lower_aggregate_argument(placer: &mut Placer, size: u64, align: u64) -> ArgLo
             };
         }
         // Registers exhausted: the whole aggregate goes to memory, keeping its
-        // eightbyte image contiguous.
+        // eightbyte image contiguous. AAPCS64 rule C.11 additionally sets the
+        // next general-purpose register number to 8, so every later argument
+        // is stacked too even though a register may remain; SysV AMD64 has no
+        // such rule and a later scalar still takes the register the aggregate
+        // could not fit in.
+        if placer.spec.aggregate_rule == AggregateClassificationRule::Aapcs64Composite {
+            placer.exhaust(class);
+        }
         let (stack_size, stack_align) = placer.stack_extent(size, false);
         let (offset, size, align) = placer.claim_stack(stack_size, stack_align);
         return ArgLocation::Stack {
@@ -807,6 +824,49 @@ mod tests {
             }
         );
         assert_eq!(signature.arguments()[6].location, registers(5, 1));
+    }
+
+    #[test]
+    fn an_aapcs64_composite_that_does_not_fit_exhausts_the_register_roster() {
+        // Seven words leave `x7`; a two-eightbyte composite cannot fit, so it
+        // goes to the stack entire and, per AAPCS64 rule C.11, the next
+        // general-purpose register number becomes 8: the word after it is
+        // stacked behind the composite rather than taking the free `x7`.
+        for convention in [AAPCS, DARWIN] {
+            let signature = lower_c_signature(
+                convention,
+                &[
+                    word(),
+                    word(),
+                    word(),
+                    word(),
+                    word(),
+                    word(),
+                    word(),
+                    aggregate(16, 8),
+                    word(),
+                ],
+                CAbiTypeFacts::ZeroSized,
+            );
+            assert_eq!(
+                signature.arguments()[7].location,
+                ArgLocation::Stack {
+                    offset: 0,
+                    size: 16,
+                    align: 8
+                }
+            );
+            assert_eq!(
+                signature.arguments()[8].location,
+                ArgLocation::Stack {
+                    offset: 16,
+                    size: 8,
+                    align: 8
+                },
+                "{convention}: the register the composite could not use stays unused"
+            );
+            assert_eq!(signature.stack_bytes(), 32);
+        }
     }
 
     #[test]
