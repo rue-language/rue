@@ -1459,13 +1459,6 @@ impl<'a> CfgLower<'a> {
                 imm: 0,
             });
         }
-        // Target-C boundary (ADR-0064 P2): re-extend a foreign scalar return to
-        // Rue's canonical 64-bit form. A C callee leaves the bits above the
-        // return's declared width unspecified, so the caller extends per the
-        // shared classifier's rule.
-        if let Some(ext) = plan.foreign_return_extension {
-            self.emit_c_return_extension(primary, ext);
-        }
         crate::value_plan::MaterializedValue { primary, slots }
     }
 

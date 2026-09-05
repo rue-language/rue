@@ -462,10 +462,11 @@ pub trait ValueLowerAdapter:
     fn return_register_banks(&self) -> crate::call_plan::AbiRegisterBanks;
     fn emit_value(&mut self, plan: ValueEmissionPlan) -> ValueResult;
     fn emit_call(&mut self, plan: CallPlan) -> ValueResult;
-    /// Emit an `extern "C"` foreign call that crosses one or more aggregates by
-    /// value (ADR-0064 P3). The classification comes from the shared
-    /// [`ForeignCallInputs`](crate::foreign_call::ForeignCallInputs) authority;
-    /// the backend owns only the physical register/stack/sret sequence.
+    /// Emit an `extern "C"` foreign call (ADR-0064 P3). Every foreign call
+    /// arrives here, whatever its argument and result shapes: the
+    /// classification comes from the shared
+    /// [`ForeignCallInputs`](crate::foreign_call::ForeignCallInputs) authority
+    /// and the backend owns only the physical register/stack/sret sequence.
     /// `result` is the pre-reserved result vreg.
     fn emit_foreign_call(
         &mut self,
@@ -1771,18 +1772,13 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
             } else {
                 let symbol = adapter.resolve_symbol(*name);
                 let foreign_convention = adapter.foreign_symbol_convention(&symbol);
-                // A foreign call that crosses an aggregate by value takes the
-                // dedicated C path (ADR-0064 P3): the native slot plan reverses
-                // multi-slot aggregates, disagreeing with C packing, so
-                // aggregates are marshaled through their physical memory image in
-                // C field order. A scalars-only foreign call keeps P2's native
-                // plan with a boundary return extension. Either way the
-                // convention is the declaration's own.
-                if let Some(convention) = foreign_convention
-                    && crate::foreign_call::ForeignCallInputs::call_touches_aggregate(
-                        ctx.cfg, inst.ty, call_args,
-                    )
-                {
+                // Every `extern "C"` call crosses through the one lowered
+                // signature (ADR-0064 P3): each argument and the return travel
+                // where that signature places them, marshaled through their
+                // compact physical memory image in C field order whatever their
+                // shapes. The convention is the declaration's own, resolved once
+                // when its signature was checked.
+                if let Some(convention) = foreign_convention {
                     let foreign_inputs = crate::foreign_call::ForeignCallInputs::from_cfg(
                         symbol,
                         ctx.cfg,
@@ -1794,21 +1790,6 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     let result_vreg = adapter.reserve_typed_value_result(float_width(inst.ty));
                     adapter.emit_foreign_call(foreign_inputs, result_vreg)
                 } else {
-                    // An `extern` scalar/pointer call (ADR-0064 P2): a scalar
-                    // return is re-extended to Rue's canonical 64-bit form because
-                    // a C callee leaves the bits above the return's declared width
-                    // unspecified. The rule comes from the shared `TargetCCallAbi`
-                    // classifier reading the declaration's convention, not a
-                    // backend-local choice.
-                    let foreign_return_extension = foreign_convention
-                        .filter(|_| {
-                            matches!(inputs.return_plan, crate::call_plan::ReturnPlan::Scalar)
-                        })
-                        .map(|convention| {
-                            rue_air::TargetCCallAbi::new(convention)
-                                .scalar_return_extension(inst.ty)
-                        })
-                        .filter(|ext| !ext.is_noop());
                     // The result vreg mirrors the return's logical slot 0, so its
                     // class follows that slot's LEAF: a float-leaf aggregate
                     // result lands in an FP vreg, not a general-purpose one, and
@@ -1841,7 +1822,6 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                             adapter.return_register_banks(),
                         );
                     }
-                    plan.foreign_return_extension = foreign_return_extension;
                     adapter.emit_call(plan)
                 }
             };

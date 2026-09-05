@@ -1355,6 +1355,76 @@ mod tests {
     }
 
     #[test]
+    fn a_scalars_only_signature_lowers_identically_as_an_import_and_an_export() {
+        // Both directions of one `extern "C"` signature read the same
+        // `LoweredSignature`, whatever the shapes involved: a scalars-only
+        // signature has no aggregate to route it anywhere else. Nine arguments
+        // reach the stacked tail on every row, and the narrow ones are where the
+        // Apple row's natural-size packing would differ if the two directions
+        // ever classified separately.
+        use crate::foreign_call::{ForeignArg, ForeignCallInputs, ForeignReturn};
+        use rue_air::CAbiScalarKind;
+        use rue_cfg::CfgValue;
+
+        let kinds = [
+            CAbiScalarKind::RegisterWidth,
+            CAbiScalarKind::I8,
+            CAbiScalarKind::U16,
+            CAbiScalarKind::I32,
+            CAbiScalarKind::Bool,
+            CAbiScalarKind::RegisterWidth,
+            CAbiScalarKind::U32,
+            CAbiScalarKind::I16,
+            CAbiScalarKind::U8,
+        ];
+        let result = scalar_facts(CAbiScalarKind::I16);
+        for target in Target::all() {
+            let convention = target.c_calling_convention();
+            let import = ForeignCallInputs::new(
+                "f".into(),
+                convention,
+                kinds
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &kind)| ForeignArg::Scalar {
+                        value: CfgValue::from_raw(index as u32),
+                        kind,
+                    })
+                    .collect(),
+                ForeignReturn::Scalar,
+                result,
+            );
+            let export = ExportSignature {
+                convention,
+                parameters: kinds
+                    .iter()
+                    .map(|&kind| ExportParameter {
+                        c: scalar_facts(kind),
+                        native: NativeParameter::Direct {
+                            leaves: vec![scalar_leaf(kind.extension().natural_bytes(), false)],
+                            reversed: false,
+                        },
+                    })
+                    .collect(),
+                result,
+                return_facts: NativeAbiTypeFacts {
+                    abi_slots: 1,
+                    aggregate: false,
+                    strbuf: false,
+                    slot_identical: false,
+                },
+                return_leaves: vec![scalar_leaf(2, true)],
+                return_padding: Vec::new(),
+            };
+            assert_eq!(
+                *import.signature(),
+                export.lowered(),
+                "{target:?}: an import and an export of one signature place it identically"
+            );
+        }
+    }
+
+    #[test]
     fn a_scalar_passthrough_forwards_with_one_call_relocation() {
         for (target, kind) in [
             (Target::X86_64Linux, RelocationKind::X86Plt32),

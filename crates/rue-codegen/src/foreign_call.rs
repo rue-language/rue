@@ -1,13 +1,10 @@
 //! Lowering for `extern "C"` foreign calls (ADR-0064 P3).
 //!
-//! A target-C crossing disagrees with the native slot model — the native
-//! planner decomposes an aggregate one slot per leaf and *reverses* the slots
-//! (the register-packing audit's key finding), whereas C packs fields into
-//! eightbytes in ascending memory order. So a foreign call that touches an
-//! aggregate is planned here, entirely separate from the native `CallPlan`, and
-//! lowered through each aggregate's **physical memory image** (which, for a
-//! `@repr(c)` struct of scalar/pointer fields, is exactly the C object layout
-//! under the compact-layout default).
+//! Every `extern "C"` call is planned here, whatever its argument and result
+//! shapes, so one crossing has one plan: the target-C convention places the
+//! call's values and each by-value aggregate is lowered through its **physical
+//! memory image** (which, for a `@repr(c)` struct of scalar/pointer fields, is
+//! exactly the C object layout under the compact-layout default).
 //!
 //! ## Where the classification lives
 //!
@@ -386,8 +383,8 @@ pub(crate) trait ForeignCallLoweringBackend {
     fn foreign_move_primary(&mut self, primary: VReg, slot: VReg);
 }
 
-/// Lower one aggregate-crossing foreign call through the single shared event
-/// sequence. Concrete backends provide only instruction-selection leaves via
+/// Lower one foreign call through the single shared event sequence. Concrete
+/// backends provide only instruction-selection leaves via
 /// [`ForeignCallLoweringBackend`].
 pub(crate) fn lower_foreign_call<B: ForeignCallLoweringBackend>(
     backend: &mut B,
@@ -505,22 +502,11 @@ pub(crate) fn lower_foreign_call<B: ForeignCallLoweringBackend>(
 }
 
 impl ForeignCallInputs {
-    /// Whether a foreign call to `return_ty` with `args` needs the aggregate
-    /// path at all: true when the return or any argument is an aggregate
-    /// (struct/array) type. A scalars-only foreign call keeps the native-plan
-    /// route with a boundary return extension.
-    pub(crate) fn call_touches_aggregate(cfg: &Cfg, return_ty: Type, args: &[CfgCallArg]) -> bool {
-        is_aggregate(return_ty)
-            || args
-                .iter()
-                .any(|arg| is_aggregate(cfg.get_inst(arg.value).ty))
-    }
-
-    /// Compute the simultaneous transient area of an aggregate foreign call
-    /// from the same lowered signature the lowerers consume. This accounts for
-    /// hidden sret storage, byval stack cells, caller-owned by-reference
-    /// copies, and argument-register exhaustion that spills pointers and
-    /// eightbytes to the outgoing stack area.
+    /// Compute the simultaneous transient area of a foreign call from the same
+    /// lowered signature the lowerers consume. This accounts for hidden sret
+    /// storage, byval stack cells, caller-owned by-reference copies, and
+    /// argument-register exhaustion that spills pointers and eightbytes to the
+    /// outgoing stack area.
     pub(crate) fn checked_call_area_bytes(
         cfg: &Cfg,
         type_pool: &FrozenTypeInternPool,

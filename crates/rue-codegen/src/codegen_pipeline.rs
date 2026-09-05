@@ -139,11 +139,7 @@ pub(crate) fn validate_pre_lowering_budget_for_target(
             continue;
         };
         let call_args = cfg.get_call_args(&inst.data);
-        if let Some(convention) = foreign_symbol_convention(*name)
-            && crate::foreign_call::ForeignCallInputs::call_touches_aggregate(
-                cfg, inst.ty, call_args,
-            )
-        {
+        if let Some(convention) = foreign_symbol_convention(*name) {
             crate::foreign_call::ForeignCallInputs::checked_call_area_bytes(
                 cfg, type_pool, inst.ty, call_args, convention,
             )
