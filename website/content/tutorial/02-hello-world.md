@@ -22,13 +22,16 @@ Compile and run it:
 
 ```bash
 RUE="$(scripts/rue-bin)"
+export RUE_STD_PATH="$PWD/std"
 "$RUE" hello.rue -o hello
 ./hello
 echo $?  # prints: 0
 ```
 
 The compiler takes the source file (`hello.rue`) and produces an executable
-(`hello`).
+(`hello`). `RUE_STD_PATH` tells the compiler where the standard library lives;
+without it, any program that imports `std` (which starts in the next chapter)
+fails with `standard library not found`.
 
 For quick experiments, you can also let the repository wrapper build the
 compiler, compile your file to a temporary executable, and run it:

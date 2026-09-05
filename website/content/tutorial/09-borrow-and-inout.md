@@ -16,7 +16,7 @@ function access a value without taking ownership of it.
 
 Look at this code:
 
-```rue
+```rue check
 fn main() -> i32 {
     let mut values = [10, 20, 30];
     double_all(inout values);
@@ -54,7 +54,9 @@ In Rue, mutation is always explicit at the call site.
 
 Use `inout` when a function needs to modify its argument:
 
-```rue
+```rue check
+const std = @import("std");
+
 fn double_all(inout arr: [i32; 3]) {
     let mut i: u64 = 0;
     while i < 3 {
@@ -81,7 +83,9 @@ Both the function signature and the call site use `inout`. There's no way to acc
 
 Use `borrow` when you want to read data without copying it:
 
-```rue
+```rue check
+const std = @import("std");
+
 fn sum_array(borrow arr: [i32; 5]) -> i32 {
     let mut total = 0;
     let mut i: u64 = 0;
@@ -104,7 +108,9 @@ With `borrow`, you know the function won't change your data.
 
 Borrowing also keeps non-copy structs usable after the call:
 
-```rue
+```rue check
+const std = @import("std");
+
 struct Point {
     x: i32,
     y: i32,
@@ -129,7 +135,9 @@ fn main() -> i32 {
 
 You can mix borrow and inout in a single function:
 
-```rue
+```rue check
+const std = @import("std");
+
 fn copy_into(borrow src: [i32; 3], inout dst: [i32; 3]) {
     let mut i: u64 = 0;
     while i < 3 {
@@ -157,7 +165,7 @@ Reading the call site, you immediately know: `source` is read, `dest` is modifie
 Rue enforces the same rule inside one call: any number of `borrow` accesses, or
 one `inout` access, but not both for the same value at the same time.
 
-```rue
+```rue check
 fn observe(borrow old: i32, inout new: i32) -> i32 {
     old + new
 }
@@ -180,7 +188,9 @@ the same call.
 
 These work with any type:
 
-```rue
+```rue check
+const std = @import("std");
+
 struct Point {
     x: i32,
     y: i32,
@@ -212,7 +222,9 @@ fn main() -> i32 {
 Some move-only values need cleanup when they go out of scope. Define that cleanup
 with a `drop fn` named after the struct:
 
-```rue
+```rue check
+const std = @import("std");
+
 struct Guard {
     value: i32,
 }
@@ -232,7 +244,9 @@ fn main() -> i32 {
 You can also drop a value early with `@drop`. Dropping consumes the value, so it
 cannot be used afterward:
 
-```rue
+```rue check
+const std = @import("std");
+
 struct Guard {
     value: i32,
 }
