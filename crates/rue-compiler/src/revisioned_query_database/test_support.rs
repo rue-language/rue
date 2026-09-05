@@ -931,3 +931,13 @@ pub(super) fn lookup_incarnation(
     .unwrap()
     .node_incarnation()
 }
+
+/// A handle on the query runtime `database` owns.
+///
+/// Cloning the handle is how a test outlives the database and still asks what
+/// became of its worker threads: the database destructor's shutdown only says
+/// something if the threads are gone while the runtime core is still reachable,
+/// which after any real compilation it is (RUE-2043).
+pub(crate) fn query_runtime(database: &RevisionedQueryDatabase) -> rue_query::QueryRuntime {
+    database.runtime.clone()
+}

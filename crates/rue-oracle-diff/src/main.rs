@@ -722,6 +722,28 @@ fn model_gap_observation(case: &Case, outcome: &CaseOutcome) -> model_gaps::Obse
     }
 }
 
+/// Render this process's query worker-thread budget, for a resource report.
+///
+/// The whole corpus runs in this one process, so its high-water mark of live
+/// query workers is the number that says whether a thread refusal met a run at
+/// a steady budget or one accumulating threads across cases (RUE-2043). Each
+/// worker is a kernel thread reserving a fixed stack, so the peak and its
+/// product with that reservation are the two host resources a run can exhaust,
+/// and the still-live count corroborates: one compilation needs a handful and
+/// releases them when its session drops, so a peak near the live count is a
+/// run holding onto every worker it ever made.
+fn worker_thread_budget() -> String {
+    let peak = rue_query::peak_query_worker_threads();
+    let stack_mib = rue_query::REGISTERED_BATCH_WORKER_STACK_BYTES / (1024 * 1024);
+    let reserved_mib =
+        peak.saturating_mul(rue_query::REGISTERED_BATCH_WORKER_STACK_BYTES) / (1024 * 1024);
+    format!(
+        "peak {peak} live at once ({reserved_mib} MiB of reserved stack at {stack_mib} MiB \
+         each), {} still live now",
+        rue_query::live_query_worker_threads(),
+    )
+}
+
 /// Print the tallied report and turn it into a process exit code: success when
 /// the oracle agreed with the compiler on every modeled eligible case, failure
 /// on any harness/front-end/oracle failure or disagreement. Shared by
@@ -739,6 +761,7 @@ fn finish_report(report: &Report, corpus: &str) -> ExitCode {
     for line in report.ineligible_breakdown_lines() {
         println!("{line}");
     }
+    println!("  query worker threads:     {}", worker_thread_budget());
     println!("  HARNESS FAILURES: {}", report.harness_failures.len());
     for failure in &report.harness_failures {
         println!("\n  ✗ {failure}");
@@ -769,8 +792,11 @@ fn finish_report(report: &Report, corpus: &str) -> ExitCode {
         println!(
             "\n{} case(s) stopped on a host resource condition, not a disagreement — \
              each ⚠ above carries the operating system's own refusal and the worker \
-             budget that was live. Lower in-process concurrency with {ORACLE_JOBS_VAR}=N \
-             (or run fewer corpora and worktrees at once) and rerun.",
+             budget that was live. What the host refused is a thread, so the ceiling \
+             is its per-process thread limit (macOS `sysctl kern.num_taskthreads`, \
+             Linux `ulimit -u`); read that against the query worker threads line \
+             above. Lower in-process concurrency with {ORACLE_JOBS_VAR}=N (or run \
+             fewer corpora and worktrees at once) and rerun.",
             report.harness_resource.len(),
         );
         return ExitCode::FAILURE;

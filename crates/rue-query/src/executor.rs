@@ -3,6 +3,7 @@
 use std::fmt;
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -12,42 +13,107 @@ use crate::{REGISTERED_BATCH_WORKER_STACK_BYTES, lock};
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
-/// Stable opening of every rendering of [`WorkerSpawnFailure`].
+/// Physical query-runtime worker threads alive in this process right now.
+///
+/// The count is process-wide rather than per-runtime because the resource it
+/// tracks is: every runtime in the process draws its worker threads from one
+/// host budget, and it is the *total* that a host refuses to grow.
+static LIVE_WORKER_THREADS: AtomicUsize = AtomicUsize::new(0);
+
+/// The largest value [`LIVE_WORKER_THREADS`] has ever held in this process.
+static PEAK_WORKER_THREADS: AtomicUsize = AtomicUsize::new(0);
+
+/// Physical query-runtime worker threads currently alive process-wide.
+///
+/// A long-running harness that compiles many programs in one process expects
+/// this to return to a small steady state between compilations: worker threads
+/// belong to a runtime, and a runtime releases them when it is dropped.
+pub fn live_query_worker_threads() -> usize {
+    LIVE_WORKER_THREADS.load(Ordering::Relaxed)
+}
+
+/// High-water mark of [`live_query_worker_threads`] for this process.
+///
+/// This is the number a report needs when the host refuses a thread: it says
+/// whether the refusal met a process that was accumulating threads or one that
+/// was already running at a steady, modest budget (RUE-2043).
+pub fn peak_query_worker_threads() -> usize {
+    PEAK_WORKER_THREADS.load(Ordering::Relaxed)
+}
+
+fn record_worker_birth() {
+    let live = LIVE_WORKER_THREADS.fetch_add(1, Ordering::Relaxed) + 1;
+    PEAK_WORKER_THREADS.fetch_max(live, Ordering::Relaxed);
+}
+
+fn record_worker_death() {
+    LIVE_WORKER_THREADS.fetch_sub(1, Ordering::Relaxed);
+}
+
+/// Stable opening of a [`WorkerSpawnFailure`] the HOST caused.
 ///
 /// Drivers publish the rendering as an internal-error diagnostic and harnesses
 /// match this prefix to separate a loaded host from a compiler defect, so the
-/// text is a contract rather than an incidental message.
+/// text is a contract rather than an incidental message. It is exactly the
+/// distinction [`WorkerSpawnFailure::is_host_refusal`] draws in-process: a
+/// refusal the compiler itself made must not carry this prefix, or a harness
+/// reading stderr would report a compiler bug as a busy machine.
 pub const WORKER_SPAWN_MESSAGE_PREFIX: &str = "query runtime could not spawn a worker thread";
 
-/// The host refused a query-runtime physical worker thread.
+/// The executor refused to dispatch a registered-batch job.
 ///
 /// Thread creation is the one step of registered-batch dispatch that depends on
 /// a resource the compiler does not own. `EAGAIN` under host thread or
 /// address-space pressure is a condition of the machine, not a compiler defect,
 /// so it is reported as a typed value the caller can turn into a diagnostic
-/// rather than an abort of the process.
+/// rather than an abort of the process. The same typing covers dispatch onto a
+/// runtime whose owner already ended its workers, which is a defect but still
+/// must not take the process down.
 ///
 /// The payload is a value type rather than an `io::Error` because
 /// [`QueryAbort`](crate::QueryAbort) is `Clone + Eq`: the refusal is captured
 /// as its rendering, its raw OS code, and the worker budget that was live when
-/// the host said no.
+/// it happened.
 #[derive(Clone, PartialEq, Eq)]
 pub struct WorkerSpawnFailure {
-    os_error: String,
-    raw_os_error: Option<i32>,
+    cause: RefusalCause,
     live_workers: usize,
     worker_stack_bytes: usize,
 }
 
+/// What stopped the dispatch.
+#[derive(Clone, PartialEq, Eq)]
+enum RefusalCause {
+    /// The host declined a new physical worker thread.
+    Host {
+        os_error: String,
+        raw_os_error: Option<i32>,
+    },
+    /// The runtime's owner had already ended its workers. Only a defect
+    /// reaches this — an owner shuts down when it is finished with the runtime
+    /// — so it renders WITHOUT [`WORKER_SPAWN_MESSAGE_PREFIX`]: that prefix is
+    /// how a harness tells a loaded machine from a compiler bug, and this is
+    /// the compiler bug.
+    OwnerShutdown,
+}
+
 impl fmt::Display for WorkerSpawnFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "{WORKER_SPAWN_MESSAGE_PREFIX}: {}; {} workers of {} MiB stack were live",
-            self.os_error,
-            self.live_workers,
-            self.worker_stack_mib()
-        )
+        match &self.cause {
+            RefusalCause::Host { os_error, .. } => write!(
+                formatter,
+                "{WORKER_SPAWN_MESSAGE_PREFIX}: {os_error}; {} workers of {} MiB stack were live",
+                self.live_workers,
+                self.worker_stack_mib()
+            ),
+            RefusalCause::OwnerShutdown => write!(
+                formatter,
+                "query runtime received a batch job after its owner shut the workers down; \
+                 {} workers of {} MiB stack were live",
+                self.live_workers,
+                self.worker_stack_mib()
+            ),
+        }
     }
 }
 
@@ -71,24 +137,54 @@ impl WorkerSpawnFailure {
     /// they are the budget a report needs in order to be actionable.
     pub fn new(error: &io::Error, live_workers: usize, worker_stack_bytes: usize) -> Self {
         Self {
-            os_error: error.to_string(),
-            raw_os_error: error.raw_os_error(),
+            cause: RefusalCause::Host {
+                os_error: error.to_string(),
+                raw_os_error: error.raw_os_error(),
+            },
             live_workers,
             worker_stack_bytes,
         }
     }
 
-    /// The operating system's own account of the refusal.
+    /// Captures dispatch onto a runtime whose owner already shut it down.
+    fn after_owner_shutdown(live_workers: usize, worker_stack_bytes: usize) -> Self {
+        Self {
+            cause: RefusalCause::OwnerShutdown,
+            live_workers,
+            worker_stack_bytes,
+        }
+    }
+
+    /// Whether the machine, rather than the compiler, refused the dispatch.
+    ///
+    /// A harness separates a loaded host from a compiler defect on this
+    /// distinction; across a process boundary it reads the same distinction off
+    /// [`WORKER_SPAWN_MESSAGE_PREFIX`] in the rendered message.
+    pub const fn is_host_refusal(&self) -> bool {
+        matches!(self.cause, RefusalCause::Host { .. })
+    }
+
+    /// The operating system's own account of a host refusal.
+    ///
+    /// Empty when the compiler refused the dispatch itself; see
+    /// [`is_host_refusal`](Self::is_host_refusal).
     pub fn os_error(&self) -> &str {
-        &self.os_error
+        match &self.cause {
+            RefusalCause::Host { os_error, .. } => os_error,
+            RefusalCause::OwnerShutdown => "",
+        }
     }
 
     /// The raw `errno` when the host reported one.
     pub const fn raw_os_error(&self) -> Option<i32> {
-        self.raw_os_error
+        match &self.cause {
+            RefusalCause::Host { raw_os_error, .. } => *raw_os_error,
+            RefusalCause::OwnerShutdown => None,
+        }
     }
 
-    /// Physical workers this runtime already owned when the spawn was refused.
+    /// Physical workers this runtime already owned when the dispatch was
+    /// refused.
     pub const fn live_workers(&self) -> usize {
         self.live_workers
     }
@@ -110,7 +206,11 @@ impl WorkerSpawnFailure {
 /// first acquire slots from `BatchWorkerClaim`; the executor only maps those
 /// already-granted slots onto long-lived operating-system threads.
 pub(crate) struct ReusableBatchExecutor {
-    sender: Option<mpsc::Sender<Job>>,
+    /// `None` once the runtime's owner has shut the executor down. The slot is
+    /// behind a lock because shutdown reaches the executor through the shared
+    /// `Arc<RuntimeCore>` rather than through a unique borrow, and because it
+    /// is what makes shutdown and dispatch exclusive of one another.
+    sender: Mutex<Option<mpsc::Sender<Job>>>,
     receiver: Arc<Mutex<mpsc::Receiver<Job>>>,
     workers: Mutex<Vec<JoinHandle<()>>>,
     worker_capacity: usize,
@@ -132,7 +232,7 @@ impl ReusableBatchExecutor {
     pub(crate) fn new(worker_capacity: usize) -> Self {
         let (sender, receiver) = mpsc::channel::<Job>();
         Self {
-            sender: Some(sender),
+            sender: Mutex::new(Some(sender)),
             receiver: Arc::new(Mutex::new(receiver)),
             workers: Mutex::new(Vec::with_capacity(worker_capacity)),
             worker_capacity,
@@ -143,9 +243,10 @@ impl ReusableBatchExecutor {
 
     /// Dispatches one job onto this runtime's physical workers.
     ///
-    /// Returns the refusal when the host declines a new worker thread. Nothing
-    /// is queued in that case, so the caller owes no join for this job and may
-    /// surface the condition without leaving batch state behind.
+    /// Returns the refusal when the host declines a new worker thread, or when
+    /// the runtime's owner already shut the workers down. Nothing is queued in
+    /// either case, so the caller owes no join for this job and may surface the
+    /// condition without leaving batch state behind.
     pub(crate) fn submit<R>(
         &self,
         job: impl FnOnce() -> R + Send + 'static,
@@ -153,6 +254,17 @@ impl ReusableBatchExecutor {
     where
         R: Send + 'static,
     {
+        // The queue slot stays locked across the whole dispatch. That is what
+        // makes shutdown and submission exclusive of one another: a `Sender`
+        // cloned out of the slot would keep the channel connected, and
+        // `shutdown` would then join workers that never observe the close.
+        let sender = lock(&self.sender);
+        let Some(sender) = sender.as_ref() else {
+            return Err(WorkerSpawnFailure::after_owner_shutdown(
+                lock(&self.workers).len(),
+                REGISTERED_BATCH_WORKER_STACK_BYTES,
+            ));
+        };
         let mut thread_births = 0;
         {
             let mut workers = lock(&self.workers);
@@ -166,15 +278,13 @@ impl ReusableBatchExecutor {
             }
         }
         let (completed, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .as_ref()
-            .expect("query runtime executor is live while its core is live")
+        sender
             .send(Box::new(move || {
                 let result = catch_unwind(AssertUnwindSafe(job));
                 let finished_at = Instant::now();
                 let _ = completed.send((result, finished_at));
             }))
-            .expect("query runtime executor workers remain live with the runtime");
+            .expect("the executor owns the receiver its queue delivers to");
         Ok((
             BatchJobHandle {
                 receiver: Some(receiver),
@@ -198,10 +308,17 @@ impl ReusableBatchExecutor {
             return Err(error);
         }
         let receiver = self.receiver.clone();
+        // The gauge is raised before the thread exists and lowered by a guard
+        // the thread owns, so the pair cannot race: a worker that exits
+        // immediately can only ever lower a count this call already raised.
+        record_worker_birth();
         thread::Builder::new()
             .name(format!("rue-query-worker-{index}"))
             .stack_size(REGISTERED_BATCH_WORKER_STACK_BYTES)
             .spawn(move || {
+                // The gauge is lowered by this guard rather than at the
+                // `return` below so an unwinding worker is still accounted for.
+                let _accounting = WorkerLifetime;
                 loop {
                     let job = {
                         // Exactly one idle worker waits on the receiver;
@@ -216,6 +333,41 @@ impl ReusableBatchExecutor {
                     job();
                 }
             })
+            .inspect_err(|_| record_worker_death())
+    }
+
+    /// Disconnects the job queue and joins every physical worker.
+    ///
+    /// Called when the runtime's owner is finished with it. `Drop` alone is not
+    /// enough: the executor lives inside the `Arc<RuntimeCore>`, which an
+    /// evaluator graph may hold in cycles, so the core is not reliably freed
+    /// when a compilation ends; the full account is at the destructor of
+    /// `rue-compiler`'s `RevisionedQueryDatabase` (RUE-2043).
+    ///
+    /// The queue slot is released before the joins, so a dispatch racing this
+    /// teardown is refused with a typed error instead of blocking; the queue is
+    /// already drained of jobs the racing caller might still be waiting on.
+    pub(crate) fn shutdown(&self) {
+        lock(&self.sender).take();
+        // The handles are taken out from under the lock before any join. A job
+        // still running is free to reach `submit`, whose refusal path reads the
+        // worker list, and joining while holding that lock would deadlock
+        // against the very thread being joined.
+        let workers = lock(&self.workers).drain(..).collect::<Vec<_>>();
+        for worker in workers {
+            worker
+                .join()
+                .expect("query runtime workers contain job panics");
+        }
+    }
+
+    /// Physical workers this executor still owns.
+    ///
+    /// Zero after [`shutdown`](Self::shutdown): every handle was joined and
+    /// drained, so the operating-system threads are gone rather than merely
+    /// unreferenced.
+    pub(crate) fn live_worker_count(&self) -> usize {
+        lock(&self.workers).len()
     }
 
     /// Makes the next physical worker creation fail with `error`.
@@ -225,17 +377,24 @@ impl ReusableBatchExecutor {
     }
 }
 
+/// Decrements the process-wide live-worker gauge when a worker thread ends.
+struct WorkerLifetime;
+
+impl Drop for WorkerLifetime {
+    fn drop(&mut self) {
+        record_worker_death();
+    }
+}
+
 impl Drop for ReusableBatchExecutor {
     fn drop(&mut self) {
         // Disconnecting the queue wakes the idle receiver. Each worker then
         // observes the same closed queue in turn and exits before runtime-owned
-        // state is destroyed.
-        self.sender.take();
-        for worker in lock(&self.workers).drain(..) {
-            worker
-                .join()
-                .expect("query runtime workers contain job panics");
-        }
+        // state is destroyed. This is the backstop for a core that does become
+        // unreachable — an executor built directly, or a runtime whose graph
+        // holds no cycle. Where an owner already ran `shutdown`, draining an
+        // emptied worker list is a no-op.
+        self.shutdown();
     }
 }
 
@@ -293,6 +452,7 @@ mod tests {
         let Err(refused) = executor.submit(|| 2) else {
             panic!("a refused worker thread must not be reported as a dispatched job")
         };
+        assert!(refused.is_host_refusal());
         assert_eq!(refused.raw_os_error(), Some(EAGAIN_LIKE_RAW_OS_ERROR));
         assert_eq!(refused.live_workers(), 1);
         assert_eq!(
@@ -320,6 +480,48 @@ mod tests {
 
     /// macOS `EAGAIN`, the code a thread-exhausted host returns in the field.
     const EAGAIN_LIKE_RAW_OS_ERROR: i32 = 35;
+
+    /// RUE-2043: after the owning runtime tears the executor down, dispatch is
+    /// refused with a value the caller can report, and no worker is created for
+    /// a job that will never run.
+    #[test]
+    fn dispatch_after_shutdown_is_a_typed_refusal_rather_than_a_panic() {
+        let executor = ReusableBatchExecutor::new(2);
+        let (first, births) = executor.submit(|| 1).unwrap();
+        assert_eq!(births, 1);
+        assert_eq!(first.join().0.unwrap(), 1);
+
+        executor.shutdown();
+        assert_eq!(
+            executor.live_worker_count(),
+            0,
+            "shutdown must join the physical workers, not merely close the queue"
+        );
+
+        let Err(refused) = executor.submit(|| 2) else {
+            panic!("a torn-down executor must not report a job as dispatched")
+        };
+        assert!(!refused.is_host_refusal());
+        assert_eq!(refused.raw_os_error(), None);
+        assert!(refused.os_error().is_empty());
+        assert_eq!(refused.live_workers(), 0);
+        let rendered = refused.to_string();
+        assert!(
+            !rendered.contains(WORKER_SPAWN_MESSAGE_PREFIX),
+            "a teardown defect must not render as the host refusal a harness \
+             classifies as a resource condition: {rendered}"
+        );
+        assert!(
+            rendered.contains("after its owner shut the workers down"),
+            "the refusal must name what actually happened: {rendered}"
+        );
+        assert_eq!(format!("{refused:?}"), rendered);
+        assert_eq!(
+            executor.live_worker_count(),
+            0,
+            "a refused dispatch must not create a worker for a job it never queued"
+        );
+    }
 
     #[test]
     fn submitted_jobs_reuse_one_physical_worker() {

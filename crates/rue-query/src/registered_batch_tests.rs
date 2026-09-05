@@ -163,6 +163,126 @@ fn run_registered_batch(worker_count: usize) -> QueryRequestAttempt<Arc<[u64]>> 
     attempt
 }
 
+/// RUE-2043: a runtime's owner can end its worker threads while the runtime
+/// core is still referenced.
+///
+/// An evaluator graph may hold `QueryFamily` and `QueryRuntime` handles in
+/// cycles, so workers that waited for the last reference to the core would
+/// never exit; the full account is at the destructor of `rue-compiler`'s
+/// `RevisionedQueryDatabase`.
+#[test]
+fn shutting_down_a_runtime_joins_its_workers_while_its_core_is_retained() {
+    let runtime = QueryRuntime::new(2);
+    publish_empty(&runtime, [revision(1)]);
+    let child = runtime
+        .family_with_evaluator::<Slot, u64, _>("retained-core-child", 8, |_, _, key| {
+            Ok(QueryOutput::success(key.0))
+        })
+        .unwrap();
+    let child_for_root = child.clone();
+    let root = runtime
+        .family_with_evaluator::<Key, u64, _>("retained-core-root", 8, move |context, _, _| {
+            let mut sum = 0;
+            for terminal in context.query_registered_batch(&child_for_root, [Slot(1), Slot(2)])? {
+                let QueryOutcome::Success(value) = terminal.outcome() else {
+                    unreachable!()
+                };
+                sum += *value;
+            }
+            Ok(QueryOutput::success(sum))
+        })
+        .unwrap();
+    runtime
+        .request_registered(&root, revision(1), Key("root"), CancellationToken::new())
+        .into_result()
+        .expect("the batch completes on a physical worker");
+    assert_eq!(
+        runtime.metrics().batch_worker_thread_births,
+        1,
+        "the batch must have created the physical worker whose lifetime is under test"
+    );
+    // The process-wide gauges are raised in two steps by every runtime in the
+    // process, so `peak` and `live` cannot be compared across a concurrent
+    // read. What this asserts is that both account for this runtime's worker.
+    let live_during = live_query_worker_threads();
+    let peak_during = peak_query_worker_threads();
+    assert!(
+        live_during > 0 && peak_during > 0,
+        "the process gauges must account for a live worker: {live_during} live, \
+         {peak_during} peak"
+    );
+
+    // Stand in for the retained query graph: references that outlive the owner.
+    let retained_core = runtime.core.clone();
+    let retained_graph = (child, root, runtime.clone());
+    runtime.shutdown_workers();
+    drop(runtime);
+
+    assert_eq!(
+        retained_core.batch_executor.live_worker_count(),
+        0,
+        "shutting the runtime down must join its physical workers rather than wait \
+         for the last reference to the runtime core"
+    );
+    drop(retained_graph);
+}
+
+/// RUE-2043: dispatch onto a runtime whose owner already tore it down is a
+/// typed abort, not a panic.
+///
+/// Nothing should reach this: an owner shuts down from a point at which no
+/// request can be in flight. But a teardown placed on the wrong owner would
+/// otherwise reach the queue's `expect` and abort the process during an
+/// ordinary compilation, so the refusal is a value the caller can report — and
+/// one distinguishable from the loaded host that `WORKER_SPAWN_MESSAGE_PREFIX`
+/// classifies, because this is a compiler defect and that is not.
+#[test]
+fn a_batch_dispatched_after_shutdown_aborts_without_panicking() {
+    let runtime = QueryRuntime::new(2);
+    publish_empty(&runtime, [revision(1)]);
+    let child = runtime
+        .family_with_evaluator::<Slot, u64, _>("after-shutdown-child", 8, |_, _, key| {
+            Ok(QueryOutput::success(key.0))
+        })
+        .unwrap();
+    let child_for_root = child.clone();
+    let root = runtime
+        .family_with_evaluator::<Key, u64, _>("after-shutdown-root", 8, move |context, _, _| {
+            let mut sum = 0;
+            for terminal in context.query_registered_batch(&child_for_root, [Slot(1), Slot(2)])? {
+                let QueryOutcome::Success(value) = terminal.outcome() else {
+                    unreachable!()
+                };
+                sum += *value;
+            }
+            Ok(QueryOutput::success(sum))
+        })
+        .unwrap();
+
+    runtime.shutdown_workers();
+    let abort = runtime
+        .request_registered(&root, revision(1), Key("root"), CancellationToken::new())
+        .into_result()
+        .expect_err("a torn-down runtime must refuse the batch rather than serve it");
+    let QueryAbort::WorkerSpawn(failure) = abort else {
+        panic!("a torn-down runtime must report the refusal it made: {abort:?}")
+    };
+    assert!(
+        !failure.is_host_refusal() && failure.raw_os_error().is_none(),
+        "the machine refused nothing here: {failure}"
+    );
+    assert!(
+        !failure.to_string().contains(WORKER_SPAWN_MESSAGE_PREFIX),
+        "a compiler-side teardown defect must not render as a host resource \
+         condition, which is what a harness matches that prefix for: {failure}"
+    );
+    assert_eq!(
+        runtime.metrics().batch_worker_thread_births,
+        0,
+        "a refused dispatch must not have created a worker thread"
+    );
+}
+
 #[test]
 fn a_refused_worker_thread_aborts_the_batch_without_panicking() {
     let runtime = QueryRuntime::new(2);

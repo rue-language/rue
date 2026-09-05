@@ -6376,3 +6376,79 @@ fn a_refused_query_worker_becomes_an_internal_error_diagnostic() {
     // the structural dump every other abort gets.
     assert!(!message.contains("query aborted"), "{message}");
 }
+
+/// A program wide enough that registration dispatches real parallel batches:
+/// the physical worker threads under test are created only when a batch has
+/// siblings to run beside the one the caller runs inline.
+fn parallel_batch_fixture() -> String {
+    use std::fmt::Write as _;
+
+    const HELPERS: usize = 24;
+    let mut source = String::new();
+    for index in 0..HELPERS {
+        writeln!(
+            source,
+            "fn helper_{index}(x: i32) -> i32 {{ return x + {index}; }}"
+        )
+        .expect("writing to a String cannot fail");
+    }
+    source.push_str("fn main() -> i32 {\n    let mut total: i32 = 0;\n");
+    for index in 0..HELPERS {
+        writeln!(source, "    total = total + helper_{index}(total);")
+            .expect("writing to a String cannot fail");
+    }
+    source.push_str("    return total - total;\n}\n");
+    source
+}
+
+/// RUE-2043: dropping a `CompilerSession` ends the query worker threads its
+/// database created, even though the query graph outlives the database.
+///
+/// The handles retained past each drop are what makes the assertion mean
+/// something: a compilation leaves its runtime core reachable from reference
+/// cycles among the registered families, so the core outlives the session that
+/// owned it and worker threads waiting for the last reference would never exit.
+/// The full account is at `RevisionedQueryDatabase`'s destructor.
+#[test]
+fn dropped_compiler_sessions_end_their_query_worker_threads() {
+    const SESSIONS: usize = 4;
+
+    let source = parallel_batch_fixture();
+    let mut retained = Vec::with_capacity(SESSIONS);
+    for _ in 0..SESSIONS {
+        let snapshot =
+            SourceSnapshot::single("<test>", &source).expect("the fixture is a valid snapshot");
+        // Two workers of query concurrency give the executor a capacity of
+        // exactly one physical worker, so the fixture dispatches onto a real
+        // thread on any host, including a single-CPU runner.
+        let mut session = CompilerSession::with_query_concurrency(2);
+        let published = crate::test_support::publish_test_snapshot(&mut session, &snapshot)
+            .expect("the fixture publishes");
+        crate::queries::compile_with_session(&mut session, &published, &CompileOptions::default())
+            .expect("the fixture compiles");
+        let runtime = crate::revisioned_query_database::test_support::query_runtime(
+            &session.queries.revisioned,
+        );
+        drop(session);
+        retained.push(runtime);
+    }
+
+    let births: u64 = retained
+        .iter()
+        .map(|runtime| runtime.metrics().batch_worker_thread_births)
+        .sum();
+    assert!(
+        births > 0,
+        "the fixture must dispatch batches onto physical workers, or a worker \
+         count of zero after the drop proves nothing"
+    );
+    let live: usize = retained
+        .iter()
+        .map(rue_query::QueryRuntime::live_worker_threads)
+        .sum();
+    assert_eq!(
+        live, 0,
+        "{SESSIONS} dropped sessions created {births} worker threads and must \
+         own none of them now"
+    );
+}

@@ -16,7 +16,11 @@ use crate::*;
 /// whose platform stack is materially larger than Rust's default spawned-thread
 /// stack. Keep structured batch children at that established floor so moving a
 /// valid deeply nested query onto a worker cannot create a stack overflow.
-pub(crate) const REGISTERED_BATCH_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
+///
+/// It is public because a host-resource report is only actionable with it: a
+/// thread high-water mark is a number, and this constant is what turns that
+/// number into the address space and kernel thread slots the run asked for.
+pub const REGISTERED_BATCH_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 
 fn batch_completion_coordinator_residual_ns(
     wait_started: Instant,
