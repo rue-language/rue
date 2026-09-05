@@ -21,8 +21,20 @@ source files
 ```
 
 Use `rue --emit <stage>` to inspect `tokens`, `ast`, `rir`, `air`, `cfg`,
-`lowering`, `mir`, `liveness`, `regalloc`, `asm`, or `stackframe`. The option
-can be repeated to request several views.
+`lowering`, `mir`, `liveness`, `regalloc`, `asm`, `stackframe`, or `abi`. The
+option can be repeated to request several views.
+
+The `abi` view reports, for every function the root module reaches, the calling
+convention its signature follows and where each parameter and the result
+travels: a named register, a byte offset in the outgoing argument area, a
+pointer to a caller-owned copy, or nothing for a zero-sized value. It reads the
+artifacts code generation reads — `rue_air::lower_c_signature` for every C
+boundary, `NativeCallAbi` plus the shared slot plan for the native convention —
+and asks each backend for the name of a roster index, so it cannot describe a
+placement the compiler does not emit. `--target` selects the row, so a Darwin
+placement is readable on any host, and a `pub extern "C" fn` export prints both
+its C entry and the native body its thunk forwards to. See
+`docs/notes/ffi-abi-conformance-audit.md`.
 
 The `stackframe` view reports each frame's byte-based layout — per-slot offsets
 and sizes, callee-saved registers, and the 16-byte-aligned total — from the

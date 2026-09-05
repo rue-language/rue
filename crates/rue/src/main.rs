@@ -3875,6 +3875,7 @@ mod tests {
             EmitStage::RegAlloc,
             EmitStage::Asm,
             EmitStage::StackFrame,
+            EmitStage::Abi,
         ] {
             assert!(emit_requires_semantic(&[stage]));
             assert_eq!(
@@ -5104,6 +5105,7 @@ mod tests {
             "stackframe".parse::<EmitStage>().unwrap(),
             EmitStage::StackFrame
         );
+        assert_eq!("abi".parse::<EmitStage>().unwrap(), EmitStage::Abi);
         assert_eq!("deps".parse::<EmitStage>().unwrap(), EmitStage::Deps);
     }
 
@@ -5117,7 +5119,8 @@ mod tests {
     fn emit_stage_all_names() {
         assert_eq!(
             EmitStage::all_names(),
-            "tokens, ast, rir, air, cfg, lowering, mir, liveness, regalloc, asm, stackframe, deps"
+            "tokens, ast, rir, air, cfg, lowering, mir, liveness, regalloc, asm, stackframe, \
+             abi, deps"
         );
     }
 
@@ -5137,6 +5140,12 @@ mod tests {
     fn parse_emit_stackframe() {
         let opts = unwrap_options(parse_args_from(&["--emit", "stackframe", "source.rue"]));
         assert_eq!(opts.emit_stages, vec![EmitStage::StackFrame]);
+    }
+
+    #[test]
+    fn parse_emit_abi() {
+        let opts = unwrap_options(parse_args_from(&["--emit", "abi", "source.rue"]));
+        assert_eq!(opts.emit_stages, vec![EmitStage::Abi]);
     }
 
     #[test]

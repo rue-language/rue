@@ -41,6 +41,22 @@ macro_rules! end_inst {
     };
 }
 
+/// Project a backend's physical register roster onto its names, in roster
+/// order.
+///
+/// The ABI report names registers by asking the backend that owns them, so a
+/// roster must be spelled exactly once. This macro is how each backend hands
+/// over `[Reg; N]` as `[&str; N]` in a const item: `Reg::name64` is a `const
+/// fn`, but a `const fn` cannot build a fixed-size array from a slice, so the
+/// indices are written out and the compiler checks the length.
+macro_rules! roster_names {
+    ($roster:expr; $($index:literal)+) => {
+        [$($roster[$index].name64()),+]
+    };
+}
+pub(crate) use roster_names;
+
+pub mod abi_report;
 mod allocation;
 mod backend;
 pub mod call_plan;

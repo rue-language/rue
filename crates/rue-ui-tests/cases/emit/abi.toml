@@ -1,0 +1,365 @@
+# `--emit abi` is the evidence surface for "where does this value actually
+# travel" (RUE-2033). These cases pin the full report text, because the whole
+# point of the stage is that a placement can be read off it without reading
+# assembly — a wording or a register that drifts is a regression, not a detail.
+#
+# The blocks are ordered by the stage's documented contract: reached functions
+# in the `--emit air` order (a `pub extern "C" fn` export taking an export block
+# there), then every reached `extern "C"` import by C symbol.
+
+[section]
+id = "emit.abi"
+name = "--emit abi calling-convention report"
+description = "Per-function convention and per-value placement for native functions, C imports, and C exports."
+
+[[case]]
+name = "native_multislot_aggregate_argument_and_sret_return"
+description = "A 7-slot by-value aggregate crosses the native convention reversed, spilling past the six SysV argument registers; the same aggregate returns through sret, whose hidden pointer takes argument register 0."
+target = "x86-64-linux"
+source = """
+struct Wide {
+    a: i64,
+    b: i64,
+    c: i64,
+    d: i64,
+    e: i64,
+    f: i64,
+    g: i64,
+}
+
+fn through(w: Wide) -> Wide {
+    w
+}
+
+fn main() -> i32 {
+    let w = Wide { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7 };
+    let t = through(w);
+    let last: i32 = @intCast(t.g);
+    last
+}
+"""
+expected_abi = """
+function __rue_fn_test_2erue__through
+  convention rue, symbol __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s7_7468726f756768t0_
+  parameter 0: Wide$test_2erue, by value, 7 slots, reversed
+    slot 6: gp register 1 (rsi)
+    slot 5: gp register 2 (rdx)
+    slot 4: gp register 3 (rcx)
+    slot 3: gp register 4 (r8)
+    slot 2: gp register 5 (r9)
+    slot 1: stack slot 0
+    slot 0: stack slot 1
+  return: Wide$test_2erue, sret: pointer in gp register 0 (rdi) to 7 slots (64 bytes of caller storage)
+
+function main
+  convention rue, symbol main
+  return: i32, gp return register 0 (rax)
+"""
+
+# The same `extern "C"` signature on all three rows. Eight register-width
+# arguments exhaust SysV's six and AAPCS64's eight, so the narrow tail and the
+# 24-byte struct behind it land in each row's own way:
+#
+#   SysV            byval on the stack, 24 whole bytes at +24 (§3.2.3 MEMORY)
+#   AAPCS64         by reference — a pointer to a caller-owned copy (§6.8.2 C.12)
+#   Apple arm64     the same by-reference rule, but the `i8` ahead of it packs
+#                   at its natural size, so it occupies one byte, not a slot
+[[case]]
+name = "extern_import_stacked_tail_sysv"
+description = "SysV AMD64: register-exhausted tail on the stack in whole eightbytes, and a 24-byte @repr(c) struct passed byval on the stack."
+target = "x86-64-linux"
+preview = "c_ffi"
+preview_should_pass = true
+source = """
+@repr(c)
+struct Triple {
+    a: i64,
+    b: i64,
+    c: i64,
+}
+
+extern "C" {
+    fn wide(
+        a: i64,
+        b: i64,
+        c: i64,
+        d: i64,
+        e: i64,
+        f: i64,
+        g: i64,
+        h: i64,
+        tail: i8,
+        block: Triple,
+    ) -> i64;
+}
+
+fn main() -> i32 {
+    let block = Triple { a: 1, b: 2, c: 3 };
+    let total = checked { wide(1, 2, 3, 4, 5, 6, 7, 8, 9, block) };
+    let code: i32 = @intCast(total);
+    code
+}
+"""
+expected_abi = """
+function main
+  convention rue, symbol main
+  return: i32, gp return register 0 (rax)
+
+import wide
+  convention x86-64-sysv, symbol wide
+  parameter 0: i64, by value, gp register 0 (rdi)
+  parameter 1: i64, by value, gp register 1 (rsi)
+  parameter 2: i64, by value, gp register 2 (rdx)
+  parameter 3: i64, by value, gp register 3 (rcx)
+  parameter 4: i64, by value, gp register 4 (r8)
+  parameter 5: i64, by value, gp register 5 (r9)
+  parameter 6: i64, by value, stack +0 (8 bytes, align 8)
+  parameter 7: i64, by value, stack +8 (8 bytes, align 8)
+  parameter 8: i8, by value, stack +16 (8 bytes, align 8), sign-extended from 8 bits
+  parameter 9: Triple$test_2erue, by value, stack +24 (24 bytes, align 8)
+  return: i64, gp result register 0 (rax)
+  outgoing argument area: 48 bytes
+"""
+
+[[case]]
+name = "extern_import_stacked_tail_aapcs64"
+description = "AAPCS64: eight register-width arguments fill x0-x7, the narrow tail takes a whole 8-byte stack slot, and the 24-byte struct crosses by reference (§6.8.2 C.12), its pointer itself stacked."
+target = "aarch64-linux"
+preview = "c_ffi"
+preview_should_pass = true
+source = """
+@repr(c)
+struct Triple {
+    a: i64,
+    b: i64,
+    c: i64,
+}
+
+extern "C" {
+    fn wide(
+        a: i64,
+        b: i64,
+        c: i64,
+        d: i64,
+        e: i64,
+        f: i64,
+        g: i64,
+        h: i64,
+        tail: i8,
+        block: Triple,
+    ) -> i64;
+}
+
+fn main() -> i32 {
+    let block = Triple { a: 1, b: 2, c: 3 };
+    let total = checked { wide(1, 2, 3, 4, 5, 6, 7, 8, 9, block) };
+    let code: i32 = @intCast(total);
+    code
+}
+"""
+expected_abi = """
+function main
+  convention rue, symbol main
+  return: i32, gp return register 0 (x0)
+
+import wide
+  convention aarch64-aapcs, symbol wide
+  parameter 0: i64, by value, gp register 0 (x0)
+  parameter 1: i64, by value, gp register 1 (x1)
+  parameter 2: i64, by value, gp register 2 (x2)
+  parameter 3: i64, by value, gp register 3 (x3)
+  parameter 4: i64, by value, gp register 4 (x4)
+  parameter 5: i64, by value, gp register 5 (x5)
+  parameter 6: i64, by value, gp register 6 (x6)
+  parameter 7: i64, by value, gp register 7 (x7)
+  parameter 8: i8, by value, stack +0 (8 bytes, align 8), sign-extended from 8 bits
+  parameter 9: Triple$test_2erue, by value, indirect: pointer at stack +8 to 24 bytes (align 8)
+  return: i64, gp result register 0 (x0)
+  outgoing argument area: 16 bytes
+"""
+
+[[case]]
+name = "extern_import_stacked_tail_darwin"
+description = "Apple arm64: the same signature as the AAPCS64 case, differing only where Apple's amendment does — the stacked `i8` occupies one byte at its natural alignment instead of a whole eightbyte."
+target = "aarch64-macos"
+preview = "c_ffi"
+preview_should_pass = true
+source = """
+@repr(c)
+struct Triple {
+    a: i64,
+    b: i64,
+    c: i64,
+}
+
+extern "C" {
+    fn wide(
+        a: i64,
+        b: i64,
+        c: i64,
+        d: i64,
+        e: i64,
+        f: i64,
+        g: i64,
+        h: i64,
+        tail: i8,
+        block: Triple,
+    ) -> i64;
+}
+
+fn main() -> i32 {
+    let block = Triple { a: 1, b: 2, c: 3 };
+    let total = checked { wide(1, 2, 3, 4, 5, 6, 7, 8, 9, block) };
+    let code: i32 = @intCast(total);
+    code
+}
+"""
+expected_abi = """
+function main
+  convention rue, symbol main
+  return: i32, gp return register 0 (x0)
+
+import wide
+  convention aarch64-aapcs-darwin, symbol wide
+  parameter 0: i64, by value, gp register 0 (x0)
+  parameter 1: i64, by value, gp register 1 (x1)
+  parameter 2: i64, by value, gp register 2 (x2)
+  parameter 3: i64, by value, gp register 3 (x3)
+  parameter 4: i64, by value, gp register 4 (x4)
+  parameter 5: i64, by value, gp register 5 (x5)
+  parameter 6: i64, by value, gp register 6 (x6)
+  parameter 7: i64, by value, gp register 7 (x7)
+  parameter 8: i8, by value, stack +0 (1 byte, align 1), sign-extended from 8 bits
+  parameter 9: Triple$test_2erue, by value, indirect: pointer at stack +8 to 24 bytes (align 8)
+  return: i64, gp result register 0 (x0)
+  outgoing argument area: 16 bytes
+"""
+
+# An export owns both halves of one crossing, so its block prints both: the C
+# entry a foreign caller writes (two eightbytes in, two result registers out)
+# and the native body the thunk forwards to, whose by-value aggregate crosses
+# reversed. Reading the two sides together is what shows the thunk has real work
+# to do even for a signature this small.
+[[case]]
+name = "export_two_field_struct_in_and_out"
+description = "A `pub extern \\\"C\\\" fn` export prints its C side and the native side it forwards to."
+target = "x86-64-linux"
+preview = "c_ffi"
+preview_should_pass = true
+source = """
+@repr(c)
+struct Pair {
+    lo: i64,
+    hi: i64,
+}
+
+pub extern "C" fn swap(p: Pair) -> Pair {
+    Pair { lo: p.hi, hi: p.lo }
+}
+
+fn main() -> i32 {
+    0
+}
+"""
+expected_abi = """
+export swap
+  c side
+    convention x86-64-sysv, symbol swap
+    parameter 0: Pair$test_2erue, by value, gp registers 0-1 (rdi, rsi)
+    return: Pair$test_2erue, gp result registers 0-1 (rax, rdx)
+    outgoing argument area: 0 bytes
+  native side
+    convention rue, symbol __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s4_73776170t0_
+    parameter 0: Pair$test_2erue, by value, 2 slots, reversed
+      slot 1: gp register 0 (rdi)
+      slot 0: gp register 1 (rsi)
+    return: Pair$test_2erue, 2 slots
+      slot 0: gp return register 0 (rax)
+      slot 1: gp return register 1 (rdx)
+
+function main
+  convention rue, symbol main
+  return: i32, gp return register 0 (rax)
+"""
+
+# `borrow` and `inout` are one caller pointer each whatever they point at, so
+# the line names the pointee type and the register the pointer arrives in — and
+# says nothing about how many slots the pointee occupies, because the callee's
+# parameter slot holds only the pointer. A `unit` result has no place at all.
+[[case]]
+name = "by_reference_parameter_modes"
+description = "borrow and inout parameters report their mode, their pointee type, and the one register their pointer arrives in."
+target = "x86-64-linux"
+source = """
+struct Counter {
+    hits: i64,
+    misses: i64,
+}
+
+fn bump(inout c: Counter, by: i64) {
+    c.hits = c.hits + by;
+}
+
+fn total(borrow c: Counter) -> i64 {
+    c.hits + c.misses
+}
+
+fn main() -> i32 {
+    let mut c = Counter { hits: 0, misses: 0 };
+    bump(inout c, 3);
+    let sum: i32 = @intCast(total(borrow c));
+    sum
+}
+"""
+expected_abi = """
+function __rue_fn_test_2erue__bump
+  convention rue, symbol __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s4_62756d70t0_
+  parameter 0: Counter$test_2erue, inout, indirect: pointer in gp register 0 (rdi)
+  parameter 1: i64, by value, gp register 1 (rsi)
+  return: unit, no value
+
+function __rue_fn_test_2erue__total
+  convention rue, symbol __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s5_746f74616ct0_
+  parameter 0: Counter$test_2erue, borrow, indirect: pointer in gp register 0 (rdi)
+  return: i64, gp return register 0 (rax)
+
+function main
+  convention rue, symbol main
+  return: i32, gp return register 0 (rax)
+"""
+
+# A by-value aggregate the compact layout cannot express slot-identically (an
+# `[i32; 8]` field) is forced indirect by the memory-first rule: one incoming
+# pointer for a value that still occupies nine callee parameter slots. That
+# collapse is the one case where the pointee's slot count *is* an ABI fact, so
+# the line states it — and the same type returns through sret.
+[[case]]
+name = "native_compact_indirect_argument_states_its_pointee_slots"
+description = "A by-value aggregate forced indirect by the compact memory-first rule crosses as one pointer to nine slots."
+target = "x86-64-linux"
+source = """
+struct Block {
+    items: [i32; 8],
+    len: u32,
+}
+
+fn through(b: Block) -> Block {
+    b
+}
+
+fn main() -> i32 {
+    let b = Block { items: [1, 2, 3, 4, 5, 6, 7, 8], len: 8 };
+    let t = through(b);
+    t.items[7]
+}
+"""
+expected_abi = """
+function __rue_fn_test_2erue__through
+  convention rue, symbol __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s7_7468726f756768t0_
+  parameter 0: Block$test_2erue, by value, indirect: pointer in gp register 1 (rsi) to 9 slots
+  return: Block$test_2erue, sret: pointer in gp register 0 (rdi) to 9 slots (80 bytes of caller storage)
+
+function main
+  convention rue, symbol main
+  return: i32, gp return register 0 (rax)
+"""

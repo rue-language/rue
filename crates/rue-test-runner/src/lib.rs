@@ -251,8 +251,8 @@ impl<'de> Deserialize<'de> for ErrorContains {
 ///
 /// Golden-IR assertions (`expected_tokens`, `expected_ast`, `expected_rir`,
 /// `expected_air`, `expected_cfg`, `expected_mir`, `expected_lowering`,
-/// `expected_liveness`, `expected_regalloc`, `expected_asm`, and
-/// `expected_stackframe`) are checked by running
+/// `expected_liveness`, `expected_regalloc`, `expected_asm`,
+/// `expected_stackframe`, and `expected_abi`) are checked by running
 /// `rue --emit <stage>` and comparing the dump. Execution assertions
 /// (`exit_code`, `expected_stdout`, `runtime_error`, warning checks, ...)
 /// are checked by compiling and running the program.
@@ -322,6 +322,9 @@ pub struct Case {
     /// Expected stack frame dump (golden test)
     #[serde(default)]
     pub expected_stackframe: Option<String>,
+    /// Expected calling-convention/placement report (golden test)
+    #[serde(default)]
+    pub expected_abi: Option<String>,
     /// Expected CFG dump (golden test)
     #[serde(default)]
     pub expected_cfg: Option<String>,
@@ -423,6 +426,7 @@ impl Case {
             || self.expected_regalloc.is_some()
             || self.expected_asm.is_some()
             || self.expected_stackframe.is_some()
+            || self.expected_abi.is_some()
     }
 
     /// Whether this case carries any golden-IR assertion whose output depends
@@ -434,6 +438,7 @@ impl Case {
             || self.expected_regalloc.is_some()
             || self.expected_asm.is_some()
             || self.expected_stackframe.is_some()
+            || self.expected_abi.is_some()
     }
 
     /// Whether verifying this case requires *running* the produced binary, as
@@ -464,6 +469,7 @@ impl Case {
             ("expected_regalloc", self.expected_regalloc.is_some()),
             ("expected_asm", self.expected_asm.is_some()),
             ("expected_stackframe", self.expected_stackframe.is_some()),
+            ("expected_abi", self.expected_abi.is_some()),
         ]
         .into_iter()
         .filter_map(|(field, present)| present.then_some(field))
@@ -1128,6 +1134,7 @@ const PARAM_OVERRIDE_KEYS: &[&str] = &[
     "expected_regalloc",
     "expected_asm",
     "expected_stackframe",
+    "expected_abi",
     "warning_contains",
     "expected_warning_count",
     "spec_extra",
@@ -1180,7 +1187,8 @@ fn invalid_param_override_expectation(key: &str, value: &toml::Value) -> Option<
         | "expected_liveness"
         | "expected_regalloc"
         | "expected_asm"
-        | "expected_stackframe" => value.is_str(),
+        | "expected_stackframe"
+        | "expected_abi" => value.is_str(),
         "timeout_ms" => value
             .as_integer()
             .is_some_and(|value| u64::try_from(value).is_ok()),
@@ -1216,7 +1224,8 @@ fn invalid_param_override_expectation(key: &str, value: &toml::Value) -> Option<
         | "expected_liveness"
         | "expected_regalloc"
         | "expected_asm"
-        | "expected_stackframe" => "a string",
+        | "expected_stackframe"
+        | "expected_abi" => "a string",
         "timeout_ms" | "expected_warning_count" => "a non-negative integer",
         "error_contains" | "warning_contains" => "a string or an array of strings",
         "spec_extra" => "an array of strings",
@@ -1319,6 +1328,10 @@ fn case_contains_placeholder(case: &Case, key: &str) -> bool {
             .is_some_and(|value| contains_placeholder(value, key))
         || case
             .expected_stackframe
+            .as_ref()
+            .is_some_and(|value| contains_placeholder(value, key))
+        || case
+            .expected_abi
             .as_ref()
             .is_some_and(|value| contains_placeholder(value, key))
         || case
@@ -1473,6 +1486,7 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                 expected_regalloc: substitute_optional_string(&case.expected_regalloc, &params),
                 expected_asm: substitute_optional_string(&case.expected_asm, &params),
                 expected_stackframe: substitute_optional_string(&case.expected_stackframe, &params),
+                expected_abi: substitute_optional_string(&case.expected_abi, &params),
                 expected_cfg: substitute_optional_string(&case.expected_cfg, &params),
                 runtime_error: substitute_optional_string(&case.runtime_error, &params),
                 warning_contains: substitute_optional_string_vec(&case.warning_contains, &params),
@@ -1639,6 +1653,11 @@ pub fn expand_case(case: Case) -> Vec<Case> {
             if let Some(value) = params.get("expected_asm") {
                 if let Some(s) = value.as_str() {
                     expanded.expected_asm = Some(substitute_placeholders(s, &params));
+                }
+            }
+            if let Some(value) = params.get("expected_abi") {
+                if let Some(s) = value.as_str() {
+                    expanded.expected_abi = Some(substitute_placeholders(s, &params));
                 }
             }
             if let Some(value) = params.get("expected_stackframe") {
@@ -2577,6 +2596,7 @@ fn stage_to_header_name(stage: &str) -> &'static str {
         "regalloc" => "Register Allocation",
         "asm" => "Assembly",
         "stackframe" => "Stack Frame",
+        "abi" => "ABI",
         _ => panic!("Unknown stage: {}", stage),
     }
 }
@@ -3118,6 +3138,17 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
                 rue_binary,
                 &source_path,
                 "stackframe",
+                expected,
+                &build_command,
+                compile_timeout,
+            )?;
+        }
+
+        if let Some(ref expected) = case.expected_abi {
+            run_golden_ir_test(
+                rue_binary,
+                &source_path,
+                "abi",
                 expected,
                 &build_command,
                 compile_timeout,
@@ -3763,6 +3794,7 @@ params = [
             expected_regalloc: None,
             expected_asm: None,
             expected_stackframe: None,
+            expected_abi: None,
             expected_cfg: None,
             runtime_error: None,
             runtime_exit_code: None,
@@ -3820,6 +3852,7 @@ params = [
             expected_regalloc: None,
             expected_asm: None,
             expected_stackframe: None,
+            expected_abi: None,
             expected_cfg: None,
             runtime_error: None,
             runtime_exit_code: None,
@@ -3885,6 +3918,7 @@ params = [
             expected_regalloc: None,
             expected_asm: None,
             expected_stackframe: None,
+            expected_abi: None,
             expected_cfg: None,
             runtime_error: None,
             runtime_exit_code: None,
@@ -3942,6 +3976,7 @@ params = [
             expected_regalloc: None,
             expected_asm: None,
             expected_stackframe: None,
+            expected_abi: None,
             expected_cfg: None,
             runtime_error: None,
             runtime_exit_code: None,
@@ -4761,6 +4796,7 @@ chmod +x "$output"
             expected_regalloc: None,
             expected_asm: None,
             expected_stackframe: None,
+            expected_abi: None,
             expected_cfg: None,
             runtime_error: None,
             runtime_exit_code: None,

@@ -39,6 +39,33 @@ use crate::MachineCode;
 // Re-export from parent
 pub use super::{EmittedCode, EmittedRelocation};
 
+/// Physical names of the general-purpose argument roster, in roster order.
+///
+/// The ABI report (`--emit abi`) asks the backend for the name of a roster
+/// index instead of restating a roster of its own, so renaming or reordering
+/// [`cfg_lower::ARG_REGS`] moves the report with it. AAPCS64's own argument
+/// registers are these eight.
+pub(crate) const GP_ARGUMENT_REGISTER_NAMES: [&str; 8] =
+    crate::roster_names!(cfg_lower::ARG_REGS; 0 1 2 3 4 5 6 7);
+
+/// Physical names of the floating-point argument roster, in roster order.
+pub(crate) const FP_ARGUMENT_REGISTER_NAMES: [&str; 8] =
+    crate::roster_names!(cfg_lower::FP_ARG_REGS; 0 1 2 3 4 5 6 7);
+
+/// Physical names of the general-purpose return roster, in roster order.
+/// AAPCS64's own result registers are its first two, `x0:x1`.
+pub(crate) const GP_RETURN_REGISTER_NAMES: [&str; 8] =
+    crate::roster_names!(cfg_lower::RET_REGS; 0 1 2 3 4 5 6 7);
+
+/// Physical names of the floating-point return roster, in roster order.
+pub(crate) const FP_RETURN_REGISTER_NAMES: [&str; 8] =
+    crate::roster_names!(cfg_lower::FP_RET_REGS; 0 1 2 3 4 5 6 7);
+
+/// AAPCS64 section 6.9 carries the hidden indirect-result pointer in `x8`, a
+/// register outside the ordinary argument roster, so user arguments still start
+/// at roster index 0. The export thunk names the same register physically.
+pub(crate) const DEDICATED_SRET_REGISTER_NAME: &str = "x8";
+
 struct Aarch64CodegenBackend;
 
 pub(crate) fn prepare_backend(

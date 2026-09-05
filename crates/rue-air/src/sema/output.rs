@@ -302,6 +302,30 @@ pub fn body_parameter_types(air: &crate::Air) -> ahash::AHashMap<u32, crate::Typ
     types
 }
 
+/// The pointee type of every `borrow` / `inout` parameter the body reaches,
+/// keyed by the parameter's ABI slot.
+///
+/// A by-reference parameter has no `Param` instruction and no drop entry — its
+/// slot carries the caller's pointer, and every use goes through a place whose
+/// base is that slot — so [`body_parameter_types`] deliberately does not see
+/// it. The place's own [`AirPlace::base_type`](crate::AirPlace) is the pointee
+/// type, recorded because a physical slot index does not identify it.
+///
+/// This is a *presentation* recovery, not an ABI input: a by-reference
+/// parameter crosses as one pointer whatever it points at, so nothing in
+/// classification, layout, or code generation consults this. `--emit abi` reads
+/// it to name the type beside a placement. A parameter the body never reads
+/// through a place has no entry, and the report says so.
+pub fn by_reference_parameter_pointee_types(air: &crate::Air) -> ahash::AHashMap<u32, crate::Type> {
+    let mut types: ahash::AHashMap<u32, crate::Type> = ahash::AHashMap::new();
+    for place in air.places() {
+        if let crate::AirPlaceBase::Param(slot) = place.base {
+            types.entry(slot).or_insert(place.base_type);
+        }
+    }
+    types
+}
+
 impl SourceParamAbi {
     /// Whether this parameter is a by-value aggregate the classifier forced
     /// indirect: it reserves `slot_count` frame slots but arrives as one pointer
