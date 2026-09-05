@@ -646,6 +646,7 @@ mod tests {
         let layout_methods = [
             "require_layout_slots",
             "reserve_frame_slots",
+            "require_frame_slots_fit",
             "checked_abi_slot_count",
             "abi_slot_count",
         ];
@@ -699,6 +700,28 @@ mod tests {
 
         let reserve = method_item(engine_owner, "reserve_frame_slots");
         assert!(reserve.contains("crate::layout::checked_function_frame_slots(start, additional)"));
+
+        let probe = method_item(engine_owner, "require_frame_slots_fit");
+        assert!(
+            probe.contains("self.reserve_frame_slots(&mut probe, additional, span)"),
+            "the non-consuming frame probe asks the reserving path, not a second budget rule"
+        );
+
+        // RUE-2059: an array-repeat literal expands one element reference per
+        // element, so the frame budget must be asked before that expansion,
+        // not after. Rejecting `[0; 268435455]` otherwise costs seconds and
+        // gigabytes for a diagnostic decided entirely by the layout.
+        let repeat = method_item(AGGREGATES_SOURCE, "analyze_array_repeat");
+        let probe_at = repeat
+            .find("self.require_frame_slots_fit(")
+            .expect("the repeat path asks the frame budget");
+        let expand_at = repeat
+            .find("vec![value_result.air_ref;")
+            .expect("the repeat path expands one element reference per element");
+        assert!(
+            probe_at < expand_at,
+            "the frame-budget check must precede the per-element payload expansion"
+        );
 
         let checked = method_item(engine_owner, "checked_abi_slot_count");
         for edge in [

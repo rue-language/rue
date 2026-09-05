@@ -2058,7 +2058,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // work proportional to a value the compiler is required to reject.
         // This is the same checked materialization boundary used for locals,
         // temporaries, by-value parameters, and type-layout intrinsics.
-        self.require_layout_slots(array_type, span)?;
+        let array_slots = self.require_layout_slots(array_type, span)?;
 
         // Require the element type to be Copy (RUE-235).
         if !self.is_type_copy(elem_type) {
@@ -2079,6 +2079,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             span,
             ctx,
         )?;
+
+        // The single-object limit above admits layouts the *function frame*
+        // cannot hold — either on their own (it is one slot looser) or once
+        // earlier locals have spent part of the budget. Such a repeat is
+        // rejected by the binding's or temporary's `reserve_frame_slots`, but
+        // only after this expansion has already built one element reference
+        // per element: `[0; 268435455]` cost about 8 s and 2 GB to produce a
+        // diagnostic that depends on nothing but the layout (RUE-2059). Ask
+        // the frame budget first so rejecting an unrepresentable repeat is
+        // O(1); accepted repeats are unaffected, since a region that fits here
+        // still fits when the owning storage reserves it.
+        self.require_frame_slots_fit(ctx.next_slot, array_slots, span)?;
 
         // Desugar to ArrayInit: `length` elements, each the single value.
         let elem_refs = vec![value_result.air_ref; length as usize];
