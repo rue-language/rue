@@ -1076,6 +1076,28 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(start)
     }
 
+    /// Ask the frame budget the same question [`Self::reserve_frame_slots`]
+    /// answers, without consuming any of it.
+    ///
+    /// A value whose per-element representation is expensive to build — an
+    /// array-repeat literal expands one element reference per element — must
+    /// learn that the frame cannot hold it *before* paying that cost, not
+    /// after (RUE-2059). The reservation itself stays at the binding or
+    /// temporary that owns the storage; `next_slot` only ever advances, so a
+    /// region that does not fit at the current watermark cannot fit at the
+    /// later one either, and this check rejects exactly what that reservation
+    /// would have rejected.
+    pub(crate) fn require_frame_slots_fit(
+        &self,
+        current: u32,
+        additional: u32,
+        span: Span,
+    ) -> CompileResult<()> {
+        let mut probe = current;
+        self.reserve_frame_slots(&mut probe, additional, span)?;
+        Ok(())
+    }
+
     /// Checked companion to [`Self::abi_slot_count`]: `None` when the type's
     /// layout overflows or exceeds [`MAX_TYPE_SLOTS`] (RUE-561). Computed in
     /// u64 with checked arithmetic so large array lengths cannot truncate to

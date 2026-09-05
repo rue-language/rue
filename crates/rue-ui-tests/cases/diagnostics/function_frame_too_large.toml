@@ -18,3 +18,22 @@ compile_fail = true
 # a load-sensitive latency gate.
 timeout_ms = 30000
 error_contains = ["[E0907]", "function stack frame or outgoing call area", "2147483632"]
+
+[[case]]
+name = "oversized_repeat_literal_rejected_before_expansion"
+source = """
+fn main() -> i32 {
+    let xs: [i8; 268435455] = [0; 268435455];
+    0
+}
+"""
+compile_fail = true
+# RUE-2059: this array is one slot past the frame budget, so the diagnostic is
+# decided by the layout alone — yet rejecting it took ~8s and ~2GB because the
+# repeat expanded a 268-million-entry element payload before the budget was
+# checked. The check now precedes the expansion and the case runs in tens of
+# milliseconds. The timeout is a regression guard with two orders of magnitude
+# of headroom, not a latency gate: only a return to per-element cost can trip
+# it.
+timeout_ms = 5000
+error_contains = ["[E0907]", "function stack frame or outgoing call area", "2147483632"]
