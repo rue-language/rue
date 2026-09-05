@@ -181,7 +181,10 @@ git push -u origin RUE-NNN-short-slug
 Open and merge the PR with whatever GitHub access the session has: the `gh`
 CLI where it is installed and authenticated, otherwise the GitHub API tools
 the harness provides. A sandboxed authentication failure is not authoritative;
-retry with host access before reporting a blocker.
+retry with host access before reporting a blocker. Harness GitHub tools may
+append an attribution footer to the body they create; re-read the PR after
+opening it and remove any footer with a body update before enabling
+auto-merge, so the published text stays tool-neutral.
 
 ### Jujutsu checkouts
 
