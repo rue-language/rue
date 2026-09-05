@@ -45,6 +45,17 @@ use crate::vreg::BLOCK_LABEL_BASE;
 /// these are passed on the caller's stack (slot `k >= 6` at `[rbp+16+(k-6)*8]`
 /// in the callee); the callee prologue copies them into its frame param area
 /// so the body addresses every param slot uniformly (see `emit_prologue`).
+/// The one x86-64 target Rue supports. This backend serves exactly that target,
+/// so it names it rather than threading it through lowering; every convention
+/// question still resolves through the single `"C"` alias table keyed by it,
+/// never by architecture.
+pub(super) const X86_64_TARGET: rue_target::Target = rue_target::Target::X86_64Linux;
+
+/// The convention an `extern "C"` boundary follows on this backend's target.
+pub(super) const fn x86_64_target_c_convention() -> rue_target::CallingConvention {
+    X86_64_TARGET.c_calling_convention()
+}
+
 pub(super) const ARG_REGS: [Reg; 6] = [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9];
 pub(super) const FP_ARG_REGS: [Reg; 8] = [
     Reg::Xmm0,
@@ -145,6 +156,10 @@ pub struct CfgLower<'a> {
 }
 
 impl crate::call_plan::CallMaterializer for CfgLower<'_> {
+    fn target_c_convention(&self) -> rue_target::CallingConvention {
+        x86_64_target_c_convention()
+    }
+
     fn materialize_scalar(&mut self, value: CfgValue) -> VReg {
         self.get_vreg(value)
     }
@@ -334,10 +349,14 @@ impl<'a> CfgLower<'a> {
         &mut self,
         plan: crate::runtime_call_plan::RuntimeCallPlan,
     ) -> crate::value_plan::MaterializedValue {
-        use crate::runtime_call_plan::{RuntimeCallArg, RuntimeCallResult};
-        use rue_runtime_abi::CallingConvention;
+        use crate::runtime_call_plan::{RuntimeCallArg, RuntimeCallPlan, RuntimeCallResult};
 
-        assert_eq!(plan.calling_convention(), CallingConvention::TargetC);
+        assert_eq!(
+            RuntimeCallPlan::calling_convention(X86_64_TARGET),
+            rue_target::CallingConvention::X86_64SysV,
+            "this lowering implements SysV AMD64, the convention the runtime-helper \
+             boundary resolves to on x86-64"
+        );
         assert!(
             plan.args().len() <= ARG_REGS.len(),
             "runtime manifest exceeds the x86-64 target-C register budget"
@@ -598,6 +617,7 @@ impl<'a> CfgLower<'a> {
                 gp: ARG_REGS.len(),
                 fp: FP_ARG_REGS.len(),
             },
+            x86_64_target_c_convention(),
         );
         let _ = self.lower_call_plan(plan);
     }
@@ -3994,9 +4014,6 @@ impl crate::value_plan::ValueLowerAdapter for CfgLower<'_> {
     fn is_foreign_symbol(&self, machine_symbol: &str) -> bool {
         self.symbols.is_foreign(machine_symbol)
     }
-    fn target_c_flavor(&self) -> rue_air::TargetCAbiFlavor {
-        rue_air::TargetCAbiFlavor::SysVAmd64
-    }
     fn call_arg_register_banks(&self) -> crate::call_plan::AbiRegisterBanks {
         crate::call_plan::AbiRegisterBanks {
             gp: ARG_REGS.len(),
@@ -4095,8 +4112,8 @@ fn emit_marshal_tag_ne(mir: &mut X86Mir, tag: VReg, discriminant: u32, label: La
 }
 
 impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
-    fn target_c_flavor(&self) -> rue_air::TargetCAbiFlavor {
-        rue_air::TargetCAbiFlavor::SysVAmd64
+    fn target_c_convention(&self) -> rue_target::CallingConvention {
+        x86_64_target_c_convention()
     }
 
     fn foreign_int_arg_register_count(&self) -> usize {
@@ -4137,26 +4154,38 @@ impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
         panic!("SysV AMD64 does not pass foreign aggregates by reference")
     }
 
-    fn foreign_emit_stack_args(&mut self, stack_ops: &[VReg]) {
-        let count = u64::try_from(stack_ops.len()).expect("foreign stack slot count must fit u64");
+    fn foreign_emit_stack_args(&mut self, stack: &crate::foreign_call::ForeignStackArea) {
+        // SysV packs its outgoing argument area in whole 8-byte slots, so the
+        // planner's stores are always one full slot at an ascending cell offset
+        // and this adapter keeps its push-based sequence: pushing in reverse
+        // order leaves store 0 nearest `rsp`, which is the offset the planner
+        // assigned it.
+        let count =
+            u64::try_from(stack.stores.len()).expect("foreign stack slot count must fit u64");
+        for (index, store) in stack.stores.iter().enumerate() {
+            let cell_offset = checked_cell_byte_offset(index as u64)
+                .ok()
+                .and_then(|offset| u32::try_from(offset).ok())
+                .expect("foreign stack slot offset must fit an unsigned displacement");
+            assert_eq!(
+                (store.bytes, store.offset),
+                (8, cell_offset),
+                "SysV AMD64 stacks every argument in one whole 8-byte slot"
+            );
+        }
         let cell_bytes =
             checked_cell_region_bytes(count).expect("foreign stack area must fit displacement");
-        let stack_bytes = checked_aligned_cell_region_bytes(count)
-            .expect("foreign stack area must pass frame-budget preflight");
-        if stack_bytes > cell_bytes {
+        if stack.bytes > cell_bytes {
             self.mir.push(X86Inst::AddRI {
                 dst: Operand::Physical(Reg::Rsp),
-                imm: -i32::try_from(
-                    checked_cell_region_padding_bytes(count)
-                        .expect("foreign stack alignment padding must fit displacement"),
-                )
-                .expect("foreign stack alignment padding must fit i32"),
+                imm: -i32::try_from(stack.bytes - cell_bytes)
+                    .expect("foreign stack alignment padding must fit i32"),
             });
         }
-        for v in stack_ops.iter().rev() {
+        for store in stack.stores.iter().rev() {
             self.mir.push(X86Inst::MovRR {
                 dst: Operand::Physical(Reg::Rax),
-                src: Operand::Virtual(*v),
+                src: Operand::Virtual(store.value),
             });
             self.mir.push(X86Inst::Push {
                 src: Operand::Physical(Reg::Rax),
@@ -4190,15 +4219,11 @@ impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
         self.mir.push(X86Inst::call(symbol_id));
     }
 
-    fn foreign_cleanup_stack(&mut self, stack_count: usize) {
-        if stack_count > 0 {
-            let stack_bytes = checked_aligned_cell_region_bytes(
-                u64::try_from(stack_count).expect("foreign stack slot count must fit u64"),
-            )
-            .expect("foreign stack area must pass frame-budget preflight");
+    fn foreign_cleanup_stack(&mut self, stack: &crate::foreign_call::ForeignStackArea) {
+        if stack.bytes > 0 {
             self.mir.push(X86Inst::AddRI {
                 dst: Operand::Physical(Reg::Rsp),
-                imm: checked_displacement_bytes(u64::from(stack_bytes))
+                imm: checked_displacement_bytes(u64::from(stack.bytes))
                     .expect("foreign stack area must fit displacement"),
             });
         }
@@ -6537,14 +6562,13 @@ mod tests {
 
     #[test]
     fn runtime_manifest_fits_register_only_target_c_subset() {
+        assert_eq!(
+            crate::runtime_call_plan::RuntimeCallPlan::calling_convention(X86_64_TARGET),
+            rue_target::CallingConvention::X86_64SysV,
+            "the x86-64 runtime-helper boundary is SysV AMD64"
+        );
         for id in rue_runtime_abi::RuntimeHelperId::ALL {
             let helper = id.helper();
-            assert_eq!(
-                helper.calling_convention,
-                rue_runtime_abi::CallingConvention::TargetC,
-                "{} must use the target C convention",
-                helper.symbol
-            );
             assert!(
                 helper.parameters.len() <= ARG_REGS.len(),
                 "{} has {} parameters, exceeding the x86-64 register-only runtime-call budget of {}",
@@ -7189,5 +7213,89 @@ mod tests {
             )),
             "a `u8` @ptr_read must use the one-byte zero-extended narrow load"
         );
+    }
+
+    #[test]
+    fn sysv_stacks_a_narrow_tail_in_whole_slots_unaffected_by_the_apple_amendment() {
+        use crate::foreign_call::{
+            AggregateImage, ForeignArg, ForeignCallInputs, ForeignCallLoweringBackend,
+            ForeignCallPlan, ForeignReturn,
+        };
+        // The same narrow `i8`/`i16`/`i32` tail Apple packs on AArch64: SysV has
+        // no natural-size amendment, so each stacked argument keeps a whole
+        // 8-byte slot whatever its C width, and the push-based sequence stands.
+        let mut args = vec![ForeignArg::AggregateRegisters {
+            value: CfgValue::from_raw(0),
+            image: AggregateImage {
+                map: Vec::new(),
+                padding: Vec::new(),
+                slot_count: 0,
+                size: 8,
+                align: 8,
+                storage_bytes: 16,
+            },
+        }];
+        args.extend((1..6).map(|index| ForeignArg::Scalar {
+            value: CfgValue::from_raw(index),
+            natural_bytes: 8,
+        }));
+        for (index, natural_bytes) in [(6, 1), (7, 2), (8, 4)] {
+            args.push(ForeignArg::Scalar {
+                value: CfgValue::from_raw(index),
+                natural_bytes,
+            });
+        }
+        let plan = ForeignCallPlan::new(
+            ForeignCallInputs {
+                symbol: "narrow_tail".into(),
+                convention: x86_64_target_c_convention(),
+                args,
+                ret: ForeignReturn::ZeroSized,
+            },
+            ARG_REGS.len(),
+        );
+        let area = plan.stack_area_for_test(&[VReg::new(80), VReg::new(81), VReg::new(82)]);
+        assert_eq!(area.bytes, 32);
+        assert_eq!(
+            area.stores
+                .iter()
+                .map(|store| (store.offset, store.bytes))
+                .collect::<Vec<_>>(),
+            vec![(0, 8), (8, 8), (16, 8)]
+        );
+
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::UNIT,
+            0,
+            "f",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        fixture.ret(None);
+        let cfg = fixture.cfg.finish(&pool).expect("test CFG must verify");
+        let mut lower = CfgLower::new(&cfg, &pool, &interner);
+        lower.foreign_emit_stack_args(&area);
+        // Three whole slots plus one cell of call-alignment padding, pushed in
+        // reverse so the first store lands nearest `rsp`.
+        assert_eq!(
+            lower
+                .mir
+                .instructions()
+                .iter()
+                .filter(|inst| matches!(inst, X86Inst::Push { .. }))
+                .count(),
+            3
+        );
+        assert!(lower.mir.instructions().iter().any(|inst| matches!(
+            inst,
+            X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rsp),
+                imm: -8
+            }
+        )));
     }
 }

@@ -36,7 +36,6 @@ pub(crate) trait Backend {
     const FP_ARG_REG_COUNT: u32;
     const RETURN_REG_COUNT: u32;
     const SAVED_REG_SCHEME: SavedRegScheme;
-    const TARGET_C_FLAVOR: rue_air::TargetCAbiFlavor;
 
     fn lower(
         cfg: &ValidatedCfg,

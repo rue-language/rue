@@ -448,9 +448,6 @@ pub trait ValueLowerAdapter:
     /// [`resolve_symbol`](Self::resolve_symbol)) names an `extern "C"` foreign
     /// function, so its call crosses under the target-C ABI (ADR-0064 P2).
     fn is_foreign_symbol(&self, machine_symbol: &str) -> bool;
-    /// The target-C psABI flavor for this backend: SysV AMD64 on x86-64, AAPCS64
-    /// on AArch64. Names the classifier that governs a foreign-call boundary.
-    fn target_c_flavor(&self) -> rue_air::TargetCAbiFlavor;
     fn resolve_named_symbol(&self, symbol: &str) -> String;
     fn call_arg_register_banks(&self) -> crate::call_plan::AbiRegisterBanks;
     /// The target's RETURN register file, one bank per register class. Its
@@ -1786,7 +1783,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                         ctx.type_pool,
                         inst.ty,
                         call_args,
-                        adapter.target_c_flavor(),
+                        adapter.target_c_convention(),
                     );
                     let result_vreg = adapter.reserve_typed_value_result(float_width(inst.ty));
                     adapter.emit_foreign_call(foreign_inputs, result_vreg)
@@ -1799,7 +1796,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     let foreign_return_extension = if is_foreign
                         && matches!(inputs.return_plan, crate::call_plan::ReturnPlan::Scalar)
                     {
-                        let ext = rue_air::TargetCCallAbi::new(adapter.target_c_flavor())
+                        let ext = rue_air::TargetCCallAbi::new(adapter.target_c_convention())
                             .scalar_return_extension(inst.ty);
                         (!ext.is_noop()).then_some(ext)
                     } else {
@@ -3985,10 +3982,6 @@ mod tests {
                 .map(|arg| arg.parameter())
                 .collect::<Vec<_>>(),
             RuntimeHelperId::Realloc.helper().parameters
-        );
-        assert_eq!(
-            realloc.calling_convention(),
-            RuntimeHelperId::Realloc.helper().calling_convention
         );
         assert_eq!(
             realloc.return_behavior(),

@@ -548,9 +548,8 @@ fn request_call_abi(
 
 #[test]
 fn call_abi_classifies_native_target_c_named_destructor_and_drop_glue_on_both_targets() {
-    use crate::type_queries::{
-        CallAbiArgumentClass as A, CallAbiConvention as C, CallAbiReturnClass as R,
-    };
+    use crate::type_queries::{CallAbiArgumentClass as A, CallAbiReturnClass as R};
+    use rue_target::CallingConvention as C;
     let source = source_snapshot(
         &[(
             1,
@@ -581,7 +580,7 @@ fn call_abi_classifies_native_target_c_named_destructor_and_drop_glue_on_both_ta
         ));
     for target in [crate::Target::X86_64Linux, crate::Target::Aarch64Linux] {
         let native = request_call_abi(&database, revision, native.clone(), target);
-        assert_eq!(native.convention, C::Native);
+        assert_eq!(native.convention, C::Rue);
         assert!(native.native_symbol.is_some());
         assert_eq!(
             native.return_class,
@@ -593,14 +592,7 @@ fn call_abi_classifies_native_target_c_named_destructor_and_drop_glue_on_both_ta
         );
 
         let foreign = request_call_abi(&database, revision, foreign.clone(), target);
-        assert_eq!(
-            foreign.convention,
-            C::TargetC(if target == crate::Target::X86_64Linux {
-                rue_air::TargetCAbiFlavor::SysVAmd64
-            } else {
-                rue_air::TargetCAbiFlavor::Aapcs64
-            })
-        );
+        assert_eq!(foreign.convention, C::c_for_target(target));
         assert!(foreign.native_symbol.is_none());
         assert_eq!(
             foreign.return_class,
@@ -616,7 +608,7 @@ fn call_abi_classifies_native_target_c_named_destructor_and_drop_glue_on_both_ta
         ));
 
         let exported = request_call_abi(&database, revision, exported.clone(), target);
-        assert_eq!(exported.convention, C::Native);
+        assert_eq!(exported.convention, C::Rue);
         assert_eq!(
             exported.return_class,
             R::Scalar {
@@ -625,7 +617,7 @@ fn call_abi_classifies_native_target_c_named_destructor_and_drop_glue_on_both_ta
         );
 
         let destructor = request_call_abi(&database, revision, destructor.clone(), target);
-        assert_eq!(destructor.convention, C::Native);
+        assert_eq!(destructor.convention, C::Rue);
         assert_eq!(destructor.arguments.len(), 1);
         assert!(matches!(
             destructor.arguments[0].class,
@@ -638,7 +630,7 @@ fn call_abi_classifies_native_target_c_named_destructor_and_drop_glue_on_both_ta
             crate::FunctionInstanceKey::DropGlue(Node::new(owner.clone())),
             target,
         );
-        assert_eq!(glue.convention, C::Native);
+        assert_eq!(glue.convention, C::Rue);
         assert_eq!(glue.return_class, R::ZeroSized);
         assert!(matches!(
             glue.arguments[0].class,
@@ -649,9 +641,8 @@ fn call_abi_classifies_native_target_c_named_destructor_and_drop_glue_on_both_ta
 
 #[test]
 fn call_abi_batches_layouts_across_mixed_modes_and_duplicate_parameter_types() {
-    use crate::type_queries::{
-        CallAbiArgumentClass as A, CallAbiConvention as C, CallAbiReturnClass as R,
-    };
+    use crate::type_queries::{CallAbiArgumentClass as A, CallAbiReturnClass as R};
+    use rue_target::CallingConvention as C;
     // `mixed` interleaves reference and by-value parameters and repeats
     // `[u64; 7]`, so the batch is sparser than the parameter list and
     // carries a duplicate key. `scalars` repeats `u32` under Target-C.
@@ -675,7 +666,7 @@ fn call_abi_batches_layouts_across_mixed_modes_and_duplicate_parameter_types() {
 
     for target in [crate::Target::X86_64Linux, crate::Target::Aarch64Linux] {
         let mixed = request_call_abi(&database, revision, mixed.clone(), target);
-        assert_eq!(mixed.convention, C::Native);
+        assert_eq!(mixed.convention, C::Rue);
         assert_eq!(mixed.arguments.len(), 5);
 
         // Reference parameters stay layout-free and keep one value slot,
@@ -706,14 +697,7 @@ fn call_abi_batches_layouts_across_mixed_modes_and_duplicate_parameter_types() {
         );
 
         let scalars = request_call_abi(&database, revision, scalars.clone(), target);
-        assert_eq!(
-            scalars.convention,
-            C::TargetC(if target == crate::Target::X86_64Linux {
-                rue_air::TargetCAbiFlavor::SysVAmd64
-            } else {
-                rue_air::TargetCAbiFlavor::Aapcs64
-            })
-        );
+        assert_eq!(scalars.convention, C::c_for_target(target));
         assert_eq!(scalars.arguments.len(), 3);
         assert_eq!(scalars.arguments[0].class, scalars.arguments[1].class);
         assert_eq!(
@@ -739,9 +723,8 @@ fn call_abi_batches_layouts_across_mixed_modes_and_duplicate_parameter_types() {
 
 #[test]
 fn call_abi_resolves_value_specialized_array_layout_on_both_targets() {
-    use crate::type_queries::{
-        CallAbiArgumentClass as A, CallAbiConvention as C, CallAbiReturnClass as R,
-    };
+    use crate::type_queries::{CallAbiArgumentClass as A, CallAbiReturnClass as R};
+    use rue_target::CallingConvention as C;
     let source = source_snapshot(
         &[(
             1,
@@ -765,7 +748,7 @@ fn call_abi_resolves_value_specialized_array_layout_on_both_targets() {
     let revision = revision_for(&mut database, &source);
     for target in [crate::Target::X86_64Linux, crate::Target::Aarch64Linux] {
         let named = request_call_abi(&database, revision, named.clone(), target);
-        assert_eq!(named.convention, C::Native);
+        assert_eq!(named.convention, C::Rue);
         assert_eq!(
             named.return_class,
             R::Scalar {
@@ -781,7 +764,7 @@ fn call_abi_resolves_value_specialized_array_layout_on_both_targets() {
         );
 
         let facts = request_call_abi(&database, revision, callable.clone(), target);
-        assert_eq!(facts.convention, C::Native);
+        assert_eq!(facts.convention, C::Rue);
         assert_eq!(
             facts.return_class,
             if target == crate::Target::X86_64Linux {
@@ -806,9 +789,8 @@ fn call_abi_resolves_value_specialized_array_layout_on_both_targets() {
 
 #[test]
 fn call_abi_derives_anonymous_destructor_signature_from_its_exact_producer() {
-    use crate::type_queries::{
-        CallAbiArgumentClass as A, CallAbiConvention as C, CallAbiReturnClass as R,
-    };
+    use crate::type_queries::{CallAbiArgumentClass as A, CallAbiReturnClass as R};
+    use rue_target::CallingConvention as C;
     let source = source_snapshot(
         &[(
             1,
@@ -850,7 +832,7 @@ fn call_abi_derives_anonymous_destructor_signature_from_its_exact_producer() {
     };
     for target in [crate::Target::X86_64Linux, crate::Target::Aarch64Linux] {
         let facts = request_call_abi(&database, revision, callable.clone(), target);
-        assert_eq!(facts.convention, C::Native);
+        assert_eq!(facts.convention, C::Rue);
         assert_eq!(facts.return_class, R::ZeroSized);
         assert_eq!(facts.arguments.len(), 1);
         assert!(matches!(
@@ -1075,7 +1057,7 @@ fn call_abi_native_classification_matches_the_live_classifier_on_both_targets() 
             );
             assert_eq!(
                 facts.convention,
-                crate::type_queries::CallAbiConvention::Native,
+                rue_target::CallingConvention::Rue,
                 "{name} is a native callable"
             );
             assert_eq!(facts.arguments.len(), params.len(), "arity of {name}");
@@ -1361,12 +1343,8 @@ fn call_abi_target_c_classification_matches_the_live_classifier_on_both_targets(
     let mut database = RevisionedQueryDatabase::default();
     let revision = revision_for(&mut database, &source);
     for target in [crate::Target::X86_64Linux, crate::Target::Aarch64Linux] {
-        let flavor = if target == crate::Target::X86_64Linux {
-            rue_air::TargetCAbiFlavor::SysVAmd64
-        } else {
-            rue_air::TargetCAbiFlavor::Aapcs64
-        };
-        let abi = TargetCCallAbi::new(flavor);
+        let convention = rue_target::CallingConvention::c_for_target(target);
+        let abi = TargetCCallAbi::new(convention);
         let request = |name: &str| {
             request_call_abi(
                 &database,
@@ -1377,10 +1355,7 @@ fn call_abi_target_c_classification_matches_the_live_classifier_on_both_targets(
         };
 
         let signed = request("c_signed");
-        assert_eq!(
-            signed.convention,
-            crate::type_queries::CallAbiConvention::TargetC(flavor)
-        );
+        assert_eq!(signed.convention, convention);
         assert_scalar_args(
             &signed,
             &abi,
@@ -1490,10 +1465,7 @@ fn call_abi_strbuf_return_uses_sret_on_both_planes() {
             free_function_instance(&strbuf_module, "echo"),
             target,
         );
-        assert_eq!(
-            facts.convention,
-            crate::type_queries::CallAbiConvention::Native
-        );
+        assert_eq!(facts.convention, rue_target::CallingConvention::Rue);
         assert_eq!(
             facts.return_class,
             crate::type_queries::CallAbiReturnClass::NativeIndirect { slots: 3 }

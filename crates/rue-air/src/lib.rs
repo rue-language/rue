@@ -43,9 +43,9 @@ mod type_properties;
 mod types;
 
 pub use call_abi::{
-    AggregateArgClass, AggregateReturnClass, ArgClass, ArgConvention, CAbiScalarKind, CallAbi,
-    NativeAbiTypeFacts, NativeCallAbi, ReturnClass, ScalarAbiExtension, TargetCAbiFlavor,
-    TargetCCallAbi, is_slot_identical_layout, native_return_register_budget,
+    AggregateArgClass, AggregateReturnClass, ArgClass, ArgConvention, CAbiScalarKind,
+    NativeAbiTypeFacts, NativeCallAbi, ReturnClass, ScalarAbiExtension, TargetCCallAbi,
+    is_slot_identical_layout, native_return_register_budget,
 };
 pub use exact_decimal::canonical_decimal_literal;
 pub use exact_decimal::finite_float_literal_bits;

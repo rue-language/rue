@@ -67,7 +67,6 @@ impl Backend for X86CodegenBackend {
     const RETURN_REG_COUNT: u32 = cfg_lower::RET_REGS.len() as u32;
     const SAVED_REG_SCHEME: crate::frame_layout::SavedRegScheme =
         crate::frame_layout::SavedRegScheme::X86_64;
-    const TARGET_C_FLAVOR: rue_air::TargetCAbiFlavor = rue_air::TargetCAbiFlavor::SysVAmd64;
 
     fn lower(
         cfg: &ValidatedCfg,

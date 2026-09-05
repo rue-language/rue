@@ -137,6 +137,10 @@ pub struct CfgLower<'a> {
 }
 
 impl crate::call_plan::CallMaterializer for CfgLower<'_> {
+    fn target_c_convention(&self) -> rue_target::CallingConvention {
+        self.target.c_calling_convention()
+    }
+
     fn materialize_scalar(&mut self, value: CfgValue) -> VReg {
         self.get_vreg(value)
     }
@@ -335,10 +339,18 @@ impl<'a> CfgLower<'a> {
         &mut self,
         plan: crate::runtime_call_plan::RuntimeCallPlan,
     ) -> crate::value_plan::MaterializedValue {
-        use crate::runtime_call_plan::{RuntimeCallArg, RuntimeCallResult};
-        use rue_runtime_abi::CallingConvention;
+        use crate::runtime_call_plan::{RuntimeCallArg, RuntimeCallPlan, RuntimeCallResult};
 
-        assert_eq!(plan.calling_convention(), CallingConvention::TargetC);
+        assert!(
+            matches!(
+                RuntimeCallPlan::calling_convention(self.target),
+                rue_target::CallingConvention::Aarch64Aapcs
+                    | rue_target::CallingConvention::Aarch64AapcsDarwin
+            ),
+            "this lowering implements the AAPCS64 rows; the runtime-helper boundary on \
+             {} must resolve to one of them",
+            self.target
+        );
         assert!(
             plan.args().len() <= ARG_REGS.len(),
             "runtime manifest exceeds the AArch64 target-C register budget"
@@ -590,6 +602,7 @@ impl<'a> CfgLower<'a> {
                 gp: ARG_REGS.len(),
                 fp: FP_ARG_REGS.len(),
             },
+            self.target.c_calling_convention(),
         );
         let _ = self.lower_call_plan(plan);
     }
@@ -3867,9 +3880,6 @@ impl crate::value_plan::ValueLowerAdapter for CfgLower<'_> {
     fn is_foreign_symbol(&self, machine_symbol: &str) -> bool {
         self.symbols.is_foreign(machine_symbol)
     }
-    fn target_c_flavor(&self) -> rue_air::TargetCAbiFlavor {
-        rue_air::TargetCAbiFlavor::Aapcs64
-    }
     fn call_arg_register_banks(&self) -> crate::call_plan::AbiRegisterBanks {
         crate::call_plan::AbiRegisterBanks {
             gp: ARG_REGS.len(),
@@ -4002,8 +4012,8 @@ fn emit_marshal_tag_ne(mir: &mut Aarch64Mir, tag: VReg, discriminant: u32, label
 }
 
 impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
-    fn target_c_flavor(&self) -> rue_air::TargetCAbiFlavor {
-        rue_air::TargetCAbiFlavor::Aapcs64
+    fn target_c_convention(&self) -> rue_target::CallingConvention {
+        self.target.c_calling_convention()
     }
 
     fn foreign_int_arg_register_count(&self) -> usize {
@@ -4064,26 +4074,40 @@ impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
         ptr
     }
 
-    fn foreign_emit_stack_args(&mut self, stack_ops: &[VReg]) {
-        let stack_bytes = checked_aligned_cell_region_bytes(
-            u64::try_from(stack_ops.len()).expect("foreign stack slot count must fit u64"),
-        )
-        .expect("foreign stack area must pass frame-budget preflight");
-        if stack_bytes > 0 {
+    fn foreign_emit_stack_args(&mut self, stack: &crate::foreign_call::ForeignStackArea) {
+        if stack.bytes > 0 {
             self.mir.push(Aarch64Inst::SubImm {
                 dst: Operand::Physical(Reg::Sp),
                 src: Operand::Physical(Reg::Sp),
-                imm: checked_displacement_bytes(u64::from(stack_bytes))
+                imm: checked_displacement_bytes(u64::from(stack.bytes))
                     .expect("foreign stack area must fit displacement"),
             });
         }
-        for (index, v) in stack_ops.iter().enumerate() {
-            self.mir.push(Aarch64Inst::Str {
-                src: Operand::Virtual(*v),
-                base: Reg::Sp,
-                offset: checked_cell_byte_offset(index as u64)
-                    .expect("foreign stack slot offset must fit displacement"),
-            });
+        // Each store commits exactly the width the convention's packing rule
+        // assigned it: a whole eightbyte under AAPCS64, and the scalar's own C
+        // width under Apple's amendment, so a stacked `i8` writes one byte.
+        // The planner keeps every offset a multiple of its width, which is what
+        // the scaled `imm12` addressing mode requires.
+        for store in &stack.stores {
+            let offset = checked_displacement_bytes(u64::from(store.offset))
+                .expect("foreign stack slot offset must fit displacement");
+            let src = Operand::Virtual(store.value);
+            match store.bytes {
+                8 => self.mir.push(Aarch64Inst::Str {
+                    src,
+                    base: Reg::Sp,
+                    offset,
+                }),
+                width @ (1 | 2 | 4) => self.mir.push(Aarch64Inst::NarrowStore {
+                    src,
+                    base: Reg::Sp,
+                    offset,
+                    width: width as u8,
+                }),
+                other => {
+                    panic!("a stacked target-C argument commits 1, 2, 4, or 8 bytes; got {other}")
+                }
+            }
         }
     }
 
@@ -4108,16 +4132,12 @@ impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
         self.mir.push(Aarch64Inst::call(symbol_id));
     }
 
-    fn foreign_cleanup_stack(&mut self, stack_count: usize) {
-        if stack_count > 0 {
-            let stack_bytes = checked_aligned_cell_region_bytes(
-                u64::try_from(stack_count).expect("foreign stack slot count must fit u64"),
-            )
-            .expect("foreign stack area must pass frame-budget preflight");
+    fn foreign_cleanup_stack(&mut self, stack: &crate::foreign_call::ForeignStackArea) {
+        if stack.bytes > 0 {
             self.mir.push(Aarch64Inst::AddImm {
                 dst: Operand::Physical(Reg::Sp),
                 src: Operand::Physical(Reg::Sp),
-                imm: checked_displacement_bytes(u64::from(stack_bytes))
+                imm: checked_displacement_bytes(u64::from(stack.bytes))
                     .expect("foreign stack area must fit displacement"),
             });
         }
@@ -5117,17 +5137,20 @@ mod tests {
             CfgLower::new(&cfg, self.pool, self.interner, Target::Aarch64Linux).lower()
         }
 
-        /// Lower for the host target, as the whole-pipeline tests do.
+        /// Lower for the host target, as the whole-pipeline tests do — but
+        /// only when the host is one this backend serves. This lowerer answers
+        /// target-keyed questions (the `"C"` convention row, and through it the
+        /// outgoing argument packing), so handing it an x86-64 host target on a
+        /// cross host would ask AArch64 code generation an x86-64 question.
         fn lower_host(self) -> Aarch64Mir {
+            let target = match Target::host() {
+                Some(host) if host.arch() == rue_target::Arch::Aarch64 => host,
+                _ => Target::Aarch64Linux,
+            };
             let cfg = self.cfg.finish(self.pool).expect("test CFG must verify");
-            CfgLower::new(
-                &cfg,
-                self.pool,
-                self.interner,
-                Target::host().expect("test lowering requires a supported Rue host target"),
-            )
-            .lower()
-            .expect("test lowering should succeed")
+            CfgLower::new(&cfg, self.pool, self.interner, target)
+                .lower()
+                .expect("test lowering should succeed")
         }
 
         /// Lower with the pipeline's real parameter storage plan applied
@@ -6357,14 +6380,21 @@ mod tests {
 
     #[test]
     fn runtime_manifest_fits_register_only_target_c_subset() {
+        for target in [
+            rue_target::Target::Aarch64Linux,
+            rue_target::Target::Aarch64Macos,
+        ] {
+            assert!(
+                matches!(
+                    crate::runtime_call_plan::RuntimeCallPlan::calling_convention(target),
+                    rue_target::CallingConvention::Aarch64Aapcs
+                        | rue_target::CallingConvention::Aarch64AapcsDarwin
+                ),
+                "the {target} runtime-helper boundary is an AAPCS64 row"
+            );
+        }
         for id in rue_runtime_abi::RuntimeHelperId::ALL {
             let helper = id.helper();
-            assert_eq!(
-                helper.calling_convention,
-                rue_runtime_abi::CallingConvention::TargetC,
-                "{} must use the target C convention",
-                helper.symbol
-            );
             assert!(
                 helper.parameters.len() <= ARG_REGS.len(),
                 "{} has {} parameters, exceeding the AArch64 register-only runtime-call budget of {}",
@@ -6884,5 +6914,143 @@ mod tests {
             )),
             "a `u8` @ptr_read must use the one-byte zero-extended narrow load"
         );
+    }
+
+    fn empty_cfg(pool: &FrozenTypeInternPool, interner: &ThreadedRodeo) -> ValidatedCfg {
+        let mut fixture = FixtureCfg::new(
+            Type::UNIT,
+            0,
+            "f",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            pool,
+            interner,
+        );
+        fixture.ret(None);
+        fixture.cfg.finish(pool).expect("test CFG must verify")
+    }
+
+    /// The stacked `i8`/`i16`/`i32`/`i64` tail of an `extern "C"` call whose
+    /// earlier arguments have exhausted `x0`-`x7`, laid out by the shared
+    /// planner for `convention`.
+    fn narrow_tail_area(
+        convention: rue_target::CallingConvention,
+    ) -> crate::foreign_call::ForeignStackArea {
+        use crate::foreign_call::{AggregateImage, ForeignArg, ForeignCallInputs, ForeignReturn};
+        let mut args = vec![ForeignArg::AggregateRegisters {
+            value: CfgValue::from_raw(0),
+            image: AggregateImage {
+                map: Vec::new(),
+                padding: Vec::new(),
+                slot_count: 0,
+                size: 8,
+                align: 8,
+                storage_bytes: 16,
+            },
+        }];
+        args.extend((1..8).map(|index| ForeignArg::Scalar {
+            value: CfgValue::from_raw(index),
+            natural_bytes: 8,
+        }));
+        for (index, natural_bytes) in [(8, 1), (9, 2), (10, 4), (11, 8)] {
+            args.push(ForeignArg::Scalar {
+                value: CfgValue::from_raw(index),
+                natural_bytes,
+            });
+        }
+        crate::foreign_call::ForeignCallPlan::new(
+            ForeignCallInputs {
+                symbol: "narrow_tail".into(),
+                convention,
+                args,
+                ret: ForeignReturn::ZeroSized,
+            },
+            ARG_REGS.len(),
+        )
+        .stack_area_for_test(&[VReg::new(80), VReg::new(81), VReg::new(82), VReg::new(83)])
+    }
+
+    #[test]
+    fn darwin_packs_a_narrow_stacked_tail_where_aapcs64_uses_whole_slots() {
+        use crate::foreign_call::ForeignCallLoweringBackend;
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let cfg = empty_cfg(&pool, &interner);
+
+        let emitted = |target: Target| {
+            let area = narrow_tail_area(target.c_calling_convention());
+            let mut lower = CfgLower::new(&cfg, &pool, &interner, target);
+            lower.foreign_emit_stack_args(&area);
+            lower.foreign_cleanup_stack(&area);
+            let stores = lower
+                .mir
+                .instructions()
+                .iter()
+                .filter_map(|inst| match inst {
+                    Aarch64Inst::Str {
+                        base: Reg::Sp,
+                        offset,
+                        ..
+                    } => Some((*offset, 8_u8)),
+                    Aarch64Inst::NarrowStore {
+                        base: Reg::Sp,
+                        offset,
+                        width,
+                        ..
+                    } => Some((*offset, *width)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            (area.bytes, stores)
+        };
+
+        // AAPCS64 on Linux: one whole 8-byte slot per stacked argument.
+        assert_eq!(
+            emitted(Target::Aarch64Linux),
+            (32, vec![(0, 8), (8, 8), (16, 8), (24, 8)])
+        );
+        // Apple's arm64 amendment: each stacked scalar takes its natural size at
+        // its natural alignment, so the tail packs into 16 bytes and each store
+        // commits exactly the C width.
+        assert_eq!(
+            emitted(Target::Aarch64Macos),
+            (16, vec![(0, 1), (2, 2), (4, 4), (8, 8)])
+        );
+    }
+
+    #[test]
+    fn the_outgoing_argument_area_reservation_follows_the_packing_rule() {
+        use crate::foreign_call::ForeignCallLoweringBackend;
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let cfg = empty_cfg(&pool, &interner);
+
+        let reservation = |target: Target| {
+            let area = narrow_tail_area(target.c_calling_convention());
+            let mut lower = CfgLower::new(&cfg, &pool, &interner, target);
+            lower.foreign_emit_stack_args(&area);
+            lower.foreign_cleanup_stack(&area);
+            lower
+                .mir
+                .instructions()
+                .iter()
+                .filter_map(|inst| match inst {
+                    Aarch64Inst::SubImm {
+                        dst: Operand::Physical(Reg::Sp),
+                        imm,
+                        ..
+                    } => Some(-*imm),
+                    Aarch64Inst::AddImm {
+                        dst: Operand::Physical(Reg::Sp),
+                        imm,
+                        ..
+                    } => Some(*imm),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(reservation(Target::Aarch64Linux), vec![-32, 32]);
+        assert_eq!(reservation(Target::Aarch64Macos), vec![-16, 16]);
     }
 }

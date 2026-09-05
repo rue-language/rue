@@ -6,13 +6,40 @@
 //! argument materialization until a target adapter assigns physical registers.
 
 use rue_runtime_abi::{
-    AbiParameter, AbiResult, AbiType, AggregateShapeId, CallingConvention, ParameterMode,
-    ReturnBehavior, RuntimeHelperId,
+    AbiParameter, AbiResult, AbiType, AggregateShapeId, ParameterMode, ReturnBehavior,
+    RuntimeHelperId, RuntimeTarget,
 };
+use rue_target::{CallingConvention, Target};
 
 use crate::allocation::ScalePlan;
 use crate::call_plan::{CallArgInput, CallMaterializer, ReturnPlan};
 use crate::vreg::VReg;
+
+/// The one correspondence between the compiler's [`Target`] and the runtime
+/// manifest's dependency-light [`RuntimeTarget`] mirror.
+///
+/// `rue-runtime-abi` is a `no_std` leaf that cannot depend on `rue-target`
+/// (ADR-0055), so it names targets in its own enum. This pair of renamings is
+/// the bridge, and it carries no ABI policy of its own: a manifest-side target
+/// reaches the single `"C"` alias table by becoming a [`Target`] first. Both
+/// directions are total, and the crate's tests pin them as mutual inverses.
+pub const fn runtime_target(target: Target) -> RuntimeTarget {
+    match target {
+        Target::X86_64Linux => RuntimeTarget::X86_64Linux,
+        Target::Aarch64Linux => RuntimeTarget::Aarch64Linux,
+        Target::Aarch64Macos => RuntimeTarget::Aarch64Macos,
+    }
+}
+
+/// The [`Target`] a manifest-side [`RuntimeTarget`] names; the inverse of
+/// [`runtime_target`].
+pub const fn compiler_target(target: RuntimeTarget) -> Target {
+    match target {
+        RuntimeTarget::X86_64Linux => Target::X86_64Linux,
+        RuntimeTarget::Aarch64Linux => Target::Aarch64Linux,
+        RuntimeTarget::Aarch64Macos => Target::Aarch64Macos,
+    }
+}
 
 /// One canonical logical runtime argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,7 +150,6 @@ pub struct RuntimeCallPlan {
     args: Vec<RuntimeCallArg>,
     result: RuntimeCallResult,
     return_behavior: ReturnBehavior,
-    calling_convention: CallingConvention,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,7 +220,6 @@ impl RuntimeCallPlan {
             args,
             result,
             return_behavior: manifest.return_behavior,
-            calling_convention: manifest.calling_convention,
         })
     }
 
@@ -322,8 +347,16 @@ impl RuntimeCallPlan {
         self.return_behavior
     }
 
-    pub const fn calling_convention(&self) -> CallingConvention {
-        self.calling_convention
+    /// The convention a runtime-helper call crosses under on `target`.
+    ///
+    /// The helper boundary is a `"C"` call like any other, so it resolves
+    /// through the one alias table rather than carrying a convention of its
+    /// own: every compiler-callable helper in the manifest is a C call, and
+    /// which C row that is depends only on the compilation target. This is an
+    /// associated function, not a method, because the plan itself holds nothing
+    /// target-specific.
+    pub const fn calling_convention(target: Target) -> CallingConvention {
+        CallingConvention::c_for_target(target)
     }
 
     pub const fn symbol(&self) -> &'static str {
@@ -341,6 +374,62 @@ impl RuntimeCallPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every `RuntimeTarget` the manifest can name. `RuntimeTarget` has no
+    /// `ALL`, so this list is exhaustive by construction: adding a variant makes
+    /// [`compiler_target`] fail to compile and this list fail its round trip.
+    const RUNTIME_TARGETS: [RuntimeTarget; 3] = [
+        RuntimeTarget::X86_64Linux,
+        RuntimeTarget::Aarch64Linux,
+        RuntimeTarget::Aarch64Macos,
+    ];
+
+    #[test]
+    fn the_target_correspondence_is_a_total_bijection() {
+        for target in Target::all() {
+            assert_eq!(compiler_target(runtime_target(*target)), *target);
+        }
+        for target in RUNTIME_TARGETS {
+            assert_eq!(runtime_target(compiler_target(target)), target);
+        }
+        assert_eq!(Target::all().len(), RUNTIME_TARGETS.len());
+    }
+
+    #[test]
+    fn the_helper_boundary_resolves_through_the_one_c_alias_table() {
+        // Total over every `Target`, total over every `RuntimeTarget`, and the
+        // two agree: a manifest-side target resolves the alias by becoming a
+        // compiler target first, so there is one mapping table and not two.
+        for target in Target::all() {
+            let convention = RuntimeCallPlan::calling_convention(*target);
+            assert_eq!(
+                convention,
+                CallingConvention::c_for_target(*target),
+                "the runtime-helper boundary is the target's `\"C\"` convention"
+            );
+            assert!(convention.is_c());
+            assert_eq!(
+                convention,
+                CallingConvention::c_for_target(compiler_target(runtime_target(*target))),
+                "the `RuntimeTarget` route must reach the same row"
+            );
+        }
+        for target in RUNTIME_TARGETS {
+            assert!(CallingConvention::c_for_target(compiler_target(target)).is_c());
+        }
+        assert_eq!(
+            RuntimeCallPlan::calling_convention(Target::Aarch64Macos),
+            CallingConvention::Aarch64AapcsDarwin
+        );
+        assert_eq!(
+            RuntimeCallPlan::calling_convention(Target::Aarch64Linux),
+            CallingConvention::Aarch64Aapcs
+        );
+        assert_eq!(
+            RuntimeCallPlan::calling_convention(Target::X86_64Linux),
+            CallingConvention::X86_64SysV
+        );
+    }
 
     #[test]
     fn panic_rejects_arbitrary_arguments_and_sret() {
@@ -368,7 +457,6 @@ mod tests {
         let random = RuntimeCallPlan::no_args(RuntimeHelperId::RandomU64);
         assert_eq!(random.result, RuntimeCallResult::Scalar(AbiType::U64));
         assert_eq!(random.return_behavior, ReturnBehavior::Returns);
-        assert_eq!(random.calling_convention, CallingConvention::TargetC);
 
         let read = RuntimeCallPlan::expect_manifest(
             RuntimeHelperId::ReadLine,

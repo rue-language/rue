@@ -112,7 +112,7 @@ pub(crate) fn validate_pre_lowering_budget(
         arg_reg_count,
         return_reg_count,
         scheme,
-        rue_air::TargetCAbiFlavor::SysVAmd64,
+        rue_target::CallingConvention::X86_64SysV,
         &|_| false,
     )
 }
@@ -123,7 +123,7 @@ pub(crate) fn validate_pre_lowering_budget_for_target(
     arg_reg_count: u32,
     return_reg_count: u32,
     scheme: SavedRegScheme,
-    target_c_flavor: rue_air::TargetCAbiFlavor,
+    target_c_convention: rue_target::CallingConvention,
     is_foreign_symbol: &dyn Fn(lasso::Spur) -> bool,
 ) -> CompileResult<bool> {
     let return_class =
@@ -151,7 +151,7 @@ pub(crate) fn validate_pre_lowering_budget_for_target(
                 type_pool,
                 inst.ty,
                 call_args,
-                target_c_flavor,
+                target_c_convention,
             )
             .map_err(|_| frame_budget_error(cfg, Some(value)))?;
             continue;
@@ -219,7 +219,7 @@ pub(crate) fn prepare_mir_with_backend<B: crate::backend::Backend>(
         B::ARG_REG_COUNT,
         B::RETURN_REG_COUNT,
         B::SAVED_REG_SCHEME,
-        B::TARGET_C_FLAVOR,
+        target.c_calling_convention(),
         &|name| symbols.is_foreign(&symbols.resolve(interner.resolve(&name))),
     )?;
     let param_storage = crate::param_storage::ParamStoragePlan::plan(
@@ -390,7 +390,6 @@ mod tests {
         const FP_ARG_REG_COUNT: u32 = 8;
         const RETURN_REG_COUNT: u32 = 6;
         const SAVED_REG_SCHEME: SavedRegScheme = SavedRegScheme::X86_64;
-        const TARGET_C_FLAVOR: rue_air::TargetCAbiFlavor = rue_air::TargetCAbiFlavor::SysVAmd64;
 
         fn lower(
             _cfg: &ValidatedCfg,
@@ -617,18 +616,24 @@ mod tests {
         cfg.append_call(entry, None, Spur::default(), args, huge, Span::default())
             .unwrap();
 
-        for (arg_regs, ret_regs, scheme, flavor) in [
+        for (arg_regs, ret_regs, scheme, convention) in [
             (
                 6,
                 6,
                 SavedRegScheme::X86_64,
-                rue_air::TargetCAbiFlavor::SysVAmd64,
+                rue_target::CallingConvention::X86_64SysV,
             ),
             (
                 8,
                 8,
                 SavedRegScheme::Aarch64,
-                rue_air::TargetCAbiFlavor::Aapcs64,
+                rue_target::CallingConvention::Aarch64Aapcs,
+            ),
+            (
+                8,
+                8,
+                SavedRegScheme::Aarch64,
+                rue_target::CallingConvention::Aarch64AapcsDarwin,
             ),
         ] {
             let error = super::validate_pre_lowering_budget_for_target(
@@ -637,7 +642,7 @@ mod tests {
                 arg_regs,
                 ret_regs,
                 scheme,
-                flavor,
+                convention,
                 &|_| true,
             )
             .unwrap_err();
@@ -694,18 +699,24 @@ mod tests {
         // aggregate argument's 16-byte image scratch is live alongside it
         // during lowering. Both target-C lowerers must reject that peak before
         // their stack adjustments are emitted.
-        for (arg_regs, ret_regs, scheme, flavor) in [
+        for (arg_regs, ret_regs, scheme, convention) in [
             (
                 6,
                 6,
                 SavedRegScheme::X86_64,
-                rue_air::TargetCAbiFlavor::SysVAmd64,
+                rue_target::CallingConvention::X86_64SysV,
             ),
             (
                 8,
                 8,
                 SavedRegScheme::Aarch64,
-                rue_air::TargetCAbiFlavor::Aapcs64,
+                rue_target::CallingConvention::Aarch64Aapcs,
+            ),
+            (
+                8,
+                8,
+                SavedRegScheme::Aarch64,
+                rue_target::CallingConvention::Aarch64AapcsDarwin,
             ),
         ] {
             assert!(
@@ -715,11 +726,11 @@ mod tests {
                     arg_regs,
                     ret_regs,
                     scheme,
-                    flavor,
+                    convention,
                     &|_| true,
                 )
                 .is_err(),
-                "foreign scratch must count against the {flavor:?} live sret area"
+                "foreign scratch must count against the {convention:?} live sret area"
             );
         }
     }

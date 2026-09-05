@@ -12,14 +12,15 @@
 //! ## Why scalars/pointers are a prologue, not a repack
 //!
 //! For the integer/pointer scalars this phase supports, the native Rue argument
-//! convention and both target-C conventions already agree on *where* each
+//! convention and every target-C convention already agree on *where* each
 //! argument lives: the first arguments occupy the same integer registers (`rdi,
-//! rsi, rdx, rcx, r8, r9` on SysV; `x0..x7` on AAPCS64), a scalar return comes
-//! back in the same primary result register, and Rue's internal invariant keeps
-//! a scalar canonically extended — which is *stronger* than what a C caller
-//! guarantees. The one place the conventions disagree is the **narrow-integer
-//! extension**: a C caller may leave the bits above a narrow argument's declared
-//! width unspecified (SysV) or extended only to 32 bits (AAPCS64), whereas the
+//! rsi, rdx, rcx, r8, r9` on SysV; `x0..x7` on the AAPCS64 rows), a scalar
+//! return comes back in the same primary result register, and Rue's internal
+//! invariant keeps a scalar canonically extended — which is *stronger* than what
+//! a C caller guarantees. The one place the conventions disagree is the
+//! **narrow-integer extension**: a C caller may leave the bits above a narrow
+//! argument's declared width unspecified (SysV), extended only to 32 bits
+//! (AAPCS64), or extended to 32 bits by requirement (Apple arm64), whereas the
 //! native body assumes the program-wide canonical 64-bit form. So the thunk
 //! re-extends each narrow argument register in place — reusing the shared
 //! [`TargetCCallAbi`] authority so it cannot disagree with the import side about
@@ -45,7 +46,7 @@
 //! analysis (`ExportSignatureUnsupported`, E1106); this module only ever sees
 //! register-resident scalar/pointer signatures.
 
-use rue_air::{ScalarAbiExtension, TargetCAbiFlavor, TargetCCallAbi, Type};
+use rue_air::{ScalarAbiExtension, TargetCCallAbi, Type};
 use rue_target::{Arch, Target};
 
 use crate::{EmittedRelocation, MachineCode};
@@ -62,22 +63,28 @@ pub fn generate_export_thunk(
     param_types: &[Type],
 ) -> MachineCode {
     match target.arch() {
-        Arch::X86_64 => generate_x86_64(native_symbol, param_types),
-        Arch::Aarch64 => generate_aarch64(native_symbol, param_types),
+        Arch::X86_64 => generate_x86_64(target, native_symbol, param_types),
+        Arch::Aarch64 => generate_aarch64(target, native_symbol, param_types),
     }
 }
 
-/// The classifier flavor for a target's architecture. Both directions of the C
-/// boundary consult the same authority (`TargetCCallAbi`), so the export thunk
-/// and the import call agree on every scalar extension.
-fn flavor_for(target: Target) -> TargetCAbiFlavor {
-    TargetCAbiFlavor::for_arch(target.arch())
-}
-
-/// The extension each argument register needs, in register order. Shared by both
-/// backends and by the import side.
+/// The extension each argument register needs, in register order.
+///
+/// The convention comes from the target's `"C"` alias, not from its
+/// architecture, so an AArch64 macOS export consults the Apple row. Both
+/// directions of the C boundary consult the same authority
+/// ([`TargetCCallAbi`]), so the export thunk and the import call agree on every
+/// scalar extension.
+///
+/// Apple's arm64 ABI *requires* the caller to extend an argument narrower than
+/// 32 bits, so a Darwin thunk could in principle trust the incoming register.
+/// It re-extends anyway: SysV and generic AAPCS64 callers make no such promise,
+/// the native body needs Rue's canonical 64-bit form (which is stronger than
+/// Apple's 32-bit guarantee), and re-extending an already-extended value is a
+/// no-op. One rule for every row is both correct and cheaper than a per-row
+/// prologue.
 fn arg_extensions(target: Target, param_types: &[Type]) -> Vec<ScalarAbiExtension> {
-    let abi = TargetCCallAbi::new(flavor_for(target));
+    let abi = TargetCCallAbi::for_target(target);
     param_types
         .iter()
         .map(|ty| abi.scalar_arg_extension(*ty))
@@ -99,8 +106,8 @@ const X86_ARG_REGS: [(u8, bool); 6] = [
     (1, true),  // r9
 ];
 
-fn generate_x86_64(native_symbol: &str, param_types: &[Type]) -> MachineCode {
-    let extensions = arg_extensions(Target::X86_64Linux, param_types);
+fn generate_x86_64(target: Target, native_symbol: &str, param_types: &[Type]) -> MachineCode {
+    let extensions = arg_extensions(target, param_types);
     let mut code = Vec::new();
 
     // Re-extend each narrow argument register in place before forwarding.
@@ -163,8 +170,8 @@ fn x86_extend_reg(code: &mut Vec<u8>, reg: u8, ext_bit: bool, ext: ScalarAbiExte
 // AArch64 / AAPCS64
 // ============================================================================
 
-fn generate_aarch64(native_symbol: &str, param_types: &[Type]) -> MachineCode {
-    let extensions = arg_extensions(Target::Aarch64Linux, param_types);
+fn generate_aarch64(target: Target, native_symbol: &str, param_types: &[Type]) -> MachineCode {
+    let extensions = arg_extensions(target, param_types);
     let mut words: Vec<u32> = Vec::new();
 
     for (index, ext) in extensions.iter().enumerate() {
@@ -271,5 +278,19 @@ mod tests {
         let code = generate_export_thunk(Target::Aarch64Linux, "native", &[Type::I16, Type::U8]);
         assert_eq!(&code.code[..4], &(0x9340_3C00u32).to_le_bytes()); // sxth x0, w0
         assert_eq!(&code.code[4..8], &(0x5300_1C21u32).to_le_bytes()); // uxtb w1, w1
+    }
+
+    #[test]
+    fn every_target_row_re_extends_narrow_export_arguments() {
+        // The thunk asks the convention, not the architecture, which extension
+        // each argument needs. Apple's row requires the caller to extend below
+        // 32 bits, but the native body needs the canonical 64-bit form, so the
+        // Darwin thunk re-extends exactly as the Linux one does.
+        let params = [Type::I8, Type::U16, Type::I32, Type::BOOL, Type::I64];
+        let linux = generate_export_thunk(Target::Aarch64Linux, "native", &params);
+        let darwin = generate_export_thunk(Target::Aarch64Macos, "native", &params);
+        assert_eq!(linux.code, darwin.code);
+        // Four narrow arguments plus the five-word frame; `i64` needs nothing.
+        assert_eq!(darwin.code.len(), 9 * 4);
     }
 }
