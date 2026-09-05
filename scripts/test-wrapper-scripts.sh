@@ -820,8 +820,12 @@ test_sanitizer_status_contracts() {
 # passes); the real run exits with $FAKE_RUN_EXIT. Echoes the sandbox path.
 make_rue_unit_sandbox() {
   local sb; sb="$(mktemp -d)"
-  mkdir -p "$sb/scripts" "$sb/crates/rue-parser" "$sb/crates/rue-compiler"
+  mkdir -p "$sb/scripts" "$sb/crates/rue" "$sb/crates/rue-parser" \
+    "$sb/crates/rue-compiler"
   cp "$SRC_ROOT/scripts/rue" "$sb/scripts/rue"; chmod +x "$sb/scripts/rue"
+  # crates/rue is the package whose own name needs no prefix; keeping it in the
+  # sandbox pins that the exact spelling wins over crates/rue-rue (RUE-2040).
+  printf '# stub\n' >"$sb/crates/rue/BUCK"
   printf '# stub\n' >"$sb/crates/rue-parser/BUCK"
   printf '# stub\n' >"$sb/crates/rue-compiler/BUCK"
   cat >"$sb/buck2" <<'EOF'
@@ -864,6 +868,25 @@ test_rue_unit_maps_crate_and_forwards_args() {
       ./scripts/rue unit compiler:rue-compiler-public-api-test ) >/dev/null 2>&1 || rc=$?
   check "scripts/rue unit: explicit crate:target form reaches the alternate target" \
     "$([ "$rc" -eq 0 ] && grep -Fxq 'run //crates/rue-compiler:rue-compiler-public-api-test --' "$sb/buck.log" && echo 0 || echo 1)"
+
+  # RUE-2040: the package named `rue` — the driver and the `rue test` runner —
+  # is reached by its own name. Prefixing unconditionally sent this to a
+  # crates/rue-rue that has never existed, leaving those unit tests with no
+  # spelling at all through this wrapper.
+  : >"$sb/buck.log"; rc=0
+  ( cd "$sb" && BUCK_LOG="$sb/buck.log" \
+      FAKE_LIST_OUT='rue::test_mode::tests::renders: test' \
+      ./scripts/rue unit rue test_mode ) >/dev/null 2>&1 || rc=$?
+  check "scripts/rue unit: a package needing no prefix resolves to itself" \
+    "$([ "$rc" -eq 0 ] && grep -Fxq 'run //crates/rue:rue-test -- test_mode' "$sb/buck.log" && echo 0 || echo 1)"
+
+  # ...and its second test target stays reachable through the explicit form.
+  : >"$sb/buck.log"; rc=0
+  ( cd "$sb" && BUCK_LOG="$sb/buck.log" \
+      FAKE_LIST_OUT='rue_driver::tests::case: test' \
+      ./scripts/rue unit rue:rue-driver-test ) >/dev/null 2>&1 || rc=$?
+  check "scripts/rue unit: crate:target form reaches a second target in that package" \
+    "$([ "$rc" -eq 0 ] && grep -Fxq 'run //crates/rue:rue-driver-test --' "$sb/buck.log" && echo 0 || echo 1)"
   rm -rf "$sb"
 }
 
@@ -908,6 +931,10 @@ test_rue_unit_unknown_crate_errors_cleanly() {
     "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
   check "scripts/rue unit: unknown crate names the missing crate" \
     "$(grep -q "unknown crate 'nosuchcrate'" <<< "$out" && echo 0 || echo 1)"
+  # Both spellings were probed, so both are named: a reader can tell whether
+  # they meant the prefixed package or the bare one (RUE-2040).
+  check "scripts/rue unit: unknown crate names every package it probed" \
+    "$(grep -Fq 'crates/nosuchcrate or crates/rue-nosuchcrate' <<< "$out" && echo 0 || echo 1)"
   check "scripts/rue unit: unknown crate never invokes buck2" \
     "$([ ! -s "$sb/buck.log" ] && echo 0 || echo 1)"
   rm -rf "$sb"
