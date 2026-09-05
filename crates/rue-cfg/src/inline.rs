@@ -111,6 +111,18 @@ pub enum CfgInlineError {
         call_type: Type,
         callee_return_type: Type,
     },
+    /// An accessor callee has no `Return` terminator carrying a value, so the
+    /// mandatory splice has no yielded place to substitute (ADR-0062 §1).
+    AccessorHasNoReturn,
+    /// An accessor callee returns a value that is not a place read. Every
+    /// non-diverging accessor exit yields a projection of the receiver
+    /// (ADR-0062 §1), so the returned value is a `PlaceRead` by construction;
+    /// anything else means the accessor body was lowered through a shape the
+    /// mandatory splice cannot substitute.
+    AccessorReturnNotAPlaceRead {
+        returned: CfgValue,
+        returned_kind: String,
+    },
     /// A physically by-reference argument is not a place read at all — a
     /// violated sema/CFG invariant at the call site (RUE-760).
     NonPlaceByRefArgument { arg_index: usize },
@@ -159,8 +171,23 @@ impl std::fmt::Display for CfgInlineError {
             } => write!(
                 f,
                 "call result type {} does not match callee return type {}",
-                call_type.name(),
-                callee_return_type.name()
+                // No pool is threaded through `Display`; the id-bearing
+                // fallback still distinguishes two structs, which the bare
+                // `<struct>` placeholder did not (RUE-2012). Use
+                // `describe` where a pool is available.
+                call_type.safe_name_with_frozen_pool(None),
+                callee_return_type.safe_name_with_frozen_pool(None)
+            ),
+            Self::AccessorHasNoReturn => write!(
+                f,
+                "accessor callee has no return terminator carrying a yielded place"
+            ),
+            Self::AccessorReturnNotAPlaceRead {
+                returned,
+                returned_kind,
+            } => write!(
+                f,
+                "accessor callee returns {returned} ({returned_kind}), which is not a place read"
             ),
             Self::NonPlaceByRefArgument { arg_index } => {
                 write!(f, "by-ref argument {arg_index} is not a place read")
@@ -187,6 +214,44 @@ impl std::fmt::Display for CfgInlineError {
 }
 
 impl std::error::Error for CfgInlineError {}
+
+/// The variant name of a CFG instruction, for diagnostics.
+///
+/// `CfgInstData` derives `Debug`, which prints the variant name first, so the
+/// leading identifier is the kind. Naming the kind rather than the whole
+/// payload keeps an internal-compiler-error message bounded while still
+/// saying what shape was found (RUE-2012).
+fn inst_kind_name(data: &CfgInstData) -> String {
+    let rendered = format!("{data:?}");
+    rendered
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+impl CfgInlineError {
+    /// Render this failure with type names resolved through `type_pool`.
+    ///
+    /// [`Display`](std::fmt::Display) has no pool to consult and falls back to
+    /// `<struct#7>`-style identity names. Diagnostics that reach a user — the
+    /// mandatory accessor splice reports its failures as an internal compiler
+    /// error — go through here so the message names the actual types
+    /// (RUE-2012).
+    pub fn describe(&self, type_pool: &FrozenTypeInternPool) -> String {
+        match self {
+            Self::ReturnTypeMismatch {
+                call_type,
+                callee_return_type,
+            } => format!(
+                "call result type {} does not match callee return type {}",
+                call_type.safe_name_with_frozen_pool(Some(type_pool)),
+                callee_return_type.safe_name_with_frozen_pool(Some(type_pool))
+            ),
+            other => other.to_string(),
+        }
+    }
+}
 
 impl From<CfgEditError> for CfgInlineError {
     fn from(error: CfgEditError) -> Self {
@@ -656,14 +721,11 @@ pub fn splice_call_in_block_in_place(
                 Terminator::Return { value: Some(value) } => Some(value),
                 _ => None,
             })
-            .ok_or(CfgInlineError::ReturnTypeMismatch {
-                call_type: call_ty,
-                callee_return_type: callee.return_type(),
-            })?;
+            .ok_or(CfgInlineError::AccessorHasNoReturn)?;
         let CfgInstData::PlaceRead { place } = &callee.get_inst(returned).data else {
-            return Err(CfgInlineError::ReturnTypeMismatch {
-                call_type: call_ty,
-                callee_return_type: callee.return_type(),
+            return Err(CfgInlineError::AccessorReturnNotAPlaceRead {
+                returned,
+                returned_kind: inst_kind_name(&callee.get_inst(returned).data),
             });
         };
         Some((

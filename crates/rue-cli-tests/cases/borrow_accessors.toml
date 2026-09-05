@@ -760,3 +760,162 @@ args = ["--emit", "asm", "--target", "aarch64-linux", "main.rue"]
 compile_only = true
 compile_stdout_contains = ["=== Assembly (aarch64-linux) ===", "main:"]
 compile_stdout_not_contains = ["xr:", "yr:"]
+
+[[case]]
+name = "nested_accessor_yield_over_aggregate_element_runs"
+differential_opt = true
+description = "An accessor whose body holds a local and yields a nested accessor over a multi-slot element splices and runs (RUE-2012)."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const Buf = std.arraybuf.ArrayBuf(StrBuf);
+struct Holder {
+    buf: Buf,
+    fn last(borrow self) -> borrow StrBuf {
+        let n = self.buf.len();
+        yield self.buf.get_ref(n - 1);
+    }
+}
+fn main() -> i32 {
+    let mut h = Holder { buf: Buf.new() };
+    let a: StrBuf = "first";
+    let b: StrBuf = "second";
+    h.buf.push(a);
+    h.buf.push(b);
+    println(h.last());
+    @dbg(h.last().len());
+    if h.last().len() == 6 { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "second\n6\n"
+exit_code = 0
+
+[[case]]
+name = "std_stack_of_strbuf_peek_ref_runs"
+differential_opt = true
+description = "Stack(StrBuf).peek_ref — a local, a computed index, and a drop-glue element — borrows the top in place."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const Stack = std.stack.Stack(StrBuf);
+fn main() -> i32 {
+    let mut s = Stack.new();
+    let a: StrBuf = "first";
+    let b: StrBuf = "second";
+    s.push(a);
+    s.push(b);
+    println(s.peek_ref());
+    @dbg(s.len());
+    if s.peek_ref().len() == 6 { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "second\n2\n"
+exit_code = 0
+
+[[case]]
+name = "accessor_yield_over_aggregate_element_constant_index_runs"
+description = "Control: the same aggregate element yielded at a constant index, with no local in the accessor body."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const Buf = std.arraybuf.ArrayBuf(StrBuf);
+struct Holder {
+    buf: Buf,
+    fn first(borrow self) -> borrow StrBuf {
+        yield self.buf.get_ref(0);
+    }
+}
+fn main() -> i32 {
+    let mut h = Holder { buf: Buf.new() };
+    let a: StrBuf = "first";
+    h.buf.push(a);
+    println(h.first());
+    if h.first().len() == 5 { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "first\n"
+exit_code = 0
+
+[[case]]
+name = "accessor_yield_over_scalar_element_with_local_runs"
+description = "Control: the same body over a single-slot element, which never took the aggregate-preserve spill."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const Buf = std.arraybuf.ArrayBuf(i64);
+struct Holder {
+    buf: Buf,
+    fn last(borrow self) -> borrow i64 {
+        let n = self.buf.len();
+        yield self.buf.get_ref(n - 1);
+    }
+}
+fn main() -> i32 {
+    let mut h = Holder { buf: Buf.new() };
+    h.buf.push(41);
+    h.buf.push(42);
+    @dbg(h.last());
+    if h.last() == 42 { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "42\n"
+exit_code = 0
+
+[[case]]
+name = "accessor_with_owned_parameter_drops_it_once"
+differential_opt = true
+description = "An accessor taking an owned droppable parameter drops it exactly once and still returns its yielded place (RUE-2012)."
+files = [{ path = "main.rue", source = """
+struct Noisy { id: i64 }
+drop fn Noisy(self) { @dbg(self.id); }
+struct Holder {
+    cells: [i64; 4],
+    fn at(borrow self, tag: Noisy, i: u64) -> borrow i64 {
+        let n = i;
+        yield self.cells[n];
+    }
+}
+fn main() -> i32 {
+    let h = Holder { cells: [1, 2, 3, 4] };
+    let t = Noisy { id: 9 };
+    @dbg(h.at(t, 2));
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "9\n3\n"
+exit_code = 0
+
+[[case]]
+name = "nested_accessor_yield_over_aggregate_element_lowers_on_aarch64"
+description = "The spliced nested-accessor place lowers on AArch64 without publishing an accessor symbol."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const Buf = std.arraybuf.ArrayBuf(StrBuf);
+struct Holder {
+    buf: Buf,
+    fn last(borrow self) -> borrow StrBuf {
+        let n = self.buf.len();
+        yield self.buf.get_ref(n - 1);
+    }
+}
+fn main() -> i32 {
+    let mut h = Holder { buf: Buf.new() };
+    let a: StrBuf = "first";
+    h.buf.push(a);
+    if h.last().len() == 5 { 0 } else { 1 }
+}
+""" }]
+args = ["--emit", "asm", "--target", "aarch64-linux", "main.rue"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+compile_only = true
+compile_stdout_contains = ["=== Assembly (aarch64-linux) ===", "main:"]
+compile_stdout_not_contains = [".last:", "get_ref:"]

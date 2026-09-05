@@ -733,6 +733,50 @@ pub struct CfgBuilder<'a> {
     implicit_destructor_types: AHashSet<Type>,
     anonymous_destructor_dependency_incomplete: bool,
     callable_kind: AnalyzedCallableKind,
+    /// For an accessor body, the AIR values on the spine from `Ret` down to
+    /// the `PlaceRead` that lowered the trailing `yield`.
+    ///
+    /// The mandatory accessor splice consumes that `PlaceRead` as a place
+    /// descriptor, so it must reach `Return` as itself — never materialized
+    /// into a value. Every scope-cleanup shaping that would rewrite the
+    /// operand consults this set (RUE-2012).
+    accessor_yield_spine: AHashSet<AirRef>,
+}
+
+/// The AIR values on an accessor's yield spine: every `Ret` operand, and every
+/// block value beneath it, down to the `PlaceRead` that lowered the trailing
+/// `yield`.
+///
+/// An accessor's `Return` operand is a place descriptor, not a value: the
+/// mandatory splice (ADR-0062, RUE-1208) reads the place off that `PlaceRead`
+/// and substitutes it into the caller, so nothing may rewrite the operand into
+/// a load of a materialized copy on the way to `Return`. Scope cleanup would
+/// otherwise spill a multi-slot block result to frame storage (RUE-875), which
+/// both breaks the splice and copies a borrowed aggregate the accessor does not
+/// own (RUE-2012).
+///
+/// The set is empty for every other callable kind.
+fn accessor_yield_spine(
+    air: &ValidatedAir,
+    callable_kind: AnalyzedCallableKind,
+) -> AHashSet<AirRef> {
+    let mut spine = AHashSet::new();
+    if callable_kind != AnalyzedCallableKind::Accessor {
+        return spine;
+    }
+    for index in 0..air.len() {
+        let AirInstData::Ret(Some(value)) = air.get(AirRef::from_raw(index as u32)).data else {
+            continue;
+        };
+        let mut current = value;
+        while spine.insert(current) {
+            let AirInstData::Block { value, .. } = air.get(current).data else {
+                break;
+            };
+            current = value;
+        }
+    }
+    spine
 }
 
 /// Derive the grouped per-source-parameter ABI descriptors (ADR-0052 phase 5.8,
@@ -1004,11 +1048,13 @@ impl<'a> CfgBuilder<'a> {
             implicit_destructor_types: AHashSet::new(),
             anonymous_destructor_dependency_incomplete: false,
             callable_kind,
+            accessor_yield_spine: AHashSet::new(),
         };
 
         // Create entry block
         builder.current_block = builder.cfg.new_block();
         builder.cfg.entry = builder.current_block;
+        builder.accessor_yield_spine = accessor_yield_spine(air, callable_kind);
         builder.has_droppable_params = builder
             .air
             .param_drops()
@@ -1892,6 +1938,7 @@ impl<'a> CfgBuilder<'a> {
             AirInstData::Block { statements, value } => {
                 // Collect statements into a Vec for iteration (needed for checking remaining)
                 let statements: Vec<AirRef> = self.air.get_block_statements(statements).collect();
+                let value_ref = *value;
 
                 // A binding's storage wrapper — `Block { [StorageLive s], Alloc s }`,
                 // emitted by `let` lowering to pair a slot's storage annotation with
@@ -2013,11 +2060,19 @@ impl<'a> CfgBuilder<'a> {
                             // boundary, so it deliberately is not added to the
                             // drop scope. The post-cleanup Load continues the
                             // same value and the eventual consumer owns it.
+                            //
+                            // An accessor's yielded place is the exception:
+                            // it is a place descriptor the mandatory splice
+                            // reads and deletes, never a value that reaches a
+                            // register. Spilling it would both break the
+                            // splice's `PlaceRead` operand and copy a borrowed
+                            // aggregate the accessor does not own (RUE-2012).
                             let preserved = if !scope_slots.is_empty()
                                 && let Some(value) = result.value
                                 && ty != Type::UNIT
                                 && ty != Type::NEVER
                                 && self.type_pool.abi_slot_count(ty) > 1
+                                && !self.accessor_yield_spine.contains(&value_ref)
                             {
                                 let width = self.type_pool.abi_slot_count(ty).max(1);
                                 let slot = self.cfg.alloc_temp_local_slots(width);
@@ -3488,6 +3543,24 @@ impl<'a> CfgBuilder<'a> {
             return;
         }
 
+        // An accessor returns a place descriptor, not a value: the mandatory
+        // splice reads the yielded `PlaceRead` straight off the `Return`
+        // operand (ADR-0062, RUE-1208). The shared cleanup suffix re-lands
+        // every return value as a block parameter of one common exit, which
+        // erases that operand. An accessor has exactly one non-diverging exit,
+        // so there is nothing to share: emit its cleanup inline and return the
+        // place read itself (RUE-2012).
+        if self.callable_kind == AnalyzedCallableKind::Accessor
+            && value.is_some_and(|value| {
+                matches!(self.cfg.get_inst(value).data, CfgInstData::PlaceRead { .. })
+            })
+        {
+            self.emit_return_cleanup_inline(span);
+            self.cfg
+                .set_terminator(self.current_block, Terminator::Return { value });
+            return;
+        }
+
         #[cfg(test)]
         RETURN_CLEANUP_STATS.with(|stats| {
             let mut next = stats.get();
@@ -3581,6 +3654,43 @@ impl<'a> CfgBuilder<'a> {
                 successor,
             );
         self.goto_return_cleanup(self.current_block, successor.entry, value, span);
+    }
+
+    /// Emit an accessor's return cleanup into the current block rather than
+    /// into the interned, shared cleanup suffix.
+    ///
+    /// The actions and their order are the ones
+    /// [`Self::branch_through_return_cleanup`] schedules — every live lexical
+    /// slot innermost-first, then every unmoved droppable parameter in reverse
+    /// declaration order. Emitting them here needs no `MoveState` swap dance:
+    /// an interned region is shared across move states and must therefore
+    /// impersonate the one it was keyed on, while this path runs under the
+    /// live state it belongs to.
+    fn emit_return_cleanup_inline(&mut self, span: rue_span::Span) {
+        let live_slots: Vec<LiveSlot> = self
+            .scope_stack
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.iter().rev().cloned())
+            .collect();
+        for live_slot in live_slots {
+            let slot_span = live_slot.span;
+            self.emit_drop_for_slot(&live_slot, slot_span);
+        }
+
+        for index in (0..self.air.param_drops().len()).rev() {
+            let (abi_slot, ty) = self.air.param_drops()[index];
+            let key = MovedSlot::Param(abi_slot);
+            if self.moved.is_slot_moved(key) || !self.type_needs_drop(ty) {
+                continue;
+            }
+            self.emit_guarded(key, span, |b| {
+                if !b.emit_partial_drop(key, ty, span) {
+                    let param_val = b.emit(CfgInstData::Param { index: abi_slot }, ty, span);
+                    b.emit(CfgInstData::Drop { value: param_val }, Type::UNIT, span);
+                }
+            });
+        }
     }
 
     fn return_cleanup_paths(&self, key: MovedSlot) -> (Vec<FieldPath>, Vec<FieldPath>) {
