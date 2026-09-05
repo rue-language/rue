@@ -16,6 +16,118 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 impl CompilerSession {
+    /// The call site that demanded `failing`, for a diagnostic raised inside a
+    /// body the programmer did not write.
+    ///
+    /// An element-type gate (`@require_trivially_droppable(T)`, E0711) is
+    /// stated in a container's own method body, so the analysis that rejects it
+    /// runs over standard-library source with the programmer's element type
+    /// substituted. That body has no call site of its own — one body analysis
+    /// serves every caller, and the analysis is deliberately shared — so the
+    /// demanding site cannot be threaded into the gate. It is recovered here
+    /// instead, at the presentation boundary, from terminals the reached
+    /// closure has already published: the earliest call instruction, in source
+    /// order, that names the failing instance. Source positions therefore never
+    /// enter query identity (ADR-0063); they are read back out of it.
+    ///
+    /// A container that delegates (`Grid2D::get` reading through
+    /// `ArrayBuf::get`) puts one or more standard-library frames between the
+    /// gate and the programmer, so the walk climbs until it reaches a call
+    /// written outside the trusted standard library. It reports nothing rather
+    /// than a guess when the chain runs out, which leaves the gate's own span
+    /// primary exactly as before.
+    fn element_gate_demand_site(
+        &self,
+        revision: rue_query::Revision,
+        closure: &crate::body_query::BodyClosureOutput,
+        failing: &crate::body_query::BodyQueryKey,
+        trusted_files: &ahash::AHashSet<rue_span::FileId>,
+        cancellation: &rue_query::CancellationToken,
+    ) -> Result<Option<rue_span::Span>, SemanticRequestControl> {
+        /// Delegation depth the walk will cross. Standard-library containers
+        /// wrap one another a few layers deep at most; the bound keeps a
+        /// pathological or cyclic graph from turning a diagnostic into a scan.
+        const MAX_DEMAND_HOPS: usize = 8;
+
+        let mut callee = failing.instance.clone();
+        let mut visited = BTreeSet::new();
+        for _ in 0..MAX_DEMAND_HOPS {
+            if !visited.insert(callee.clone()) {
+                break;
+            }
+            let mut candidates = Vec::new();
+            for caller in closure.bodies.iter() {
+                if caller.key.instance == callee {
+                    continue;
+                }
+                let rue_query::QueryOutcome::Success(bundle) = caller.bundle.outcome() else {
+                    continue;
+                };
+                let crate::body_query::BodyTransaction::Success { body, .. } = &bundle.transaction
+                else {
+                    continue;
+                };
+                // Instruction anchors are relative to the body an export was
+                // taken from. An ordinary or specialized body starts at its
+                // locator's body span; an anonymous member's body is a fragment
+                // inside the producer the locator describes, so its own anchor
+                // is the extra offset.
+                let (semantic, anchor_base) = match body.as_ref() {
+                    crate::body_query::CanonicalBody::Ordinary { body, .. } => (body, 0),
+                    crate::body_query::CanonicalBody::Anonymous {
+                        body, body_anchor, ..
+                    } => (body, body_anchor.start),
+                    crate::body_query::CanonicalBody::Specialization { body, .. } => (body, 0),
+                };
+                let Some(anchor) = earliest_call_anchor(semantic, &callee) else {
+                    continue;
+                };
+                let locator = self
+                    .queries
+                    .revisioned
+                    .body_source_basis_projection(
+                        revision,
+                        caller.key.clone(),
+                        cancellation.clone(),
+                    )
+                    .map_err(SemanticRequestControl::Abort)?;
+                let rue_query::QueryOutcome::Success(locator) = locator.outcome() else {
+                    unreachable!("BodySourceLocator publishes typed values")
+                };
+                let Some(locator) = locator.as_ref() else {
+                    continue;
+                };
+                let start = locator.body_start + anchor_base;
+                candidates.push((
+                    locator.physical_path.clone(),
+                    rue_span::Span::with_file(
+                        locator.file_id,
+                        start + anchor.start,
+                        start + anchor.end,
+                    ),
+                    caller.key.instance.clone(),
+                ));
+            }
+            // Reachability order is a scheduling artifact, so the winner is
+            // chosen by source identity — the same path-then-offset rule the
+            // driver already sorts a diagnostic batch by.
+            candidates.sort_by(|left, right| {
+                (&left.0, left.1.start, &left.2).cmp(&(&right.0, right.1.start, &right.2))
+            });
+            if let Some((_, span, _)) = candidates
+                .iter()
+                .find(|(_, span, _)| !trusted_files.contains(&span.file_id))
+            {
+                return Ok(Some(*span));
+            }
+            let Some((_, _, next)) = candidates.into_iter().next() else {
+                break;
+            };
+            callee = next;
+        }
+        Ok(None)
+    }
+
     fn rooted_body_graph_with_cancellation(
         &mut self,
         options: &CompileOptions,
@@ -199,6 +311,15 @@ impl CompilerSession {
                 )));
             }
         }
+        // Files the programmer did not write. An element-type gate stated in a
+        // standard-library container body is rejected against the element type
+        // the programmer chose, so its diagnostic belongs at the call that
+        // demanded that body rather than at the gate line inside std.
+        let trusted_files = program
+            .modules_iter()
+            .filter(|module| module.module_id().is_trusted_standard_library())
+            .map(|module| module.file_id())
+            .collect::<ahash::AHashSet<_>>();
         for closure_body in closure.bodies.iter() {
             let rue_query::QueryOutcome::Success(bundle) = closure_body.bundle.outcome() else {
                 unreachable!("BodyAnalysisBundle publishes typed values")
@@ -228,6 +349,21 @@ impl CompilerSession {
                     ..
                 } = projected
                 {
+                    let body_errors = if body_errors
+                        .iter()
+                        .any(|error| is_element_gate_diagnostic(&error.kind))
+                    {
+                        let demand = self.element_gate_demand_site(
+                            revision,
+                            closure,
+                            &closure_body.key,
+                            &trusted_files,
+                            &cancellation,
+                        )?;
+                        anchor_element_gate_diagnostics(body_errors, demand)
+                    } else {
+                        body_errors
+                    };
                     errors.extend(body_errors.iter().cloned());
                 }
             }
@@ -2277,6 +2413,72 @@ pub(super) fn stable_producer_definition_root(
         crate::StableProducerId::Definition(definition) => Some(definition),
         crate::StableProducerId::Function(function) => stable_function_definition_root(function),
     }
+}
+
+/// Whether this diagnostic is an element-type gate rejection, i.e. one a
+/// container states about the element type its caller chose.
+///
+/// Only the trivially-droppable gate reaches a runtime body: `@require_droppable`
+/// is consumed while reducing a `-> type` constructor and is already labelled
+/// with its type-constructor application there.
+fn is_element_gate_diagnostic(kind: &ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::ContainerElementNotTriviallyDroppable { .. }
+    )
+}
+
+/// Re-anchor every element-gate diagnostic in `errors` at the call that
+/// demanded the rejected body, keeping the gate's own line as a labelled
+/// secondary span. Everything else in the batch is passed through untouched.
+fn anchor_element_gate_diagnostics(
+    errors: CompileErrors,
+    demand: Option<rue_span::Span>,
+) -> CompileErrors {
+    let Some(demand) = demand else {
+        return errors;
+    };
+    let mut anchored = CompileErrors::new();
+    for error in errors.into_iter() {
+        if !is_element_gate_diagnostic(&error.kind) {
+            anchored.push(error);
+            continue;
+        }
+        let Some(gate) = error.span() else {
+            anchored.push(error);
+            continue;
+        };
+        anchored.push(error.with_primary_span(demand).with_label(
+            "the element type is required to be trivially droppable here",
+            gate,
+        ));
+    }
+    anchored
+}
+
+/// The earliest call in `body`, by instruction anchor, that names `callee`.
+///
+/// A specialized call records a canonical specialization identity rather than a
+/// function instance key; it is compared through the one conversion the
+/// materialization path already uses, so a body calling two specializations of
+/// one generic cannot be credited with the wrong one.
+fn earliest_call_anchor(
+    body: &rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>,
+    callee: &crate::FunctionInstanceKey,
+) -> Option<rue_air::SemanticBodyAnchor> {
+    body.instructions
+        .iter()
+        .filter(|inst| match &inst.data {
+            rue_air::SemanticBodyInstData::Call { function, .. }
+            | rue_air::SemanticBodyInstData::AccessorCall { function, .. } => function == callee,
+            rue_air::SemanticBodyInstData::CallSpecialized { identity, .. } => {
+                crate::semantic_identity::function_instance_from_specialization(identity)
+                    .is_some_and(|instance| instance == *callee)
+            }
+            _ => false,
+        })
+        .map(|inst| inst.anchor)
+        .min_by_key(|anchor| anchor.start)
 }
 
 fn import_semantic_body_warnings(

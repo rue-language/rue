@@ -1794,8 +1794,8 @@ define_error_codes! {
         ],
     };
     CONTAINER_ELEMENT_NOT_TRIVIALLY_DROPPABLE = 711 => {
-        explanation: "A by-copy container read would duplicate an element while leaving the stored value live. When the element type has drop glue, both values would later clean up the same owned resources, so `@require_trivially_droppable(T)` rejects the read.",
-        likely_cause: "A container's by-copy accessor such as `get` or `get_or` was instantiated for an element type with a destructor or nested drop glue. Read the element in place through `get_ref`, or transfer its ownership with `pop` or `pop_or`.",
+        explanation: "`@require_trivially_droppable(T)` rejects an element type that owns resources. Duplicating such an element leaves two values cleaning up the same owned buffer, a double-free, so the gate rejects the duplication before it happens. It guards two shapes and the message says which. A by-copy read (`ArrayBuf(T)::get`, `get_or`) duplicates one stored element while the slot stays live; a construction (`Grid2D(T)::new`, or a `-> type` producer that gates its element type) duplicates one value into every cell of a new container.",
+        likely_cause: "For a read: a by-copy accessor such as `get` or `get_or` was called on a container whose element type has a destructor or nested drop glue. Read the element in place through `get_ref`, or transfer its ownership with `pop` or `pop_or`. For a construction: the container stores its cells by copy and has no by-reference form to offer, so the element type itself must be trivially droppable — hold the owning values in an `ArrayBuf` and store an index or a borrow instead. The diagnostic points at the call that demanded the container, with the gate itself labelled in the library that states it.",
         examples: [
             ErrorCodeExample { title: "Copy an element that has drop glue", source: "struct Resource { value: i32 }\ndrop fn Resource(self) {}\nfn Reader(comptime T: type) -> type {\n    struct {\n        value: T,\n        fn first(borrow self) -> T {\n            @require_trivially_droppable(T);\n            self.value\n        }\n    }\n}\nfn main() -> i32 {\n    let R = Reader(Resource);\n    let reader = R { value: Resource { value: 42 } };\n    let value = reader.first();\n    value.value\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
             ErrorCodeExample { title: "Copy a trivially droppable element", source: "fn Reader(comptime T: type) -> type {\n    struct {\n        value: T,\n        fn first(borrow self) -> T {\n            @require_trivially_droppable(T);\n            self.value\n        }\n    }\n}\nfn main() -> i32 {\n    let R = Reader(i32);\n    let reader = R { value: 42 };\n    reader.first()\n}", outcome: ErrorCodeExampleOutcome::Compiles },
@@ -2848,6 +2848,21 @@ impl<K> DiagnosticWrapper<K> {
         self
     }
 
+    /// Move the primary location, keeping the kind and every attached label,
+    /// note, help, and suggestion.
+    ///
+    /// A diagnostic raised while analysing a body the programmer did not write
+    /// — a standard-library method specialized for their element type — is
+    /// first anchored where it was raised and only then re-anchored at the site
+    /// that demanded that body. The demanding site is not knowable during the
+    /// analysis (one body analysis serves every caller), so relocation is a
+    /// presentation step over already-published terminals.
+    #[inline]
+    pub fn with_primary_span(mut self, span: Span) -> Self {
+        self.span = Some(span);
+        self
+    }
+
     /// Add a secondary label pointing to related code.
     ///
     /// Labels appear as additional annotations in the source snippet.
@@ -2977,6 +2992,37 @@ pub struct PrivateUnqualifiedAccessData {
     pub name: String,
     /// The path of the file that defines the private item.
     pub defining_file: String,
+}
+
+/// What an `@require_trivially_droppable(T)` gate is guarding.
+///
+/// The gate is one intrinsic with one error code, but it is written in two
+/// kinds of callable and the way out differs. Classification is the shape of
+/// the callable that states it: a gate in a body with a `self` receiver guards
+/// a by-copy read of a stored element, and a gate in an associated function or
+/// a `-> type` producer guards a container whose representation duplicates the
+/// element itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElementGateShape {
+    /// A by-copy read of a stored element, e.g. `ArrayBuf(T)::get`. `get_ref`
+    /// reads it in place and `pop` moves it out.
+    Read,
+    /// A container whose cells are duplicated from one element, e.g.
+    /// `Grid2D(T)::new`, or a `-> type` producer that gates its element type
+    /// outright. There is no by-reference alternative to offer.
+    Construction,
+}
+
+/// The rendered message for an element-type gate rejection (E0711).
+fn element_gate_message(ty: &str, shape: ElementGateShape) -> String {
+    match shape {
+        ElementGateShape::Read => format!(
+            "cannot read an element of type `{ty}` by copy: it owns resources (has drop glue), so a by-copy read would alias the owned value and double-free it at scope exit — use `get_ref` for an in-place read, or move it out with `pop`/`pop_or` (RUE-651)"
+        ),
+        ElementGateShape::Construction => format!(
+            "cannot use an element of type `{ty}` here: elements are duplicated by copy, so the element type must be trivially droppable, and `{ty}` owns resources (has drop glue) — use an element type without drop glue (RUE-651)"
+        ),
+    }
 }
 
 /// The kind of compilation error.
@@ -3310,19 +3356,23 @@ pub enum ErrorKind {
         "`@require_droppable` requires a trivially-droppable type, but `{ty}` is `linear` — an owning growable container (e.g. `ArrayBuf`) cannot yet track element linearity, so the element would be leaked (RUE-388)"
     )]
     ContainerElementIsLinear { ty: String },
-    /// A by-copy element read (`ArrayBuf(T)::get`/`get_or`) was attempted on an
-    /// element type that owns resources — one with drop glue (a destructor, or a
-    /// field/payload that has one). Copying such an element by `@ptr_read` leaves
-    /// the copy and the still-live slot both pointing at the same owned buffer, so
-    /// both run drop glue at scope exit: a double-free (RUE-651). The read is
-    /// rejected; use the borrow-returning `get_ref` accessor for an in-place
-    /// read, or move the element out with `pop`/`pop_or` instead (one owner).
+    /// `@require_trivially_droppable(T)` rejected an element type that owns
+    /// resources — one with drop glue (a destructor, or a field/payload that has
+    /// one). Duplicating such an element by `@ptr_read` leaves the copy and the
+    /// still-live original both pointing at the same owned buffer, so both run
+    /// drop glue at scope exit: a double-free (RUE-651).
+    ///
+    /// One code, two situations, because the gate guards two shapes and the
+    /// remedies differ ([`ElementGateShape`]). A by-copy *read*
+    /// (`ArrayBuf(T)::get`/`get_or`) has an in-place alternative: `get_ref`
+    /// borrows the element, and `pop`/`pop_or` moves it out, leaving one owner.
     /// Mirrors Swift's rule that a non-copyable element cannot use a by-value
-    /// `get` subscript.
-    #[error(
-        "cannot read an element of type `{ty}` by copy: it owns resources (has drop glue), so a by-copy read would alias the owned value and double-free it at scope exit — use `get_ref` for an in-place read, or move it out with `pop`/`pop_or` (RUE-651)"
-    )]
-    ContainerElementNotTriviallyDroppable { ty: String },
+    /// `get` subscript. A *construction* (`Grid2D(T)::new`, or a `-> type`
+    /// producer that gates its whole element type) has neither: the container
+    /// duplicates the element into every cell, so nothing short of a
+    /// trivially droppable element type will do.
+    #[error("{}", element_gate_message(ty, *shape))]
+    ContainerElementNotTriviallyDroppable { ty: String, shape: ElementGateShape },
     /// Inout argument is not an lvalue (variable, field, or array element)
     #[error("inout argument must be an lvalue (variable, field, or array element)")]
     InoutNonLvalue,

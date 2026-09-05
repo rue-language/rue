@@ -477,6 +477,11 @@ $runtime
                                     .map(|rejected| rejected.then(|| {
                                         rue_error::ErrorKind::ContainerElementNotTriviallyDroppable {
                                             ty: gate_type_name.clone(),
+                                            // Deferral only happens while a
+                                            // declaration binds — never in a
+                                            // body with a receiver — so the
+                                            // gate guards a construction.
+                                            shape: rue_error::ElementGateShape::Construction,
                                         }
                                     })),
                             };

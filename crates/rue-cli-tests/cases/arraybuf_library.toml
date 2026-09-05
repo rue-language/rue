@@ -781,11 +781,21 @@ exit_code = 243
 # `arraybuf_strbuf_elements` case above (which uses `pop`) still runs.
 [[case]]
 name = "arraybuf_get_on_drop_glue_element_rejected"
-description = "A by-copy `get` of a drop-glue element (StrBuf) is rejected with E0711 and pointed at `get_ref` or `pop`, instead of a double-free segfault (RUE-651/RUE-1017)."
+description = "A by-copy `get` of a drop-glue element (StrBuf) is rejected with E0711 at the caller's own `b.get(0)`, pointed at `get_ref` or `pop`, instead of a double-free segfault (RUE-651/RUE-1017)."
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["main.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0711", "by copy", "use `get_ref` for an in-place read", "move it out with `pop`/`pop_or`"]
+# The gate is stated inside `std/arraybuf.rue`, but the diagnostic is anchored
+# at the call that demanded that body — line 11 of this program — with the gate
+# line kept as a labelled secondary span (RUE-2026).
+error_contains = [
+    "E0711",
+    "by copy",
+    "use `get_ref` for an in-place read",
+    "move it out with `pop`/`pop_or`",
+    "main.rue:11:",
+    "the element type is required to be trivially droppable here",
+]
 files = [{ path = "main.rue", source = """
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;

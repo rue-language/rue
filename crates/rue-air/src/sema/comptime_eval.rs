@@ -50,7 +50,7 @@ use ahash::{AHashMap, AHashSet};
 use std::time::Instant;
 
 use lasso::Spur;
-use rue_error::{CompileError, CompileResult, ErrorKind};
+use rue_error::{CompileError, CompileResult, ElementGateShape, ErrorKind};
 use rue_rir::{InstData, InstRef};
 use rue_span::{FileId, Span};
 
@@ -1248,26 +1248,44 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         )
     }
 
-    /// The `@require_trivially_droppable(T)` gate for by-copy element *reads*
-    /// (RUE-651). `ArrayBuf(T)`'s `get`/`get_or` return the element by copying it
-    /// out with `@ptr_read` while leaving the slot live. For a `T` with drop glue
-    /// (a destructor, or a field/payload/element that has one) that copy aliases
-    /// the element's owned resources: both the copy and the still-live slot run
-    /// drop glue at scope exit — a double-free. This gate rejects those reads at
-    /// their call site (E0711); use `get_ref` to read it in place or *move* it
-    /// out with `pop`/`pop_or`
-    /// instead. It is deliberately placed in the `get`/`get_or` method bodies (not
-    /// the constructor), so demand-driven analysis (ADR-0045) fires it only when a
-    /// program actually calls a by-copy read — storing, pushing, popping, and
-    /// dropping a drop-glue element stay legal (RUE-646). Mirrors Swift's rule
-    /// that a non-copyable element cannot use a by-value `get` subscript.
+    /// The `@require_trivially_droppable(T)` gate on an element type (RUE-651).
+    /// Duplicating an element of a `T` that has drop glue (a destructor, or a
+    /// field/payload/element that has one) aliases its owned resources: the copy
+    /// and the still-live original both run drop glue at scope exit — a
+    /// double-free. E0711 rejects the duplication.
+    ///
+    /// Two shapes state the gate and both reach here. A by-copy *read*
+    /// (`ArrayBuf(T)`'s `get`/`get_or` copy the element out with `@ptr_read`
+    /// while the slot stays live) has `get_ref` for an in-place read and
+    /// `pop`/`pop_or` to *move* it out. A *construction* (`Grid2D(T)::new` fills
+    /// every cell from one `fill`) has neither, so only a trivially droppable
+    /// element type will do. Mirrors Swift's rule that a non-copyable element
+    /// cannot use a by-value `get` subscript.
+    ///
+    /// The gate is deliberately placed in method bodies rather than the
+    /// constructor, so demand-driven analysis (ADR-0045) fires it only when a
+    /// program actually calls one — storing, pushing, popping, and dropping a
+    /// drop-glue element stay legal (RUE-646). That also means the body under
+    /// analysis is the library's, not the caller's, and the resulting diagnostic
+    /// is re-anchored at the demanding call site when the closure is projected
+    /// (`CompilerSession::element_gate_demand_site`).
     ///
     /// A `linear` `T` never reaches here: `@require_droppable` already rejects it
     /// at instantiation, so `ArrayBuf(linear)` cannot be constructed to be read.
-    pub(crate) fn check_trivially_droppable(&mut self, ty: Type, span: Span) -> CompileResult<()> {
+    ///
+    /// `shape` is what the gate guards, and it decides which of E0711's two
+    /// messages is rendered: the caller classifies it from the shape of the
+    /// callable stating the gate (a `self` receiver reads a stored element;
+    /// anything else duplicates the element into a container).
+    pub(crate) fn check_trivially_droppable(
+        &mut self,
+        ty: Type,
+        span: Span,
+        shape: ElementGateShape,
+    ) -> CompileResult<()> {
         if self.declaration_binding_active() {
             match self.known_drop_glue_during_binding(ty) {
-                Some(true) => return Err(self.trivially_droppable_error(ty, span)),
+                Some(true) => return Err(self.trivially_droppable_error(ty, span, shape)),
                 Some(false) => return Ok(()),
                 None => {
                     self.defer_ownership_gate(
@@ -1279,20 +1297,31 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
             }
         }
-        self.check_trivially_droppable_finalized(ty, span)
+        self.check_trivially_droppable_finalized(ty, span, shape)
     }
 
-    fn check_trivially_droppable_finalized(&self, ty: Type, span: Span) -> CompileResult<()> {
+    fn check_trivially_droppable_finalized(
+        &self,
+        ty: Type,
+        span: Span,
+        shape: ElementGateShape,
+    ) -> CompileResult<()> {
         if self.type_has_drop_glue(ty) {
-            return Err(self.trivially_droppable_error(ty, span));
+            return Err(self.trivially_droppable_error(ty, span, shape));
         }
         Ok(())
     }
 
-    fn trivially_droppable_error(&self, ty: Type, span: Span) -> CompileError {
+    fn trivially_droppable_error(
+        &self,
+        ty: Type,
+        span: Span,
+        shape: ElementGateShape,
+    ) -> CompileError {
         CompileError::new(
             ErrorKind::ContainerElementNotTriviallyDroppable {
                 ty: self.format_type_name(ty),
+                shape,
             },
             span,
         )
@@ -2492,7 +2521,15 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
         ty: Type,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<(), Self::Failure> {
-        OrdinaryBodyEngine::check_trivially_droppable(self, ty, site.span()).map_err(Into::into)
+        // A comptime type-constructor body has no receiver: a gate reduced here
+        // guards the element type of the container being produced.
+        OrdinaryBodyEngine::check_trivially_droppable(
+            self,
+            ty,
+            site.span(),
+            ElementGateShape::Construction,
+        )
+        .map_err(Into::into)
     }
     fn type_name(&self, ty: &Type) -> String {
         self.format_type_name(*ty)

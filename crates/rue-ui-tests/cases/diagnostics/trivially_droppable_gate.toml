@@ -1,25 +1,31 @@
 [section]
 id = "diagnostics.trivially-droppable-gate"
-name = "By-copy element read gate (E0711)"
+name = "Trivially-droppable element-type gate (E0711)"
 description = """
-An owning container's by-copy read (`ArrayBuf(T)::get`/`get_or`, RUE-651) copies
-the element out with `@ptr_read` while the stored slot stays live. For a `T` with
-drop glue that copy would alias the element's owned resources — both the copy and
-the slot run drop glue at scope exit, a double-free. `@require_trivially_droppable(T)`
-in the reader's body rejects those reads (E0711), directing the caller to `get_ref`
-for an in-place read or `pop`
-(which moves the element, leaving one owner). Because the gate lives in the method
-body, demand-driven analysis (ADR-0045) fires it only when a by-copy read is
+`@require_trivially_droppable(T)` (E0711, RUE-651) rejects an element type that
+owns resources, because duplicating such an element leaves the copy and the
+original both running drop glue at scope exit — a double-free. One code, two
+messages, chosen by the shape of the callable that states the gate. A body with a
+`self` receiver is reading a stored element by copy (`ArrayBuf(T)::get`/`get_or`
+copy it out with `@ptr_read` while the slot stays live), so the message offers
+`get_ref` for an in-place read and `pop` to move it out, leaving one owner. An
+associated function or a `-> type` producer has no stored element to borrow and is
+duplicating one value into a container's cells (`Grid2D(T)::new`), so the message
+says only a trivially droppable element type will do. Because the gate lives in a
+method body, demand-driven analysis (ADR-0045) fires it only when that method is
 actually called — storing/pushing/popping/dropping a drop-glue element stays legal
-(RUE-646). Mirrors Swift's rule that a non-copyable element cannot use a by-value
-`get` subscript. Most cases here use a self-contained minimal container so the gate
-is tested independent of the std `ArrayBuf` source; the `real_std` cases at the end
-pin the same gate where `std/grid.rue` states it for a whole element type.
+(RUE-646). The rejected body belongs to the library, not the caller, so the
+diagnostic is anchored at the call that demanded it and keeps the gate line as a
+labelled secondary span (RUE-2026). Mirrors Swift's rule that a non-copyable
+element cannot use a by-value `get` subscript. Most cases here use a self-contained
+minimal container so the gate is tested independent of the std `ArrayBuf` source;
+the `real_std` cases at the end pin the same gate where `std/grid.rue` states it
+for a whole element type.
 """
 
 [[case]]
 name = "e0711_drop_glue_element_read_rejected"
-description = "Calling a by-copy read whose element type has drop glue is rejected with E0711 and pointed at `get_ref` or `pop`."
+description = "Calling a by-copy read whose element type has drop glue is rejected with E0711 at the call, pointed at `get_ref` or `pop`, with the gate line labelled."
 source = """
 struct D { v: i32 }
 drop fn D(self) {}
@@ -44,6 +50,9 @@ error_contains = [
     "E0711",
     "cannot read an element of type `D` by copy",
     "use `get_ref` for an in-place read, or move it out with `pop`/`pop_or`",
+    # The primary span is `r.first()`, not the gate inside `Reader`.
+    "test.rue:15:",
+    "the element type is required to be trivially droppable here",
 ]
 
 [[case]]
@@ -67,6 +76,37 @@ fn main() -> i32 {
 """
 compile_fail = false
 exit_code = 42
+
+[[case]]
+name = "e0711_construction_gate_uses_construction_wording"
+description = "An associated function stating the gate has no stored element to borrow, so E0711 says the element type itself must be trivially droppable rather than offering `get_ref`/`pop`."
+source = """
+struct D { v: i32 }
+drop fn D(self) {}
+fn Cells(comptime T: type) -> type {
+    struct {
+        first: T,
+        second: T,
+        fn filled(fill: T) -> Self {
+            @require_trivially_droppable(T);
+            Self { first: fill, second: fill }
+        }
+    }
+}
+fn main() -> i32 {
+    let C = Cells(D);
+    let cells = C.filled(D { v: 1 });
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0711",
+    "cannot use an element of type `D` here",
+    "elements are duplicated by copy",
+    "test.rue:15:",
+    "the element type is required to be trivially droppable here",
+]
 
 [[case]]
 name = "drop_glue_element_stored_but_unread_compiles"
@@ -303,7 +343,7 @@ error_contains = ["E0711", "Outer"]
 # the gate, and is rejected at the loop with E0205.
 [[case]]
 name = "e0711_grid2d_owning_element_rejected_at_new"
-description = "Constructing `Grid2D(StrBuf)` is rejected with E0711 naming `StrBuf`, not a moved-value error against `fill` inside std."
+description = "Constructing `Grid2D(StrBuf)` is rejected with E0711 naming `StrBuf`, at the caller's own `G.new(...)` and in construction wording, not a moved-value error against `fill` inside std."
 source = """
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
@@ -320,6 +360,11 @@ expected_error_code = "E0711"
 error_contains = [
     "E0711",
     "element of type `StrBuf`",
+    # `new` has no receiver, so the construction message is rendered rather than
+    # the by-copy-read one, and the diagnostic lands on the caller's line.
+    "elements are duplicated by copy",
+    "test.rue:6:",
+    "the element type is required to be trivially droppable here",
 ]
 
 [[case]]
