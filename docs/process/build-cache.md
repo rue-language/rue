@@ -33,8 +33,10 @@ scripts/rue cache install       # prompts without echo for the BuildBuddy key
 `${XDG_CONFIG_HOME:-~/.config}/rue/buildbuddy.buckconfig` with mode `0600`;
 re-run it to replace the file, and it never prints the key. That is the only
 step: the repository `./buck2` wrapper links `.buckconfig.local` (gitignored)
-to that file in any worktree on the first `build`, `test`, `run`, or `install`
-there, so the credential is never copied between worktrees or stored in Git.
+to that file in any worktree on the first `build`, `test`, `run`, `install`, or
+`audit` there, so the credential is never copied between worktrees or stored in
+Git (`audit` links because it is how the configuration is read back, and it
+must report what a build would get — see the CI verification below).
 The link, rather than a per-command `--config-file`, is the delivery mechanism
 because `[buck2] digest_algorithms` and `[buck2_re_client]` are daemon-startup
 settings: a `--config-file` leaves the daemon on SHA1 digests (which
@@ -353,6 +355,32 @@ Availability rules, which the workflow steps must respect:
   independent job lets the ordinary linux-x64 build and tests use the shared
   cache without changing the reproducibility contract.
 
+### Verifying that the daemon actually got the config (RUE-2009)
+
+The delivery mechanism is a lazy `.buckconfig.local` link, so a job can reach
+its build with a daemon that never loaded the config: it then has no remote
+cache, executes everything locally, and passes. `CI` run 33774551666 did that in
+seventeen jobs, each logging `Internal error (stage: remote_action_cache) …
+Error: (No engine address)` while going green. Nothing was red and the summary
+said nothing, so the only evidence was a raw log — the same reconstruction
+RUE-2003 had to do.
+
+Every provisioning step therefore runs `scripts/provision-build-cache verify`
+immediately after `install`. It asks Buck for one key,
+`buck2 audit config buck2_re_client.engine_address`, and fails the setup step
+when the secret is present and the daemon reports no address, naming that cause
+and the two paths involved. Only the address key is requested and no audit
+output is ever echoed, because the section as a whole carries the credential
+header. The `./buck2` wrapper links the installed config for `audit` as well as
+for `build`/`test`/`run`/`install`, so the daemon that answers is configured
+exactly as the build that follows will be; a changed `.buckconfig.local`
+restarts the daemon, which is what makes the answer a fresh one.
+
+Where no cache is expected the check passes with an explanatory line rather
+than failing: a fork `pull_request` without the secret, and `RUE_NO_REMOTE_CACHE=1`.
+It confirms configuration, not reachability — an engine address the daemon
+cannot reach still fails later, in the build, with Buck's own diagnostic.
+
 `scripts/check-reproducible-build-metadata.py` is a separate, opt-in diagnostic
 for investigating reproducibility below that final binary. It requires a clean
 working tree, records `HEAD`, and archives that same tracked revision into two
@@ -445,10 +473,19 @@ Each summary separates the four costs that a single wall-time number conflates:
 
 | Column | Question it answers |
 | --- | --- |
+| Action cache | whether this step had a cache at all, and used it |
 | Cached | how many actions the remote cache served |
 | Remote | how many executed on the BuildBuddy worker |
 | Local | how many executed on the runner |
 | Test time | how long the test processes themselves ran |
+
+`Action cache` reads `used` for a step whose Buck invocations obtained actions
+from BuildBuddy, `unused` for a step configured for the cache that obtained
+none, and `off` for a step with no engine address in the checkout's
+`.buckconfig.local` — a fork pull request, `RUE_NO_REMOTE_CACHE=1`, or an
+explicit `--no-remote-cache`/`--local-only`, as the remote-execution canary
+uses. A cache-free lane is then visible in the summary instead of only in a raw
+log (RUE-2009).
 
 The first three are Buck's own accounting of how each action was *obtained*.
 The fourth is not: Rue's spec, UI, and CLI corpora are entire harnesses behind a

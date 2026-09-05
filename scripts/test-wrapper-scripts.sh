@@ -1010,6 +1010,59 @@ EOF
   rm -rf "$sb"
 }
 
+# RUE-2009: a lane whose daemon never loaded the BuildBuddy config builds
+# everything locally and turns nothing red, and the summary said nothing about
+# it. The action-cache column reports the state per step, so a cache-free lane
+# is readable next to the counters that explain it. Each case runs from its own
+# sandbox because the state is read from that checkout's .buckconfig.local.
+test_ci_timed_reports_action_cache_state() {
+  local sb; sb="$(mktemp -d)"
+  cp "$SRC_ROOT/scripts/ci-timed" "$sb/ci-timed"; chmod +x "$sb/ci-timed"
+  cat >"$sb/served" <<'EOF'
+#!/usr/bin/env bash
+echo 'Commands: 10 (cached: 7, remote: 1, local: 2)'
+EOF
+  cat >"$sb/cache-free" <<'EOF'
+#!/usr/bin/env bash
+echo 'Commands: 10 (cached: 0, remote: 0, local: 10)'
+EOF
+  chmod +x "$sb/served" "$sb/cache-free"
+
+  ( cd "$sb" && GITHUB_STEP_SUMMARY="$sb/summary" ./ci-timed "unconfigured" -- ./served ) >/dev/null 2>&1
+  check "ci-timed: a step with no engine address reports the cache off" \
+    "$(grep -Fq '| off |' "$sb/summary" && echo 0 || echo 1)"
+
+  cat >"$sb/.buckconfig.local" <<'EOF'
+[buck2_re_client]
+engine_address = grpc://remote.buildbuddy.io
+EOF
+  : >"$sb/summary"
+  ( cd "$sb" && GITHUB_STEP_SUMMARY="$sb/summary" ./ci-timed "served" -- ./served ) >/dev/null 2>&1
+  check "ci-timed: a configured step that obtained actions reports the cache used" \
+    "$(grep -Fq '| used |' "$sb/summary" && echo 0 || echo 1)"
+
+  # The silent case the column exists for: configured, and nothing came from
+  # the cache or a worker.
+  : >"$sb/summary"
+  ( cd "$sb" && GITHUB_STEP_SUMMARY="$sb/summary" ./ci-timed "cache-free" -- ./cache-free ) >/dev/null 2>&1
+  check "ci-timed: a configured step that obtained nothing reports the cache unused" \
+    "$(grep -Fq '| unused |' "$sb/summary" && echo 0 || echo 1)"
+
+  # The merge-group canary disables cache reads on purpose; that is off, not a
+  # cache that failed to serve anything.
+  : >"$sb/summary"
+  ( cd "$sb" && GITHUB_STEP_SUMMARY="$sb/summary" ./ci-timed "canary" -- ./cache-free --no-remote-cache ) >/dev/null 2>&1
+  check "ci-timed: an explicit cache opt-out reports the cache off" \
+    "$(grep -Fq '| off |' "$sb/summary" && echo 0 || echo 1)"
+
+  : >"$sb/summary"
+  ( cd "$sb" && RUE_NO_REMOTE_CACHE=1 GITHUB_STEP_SUMMARY="$sb/summary" ./ci-timed "opt-out" -- ./served ) >/dev/null 2>&1
+  check "ci-timed: RUE_NO_REMOTE_CACHE reports the cache off" \
+    "$(grep -Fq '| off |' "$sb/summary" && echo 0 || echo 1)"
+
+  rm -rf "$sb"
+}
+
 # The cache probe must distinguish a genuine same-run cold-to-warm conversion
 # from an already-warm shared cache or a second build that did no better.
 test_cache_probe_counter_validation() {
@@ -1628,6 +1681,7 @@ test_rue_unit_zero_match_fails_loud
 test_rue_unit_failing_test_propagates_exit
 test_rue_unit_unknown_crate_errors_cleanly
 test_ci_timed_preserves_status_and_summarizes_actions
+test_ci_timed_reports_action_cache_state
 test_cache_probe_counter_validation
 test_ci_heavy_suite_audits_its_target
 test_ci_corpus_inventory_is_graph_derived_and_fails_closed
