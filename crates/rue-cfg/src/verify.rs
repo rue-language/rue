@@ -208,24 +208,32 @@ impl Cfg {
         count
     }
 
-    /// Verify the CFG's structural invariants, panicking with a precise,
-    /// function- and block-localized message on any violation.
+    /// Verify against an empty fixture pool: the entry point for unit tests
+    /// whose graphs mention only scalar types.
     ///
-    /// See the module docs for the invariants and the rationale for the hard
-    /// panic. This is a compiler-bug guard: a well-formed pipeline never trips
-    /// it; the check is paid to pin future lowering regressions to their source.
-    pub fn verify(&self) -> Result<(), CfgVerificationError> {
-        Verifier::new(self, None, true).verify()
+    /// The verifier reads aggregate widths, drop obligations, and projection
+    /// chains from the pool, so a graph naming a struct, array, or enum type
+    /// must be verified against the pool that defines it.
+    #[cfg(test)]
+    pub(crate) fn verify_with_fixture_pool(&self) -> Result<(), CfgVerificationError> {
+        self.verify_with_type_pool(&FrozenTypeInternPool::new())
     }
 
-    /// Verify with the active semantic type pool, enabling exact aggregate
-    /// layouts and projection-chain validation. Production callers must use
-    /// this entry point.
+    /// Verify the CFG's structural invariants against the active semantic type
+    /// pool, reporting a precise, function- and block-localized message on any
+    /// violation.
+    ///
+    /// See the module docs for the invariants and the rationale for the hard
+    /// panic callers apply to the result. This is a compiler-bug guard: a
+    /// well-formed pipeline never trips it; the check is paid to pin future
+    /// lowering regressions to their source. The pool is what makes exact
+    /// aggregate layouts and projection-chain validation possible, so it is
+    /// required rather than optional.
     pub fn verify_with_type_pool(
         &self,
         type_pool: &FrozenTypeInternPool,
     ) -> Result<(), CfgVerificationError> {
-        Verifier::new(self, Some(type_pool), true).verify()
+        Verifier::new(self, type_pool, true).verify()
     }
 
     /// Verify the optimized live graph. DCE intentionally retains dead values
@@ -236,7 +244,7 @@ impl Cfg {
         &self,
         type_pool: &FrozenTypeInternPool,
     ) -> Result<(), CfgVerificationError> {
-        Verifier::new(self, Some(type_pool), false).verify()
+        Verifier::new(self, type_pool, false).verify()
     }
 
     /// Verify a CFG edit whose only intended effect is on blocks reachable from
@@ -256,7 +264,7 @@ impl Cfg {
         &self,
         type_pool: &FrozenTypeInternPool,
     ) -> Result<(), CfgVerificationError> {
-        Verifier::materialization(self, Some(type_pool)).verify()
+        Verifier::materialization(self, type_pool).verify()
     }
 
     /// Collect every `CfgValue` operand referenced by an instruction into
@@ -356,7 +364,7 @@ enum Attachment {
 
 struct Verifier<'a> {
     cfg: &'a Cfg,
-    type_pool: Option<&'a FrozenTypeInternPool>,
+    type_pool: &'a FrozenTypeInternPool,
     require_complete_attachments: bool,
     skip_unreachable_blocks: bool,
     attachments: Vec<Option<Attachment>>,
@@ -378,7 +386,7 @@ struct Verifier<'a> {
 impl<'a> Verifier<'a> {
     fn new(
         cfg: &'a Cfg,
-        type_pool: Option<&'a FrozenTypeInternPool>,
+        type_pool: &'a FrozenTypeInternPool,
         require_complete_attachments: bool,
     ) -> Self {
         Self {
@@ -404,7 +412,7 @@ impl<'a> Verifier<'a> {
     /// `if`'s dead `else` still holding a `goto merge([arg])` after the merge
     /// block's parameter was substituted away). The final `finish_after_optimization`
     /// still sweeps those husks under strict verification once DCE has run.
-    fn materialization(cfg: &'a Cfg, type_pool: Option<&'a FrozenTypeInternPool>) -> Self {
+    fn materialization(cfg: &'a Cfg, type_pool: &'a FrozenTypeInternPool) -> Self {
         Self {
             skip_unreachable_blocks: true,
             ..Self::new(cfg, type_pool, false)
@@ -533,16 +541,14 @@ impl<'a> Verifier<'a> {
                         }
                     }
                     CfgInstData::Drop { value: dropped } => {
-                        if let Some(pool) = self.type_pool {
-                            let dropped_ty = self.cfg.get_inst(dropped).ty;
-                            // Validate nominal identities before recursive drop
-                            // queries so malformed CFG returns a typed error.
-                            self.abi_slot_count(dropped_ty, block.id, value, "Drop operand")?;
-                            if pool.type_needs_drop(dropped_ty)
-                                && droppable_value_set.insert(dropped)
-                            {
-                                droppable_values.push(dropped);
-                            }
+                        let dropped_ty = self.cfg.get_inst(dropped).ty;
+                        // Validate nominal identities before recursive drop
+                        // queries so malformed CFG returns a typed error.
+                        self.abi_slot_count(dropped_ty, block.id, value, "Drop operand")?;
+                        if self.type_pool.type_needs_drop(dropped_ty)
+                            && droppable_value_set.insert(dropped)
+                        {
+                            droppable_values.push(dropped);
                         }
                     }
                     _ => {}
@@ -1704,39 +1710,11 @@ impl<'a> Verifier<'a> {
         value: CfgValue,
         role: &str,
     ) -> Result<u32, CfgVerificationError> {
-        let Some(pool) = self.type_pool else {
-            return Ok(match ty.try_kind() {
-                Some(TypeKind::I8)
-                | Some(TypeKind::I16)
-                | Some(TypeKind::I32)
-                | Some(TypeKind::I64)
-                | Some(TypeKind::U8)
-                | Some(TypeKind::U16)
-                | Some(TypeKind::U32)
-                | Some(TypeKind::U64)
-                | Some(TypeKind::Bool)
-                | Some(TypeKind::F32)
-                | Some(TypeKind::F64)
-                | Some(TypeKind::Error)
-                | Some(TypeKind::PtrConst(_))
-                | Some(TypeKind::PtrMut(_)) => 1,
-                Some(TypeKind::Unit)
-                | Some(TypeKind::Never)
-                | Some(TypeKind::ComptimeType)
-                | Some(TypeKind::ComptimeFloat)
-                | Some(TypeKind::Module(_))
-                | Some(TypeKind::Struct(_))
-                | Some(TypeKind::Array(_))
-                | Some(TypeKind::Enum(_))
-                | None => 0,
-            });
-        };
-
-        let canonical_width = || pool.try_abi_slot_count(ty);
+        let canonical_width = || self.type_pool.try_abi_slot_count(ty);
         #[cfg(test)]
         let width = self
             .abi_slot_query_override
-            .map_or_else(canonical_width, |query| query(pool, ty));
+            .map_or_else(canonical_width, |query| query(self.type_pool, ty));
         #[cfg(not(test))]
         let width = canonical_width();
 
@@ -1764,9 +1742,7 @@ impl<'a> Verifier<'a> {
     }
 
     fn is_fixed_str_to_view_coercion(&self, source: Type, result: Type) -> bool {
-        let Some(pool) = self.type_pool else {
-            return false;
-        };
+        let pool = self.type_pool;
         let (TypeKind::Struct(source_id), TypeKind::Struct(result_id)) =
             (source.kind(), result.kind())
         else {
@@ -1822,92 +1798,91 @@ impl<'a> Verifier<'a> {
             }
         }
         let projections = self.cfg.get_place_projections(place);
-        if let Some(pool) = self.type_pool {
-            let mut current_ty = place.base_type;
-            for (projection_index, projection) in projections.iter().enumerate() {
-                current_ty = match projection {
-                    Projection::Field {
-                        struct_id,
-                        field_index,
-                    } => {
-                        let Some(def) = pool.try_struct_def(*struct_id) else {
-                            return Err(self.error(format_args!(
-                                "projection {} in place instruction {} in block {} references invalid struct id {:?}",
-                                projection_index, value, block, struct_id
-                            )));
-                        };
-                        let expected = Type::new_struct(*struct_id);
-                        if current_ty != expected {
-                            return Err(self.error(format_args!(
-                                "projection {} in place instruction {} in block {} expects container type {:?}, but previous link produced {:?}",
-                                projection_index, value, block, expected, current_ty
-                            )));
-                        }
-                        let Some(field) = def.fields.get(*field_index as usize) else {
-                            return Err(self.error(format_args!(
-                                "projection {} in place instruction {} in block {} references field {} of struct {:?}, which has {} fields",
-                                projection_index,
-                                value,
-                                block,
-                                field_index,
-                                struct_id,
-                                def.fields.len()
-                            )));
-                        };
-                        field.ty
+        let pool = self.type_pool;
+        let mut current_ty = place.base_type;
+        for (projection_index, projection) in projections.iter().enumerate() {
+            current_ty = match projection {
+                Projection::Field {
+                    struct_id,
+                    field_index,
+                } => {
+                    let Some(def) = pool.try_struct_def(*struct_id) else {
+                        return Err(self.error(format_args!(
+                            "projection {} in place instruction {} in block {} references invalid struct id {:?}",
+                            projection_index, value, block, struct_id
+                        )));
+                    };
+                    let expected = Type::new_struct(*struct_id);
+                    if current_ty != expected {
+                        return Err(self.error(format_args!(
+                            "projection {} in place instruction {} in block {} expects container type {:?}, but previous link produced {:?}",
+                            projection_index, value, block, expected, current_ty
+                        )));
                     }
-                    Projection::Index { array_type, .. } => {
-                        let TypeKind::Array(array_id) = array_type.kind() else {
-                            return Err(self.error(format_args!(
-                                "projection {} in place instruction {} in block {} has non-array container type {:?}",
-                                projection_index, value, block, array_type
-                            )));
-                        };
-                        let Some((element_ty, _)) = pool.try_array_def(array_id) else {
-                            return Err(self.error(format_args!(
-                                "projection {} in place instruction {} in block {} references invalid array id {:?}",
-                                projection_index, value, block, array_id
-                            )));
-                        };
-                        if current_ty != *array_type {
-                            return Err(self.error(format_args!(
-                                "projection {} in place instruction {} in block {} expects container type {:?}, but previous link produced {:?}",
-                                projection_index, value, block, array_type, current_ty
-                            )));
-                        }
-                        element_ty
+                    let Some(field) = def.fields.get(*field_index as usize) else {
+                        return Err(self.error(format_args!(
+                            "projection {} in place instruction {} in block {} references field {} of struct {:?}, which has {} fields",
+                            projection_index,
+                            value,
+                            block,
+                            field_index,
+                            struct_id,
+                            def.fields.len()
+                        )));
+                    };
+                    field.ty
+                }
+                Projection::Index { array_type, .. } => {
+                    let TypeKind::Array(array_id) = array_type.kind() else {
+                        return Err(self.error(format_args!(
+                            "projection {} in place instruction {} in block {} has non-array container type {:?}",
+                            projection_index, value, block, array_type
+                        )));
+                    };
+                    let Some((element_ty, _)) = pool.try_array_def(array_id) else {
+                        return Err(self.error(format_args!(
+                            "projection {} in place instruction {} in block {} references invalid array id {:?}",
+                            projection_index, value, block, array_id
+                        )));
+                    };
+                    if current_ty != *array_type {
+                        return Err(self.error(format_args!(
+                            "projection {} in place instruction {} in block {} expects container type {:?}, but previous link produced {:?}",
+                            projection_index, value, block, array_type, current_ty
+                        )));
                     }
-                };
-            }
+                    element_ty
+                }
+            };
+        }
 
-            let inst = self.cfg.get_inst(value);
-            match &inst.data {
-                CfgInstData::PlaceRead { .. }
-                    if inst.ty != current_ty
-                        && !self.is_fixed_str_to_view_coercion(current_ty, inst.ty) =>
-                {
+        let inst = self.cfg.get_inst(value);
+        match &inst.data {
+            CfgInstData::PlaceRead { .. }
+                if inst.ty != current_ty
+                    && !self.is_fixed_str_to_view_coercion(current_ty, inst.ty) =>
+            {
+                return Err(self.error(format_args!(
+                    "place-read instruction {} in block {} has result type {:?}, but its projection chain produces {:?}",
+                    value, block, inst.ty, current_ty
+                )));
+            }
+            CfgInstData::PlaceWrite { value: stored, .. } => {
+                let stored_ty = self.inst(*stored, block, "place-write value")?.ty;
+                if stored_ty != current_ty {
                     return Err(self.error(format_args!(
-                        "place-read instruction {} in block {} has result type {:?}, but its projection chain produces {:?}",
-                        value, block, inst.ty, current_ty
+                        "place-write instruction {} in block {} stores type {:?}, but its projection chain produces {:?}",
+                        value, block, stored_ty, current_ty
                     )));
                 }
-                CfgInstData::PlaceWrite { value: stored, .. } => {
-                    let stored_ty = self.inst(*stored, block, "place-write value")?.ty;
-                    if stored_ty != current_ty {
-                        return Err(self.error(format_args!(
-                            "place-write instruction {} in block {} stores type {:?}, but its projection chain produces {:?}",
-                            value, block, stored_ty, current_ty
-                        )));
-                    }
-                    if inst.ty != Type::UNIT {
-                        return Err(self.error(format_args!(
-                            "place-write instruction {} in block {} has result type {:?}, expected unit",
-                            value, block, inst.ty
-                        )));
-                    }
+                if inst.ty != Type::UNIT {
+                    return Err(self.error(format_args!(
+                        "place-write instruction {} in block {} has result type {:?}, expected unit",
+                        value, block, inst.ty
+                    )));
                 }
-                _ => {}
             }
+            _ => {}
         }
 
         if let Some(first) = projections.first() {
@@ -3813,7 +3788,7 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Return { value: Some(v) });
-        cfg.verify().unwrap(); // must not panic
+        cfg.verify_with_fixture_pool().unwrap(); // must not panic
     }
 
     fn cfg_with_field_place(base_type: Type, struct_id: StructId) -> Cfg {
@@ -3847,22 +3822,26 @@ mod tests {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::default();
         let struct_id = register_struct(&pool, &interner, "FieldBase", &[Type::I32]);
+        let pool = pool.freeze();
         cfg_with_field_place(Type::new_struct(struct_id), struct_id)
-            .verify()
+            .verify_with_type_pool(&pool)
             .unwrap();
     }
 
     #[test]
-    #[should_panic(expected = "first projection requires base type")]
+    #[should_panic(expected = "but previous link produced Type::I32")]
     fn verify_rejects_field_projection_with_wrong_base_type() {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::default();
         let struct_id = register_struct(&pool, &interner, "WrongBase", &[Type::I32]);
-        cfg_with_field_place(Type::I32, struct_id).verify().unwrap();
+        let pool = pool.freeze();
+        cfg_with_field_place(Type::I32, struct_id)
+            .verify_with_type_pool(&pool)
+            .unwrap();
     }
 
     #[test]
-    #[should_panic(expected = "first projection requires base type")]
+    #[should_panic(expected = "but previous link produced Type::I32")]
     fn verify_rejects_index_projection_with_wrong_base_type_on_write() {
         let mut cfg = Cfg::new(Type::UNIT, 1, 0, "index_place".to_string(), vec![]);
         let entry = cfg.new_block();
@@ -3883,9 +3862,9 @@ mod tests {
                 span: Span::new(0, 1),
             },
         );
-        let array_type = TypeInternPool::new()
-            .try_intern_array(Type::I32, 1)
-            .unwrap();
+        let pool = TypeInternPool::new();
+        let array_type = pool.try_intern_array(Type::I32, 1).unwrap();
+        let pool = pool.freeze();
         let place = cfg
             .make_place(
                 PlaceBase::Local(0),
@@ -3903,11 +3882,11 @@ mod tests {
         );
         cfg.set_terminator(entry, Terminator::Return { value: None });
 
-        cfg.verify().unwrap();
+        cfg.verify_with_type_pool(&pool).unwrap();
     }
 
     #[test]
-    #[should_panic(expected = "Index projection with non-array container type Type::I32")]
+    #[should_panic(expected = "has non-array container type Type::I32")]
     fn verify_rejects_non_array_index_projection_type() {
         let mut cfg = Cfg::new(Type::I32, 1, 0, "index_type".to_string(), vec![]);
         let entry = cfg.new_block();
@@ -3940,7 +3919,7 @@ mod tests {
         );
         cfg.set_terminator(entry, Terminator::Return { value: Some(read) });
 
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -3958,7 +3937,7 @@ mod tests {
             },
         );
         // Deliberately leave the reachable entry block with Terminator::None.
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -3977,7 +3956,7 @@ mod tests {
         cfg.set_terminator(entry, Terminator::Return { value: Some(value) });
         // An orphan block, never wired in, with no terminator: must be skipped.
         let _orphan = cfg.new_block();
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -3998,7 +3977,7 @@ mod tests {
                 args: crate::payload::CfgGotoArgs::EMPTY,
             },
         );
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     /// Build `entry --goto(one arg of `arg_ty`)--> target(param: i32)`.
@@ -4024,14 +4003,18 @@ mod tests {
 
     #[test]
     fn verify_accepts_well_typed_edge() {
-        cfg_with_typed_edge(Type::I32).verify().unwrap(); // must not panic
+        cfg_with_typed_edge(Type::I32)
+            .verify_with_fixture_pool()
+            .unwrap(); // must not panic
     }
 
     #[test]
     #[should_panic(expected = "ill-typed edge")]
     fn verify_catches_edge_type_mismatch() {
         // The RUE-347 shape: a unit value passed into an i32 block parameter.
-        cfg_with_typed_edge(Type::UNIT).verify().unwrap();
+        cfg_with_typed_edge(Type::UNIT)
+            .verify_with_fixture_pool()
+            .unwrap();
     }
 
     #[test]
@@ -4077,7 +4060,7 @@ mod tests {
                 args,
             },
         );
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -4092,7 +4075,7 @@ mod tests {
             span: Span::new(0, 0),
         });
         cfg.set_terminator(entry, Terminator::Unreachable);
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -4111,7 +4094,7 @@ mod tests {
         );
         cfg.get_block_mut(entry).insts.push(value);
         cfg.set_terminator(entry, Terminator::Return { value: Some(value) });
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -4123,7 +4106,7 @@ mod tests {
         let param = cfg.add_block_param(entry, Type::I32);
         cfg.get_inst_mut(param).data = CfgInstData::BlockParam { index: 1 };
         cfg.set_terminator(entry, Terminator::Return { value: Some(param) });
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -4135,7 +4118,7 @@ mod tests {
         let param = cfg.add_block_param(entry, Type::I32);
         cfg.get_inst_mut(param).data = CfgInstData::Const(0);
         cfg.set_terminator(entry, Terminator::Return { value: Some(param) });
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -4147,7 +4130,7 @@ mod tests {
         let param = cfg.add_block_param(entry, Type::I32);
         cfg.get_block_mut(entry).params[0].1 = Type::U64;
         cfg.set_terminator(entry, Terminator::Return { value: Some(param) });
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -4179,7 +4162,7 @@ mod tests {
                 value: Some(earlier),
             },
         );
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -4218,7 +4201,7 @@ mod tests {
         );
         cfg.set_terminator(left, Terminator::Return { value: Some(value) });
         cfg.set_terminator(right, Terminator::Return { value: Some(value) });
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     /// A terminator-less reachable entry plus two *unreachable* blocks, where
@@ -4268,7 +4251,7 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Return { value: Some(live) });
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -4285,7 +4268,7 @@ mod tests {
                 value: Some(orphaned),
             },
         );
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -4314,7 +4297,7 @@ mod tests {
             },
         );
         cfg.set_terminator(target, Terminator::Unreachable);
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -4324,7 +4307,7 @@ mod tests {
         let entry = cfg.new_block();
         cfg.entry = entry;
         cfg.set_terminator(entry, Terminator::Return { value: None });
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -4342,7 +4325,7 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Return { value: Some(value) });
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -4351,7 +4334,7 @@ mod tests {
         let mut cfg = unit_cfg();
         cfg.new_block();
         cfg.entry = BlockId::from_raw(7);
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -4367,7 +4350,7 @@ mod tests {
                 args: crate::payload::CfgGotoArgs::EMPTY,
             },
         );
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -4449,7 +4432,9 @@ mod tests {
     fn strict_verify_rejects_unreachable_husk_edge() {
         // The strict verifier every real pipeline boundary uses still checks
         // unreachable blocks, so the husk's stale arity is caught.
-        cfg_with_unreachable_husk_edge().verify().unwrap();
+        cfg_with_unreachable_husk_edge()
+            .verify_with_fixture_pool()
+            .unwrap();
     }
 
     #[test]
@@ -4551,7 +4536,7 @@ mod tests {
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
 
-        let mut verifier = Verifier::new(&cfg, Some(&pool), true);
+        let mut verifier = Verifier::new(&cfg, &pool, true);
         verifier.abi_slot_query_override = Some(divergent_width);
         let error = verifier.verify().unwrap_err();
         assert!(error.to_string().contains("local slot range 0..7"));
@@ -4813,7 +4798,7 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
-        let error = cfg.verify().unwrap_err();
+        let error = cfg.verify_with_fixture_pool().unwrap_err();
         assert_eq!(error.payload().unwrap().family(), "array elements");
         assert_eq!(
             error.location(),
@@ -4842,7 +4827,7 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
-        let error = cfg.verify().unwrap_err();
+        let error = cfg.verify_with_fixture_pool().unwrap_err();
         assert_eq!(error.payload().unwrap().family(), "call arguments");
         assert_eq!(
             error.location(),
@@ -4874,7 +4859,7 @@ mod tests {
                 default: entry,
             },
         );
-        let error = cfg.verify().unwrap_err();
+        let error = cfg.verify_with_fixture_pool().unwrap_err();
         assert_eq!(error.payload().unwrap().family(), "switch cases");
         assert_eq!(
             error.location(),
@@ -4902,7 +4887,7 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
-        let error = cfg.verify().unwrap_err();
+        let error = cfg.verify_with_fixture_pool().unwrap_err();
         assert_eq!(error.payload().unwrap().family(), "projections");
         assert_eq!(
             error.location(),
@@ -4927,9 +4912,9 @@ mod tests {
                 span: Span::new(0, 0),
             },
         );
-        let array_type = TypeInternPool::new()
-            .try_intern_array(Type::I32, 1)
-            .unwrap();
+        let pool = TypeInternPool::new();
+        let array_type = pool.try_intern_array(Type::I32, 1).unwrap();
+        let pool = pool.freeze();
         let place = cfg
             .make_place(
                 PlaceBase::Local(0),
@@ -4946,7 +4931,7 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
-        cfg.verify().unwrap();
+        cfg.verify_with_type_pool(&pool).unwrap();
     }
 
     #[test]

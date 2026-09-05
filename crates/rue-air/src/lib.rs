@@ -45,7 +45,7 @@ mod types;
 
 pub use call_abi::{
     ArgConvention, CAbiScalarKind, NativeAbiTypeFacts, NativeCallAbi, ReturnClass,
-    ScalarAbiExtension, TargetCCallAbi, aggregate_leaves, c_abi_type_facts,
+    ScalarAbiExtension, TargetCCallAbi, aggregate_leaves, c_abi_type_facts, is_multislot_aggregate,
     is_slot_identical_layout, native_return_register_budget,
 };
 pub use exact_decimal::canonical_decimal_literal;

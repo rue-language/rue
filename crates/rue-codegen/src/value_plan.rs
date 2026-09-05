@@ -2347,6 +2347,21 @@ pub fn comparison_integer_width(ty: Type) -> IntegerWidth {
     }
 }
 
+/// The width a `switch` terminator compares its scrutinee at.
+///
+/// The bit width comes from `Type::switch_compare_width`, the same authority
+/// CFG simplification consults when it folds a constant `switch`: a scrutinee
+/// folded to one arm before code generation and the compare the backends emit
+/// for the unfolded graph are then decided by one rule. Signedness rides along
+/// as the scrutinee's own, so a policy trace names the type it compared; the
+/// comparison itself is an equality and reads the same either way.
+pub fn switch_compare_width(ty: Type) -> IntegerWidth {
+    IntegerWidth {
+        bits: ty.switch_compare_width(),
+        signed: ty.is_signed(),
+    }
+}
+
 /// Shared signedness query for target encodings that need a flag or extension
 /// form after the integer policy has been selected.
 pub fn type_is_signed(ty: Type) -> bool {

@@ -97,6 +97,22 @@ fn cfg_abi_width_checks_have_one_frozen_pool_authority() {
         1,
         "CFG verifier must have exactly one ABI-width decision helper"
     );
+    // The pool is required, so there is no second, weaker width rule for a
+    // verifier built without one.
+    assert!(
+        source.contains("type_pool: &'a FrozenTypeInternPool,"),
+        "CFG verifier must hold the frozen type pool unconditionally"
+    );
+    for poolless in [
+        "type_pool: Option<",
+        "Some(pool) = self.type_pool",
+        "Some(TypeKind::PtrMut(_)) => 1",
+    ] {
+        assert!(
+            !source.contains(poolless),
+            "CFG verifier regained a poolless verification mode: {poolless}"
+        );
+    }
     assert_eq!(
         source.matches("pool.try_abi_slot_count(ty)").count(),
         1,
@@ -224,6 +240,27 @@ fn constant_folding_uses_the_air_integer_semantics_kernel() {
         assert!(
             !source.contains(helper),
             "const folding regained local helper {helper}"
+        );
+    }
+
+    // Loop unrolling reads induction constants, encodes the constants an
+    // unrolled body materializes, and bounds a trip count — all width and
+    // range decisions the same kernel owns. A private copy here would let a
+    // folded trip count disagree with the folded induction constants it feeds.
+    let unroll = include_str!("opt/unroll.rs");
+    assert!(unroll.contains("integer_semantics()"));
+    assert!(unroll.contains("canonicalize_i128("));
+    assert!(unroll.contains("fits_i128("));
+    for hand_rolled in [
+        "int_bit_width()",
+        "1i128 << width",
+        "1i128 << (width - 1)",
+        "rem_euclid",
+        "128 - width",
+    ] {
+        assert!(
+            !unroll.contains(hand_rolled),
+            "loop unrolling regained local integer width math: {hand_rolled}"
         );
     }
 }

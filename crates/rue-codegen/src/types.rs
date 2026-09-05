@@ -87,9 +87,13 @@ pub fn type_slot_span(type_pool: &FrozenTypeInternPool, ty: Type) -> u32 {
 
 /// Whether `ty` needs a complete aggregate slot representation rather than a
 /// single primary vreg. Discriminant-only enums remain scalar values.
+///
+/// Delegates to `rue_air::is_multislot_aggregate`, the same predicate the
+/// native call-ABI classifier applies when it decides between a register
+/// aggregate and a scalar, so the value materializer and the call planner
+/// classify every type identically.
 pub fn is_multislot_aggregate(type_pool: &FrozenTypeInternPool, ty: Type) -> bool {
-    matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_))
-        || (ty.is_enum() && type_slot_count(type_pool, ty) > 1)
+    rue_air::is_multislot_aggregate(ty, type_slot_count(type_pool, ty))
 }
 
 /// Return the `(Some, None)` discriminant values for an `Option`-shaped enum
