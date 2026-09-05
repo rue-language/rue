@@ -25,6 +25,7 @@ fn compiler_owned_explanation_examples_have_the_declared_outcome() {
                     | 700..=702
                     | 709..=712
                     | 800..=802
+                    | 900..=908
                     | 950
             )
     }) {

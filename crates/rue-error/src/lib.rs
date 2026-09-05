@@ -1909,18 +1909,159 @@ define_error_codes! {
     // ========================================================================
     // Array errors (E0900-E0999)
     // ========================================================================
-    INDEX_ON_NON_ARRAY = 900;
-    ARRAY_LENGTH_MISMATCH = 901;
-    INDEX_OUT_OF_BOUNDS = 902;
-    TYPE_ANNOTATION_REQUIRED = 903;
-    MOVE_OUT_OF_INDEX = 904;
-    ARRAY_REPEAT_NON_COPY = 905;
-    TYPE_TOO_LARGE = 906;
-    FUNCTION_FRAME_TOO_LARGE = 907;
+    /// `base[index]` whose base type holds no element sequence. The three
+    /// indexable shapes are the fixed array `[T; N]` (4.11:3), the borrowed
+    /// slice view `[T]` (7.2:20), and the string types, whose integer index
+    /// reads one byte as `u8` (3.7:16).
+    INDEX_ON_NON_ARRAY = 900 => {
+        explanation: "An index expression `base[index]` selects an element from a sequence, so `base` has to denote one. Rue indexes exactly three shapes: the fixed array `[T; N]`, whose index expression has the element type `T` (4.11:3, 4.11:5); the borrowed slice view `[T]`, which indexes the run of storage it views (7.2:20); and the string types `str`, `Str(N)`, and `StrBuf`, whose integer index reads one UTF-8 byte as a `u8` (3.7:16). E0900 reports a base of any other type — a scalar, a struct, an enum, a raw pointer, a module — and names the type the base actually has after inference, which is the fact that identifies a chain such as `outer.inner[0]` that indexes one link too early. Two neighbouring failures are other codes: an indexable base with a non-integer index is a type mismatch reported at the index operand (E0206, 4.11:4), and a constant index outside a fixed array's length is E0902.",
+        likely_cause: "The base names a value that holds no sequence — the single element that was meant to be the array, or the struct that holds the array in a field. Index the array itself, or project to the field that holds it, as in `grid.rows[0]`. A raw pointer is not indexable either: advance it with `@ptr_offset` inside an `unchecked` block instead of subscripting it.",
+        examples: [
+            ErrorCodeExample { title: "Index a value that is not a sequence", source: "fn main() -> i32 {\n    let value: i32 = 5;\n    value[0]\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Index the array that holds the elements", source: "fn main() -> i32 {\n    let values: [i32; 3] = [10, 20, 30];\n    values[0]\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Index expression base types", path: "docs/spec/src/04-expressions/11-index-expressions.md", rule: Some("4.11:3") },
+            ErrorCodeReference { title: "Slice indexing", path: "docs/spec/src/07-arrays/02-slices.md", rule: Some("7.2:20") },
+            ErrorCodeReference { title: "String byte indexing", path: "docs/spec/src/03-types/07-string-type.md", rule: Some("3.7:16") },
+        ],
+    };
+    /// An array length disagreement: a literal whose element count differs
+    /// from the length its context demands (7.1:4), or two array types that
+    /// inference unified with equal element types and different lengths.
+    ARRAY_LENGTH_MISMATCH = 901 => {
+        explanation: "An array type carries its length, so `[i32; 3]` and `[i32; 2]` are different types (3.5:1). E0901 reports a disagreement about that length and names both, expected first. It is raised in two places: an array literal whose element count differs from the length its context demands (7.1:4), and unification of two array types that agree on the element type but not on the length. A context that supplies the type also supplies the length — a `let` annotation, a parameter type, a return type — and the literal must then have exactly that many elements; with no such context the literal's own element count fixes the type, so the disagreement can only surface where two lengths meet. A literal whose elements disagree about the element `type` is a different failure: that is a type mismatch (E0206) at the offending element.",
+        likely_cause: "An element was added to or removed from an array literal without updating the declared length, or a literal was written against the wrong annotation. Make the element count match the declared length, or change the annotation to the literal's length. A count that varies at run time is not an array length at all: array lengths are compile-time constants (3.5:2), so a run of elements whose size is not known until run time is passed as a borrowed slice `[T]` instead.",
+        examples: [
+            ErrorCodeExample { title: "An array literal shorter than its annotation", source: "fn main() -> i32 {\n    let xs: [i32; 3] = [10, 20];\n    xs[0]\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Match the declared length", source: "fn main() -> i32 {\n    let xs: [i32; 3] = [10, 20, 30];\n    xs[0]\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Array literal element count", path: "docs/spec/src/07-arrays/01-fixed-arrays.md", rule: Some("7.1:4") },
+            ErrorCodeReference { title: "Array types carry their length", path: "docs/spec/src/03-types/05-array-types.md", rule: Some("3.5:1") },
+            ErrorCodeReference { title: "Array lengths are compile-time values", path: "docs/spec/src/03-types/05-array-types.md", rule: Some("3.5:2") },
+        ],
+    };
+    /// A constant index that is negative or not less than the fixed array's
+    /// length, rejected by the compile-time bounds check (4.11:7). `index` is
+    /// `i128` so a constant `u64` index above `i64::MAX` is still reported
+    /// exactly rather than narrowing into the runtime path (RUE-532).
+    INDEX_OUT_OF_BOUNDS = 902 => {
+        explanation: "A constant index into a fixed array is bounds-checked while the program is compiled (4.11:7, 7.1:9). E0902 reports an index the compiler folded to a constant that is negative or not less than the array's length, so the access could never succeed; the message names the length and the index it evaluated. Only constant indices are diagnosed here. A non-constant index is checked at run time and traps instead of failing the build (4.11:8, 4.11:9), and a slice index is always dynamic because a view's length is a runtime value (7.2:22). The check follows the whole place chain rather than only a whole-expression read: `xs[5].field` names the same out-of-range element that `xs[5]` does, and reports at the index in every place context — a value read, a comparison operand, a `borrow` argument, an `@dbg` operand.",
+        likely_cause: "The index is one past the end: the valid indices of `[T; N]` are `0` through `N - 1`. An array's length was often reduced without updating a fixed index, or a length was mistaken for a last position. Use an index inside the range. A position that is only known at run time is not diagnosed here at all — it is bounds-checked at run time and traps, halting the program with exit code 101.",
+        examples: [
+            ErrorCodeExample { title: "A constant index past the last element", source: "fn main() -> i32 {\n    let xs: [i32; 3] = [10, 20, 30];\n    xs[5]\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Index the last valid position", source: "fn main() -> i32 {\n    let xs: [i32; 3] = [10, 20, 30];\n    xs[2]\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Compile-time bounds checking", path: "docs/spec/src/04-expressions/11-index-expressions.md", rule: Some("4.11:7") },
+            ErrorCodeReference { title: "Runtime bounds checking", path: "docs/spec/src/04-expressions/11-index-expressions.md", rule: Some("4.11:8") },
+            ErrorCodeReference { title: "Slice bounds are always dynamic", path: "docs/spec/src/07-arrays/02-slices.md", rule: Some("7.2:22") },
+        ],
+    };
+    /// An array literal whose element type inference could not fix: an empty
+    /// `[]` with no context, a nested literal that leaves the element type
+    /// open, or an array left unresolved by a malformed comptime
+    /// construction (RUE-153, RUE-190).
+    TYPE_ANNOTATION_REQUIRED = 903 => {
+        explanation: "Type inference could not fix the element type of an array literal. Inference runs over one function body and solves the constraints that body generates (3.11:2, 3.11:4); an empty literal `[]` generates no element constraint at all, so nothing determines its element type variable. The same happens to a literal whose elements leave the element type open — a nested `[[]]` — and to an array left unresolved by a malformed or partially specialized comptime construction. Rather than let an unconstrained type reach code generation, the compiler reports E0903 at the literal. The diagnostic is about the element type and not the length: an array literal's type is `[T; n]` for one shared element type `T` (7.1:2), and `[]` is perfectly legal once something supplies that `T`.",
+        likely_cause: "An empty array literal was written where nothing supplies its element type, most often `let xs = [];`. Annotate the binding — `let xs: [i32; 0] = [];` — or put the literal in a position that fixes the element type, such as an argument at a call or a return expression. When the literal is not empty, the message still means the element type is open after inference: annotate the binding, or annotate the element expression inference could not solve.",
+        examples: [
+            ErrorCodeExample { title: "An empty array literal with no context", source: "fn main() -> i32 {\n    let xs = [];\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Annotate the element type", source: "fn main() -> i32 {\n    let xs: [i32; 0] = [];\n    0\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Inference is one function body wide", path: "docs/spec/src/03-types/11-type-inference.md", rule: Some("3.11:2") },
+            ErrorCodeReference { title: "Constraint model", path: "docs/spec/src/03-types/11-type-inference.md", rule: Some("3.11:4") },
+            ErrorCodeReference { title: "Array literal types", path: "docs/spec/src/07-arrays/01-fixed-arrays.md", rule: Some("7.1:2") },
+        ],
+    };
+    /// Cannot move or destructure through an array index the per-element
+    /// ownership tracker cannot follow: a non-constant index, or indexing not
+    /// rooted directly at an array variable (3.8:68, 7.1:28).
+    MOVE_OUT_OF_INDEX = 904 => {
+        explanation: "Moving a non-Copy element out of an array is tracked one element at a time, and that tracking has to name the element while the program is compiled. A read moves an element out only when the index is a compile-time constant and the indexing applies directly to an array variable or by-value array parameter (3.8:68); every other consuming read is E0904 (7.1:28) — a runtime index, or an array reached through another projection or produced by an expression. The restriction is a soundness requirement rather than a convenience: with a runtime index the compiler cannot know which element moved, so neither use-after-move checking nor drop elaboration could stay correct. The same diagnostic covers a value-context projection with a declared-`linear` prefix even when the selected element is `Copy`, because such a read destructures the smallest enclosing declared-linear place (3.8:33) and a runtime index cannot identify the place whose residue would have to be disposed of.",
+        likely_cause: "A non-Copy element was consumed through a computed index, as in `take(xs[i])` for a runtime `i`. Index with a literal or a named compile-time constant when the element is known; otherwise borrow the element instead of moving it, so it stays in the array, or move the whole array by value and consume its elements at constant indices. Iteration is not affected by this rule: a `for` loop binds each element by shared borrow rather than moving it out.",
+        examples: [
+            ErrorCodeExample { title: "Move an element out at a runtime index", source: "struct Data { value: i32 }\n\nfn take(d: Data) -> i32 { d.value }\n\nfn pick() -> u64 { 0 }\n\nfn main() -> i32 {\n    let xs: [Data; 2] = [Data { value: 1 }, Data { value: 2 }];\n    let index = pick();\n    take(xs[index])\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Move an element out at a constant index", source: "struct Data { value: i32 }\n\nfn take(d: Data) -> i32 { d.value }\n\nfn main() -> i32 {\n    let xs: [Data; 2] = [Data { value: 1 }, Data { value: 2 }];\n    take(xs[1])\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Constant-index element moves", path: "docs/spec/src/03-types/08-move-semantics.md", rule: Some("3.8:68") },
+            ErrorCodeReference { title: "Untrackable index projections", path: "docs/spec/src/07-arrays/01-fixed-arrays.md", rule: Some("7.1:28") },
+            ErrorCodeReference { title: "Destructuring a declared-linear place", path: "docs/spec/src/03-types/08-move-semantics.md", rule: Some("3.8:33") },
+        ],
+    };
+    /// Array-repeat literal `[value; count]` whose element type is not Copy
+    /// (7.1:38, RUE-235). The repeat materializes `count` copies of one
+    /// value, so the element type must be copyable.
+    ARRAY_REPEAT_NON_COPY = 905 => {
+        explanation: "The repeat form `[value; count]` materializes `count` copies of a single value: the value expression is evaluated exactly once and its result is copied into each slot (7.1:39). Copying is only well-defined when the element type is `Copy`, so a repeat literal requires one (7.1:38); E0905 names the element type that is not. Rue's `Copy` types are the integer types, `bool`, the unit type, the first-class string types, discriminant-only enums, and arrays of Copy elements (3.8:2); a user-defined struct is a move type by default however small its fields are (3.8:3), and opts in with the `@copy` directive (3.8:14). The list form `[a, b, c]` carries no such requirement — each element is a separate value-context use, so non-Copy elements can be moved into it one at a time.",
+        likely_cause: "The repeated value's type is a struct that is not marked `@copy`, or an aggregate holding such a struct. Mark the struct `@copy` when every field is itself Copy and the type has no destructor, or write the list form and move a distinct value into each position. An element type with a destructor or a must-consume obligation can never be `Copy`, so those must use the list form.",
+        examples: [
+            ErrorCodeExample { title: "Repeat a move-type element", source: "struct Data { value: i32 }\n\nfn main() -> i32 {\n    let d = Data { value: 1 };\n    let xs = [d; 3];\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Declare the element type Copy", source: "@copy\nstruct Data { value: i32 }\n\nfn main() -> i32 {\n    let d = Data { value: 1 };\n    let xs = [d; 3];\n    xs[0].value + xs[1].value + xs[2].value\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Repeat literals require a Copy element", path: "docs/spec/src/07-arrays/01-fixed-arrays.md", rule: Some("7.1:38") },
+            ErrorCodeReference { title: "A repeat evaluates its value once", path: "docs/spec/src/07-arrays/01-fixed-arrays.md", rule: Some("7.1:39") },
+            ErrorCodeReference { title: "The @copy directive", path: "docs/spec/src/03-types/08-move-semantics.md", rule: Some("3.8:14") },
+        ],
+    };
+    /// A type's layout exceeds the implementation's maximum object size
+    /// (C.4:3; RUE-561 — unchecked u32 slot arithmetic previously ICEd on
+    /// 2 GiB arrays and silently truncated 32 GiB ones to zero-sized).
+    ///
+    /// The limit that is actually enforced is a count of 8-byte ABI slots, not
+    /// a byte total, and the message names the slot ceiling so it reports the
+    /// limit the compiler checks, as C.1:2 requires (RUE-1272).
+    TYPE_TOO_LARGE = 906 => {
+        explanation: "Rue rejects a type whose layout needs more than 268,435,455 ABI slots, the object-size ceiling published in C.4:3. The ceiling is the code generator's frame-offset addressing range — `i32::MAX`, 2,147,483,647 bytes — divided by the 8-byte slot width, so any layout that fits it is addressable by a signed 32-bit displacement. The check counts slots and not bytes: a layout spends one 8-byte slot per scalar, per struct field, and per array element whatever the element's own width (C.4:2), so `[i8; N]` and `[i64; N]` reach the ceiling at the same `N` and a narrow element type buys no headroom. E0906 is raised wherever a value of the type would be materialized — a local, a by-value parameter, a temporary, an array-repeat literal, or a `@size_of`/`@align_of` query — and the message names the slot ceiling rather than a byte figure. Exceeding the limit is a diagnosable failure by policy (C.1:2): the compiler reports it instead of wrapping the slot arithmetic or truncating the layout.",
+        likely_cause: "An array length (or a nested array's element count times its length) puts the type over 268,435,455 elements' worth of slots. Reduce the length, or hold the data behind a run of storage that is not a single frame-resident object. A layout close to the ceiling is also close to the per-function storage budget that E0907 checks, so shrinking the type usually resolves both. Note that the byte size can look small and still be rejected: `[i8; 268435456]` is about 256 MiB of data but 268,435,456 slots, one past the ceiling.",
+        examples: [
+            ErrorCodeExample { title: "One element past the slot ceiling", source: "fn main() -> i32 { @size_of([i8; 268435456]) }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "A layout at the slot ceiling", source: "fn main() -> i32 { @size_of([i8; 268435455]) }", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "The ABI-slot object ceiling", path: "docs/spec/src/appendices/C-implementation-limits.md", rule: Some("C.4:3") },
+            ErrorCodeReference { title: "Slots, not bytes, bound an array", path: "docs/spec/src/appendices/C-implementation-limits.md", rule: Some("C.4:2") },
+            ErrorCodeReference { title: "Implementation limits are diagnosed", path: "docs/spec/src/appendices/C-implementation-limits.md", rule: Some("C.1:2") },
+            ErrorCodeReference { title: "Canonical physical type layout", path: "docs/designs/0052-canonical-physical-type-layout.md", rule: None },
+        ],
+    };
+    /// A function's cumulative locals, parameter homes, sret cell, spills, or
+    /// transient outgoing call area exceeds the backend displacement budget
+    /// of 2,147,483,632 bytes (C.4:3, RUE-780).
+    FUNCTION_FRAME_TOO_LARGE = 907 => {
+        explanation: "Every function's storage is addressed by signed 32-bit displacements from its frame pointer, so the cumulative storage of one function is limited to 2,147,483,632 bytes — the largest 16-byte-aligned value inside that range (C.4:3). Locals, parameter homes, hidden return storage, register-allocation spills, and the simultaneous outgoing call area all draw on that one checked budget, and E0907 reports the reservation that would take it over; the message names the byte ceiling. The budget is cumulative, which is what distinguishes E0907 from E0906: each individual type in the function may be within the object-size ceiling of 268,435,455 slots and the function still be rejected because their sum is not. The check runs during semantic analysis, before any machine code is generated, so it is the same on every supported target.",
+        likely_cause: "One very large frame-resident object, or many merely large ones in the same body, exceeded the function's storage budget. Shrink the largest local — an array length is usually the driver — or split the body so that separately-lived objects live in separate functions rather than sharing one frame. A large object passed by value is reserved twice over — once in the caller's outgoing call area and again in the callee's parameter home — while a `borrow` parameter costs one pointer-sized slot in each.",
+        examples: [
+            ErrorCodeExample { title: "A local one slot past the frame budget", source: "fn main() -> i32 {\n    let xs: [[i8; 16383]; 16385] = [[0; 16383]; 16385];\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Keep the frame inside the budget", source: "fn main() -> i32 {\n    let xs: [[i8; 1024]; 16] = [[0; 1024]; 16];\n    @intCast(xs[0][0])\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Cumulative storage of one function", path: "docs/spec/src/appendices/C-implementation-limits.md", rule: Some("C.4:3") },
+            ErrorCodeReference { title: "Implementation capacity limits", path: "docs/spec/src/appendices/C-implementation-limits.md", rule: Some("C.6:1") },
+            ErrorCodeReference { title: "Implementation limits are diagnosed", path: "docs/spec/src/appendices/C-implementation-limits.md", rule: Some("C.1:2") },
+        ],
+    };
     /// A frame array with non-slot-width elements cannot yet be borrowed as a
     /// slice because slice pointer semantics use the compact element image
     /// while frames keep a full-slot representation (RUE-1595).
-    SLICE_FRAME_ARRAY_NOT_SUPPORTED = 908;
+    SLICE_FRAME_ARRAY_NOT_SUPPORTED = 908 => {
+        explanation: "The fixed-array-to-slice coercion materializes a two-word view — the address of element `0` and the length — and hands it to a `borrow [T]` parameter (7.2:12). A view strides by the element type's own size, while a frame-resident array still keeps one full 8-byte slot per element, so for an element whose compact image is not slot-identical the two strides disagree and the view would read the wrong addresses. E0908 refuses that coercion at the argument and names the element type (7.2:14). Non-slot-identical means an element narrower than a slot, such as `i32` or `u8`, or an aggregate holding such a field; an element built only from slot-width fields is slot-identical and coerces however many fields it has. An empty array is exempt, because a zero-length view's pointer word is never dereferenced. This is a transitional limit of the current implementation tracked by RUE-1595, not a property of the slice type: it is lifted when arrays adopt the compact element representation. An operand that is not a whole array place, or whose element type merely converts to the slice's, is a different failure — a type mismatch under 7.2:13.",
+        likely_cause: "A local array of a narrow element type was passed to a `borrow [T]` parameter, as in `head(borrow xs)` for `xs: [i32; 3]`. Until the restriction is lifted, either widen the element type to a slot-width one — `[i64; N]` coerces, and so does an element struct whose every field is slot-width — or take the fixed array itself as a `borrow [T; N]` parameter, which passes one pointer and needs no view. An empty array of any element type still coerces.",
+        examples: [
+            ErrorCodeExample { title: "Borrow a narrow-element frame array as a slice", source: "fn head(borrow s: [i32]) -> i32 { s[0] }\n\nfn main() -> i32 {\n    let xs: [i32; 3] = [42, 1, 2];\n    head(borrow xs)\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Coerce a slot-width element type", source: "fn head(borrow s: [i64]) -> i32 { @intCast(s[0]) }\n\nfn main() -> i32 {\n    let xs: [i64; 3] = [42, 1, 2];\n    head(borrow xs)\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Non-slot-width elements do not coerce", path: "docs/spec/src/07-arrays/02-slices.md", rule: Some("7.2:14") },
+            ErrorCodeReference { title: "Fixed-array-to-slice coercion", path: "docs/spec/src/07-arrays/02-slices.md", rule: Some("7.2:12") },
+            ErrorCodeReference { title: "Coercion operand legality", path: "docs/spec/src/07-arrays/02-slices.md", rule: Some("7.2:13") },
+            ErrorCodeReference { title: "The fixed/slice/growable type trio", path: "docs/designs/0043-collection-string-type-trio.md", rule: None },
+        ],
+    };
 
     // ------------------------------------------------------------------
     // Bit-reinterpretation errors (E0950-E0959)
@@ -4613,6 +4754,48 @@ mod tests {
             .iter()
             .filter_map(|declaration| {
                 (800..=802)
+                    .contains(&declaration.code.0)
+                    .then_some(declaration.code)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(explained, expected);
+        assert!(
+            expected
+                .into_iter()
+                .all(|code| error_code_explanation(code).is_some())
+        );
+    }
+
+    #[test]
+    fn active_array_explanation_band_is_complete_and_bounded() {
+        let expected = [
+            ErrorCode::INDEX_ON_NON_ARRAY,
+            ErrorCode::ARRAY_LENGTH_MISMATCH,
+            ErrorCode::INDEX_OUT_OF_BOUNDS,
+            ErrorCode::TYPE_ANNOTATION_REQUIRED,
+            ErrorCode::MOVE_OUT_OF_INDEX,
+            ErrorCode::ARRAY_REPEAT_NON_COPY,
+            ErrorCode::TYPE_TOO_LARGE,
+            ErrorCode::FUNCTION_FRAME_TOO_LARGE,
+            ErrorCode::SLICE_FRAME_ARRAY_NOT_SUPPORTED,
+        ];
+        // The array category spans 900..=999, but its 950..=959
+        // bit-reinterpretation sub-band has its own guard above. Bounding this
+        // one at 949 keeps the two exact-set assertions disjoint while still
+        // failing on any new code added to the array tranche itself.
+        let active = error_code_metadata()
+            .iter()
+            .filter(|metadata| (900..=949).contains(&metadata.code.0))
+            .map(|metadata| {
+                assert_eq!(metadata.source_path, "crates/rue-error/src/lib.rs");
+                metadata.code
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(active, expected);
+        let explained = ERROR_CODE_EXPLANATION_DECLARATIONS
+            .iter()
+            .filter_map(|declaration| {
+                (900..=949)
                     .contains(&declaration.code.0)
                     .then_some(declaration.code)
             })

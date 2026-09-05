@@ -732,6 +732,93 @@ compile_stdout_contains = ["E0802: Chained comparison", "Chain two comparisons:"
 compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
+# The array tranche covers every active code in E0900-E0908: indexing legality
+# and bounds, array literal shape and element-type inference, per-element move
+# tracking, the repeat literal's Copy requirement, the two object-size and
+# frame-size implementation limits, and the transitional slice-coercion
+# restriction. Invalid source pins each invocation as a non-compiling metadata
+# path.
+[[case]]
+name = "index_on_non_array_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0900"]
+compile_only = true
+compile_stdout_contains = ["E0900: Index on non array", "Index a value that is not a sequence:", "Index the array that holds the elements:", "docs/spec/src/04-expressions/11-index-expressions.md (spec rule 4.11:3)", "docs/spec/src/07-arrays/02-slices.md (spec rule 7.2:20)", "docs/spec/src/03-types/07-string-type.md (spec rule 3.7:16)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "array_length_mismatch_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0901"]
+compile_only = true
+compile_stdout_contains = ["E0901: Array length mismatch", "An array literal shorter than its annotation:", "Match the declared length:", "docs/spec/src/07-arrays/01-fixed-arrays.md (spec rule 7.1:4)", "docs/spec/src/03-types/05-array-types.md (spec rule 3.5:1)", "docs/spec/src/03-types/05-array-types.md (spec rule 3.5:2)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "index_out_of_bounds_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0902"]
+compile_only = true
+compile_stdout_contains = ["E0902: Index out of bounds", "A constant index past the last element:", "Index the last valid position:", "docs/spec/src/04-expressions/11-index-expressions.md (spec rule 4.11:7)", "docs/spec/src/04-expressions/11-index-expressions.md (spec rule 4.11:8)", "docs/spec/src/07-arrays/02-slices.md (spec rule 7.2:22)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "type_annotation_required_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0903"]
+compile_only = true
+compile_stdout_contains = ["E0903: Type annotation required", "An empty array literal with no context:", "Annotate the element type:", "docs/spec/src/03-types/11-type-inference.md (spec rule 3.11:2)", "docs/spec/src/03-types/11-type-inference.md (spec rule 3.11:4)", "docs/spec/src/07-arrays/01-fixed-arrays.md (spec rule 7.1:2)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "move_out_of_index_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0904"]
+compile_only = true
+compile_stdout_contains = ["E0904: Move out of index", "Move an element out at a runtime index:", "Move an element out at a constant index:", "docs/spec/src/03-types/08-move-semantics.md (spec rule 3.8:68)", "docs/spec/src/07-arrays/01-fixed-arrays.md (spec rule 7.1:28)", "docs/spec/src/03-types/08-move-semantics.md (spec rule 3.8:33)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "array_repeat_non_copy_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0905"]
+compile_only = true
+compile_stdout_contains = ["E0905: Array repeat non copy", "Repeat a move-type element:", "Declare the element type Copy:", "docs/spec/src/07-arrays/01-fixed-arrays.md (spec rule 7.1:38)", "docs/spec/src/07-arrays/01-fixed-arrays.md (spec rule 7.1:39)", "docs/spec/src/03-types/08-move-semantics.md (spec rule 3.8:14)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "type_too_large_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0906"]
+compile_only = true
+compile_stdout_contains = ["E0906: Type too large", "268,435,455 ABI slots", "One element past the slot ceiling:", "A layout at the slot ceiling:", "docs/spec/src/appendices/C-implementation-limits.md (spec rule C.4:3)", "docs/spec/src/appendices/C-implementation-limits.md (spec rule C.4:2)", "docs/spec/src/appendices/C-implementation-limits.md (spec rule C.1:2)", "docs/designs/0052-canonical-physical-type-layout.md"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "function_frame_too_large_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0907"]
+compile_only = true
+compile_stdout_contains = ["E0907: Function frame too large", "2,147,483,632 bytes", "A local one slot past the frame budget:", "Keep the frame inside the budget:", "docs/spec/src/appendices/C-implementation-limits.md (spec rule C.4:3)", "docs/spec/src/appendices/C-implementation-limits.md (spec rule C.6:1)", "docs/spec/src/appendices/C-implementation-limits.md (spec rule C.1:2)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "slice_frame_array_not_supported_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0908"]
+compile_only = true
+compile_stdout_contains = ["E0908: Slice frame array not supported", "transitional limit", "RUE-1595", "Borrow a narrow-element frame array as a slice:", "Coerce a slot-width element type:", "docs/spec/src/07-arrays/02-slices.md (spec rule 7.2:14)", "docs/spec/src/07-arrays/02-slices.md (spec rule 7.2:12)", "docs/spec/src/07-arrays/02-slices.md (spec rule 7.2:13)", "docs/designs/0043-collection-string-type-trio.md"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
 # The bit-reinterpretation tranche covers the sole active code in E0950-E0959:
 # the same-width requirement of `@bitCast`. Invalid source pins the invocation
 # as a non-compiling metadata path.
