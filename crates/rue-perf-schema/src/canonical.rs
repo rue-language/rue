@@ -1,11 +1,13 @@
-//! Canonical serialization and content addressing.
+//! Key-sorted serialization, content addressing, and the reporting form.
 //!
 //! A run object's name is the SHA-256 digest of its canonical form. For that
 //! name to be stable, serialization must be a function of the value alone:
 //! object keys sorted, no insignificant whitespace, and no floating-point
 //! numbers anywhere. The float rule is the reason raw records hold integer
 //! nanoseconds and integer bytes — hashing must never depend on how some
-//! writer chose to format `0.1`.
+//! writer chose to format `0.1`. Reports that are read rather than hashed —
+//! the `--benchmark-json` envelope above all — keep the sorted-key shape but
+//! may carry floats, and take [`sorted_json`] instead.
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -53,7 +55,25 @@ pub fn canonical_json<T: Serialize + ?Sized>(value: &T) -> Result<String, Canoni
         detail: error.to_string(),
     })?;
     let mut out = String::new();
-    write_canonical(&value, "", &mut out)?;
+    write_sorted(&value, "", &mut out, Floats::Rejected)?;
+    Ok(out)
+}
+
+/// Serialize a value to key-sorted compact JSON, floating-point numbers
+/// included.
+///
+/// This is the shape a published report takes on the wire: the same object
+/// keys in the same order whatever a producer's field declaration order
+/// happens to be, so a consumer diffing two reports sees only real changes.
+/// Unlike [`canonical_json`] it is not a content-addressing form — a float's
+/// text is a formatting decision, so a digest over these bytes would not be a
+/// function of the value alone.
+pub fn sorted_json<T: Serialize + ?Sized>(value: &T) -> Result<String, CanonicalError> {
+    let value = serde_json::to_value(value).map_err(|error| CanonicalError::NotSerializable {
+        detail: error.to_string(),
+    })?;
+    let mut out = String::new();
+    write_sorted(&value, "", &mut out, Floats::Permitted)?;
     Ok(out)
 }
 
@@ -69,10 +89,20 @@ pub fn content_address<T: Serialize + ?Sized>(value: &T) -> Result<String, Canon
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn write_canonical(
+/// Whether a writer may emit a floating-point number or must refuse one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Floats {
+    /// Content addressing: a float is an error, located by JSON pointer.
+    Rejected,
+    /// Reporting: a float is written exactly as `serde_json` would write it.
+    Permitted,
+}
+
+fn write_sorted(
     value: &serde_json::Value,
     path: &str,
     out: &mut String,
+    floats: Floats,
 ) -> Result<(), CanonicalError> {
     match value {
         serde_json::Value::Null => out.push_str("null"),
@@ -83,6 +113,11 @@ fn write_canonical(
                 out.push_str(&unsigned.to_string());
             } else if let Some(signed) = number.as_i64() {
                 out.push_str(&signed.to_string());
+            } else if floats == Floats::Permitted {
+                // `Number`'s `Display` is the serializer's own float
+                // formatting, so a permitted float reads exactly as
+                // `serde_json` would have written it.
+                out.push_str(&number.to_string());
             } else {
                 return Err(CanonicalError::FloatingPoint {
                     path: if path.is_empty() {
@@ -108,7 +143,7 @@ fn write_canonical(
                 if index > 0 {
                     out.push(',');
                 }
-                write_canonical(item, &format!("{path}/{index}"), out)?;
+                write_sorted(item, &format!("{path}/{index}"), out, floats)?;
             }
             out.push(']');
         }
@@ -131,7 +166,7 @@ fn write_canonical(
                 out.push_str(&encoded);
                 out.push(':');
                 let child = entries.get(key).expect("key came from this map");
-                write_canonical(child, &format!("{path}/{key}"), out)?;
+                write_sorted(child, &format!("{path}/{key}"), out, floats)?;
             }
             out.push('}');
         }
@@ -185,6 +220,22 @@ mod tests {
     fn non_ascii_keys_sort_by_scalar_sequence() {
         let canonical = canonical_json(&json!({"é": 1, "e": 2, "z": 3})).unwrap();
         assert_eq!(canonical, "{\"e\":2,\"z\":3,\"\u{e9}\":1}");
+    }
+
+    #[test]
+    fn the_reporting_form_sorts_keys_and_keeps_floats() {
+        let report = sorted_json(&json!({"b": 0.5, "a": {"d": 1, "c": [2.25]}})).unwrap();
+        assert_eq!(report, r#"{"a":{"c":[2.25],"d":1},"b":0.5}"#);
+    }
+
+    #[test]
+    fn the_reporting_form_writes_floats_as_serde_json_does() {
+        // The wire bytes must not depend on which writer produced them.
+        let value = json!({"a": 0.1, "b": 1.0, "c": 1e300, "d": -0.0});
+        assert_eq!(
+            sorted_json(&value).unwrap(),
+            serde_json::to_string(&value).unwrap()
+        );
     }
 
     #[test]

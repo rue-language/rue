@@ -37,7 +37,8 @@ use rue_perf_schema::{
     PeerObservation, PeerPolicy, PeerRole, PeerThreadPolicy, ProgramIdentity, RUNTIME_RECORD_KIND,
     RUNTIME_REPORT_SCHEMA_VERSION, RecordedInput, RuntimeCompleteness, RuntimeEpoch,
     RuntimeFailure, RuntimeIdentity, RuntimeManifest, RuntimeObservation, RuntimeRegime,
-    RuntimeReport, RuntimeSample, RuntimeSuiteRevision, RuntimeWorkload, validate_runtime_report,
+    RuntimeReport, RuntimeSample, RuntimeSuiteRevision, RuntimeWorkload, utc_timestamp,
+    validate_runtime_report,
 };
 
 use crate::digest::sha256_bytes as sha256;
@@ -202,7 +203,7 @@ pub fn run() -> Result<u8, String> {
         }
     };
 
-    let started_at = crate::utc_timestamp();
+    let started_at = utc_timestamp();
     let compiler_version = compiler_version(&options.compiler)?;
     let toolchain_hash =
         pins::toolchain_hash(&options.repo_root).map_err(|error| error.to_string())?;
@@ -255,7 +256,7 @@ pub fn run() -> Result<u8, String> {
             commit: options.commit.clone(),
             compiler_version,
             started_at,
-            finished_at: crate::utc_timestamp(),
+            finished_at: utc_timestamp(),
             toolchain_hash,
             stdlib_hash,
             workload_source_hashes,

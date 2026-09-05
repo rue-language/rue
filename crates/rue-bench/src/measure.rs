@@ -20,9 +20,9 @@ use std::time::Instant;
 
 use crate::digest::{sha256_bytes, sha256_file};
 use rue_perf_schema::{
-    BuildBoundaryEvidence, BuildBoundaryPolicy, CompilerBoundaryEvidence,
-    CompilerCriticalPathEvidence, CompilerInputClass, CompilerWork, FailureRecord, PhaseAccounting,
-    RunnerBoundaryEvidence, RunnerClockBoundary, Sample, WorkloadShape,
+    BenchmarkReport, BuildBoundaryEvidence, BuildBoundaryPolicy, CompilerBoundaryEvidence,
+    CompilerInputClass, CompilerWork, FailureRecord, PhaseAccounting, RunnerBoundaryEvidence,
+    RunnerClockBoundary, Sample, WorkloadShape,
 };
 
 static PROCESS_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -63,66 +63,6 @@ pub enum SampleOutcome {
     Measured(Box<Sample>),
     /// The sample could not be produced, with structured evidence of why.
     Failed(Box<FailureRecord>),
-}
-
-/// The compiler's `--benchmark-json` output.
-#[derive(serde::Deserialize)]
-struct BenchmarkJson {
-    #[serde(
-        rename = "schema_version",
-        deserialize_with = "deserialize_benchmark_schema_version"
-    )]
-    // The custom deserializer validates this wire field; the benchmark
-    // consumer otherwise has no need to retain the already-checked value.
-    _schema_version: u32,
-    phase_accounting: PhaseAccounting,
-    metadata: BenchmarkMetadata,
-    source_metrics: SourceMetrics,
-    compiler_work: CompilerWork,
-    emitted_output: EmittedOutput,
-    #[serde(default)]
-    compiler_boundary: Option<CompilerBoundaryEvidence>,
-    #[serde(default)]
-    critical_path: Option<CompilerCriticalPathEvidence>,
-}
-
-const BENCHMARK_JSON_SCHEMA_VERSION: u32 = 19;
-
-fn deserialize_benchmark_schema_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::Error;
-
-    let version = <u32 as serde::Deserialize>::deserialize(deserializer)?;
-    if version != BENCHMARK_JSON_SCHEMA_VERSION {
-        return Err(D::Error::custom(format!(
-            "unsupported benchmark JSON schema version {version}; expected {BENCHMARK_JSON_SCHEMA_VERSION}"
-        )));
-    }
-    Ok(version)
-}
-
-#[derive(serde::Deserialize)]
-struct BenchmarkMetadata {
-    target: String,
-    compiler_build_profile: String,
-}
-
-#[derive(serde::Deserialize)]
-struct SourceMetrics {
-    files: u64,
-    modules: u64,
-    bytes: u64,
-    lines: u64,
-    tokens: u64,
-    functions: u64,
-}
-
-#[derive(serde::Deserialize)]
-struct EmittedOutput {
-    size_bytes: u64,
-    sha256: String,
 }
 
 struct CompletedCompile {
@@ -332,10 +272,22 @@ fn run_once(request: &SampleRequest<'_>) -> Result<CompletedCompile, String> {
         ));
     }
 
-    let parsed: BenchmarkJson = serde_json::from_str(stdout.trim()).map_err(|error| {
+    let parsed: BenchmarkReport = serde_json::from_str(stdout.trim()).map_err(|error| {
         let tail: String = stderr.lines().rev().take(5).collect::<Vec<_>>().join("\n");
         format!("no benchmark JSON on stdout ({error}); stderr tail:\n{tail}")
     })?;
+    // Every section below is optional on the wire, because a driver path that
+    // measured less still publishes a valid report. A sample is not a sample
+    // without them, so the runner is where their absence is refused.
+    let emitted_output = parsed
+        .emitted_output
+        .ok_or_else(|| "compiler omitted the emitted-output digest".to_string())?;
+    let source_metrics = parsed
+        .source_metrics
+        .ok_or_else(|| "compiler omitted source metrics".to_string())?;
+    let compiler_work = parsed
+        .compiler_work
+        .ok_or_else(|| "compiler omitted compiler-work counters".to_string())?;
     let output_bytes = fs::read(&output_path)
         .map_err(|error| format!("could not read compiler output for verification: {error}"))?;
     if output_bytes.is_empty()
@@ -348,9 +300,7 @@ fn run_once(request: &SampleRequest<'_>) -> Result<CompletedCompile, String> {
     }
     let output_sha256 = sha256_bytes(&output_bytes);
     let output_binary_bytes = u64::try_from(output_bytes.len()).unwrap_or(u64::MAX);
-    if parsed.emitted_output.sha256 != output_sha256
-        || parsed.emitted_output.size_bytes != output_binary_bytes
-    {
+    if emitted_output.sha256 != output_sha256 || emitted_output.size_bytes != output_binary_bytes {
         return Err("compiler and runner disagree about emitted output bytes".to_string());
     }
     if !directory_contains_only(&output_directory, &output_path)? {
@@ -391,7 +341,7 @@ fn run_once(request: &SampleRequest<'_>) -> Result<CompletedCompile, String> {
                 },
                 compiler,
                 critical_path,
-                compiler_work: parsed.compiler_work.clone(),
+                compiler_work: compiler_work.clone(),
             };
             let expected_target = request.target.ok_or_else(|| {
                 "boundary policy has no independently declared target".to_string()
@@ -407,17 +357,10 @@ fn run_once(request: &SampleRequest<'_>) -> Result<CompletedCompile, String> {
         accounting: parsed.phase_accounting,
         peak_memory_bytes: peak,
         output_binary_bytes,
-        shape: WorkloadShape {
-            files: parsed.source_metrics.files,
-            modules: parsed.source_metrics.modules,
-            bytes: parsed.source_metrics.bytes,
-            lines: parsed.source_metrics.lines,
-            tokens: parsed.source_metrics.tokens,
-            functions: parsed.source_metrics.functions,
-        },
+        shape: source_metrics,
         target: parsed.metadata.target,
         compiler_build_profile: parsed.metadata.compiler_build_profile,
-        compiler_work: parsed.compiler_work,
+        compiler_work,
         process_elapsed_ns,
         output_sha256,
         boundary_evidence,
@@ -608,36 +551,78 @@ fn max_rss_bytes(ru_maxrss: libc::c_long) -> u64 {
 mod tests {
     use std::collections::BTreeMap;
 
-    use rue_perf_schema::Phase;
+    use rue_perf_schema::{
+        BENCHMARK_JSON_SCHEMA_VERSION, BENCHMARK_TIMING_MODEL, BenchmarkMetadata, EmittedOutput,
+        Phase,
+    };
 
     use super::*;
 
-    #[test]
-    fn benchmark_json_schema_16_is_rejected() {
-        let error = serde_json::from_str::<BenchmarkJson>(r#"{"schema_version":16}"#)
-            .err()
-            .expect("retired benchmark JSON schema must be rejected");
-        assert!(error.to_string().contains("expected 19"));
+    /// A report shaped like the compiler's, built through the shared producer
+    /// type rather than by hand: the fixture this replaced could keep spelling
+    /// a field the compiler had renamed, and still pass.
+    fn published_report() -> String {
+        BenchmarkReport {
+            schema_version: BENCHMARK_JSON_SCHEMA_VERSION,
+            timing_model: BENCHMARK_TIMING_MODEL.to_string(),
+            phase_accounting: PhaseAccounting {
+                phase_ns: BTreeMap::new(),
+                mixed_parallel_ns: 0,
+                unattributed_ns: 0,
+                compiler_root_ns: 0,
+            },
+            metadata: BenchmarkMetadata {
+                timestamp: "2026-01-02T03:04:05Z".to_string(),
+                version: "0.1.0".to_string(),
+                target: "x86_64-linux".to_string(),
+                compiler_build_profile: "test".to_string(),
+            },
+            passes: Vec::new(),
+            driver_phases: Vec::new(),
+            total_ms: 0.0,
+            source_metrics: Some(WorkloadShape {
+                files: 1,
+                modules: 1,
+                bytes: 24,
+                lines: 1,
+                tokens: 9,
+                functions: 1,
+            }),
+            compiler_work: Some(CompilerWork::default()),
+            peak_memory_bytes: None,
+            emitted_output: Some(EmittedOutput::of(b"artifact")),
+            compiler_boundary: None,
+            critical_path: None,
+            compiler_allocations: None,
+        }
+        .to_wire_json()
+        .expect("a benchmark report renders")
     }
 
     #[test]
-    fn benchmark_json_schema_19_is_accepted_by_the_parser() {
-        let phase_accounting = PhaseAccounting {
-            phase_ns: BTreeMap::new(),
-            mixed_parallel_ns: 0,
-            unattributed_ns: 0,
-            compiler_root_ns: 0,
-        };
-        let value = serde_json::json!({
-            "schema_version": 19,
-            "phase_accounting": phase_accounting,
-            "metadata": {"target": "x86_64-linux", "compiler_build_profile": "test"},
-            "source_metrics": {"files": 0, "modules": 0, "bytes": 0, "lines": 0, "tokens": 0, "functions": 0},
-            "compiler_work": CompilerWork::default(),
-            "emitted_output": {"size_bytes": 0, "sha256": ""}
-        });
-        let parsed: BenchmarkJson = serde_json::from_value(value).expect("schema 19 parses");
-        assert_eq!(parsed._schema_version, BENCHMARK_JSON_SCHEMA_VERSION);
+    fn a_retired_benchmark_json_schema_is_rejected() {
+        let error = serde_json::from_str::<BenchmarkReport>(r#"{"schema_version":16}"#)
+            .err()
+            .expect("retired benchmark JSON schema must be rejected");
+        assert!(error.to_string().contains("expected 19"), "{error}");
+    }
+
+    #[test]
+    fn the_current_schema_is_accepted_by_the_parser() {
+        let parsed: BenchmarkReport =
+            serde_json::from_str(&published_report()).expect("the current schema parses");
+        assert_eq!(parsed.schema_version, BENCHMARK_JSON_SCHEMA_VERSION);
+        assert_eq!(
+            parsed.source_metrics.expect("source metrics survive").bytes,
+            24
+        );
+        assert_eq!(
+            parsed
+                .emitted_output
+                .expect("an emitted-output digest survives")
+                .size_bytes,
+            8
+        );
     }
 
     fn accounting(root_ns: u64, semantic_ns: u64, unattributed_ns: u64) -> PhaseAccounting {

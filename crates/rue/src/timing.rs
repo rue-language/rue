@@ -17,8 +17,9 @@
 //!    buffers.
 //!
 //! 3. **Reporting**: After compilation, `TimingData::report()` formats the collected
-//!    timing as a human-readable table. For machine-readable output, use
-//!    `TimingData::to_json()`.
+//!    timing as a human-readable table. For machine-readable output,
+//!    `TimingData::to_benchmark_report()` fills in the `rue-perf-schema`
+//!    envelope that `--benchmark-json` publishes.
 //!
 //! # Two timing models, kept distinct
 //!
@@ -30,7 +31,7 @@
 //! concurrently across query workers. Summing them double-counts, which is why
 //! the root total is a union of active intervals rather than a sum.
 //!
-//! **Wall-clock phase accounting** is [`BenchmarkTiming::phase_accounting`]. A
+//! **Wall-clock phase accounting** is `BenchmarkReport::phase_accounting`. A
 //! small set of explicitly instrumented, mutually exclusive phases partitions
 //! compiler-root wall time so that, in exact integer nanoseconds:
 //!
@@ -87,8 +88,9 @@
 //! // Print the timing report
 //! eprintln!("{}", timing_data.report());
 //!
-//! // Or get JSON for benchmarking
-//! println!("{}", timing_data.to_json());
+//! // Or fill in the machine-readable envelope for benchmarking
+//! let report = timing_data.to_benchmark_report(target, version, None, None, None);
+//! println!("{}", report.to_wire_json().unwrap());
 //! ```
 
 use std::cell::RefCell;
@@ -96,7 +98,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 #[cfg(test)]
 use std::thread::ThreadId;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 #[cfg(rue_release_build)]
 const COMPILER_BUILD_PROFILE: &str = "release_thin_lto";
@@ -104,8 +106,11 @@ const COMPILER_BUILD_PROFILE: &str = "release_thin_lto";
 const COMPILER_BUILD_PROFILE: &str = "debug";
 
 use ahash::AHashMap;
-use rue_perf_schema::{CompilerWork, DurationDistribution, Phase, PhaseAccounting};
-use serde::Serialize;
+use rue_perf_schema::{
+    BENCHMARK_JSON_SCHEMA_VERSION, BENCHMARK_TIMING_MODEL, BenchmarkDriverPhase, BenchmarkMetadata,
+    BenchmarkPass, BenchmarkReport, CompilerWork, DurationDistribution, Phase, PhaseAccounting,
+    WorkloadShape, utc_timestamp,
+};
 
 use tracing::span::{Attributes, Id};
 use tracing::{Event, Subscriber};
@@ -297,107 +302,6 @@ fn merge_driver_phase(
     let aggregate = target.entry(name).or_default();
     aggregate.duration += local.duration;
     aggregate.invocations += local.invocations;
-}
-
-/// JSON output structure for benchmark timing data.
-///
-/// This structure is designed for machine-readable output that can be
-/// consumed by the benchmark runner and visualization tools. It includes
-/// metadata for historical analysis and comparison across runs.
-#[derive(Debug, Clone, Serialize)]
-pub struct BenchmarkTiming {
-    /// Version of this machine-readable timing contract.
-    pub schema_version: u32,
-    /// Pass durations are inclusive and may overlap their parents.
-    pub timing_model: &'static str,
-    /// The additive wall-clock partition of compiler-root time.
-    ///
-    /// This is the only model that may be stacked. Its integer nanoseconds
-    /// satisfy `sum(phase_ns) + mixed_parallel_ns + unattributed_ns ==
-    /// compiler_root_ns` exactly. The `passes` table below is the *other*
-    /// model — inclusive spans that nest and overlap — and the two must never
-    /// be mixed in one visualization.
-    pub phase_accounting: PhaseAccounting,
-    /// Metadata about this benchmark run.
-    pub metadata: BenchmarkMetadata,
-    /// Individual pass timings in milliseconds.
-    pub passes: Vec<PassTiming>,
-    /// Driver-side phases measured outside the compiler's timing root.
-    ///
-    /// These break down `process - total_ms`, never `total_ms` itself, so they
-    /// must not be added to the pass table. The field is omitted entirely when
-    /// the run measured no driver phase.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub driver_phases: Vec<DriverPhaseTiming>,
-    /// Total compilation time in milliseconds.
-    pub total_ms: f64,
-    /// Source and program-shape metrics for throughput calculations.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_metrics: Option<SourceMetrics>,
-    /// Deterministic compiler work independent of host timing.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub compiler_work: Option<CompilerWork>,
-    /// Peak memory usage in bytes (if available).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub peak_memory_bytes: Option<u64>,
-}
-
-/// Source and program-shape metrics for throughput calculations.
-#[derive(Debug, Clone, Serialize)]
-pub struct SourceMetrics {
-    /// Number of source files compiled.
-    pub files: usize,
-    /// Number of modules consumed by parsing.
-    pub modules: usize,
-    /// Total bytes across source files.
-    pub bytes: usize,
-    /// Total lines across source files.
-    pub lines: usize,
-    /// Total tokens produced by the lexer invocations consumed by parsing.
-    pub tokens: usize,
-    /// Number of source and synthesized functions considered for CFG construction.
-    pub functions: usize,
-}
-
-/// Metadata about a benchmark run for historical analysis.
-#[derive(Debug, Clone, Serialize)]
-pub struct BenchmarkMetadata {
-    /// ISO 8601 timestamp of when the benchmark was run.
-    pub timestamp: String,
-    /// Compiler version.
-    pub version: String,
-    /// Target platform (e.g., "x86_64-linux", "aarch64-macos").
-    pub target: String,
-    /// Build profile of the Rust compiler binary being measured.
-    pub compiler_build_profile: &'static str,
-}
-
-/// Timing data for a single compiler pass.
-#[derive(Debug, Clone, Serialize)]
-pub struct PassTiming {
-    /// Name of the pass (e.g., "lexer", "parser").
-    pub name: String,
-    /// Time spent in this pass in milliseconds.
-    pub duration_ms: f64,
-    /// Percentage of total compilation time.
-    pub percent: f64,
-    /// Number of spans aggregated into this row.
-    pub invocations: u64,
-    /// Number of invocations without a parent span.
-    pub root_invocations: u64,
-    /// Number of invocations without a child span.
-    pub leaf_invocations: u64,
-}
-
-/// Timing for one driver-side phase outside the compiler's timing root.
-#[derive(Debug, Clone, Serialize)]
-pub struct DriverPhaseTiming {
-    /// Name of the driver phase (e.g., "output_write").
-    pub name: String,
-    /// Time spent in this phase in milliseconds.
-    pub duration_ms: f64,
-    /// Number of spans aggregated into this row.
-    pub invocations: u64,
 }
 
 impl TimingData {
@@ -720,7 +624,11 @@ impl TimingData {
         output
     }
 
-    /// Generate structured timing data with optional source metrics and memory usage.
+    /// Fill in the `--benchmark-json` envelope for this compilation.
+    ///
+    /// The report's optional evidence sections are left empty: only the driver
+    /// knows what it published, so it sets them on the value returned here and
+    /// then renders the whole envelope once.
     ///
     /// # Arguments
     /// * `target` - The target platform string (e.g., "x86_64-linux")
@@ -728,14 +636,14 @@ impl TimingData {
     /// * `source_metrics` - Optional source and program-shape metrics
     /// * `compiler_work` - Optional deterministic compiler-work counters
     /// * `peak_memory_bytes` - Optional peak memory usage in bytes
-    pub fn to_benchmark_timing_with_metrics(
+    pub fn to_benchmark_report(
         &self,
         target: &str,
         version: &str,
-        source_metrics: Option<SourceMetrics>,
+        source_metrics: Option<WorkloadShape>,
         compiler_work: Option<CompilerWork>,
         peak_memory_bytes: Option<u64>,
-    ) -> BenchmarkTiming {
+    ) -> BenchmarkReport {
         self.flush_local();
         let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
 
@@ -757,7 +665,7 @@ impl TimingData {
                     } else {
                         0.0
                     };
-                    PassTiming {
+                    BenchmarkPass {
                         name: pass,
                         duration_ms,
                         percent,
@@ -775,7 +683,7 @@ impl TimingData {
                 inner
                     .driver_phases
                     .get(&phase)
-                    .map(|measurement| DriverPhaseTiming {
+                    .map(|measurement| BenchmarkDriverPhase {
                         name: phase,
                         duration_ms: duration_ns(measurement.duration) as f64 / 1_000_000.0,
                         invocations: measurement.invocations,
@@ -784,15 +692,15 @@ impl TimingData {
             .collect();
 
         let metadata = BenchmarkMetadata {
-            timestamp: iso8601_now(),
+            timestamp: utc_timestamp(),
             version: version.to_string(),
             target: target.to_string(),
-            compiler_build_profile: COMPILER_BUILD_PROFILE,
+            compiler_build_profile: COMPILER_BUILD_PROFILE.to_string(),
         };
 
-        BenchmarkTiming {
-            schema_version: 19,
-            timing_model: "inclusive_spans",
+        BenchmarkReport {
+            schema_version: BENCHMARK_JSON_SCHEMA_VERSION,
+            timing_model: BENCHMARK_TIMING_MODEL.to_string(),
             phase_accounting,
             metadata,
             passes,
@@ -801,33 +709,11 @@ impl TimingData {
             source_metrics,
             compiler_work,
             peak_memory_bytes,
+            emitted_output: None,
+            compiler_boundary: None,
+            critical_path: None,
+            compiler_allocations: None,
         }
-    }
-
-    /// Generate JSON output with additional source metrics.
-    ///
-    /// # Arguments
-    /// * `target` - The target platform string
-    /// * `version` - The compiler version string
-    /// * `source_metrics` - Source and program-shape metrics
-    /// * `compiler_work` - Deterministic compiler-work counters
-    /// * `peak_memory_bytes` - Optional peak memory usage
-    pub fn to_json_with_metrics(
-        &self,
-        target: &str,
-        version: &str,
-        source_metrics: Option<SourceMetrics>,
-        compiler_work: Option<CompilerWork>,
-        peak_memory_bytes: Option<u64>,
-    ) -> String {
-        let timing = self.to_benchmark_timing_with_metrics(
-            target,
-            version,
-            source_metrics,
-            compiler_work,
-            peak_memory_bytes,
-        );
-        serde_json::to_string(&timing).unwrap_or_else(|_| "{}".to_string())
     }
 }
 
@@ -1029,79 +915,6 @@ fn capitalize(s: &str) -> String {
         None => String::new(),
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
     }
-}
-
-/// Generate an ISO 8601 timestamp for the current time.
-///
-/// Format: "2025-12-27T21:30:00Z"
-fn iso8601_now() -> String {
-    let now = SystemTime::now();
-    let duration = now.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
-    let secs = duration.as_secs();
-
-    // Convert to date/time components (simplified, assumes UTC)
-    // This is a basic implementation without external dependencies
-    const SECS_PER_MIN: u64 = 60;
-    const SECS_PER_HOUR: u64 = 3600;
-    const SECS_PER_DAY: u64 = 86400;
-
-    let days = secs / SECS_PER_DAY;
-    let remaining = secs % SECS_PER_DAY;
-    let hours = remaining / SECS_PER_HOUR;
-    let remaining = remaining % SECS_PER_HOUR;
-    let minutes = remaining / SECS_PER_MIN;
-    let seconds = remaining % SECS_PER_MIN;
-
-    // Calculate year, month, day from days since epoch (1970-01-01)
-    let (year, month, day) = days_to_ymd(days);
-
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        year, month, day, hours, minutes, seconds
-    )
-}
-
-/// Convert days since Unix epoch to (year, month, day).
-fn days_to_ymd(days: u64) -> (u64, u64, u64) {
-    // Simplified algorithm for date calculation
-    let mut remaining_days = days as i64;
-    let mut year: i64 = 1970;
-
-    // Find the year
-    loop {
-        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
-        if remaining_days < days_in_year {
-            break;
-        }
-        remaining_days -= days_in_year;
-        year += 1;
-    }
-
-    // Find the month and day
-    let leap = is_leap_year(year);
-    let days_in_months: [i64; 12] = if leap {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-
-    let mut month = 1;
-    for &days_in_month in &days_in_months {
-        if remaining_days < days_in_month {
-            break;
-        }
-        remaining_days -= days_in_month;
-        month += 1;
-    }
-
-    let day = remaining_days + 1; // Days are 1-indexed
-
-    (year as u64, month, day as u64)
-}
-
-/// Check if a year is a leap year.
-fn is_leap_year(year: i64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
 /// A tracing layer that collects timing information from spans.
@@ -1906,8 +1719,7 @@ mod tests {
             );
         }
 
-        let direct_timing =
-            direct_data.to_benchmark_timing_with_metrics("test", "test", None, None, None);
+        let direct_timing = direct_data.to_benchmark_report("test", "test", None, None, None);
         let direct_parse = direct_timing
             .passes
             .iter()
@@ -1951,8 +1763,7 @@ mod tests {
             );
         }
 
-        let session_timing =
-            session_data.to_benchmark_timing_with_metrics("test", "test", None, None, None);
+        let session_timing = session_data.to_benchmark_report("test", "test", None, None, None);
         let session_parse_file = session_timing
             .passes
             .iter()
@@ -2096,8 +1907,7 @@ mod tests {
             "normal compilation must not enter whole-program semantic spans: {compile_edges:?}"
         );
 
-        let compile_timing =
-            compile_data.to_benchmark_timing_with_metrics("test", "test", None, None, None);
+        let compile_timing = compile_data.to_benchmark_report("test", "test", None, None, None);
         let compile = compile_timing
             .passes
             .iter()
@@ -2191,7 +2001,7 @@ mod tests {
         // coordinator span. The semantic phase has one work span for the
         // prerequisite fan-out and one for body analysis; the retired session
         // worklist and body-local epoch pipeline must not reappear.
-        let timing = data.to_benchmark_timing_with_metrics("test", "test", None, None, None);
+        let timing = data.to_benchmark_report("test", "test", None, None, None);
         for retired in [
             "body_queries",
             "body_transaction",
@@ -2302,7 +2112,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         });
 
-        let timing = data.to_benchmark_timing_with_metrics("test", "test", None, None, None);
+        let timing = data.to_benchmark_report("test", "test", None, None, None);
         let pass_names: Vec<_> = timing
             .passes
             .iter()
@@ -2338,7 +2148,10 @@ mod tests {
             .unwrap();
         assert!(write.duration_ms > 0.0);
 
-        let json = data.to_json_with_metrics("test", "test", None, None, None);
+        let json = data
+            .to_benchmark_report("test", "test", None, None, None)
+            .to_wire_json()
+            .expect("a benchmark report renders");
         assert!(json.contains("\"driver_phases\""), "{json}");
         assert!(data.report().contains("Driver phases"));
     }
@@ -2347,7 +2160,10 @@ mod tests {
     fn a_run_without_driver_phases_omits_the_field_entirely() {
         let data = TimingData::new();
         data.record("lexer", Duration::from_millis(1));
-        let json = data.to_json_with_metrics("test", "test", None, None, None);
+        let json = data
+            .to_benchmark_report("test", "test", None, None, None)
+            .to_wire_json()
+            .expect("a benchmark report renders");
         assert!(!json.contains("driver_phases"), "{json}");
         assert!(!data.report().contains("Driver phases"));
     }
@@ -2411,8 +2227,7 @@ mod tests {
     #[test]
     fn test_to_benchmark_timing_empty() {
         let data = TimingData::new();
-        let timing =
-            data.to_benchmark_timing_with_metrics("x86_64-linux", "0.1.0", None, None, None);
+        let timing = data.to_benchmark_report("x86_64-linux", "0.1.0", None, None, None);
         assert!(timing.passes.is_empty());
         assert_eq!(timing.total_ms, 0.0);
     }
@@ -2423,8 +2238,7 @@ mod tests {
         data.record("lexer", Duration::from_millis(100));
         data.record("parser", Duration::from_millis(200));
 
-        let timing =
-            data.to_benchmark_timing_with_metrics("x86_64-linux", "0.1.0", None, None, None);
+        let timing = data.to_benchmark_report("x86_64-linux", "0.1.0", None, None, None);
         assert_eq!(timing.passes.len(), 2);
         assert_eq!(timing.passes[0].name, "lexer");
         assert_eq!(timing.passes[1].name, "parser");
@@ -2438,8 +2252,7 @@ mod tests {
         data.record("lexer", Duration::from_millis(100));
         data.record("parser", Duration::from_millis(300));
 
-        let timing =
-            data.to_benchmark_timing_with_metrics("x86_64-linux", "0.1.0", None, None, None);
+        let timing = data.to_benchmark_report("x86_64-linux", "0.1.0", None, None, None);
         // lexer should be 25%, parser should be 75%
         assert!((timing.passes[0].percent - 25.0).abs() < 0.1);
         assert!((timing.passes[1].percent - 75.0).abs() < 0.1);
@@ -2454,8 +2267,7 @@ mod tests {
         data.record_test_span("parser", Duration::from_millis(2), false, true);
         data.record_test_span("codegen", Duration::from_millis(4), false, true);
 
-        let timing =
-            data.to_benchmark_timing_with_metrics("x86_64-linux", "0.1.0", None, None, None);
+        let timing = data.to_benchmark_report("x86_64-linux", "0.1.0", None, None, None);
         assert!((timing.total_ms - 10.0).abs() < f64::EPSILON);
 
         let compile = timing
@@ -2552,8 +2364,7 @@ mod tests {
         let data = TimingData::new();
         data.record("lexer", Duration::from_millis(100));
 
-        let timing =
-            data.to_benchmark_timing_with_metrics("aarch64-macos", "0.2.0", None, None, None);
+        let timing = data.to_benchmark_report("aarch64-macos", "0.2.0", None, None, None);
         assert_eq!(timing.metadata.target, "aarch64-macos");
         assert_eq!(timing.metadata.version, "0.2.0");
         // Timestamp should be an ISO 8601 format
@@ -2562,11 +2373,14 @@ mod tests {
     }
 
     #[test]
-    fn test_to_json_structure() {
+    fn test_wire_json_structure() {
         let data = TimingData::new();
         data.record("lexer", Duration::from_millis(100));
 
-        let json = data.to_json_with_metrics("x86_64-linux", "0.1.0", None, None, None);
+        let json = data
+            .to_benchmark_report("x86_64-linux", "0.1.0", None, None, None)
+            .to_wire_json()
+            .expect("a benchmark report renders");
         assert!(json.contains("\"schema_version\":19"));
         assert!(json.contains(&format!(
             "\"compiler_build_profile\":\"{COMPILER_BUILD_PROFILE}\""
@@ -2589,12 +2403,51 @@ mod tests {
     }
 
     #[test]
-    fn test_to_json_empty() {
+    fn test_wire_json_empty() {
         let data = TimingData::new();
-        let json = data.to_json_with_metrics("x86_64-linux", "0.1.0", None, None, None);
+        let json = data
+            .to_benchmark_report("x86_64-linux", "0.1.0", None, None, None)
+            .to_wire_json()
+            .expect("a benchmark report renders");
         // Should produce valid JSON even with empty data
         assert!(json.contains("\"passes\":[]"));
         assert!(json.contains("\"total_ms\":0"));
+    }
+
+    #[test]
+    fn the_published_report_parses_back_through_the_shared_consumer() {
+        // Producer and consumer share one declaration in `rue-perf-schema`, and
+        // this is where the driver's real serializer meets the runner's real
+        // parser: a field renamed on one side cannot compile on the other.
+        let data = TimingData::new();
+        data.record("lexer", Duration::from_millis(100));
+        let published = data
+            .to_benchmark_report(
+                "x86_64-linux",
+                "0.1.0",
+                Some(WorkloadShape {
+                    files: 1,
+                    modules: 1,
+                    bytes: 24,
+                    lines: 1,
+                    tokens: 9,
+                    functions: 1,
+                }),
+                Some(CompilerWork::default()),
+                Some(4096),
+            )
+            .to_wire_json()
+            .expect("a benchmark report renders");
+        let parsed: BenchmarkReport =
+            serde_json::from_str(&published).expect("the runner parses the driver's report");
+        assert_eq!(parsed.schema_version, BENCHMARK_JSON_SCHEMA_VERSION);
+        assert_eq!(parsed.timing_model, BENCHMARK_TIMING_MODEL);
+        assert_eq!(parsed.passes[0].name, "lexer");
+        assert_eq!(
+            parsed.source_metrics.expect("source metrics survive").bytes,
+            24
+        );
+        assert_eq!(parsed.peak_memory_bytes, Some(4096));
     }
 
     #[test]
@@ -2604,48 +2457,10 @@ mod tests {
         data.record("zzz", Duration::from_millis(100));
         data.record("mmm", Duration::from_millis(100));
 
-        let timing =
-            data.to_benchmark_timing_with_metrics("x86_64-linux", "0.1.0", None, None, None);
+        let timing = data.to_benchmark_report("x86_64-linux", "0.1.0", None, None, None);
         assert_eq!(timing.passes[0].name, "aaa");
         assert_eq!(timing.passes[1].name, "mmm");
         assert_eq!(timing.passes[2].name, "zzz");
-    }
-
-    #[test]
-    fn test_iso8601_now() {
-        let timestamp = iso8601_now();
-        // Should be in ISO 8601 format: YYYY-MM-DDTHH:MM:SSZ
-        assert!(timestamp.contains('T'));
-        assert!(timestamp.ends_with('Z'));
-        assert_eq!(timestamp.len(), 20); // "2025-12-27T21:30:00Z"
-    }
-
-    #[test]
-    fn test_days_to_ymd_epoch() {
-        // Day 0 should be 1970-01-01
-        let (year, month, day) = days_to_ymd(0);
-        assert_eq!(year, 1970);
-        assert_eq!(month, 1);
-        assert_eq!(day, 1);
-    }
-
-    #[test]
-    fn test_days_to_ymd_known_date() {
-        // Test a known date: 2000-01-01 is 10957 days since epoch
-        // (calculated as: 30 years, with 7 leap years: 1972,76,80,84,88,92,96)
-        // 30 * 365 + 7 = 10957
-        let (year, month, day) = days_to_ymd(10957);
-        assert_eq!(year, 2000);
-        assert_eq!(month, 1);
-        assert_eq!(day, 1);
-    }
-
-    #[test]
-    fn test_is_leap_year() {
-        assert!(!is_leap_year(1900)); // divisible by 100 but not 400
-        assert!(is_leap_year(2000)); // divisible by 400
-        assert!(is_leap_year(2024)); // divisible by 4, not by 100
-        assert!(!is_leap_year(2025)); // not divisible by 4
     }
 }
 
@@ -3410,8 +3225,7 @@ mod phase_accounting_tests {
             thread::sleep(TICK);
         });
 
-        let timing =
-            data.to_benchmark_timing_with_metrics("probe-target", "probe", None, None, None);
+        let timing = data.to_benchmark_report("probe-target", "probe", None, None, None);
         assert_eq!(timing.schema_version, 19);
         assert_eq!(
             timing.metadata.compiler_build_profile,
@@ -3464,7 +3278,10 @@ mod phase_accounting_tests {
             },
             ..CompilerWork::default()
         };
-        let json = data.to_json_with_metrics("test-target", "test", None, Some(work), None);
+        let json = data
+            .to_benchmark_report("test-target", "test", None, Some(work), None)
+            .to_wire_json()
+            .expect("a benchmark report renders");
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         let structure = &value["compiler_work"]["semantic_analysis_structure"];
         assert_eq!(structure["staged_resolved_instructions"], 23);

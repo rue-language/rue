@@ -45,10 +45,11 @@ use rue_error::{
     CompileError, DiagnosticWrapper, ErrorCode, ErrorCodeExplanation, error_code_explanation,
 };
 use rue_perf_schema::{
-    ArtifactHitEvidence, BuildBoundary, CompilerBoundaryEvidence, CompilerBuildProfile,
-    CompilerConfigurationEvidence, CompilerCriticalPathEvidence, CompilerInputClass,
-    CompilerInputEvidence, CompilerPipeline, CompilerStage, EmbeddedAssetClass,
-    EmbeddedAssetEvidence, LinkPolicy, OptimizationLevel, OutputKind, WorkerSetting,
+    ArtifactHitEvidence, BenchmarkReport, BuildBoundary, CompilerBoundaryEvidence,
+    CompilerBuildProfile, CompilerConfigurationEvidence, CompilerCriticalPathEvidence,
+    CompilerInputClass, CompilerInputEvidence, CompilerPipeline, CompilerStage, EmbeddedAssetClass,
+    EmbeddedAssetEvidence, EmittedOutput, LinkPolicy, OptimizationLevel, OutputKind, WorkerSetting,
+    WorkloadShape,
 };
 use rue_target::Target;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1474,58 +1475,88 @@ fn init_tracing(
 }
 
 /// Print timing output based on CLI flags.
+///
+/// The two surfaces are exclusive: `--benchmark-json` owns stdout and prints
+/// the assembled envelope, `--time-passes` prints the human report on stderr.
+/// A caller with no benchmark report to publish passes `None` and gets the
+/// human report if it asked for one.
 fn print_timing_output(
     timing_data: &Option<timing::TimingData>,
     time_passes: bool,
-    benchmark_json: bool,
-    target: &Target,
-    source_metrics: Option<timing::SourceMetrics>,
-    compiler_work: Option<rue_perf_schema::CompilerWork>,
-    emitted_output: Option<&[u8]>,
-    compiler_boundary: Option<&CompilerBoundaryEvidence>,
-    critical_path: Option<&CompilerCriticalPathEvidence>,
+    benchmark_report: Option<&BenchmarkReport>,
 ) {
-    if let Some(timing) = timing_data {
-        if benchmark_json {
-            // JSON output goes to stdout for easy capture
-            // Include metadata and source metrics for historical analysis
-            let mut payload: serde_json::Value =
-                serde_json::from_str(&timing.to_json_with_metrics(
-                    &target.to_string(),
-                    VERSION,
-                    source_metrics,
-                    compiler_work,
-                    get_peak_memory_bytes(),
-                ))
-                .unwrap();
-            if let Some(bytes) = emitted_output {
-                use sha2::{Digest, Sha256};
-                payload["emitted_output"] = serde_json::json!({
-                    "sha256": format!("{:x}", Sha256::digest(bytes)),
-                    "size_bytes": bytes.len(),
-                });
+    if let Some(report) = benchmark_report {
+        match report.to_wire_json() {
+            Ok(json) => println!("{json}"),
+            Err(error) => {
+                eprintln!("Error: benchmark timing could not be rendered as JSON: {error}");
+                std::process::exit(1);
             }
-            if let Some(boundary) = compiler_boundary {
-                payload["compiler_boundary"] = serde_json::to_value(boundary).unwrap();
-            }
-            if let Some(critical_path) = critical_path {
-                payload["critical_path"] = serde_json::to_value(critical_path).unwrap();
-            }
-            #[cfg(rue_benchmark_allocations)]
-            {
-                let metrics = allocation::snapshot();
-                payload["compiler_allocations"] = serde_json::json!({
-                    "count": metrics.allocations,
-                    "requested_bytes": metrics.allocated_bytes,
-                    "boundary": "canonical compile root including discovery and backend",
-                });
-            }
-            println!("{payload}");
-        } else if time_passes {
-            // Human-readable output goes to stderr
+        }
+    } else if time_passes {
+        if let Some(timing) = timing_data {
+            // Human-readable output goes to stderr.
             eprintln!("{}", timing.report());
         }
     }
+}
+
+/// Assemble the `--benchmark-json` envelope for a completed compilation.
+///
+/// Everything the report can carry is filled in here, once: the timing module
+/// contributes the two timing models and the metadata, and this function adds
+/// the evidence only the driver knows. `emitted_output` identifies the
+/// published artifact and is digested by its caller, so the boundary evidence
+/// and the envelope's own section report the same digest without hashing the
+/// bytes twice.
+fn benchmark_report(
+    timing: &timing::TimingData,
+    options: &Options,
+    resolved_workers: usize,
+    source_snapshot: &rue_compiler::SourceSnapshot,
+    metrics: rue_compiler::unstable::OneShotMetrics,
+    emitted_output: EmittedOutput,
+) -> BenchmarkReport {
+    let source_metrics = WorkloadShape {
+        files: metrics.files as u64,
+        // Every accepted source file is one module in the canonical import
+        // graph. Query-work counters do not include the root module, so
+        // `files` is the exact one-shot module count rather than a work
+        // estimate.
+        modules: metrics.files as u64,
+        bytes: metrics.bytes as u64,
+        lines: metrics.lines as u64,
+        tokens: metrics.tokens as u64,
+        functions: metrics.semantic.cfg.functions_considered as u64,
+    };
+    let mut compiler_work = benchmark_compiler_work(metrics);
+    compiler_work.semantic_analysis_structure = benchmark_semantic_analysis_structure(timing);
+
+    let mut report = timing.to_benchmark_report(
+        &options.target.to_string(),
+        VERSION,
+        Some(source_metrics),
+        Some(compiler_work),
+        get_peak_memory_bytes(),
+    );
+    report.compiler_boundary = compiler_boundary_evidence(
+        options,
+        resolved_workers,
+        source_snapshot,
+        emitted_output.clone(),
+    );
+    report.critical_path = Some(compiler_critical_path_evidence(timing, metrics));
+    report.emitted_output = Some(emitted_output);
+    #[cfg(rue_benchmark_allocations)]
+    {
+        let allocations = allocation::snapshot();
+        report.compiler_allocations =
+            Some(rue_perf_schema::CompilerAllocations::over_compile_root(
+                allocations.allocations,
+                allocations.allocated_bytes,
+            ));
+    }
+    report
 }
 
 /// Finish a successful one-shot native compile after every observable
@@ -1555,7 +1586,7 @@ fn compiler_boundary_evidence(
     options: &Options,
     resolved_workers: usize,
     snapshot: &rue_compiler::SourceSnapshot,
-    emitted_output: &[u8],
+    emitted_output: EmittedOutput,
 ) -> Option<CompilerBoundaryEvidence> {
     let requested_workers = WorkerSetting::from_jobs(options.jobs)?;
     let mut accepted_inputs = snapshot
@@ -1621,11 +1652,8 @@ fn compiler_boundary_evidence(
             target: options.target.to_string(),
         }],
         artifact_hits: ArtifactHitEvidence::default(),
-        emitted_output_sha256: {
-            use sha2::{Digest, Sha256};
-            format!("{:x}", Sha256::digest(emitted_output))
-        },
-        emitted_output_size_bytes: u64::try_from(emitted_output.len()).unwrap_or(u64::MAX),
+        emitted_output_sha256: emitted_output.sha256,
+        emitted_output_size_bytes: emitted_output.size_bytes,
     })
 }
 
@@ -2531,17 +2559,10 @@ fn main() {
             }
         }
         drop(compile_span);
-        print_timing_output(
-            &timing_data,
-            options.time_passes,
-            options.benchmark_json,
-            &options.target,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
+        // `--emit` and `--benchmark-json` both want stdout, so
+        // `validate_output_modes` already refused the combination: this path
+        // has no benchmark envelope to publish, only the human report.
+        print_timing_output(&timing_data, options.time_passes, None);
         return;
     }
 
@@ -2670,7 +2691,7 @@ fn main() {
             // file rather than the pre-publication linker buffer.
             let benchmark_emitted_output = if options.benchmark_json {
                 match std::fs::read(&options.output_path) {
-                    Ok(bytes) => Some(bytes),
+                    Ok(bytes) => Some(EmittedOutput::of(&bytes)),
                     Err(error) => {
                         eprintln!(
                             "Error: could not verify published benchmark output '{}': {error}",
@@ -2683,56 +2704,18 @@ fn main() {
                 None
             };
 
-            let benchmark_metrics = options.benchmark_json.then(|| output.unstable_metrics());
-            let compiler_boundary = options
-                .benchmark_json
-                .then(|| {
-                    compiler_boundary_evidence(
-                        &options,
-                        resolved_workers,
-                        &source_snapshot,
-                        benchmark_emitted_output
-                            .as_deref()
-                            .expect("benchmark output was read after publication"),
-                    )
-                })
-                .flatten();
-            let critical_path = benchmark_metrics.and_then(|metrics| {
-                timing_data
-                    .as_ref()
-                    .map(|timing| compiler_critical_path_evidence(timing, metrics))
-            });
-            print_timing_output(
-                &timing_data,
-                options.time_passes,
-                options.benchmark_json,
-                &options.target,
-                benchmark_metrics.map(|source_stats| {
-                    timing::SourceMetrics {
-                        files: source_stats.files,
-                        // Every accepted source file is one module in the
-                        // canonical import graph. Query-work counters do not
-                        // include the root module, so `files` is the exact
-                        // one-shot module count rather than a work estimate.
-                        modules: source_stats.files,
-                        bytes: source_stats.bytes,
-                        lines: source_stats.lines,
-                        tokens: source_stats.tokens,
-                        functions: source_stats.semantic.cfg.functions_considered,
-                    }
-                }),
-                benchmark_metrics.map(|metrics| {
-                    let mut work = benchmark_compiler_work(metrics);
-                    if let Some(timing) = timing_data.as_ref() {
-                        work.semantic_analysis_structure =
-                            benchmark_semantic_analysis_structure(timing);
-                    }
-                    work
-                }),
-                benchmark_emitted_output.as_deref(),
-                compiler_boundary.as_ref(),
-                critical_path.as_ref(),
-            );
+            let report = match (timing_data.as_ref(), benchmark_emitted_output) {
+                (Some(timing), Some(emitted_output)) => Some(benchmark_report(
+                    timing,
+                    &options,
+                    resolved_workers,
+                    &source_snapshot,
+                    output.unstable_metrics(),
+                    emitted_output,
+                )),
+                _ => None,
+            };
+            print_timing_output(&timing_data, options.time_passes, report.as_ref());
             exit_successful_native_compile();
         }
         Err(errors) => {
@@ -3187,7 +3170,7 @@ mod tests {
             edges.contains(&("compile".to_owned(), "compile_pipeline".to_owned())),
             "post-discovery pipeline escaped the compile root: {edges:?}"
         );
-        let timing = data.to_benchmark_timing_with_metrics("test", "test", None, None, None);
+        let timing = data.to_benchmark_report("test", "test", None, None, None);
         for pass in &timing.passes {
             if pass.name == "compile" {
                 assert_eq!(pass.invocations, 1);

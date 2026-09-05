@@ -34,6 +34,12 @@
 //! disk. [`ValidationOutcome`] reports both, plus the run's
 //! [`Completeness`].
 //!
+//! **The wire envelope is declared once.** [`BenchmarkReport`] is what the
+//! compiler's `--benchmark-json` writes and what the runner reads back: one
+//! declaration serialized in one direction and deserialized in the other, so a
+//! renamed field is renamed for both and [`BENCHMARK_JSON_SCHEMA_VERSION`] is
+//! a single edit rather than two literals that can drift apart.
+//!
 //! ADR-0072 adds a second record kind on the same three ideas. A
 //! [`RuntimeReport`] measures how fast a *compiled Rue program* runs rather
 //! than how fast the compiler produced it, and introduces one category the
@@ -42,6 +48,7 @@
 //! observation instead of failing validation when it moves. Nothing about
 //! ADR-0067's rules for the compile-time suites changes.
 
+mod benchmark;
 mod boundary;
 mod canonical;
 mod encoding;
@@ -54,8 +61,14 @@ mod scaling;
 mod series;
 mod stats;
 mod stored;
+mod timestamp;
 mod validate;
 
+pub use benchmark::{
+    BENCHMARK_JSON_SCHEMA_VERSION, BENCHMARK_TIMING_MODEL, BenchmarkDriverPhase, BenchmarkMetadata,
+    BenchmarkPass, BenchmarkReport, COMPILER_ALLOCATION_BOUNDARY, CompilerAllocations,
+    EmittedOutput,
+};
 pub use boundary::{
     ArtifactHitEvidence, BuildBoundary, BuildBoundaryEvidence, BuildBoundaryPolicy,
     CompilerBoundaryEvidence, CompilerBuildProfile, CompilerConfigurationEvidence,
@@ -63,7 +76,7 @@ pub use boundary::{
     CompilerStage, DurationDistribution, EmbeddedAssetClass, EmbeddedAssetEvidence, LinkPolicy,
     OptimizationLevel, OutputKind, RunnerBoundaryEvidence, RunnerClockBoundary, WorkerSetting,
 };
-pub use canonical::{CanonicalError, canonical_json, content_address};
+pub use canonical::{CanonicalError, canonical_json, content_address, sorted_json};
 pub use encoding::{
     CompilerRunInvariant, CompilerWorkloadInvariant, EncodeError, EvidenceSource,
     FULL_EVIDENCE_SCHEMA_VERSION, IDENTITY_DIGEST_TAG, LEGACY_FULL_EVIDENCE_SCHEMA_VERSION,
@@ -117,6 +130,7 @@ pub use stats::{
     ratio, sample_value,
 };
 pub use stored::{Stored, StoredRecordError, StoredRun, StoredRuntimeReport};
+pub use timestamp::utc_timestamp;
 pub use validate::{
     Completeness, InvalidSample, InvalidSampleReason, ProcessElapsedRegression,
     SUPPORTED_SCHEMA_VERSIONS, ValidationError, ValidationOutcome, process_elapsed_regressions,
