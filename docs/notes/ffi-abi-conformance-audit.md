@@ -97,6 +97,14 @@ indirect-result conventions — through the one lowered signature.
 
 ## Native Rue convention
 
+The convention this section and the matrix above describe is the one
+[ADR-0084](../designs/0084-native-calling-convention.md) replaces: the native
+convention becomes the compilation target's C convention plus a return bank
+wider than C's, so the slot flattening, the reversal, and the
+hidden-first-ordinary-argument sret below all retire. The description here stays
+accurate until that migration's return phase (RUE-2038) lands, and is rewritten
+with it.
+
 The canonical native call planner flattens a source value into logical 8-byte
 slots. Scalars occupy one slot, each aggregate leaf occupies one slot, zero-size
 value parameters occupy none, and `borrow`/`inout` parameters occupy one pointer

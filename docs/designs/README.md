@@ -246,4 +246,5 @@ The table is generated from ADR frontmatter. Run
 | [0081](0081-incremental-linking-contract.md) | Symbol-granular incremental linking contract | Proposal | architecture, compiler, incremental, linker, performance |
 | [0082](0082-buck2-build-system.md) | Buck2 as the build system | Accepted | build, tooling, process |
 | [0083](0083-rue-test-mvp.md) | rue test MVP: test declarations, runner, and event protocol | Accepted | tooling, testing, syntax, semantics, incremental, cli, language-shape |
+| [0084](0084-native-calling-convention.md) | The native Rue calling convention: the target C convention plus a wider return bank | Accepted | abi, codegen, semantics |
 <!-- ADR-INDEX:END -->

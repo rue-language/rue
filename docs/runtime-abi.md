@@ -43,6 +43,11 @@ export table.
 This document describes only the typed C boundary from generated Rue code to
 `rue-runtime`. Calls between Rue functions use a separate native Rue convention
 that is intentionally not C-compatible or stable across compiler revisions.
+[ADR-0084](designs/0084-native-calling-convention.md) is the reference for that
+convention: it stays unspecified and free to change between revisions, and it is
+being migrated to the compilation target's C convention plus a return bank wider
+than C's. The runtime helper boundary below is unaffected — its helpers are C
+calls and already follow the target's C row.
 
 Both boundaries name their convention with one value type,
 `rue_target::CallingConvention`, whose members are concrete conventions:
