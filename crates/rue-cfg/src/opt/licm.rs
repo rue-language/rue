@@ -1114,7 +1114,7 @@ mod tests {
         // parameter that the loop body mutates (a `ParamStore`) varies per
         // iteration: hoisting the read would freeze the parameter at its entry
         // value and miscompile the loop (the same hazard the Load gate guards,
-        // and CSE's `never_written_params`). It must stay in the body.
+        // and CSE through `slot_facts::classify_never_written_params`). It must stay in the body.
         let mut cfg = Cfg::new(
             Type::UNIT,
             1,

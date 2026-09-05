@@ -24,12 +24,12 @@ from typing import Dict, List, Optional, Tuple
 DEFECTS = ("RUE-348", "RUE-914", "RUE-1758")
 PATCH_TARGETS = {
     "RUE-348": "crates/rue-cfg/src/opt/constfold.rs",
-    "RUE-914": "crates/rue-cfg/src/opt/cse.rs",
+    "RUE-914": "crates/rue-cfg/src/opt/slot_facts.rs",
     "RUE-1758": "crates/rue-codegen/src/terminator_plan.rs",
 }
 PATCH_PREIMAGE_SHA256 = {
     "RUE-348": "1d5d9990b397c5ff39c95178dbb8f24a7e82fd303aa934d466d331b98c1e6b26",
-    "RUE-914": "cc00b46e5840e02b80095ae9e121a39ab66bcf6b25d17e9bc37d7fe996b72fb1",
+    "RUE-914": "4d93001c85ae13ef69ae9b008097737dde497310d0c5a7a4895df1c932350efc",
     "RUE-1758": "a093afb95a27540ca01a3aabd20b721b1b8bdb4e60a464942a4c717b7f0a03d5",
 }
 FOCUSED_CLI = {

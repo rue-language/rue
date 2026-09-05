@@ -5143,18 +5143,19 @@ impl<'a> Interp<'a> {
             CfgInstData::PlaceRead { place } if self.is_inout_writeback_place(cfg, v, place) => {
                 Ok(WritebackPlace::Stored(place))
             }
-            // Forwarding a writable `inout` parameter as a nested call's `inout`
-            // argument (the container `self`-chain: `push` -> `self.reserve()`).
-            // The caller place is the parameter slot itself; the post-call
-            // copy-out writes the callee's final value back into it, and this
-            // frame in turn copies its own parameter back to *its* caller on
-            // return, so the mutation threads all the way up the chain.
-            // `place_write` routes a `Param` base through the promoted heap
-            // allocation when the slot's address was taken, matching the `Param`
-            // read path, so an address-taken forwarded parameter stays coherent.
-            CfgInstData::Param { index }
-                if *index < cfg.num_params() && cfg.is_param_writable(*index) =>
-            {
+            // A parameter passed as a nested call's `inout` argument. The caller
+            // place is the parameter slot itself, whatever the parameter's own
+            // mode: a by-value parameter is this frame's own mutable storage,
+            // and a forwarded writable `inout` parameter (the container
+            // `self`-chain: `push` -> `self.reserve()`) additionally copies
+            // back to *its* caller on return, so the mutation threads all the
+            // way up the chain. The post-call copy-out writes the callee's
+            // final value into the slot either way, and every later `Param`
+            // read of that slot observes it (RUE-2042). `place_write` routes a
+            // `Param` base through the promoted heap allocation when the
+            // slot's address was taken, matching the `Param` read path, so an
+            // address-taken parameter stays coherent.
+            CfgInstData::Param { index } if *index < cfg.num_params() => {
                 Ok(WritebackPlace::Simple {
                     base: PlaceBase::Param(*index),
                     base_type: cfg.get_inst(v).ty,
