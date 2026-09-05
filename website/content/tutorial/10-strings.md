@@ -18,8 +18,8 @@ const StrBuf = std.strbuf.StrBuf;
 fn shout(borrow s: StrBuf) -> StrBuf {
     let mut out = StrBuf.new();
     for b in s.clone() {
-        if b >= 97 && b <= 122 {
-            out.push(b - 32);
+        if b >= b'a' && b <= b'z' {
+            out.push(b - (b'a' - b'A'));
         } else {
             out.push(b);
         }
@@ -40,10 +40,17 @@ HELLO, RUE
 length: 10
 ```
 
+Two things in `shout` are explained later in this chapter. `b'a'` is a *byte
+literal*, the integer value of an ASCII character. And `shout` iterates
+`s.clone()` rather than `s` because today `for` cannot walk a borrowed
+`StrBuf` directly (RUE-2052); once that is fixed, the clone goes away.
+
 ## `str` and `StrBuf`
 
 A literal is a `str`. Giving it a `StrBuf` type, or using it where a `StrBuf`
-is expected, copies it into a fresh heap buffer:
+is expected, wraps the literal as a `StrBuf` without copying anything. The
+buffer's capacity is zero, and the first mutation is what copies the bytes to
+the heap, so the distinction costs nothing until you change the string:
 
 ```rue run
 const std = @import("std");
@@ -51,7 +58,7 @@ const StrBuf = std.strbuf.StrBuf;
 
 fn main() -> i32 {
     let literal = "static text";           // str
-    let owned: StrBuf = "heap text";        // StrBuf, copied from the literal
+    let owned: StrBuf = "heap text";        // StrBuf wrapping the literal
     let built = "built: " + @to_string(7);  // StrBuf, from concatenation
     println(literal);
     println(owned);
@@ -118,9 +125,11 @@ fn main() -> i32 {
 
 ## Bytes and characters
 
-A `StrBuf` is a sequence of bytes, and `for` visits them as `u8`. For ASCII
-text that is usually what you want; a byte compared against `48` through `57`
-is a digit, `32` is a space, and so on.
+A `StrBuf` is a sequence of bytes, and `for` visits them as `u8`. To compare
+a byte against a character, write a *byte literal*: `b'0'` is the integer
+value of the ASCII digit zero, `b' '` is a space, `b'+'` is a plus sign. A
+byte literal is an ordinary integer literal, so it works anywhere a `u8`
+does, and `b >= b'0' && b <= b'9'` tests for a digit.
 
 ```rue run
 const std = @import("std");
@@ -130,7 +139,7 @@ fn main() -> i32 {
     let text: StrBuf = "a1b22c333";
     let mut digits = 0;
     for b in text {
-        if b >= 48 && b <= 57 {
+        if b >= b'0' && b <= b'9' {
             digits += 1;
         }
     }

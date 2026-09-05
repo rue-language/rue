@@ -189,14 +189,32 @@ fn main() -> i32 {
 20 is positive
 ```
 
-Both branches must have the same type, and an `if` used as a value must have
-an `else`:
+Both branches must have the same type:
 
 ```rue compile-fail E0206
 fn main() -> i32 {
     let x = if true { 1 } else { false };
     0
 }
+```
+
+```text
+error: [E0206]: type mismatch: expected integer type, found bool
+```
+
+An `if` with no `else` has the unit type `()`, because there is nothing to
+produce when the condition is false. That makes it fine as a statement and an
+error as a value:
+
+```rue compile-fail E0206
+fn main() -> i32 {
+    let x = if true { 1 };
+    x
+}
+```
+
+```text
+error: [E0206]: type mismatch: expected i32, found ()
 ```
 
 The condition must be a `bool`. Rue does not treat `0` as false.

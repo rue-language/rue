@@ -61,17 +61,16 @@ pub struct Machine {
     fn apply(inout self, op: u8) -> StepResult {
         let right = self.pop()?;
         let left = self.pop()?;
-        let value = if op == 43 {
-            left + right
-        } else if op == 45 {
-            left - right
-        } else if op == 42 {
-            left * right
-        } else {
-            if right == 0 {
-                return StepResult.Err(EvalError.DivisionByZero);
-            }
-            left / right
+        let value = match op {
+            b'+' => left + right,
+            b'-' => left - right,
+            b'*' => left * right,
+            _ => {
+                if right == 0 {
+                    return StepResult.Err(EvalError.DivisionByZero);
+                }
+                left / right
+            },
         };
         self.push(value);
         StepResult.Ok(())
@@ -91,7 +90,7 @@ test "apply adds the top two values" {
     let mut m = Machine.new();
     m.push(3);
     m.push(4);
-    m.apply(43)?;
+    m.apply(b'+')?;
     let v = m.finish()?;
     @assert_eq(v, 7);
 }
@@ -144,11 +143,11 @@ const EvalResult = machine.EvalResult;
 const EvalError = machine.EvalError;
 
 fn is_digit(b: u8) -> bool {
-    b >= 48 && b <= 57
+    b >= b'0' && b <= b'9'
 }
 
 fn is_operator(b: u8) -> bool {
-    b == 43 || b == 45 || b == 42 || b == 47
+    b == b'+' || b == b'-' || b == b'*' || b == b'/'
 }
 
 fn eval_line(line: StrBuf) -> EvalResult {
@@ -157,7 +156,7 @@ fn eval_line(line: StrBuf) -> EvalResult {
     let mut in_number = false;
     for b in line {
         if is_digit(b) {
-            number = number * 10 + @intCast(b - 48);
+            number = number * 10 + @intCast(b - b'0');
             in_number = true;
         } else {
             if in_number {
@@ -167,7 +166,7 @@ fn eval_line(line: StrBuf) -> EvalResult {
             }
             if is_operator(b) {
                 m.apply(b)?;
-            } else if b != 32 {
+            } else if b != b' ' {
                 return EvalResult.Err(EvalError.UnexpectedByte(b));
             }
         }

@@ -9,8 +9,8 @@ template = "tutorial/page.html"
 This is the chapter where Rue is most different from languages you may know.
 Every value has one owner. Passing a value gives it away, unless you say you
 are only lending it, and lending comes in two flavors: read-only `borrow` and
-read-write `inout`. All of it is checked at compile time, and all of it is
-written at the call site.
+read-write `inout`. All of it is checked at compile time, and for free
+functions all of it is written at the call site.
 
 ```rue run
 const std = @import("std");

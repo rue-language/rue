@@ -133,6 +133,11 @@ max: 9
 hex: ff
 ```
 
+`gcd` is generic over its integer type, so it takes the type as its first
+argument, the same way `Option(i64)` does. `max` is written for `i32` only and
+needs no such argument. The last section of this chapter explains the
+mechanism.
+
 There is no prelude. `Option`, `StrBuf`, and `ArrayBuf` are not in scope until
 you import `std` and name them, which is why every program that uses them
 starts with the import and a few `const` aliases. The aliases are ordinary
