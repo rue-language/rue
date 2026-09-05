@@ -59,6 +59,71 @@ execute_if_native = true
 stdout = "42\n"
 exit_code = 0
 
+# --- Explicitly named calling conventions (9.3:1b-1c, ADR-0064 Amendment 2) ---
+# The same proof program with the convention named outright instead of `"C"`.
+# Each name belongs to one target, so each runs against its own; naming another
+# target's row is a compile error rather than a fallback.
+
+[[case]]
+name = "x86_64_linux_extern_named_convention_returns_42"
+description = "`extern \"x86-64-sysv\"` names the SysV AMD64 row outright and links and runs like `\"C\"` does on x86-64."
+files = [{ path = "main.rue", source = """
+extern "x86-64-sysv" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 {
+    let result = checked { answer() };
+    @dbg(result);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "x86-64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = "42\n"
+exit_code = 0
+
+[[case]]
+name = "aarch64_linux_extern_named_convention_returns_42"
+description = "`extern \"aarch64-aapcs\"` names AAPCS64 outright and links and runs like `\"C\"` does on AArch64 Linux."
+files = [{ path = "main.rue", source = """
+extern "aarch64-aapcs" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 {
+    let result = checked { answer() };
+    @dbg(result);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "aarch64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = "42\n"
+exit_code = 0
+
+[[case]]
+name = "extern_named_convention_not_implemented_by_target_rejected"
+description = "Naming a convention the `--target` does not implement is an error naming both (E1110), never a fallback to the target's own row."
+files = [{ path = "main.rue", source = """
+extern "aarch64-aapcs" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 {
+    let result = checked { answer() };
+    @dbg(result);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--target", "x86-64-linux", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1110", "aarch64-aapcs", "x86-64-linux"]
+
 # --- Diagnostics -----------------------------------------------------------
 
 [[case]]
@@ -292,7 +357,7 @@ exit_code = 0
 
 [[case]]
 name = "extern_unsupported_abi_rejected"
-description = "Only the \"C\" ABI is accepted in v0."
+description = "An ABI string that names no calling convention is rejected, listing the ones that do."
 files = [{ path = "main.rue", source = """
 extern "Rust" {
     fn answer() -> i64;
@@ -881,7 +946,7 @@ error_contains = ["E0435", "_start", "reserved"]
 
 [[case]]
 name = "export_c_unwind_abi_rejected"
-description = "`\"C-unwind\"` stays reserved: an export declared with it is rejected, only `\"C\"` is accepted (ADR-0064)."
+description = "`\"C-unwind\"` stays reserved: an export declared with it names no accepted calling convention and is rejected (ADR-0064)."
 files = [{ path = "main.rue", source = """
 pub extern "C-unwind" fn f() -> i32 {
     0

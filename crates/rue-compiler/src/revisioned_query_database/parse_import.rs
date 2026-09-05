@@ -572,6 +572,24 @@ pub(crate) enum SemanticNucleusBatchFailure {
     },
 }
 
+/// One `pub extern` export root, with the convention its C entry follows.
+///
+/// The convention was resolved from the export's written ABI string against the
+/// compilation target when its signature was checked (spec 9.3:1b); carrying it
+/// with the root is what lets the entry thunk be emitted under the declaration's
+/// own row instead of re-deriving the target's `"C"` alias at generation time.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct DurableCExportRoot {
+    pub(crate) key: crate::StableDefinitionKey,
+    pub(crate) convention: rue_target::CallingConvention,
+}
+
+impl RetainedCharge for DurableCExportRoot {
+    fn retained_charge(&self) -> u64 {
+        self.key.retained_charge()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SemanticNucleusProjection {
     pub(crate) declarations: Arc<[crate::DurableDeclarationSemantic]>,
@@ -579,7 +597,7 @@ pub(crate) struct SemanticNucleusProjection {
         Arc<crate::local_semantic_materialization::SharedDeclarationFactIndex>,
     pub(crate) anonymous_nominals: Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
     pub(crate) dependencies: Arc<[crate::semantic_query_nucleus::SemanticDeclarationDependency]>,
-    pub(crate) c_export_roots: Arc<[crate::StableDefinitionKey]>,
+    pub(crate) c_export_roots: Arc<[DurableCExportRoot]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

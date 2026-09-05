@@ -979,7 +979,10 @@ impl<'a> AstGen<'a> {
                 FnDeclFlags {
                     is_pub: func.visibility == Visibility::Public,
                     is_unchecked: func.is_unchecked,
-                    // `pub extern "C" fn` marks a Rue-to-C export (ADR-0064 P4).
+                    // A `pub extern` ABI string marks a Rue-to-C export
+                    // (ADR-0064 P4). Which convention it names is resolved
+                    // against the compilation target later; RIR records only
+                    // that the export exists.
                     is_c_export: func.export_abi.is_some(),
                     returns_borrow: func.place_return.is_some_and(|mode| mode.is_borrow()),
                     returns_inout: func.place_return.is_some_and(|mode| mode.is_inout()),

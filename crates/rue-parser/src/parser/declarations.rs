@@ -136,10 +136,11 @@ impl Parser {
 
     /// Parse a `pub extern "C" fn name(...) { body }` Rue-to-C export
     /// (ADR-0064 P4). The `extern` token is consumed here, then the ABI string
-    /// is captured verbatim and validated (`"C"` only) exactly as the import
-    /// block does, and the rest is an ordinary function with a body. The parsed
-    /// ABI is attached to the `Function` so semantic analysis can gate it behind
-    /// the `c_ffi` preview and validate the C-boundary signature.
+    /// is captured verbatim and checked against the one convention-name table
+    /// exactly as the import block does, and the rest is an ordinary function
+    /// with a body. The written string is attached to the `Function` so semantic
+    /// analysis can gate it behind the `c_ffi` preview, resolve it against the
+    /// compilation target, and validate the C-boundary signature.
     fn extern_export_fn(
         &mut self,
         start: u32,
@@ -157,15 +158,7 @@ impl Parser {
                 return Err(());
             }
         };
-        if abi != "C" {
-            self.error_at(
-                format!(
-                    "unsupported extern ABI \"{abi}\": only \"C\" is supported \
-                     (ADR-0064 C FFI)"
-                ),
-                abi_span,
-            );
-        }
+        self.check_foreign_abi(&abi, abi_span);
         self.function_inner(start, directives, visibility, Some(abi))
     }
 
@@ -218,10 +211,37 @@ impl Parser {
         Ok((Some(self.ty()?), place_return))
     }
 
+    /// Reject an ABI string that names no foreign calling convention (spec
+    /// 9.3:1b).
+    ///
+    /// The accepted set comes from [`rue_target::ForeignAbi`], the one table
+    /// that also spells the convention names `--emit abi` and the ABI
+    /// diagnostics print, so there is no second list to keep in sync. Whether
+    /// the *compilation target* implements a named convention is a separate,
+    /// later question: the parser has no target, so semantic analysis owns that
+    /// rejection (E1110, spec 9.3:1c) and this one stays a vocabulary check.
+    fn check_foreign_abi(&mut self, abi: &str, abi_span: Span) {
+        if rue_target::ForeignAbi::parse(abi).is_some() {
+            return;
+        }
+        let accepted = rue_target::ForeignAbi::accepted_abi_strings()
+            .map(|name| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.error_at(
+            format!(
+                "unsupported extern ABI \"{abi}\": the ABI string must be one of \
+                 {accepted} (ADR-0064 C FFI)"
+            ),
+            abi_span,
+        );
+    }
+
     /// Parse a foreign-declaration block: `extern "C" { fn name(...) -> T; }`.
     ///
-    /// The ABI string is captured verbatim (validated in semantic analysis so
-    /// the diagnostic can name the unsupported ABI). Each member is a body-less
+    /// The ABI string is captured verbatim and checked against the one
+    /// convention-name table; the string travels to semantic analysis, which
+    /// resolves it against the compilation target. Each member is a body-less
     /// function signature terminated by `;`.
     fn extern_block(&mut self, start: u32) -> PResult<ExternBlock> {
         self.expect(TokenKind::Extern)?;
@@ -235,17 +255,7 @@ impl Parser {
                 return Err(());
             }
         };
-        // `"C"` is the only ABI the current C FFI phase accepts (ADR-0064). The
-        // slot reserves room for later `"C-unwind"` or platform variants.
-        if abi != "C" {
-            self.error_at(
-                format!(
-                    "unsupported extern ABI \"{abi}\": only \"C\" is supported \
-                     (ADR-0064 C FFI)"
-                ),
-                abi_span,
-            );
-        }
+        self.check_foreign_abi(&abi, abi_span);
         self.expect(TokenKind::LBrace)?;
         let mut fns = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {

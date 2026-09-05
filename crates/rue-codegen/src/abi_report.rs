@@ -736,7 +736,7 @@ pub fn export_abi_report(
         name: exported_symbol.to_owned(),
         kind: AbiFunctionKind::Export,
         c: Some(c_side(
-            &signature.lowered(target),
+            &signature.lowered(),
             Some(exported_symbol),
             &parameter_types,
             return_type,
@@ -759,7 +759,6 @@ pub fn import_abi_reports(
     type_pool: &FrozenTypeInternPool,
     target: Target,
 ) -> Vec<AbiFunctionReport> {
-    let convention = target.c_calling_convention();
     let mut reports = Vec::new();
     for raw in 0..cfg.value_count() {
         let value = CfgValue::from_raw(raw as u32);
@@ -771,9 +770,12 @@ pub fn import_abi_reports(
             continue;
         }
         let symbol = symbols.resolve(interner.resolve(name));
-        if !symbols.is_foreign(&symbol) {
+        // The convention is the import declaration's own, resolved from its ABI
+        // string once in semantic analysis (spec 9.3:1b), so the report prints
+        // the row the call sequence is actually written under.
+        let Some(convention) = symbols.foreign_convention(&symbol) else {
             continue;
-        }
+        };
         let args = cfg.get_call_args(&inst.data);
         let inputs = crate::foreign_call::ForeignCallInputs::from_cfg(
             symbol.clone(),

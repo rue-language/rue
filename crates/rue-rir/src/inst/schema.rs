@@ -572,6 +572,10 @@ pub enum InstData {
         /// `is_extern`, an export keeps a real body, is analyzed, gets a CFG,
         /// and is code-generated; the flag only marks that a C entry thunk must
         /// be emitted and that the signature is validated for the C boundary.
+        ///
+        /// Neither flag records *which* convention the declaration named: the
+        /// ABI string is resolved against the compilation target while the
+        /// signature is checked (spec 9.3:1b), and RIR is target-independent.
         is_c_export: bool,
         /// Whether this declaration is a `test "name" { .. }` item (ADR-0083
         /// §1) rather than a `fn`. A test lowers to an ordinary `FnDecl` — no

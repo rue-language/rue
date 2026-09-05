@@ -2506,6 +2506,7 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
             is_unchecked,
             is_extern,
             is_c_export,
+            foreign_abi,
             is_accessor,
             accessor_result_mode,
             accessor_body,
@@ -2663,6 +2664,34 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                     },
                 }));
             }
+            // The written ABI, resolved exactly once. It is either the `"C"`
+            // alias, which this target answers with its own psABI row, or a row
+            // named outright (9.3:1b), which is ill-formed here unless this
+            // target implements it (9.3:1c) — never a silent fallback to the
+            // target's own row. Everything downstream carries the row this
+            // produces.
+            let foreign_convention = match foreign_abi {
+                None => None,
+                Some(abi) => {
+                    let target = provider.configuration.target;
+                    let convention = abi.resolve(target);
+                    if !convention.is_implemented_by(target) {
+                        return Err(diagnostic(
+                            rue_error::ErrorKind::CallingConventionUnsupportedOnTarget {
+                                convention: convention.name(),
+                                target: target.name(),
+                                implemented_by: convention
+                                    .implementing_targets()
+                                    .map(|target| format!("`{}`", target.name()))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                                    .into(),
+                            },
+                        ));
+                    }
+                    Some(convention)
+                }
+            };
             if *is_extern || *is_c_export {
                 let check =
                     |provider: &mut SemanticNucleusTypeProvider<'_>,
@@ -2776,6 +2805,7 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                 is_unchecked: *is_unchecked,
                 is_extern: *is_extern,
                 is_c_export: *is_c_export,
+                foreign_convention,
             })
         }
         Input::Struct {

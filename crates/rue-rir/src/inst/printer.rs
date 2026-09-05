@@ -445,8 +445,14 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     returns_borrow,
                     returns_inout,
                 } => {
+                    // The ABI string is not a RIR fact: which convention a
+                    // declaration names is resolved against the compilation
+                    // target while its signature is checked (spec 9.3:1b), and
+                    // RIR is target-independent. Both directions therefore
+                    // render the bare keyword rather than a spelling that could
+                    // disagree with the source.
                     let pub_str = if *is_c_export {
-                        "pub extern \"C\" "
+                        "pub extern "
                     } else if *is_pub {
                         "pub "
                     } else {

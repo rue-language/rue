@@ -3877,8 +3877,11 @@ impl crate::value_plan::ValueLowerAdapter for CfgLower<'_> {
     fn resolve_named_symbol(&self, symbol: &str) -> String {
         self.symbols.resolve(symbol)
     }
-    fn is_foreign_symbol(&self, machine_symbol: &str) -> bool {
-        self.symbols.is_foreign(machine_symbol)
+    fn foreign_symbol_convention(
+        &self,
+        machine_symbol: &str,
+    ) -> Option<rue_target::CallingConvention> {
+        self.symbols.foreign_convention(machine_symbol)
     }
     fn call_arg_register_banks(&self) -> crate::call_plan::AbiRegisterBanks {
         crate::call_plan::AbiRegisterBanks {

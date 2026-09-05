@@ -295,7 +295,9 @@ pub(crate) fn generate_export_thunk_objects(
             options.target,
             exported_symbol,
             &function.record.codegen.defined_symbol,
-            &crate::session::export_signature(function),
+            // Exports reaching this test-only path are declared `"C"`, so the
+            // target's own row is the row their declaration resolved to.
+            &crate::session::export_signature(function, options.target.c_calling_convention()),
         ));
     }
     objects

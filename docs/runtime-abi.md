@@ -47,12 +47,19 @@ that is intentionally not C-compatible or stable across compiler revisions.
 Both boundaries name their convention with one value type,
 `rue_target::CallingConvention`, whose members are concrete conventions:
 
-| Member | Convention |
-| --- | --- |
-| `Rue` | the native, unstable, compiler-chosen convention |
-| `X86_64SysV` | System V AMD64 psABI |
-| `Aarch64Aapcs` | AAPCS64 as on Linux |
-| `Aarch64AapcsDarwin` | AAPCS64 with Apple's arm64 amendments |
+| Member | Name (`name()`) | Convention |
+| --- | --- | --- |
+| `Rue` | `rue` | the native, unstable, compiler-chosen convention |
+| `X86_64SysV` | `x86-64-sysv` | System V AMD64 psABI |
+| `Aarch64Aapcs` | `aarch64-aapcs` | AAPCS64 as on Linux |
+| `Aarch64AapcsDarwin` | `aarch64-aapcs-darwin` | AAPCS64 with Apple's arm64 amendments |
+
+The names in the middle column are the one spelling of each convention: they are
+what `--emit abi` prints, what an ABI diagnostic names, and what an `extern`
+declaration may write (spec 9.3:1b). `CallingConvention::parse_abi_string` reads
+the same table backwards, so the declaration surface cannot drift from the
+printed names. `rue` is not among the strings a declaration may write: the native
+convention is not a foreign boundary.
 
 There is no "target C" member. `"C"` is an **alias**, resolved from the whole
 compilation target by the single table `CallingConvention::c_for_target`
@@ -66,6 +73,15 @@ compilation target by the single table `CallingConvention::c_for_target`
 
 The alias is keyed by target rather than by architecture because the two
 AArch64 targets share an architecture and do not share a convention.
+
+`rue_target::ForeignAbi` is the declaration's-eye view of the same table: an
+`extern` ABI string is either `"C"`, resolved through the alias above, or one
+convention named outright. Resolution happens once, while a declaration's
+signature is checked, and everything past it — the stable plane's call-ABI facts,
+the import planner, the export thunk, `--emit abi` — carries the resolved
+`CallingConvention` rather than re-deriving the target's own row. A named
+convention the compilation target does not implement is rejected (E1110, spec
+9.3:1c) rather than replaced.
 
 `rue-runtime-abi` is the `no_std`, dependency-free manifest crate (ADR-0055), so
 it cannot name a `Target` and does not carry a convention field: every

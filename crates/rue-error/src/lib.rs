@@ -2149,6 +2149,18 @@ define_error_codes! {
     // marker for a typed float operation that a not-yet-shipped ADR-0065
     // phase would lower, and every such operation now lowers on both backends
     // (ADR-0065 Phase 10). The number stays retired rather than reused.
+    /// An `extern` declaration or a `pub extern` export names a calling
+    /// convention the selected compilation target does not implement (RUE-2034,
+    /// spec 9.3:1c). Each platform psABI Rue knows is the C convention of
+    /// exactly one target, so `extern "aarch64-aapcs"` describes a crossing an
+    /// x86-64 build cannot make. Named conventions exist so a declaration can
+    /// say which psABI it means instead of relying on the `"C"` alias; silently
+    /// substituting the target's own row would make the two spellings mean the
+    /// same thing and lose the statement, so the declaration is rejected
+    /// instead. Sits in the FFI band beside the other `extern` rules, and is
+    /// distinct from an ABI string that names no convention at all, which the
+    /// parser rejects before any target is consulted.
+    CALLING_CONVENTION_UNSUPPORTED_ON_TARGET = 1110;
 
     // ========================================================================
     // Comptime errors (E1200-E1299)
@@ -3764,6 +3776,30 @@ pub enum ErrorKind {
     )]
     ForeignEntryPointDeclaration,
 
+    /// An `extern` declaration or `pub extern` export names a calling
+    /// convention the compilation target does not implement (RUE-2034, spec
+    /// 9.3:1c). The ABI string may be the `"C"` alias, which every target
+    /// resolves to its own psABI, or one convention's own name, which denotes
+    /// that row and nothing else. Since each row is the C convention of exactly
+    /// one target, naming another target's row states a crossing this build
+    /// cannot make; falling back to the target's own row would erase the
+    /// difference between the two spellings, so the declaration is rejected.
+    #[error(
+        "calling convention `{convention}` is not implemented by the target `{target}`: \
+         it is the C calling convention of {implemented_by} (spec 9.3:1c)"
+    )]
+    CallingConventionUnsupportedOnTarget {
+        /// The convention named in the declaration, in its canonical spelling.
+        /// Both names are table entries rather than user text, so they are
+        /// borrowed and this variant stays inside the inline size budget.
+        convention: &'static str,
+        /// The compilation target's name.
+        target: &'static str,
+        /// The targets that do implement the convention, already rendered as a
+        /// list of backtick-quoted names.
+        implemented_by: Box<str>,
+    },
+
     /// A `@repr(c)` struct failed the reject-don't-guess eligibility check
     /// (ADR-0064 Amendment 1): an empty struct, an enum/aggregate field without
     /// its own `@repr(c)` marker, or a linear / destructor-bearing field. The
@@ -4072,6 +4108,9 @@ impl ErrorKind {
             ErrorKind::ExportSignatureUnsupported { .. } => ErrorCode::EXPORT_SIGNATURE_UNSUPPORTED,
             ErrorKind::ForeignSignatureConflict(_) => ErrorCode::FOREIGN_SIGNATURE_CONFLICT,
             ErrorKind::ForeignEntryPointDeclaration => ErrorCode::FOREIGN_ENTRY_POINT_DECLARATION,
+            ErrorKind::CallingConventionUnsupportedOnTarget { .. } => {
+                ErrorCode::CALLING_CONVENTION_UNSUPPORTED_ON_TARGET
+            }
             ErrorKind::ReprCStructIneligible(_) => ErrorCode::REPR_C_STRUCT_INELIGIBLE,
             ErrorKind::SliceReturnNotAllowed => ErrorCode::SLICE_RETURN_NOT_ALLOWED,
             ErrorKind::SliceInAggregateField => ErrorCode::SLICE_IN_AGGREGATE_FIELD,

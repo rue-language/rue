@@ -283,7 +283,7 @@ pub(super) struct RootedBodyGraph {
     pub(super) anonymous_nominals: Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
     pub(super) declaration_dependencies:
         Arc<[crate::semantic_query_nucleus::SemanticDeclarationDependency]>,
-    pub(super) c_export_roots: Arc<[crate::StableDefinitionKey]>,
+    pub(super) c_export_roots: Arc<[crate::revisioned_query_database::DurableCExportRoot]>,
     pub(super) modules: Arc<[Arc<crate::parsed_modules::ParsedModule>]>,
     /// The program entry point, present only for a `RootSelection::Executable`
     /// request. A test request has no entry point (ADR-0083 §1).
@@ -318,19 +318,25 @@ pub(super) fn collect_rooted_exports(
     let export_roots = graph
         .c_export_roots
         .iter()
-        .cloned()
-        .map(crate::FunctionInstanceKey::Definition)
-        .collect::<BTreeSet<_>>();
+        .map(|export| {
+            (
+                crate::FunctionInstanceKey::Definition(export.key.clone()),
+                export.convention,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     cfgs.iter()
-        .filter(|cfg| export_roots.contains(&cfg.function))
-        .map(|cfg| crate::program_image_plan::RootedExportThunk {
-            function: cfg.function.clone(),
-            exported_symbol: match &cfg.function {
-                crate::FunctionInstanceKey::Definition(key) => key.name().to_owned(),
-                _ => unreachable!("C export roots are source definitions"),
-            },
-            native_symbol: cfg.record.codegen.defined_symbol.to_string(),
-            signature: export_signature(cfg),
+        .filter_map(|cfg| {
+            let convention = *export_roots.get(&cfg.function)?;
+            Some(crate::program_image_plan::RootedExportThunk {
+                function: cfg.function.clone(),
+                exported_symbol: match &cfg.function {
+                    crate::FunctionInstanceKey::Definition(key) => key.name().to_owned(),
+                    _ => unreachable!("C export roots are source definitions"),
+                },
+                native_symbol: cfg.record.codegen.defined_symbol.to_string(),
+                signature: export_signature(cfg, convention),
+            })
         })
         .collect()
 }
@@ -344,7 +350,10 @@ pub(super) fn collect_rooted_exports(
 /// type from. A C export's parameters are all by value (semantic analysis
 /// rejects `borrow`/`inout` in an export signature), so every one carries a
 /// type.
-pub(crate) fn export_signature(cfg: &RootedCfgUnit) -> rue_codegen::export_thunk::ExportSignature {
+pub(crate) fn export_signature(
+    cfg: &RootedCfgUnit,
+    convention: rue_target::CallingConvention,
+) -> rue_codegen::export_thunk::ExportSignature {
     let types = rue_air::body_parameter_types(&cfg.record.air);
     let parameter_types = cfg
         .record
@@ -362,6 +371,7 @@ pub(crate) fn export_signature(cfg: &RootedCfgUnit) -> rue_codegen::export_thunk
         .collect::<Vec<_>>();
     rue_codegen::export_thunk::ExportSignature::for_types(
         &cfg.record.type_pool,
+        convention,
         &parameter_types,
         cfg.record.cfg.return_type(),
     )

@@ -46,9 +46,29 @@ extern_export = "pub" "extern" STRING [ "unchecked" ] "fn" IDENT
 
 {{ rule(id="9.3:1b", cat="legality-rule") }}
 
-The ABI `STRING` in a foreign declaration or export **MUST** have the value
-`"C"`. Any other ABI string is unsupported in this version and is rejected at
-compile time.
+The ABI `STRING` in a foreign declaration or export **MUST** be either `"C"`,
+which denotes the compilation target's own C calling convention, or one of the
+calling-convention names `"x86-64-sysv"`, `"aarch64-aapcs"`, and
+`"aarch64-aapcs-darwin"`, each of which denotes that convention. A declaration
+whose ABI `STRING` is none of these is rejected at compile time; `"C-unwind"` is
+reserved (§ 9.3:2) and is one such rejection.
+
+{{ rule(id="9.3:1c", cat="legality-rule") }}
+
+A declaration whose ABI `STRING` names a calling convention the compilation
+target does not implement is ill-formed and **MUST** be rejected. The convention
+is never replaced by the target's own; `"C"` is the spelling that adapts to the
+target, and a named convention is the spelling that does not.
+
+{{ rule(id="9.3:1d", cat="informative") }}
+
+The convention names are the names the implementation already uses for these
+conventions elsewhere, so a declaration, a diagnostic, and an ABI dump spell one
+convention one way. Each named convention is the C convention of exactly one
+target Rue supports, so on that target `"C"` and the convention's own name
+denote the same convention and place values identically; the difference is what
+the declaration *says*, which is why the mismatched case is a rejection rather
+than a substitution.
 
 ## Abort at the boundary
 

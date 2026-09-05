@@ -137,14 +137,16 @@ pub struct EmittedRelocation {
 /// Borrowed compiler authority for projecting legacy live callable names to
 /// canonical machine symbols. Runtime helpers never pass through this map.
 ///
-/// It also carries the set of `extern "C"` foreign symbols (ADR-0064): a call to
-/// one of these resolves to its raw (unmangled) C name and crosses under the
-/// target-C ABI, so the backend must apply the boundary's narrow-integer
-/// extension to a scalar return ([`is_foreign`](Self::is_foreign)).
+/// It also carries the `extern` foreign symbols (ADR-0064) with the calling
+/// convention each one's declaration named: a call to one of these resolves to
+/// its raw (unmangled) C name and crosses under that convention, so the backend
+/// places its arguments and applies the boundary's narrow-integer extension from
+/// the row recorded here ([`foreign_convention`](Self::foreign_convention))
+/// rather than from the target's own C row.
 #[derive(Clone, Copy, Default)]
 pub struct MachineSymbolResolver<'a> {
     mappings: Option<&'a std::collections::BTreeMap<String, String>>,
-    foreign: Option<&'a std::collections::BTreeSet<String>>,
+    foreign: Option<&'a std::collections::BTreeMap<String, rue_target::CallingConvention>>,
 }
 
 impl<'a> MachineSymbolResolver<'a> {
@@ -155,11 +157,12 @@ impl<'a> MachineSymbolResolver<'a> {
         }
     }
 
-    /// Build a resolver that also knows which resolved symbols are `extern "C"`
-    /// foreign declarations (ADR-0064 C FFI). `foreign` holds their raw C names.
+    /// Build a resolver that also knows which resolved symbols are `extern`
+    /// foreign declarations (ADR-0064 C FFI) and which calling convention each
+    /// one's declaration named. `foreign` is keyed by their raw C names.
     pub fn new_with_foreign(
         mappings: &'a std::collections::BTreeMap<String, String>,
-        foreign: &'a std::collections::BTreeSet<String>,
+        foreign: &'a std::collections::BTreeMap<String, rue_target::CallingConvention>,
     ) -> Self {
         Self {
             mappings: Some(mappings),
@@ -174,12 +177,19 @@ impl<'a> MachineSymbolResolver<'a> {
             .unwrap_or_else(|| legacy_or_canonical.to_owned())
     }
 
-    /// Whether `machine_symbol` (already resolved via [`resolve`](Self::resolve))
-    /// names an `extern "C"` foreign function. A foreign symbol maps to itself,
-    /// so the resolved name is its raw C name.
-    pub fn is_foreign(&self, machine_symbol: &str) -> bool {
+    /// The calling convention `machine_symbol` (already resolved via
+    /// [`resolve`](Self::resolve)) crosses under when it names an `extern`
+    /// foreign function, or `None` when it does not. A foreign symbol maps to
+    /// itself, so the resolved name is its raw C name; the row is the one its
+    /// declaration named, resolved once in semantic analysis (spec 9.3:1b) and
+    /// never re-derived from the target here.
+    pub fn foreign_convention(
+        &self,
+        machine_symbol: &str,
+    ) -> Option<rue_target::CallingConvention> {
         self.foreign
-            .is_some_and(|foreign| foreign.contains(machine_symbol))
+            .and_then(|foreign| foreign.get(machine_symbol))
+            .copied()
     }
 }
 

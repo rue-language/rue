@@ -41,6 +41,10 @@
         {
           "crate": 119,
           "name": "tracing"
+        },
+        {
+          "crate": 131,
+          "name": "zmij"
         }
       ],
       "is_workspace_member": true,
@@ -109,6 +113,10 @@
         {
           "crate": 119,
           "name": "tracing"
+        },
+        {
+          "crate": 131,
+          "name": "zmij"
         }
       ],
       "is_workspace_member": true,
@@ -814,6 +822,10 @@
           "name": "rue_oracle"
         },
         {
+          "crate": 20,
+          "name": "rue_query"
+        },
+        {
           "crate": 28,
           "name": "rue_test_runner"
         },
@@ -868,6 +880,10 @@
         {
           "crate": 68,
           "name": "lasso"
+        },
+        {
+          "crate": 131,
+          "name": "zmij"
         }
       ],
       "is_workspace_member": true,
@@ -900,6 +916,10 @@
         {
           "crate": 25,
           "name": "rue_span"
+        },
+        {
+          "crate": 27,
+          "name": "rue_target"
         },
         {
           "crate": 38,
@@ -1119,6 +1139,10 @@
         {
           "crate": 23,
           "name": "rue_runtime_abi"
+        },
+        {
+          "crate": 131,
+          "name": "zmij"
         }
       ],
       "is_workspace_member": true,
@@ -1364,6 +1388,10 @@
         {
           "crate": 27,
           "name": "rue_target"
+        },
+        {
+          "crate": 28,
+          "name": "rue_test_runner"
         },
         {
           "crate": 33,

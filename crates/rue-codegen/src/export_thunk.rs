@@ -54,7 +54,7 @@ use rue_air::{
     LoweredSignature, NativeAbiTypeFacts, NativeCallAbi, PaddingRange, PointerLocation, Type,
     lower_c_signature, native_return_register_budget,
 };
-use rue_target::{Arch, CRegisterClass, SretRegisterKind, Target};
+use rue_target::{Arch, CRegisterClass, CallingConvention, SretRegisterKind, Target};
 
 #[cfg(test)]
 use rue_air::ScalarAbiExtension;
@@ -126,6 +126,12 @@ pub struct ExportParameter {
 /// resolved so the description outlives the type pool it was projected from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportSignature {
+    /// The convention the export's C entry follows, resolved once from the
+    /// declaration's ABI string against the compilation target (spec 9.3:1b).
+    /// The thunk places the C side from this row rather than re-deriving the
+    /// target's own C row, so an explicitly named convention and the `"C"` alias
+    /// reach the emitter by one route.
+    convention: CallingConvention,
     parameters: Vec<ExportParameter>,
     result: CAbiTypeFacts,
     /// The return's native classification kernel input. The native decision
@@ -144,9 +150,11 @@ impl ExportSignature {
     /// and `return_type` its result. Semantic analysis has already gated the
     /// signature through `c_passable_by_value`, so every type here is a
     /// C-passable scalar, pointer, or `@repr(c)` aggregate, and every parameter
-    /// is by value.
+    /// is by value; `convention` is the row it already resolved the export's ABI
+    /// string to.
     pub fn for_types(
         type_pool: &FrozenTypeInternPool,
+        convention: CallingConvention,
         param_types: &[Type],
         return_type: Type,
     ) -> Self {
@@ -173,6 +181,7 @@ impl ExportSignature {
             })
             .collect();
         Self {
+            convention,
             parameters,
             result: rue_air::c_abi_type_facts(type_pool, return_type),
             return_facts: native_return_facts(type_pool, return_type),
@@ -182,14 +191,14 @@ impl ExportSignature {
     }
 
     /// The lowered C signature a caller of this export writes and this thunk
-    /// reads, under `target`'s `"C"` alias.
-    pub fn lowered(&self, target: Target) -> LoweredSignature {
+    /// reads, under the convention the declaration named.
+    pub fn lowered(&self) -> LoweredSignature {
         let parameters = self
             .parameters
             .iter()
             .map(|parameter| (parameter.c, ArgConvention::ByValue))
             .collect::<Vec<_>>();
-        lower_c_signature(target.c_calling_convention(), &parameters, self.result)
+        lower_c_signature(self.convention, &parameters, self.result)
     }
 
     /// How the native body returns on `target`, whose architecture fixes the
@@ -355,7 +364,14 @@ enum ReturnImage {
 
 impl ThunkPlan {
     fn new(target: Target, signature: &ExportSignature) -> Self {
-        let c = signature.lowered(target);
+        assert!(
+            signature.convention.is_implemented_by(target),
+            "an export thunk for {target:?} cannot be emitted under {}: semantic \
+             analysis rejects a declaration naming a convention this target does \
+             not implement (spec 9.3:1c)",
+            signature.convention
+        );
+        let c = signature.lowered();
         let spec = c.spec();
         let native_return = signature.native_return(target);
         let native_arg_registers = native_argument_register_count(target);
@@ -1232,8 +1248,23 @@ mod tests {
         scalar_parameter(rue_air::CAbiScalarKind::RegisterWidth, 8, false)
     }
 
+    /// Re-key a shared test signature to `target`'s own C row.
+    ///
+    /// These signatures are type facts, and the same facts are exercised on
+    /// every target; the convention a real export carries comes from its
+    /// declaration, and semantic analysis has already rejected a declaration
+    /// naming a row the target does not implement, so a signature reaching the
+    /// thunk always names one of the target's own rows.
+    fn on(target: Target, signature: &ExportSignature) -> ExportSignature {
+        ExportSignature {
+            convention: target.c_calling_convention(),
+            ..signature.clone()
+        }
+    }
+
     fn void_signature(parameters: Vec<ExportParameter>) -> ExportSignature {
         ExportSignature {
+            convention: CallingConvention::X86_64SysV,
             parameters,
             result: CAbiTypeFacts::ZeroSized,
             return_facts: NativeAbiTypeFacts {
@@ -1269,6 +1300,7 @@ mod tests {
             },
         ];
         ExportSignature {
+            convention: CallingConvention::X86_64SysV,
             parameters: vec![ExportParameter {
                 c: CAbiTypeFacts::Aggregate { size: 24, align: 8 },
                 native: NativeParameter::Direct {
@@ -1305,6 +1337,7 @@ mod tests {
             },
         ];
         ExportSignature {
+            convention: CallingConvention::X86_64SysV,
             parameters: vec![ExportParameter {
                 c: CAbiTypeFacts::Aggregate { size: 8, align: 4 },
                 native: NativeParameter::Indirect,
@@ -1331,7 +1364,10 @@ mod tests {
             let code = generate_export_thunk(
                 target,
                 "__rue_sem_native",
-                &void_signature(vec![word_parameter(), word_parameter()]),
+                &on(
+                    target,
+                    &void_signature(vec![word_parameter(), word_parameter()]),
+                ),
             );
             assert_eq!(code.relocations.len(), 1, "{target:?}");
             assert_eq!(code.relocations[0].kind, kind);
@@ -1348,8 +1384,18 @@ mod tests {
         // they agree.
         let registers = void_signature(vec![word_parameter(); 4]);
         assert_eq!(
-            generate_export_thunk(Target::Aarch64Linux, "native", &registers).code,
-            generate_export_thunk(Target::Aarch64Macos, "native", &registers).code
+            generate_export_thunk(
+                Target::Aarch64Linux,
+                "native",
+                &on(Target::Aarch64Linux, &registers)
+            )
+            .code,
+            generate_export_thunk(
+                Target::Aarch64Macos,
+                "native",
+                &on(Target::Aarch64Macos, &registers)
+            )
+            .code
         );
 
         let narrow = void_signature(
@@ -1358,8 +1404,16 @@ mod tests {
                 .chain([scalar_parameter(rue_air::CAbiScalarKind::I8, 1, true)])
                 .collect(),
         );
-        let linux = generate_export_thunk(Target::Aarch64Linux, "native", &narrow);
-        let darwin = generate_export_thunk(Target::Aarch64Macos, "native", &narrow);
+        let linux = generate_export_thunk(
+            Target::Aarch64Linux,
+            "native",
+            &on(Target::Aarch64Linux, &narrow),
+        );
+        let darwin = generate_export_thunk(
+            Target::Aarch64Macos,
+            "native",
+            &on(Target::Aarch64Macos, &narrow),
+        );
         // Both rows read a one-byte stacked argument at offset 0, so the codes
         // agree here too; what differs is where a *second* stacked argument
         // would land, which the lowered-signature tests pin directly.
@@ -1391,7 +1445,7 @@ mod tests {
     fn a_nine_scalar_export_spills_its_tail_on_both_rows() {
         let signature = void_signature(vec![word_parameter(); 9]);
         for target in [Target::X86_64Linux, Target::Aarch64Linux] {
-            let plan = ThunkPlan::new(target, &signature);
+            let plan = ThunkPlan::new(target, &on(target, &signature));
             assert_eq!(plan.slots.len(), 9);
             let registers = native_argument_register_count(target);
             assert_eq!(plan.register_slots, registers);
@@ -1414,7 +1468,7 @@ mod tests {
     #[test]
     fn a_direct_multislot_parameter_reaches_the_body_in_reversed_slot_order() {
         for target in [Target::X86_64Linux, Target::Aarch64Linux] {
-            let plan = ThunkPlan::new(target, &triple_signature());
+            let plan = ThunkPlan::new(target, &on(target, &triple_signature()));
             // The native return is three slot-identical slots, under both
             // budgets, so it comes back in registers and there is no hidden
             // pointer ahead of the user argument.
@@ -1456,16 +1510,22 @@ mod tests {
         // SysV passes it byval on the stack; AAPCS64 passes a pointer to a
         // caller-owned copy. Either way the thunk reads the C caller's bytes in
         // place and never repacks them.
-        let sysv = ThunkPlan::new(Target::X86_64Linux, &triple_signature());
+        let sysv = ThunkPlan::new(
+            Target::X86_64Linux,
+            &on(Target::X86_64Linux, &triple_signature()),
+        );
         assert!(matches!(sysv.bases[0], ImageBase::Incoming { offset: 0 }));
-        let aapcs = ThunkPlan::new(Target::Aarch64Linux, &triple_signature());
+        let aapcs = ThunkPlan::new(
+            Target::Aarch64Linux,
+            &on(Target::Aarch64Linux, &triple_signature()),
+        );
         assert!(matches!(aapcs.bases[0], ImageBase::SavedPointer { .. }));
     }
 
     #[test]
     fn an_indirect_native_pair_forwards_the_caller_bytes_and_its_own_storage() {
         for target in [Target::X86_64Linux, Target::Aarch64Linux] {
-            let plan = ThunkPlan::new(target, &pair_signature());
+            let plan = ThunkPlan::new(target, &on(target, &pair_signature()));
             // Eight bytes of narrow fields: the native convention cannot express
             // it in registers, so both directions cross through memory.
             assert_eq!(plan.native_return, NativeReturn::Sret);
@@ -1491,7 +1551,10 @@ mod tests {
 
     #[test]
     fn only_sysv_echoes_the_indirect_result_pointer() {
-        let sysv = ThunkPlan::new(Target::X86_64Linux, &triple_signature());
+        let sysv = ThunkPlan::new(
+            Target::X86_64Linux,
+            &on(Target::X86_64Linux, &triple_signature()),
+        );
         assert!(matches!(
             sysv.c.ret(),
             LoweredReturn::Sret {
@@ -1503,7 +1566,10 @@ mod tests {
         // The pointer is argument register zero, so it is already saved there.
         assert_eq!(sysv.c_sret_offset, Some(sysv.save_base));
 
-        let aapcs = ThunkPlan::new(Target::Aarch64Linux, &triple_signature());
+        let aapcs = ThunkPlan::new(
+            Target::Aarch64Linux,
+            &on(Target::Aarch64Linux, &triple_signature()),
+        );
         assert!(matches!(
             aapcs.c.ret(),
             LoweredReturn::Sret {
@@ -1529,7 +1595,7 @@ mod tests {
                 Target::Aarch64Linux,
                 Target::Aarch64Macos,
             ] {
-                let plan = ThunkPlan::new(target, &signature);
+                let plan = ThunkPlan::new(target, &on(target, &signature));
                 assert_eq!(
                     plan.frame_bytes % 16,
                     0,
@@ -1544,7 +1610,7 @@ mod tests {
         let code = generate_export_thunk(
             Target::X86_64Linux,
             "native",
-            &void_signature(vec![word_parameter()]),
+            &on(Target::X86_64Linux, &void_signature(vec![word_parameter()])),
         );
         // push rbp ; mov rbp, rsp ; sub rsp, imm32
         assert_eq!(&code.code[..4], &[0x55, 0x48, 0x89, 0xE5]);
@@ -1561,7 +1627,10 @@ mod tests {
         let code = generate_export_thunk(
             Target::Aarch64Linux,
             "native",
-            &void_signature(vec![word_parameter()]),
+            &on(
+                Target::Aarch64Linux,
+                &void_signature(vec![word_parameter()]),
+            ),
         );
         assert_eq!(code.code.len() % 4, 0);
         let word = |index: usize| {
@@ -1593,6 +1662,7 @@ mod tests {
                 signed,
             }];
             let signature = ExportSignature {
+                convention: CallingConvention::X86_64SysV,
                 parameters: vec![ExportParameter {
                     c: CAbiTypeFacts::Aggregate {
                         size: width.into(),
@@ -1620,7 +1690,7 @@ mod tests {
                 }],
             };
             for target in [Target::X86_64Linux, Target::Aarch64Linux] {
-                let code = generate_export_thunk(target, "native", &signature);
+                let code = generate_export_thunk(target, "native", &on(target, &signature));
                 assert!(
                     !code.code.is_empty(),
                     "{target:?} must encode a {width}-byte leaf"

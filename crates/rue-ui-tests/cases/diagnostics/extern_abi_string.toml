@@ -1,0 +1,173 @@
+[section]
+id = "diagnostics.extern-abi-string"
+name = "The extern ABI string names a calling convention (spec 9.3:1b, 9.3:1c)"
+description = """
+An `extern` block or a `pub extern` export writes an ABI string. It may be
+`"C"`, the alias the compilation target resolves to its own psABI, or one
+calling convention's own name — the very names `--emit abi` prints
+(`rue_target::CallingConvention::name`). Two rejections keep those two claims
+apart, and these cases pin which one a reader gets.
+
+A string that names no convention at all is a *vocabulary* error. The parser
+owns it: it has the name table but no target, so it can say what the accepted
+spellings are and nothing about this build. The message lists them, and the span
+underlines the string itself. `"C-unwind"` (reserved, spec 9.3:2) and `"rue"`
+(the native convention, which is not a foreign boundary) are both this
+rejection.
+
+A string that names a real convention the selected `--target` does not implement
+is a *target* error, E1110, and only semantic analysis can raise it because only
+it knows the target. Naming a convention is a statement about which psABI the
+declaration means, so the compiler never substitutes the target's own row for
+it; the diagnostic names the convention, this target, and the target the
+convention does belong to.
+"""
+
+[[case]]
+name = "unknown_abi_string_lists_the_accepted_spellings"
+description = "An ABI string naming no convention is rejected by the parser, listing every accepted spelling."
+source = """
+extern "Rust" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "unsupported extern ABI \"Rust\"",
+    "\"C\", \"x86-64-sysv\", \"aarch64-aapcs\", \"aarch64-aapcs-darwin\"",
+    "ADR-0064",
+]
+
+[[case]]
+name = "unknown_abi_string_span_underlines_the_string"
+description = "The caret underlines the ABI string literal, quotes included, at 1:8."
+source = """
+extern "Rust" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["1:8", "^^^^^^"]
+
+[[case]]
+name = "c_unwind_abi_string_is_the_vocabulary_rejection"
+description = "`\"C-unwind\"` stays reserved and is rejected as a string that names no convention, not as a target mismatch."
+preview = "c_ffi"
+preview_should_pass = true
+source = """
+extern "C-unwind" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["unsupported extern ABI \"C-unwind\"", "must be one of"]
+
+[[case]]
+name = "native_convention_name_is_not_a_foreign_abi"
+description = "`\"rue\"` names the native convention, which is not a foreign boundary, so it is not an accepted ABI string."
+preview = "c_ffi"
+preview_should_pass = true
+source = """
+extern "rue" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["unsupported extern ABI \"rue\"", "must be one of"]
+
+[[case]]
+name = "export_unknown_abi_string_is_rejected_too"
+description = "The export position reads the same table: an unknown ABI string on `pub extern` gets the same diagnostic."
+preview = "c_ffi"
+preview_should_pass = true
+source = """
+pub extern "fastcall" fn twice(a: i32) -> i32 {
+    a + a
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["unsupported extern ABI \"fastcall\"", "\"aarch64-aapcs-darwin\""]
+
+[[case]]
+name = "convention_not_implemented_by_target_is_e1110"
+description = "Naming AAPCS64 while targeting x86-64 Linux is E1110, naming the convention, this target, and the target it belongs to."
+preview = "c_ffi"
+preview_should_pass = true
+target = "x86-64-linux"
+source = """
+extern "aarch64-aapcs" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "E1110",
+    "calling convention `aarch64-aapcs` is not implemented by the target `x86-64-linux`",
+    "it is the C calling convention of `aarch64-linux`",
+    "9.3:1c",
+]
+
+[[case]]
+name = "sibling_aarch64_row_is_still_a_mismatch"
+description = "The two AArch64 rows are distinct conventions: AAPCS64 named while targeting AArch64 macOS is rejected, not silently accepted as the Darwin row."
+preview = "c_ffi"
+preview_should_pass = true
+target = "aarch64-macos"
+source = """
+extern "aarch64-aapcs" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "E1110",
+    "`aarch64-aapcs` is not implemented by the target `aarch64-macos`",
+]
+
+[[case]]
+name = "export_convention_not_implemented_by_target_is_e1110"
+description = "The export position is checked the same way: an export naming another target's row is E1110."
+preview = "c_ffi"
+preview_should_pass = true
+target = "x86-64-linux"
+source = """
+pub extern "aarch64-aapcs-darwin" fn twice(a: i32) -> i32 {
+    a + a
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "E1110",
+    "`aarch64-aapcs-darwin` is not implemented by the target `x86-64-linux`",
+    "`aarch64-macos`",
+]
+
+[[case]]
+name = "preview_gate_is_reported_before_the_convention_is_checked"
+description = "Without `--preview c_ffi` the reader is told the feature is gated (E1100), not which conventions this target implements."
+target = "x86-64-linux"
+source = """
+extern "aarch64-aapcs" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["c_ffi"]

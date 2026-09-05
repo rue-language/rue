@@ -299,7 +299,8 @@ zero_charge!(
     rue_span::FileId,
     rue_span::Span,
     rue_query::Revision,
-    rue_cfg::BlockId
+    rue_cfg::BlockId,
+    rue_target::CallingConvention
 );
 
 impl<'a> RetainedCharge for Cow<'a, str> {
@@ -1559,6 +1560,12 @@ impl RetainedCharge for rue_error::ErrorKind {
             } => left
                 .retained_charge()
                 .saturating_add(right.retained_charge()),
+
+            // The convention and target names are borrowed table entries; only
+            // the rendered target list is owned.
+            E::CallingConventionUnsupportedOnTarget { implemented_by, .. } => {
+                implemented_by.retained_charge()
+            }
 
             E::UnexpectedToken { expected, found } => expected
                 .retained_charge()
