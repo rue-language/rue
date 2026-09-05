@@ -661,7 +661,7 @@ name = "nontrivial_container_element_code_is_explained"
 files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
 args = ["explain", "E0711"]
 compile_only = true
-compile_stdout_contains = ["E0711: Container element not trivially droppable", "Copy an element that has drop glue:", "Copy a trivially droppable element:", "docs/spec/src/03-types/09-destructors.md (spec rule 3.9:7)"]
+compile_stdout_contains = ["E0711: Container element not trivially droppable", "Copy an element that has drop glue:", "Copy a trivially droppable element:", "duplicates one value into every cell of a new container", "docs/spec/src/03-types/09-destructors.md (spec rule 3.9:7)"]
 compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 

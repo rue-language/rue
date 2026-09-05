@@ -63,7 +63,7 @@ Expression intrinsics (usable in any expression position):
 | `@size_of` | Get type size in bytes | 1 type | `i32` |
 | `@align_of` | Get type alignment in bytes | 1 type | `i32` |
 | `@require_droppable` | Enforce the owning-container element-type gate | 1 type | `()` |
-| `@require_trivially_droppable` | Enforce the by-copy container-read element-type gate | 1 type | `()` |
+| `@require_trivially_droppable` | Enforce the trivially-droppable element-type gate (a by-copy read, or a container built from copies) | 1 type | `()` |
 | `@int_max` | Largest value of an integer type (§4.13:126) | 1 type (integer) | that integer type |
 | `@int_min` | Smallest value of an integer type (§4.13:126) | 1 type (integer) | that integer type |
 | `@offset_of` | Get a struct field's byte offset | 1 type, 1 field name | `u64` |

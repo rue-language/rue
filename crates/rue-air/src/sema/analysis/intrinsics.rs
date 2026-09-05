@@ -92,16 +92,34 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Ok(AnalysisResult::new(air_ref, Type::UNIT));
         }
 
-        // `@require_trivially_droppable(T)` is the by-copy-read gate (RUE-651).
+        // `@require_trivially_droppable(T)` is the element-type gate (RUE-651).
         // Unlike `@require_droppable`, this one normally *does* reach runtime
-        // analysis: it lives in `ArrayBuf(T)`'s `get`/`get_or` method bodies, and
-        // demand-driven analysis (ADR-0045) monomorphizes those bodies with the
-        // concrete element type only when a program actually calls a by-copy read.
-        // If that `T` has drop glue, reading it by copy would alias its owned
-        // resources (double-free), so reject it (E0711) and point the caller at
-        // `pop`. It has no runtime value and evaluates to unit.
+        // analysis: it lives in `ArrayBuf(T)`'s `get`/`get_or` method bodies and
+        // in `Grid2D(T)`'s `new`, and demand-driven analysis (ADR-0045)
+        // monomorphizes those bodies with the concrete element type only when a
+        // program actually calls one. If that `T` has drop glue, duplicating it
+        // would alias its owned resources (double-free), so reject it (E0711).
+        // It has no runtime value and evaluates to unit.
+        //
+        // Which of E0711's two messages is right depends on what the enclosing
+        // callable does with `T`, and its receiver says which: a body with a
+        // `self` receiver reads an element already stored in that receiver, so
+        // `get_ref`/`pop` are real alternatives; an associated function has no
+        // stored element to borrow and is building a container out of copies,
+        // so only a trivially droppable element type will do. `self` is a
+        // keyword, so the receiver is the only parameter that can carry it.
         if intrinsic_name == "require_trivially_droppable" {
-            self.check_trivially_droppable(ty, span)?;
+            let receiver = self.intern_body_symbol("self")?;
+            let shape = if ctx
+                .params
+                .first()
+                .is_some_and(|param| param.name == receiver)
+            {
+                rue_error::ElementGateShape::Read
+            } else {
+                rue_error::ElementGateShape::Construction
+            };
+            self.check_trivially_droppable(ty, span, shape)?;
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::Const(0),
                 ty: Type::UNIT,

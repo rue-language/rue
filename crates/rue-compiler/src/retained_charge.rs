@@ -1409,7 +1409,7 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::FieldAccessOnNonStruct { found: value }
             | E::StrViewNotFirstClass { site: value }
             | E::ContainerElementIsLinear { ty: value }
-            | E::ContainerElementNotTriviallyDroppable { ty: value }
+            | E::ContainerElementNotTriviallyDroppable { ty: value, .. }
             | E::InoutExclusiveAccess { variable: value }
             | E::MutateBorrowedValue { variable: value }
             | E::MoveOutOfBorrow { variable: value }
