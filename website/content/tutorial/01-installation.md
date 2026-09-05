@@ -49,6 +49,7 @@ run the compiler directly:
 
 ```bash
 RUE="$(scripts/rue-bin)"
+export RUE_STD_PATH="$PWD/std"
 "$RUE" examples/welcome.rue -o welcome
 ./welcome
 ```

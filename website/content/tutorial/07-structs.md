@@ -10,7 +10,9 @@ Structs let you create custom types by grouping related data together.
 
 ## Defining Structs
 
-```rue
+```rue check
+const std = @import("std");
+
 struct Point {
     x: i32,
     y: i32,
@@ -31,7 +33,9 @@ fn main() -> i32 {
 
 Pass structs to functions and return them:
 
-```rue
+```rue check
+const std = @import("std");
+
 struct Point {
     x: i32,
     y: i32,
@@ -58,7 +62,9 @@ fn main() -> i32 {
 
 Structs can contain other structs:
 
-```rue
+```rue check
+const std = @import("std");
+
 struct Point {
     x: i32,
     y: i32,
@@ -96,7 +102,9 @@ fn main() -> i32 {
 
 If a struct variable is mutable, you can modify its fields:
 
-```rue
+```rue check
+const std = @import("std");
+
 struct Counter {
     value: i32,
 }
@@ -117,7 +125,9 @@ Integers and booleans are copied when you use them. Structs are different:
 unless you opt in to copying, a struct value is *moved* when it is assigned or
 passed by value. After a move, the old place no longer owns a live value.
 
-```rue
+```rue check
+const std = @import("std");
+
 struct Point {
     x: i32,
     y: i32,
@@ -138,7 +148,9 @@ fn main() -> i32 {
 
 The same rule applies to assignment:
 
-```rue
+```rue check
+const std = @import("std");
+
 struct Point {
     x: i32,
     y: i32,
@@ -158,7 +170,9 @@ fn main() -> i32 {
 If a struct is just data and duplicating it is safe, mark it with `@copy`.
 Copies leave the source usable:
 
-```rue
+```rue check
+const std = @import("std");
+
 @copy
 struct Point {
     x: i32,

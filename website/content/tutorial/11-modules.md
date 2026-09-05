@@ -38,6 +38,7 @@ Compile and run it:
 
 ```bash
 RUE="$(scripts/rue-bin)"
+export RUE_STD_PATH="$PWD/std"
 "$RUE" main.rue -o main
 ./main
 echo $?  # prints: 42
