@@ -192,35 +192,25 @@ fn forest_generation_independent(
         && !b.exits.iter().any(|(_, target)| a.contains(*target))
 }
 
+/// The mathematical value of a constant induction operand, read through the
+/// AIR integer-semantics kernel so a trip count and the constants folded
+/// elsewhere in the pipeline agree about width and signedness.
 fn const_value(cfg: &Cfg, value: CfgValue, ty: Type) -> Option<i128> {
     let CfgInstData::Const(raw) = cfg.get_inst(value).data else {
         return None;
     };
-    let width = ty.int_bit_width()?;
-    if ty.is_signed() {
-        let shift = 128 - width;
-        Some(((raw as i128) << shift) >> shift)
-    } else {
-        Some(i128::from(raw))
-    }
+    let integer = ty.integer_semantics()?;
+    Some(integer.canonicalize_i128(i128::from(raw)))
 }
 
+/// The canonical 64-bit register image of `value` in `ty`, or `None` when the
+/// value does not fit the type. Constants an unrolled body materializes carry
+/// the same encoding constant folding produces.
 fn encoded_const(value: i128, ty: Type) -> Option<u64> {
-    let width = ty.int_bit_width()?;
-    let min = if ty.is_signed() {
-        -(1i128 << (width - 1))
-    } else {
-        0
-    };
-    let max = if ty.is_signed() {
-        (1i128 << (width - 1)) - 1
-    } else {
-        (1i128 << width) - 1
-    };
-    if !(min..=max).contains(&value) {
-        return None;
-    }
-    u64::try_from(value.rem_euclid(1i128 << width)).ok()
+    let integer = ty.integer_semantics()?;
+    integer
+        .fits_i128(value)
+        .then(|| integer.canonicalize_i128(value) as u64)
 }
 
 fn recognize(cfg: &Cfg, lp: &NaturalLoop) -> Option<Trip> {
@@ -529,18 +519,13 @@ fn checked_trip_count(initial: i128, bound: i128, step: i128, cmp: u8, ty: Type)
     };
     // The update executes after the final body iteration. Refuse a sequence
     // that would overflow a checked induction update (which must still trap).
-    let width = ty.int_bit_width()?;
-    let (min, max) = if ty.is_signed() {
-        (-(1i128 << (width - 1)), (1i128 << (width - 1)) - 1)
-    } else {
-        (0, (1i128 << width) - 1)
-    };
-    if initial < min || initial > max {
+    let integer = ty.integer_semantics()?;
+    if !integer.fits_i128(initial) {
         return None;
     }
     let count_i = i128::from(count);
     let final_value = step.checked_mul(count_i)?.checked_add(initial)?;
-    if final_value < min || final_value > max {
+    if !integer.fits_i128(final_value) {
         return None;
     }
     Some(count)
@@ -1814,10 +1799,10 @@ mod tests {
             (3, 0, true, 1),
         ] {
             let mut cfg = slot_loop(initial, bound, descending);
-            cfg.verify().unwrap();
+            cfg.verify_with_fixture_pool().unwrap();
             let stats = run(&mut cfg).unwrap();
             assert_eq!(stats.loops_unrolled, expected);
-            cfg.verify().unwrap();
+            cfg.verify_with_fixture_pool().unwrap();
             let dom = DominatorTree::compute(&cfg);
             assert!(loops(&cfg, &dom).is_empty());
         }
@@ -1926,7 +1911,7 @@ mod tests {
         cfg.set_branch(header, cond, exit, [], body, []);
         let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.loops_unrolled, 1);
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -1942,7 +1927,7 @@ mod tests {
     fn run_batches_independent_loops_in_one_forest_generation() {
         let mut cfg = independent_slot_loops(3, 2);
         let mut repeated = independent_slot_loops(3, 2);
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
         let stats = run(&mut cfg).unwrap();
         assert_eq!(
             stats,
@@ -1959,7 +1944,7 @@ mod tests {
         );
         assert_eq!(run(&mut repeated).unwrap(), stats);
         assert_eq!(format!("{repeated:?}"), format!("{cfg:?}"));
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
         let dom = DominatorTree::compute(&cfg);
         assert!(loops(&cfg, &dom).is_empty());
     }
@@ -1991,7 +1976,7 @@ mod tests {
         assert_eq!(stats.shape_refusals, 2);
         assert_eq!(stats.blocks_cloned, 12);
         assert_eq!(stats.values_cloned, 40);
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
         let dom = DominatorTree::compute(&cfg);
         let remaining = loops(&cfg, &dom);
         assert_eq!(remaining.len(), 1);
@@ -2014,7 +1999,7 @@ mod tests {
         assert_eq!(stats.blocks_cloned, 12);
         assert_eq!(stats.values_cloned, 40);
         assert_eq!(budget.used(), 256);
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -2082,7 +2067,7 @@ mod tests {
     #[test]
     fn run_unrolls_a_constant_trip_inner_loop_then_its_containing_loop() {
         let mut cfg = nested_slot_loops(2, 2);
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
         let stats = run(&mut cfg).unwrap();
         assert_eq!(
             stats,
@@ -2097,7 +2082,7 @@ mod tests {
                 instructions_cloned: 98,
             }
         );
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
         let dom = DominatorTree::compute(&cfg);
         assert!(loops(&cfg, &dom).is_empty());
     }
@@ -2105,14 +2090,14 @@ mod tests {
     #[test]
     fn run_unrolls_deeper_nests_from_the_inside_out() {
         let mut cfg = nested_slot_loops(3, 1);
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
         let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.forest_computations, 4);
         assert_eq!(stats.loops_analyzed, 6);
         assert_eq!(stats.loops_unrolled, 3);
         assert_eq!(stats.shape_refusals, 3);
         assert_eq!(stats.budget_refusals, 0);
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
         let dom = DominatorTree::compute(&cfg);
         assert!(loops(&cfg, &dom).is_empty());
     }
@@ -2141,7 +2126,7 @@ mod tests {
             },
         );
         cfg.get_block_mut(inner_header).terminator = term;
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
         let before = format!("{:?}", cfg);
         let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.forest_computations, 1);
@@ -2170,7 +2155,7 @@ mod tests {
     #[test]
     fn run_rebuilds_a_counterfeit_loop_id_and_stale_enclosing_body() {
         let mut cfg = nested_slot_loops_with_order(2, 2, false);
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
         let old_block_count = cfg.block_count();
         let dom = DominatorTree::compute(&cfg);
         let stale_forest = loops(&cfg, &dom);
@@ -2191,7 +2176,7 @@ mod tests {
         let trip = recognize(&cfg, stale_zero).expect("the inner loop is canonical");
         let (blocks, values, instructions) = unroll_one(&mut cfg, stale_zero, trip).unwrap();
         assert_eq!((blocks, values, instructions), (6, 20, 20));
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
 
         let dom = DominatorTree::compute(&cfg);
         let fresh_forest = loops(&cfg, &dom);
@@ -2217,7 +2202,7 @@ mod tests {
         assert_eq!(stats.loops_unrolled, 1);
         assert_eq!(stats.blocks_cloned, 24);
         assert_eq!(stats.values_cloned, 78);
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -2237,7 +2222,7 @@ mod tests {
             clones, 0,
             "unrolling cloned the whole graph {clones} time(s)"
         );
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -2294,7 +2279,7 @@ mod tests {
         );
         cfg.get_block_mut(body).terminator = Terminator::None;
         cfg.set_branch(body, cond, latch, [], exit, []);
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
         let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.loops_unrolled, 0);
         assert_eq!(stats.shape_refusals, 1);
@@ -2347,11 +2332,11 @@ mod tests {
             },
         );
         cfg.set_goto(join, latch, []);
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
         let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.loops_unrolled, 1);
         assert!(stats.values_cloned > 0);
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]

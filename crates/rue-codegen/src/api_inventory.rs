@@ -212,6 +212,24 @@ fn value_planning_uses_the_air_integer_semantics_kernel() {
 }
 
 #[test]
+fn codegen_consults_air_for_aggregate_and_switch_compare_policy() {
+    // The call planner and the value materializer must classify aggregates
+    // identically, or a call passes a value in a shape the other side never
+    // expects; AIR owns the predicate both consume.
+    let types = include_str!("types.rs");
+    assert!(types.contains("rue_air::is_multislot_aggregate(ty, type_slot_count(type_pool, ty))"));
+    assert!(!types.contains("ty.is_enum() && type_slot_count(type_pool, ty) > 1"));
+
+    // Switch case matching is one rule shared with CFG simplification's
+    // constant folding, so the arm a fold selects is the arm a backend
+    // compiles.
+    let value_plan = include_str!("value_plan.rs");
+    assert!(value_plan.contains("bits: ty.switch_compare_width(),"));
+    let terminator = include_str!("terminator_plan.rs");
+    assert!(terminator.contains("value_plan::switch_compare_width(ty)"));
+}
+
+#[test]
 fn foreign_call_and_mir_state_have_one_shared_authority() {
     let foreign = include_str!("foreign_call.rs");
     assert!(foreign.contains("pub(crate) struct ForeignCallPlan"));

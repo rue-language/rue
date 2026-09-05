@@ -579,7 +579,7 @@ mod tests {
         // operands, computed in the loop body, must hoist to the preheader.
         let mut s = single_loop();
         let inv = push(&mut s.cfg, s.body, CfgInstData::BitOr(s.a, s.b), Type::I32);
-        s.cfg.verify().unwrap();
+        s.cfg.verify_with_fixture_pool().unwrap();
 
         let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
         assert_eq!(stats.invariants_hoisted, 1);
@@ -587,7 +587,7 @@ mod tests {
         // (reused, since entry is an unconditional Goto to the header).
         assert_eq!(block_of(&s.cfg, inv), Some(s.entry));
         assert!(!s.cfg.get_block(s.body).insts.contains(&inv));
-        s.cfg.verify().unwrap();
+        s.cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -598,12 +598,12 @@ mod tests {
         // never runs. This is the core ADR-0054 §2 obligation.
         let mut s = single_loop();
         let trap = push(&mut s.cfg, s.body, CfgInstData::Add(s.a, s.b), Type::I32);
-        s.cfg.verify().unwrap();
+        s.cfg.verify_with_fixture_pool().unwrap();
 
         let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
         assert_eq!(stats.invariants_hoisted, 0, "a trapping Add must not hoist");
         assert_eq!(block_of(&s.cfg, trap), Some(s.body));
-        s.cfg.verify().unwrap();
+        s.cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -624,7 +624,7 @@ mod tests {
             Type::I8,
         );
         let div = push(&mut s.cfg, s.body, CfgInstData::Div(s.a, s.b), Type::I32);
-        s.cfg.verify().unwrap();
+        s.cfg.verify_with_fixture_pool().unwrap();
 
         let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
         assert_eq!(stats.invariants_hoisted, 0);
@@ -674,13 +674,13 @@ mod tests {
             },
         );
         cfg.set_terminator(exit, Terminator::Return { value: None });
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
 
         let stats = run(&mut cfg, &test_type_pool()).unwrap();
         assert_eq!(stats.invariants_hoisted, 1, "only the invariant op hoists");
         assert_eq!(block_of(&cfg, varying), Some(body), "block-param op stays");
         assert_eq!(block_of(&cfg, invariant), Some(entry), "invariant op moved");
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -741,10 +741,10 @@ mod tests {
         let args = cfg.push_goto_args([next_o]).unwrap();
         cfg.set_terminator(o_body, Terminator::Goto { target: o, args });
         cfg.set_terminator(exit, Terminator::Return { value: None });
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
 
         let stats = run(&mut cfg, &test_type_pool()).unwrap();
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
         assert!(stats.invariants_hoisted >= 2);
 
         // RUE-1843: the whole-function definition-block table is built once per
@@ -850,7 +850,7 @@ mod tests {
             Type::UNIT,
         );
         let load = push(&mut s.cfg, s.body, CfgInstData::Load { slot: 0 }, Type::I32);
-        s.cfg.verify().unwrap();
+        s.cfg.verify_with_fixture_pool().unwrap();
         let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
         assert_eq!(stats.invariants_hoisted, 1, "effect-free body: Load hoists");
         assert_eq!(block_of(&s.cfg, load), Some(s.entry));
@@ -873,7 +873,7 @@ mod tests {
             },
             Type::UNIT,
         );
-        s.cfg.verify().unwrap();
+        s.cfg.verify_with_fixture_pool().unwrap();
         let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
         assert_eq!(stats.invariants_hoisted, 0, "same-slot store: Load stays");
         assert_eq!(block_of(&s.cfg, load), Some(s.body));
@@ -897,7 +897,7 @@ mod tests {
             },
             Type::UNIT,
         );
-        s.cfg.verify().unwrap();
+        s.cfg.verify_with_fixture_pool().unwrap();
         let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
         assert_eq!(stats.invariants_hoisted, 1, "unrelated store: Load hoists");
         assert_eq!(stats.instructions_examined, 2);
@@ -1098,13 +1098,13 @@ mod tests {
             },
             Type::I32,
         );
-        s.cfg.verify().unwrap();
+        s.cfg.verify_with_fixture_pool().unwrap();
 
         let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
         assert_eq!(stats.invariants_hoisted, 1, "only the direct read hoists");
         assert_eq!(block_of(&s.cfg, direct), Some(s.entry));
         assert_eq!(block_of(&s.cfg, indirect), Some(s.body));
-        s.cfg.verify().unwrap();
+        s.cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -1145,7 +1145,7 @@ mod tests {
         );
         cfg.set_terminator(body, goto(header));
         cfg.set_terminator(exit, Terminator::Return { value: None });
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
 
         let stats = run(&mut cfg, &test_type_pool()).unwrap();
         assert_eq!(
@@ -1153,7 +1153,7 @@ mod tests {
             "a mutated inout param read must not hoist"
         );
         assert_eq!(block_of(&cfg, read), Some(body), "the inout read stays");
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
 
         // A write to parameter slot 0 cannot change parameter slot 1.
         let mut cfg = Cfg::new(
@@ -1186,7 +1186,7 @@ mod tests {
         );
         cfg.set_terminator(body, goto(header));
         cfg.set_terminator(exit, Terminator::Return { value: None });
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
 
         let stats = run(&mut cfg, &test_type_pool()).unwrap();
         assert_eq!(
@@ -1198,7 +1198,7 @@ mod tests {
             Some(entry),
             "the pure read moved"
         );
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
 
         // Writability is a permission, not itself a loop write: an inout read
         // with no reachable writer in the loop is invariant.
@@ -1340,7 +1340,7 @@ mod tests {
             }
             cfg.set_terminator(blocks[0], goto(header));
             cfg.set_terminator(exit, Terminator::Return { value: None });
-            cfg.verify().unwrap();
+            cfg.verify_with_fixture_pool().unwrap();
 
             let stats = run(&mut cfg, &test_type_pool()).unwrap();
             assert_eq!(stats.forest_computations, 1);
@@ -1357,7 +1357,7 @@ mod tests {
                     .iter()
                     .all(|&value| block_of(&cfg, value) == Some(entry))
             );
-            cfg.verify().unwrap();
+            cfg.verify_with_fixture_pool().unwrap();
         }
     }
 
@@ -1379,7 +1379,7 @@ mod tests {
             assert_eq!(stats.candidate_dependencies, 0);
             assert_eq!(stats.worklist_pops, len as u64);
             assert_eq!(stats.invariants_hoisted, len as u64);
-            s.cfg.verify().unwrap();
+            s.cfg.verify_with_fixture_pool().unwrap();
         }
     }
 
@@ -1440,7 +1440,7 @@ mod tests {
             predecessor = next;
         }
         cfg.set_terminator(predecessor, Terminator::Return { value: None });
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
 
         let stats = run(&mut cfg, &test_type_pool()).unwrap();
         assert_eq!(stats.forest_computations, 1);
@@ -1474,7 +1474,7 @@ mod tests {
                 .zip(&bodies)
                 .all(|(&load, &body)| block_of(&cfg, load).is_some_and(|block| block != body))
         );
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -1497,13 +1497,13 @@ mod tests {
         let invariant = push(&mut cfg, body, CfgInstData::BitOr(a, b), Type::I32);
         cfg.set_terminator(body, goto(header));
         cfg.set_terminator(exit, Terminator::Return { value: None });
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
 
         let stats = run(&mut cfg, &test_type_pool()).unwrap();
         assert_eq!(stats.invariants_hoisted, 1);
         assert_eq!(stats.forest_computations, 1);
         assert_ne!(block_of(&cfg, invariant), Some(body));
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]

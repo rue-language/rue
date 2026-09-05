@@ -1224,7 +1224,7 @@ mod tests {
         cfg.set_terminator(inner_body, goto(inner));
         cfg.set_terminator(outer_latch, goto(outer));
         cfg.set_terminator(exit, Terminator::Return { value: None });
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
 
         let before = cfg.block_count();
         let stats = normalize_preheaders(&mut cfg, &test_type_pool()).unwrap();
@@ -1243,7 +1243,7 @@ mod tests {
             "the final outer body must include the materialized inner preheader"
         );
         assert!(preheader(&cfg, outer_loop).is_some());
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
 
         let second = normalize_preheaders(&mut cfg, &test_type_pool()).unwrap();
         assert_eq!(second.preheaders_materialized, 0);
@@ -1410,7 +1410,7 @@ mod tests {
 
         assert_eq!(ph, entry, "the entry Goto is reused as the preheader");
         assert_eq!(cfg.block_count(), before, "no block inserted for reuse");
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -1508,7 +1508,7 @@ mod tests {
             cfg.get_block(body).terminator,
             Terminator::Goto { target, .. } if target == header
         ));
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -1561,7 +1561,7 @@ mod tests {
         let mut expected = vec![ph, body];
         expected.sort_by_key(|b| b.as_u32());
         assert_eq!(header_preds, expected);
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -1597,7 +1597,7 @@ mod tests {
         original.set_terminator(header, branch(header_cond, body, exit));
         original.set_terminator(body, goto(header));
         original.set_terminator(exit, Terminator::Return { value: None });
-        original.verify().unwrap();
+        original.verify_with_fixture_pool().unwrap();
 
         let forest = analyze(&original);
         let lp = loop_of(&forest, header);
@@ -1702,7 +1702,7 @@ mod tests {
         let ph2 = ensure_preheader(&mut cfg, loop_of(&forest, header), &test_type_pool()).unwrap();
         assert_eq!(ph2, ph1, "the existing preheader is reused");
         assert_eq!(cfg.block_count(), base + 1, "second call inserts nothing");
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -1791,7 +1791,7 @@ mod tests {
         );
         cfg.set_terminator(exit, Terminator::Return { value: None });
 
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
 
         let dom = DominatorTree::compute(&cfg);
         let forest = loops(&cfg, &dom);
@@ -1828,7 +1828,7 @@ mod tests {
 
         // The whole rewrite is verifier-clean: arity and types agree on every
         // edge, and ph dominates the header.
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
         let dom = DominatorTree::compute(&cfg);
         assert!(dom.dominates(ph, header));
     }
@@ -1859,7 +1859,7 @@ mod tests {
             cfg.get_block(ph).terminator,
             Terminator::Goto { target, .. } if target == entry
         ));
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
         let dom = DominatorTree::compute(&cfg);
         assert!(dom.dominates(ph, entry));
     }

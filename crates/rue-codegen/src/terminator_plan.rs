@@ -89,7 +89,8 @@ pub enum TerminatorPlan {
     },
     Switch {
         scrutinee: VReg,
-        /// The comparison width selected by the language policy.
+        /// The comparison width selected by the language policy
+        /// ([`value_plan::switch_compare_width`]).
         width: value_plan::IntegerWidth,
         cases: Vec<SwitchCasePlan>,
         default: BlockId,
@@ -484,7 +485,7 @@ pub(crate) fn plan_terminator<A: TerminatorAdapter>(
             let value_plan = ValuePlan::for_value(ctx, *scrutinee);
             let scrutinee_vreg = adapter.materialize_value(*scrutinee, value_plan).primary;
             let ty = ctx.cfg.get_inst(*scrutinee).ty;
-            let width = value_plan::comparison_integer_width(ty);
+            let width = value_plan::switch_compare_width(ty);
             let cases = ctx
                 .cfg
                 .get_switch_cases(&block.terminator)

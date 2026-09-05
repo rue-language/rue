@@ -958,6 +958,21 @@ impl Type {
         matches!(*self, Type::I64 | Type::U64)
     }
 
+    /// The width, in bits, at which a `switch` compares its scrutinee against
+    /// a case value.
+    ///
+    /// A 64-bit scrutinee is compared over all 64 bits; every narrower
+    /// scrutinee — the narrow integers, `bool`, and a discriminant-only enum —
+    /// is compared over its low 32 bits, which is the width its canonical
+    /// register image already agrees on. This is the single owner of that rule:
+    /// CFG simplification folds a constant `switch` to the arm the backends
+    /// would select, and the backends compare at the width the terminator plan
+    /// carries, so a change here moves both together (RUE-27).
+    #[inline]
+    pub fn switch_compare_width(&self) -> u32 {
+        if self.is_64_bit() { 64 } else { 32 }
+    }
+
     /// Check if this type can coerce to the target type.
     ///
     /// Coercion rules:

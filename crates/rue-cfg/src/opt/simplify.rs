@@ -17,9 +17,10 @@
 //!
 //! Case selection must be exactly what the backends execute, or folding
 //! changes behavior. Both backends materialize the case value as a full
-//! 64-bit immediate and compare at 64-bit width when the scrutinee's type is
-//! 64-bit, and at 32-bit width otherwise (RUE-27) — so this pass compares the
-//! scrutinee's canonical constant the same way.
+//! 64-bit immediate and compare at the width `Type::switch_compare_width`
+//! gives (RUE-27), which is also the width the terminator plan hands them — so
+//! this pass compares the scrutinee's canonical constant through that same
+//! authority.
 //!
 //! ## Threading and merging (RUE-911)
 //!
@@ -135,9 +136,9 @@ fn fold_terminators(cfg: &mut Cfg, stats: &mut Stats) -> Result<(), crate::CfgEd
                     _ => continue,
                 };
                 // Match at the width the backends compare at (see module
-                // docs): 64-bit types compare all 64 bits of the canonical
-                // constant, narrower types compare the low 32 bits.
-                let wide = inst.ty.is_64_bit();
+                // docs), asking the type's own switch-compare policy rather
+                // than restating it here.
+                let wide = inst.ty.switch_compare_width() == 64;
                 let matches = |case: i64| {
                     if wide {
                         scrut_val == case as u64
@@ -840,7 +841,7 @@ mod tests {
                 value: Some(else_param_a),
             },
         );
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
 
         let stats = thread_only(&mut cfg);
         assert_eq!(stats.edges_threaded, 1);
@@ -863,7 +864,7 @@ mod tests {
             }
             other => panic!("expected Branch after threading, got {other:?}"),
         }
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]
@@ -921,7 +922,7 @@ mod tests {
                 value: Some(else_param),
             },
         );
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
 
         let stats = thread_only(&mut cfg);
         assert_eq!(stats.edges_threaded, 2);
@@ -941,7 +942,7 @@ mod tests {
             }
             other => panic!("expected Branch after threading, got {other:?}"),
         }
-        cfg.verify().unwrap();
+        cfg.verify_with_fixture_pool().unwrap();
     }
 
     #[test]

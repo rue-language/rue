@@ -240,7 +240,7 @@ impl<'a> NativeCallAbi<'a> {
         let abi_slots = self.type_pool.abi_slot_count(ty);
         NativeAbiTypeFacts {
             abi_slots,
-            aggregate: self.is_multislot_aggregate(ty, abi_slots),
+            aggregate: is_multislot_aggregate(ty, abi_slots),
             strbuf: matches!(
                 ty.kind(),
                 TypeKind::Struct(struct_id) if self.type_pool.is_strbuf(struct_id)
@@ -282,16 +282,22 @@ impl<'a> NativeCallAbi<'a> {
             ArgConvention::ByValue => self.type_pool.abi_slot_count(ty),
         }
     }
+}
 
-    /// The live plane's aggregate predicate: whether `ty` needs a complete
-    /// aggregate slot representation rather than a single primary vreg.
-    /// Discriminant-only enums stay scalar (oversized enums route through the
-    /// same slot-count policy per RUE-946). This is a facts *projection*; the
-    /// decisions consuming it live on [`NativeAbiTypeFacts`].
-    fn is_multislot_aggregate(&self, ty: Type, slot_count: u32) -> bool {
-        matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_))
-            || (ty.is_enum() && slot_count > 1)
-    }
+/// Whether `ty` needs a complete aggregate slot representation rather than a
+/// single primary vreg, given its flattened slot count `slot_count`.
+///
+/// Structs and arrays always do; a discriminant-only enum stays a scalar, and
+/// an enum with a payload becomes an aggregate exactly when its slot count says
+/// so (oversized enums route through the same slot-count policy per RUE-946).
+/// This is the single authority behind both halves of a call: the classifier
+/// that decides `Registers`/`Scalar` here and code generation's slots-versus-
+/// primary materialization, which cannot disagree about which types are
+/// aggregates without a call passing a value in a shape the other side never
+/// expects.
+pub fn is_multislot_aggregate(ty: Type, slot_count: u32) -> bool {
+    matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_))
+        || (ty.is_enum() && slot_count > 1)
 }
 
 /// Whether the compact physical layout of `ty` is byte-for-byte identical to
