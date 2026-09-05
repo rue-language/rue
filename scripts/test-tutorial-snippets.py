@@ -65,8 +65,7 @@ class SnippetMetadataTests(unittest.TestCase):
                 "fn main() -> i32 { 0 }\n"
                 "```\n"
             )
-            snippets, unmarked = checker.collect_snippets(root)
-            self.assertEqual(unmarked, 0)
+            snippets = checker.collect_snippets(root)
             self.assertEqual(len(snippets), 1)
             self.assertEqual(snippets[0].expected_codes, {"E0203", "E0902"})
 
@@ -104,6 +103,96 @@ class SnippetMetadataTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "compile-fial"):
                 checker.collect_snippets(Path(temp_dir))
+
+
+    def test_unmarked_rue_fences_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            chapter = Path(temp_dir) / "chapter.md"
+            chapter.write_text("```rue\nfn main() -> i32 { 0 }\n```\n")
+            with self.assertRaisesRegex(ValueError, "unmarked rue fence"):
+                checker.collect_snippets(Path(temp_dir))
+
+    def test_run_fence_reads_its_expected_output_and_attributes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            chapter = root / "chapter.md"
+            chapter.write_text(
+                "```rue run stdin=\"7\\n5\\n\" exit=3\n"
+                "fn main() -> i32 { 3 }\n"
+                "```\n"
+                "Run it like this:\n"
+                "```bash\n"
+                "scripts/rue exec stats.rue\n"
+                "```\n"
+                "```text\n"
+                "count: 2\n"
+                "```\n"
+            )
+            (snippet,) = checker.collect_snippets(root)
+            self.assertEqual(snippet.action, "run")
+            self.assertEqual(snippet.stdin, "7\n5\n")
+            self.assertEqual(snippet.exit_code, 3)
+            self.assertEqual(snippet.expected_output, "count: 2\n")
+
+            chapter.write_text("```rue run\nfn main() -> i32 { 0 }\n```\n")
+            with self.assertRaisesRegex(ValueError, "must be followed by a ```text fence"):
+                checker.collect_snippets(root)
+
+            chapter.write_text(
+                "```rue run\nfn main() -> i32 { 0 }\n```\n"
+                "```rue check\nfn main() -> i32 { 0 }\n```\n"
+                "```text\n\n```\n"
+            )
+            with self.assertRaisesRegex(ValueError, "must be followed by a ```text fence"):
+                checker.collect_snippets(root)
+
+            chapter.write_text("```rue check stdin=\"x\"\nfn main() -> i32 { 0 }\n```\n")
+            with self.assertRaisesRegex(ValueError, "only valid with run"):
+                checker.collect_snippets(root)
+
+    def test_file_fences_accumulate_for_later_snippets_in_the_chapter(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "a.md").write_text(
+                "```rue check\nfn main() -> i32 { 0 }\n```\n"
+                "```rue file=lib/math.rue\npub fn double(x: i32) -> i32 { x * 2 }\n```\n"
+                "```rue check\nconst m = @import(\"lib/math.rue\");\nfn main() -> i32 { 0 }\n```\n"
+            )
+            (root / "b.md").write_text("```rue check\nfn main() -> i32 { 0 }\n```\n")
+            first, second, other = checker.collect_snippets(root)
+            self.assertEqual(first.files, ())
+            self.assertEqual(
+                second.files, (("lib/math.rue", "pub fn double(x: i32) -> i32 { x * 2 }\n"),)
+            )
+            self.assertEqual(other.files, ())
+
+            (root / "a.md").write_text("```rue file=../escape.rue\n```\n")
+            with self.assertRaisesRegex(ValueError, "relative path inside the chapter"):
+                checker.collect_snippets(root)
+
+            (root / "a.md").write_text("```rue file=x.rue check\n```\n")
+            with self.assertRaisesRegex(ValueError, "takes no other attributes"):
+                checker.collect_snippets(root)
+
+    def test_file_fences_are_written_next_to_the_snippet(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fake = root / "fake-rue"
+            fake.write_text("#!/bin/sh\nexit 0\n")
+            fake.chmod(0o755)
+            snip = checker.Snippet(
+                path=Path("chapter.md"),
+                line=9,
+                action="check",
+                source="fn main() -> i32 { 0 }\n",
+                files=(("lib/math.rue", "pub fn double(x: i32) -> i32 { x * 2 }\n"),),
+            )
+            checker.compile_snippet(str(fake), snip, root, os.environ.copy(), 5)
+            self.assertEqual(
+                (root / "chapter" / "lib" / "math.rue").read_text(),
+                "pub fn double(x: i32) -> i32 { x * 2 }\n",
+            )
+            self.assertTrue((root / "chapter" / "chapter-9.rue").exists())
 
 
 class CompilerOutcomeTests(unittest.TestCase):
@@ -145,6 +234,28 @@ class CompilerOutcomeTests(unittest.TestCase):
                 snippet("check", frozenset()), outcome(1, diagnostics("E9001"))
             ),
             "compiler reported internal compiler diagnostic code(s): E9001",
+        )
+
+    def test_run_outcome_compares_exit_status_and_output(self):
+        snip = checker.Snippet(
+            path=Path("chapter.md"),
+            line=1,
+            action="run",
+            source="",
+            exit_code=0,
+            expected_output="hello\n",
+        )
+        self.assertIsNone(checker.run_failure(snip, outcome(0, stdout="hello\n")))
+        self.assertIsNone(checker.run_failure(snip, outcome(0, stdout="hello")))
+        self.assertIn(
+            "did not match", checker.run_failure(snip, outcome(0, stdout="goodbye\n"))
+        )
+        self.assertIn(
+            "expected the program to exit 0, but it exited 7",
+            checker.run_failure(snip, outcome(7, stdout="hello\n")),
+        )
+        self.assertEqual(
+            checker.run_failure(snip, outcome(-11)), "program terminated by signal 11"
         )
 
     def test_compile_timeout_kills_the_compiler_process_group(self):
