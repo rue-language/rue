@@ -520,12 +520,16 @@ target type is (4.13:26).
 
 {{ rule(id="4.13:120", cat="legality-rule") }}
 
-It is a compile-time error if the target type cannot be inferred, is not an
-integer type, or is an integer type whose width differs from the argument's
-width (E0950). A reinterpretation neither invents nor discards bits, so it is
-defined only between the same-width pairs — `i8`/`u8`, `i16`/`u16`,
-`i32`/`u32`, and `i64`/`u64` — in either direction, and between an integer type
-and itself. Converting between widths is `@intCast`'s job.
+It is a compile-time error if the target type cannot be inferred, if the
+argument's type or the target type is not an integer type, or if the two are
+integer types of differing widths. A reinterpretation neither invents nor
+discards bits, so it is defined only between the same-width pairs —
+`i8`/`u8`, `i16`/`u16`, `i32`/`u32`, and `i64`/`u64` — in either direction, and
+between an integer type and itself. Converting between widths is `@intCast`'s
+job. Each of those failures is reported under its own code: an uninferable
+target is the uninferred cast target of 4.13:27 (E0709), a non-integer argument
+or target is an ordinary type mismatch (E0702), and a width disagreement
+between two integer types is E0950.
 
 {{ rule(id="4.13:121", cat="dynamic-semantics") }}
 
