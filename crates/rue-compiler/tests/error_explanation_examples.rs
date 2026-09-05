@@ -1,5 +1,26 @@
 use rue_compiler::{CompileOptions, SourceSnapshot, compile_snapshot};
-use rue_error::{ErrorCodeExampleOutcome, error_code_explanation, error_code_metadata};
+use rue_error::{
+    ErrorCode, ErrorCodeExample, ErrorCodeExampleOutcome, error_code_explanation,
+    error_code_metadata,
+};
+
+/// The options one example is compiled under.
+///
+/// An example that exercises a language feature still behind a preview gate
+/// declares the `--preview` names it needs, and this is where a declaration
+/// becomes an enabled feature. Resolving the names through
+/// `ErrorCodeExample::preview_features` keeps the harness on the same parse
+/// the driver applies to `--preview <name>`; a declaration that no longer
+/// names a real feature fails loudly here rather than silently compiling the
+/// example under the stable language and reporting the gate diagnostic.
+fn example_options(code: ErrorCode, example: &ErrorCodeExample) -> CompileOptions {
+    CompileOptions {
+        preview_features: example
+            .preview_features()
+            .unwrap_or_else(|error| panic!("{code} example {:?}: {error}", example.title)),
+        ..CompileOptions::default()
+    }
+}
 
 #[test]
 fn compiler_owned_explanation_examples_have_the_declared_outcome() {
@@ -27,13 +48,15 @@ fn compiler_owned_explanation_examples_have_the_declared_outcome() {
                     | 800..=802
                     | 900..=908
                     | 950
+                    | 1000
             )
     }) {
         let explanation = error_code_explanation(metadata.code)
             .unwrap_or_else(|| panic!("{} must have an explanation", metadata.code));
         for example in explanation.examples {
             let snapshot = SourceSnapshot::single("main.rue", example.source).unwrap();
-            let result = compile_snapshot(&snapshot, &CompileOptions::default());
+            let options = example_options(metadata.code, example);
+            let result = compile_snapshot(&snapshot, &options);
             match example.outcome {
                 ErrorCodeExampleOutcome::EmitsThisCode => {
                     let errors = match result {

@@ -59,6 +59,22 @@ mod integration_tests {
         SourceSnapshot::new(metadata, contents).unwrap()
     }
 
+    /// The options one explanation example is compiled under, honouring the
+    /// `--preview` names it declares. `ErrorCodeExample::preview_features`
+    /// resolves them with the parse the driver uses, so a stale declaration
+    /// fails here instead of compiling the example under the stable language.
+    fn explanation_example_options(
+        code: rue_error::ErrorCode,
+        example: &rue_error::ErrorCodeExample,
+    ) -> CompileOptions {
+        CompileOptions {
+            preview_features: example
+                .preview_features()
+                .unwrap_or_else(|error| panic!("{code} example {:?}: {error}", example.title)),
+            ..CompileOptions::default()
+        }
+    }
+
     #[test]
     fn multi_file_explanation_examples_have_the_declared_outcome() {
         for code in [
@@ -88,8 +104,8 @@ mod integration_tests {
                 } else {
                     crate::test_support::publish_test_snapshot(&mut session, &snapshot)
                 };
-                let result = published
-                    .and_then(|_| session.rooted_cfg(&CompileOptions::default()).map(|_| ()));
+                let options = explanation_example_options(code, example);
+                let result = published.and_then(|_| session.rooted_cfg(&options).map(|_| ()));
                 match example.outcome {
                     rue_error::ErrorCodeExampleOutcome::EmitsThisCode => {
                         let errors = result.unwrap_err();
@@ -170,7 +186,8 @@ mod integration_tests {
                 } else {
                     SourceSnapshot::single("main.rue", example.source).unwrap()
                 };
-                let result = crate::test_compile_snapshot(&snapshot, &CompileOptions::default());
+                let options = explanation_example_options(metadata.code, example);
+                let result = crate::test_compile_snapshot(&snapshot, &options);
                 match example.outcome {
                     rue_error::ErrorCodeExampleOutcome::EmitsThisCode => {
                         let errors = match result {
