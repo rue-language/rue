@@ -9,7 +9,7 @@ accepted: 2026-09-02
 implemented: 2026-09-04
 spec-sections: []
 superseded-by:
-relates: ["RUE-506", "RUE-505", "RUE-504", "RUE-438", "ADR-0063", "ADR-0061", "ADR-0058", "ADR-0055", "ADR-0064", "ADR-0038", "ADR-0027", "ADR-0025", "ADR-0069", "ADR-0005"]
+relates: ["RUE-506", "RUE-505", "RUE-504", "RUE-438", "RUE-2017", "ADR-0063", "ADR-0061", "ADR-0058", "ADR-0055", "ADR-0064", "ADR-0038", "ADR-0027", "ADR-0025", "ADR-0069", "ADR-0005"]
 ---
 
 # ADR-0083: `rue test` MVP: test declarations, runner, and event protocol
@@ -334,10 +334,10 @@ $ rue test app/main.rue --filter parse_port      # run a subset
   duration, capability summary, failure structure, captured output, repro
   argv), `run_finished` (counts, wall time). **Verdicts**: `pass`, `fail`,
   `timeout`, `crash` (killed by signal), `skipped` — the last with no MVP
-  producing mechanism, an open question below. `compile_error` (as a
-  per-test verdict, §3), `cached_pass`, and the `ice` failure kind are
-  reserved in the schema for the deferred work (§6) and are unproducible in
-  the MVP, whose whole-run compile failure is exit code `2`. A **failure
+  producing mechanism, an open question below — and `compile_error`, the
+  per-test verdict of §3, produced since RUE-2017. `cached_pass` and the
+  `ice` failure kind stay reserved in the schema for the deferred work (§6)
+  and are unproducible. A **failure
   record** is data: kind (`assert` / `assert_eq` / `assert_ne` /
   `unhandled_error` / `trap:<class>` / `exit` / `signal` / `timeout` /
   `output_overflow` / `incomplete` — the last for exit 0 with no completion
@@ -367,7 +367,12 @@ $ rue test app/main.rue --filter parse_port      # run a subset
   of green.
 - **`--list`**: emits the inventory — IDs, declaration spans, the
   `capability_summary` state — with semantic analysis of test closures but
-  no codegen, no linking, no execution. Two additive surfaces are reserved
+  no codegen, no linking, no execution. Since RUE-2017 a listing also writes
+  that analysis's diagnostics to stderr, as the run path does and in the same
+  `--error-format`, while still listing every declaration and exiting `0`:
+  the listing's own records are declarations, but a listing that reported
+  nothing about a body that will not compile would mislead exactly the reader
+  who ran it to inspect the suite. Two additive surfaces are reserved
   rather than shipped: a cache-status tier (`--list --cache-status`)
   arrives with the deferred verdict cache (§6), priced honestly as
   materializing closure terminal artifacts, which the default listing must
@@ -381,8 +386,9 @@ $ rue test app/main.rue --filter parse_port      # run a subset
   set**: the request still roots every test in the closure, so a filtered
   run's verdicts are identical to the same tests' verdicts in a full run —
   the property future selection soundness requires. A broken, unselected
-  test therefore still fails the compilation, until per-test
-  `compile_error` verdicts (§6) contain it.
+  test is therefore still analyzed and its diagnostics still reach stderr;
+  since RUE-2017 the per-test `compile_error` verdict (§3) contains it, so
+  it costs that test's own verdict rather than the whole compilation.
 - **Exit codes** (proposed): `0` all selected passed, `1` at least one
   failure, `2` compilation or runner error, `3` empty selection.
 - **Sharding**: `--shard K/N` partitions deterministically by stable ID
@@ -472,17 +478,36 @@ The MVP mechanism:
 - **Reproduction as data**: every failure event carries the exact argv to
   reproduce that single test under the same seed, target, opt level, and
   filter.
-- **Per-test compile failure is a verdict, not a run abort** (deferred,
-  §6). Because each test's closure is analyzed independently as a root, a
-  semantic error in one closure can yield a `compile_error` verdict —
-  exclusion from the image, not stubbing — while every other test runs.
-  The MVP keeps the simpler whole-run-fails behavior; the per-test contract
-  is specified now so Phase 2 does not bake in the coarser one. When it
-  lands, **stderr remains the authoritative diagnostic stream** (byte-
-  for-byte as docs/process/diagnostics.md pins it); the copy embedded in a
+- **Per-test compile failure is a verdict, not a run abort.** Because each
+  test's closure is analyzed independently as a root, a semantic error in
+  one closure yields a `compile_error` verdict — exclusion from the image,
+  not stubbing — while every other test runs. *Shipped by RUE-2017,
+  independently of the rest of §6's cache work.* A broken helper several
+  tests share yields one `compile_error` per dependent test rather than a
+  whole-run failure; a failure inside no test closure is still exit `2`;
+  a selected `compile_error` makes the run exit `1`, because it is a failed
+  test. An excluded test keeps its ordinal and the image holds that ordinal
+  open, refusing dispatch with the pinned usage error. **stderr remains the
+  authoritative diagnostic stream** (byte-for-byte as
+  docs/process/diagnostics.md pins it); the copy embedded in a
   `compile_error` event is an attribution convenience, and divergence
-  between the two is a runner bug. Whether the event should carry full
-  diagnostics or only identities is deferred with that work.
+  between the two is a runner bug. The open question of whether the event
+  should carry full diagnostics or only identities is settled in favour of
+  full ones, as the same JSON objects `--error-format json` publishes.
+  **Residual, as shipped:** the per-test verdict covers a *body* that fails
+  to analyze — attribution walks the closure's own call and drop-glue edges
+  backwards from the failed body to the test roots that reach it. A
+  *declaration* that fails to analyze (a struct or enum field type, a
+  function signature, a `const` initializer, a comptime type constructor) is
+  closure-fatal instead: it stops the reachability walk, so the closure left
+  behind is incomplete and attributing the stop to the roots walked so far
+  would name an arbitrary subset rather than the dependents. It therefore
+  remains a whole-run exit `2` with an empty event stream even when one test
+  is the only thing that reaches it. Attributing declaration failures to
+  their dependents needs the currently unrooting `Definition` and `Type`
+  body references to carry that relation, and is tracked as follow-up work;
+  `residual_a_declaration_that_fails_to_analyze_is_still_a_stopped_run` in
+  `crates/rue-cli-tests/cases/rue_test.toml` pins the behaviour meanwhile.
 
 ### 4. Determinism defaults
 
@@ -612,10 +637,10 @@ decision, not a direction change.
 - **Hermetic verdict caching and selection** (RUE-1622). Verified-hermetic
   verdicts as cacheable artifacts keyed on closure fingerprints plus the
   §3 pinned values; `--changed-only` as the same predicate; allocation
-  determinism via a test-build budgeted page mapper; per-test
-  `compile_error` verdicts. The caching and selection items require
-  capability inference; the per-test `compile_error` mechanism (§3) does
-  not, and may land independently ahead of the rest.
+  determinism via a test-build budgeted page mapper. The caching and
+  selection items require capability inference; the per-test
+  `compile_error` mechanism (§3) did not, and landed independently ahead of
+  the rest as RUE-2017.
 - **Scheduling and flake policy** (RUE-1623). Declared serial groups,
   `--reruns` for non-hermetic tests, hermetic-mismatch reporting, and
   duration-fed sharding; the seedable `@random_*` maintainer call (§4)
@@ -628,11 +653,12 @@ decision, not a direction change.
 
 What the MVP does now so those land additively: `capability_summary` ships
 in v1.0 with an explicit `unavailable` status (§2); the verdict taxonomy
-reserves `compile_error`, `cached_pass`, and the `ice` failure kind without
-producing them, and §3 specifies the per-test compile-failure contract so
-Phase 2 does not bake in the coarser shape; the §3 inventories are pinned
-to exact values — precisely what makes verdicts keyable later; `--list`
-reserves the cache-status tier and `--reaches` (§2); and the failure
+reserved `compile_error`, `cached_pass`, and the `ice` failure kind without
+producing them, and §3 specified the per-test compile-failure contract so
+Phase 2 did not bake in the coarser shape — which is what let RUE-2017 make
+`compile_error` producible as an additive `1.0` change; the §3 inventories
+are pinned to exact values — precisely what makes verdicts keyable later;
+`--list` reserves the cache-status tier and `--reaches` (§2); and the failure
 channel reserves promotion and sub-result shapes with its capability
 classification stated (§5.1, §5.2).
 
@@ -871,9 +897,11 @@ site.
   `docs/process/test-events.md`. Everything that stops a `rue test` run from
   happening — a compile failure, a failing image link, an ICE, a bad flag
   combination — is `2`, so an agent branching on the status never has to
-  also parse stderr to tell those apart. How a future per-test
-  `compile_error` verdict maps onto exit codes is deferred with that verdict
-  (§6, RUE-1622).
+  also parse stderr to tell those apart. How a per-test `compile_error`
+  verdict maps onto exit codes was the remainder of this question, and
+  RUE-2017 settled it: a `compile_error` is a failed test, so a selected one
+  makes the run exit `1`, and `2` narrows to a failure outside every test
+  closure — the dispatcher, the link, or a discovery error.
 - **The `skipped` verdict has no producing mechanism**: **settled in Phase 2c
   (RUE-1920)** by reserving `skipped` **out** of the v1 taxonomy. `@skip` is
   deferred with directive-grammar work, and filtering removes tests from the

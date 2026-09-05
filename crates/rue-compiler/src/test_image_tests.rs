@@ -68,9 +68,10 @@ fn dispatch_fixture() -> (Vec<u8>, crate::unstable::TestInventory) {
         .unwrap()
         .drive(&mut session)
         .unwrap();
-    let (image, inventory) =
-        crate::unstable::test_image_in_compile_scope(&mut session, &test_options())
-            .expect("the test image links");
+    let image = crate::unstable::test_image_in_compile_scope(&mut session, &test_options())
+        .expect("the test image links");
+    assert!(image.compile_failures.is_empty());
+    let (image, inventory) = (image.output, image.inventory);
     (image.elf, inventory)
 }
 
@@ -261,6 +262,47 @@ fn platform_native_a_bad_selector_is_the_pinned_usage_error() {
     }
 }
 
+/// An excluded test's ordinal is held open and refuses dispatch (ADR-0083 §3).
+///
+/// The runner never spawns one — it publishes the `compile_error` verdict
+/// without a process — so this is what an alternative runner enumerating with
+/// `--list --format json` observes. It must be the same refusal a malformed
+/// selector gets rather than a silent exit 0 with no body run, which would be
+/// exactly the false-positive test evidence the completion record exists to
+/// prevent. The surviving test keeps the ordinal the inventory gave it.
+#[test]
+#[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+fn platform_native_an_excluded_ordinal_refuses_dispatch() {
+    let source = crate::SourceSnapshot::single(
+        "main.rue",
+        "test \"aaa broken\" { let x: i32 = true; }\n\
+         test \"bbb runs\" { println(\"ran bravo\"); }\n",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+    crate::test_support::TestDiscoveryHost::new(&source)
+        .unwrap()
+        .drive(&mut session)
+        .unwrap();
+    let image = crate::unstable::test_image_in_compile_scope(&mut session, &test_options())
+        .expect("the surviving test still links");
+    assert_eq!(image.compile_failures.len(), 1);
+    assert_eq!(image.compile_failures[0].entry.ordinal, 0);
+    assert_eq!(image.inventory.entries[1].ordinal, 1);
+
+    let excluded = run_test_image(&image.output.elf, "excluded", "0000000000000000");
+    assert_eq!(excluded.status, Some(2), "{}", excluded.stderr);
+    assert_eq!(excluded.stderr, USAGE_MESSAGE);
+    assert_eq!(excluded.stdout, "");
+    assert_eq!(excluded.channel, "");
+
+    // The hole renumbered nothing: ordinal 1 is still the second declaration.
+    let survivor = run_test_image(&image.output.elf, "survivor", "0000000000000001");
+    assert_eq!(survivor.status, Some(0), "{}", survivor.stderr);
+    assert_eq!(survivor.stdout, "ran bravo\n");
+    assert_eq!(survivor.channel, COMPLETE_FRAME);
+}
+
 /// The test-visible inventory after normalization is the pinned one
 /// (ADR-0083 §3): one argument spelled `rue-test`, and one environment entry.
 ///
@@ -304,9 +346,10 @@ fn platform_native_a_test_observes_the_pinned_process_inventory() {
         .unwrap()
         .drive(&mut session)
         .unwrap();
-    let (image, inventory) =
-        crate::unstable::test_image_in_compile_scope(&mut session, &test_options())
-            .expect("the test image links");
+    let image = crate::unstable::test_image_in_compile_scope(&mut session, &test_options())
+        .expect("the test image links");
+    assert!(image.compile_failures.is_empty());
+    let (image, inventory) = (image.output, image.inventory);
     assert_eq!(inventory.entries.len(), 1);
 
     let run = run_test_image(&image.elf, "inventory", "0000000000000000");
@@ -335,11 +378,13 @@ fn try_fixture() -> (Vec<u8>, crate::unstable::TestInventory) {
         .unwrap()
         .drive(&mut session)
         .unwrap();
-    let (image, inventory) = crate::unstable::test_image_in_compile_scope(
+    let image = crate::unstable::test_image_in_compile_scope(
         &mut session,
         &crate::test_body_try_tests::test_options(),
     )
     .expect("the test image links");
+    assert!(image.compile_failures.is_empty());
+    let (image, inventory) = (image.output, image.inventory);
     (image.elf, inventory)
 }
 

@@ -33,18 +33,30 @@ for an ordinary build of the same closure.
   the missing-inventory note is presentation and so is written in the human
   format only, because `--format json` publishes the same fact as
   `run_finished.test_candidates`.
-- **No event is emitted before the test image exists.** A compile failure is
-  diagnostics on stderr, an empty event stream, and exit `2` — never a
-  `run_started` for a run that never began.
+- **No event is emitted before the test image exists.** A compile failure
+  outside every test closure is diagnostics on stderr, an empty event stream,
+  and exit `2` — never a `run_started` for a run that never began. The image
+  exists once the surviving roots link, which is what makes a failure *inside*
+  one test's closure a different thing: that test gets the `compile_error`
+  verdict and every other test still runs. A selection whose tests are all
+  `compile_error` still links its dispatcher, so it still emits `run_started`,
+  its `test_finished` events, and `run_finished`, and exits `1`.
 
 ## Exit codes
 
 | Code | Meaning |
 |------|---------|
 | `0` | Every selected test passed. |
-| `1` | At least one selected test failed, timed out, or crashed. |
-| `2` | The run could not be performed: a compile failure, a failing image link, an ICE, a bad flag combination, an unreadable root or candidate inventory, or a runner error. |
+| `1` | At least one selected test failed, timed out, crashed, or is a `compile_error`. |
+| `2` | The run could not be performed: a compile failure outside every test closure, a failing image link, an ICE, a bad flag combination, an unreadable root or candidate inventory, or a runner error. |
 | `3` | The selection was empty. |
+
+"Outside every test closure" is about bodies. A **declaration** that fails to
+analyze — a struct field type, a function signature, a `const` initializer — is
+closure-fatal and stops the reachability walk, so it is exit `2` with an empty
+event stream even when a single test is the only thing that reaches it. The
+reason, and the follow-up that would make it a per-test verdict, are under
+[the `compile_error` verdict](#the-compile_error-verdict).
 
 `3` is a distinct outcome rather than a vacuous success because an empty
 selection is how a typo becomes false evidence. A run whose selection is empty
@@ -223,7 +235,7 @@ The head event, and the only one carrying the schema version for a run.
 |-----|------|---------|
 | `event` | `"test_finished"` | |
 | `id` | string | The stable test ID. |
-| `verdict` | string | `"pass"`, `"fail"`, `"timeout"`, or `"crash"`. |
+| `verdict` | string | `"pass"`, `"fail"`, `"timeout"`, `"crash"`, or `"compile_error"`. |
 | `duration_ms` | integer | Wall time from spawn to reap. |
 | `capability_summary` | object | `{"status":"unavailable"}` — see below. |
 | `failure` | object | The failure record. **Absent** on a pass. |
@@ -251,6 +263,7 @@ consumers already handle instead of adding one.
 | `left` | string | A comparison assertion's left operand, rendered. **Absent** on every other failure. |
 | `right` | string | Its right operand, rendered. Present exactly when `left` is. |
 | `diff` | array | The runner's diff from `left` to `right`. Present exactly when `left` is. |
+| `diagnostics` | array | The compiler diagnostics behind a `compile_error`, each the object `--error-format json` publishes for it ([diagnostics.md](diagnostics.md)). **Absent** on every other failure. |
 | `runner_note` | string | The runner's own explanation. **Absent** unless the runner could not trust what it read. |
 
 `line` and `column` are both 1-based, and `column` counts Unicode scalars rather
@@ -364,7 +377,7 @@ second retention limit.
 | Key | Type | Meaning |
 |-----|------|---------|
 | `event` | `"run_finished"` | |
-| `passed` / `failed` / `timeout` / `crash` | integer | Counts by verdict. |
+| `passed` / `failed` / `timeout` / `crash` / `compile_error` | integer | Counts by verdict. |
 | `wall_ms` | integer | Wall time for the whole run. |
 | `unimported_test_files` | array | Declared test files outside the closure. **Absent** without `--test-candidates`. |
 | `test_candidates` | `"declared"` \| `"none"` | Whether an inventory was supplied. |
@@ -408,7 +421,15 @@ carry it, each record names the schema version itself.
 `--list --format human` prints one ID per line.
 
 `--list` performs semantic analysis of the test closure and stops: no CFG, no
-codegen, no linking, no execution. Two additive surfaces are reserved rather
+codegen, no linking, no execution. It lists every declaration, a test whose body
+fails to analyze included — the declaration parsed, and a listing whose entries
+disappeared when a body broke would renumber the ordinals a run dispatches by.
+A listing is not silent about those failures: the closure's analysis diagnostics
+are written to stderr exactly as a run writes them, through the same renderer
+and the same `--error-format`, while the records on stdout are unchanged and the
+exit code stays `0`. A listing that swallowed them would report a suite as fine
+when the run will report those tests as `compile_error`. Only a failure outside
+every test closure stops a listing. Two additive surfaces are reserved rather
 than shipped (ADR-0083 §2): `--list --cache-status`, which arrives with the
 deferred verdict cache and would have to materialize closure terminal
 artifacts the default listing must never pay for, and `--list --reaches <item>`.
@@ -417,7 +438,9 @@ artifacts the default listing must never pay for, and `--list --reaches <item>`.
 
 One classifier decides every verdict from one observation of a finished process:
 the runner's own supervision outcome, the exit status, the last non-empty line
-of stderr, and the frames read from the failure channel.
+of stderr, and the frames read from the failure channel. One verdict is decided
+without a process at all — `compile_error`, below — because the compiler decided
+it before the run began.
 
 | Verdict | Failure kind | Produced when |
 |---------|--------------|---------------|
@@ -433,6 +456,7 @@ of stderr, and the frames read from the failure channel.
 | `fail` | `output_overflow` | A stream budget was exhausted; the group was killed. |
 | `timeout` | `timeout` | The per-test budget expired; the group was killed. |
 | `crash` | `signal` | Killed by a signal, SIGPIPE included. The `signal` field carries the number. |
+| `compile_error` | `compile_error` | The test's closure failed to analyze, so it was excluded from the image and no process ran. See below. |
 
 `trap:<class>` classes are `panic`, `div_by_zero`, `overflow`,
 `intcast_overflow`, `bounds_check`, `invalid_utf8`, and `stack_overflow`. The
@@ -443,6 +467,62 @@ silently reclassifying a trap as a bare `exit`. A frame naming one of those
 classes reaches the same kind the stderr match produces, so one trap has one
 spelling however the runner learned of it; a `trap:` name outside the list is
 some other producer's and is published verbatim like any unknown kind.
+
+### The `compile_error` verdict
+
+Each test item is its own root (ADR-0083 §1), so a semantic error in one test's
+closure is that test's verdict rather than the run's outcome. The test is
+**excluded from the image** — not stubbed — while every other test is linked and
+run, and it keeps its ordinal, because ordinals are the inventory's own indices
+and renumbering would make a `--list` and a run disagree about what a selector
+means. The image holds the excluded ordinal open: an alternative runner that
+dispatches it gets the same pinned usage error and exit `2` a malformed selector
+gets, never a silent success with no body run.
+
+A broken body that is **not** a test — a helper several tests call, or a
+`drop fn` whose values they destroy — yields one `compile_error` verdict per
+test whose closure reaches it, and none for a test that does not. Destruction
+counts as reaching it: the glue that calls a destructor is synthesized and
+cannot fail, but the `drop fn` it calls is ordinary source that can. A failure
+that belongs to no test closure at all, such as a failing import or a
+diagnostic about the compilation itself, is still a whole-run failure with an
+empty event stream and exit `2`.
+
+**The residual: a broken *declaration* is not a per-test verdict.** The rule
+above is about a *body* that fails to analyze. A **declaration** that fails —
+a struct or enum field type, a function signature, a `const` initializer, a
+comptime type constructor — is closure-fatal: it stops the reachability walk
+itself, so the closure left behind is incomplete, bodies a later root would have
+reached were never scheduled, and attributing the stop to the roots walked so
+far would name an arbitrary subset rather than the tests that actually depend on
+it. Such a failure therefore remains a whole-run failure with an empty event
+stream and exit `2` in this version, even when exactly one test reaches the
+broken declaration and every other test is independent of it. That is a known
+residual of the per-test contract, not the contract's intent; attributing
+declaration failures to their dependents is tracked as follow-up work.
+`crates/rue-cli-tests/cases/rue_test.toml`'s
+`residual_a_declaration_that_fails_to_analyze_is_still_a_stopped_run` pins the
+current behaviour so the residual is executable rather than prose.
+
+The event is the ordinary `test_finished` shape, so a consumer branches on
+`verdict` and nothing else: `duration_ms` is `0` and the capture records are
+empty, because no process existed; `scratch_dir` is absent for the same reason;
+`repro` is present as always. Its failure record carries `kind`
+`"compile_error"`, the first diagnostic's `message` and primary span as
+`location`, a rendered `payload` (one `<code>: <message>` line per diagnostic),
+and the `diagnostics` array.
+
+**stderr remains the authoritative diagnostic stream.** The diagnostics are
+written there once for the run, before any event, in the run's own
+`--error-format` and byte-for-byte as a whole-run failure would have written
+them — so a helper several tests share is reported once, not once per dependent
+test. The `diagnostics` array in each event is the attribution: which test each
+diagnostic excluded. Divergence between the two is a runner bug. They are
+written whatever the selection is, because the analysis root set is the whole
+closure: `--filter` narrows the run set, never the analysis root set, so a
+filtered run's verdicts are unchanged — but a filtered run that silently
+swallowed a broken test file would be exactly the papercut the
+unimported-test-file warning exists to prevent.
 
 Precedence, in order:
 
@@ -470,8 +550,6 @@ so a consumer can handle them when they arrive:
   them, and `@skip` is deferred with directive-argument grammar. An unproducible
   verdict in a published enum is a consumer trap, so it is documented rather
   than emitted (this settles ADR-0083's open question).
-- **`compile_error`** — a per-test verdict, deferred with ADR-0083 §6. The MVP's
-  whole-run compile failure is exit `2`.
 - **`cached_pass`** — deferred with the hermetic verdict cache.
 - **`ice`** — a reserved failure kind.
 
@@ -655,6 +733,12 @@ event of a run and in each `--list --format json` record.
   failure record's `left`, `right`, and `diff` and the `assert_eq` /
   `assert_ne` kinds arrived this way (ADR-0083 Phase 2.5): the version stays
   `1.0` because nothing a `1.0` consumer already read changed.
+  `compile_error` arrived the same way (RUE-2017): the verdict was published in
+  this taxonomy from v1.0 as reserved, and the failure record's `diagnostics`
+  array and `run_finished`'s `compile_error` count are new optional fields.
+  Nothing a `1.0` consumer already read changed — but a consumer that treated
+  the four verdicts as exhaustive now sees a fifth, which is what "consumers
+  must ignore unknown fields and unknown event kinds" was for.
 - `repro_env` arrived the same way (RUE-2020), alongside a `repro` whose
   `argv[0]` and root became absolute. The version stays `1.0`: the field is new
   and optional, and `repro` still holds what it always did — the argv that

@@ -7,11 +7,16 @@
 //! anything, and what keeps the human renderer and the event stream from
 //! disagreeing — both read the same `Verdict`.
 //!
+//! One verdict is decided without a process at all: `compile_error`, for a
+//! test whose closure failed to analyze (ADR-0083 §3). It is classified by the
+//! compiler rather than by an observation, which is why it is the one verdict
+//! `classify` never returns.
+//!
 //! Reserved and unproduced in this version, per ADR-0083 §6: the `skipped`
 //! verdict (settled OUT of the v1 taxonomy — filtering removes tests from the
 //! selection rather than reporting them, and `@skip` is deferred with directive
-//! grammar), the `compile_error` and `cached_pass` verdicts, and the `ice`
-//! failure kind. `docs/process/test-events.md` documents each as reserved.
+//! grammar), the `cached_pass` verdict, and the `ice` failure kind.
+//! `docs/process/test-events.md` documents each as reserved.
 
 use std::fmt;
 
@@ -92,6 +97,10 @@ pub(crate) enum FailureKind {
     OutputOverflow(Overflow),
     /// A kind a failure frame supplied verbatim (ADR-0083 §5.1).
     Reported(String),
+    /// The test's closure failed to analyze, so it was excluded from the image
+    /// (ADR-0083 §3). No process ran, and the record carries the compiler's
+    /// diagnostics instead of a runtime observation.
+    CompileError,
 }
 
 impl FailureKind {
@@ -129,6 +138,7 @@ impl fmt::Display for FailureKind {
             // `kind` must not have to enumerate three spellings.
             Self::OutputOverflow(_) => f.write_str("output_overflow"),
             Self::Reported(kind) => f.write_str(kind),
+            Self::CompileError => f.write_str("compile_error"),
         }
     }
 }
@@ -142,6 +152,10 @@ pub(crate) enum Verdict {
     Timeout,
     /// Killed by a signal, SIGPIPE included.
     Crash(i32),
+    /// The test's closure failed to analyze (ADR-0083 §3). It is a failed test
+    /// rather than a failed run: every other test in the closure still linked
+    /// and ran, and this one is excluded from the image.
+    CompileError,
 }
 
 impl Verdict {
@@ -152,6 +166,7 @@ impl Verdict {
             Self::Fail(_) => "fail",
             Self::Timeout => "timeout",
             Self::Crash(_) => "crash",
+            Self::CompileError => "compile_error",
         }
     }
 
@@ -826,5 +841,38 @@ mod tests {
         assert_eq!(Verdict::Fail(FailureKind::Exit).as_str(), "fail");
         assert_eq!(Verdict::Timeout.as_str(), "timeout");
         assert_eq!(Verdict::Crash(11).as_str(), "crash");
+        assert_eq!(Verdict::CompileError.as_str(), "compile_error");
+        assert_eq!(FailureKind::CompileError.to_string(), "compile_error");
+    }
+
+    /// `compile_error` is decided by the compiler, never by an observation of a
+    /// process, so no classification can produce it (ADR-0083 §3).
+    #[test]
+    fn no_observation_classifies_as_a_compile_error() {
+        for (supervision, status, stderr, channel) in [
+            (
+                Supervision::Exited,
+                Ok(0),
+                &b""[..],
+                "{\"record\":\"complete\",\"schema\":\"1.0\"}",
+            ),
+            (Supervision::Exited, Ok(0), &b""[..], ""),
+            (Supervision::Exited, Ok(1), &b""[..], ""),
+            (Supervision::Exited, Ok(101), &b"assertion failed"[..], ""),
+            (Supervision::Exited, Err(9), &b""[..], ""),
+            (Supervision::TimedOut, Err(9), &b""[..], ""),
+        ] {
+            let classification = classify(Observation {
+                supervision,
+                status,
+                stderr,
+                frames: &parse_channel(channel.as_bytes()),
+            });
+            assert_ne!(
+                classification.verdict,
+                Verdict::CompileError,
+                "{status:?} must not classify as a compile error"
+            );
+        }
     }
 }

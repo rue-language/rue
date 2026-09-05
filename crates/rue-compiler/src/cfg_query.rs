@@ -59,8 +59,13 @@ pub(crate) enum CfgSemanticInput {
     /// the body is a pure function of the ordered table, so two requests with
     /// the same tests in the same order share one CFG terminal, and adding or
     /// renaming a test invalidates it exactly as it should.
+    ///
+    /// An entry is `None` for a test excluded from this image because its
+    /// closure failed to analyze (ADR-0083 §3). The hole keeps every later
+    /// ordinal where the inventory put it, and it is part of the key: an image
+    /// that excludes a test is not the image that dispatches it.
     TestDispatcher {
-        table: Arc<[crate::FunctionInstanceKey]>,
+        table: Arc<[Option<crate::FunctionInstanceKey>]>,
         materialization: Arc<crate::local_semantic_materialization::LocalMaterializationFacts>,
         body_span: Span,
     },

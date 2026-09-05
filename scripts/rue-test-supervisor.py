@@ -13,8 +13,9 @@ policy, and it is deliberately the only thing here:
 
   * the run's verdict is read from the NDJSON EVENT STREAM, never from the human
     rendering, which is not a contract (test-events.md, "Streams");
-  * a nonzero exit (1 failures, 2 compile or runner error, 3 empty selection)
-    fails the target;
+  * a nonzero exit (1 failures, a test whose closure did not compile included,
+    2 a failure outside every test closure or a runner error, 3 empty
+    selection) fails the target;
   * a non-empty `run_finished.unimported_test_files` fails the target too,
     unless the rule set `allow_unimported`. `rue test` itself exits 0 with that
     warning on stderr, which is why a build rule that only forwarded the exit
@@ -40,8 +41,11 @@ import sys
 
 # Exit codes of `rue test` (docs/process/test-events.md, "Exit codes").
 _EXIT_REASONS = {
-    1: "a selected test failed, timed out, or crashed",
-    2: "the run could not be performed (compile failure, ICE, or runner error)",
+    1: "a selected test failed, timed out, crashed, or did not compile",
+    2: (
+        "the run could not be performed (a compile failure outside every test "
+        "closure, ICE, or runner error)"
+    ),
     3: "the selection was empty",
 }
 
@@ -172,12 +176,17 @@ def report(command, result, reasons, run_finished, events):
             file=sys.stderr,
         )
     if run_finished:
+        # Every class `run_finished` counts, `compile_error` included. A
+        # summary that omitted one would report a target failed by three
+        # broken test closures as four zeroes: a failure for no stated reason.
         print(
-            "summary: {} passed, {} failed, {} timed out, {} crashed in {} ms".format(
+            "summary: {} passed, {} failed, {} timed out, {} crashed, "
+            "{} did not compile in {} ms".format(
                 run_finished.get("passed", 0),
                 run_finished.get("failed", 0),
                 run_finished.get("timeout", 0),
                 run_finished.get("crash", 0),
+                run_finished.get("compile_error", 0),
                 run_finished.get("wall_ms", 0),
             ),
             file=sys.stderr,

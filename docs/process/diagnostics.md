@@ -21,7 +21,11 @@ It is orthogonal to the third machine surface as well.
 [test-events.md](test-events.md) owns the `rue test` event stream, which is
 NDJSON on **stdout**; program diagnostics keep this document's framing on
 stderr in test mode exactly as in a build, so a consumer can read one stream
-for each.
+for each. A `compile_error` verdict's event embeds the diagnostics that
+excluded its test, as the same objects this document's schema defines — the
+event stream is the attribution, and stderr remains the authoritative
+diagnostic stream, carrying each of them once for the run whatever
+`--error-format` it was given.
 
 ## Stream and framing
 

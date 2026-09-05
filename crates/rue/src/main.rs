@@ -1220,6 +1220,12 @@ struct DiagnosticOutput<'a> {
     /// The path each file is known by, used to put a batch of diagnostics into
     /// source order before it reaches a formatter.
     paths: AHashMap<FileId, &'a str>,
+    /// The sources the renderer was built over, retained so a consumer that
+    /// needs the JSON shape of a diagnostic under `--error-format text` can
+    /// build a second formatter over exactly the same files. `rue test` is the
+    /// one such consumer: a `compile_error` event carries JSON diagnostics on
+    /// stdout while stderr keeps the run's chosen format (ADR-0083 §3).
+    sources: Vec<(FileId, SourceInfo<'a>)>,
     renderer: DiagnosticRenderer<'a>,
 }
 
@@ -1235,14 +1241,47 @@ impl<'a> DiagnosticOutput<'a> {
             .map(|(file_id, info)| (*file_id, info.path))
             .collect();
         let renderer = match format {
-            ErrorFormat::Text => DiagnosticRenderer::Text(MultiFileFormatter::new(sources)),
-            ErrorFormat::Json => DiagnosticRenderer::Json(MultiFileJsonFormatter::new(sources)),
+            ErrorFormat::Text => {
+                DiagnosticRenderer::Text(MultiFileFormatter::new(sources.iter().cloned()))
+            }
+            ErrorFormat::Json => {
+                DiagnosticRenderer::Json(MultiFileJsonFormatter::new(sources.iter().cloned()))
+            }
         };
         Self {
             format,
             paths,
+            sources,
             renderer,
         }
+    }
+
+    /// The same JSON objects `--error-format json` publishes for each batch of
+    /// diagnostics, in the same source order, whatever format this output was
+    /// built for.
+    ///
+    /// Every batch shares one formatter because they share one program: a
+    /// `compile_error` verdict embeds the diagnostics that excluded its test
+    /// (ADR-0083 §3), and building the per-file coordinate index once per
+    /// failing test would rescan the whole program for each of them.
+    ///
+    /// The objects come from the diagnostic formatter's own serializer rather
+    /// than from a second rendering here, so an event's copy and the
+    /// `--error-format json` line on stderr can never disagree about a field.
+    fn json_diagnostic_batches(&self, batches: &[&CompileErrors]) -> Vec<Vec<serde_json::Value>> {
+        let formatter = MultiFileJsonFormatter::new(self.sources.iter().cloned());
+        batches
+            .iter()
+            .map(|errors| {
+                self.in_source_order(errors.as_slice())
+                    .into_iter()
+                    .map(|error| {
+                        serde_json::from_str(&formatter.format_error(error).to_json())
+                            .expect("a rendered JSON diagnostic is JSON")
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     /// Order a batch of diagnostics the way a reader walks the program: by the
@@ -4420,6 +4459,14 @@ mod tests {
         assert!(matches!(json.renderer, DiagnosticRenderer::Json(_)));
     }
 
+    /// The renderer a format selects is constructed once, in one `match`.
+    ///
+    /// `json_diagnostic_batches` builds a second JSON formatter, and it is
+    /// deliberately spelled off `self.sources` rather than the constructor's
+    /// `sources`: it is the on-demand JSON *view* a text-format run needs for a
+    /// `compile_error` event's `diagnostics` (ADR-0083 §3), not a second
+    /// renderer selection. Distinguishing them by spelling is what keeps this
+    /// assertion about selection.
     #[test]
     fn diagnostic_output_source_selects_one_renderer_construction() {
         let source = include_str!("main.rs");
@@ -4432,17 +4479,24 @@ mod tests {
         assert!(production.contains("match format"));
         assert_eq!(
             production
-                .matches("MultiFileFormatter::new(sources)")
+                .matches("MultiFileFormatter::new(sources.iter().cloned())")
                 .count(),
             1,
             "text formatter construction must be selected, not duplicated"
         );
         assert_eq!(
             production
-                .matches("MultiFileJsonFormatter::new(sources)")
+                .matches("MultiFileJsonFormatter::new(sources.iter().cloned())")
                 .count(),
             1,
             "JSON formatter construction must be selected, not duplicated"
+        );
+        assert_eq!(
+            production
+                .matches("MultiFileJsonFormatter::new(self.sources.iter().cloned())")
+                .count(),
+            1,
+            "the on-demand JSON view is one function's, not a second renderer"
         );
         assert!(!production.contains("sources.clone()"));
     }

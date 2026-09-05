@@ -50,6 +50,7 @@ pub(crate) fn render(event: &Event) -> Option<String> {
             failed,
             timeout,
             crash,
+            compile_error,
             wall_ms,
             // The unimported-test-file warnings are the runner's own, and
             // stderr carries them once in every format (test-events.md,
@@ -59,7 +60,14 @@ pub(crate) fn render(event: &Event) -> Option<String> {
             // The missing-inventory notice is the runner's own too, and goes
             // to stderr with them. See `notice`.
             test_candidates: _,
-        } => Some(summary(*passed, *failed, *timeout, *crash, *wall_ms)),
+        } => Some(summary(Counts {
+            passed: *passed,
+            failed: *failed,
+            timeout: *timeout,
+            crash: *crash,
+            compile_error: *compile_error,
+            wall_ms: *wall_ms,
+        })),
     }
 }
 
@@ -85,23 +93,40 @@ pub(crate) fn notice(event: &Event, context: Context) -> Option<&'static str> {
     }
 }
 
+/// The `run_finished` counts a summary line is built from.
+struct Counts {
+    passed: usize,
+    failed: usize,
+    timeout: usize,
+    crash: usize,
+    compile_error: usize,
+    wall_ms: u64,
+}
+
 /// `41 passed, 1 failed (0.9s)`, naming the classes that occurred.
 ///
-/// A zero count for timeouts or crashes is left out rather than printed as
-/// `0 timed out`: those are not ordinary outcomes, and a line that always
-/// mentions them trains a reader to stop seeing them.
-fn summary(passed: usize, failed: usize, timeout: usize, crash: usize, wall_ms: u64) -> String {
-    let mut parts = vec![format!("{passed} passed")];
-    if failed > 0 {
-        parts.push(format!("{failed} failed"));
+/// A zero count for timeouts, crashes, or compile errors is left out rather
+/// than printed as `0 timed out`: those are not ordinary outcomes, and a line
+/// that always mentions them trains a reader to stop seeing them.
+fn summary(counts: Counts) -> String {
+    let mut parts = vec![format!("{} passed", counts.passed)];
+    if counts.failed > 0 {
+        parts.push(format!("{} failed", counts.failed));
     }
-    if timeout > 0 {
-        parts.push(format!("{timeout} timed out"));
+    if counts.timeout > 0 {
+        parts.push(format!("{} timed out", counts.timeout));
     }
-    if crash > 0 {
-        parts.push(format!("{crash} crashed"));
+    if counts.crash > 0 {
+        parts.push(format!("{} crashed", counts.crash));
     }
-    format!("{} ({})", parts.join(", "), seconds(wall_ms))
+    if counts.compile_error > 0 {
+        parts.push(format!(
+            "{} compile error{}",
+            counts.compile_error,
+            if counts.compile_error == 1 { "" } else { "s" }
+        ));
+    }
+    format!("{} ({})", parts.join(", "), seconds(counts.wall_ms))
 }
 
 /// A duration a person reads, to a tenth of a second.
@@ -127,7 +152,43 @@ fn render_failure(finished: &TestFinished) -> String {
         Verdict::Fail(_) => "FAIL",
         Verdict::Timeout => "TIMEOUT",
         Verdict::Crash(_) => "CRASH",
+        Verdict::CompileError => "COMPILE ERROR",
     };
+    // A test that never ran has no captured output, no scratch directory, and
+    // nothing the runner observed: its whole report is the first diagnostic and
+    // a pointer to the stream that carries them all (ADR-0083 §3).
+    if matches!(verdict, Verdict::CompileError) {
+        let mut out = format!("{banner} {id}");
+        if let Some(failure) = failure {
+            out.push_str("\n  ");
+            out.push_str(&failure.kind);
+            if !failure.message.is_empty() {
+                let _ = write!(out, ": {}", failure.message);
+            }
+            if let Some(location) = &failure.location {
+                let _ = write!(
+                    out,
+                    "  ({}:{}:{})",
+                    location.file, location.line, location.column
+                );
+            }
+            let count = failure
+                .diagnostics
+                .as_ref()
+                .map_or(0, |diagnostics| diagnostics.len());
+            let _ = write!(
+                out,
+                "\n  {} on stderr; the test was excluded from the image",
+                if count == 1 {
+                    "the diagnostic is".to_owned()
+                } else {
+                    format!("{count} diagnostics are")
+                }
+            );
+        }
+        let _ = write!(out, "\n  repro: {}", shell_command(repro_env, repro));
+        return out;
+    }
     let mut out = format!("{banner} {id}");
     if let Some(failure) = failure {
         out.push_str("\n  ");
@@ -382,12 +443,95 @@ mod tests {
         }))
     }
 
+    /// The `compile_error` shape: no captures, no scratch directory, and the
+    /// diagnostics the compiler decided it with.
+    fn compile_error_finished(diagnostics: usize) -> Event {
+        Event::TestFinished(Box::new(TestFinished {
+            id: "app/t.rue::parses a port".to_owned(),
+            verdict: Verdict::CompileError,
+            duration_ms: 0,
+            failure: Some(FailureRecord {
+                kind: "compile_error".to_owned(),
+                message: "type mismatch: expected i32, found bool".to_owned(),
+                location: Some(super::super::events::Location {
+                    file: "app/t.rue".to_owned(),
+                    line: 4,
+                    column: 5,
+                }),
+                payload: Some("E0206: type mismatch: expected i32, found bool".to_owned()),
+                diagnostics: Some(vec![serde_json::Value::Null; diagnostics]),
+                ..FailureRecord::default()
+            }),
+            stdout: Capture::new(Vec::new(), 0, false),
+            stderr: Capture::new(Vec::new(), 0, false),
+            scratch_dir: None,
+            repro: vec![
+                "/opt/rue/bin/rue".to_owned(),
+                "test".to_owned(),
+                "/work/app/main.rue".to_owned(),
+            ],
+            repro_env: Vec::new(),
+        }))
+    }
+
+    /// A test that never ran has nothing observed to print: its report is the
+    /// banner, the first diagnostic, a pointer to stderr, and the repro
+    /// (ADR-0083 §3). It keeps the asymmetric-verbosity shape every other
+    /// failure has.
+    #[test]
+    fn a_compile_error_names_its_diagnostic_and_points_at_stderr() {
+        let rendered = super::render(&compile_error_finished(1)).expect("a failure renders");
+        assert_eq!(
+            rendered,
+            concat!(
+                "COMPILE ERROR app/t.rue::parses a port\n",
+                "  compile_error: type mismatch: expected i32, found bool  (app/t.rue:4:5)\n",
+                "  the diagnostic is on stderr; the test was excluded from the image\n",
+                "  repro: /opt/rue/bin/rue test /work/app/main.rue",
+            )
+        );
+        assert!(
+            !rendered.contains("stdout") && !rendered.contains("scratch"),
+            "a test that never ran captured nothing: {rendered}"
+        );
+        assert!(
+            super::render(&compile_error_finished(3))
+                .expect("a failure renders")
+                .contains("3 diagnostics are on stderr"),
+            "the count is the reader's cue that stderr has more"
+        );
+    }
+
+    /// `compile_error` is its own summary class: "did not compile" and "ran and
+    /// failed" send a reader to different places, and stderr is where the first
+    /// one is explained.
+    #[test]
+    fn the_summary_counts_compile_errors_separately() {
+        let summarized = |compile_error| {
+            super::render(&Event::RunFinished {
+                passed: 2,
+                failed: 1,
+                timeout: 0,
+                crash: 0,
+                compile_error,
+                wall_ms: 900,
+                unimported_test_files: None,
+                test_candidates: CandidateSource::Declared,
+            })
+            .expect("a summary renders")
+        };
+        assert_eq!(summarized(0), "2 passed, 1 failed (0.9s)");
+        assert_eq!(summarized(1), "2 passed, 1 failed, 1 compile error (0.9s)");
+        assert_eq!(summarized(4), "2 passed, 1 failed, 4 compile errors (0.9s)");
+    }
+
     fn run_finished(passed: usize, failed: usize, timeout: usize, crash: usize) -> Event {
         Event::RunFinished {
             passed,
             failed,
             timeout,
             crash,
+            compile_error: 0,
             wall_ms: 900,
             unimported_test_files: Some(Vec::new()),
             test_candidates: CandidateSource::Declared,
@@ -593,6 +737,7 @@ mod tests {
             failed: 0,
             timeout: 0,
             crash: 0,
+            compile_error: 0,
             wall_ms: 100,
             unimported_test_files: None,
             test_candidates: CandidateSource::None,
@@ -650,6 +795,7 @@ mod tests {
             failed: 0,
             timeout: 0,
             crash: 0,
+            compile_error: 0,
             wall_ms: 0,
             unimported_test_files: Some(vec![
                 UnimportedFile {

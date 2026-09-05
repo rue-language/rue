@@ -3,7 +3,7 @@ use std::path::Path;
 use rue_compiler::unstable::TestCandidateInventory;
 use rue_compiler::unstable::{
     CancellableCompileOutcome, CodegenReady, CompilationCancellation, ObjectsReady,
-    PresentationOutput, PresentationRequest, TestInventory, UnimportedTestFile,
+    PresentationOutput, PresentationRequest, TestImage, TestListing, UnimportedTestFile,
     cancellable_executable_in_compile_scope, codegen_ready, executable_in_compile_scope,
     objects_ready, runnable_ready, test_image_in_compile_scope, test_inventory,
     unimported_test_files,
@@ -182,17 +182,19 @@ impl FilesystemCompilerHost {
     }
 
     /// Analyze the request's test closure and publish its ordered inventory
-    /// (ADR-0083 §2's `--list`), without codegen or linking.
-    pub fn test_inventory(&mut self, options: &CompileOptions) -> MultiErrorResult<TestInventory> {
+    /// (ADR-0083 §2's `--list`), without codegen or linking, alongside the
+    /// diagnostics of every body in the closure that failed to analyze.
+    pub fn test_inventory(&mut self, options: &CompileOptions) -> MultiErrorResult<TestListing> {
         test_inventory(&mut self.state.session, options)
     }
 
     /// Link the test image for the request's closure and publish the inventory
-    /// that assigned its dispatch ordinals (ADR-0083 §3).
+    /// that assigned its dispatch ordinals, plus the tests the image excluded
+    /// because their closures failed to analyze (ADR-0083 §3).
     pub fn test_image_in_compile_scope(
         &mut self,
         options: &CompileOptions,
-    ) -> MultiErrorResult<(CompileOutput, TestInventory)> {
+    ) -> MultiErrorResult<TestImage> {
         test_image_in_compile_scope(&mut self.state.session, options)
     }
 
