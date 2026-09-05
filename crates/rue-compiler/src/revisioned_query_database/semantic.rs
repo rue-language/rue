@@ -1395,7 +1395,12 @@ pub(super) struct StableCallableSignature {
         crate::TypeInstanceKey,
     )>,
     pub(super) result: crate::TypeInstanceKey,
-    pub(super) target_c: bool,
+    /// The C convention this callable is *entered* under, already resolved from
+    /// the declaration's ABI string against the compilation target, or `None`
+    /// for a callable entered under Rue's native convention. Only a foreign
+    /// declaration is a C entry: a `pub extern` export's own body is native and
+    /// its separate thunk is the crossing.
+    pub(super) foreign_convention: Option<rue_target::CallingConvention>,
 }
 
 pub(super) fn named_callable_owner_type(
@@ -1596,7 +1601,7 @@ pub(super) fn query_callable_signature(
         crate::FunctionInstanceKey::DropGlue(owner) => Ok(Ok(StableCallableSignature {
             parameters: vec![(DurableParameterMode::Value, owner.as_ref().clone())],
             result: crate::TypeInstanceKey::Unit,
-            target_c: false,
+            foreign_convention: None,
         })),
         // A structural printer takes the error value and hands back a borrowed
         // `{ptr, len}` view of the rendering it wrote (ADR-0083 §1).
@@ -1606,7 +1611,7 @@ pub(super) fn query_callable_signature(
                 kind: crate::AnonymousNominalKind::Struct,
                 name: Arc::from("str"),
             },
-            target_c: false,
+            foreign_convention: None,
         })),
         crate::FunctionInstanceKey::Definition(definition)
             if definition.kind() == crate::StableDefinitionKind::Destructor =>
@@ -1619,7 +1624,7 @@ pub(super) fn query_callable_signature(
             Ok(Ok(StableCallableSignature {
                 parameters: vec![(DurableParameterMode::Value, owner)],
                 result: crate::TypeInstanceKey::Unit,
-                target_c: false,
+                foreign_convention: None,
             }))
         }
         crate::FunctionInstanceKey::AnonymousMember { owner, member } => {
@@ -1679,7 +1684,7 @@ pub(super) fn query_callable_signature(
             Ok(Ok(StableCallableSignature {
                 parameters,
                 result: anonymous_method_type(&signature.result, owner),
-                target_c: false,
+                foreign_convention: None,
             }))
         }
         callable => {
@@ -1742,6 +1747,7 @@ pub(super) fn query_callable_signature(
                 self_mode,
                 is_extern,
                 is_c_export: _,
+                foreign_convention,
                 ..
             } = &signature.signature
             else {
@@ -1803,8 +1809,9 @@ pub(super) fn query_callable_signature(
                 parameters: runtime_parameters,
                 result: crate::type_queries::type_instance(&result),
                 // A C export's source body uses Rue's native ABI. The separate
-                // entry thunk is the Target-C boundary.
-                target_c: *is_extern,
+                // entry thunk is the C boundary, and carries the declaration's
+                // convention on its own.
+                foreign_convention: is_extern.then_some(*foreign_convention).flatten(),
             }))
         }
     }
@@ -1931,14 +1938,13 @@ pub(super) fn evaluate_call_abi(
                 .with_terminal_kind(QueryTerminalKind::Failure));
         }
     };
-    // `"C"` is an alias resolved by the whole target, not by its architecture:
-    // AArch64 Linux and AArch64 macOS share an architecture and follow different
-    // conventions. The stable plane consults the same table code generation does.
-    let convention = if signature.target_c {
-        CallingConvention::c_for_target(key.configuration.target)
-    } else {
-        CallingConvention::Rue
-    };
+    // A foreign declaration's convention was resolved once, from its written ABI
+    // string against this compilation target, when its signature was checked
+    // (9.3:1b); the stable plane carries that row rather than re-deriving the
+    // target's own C row here. Everything else is entered natively.
+    let convention = signature
+        .foreign_convention
+        .unwrap_or(CallingConvention::Rue);
     // Every layout this ABI needs, in one batch: each by-value parameter in
     // signature order, then the result. A reference parameter is passed as a
     // pointer whatever it points at, so it contributes no key and no layout

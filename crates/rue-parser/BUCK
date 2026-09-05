@@ -6,6 +6,7 @@ rue_crate(
         "//crates/rue-error:rue-error",
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-span:rue-span",
+        "//crates/rue-target:rue-target",
         "//third-party:ahash",
         "//third-party:lasso",
         "//third-party:smallvec",

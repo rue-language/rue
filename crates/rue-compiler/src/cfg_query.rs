@@ -644,7 +644,13 @@ impl CfgRecord {
 pub(crate) struct CfgCodegenDomain {
     pub(crate) defined_symbol: Arc<str>,
     pub(crate) symbol_mappings: Arc<std::collections::BTreeMap<String, String>>,
-    pub(crate) foreign_symbols: Arc<std::collections::BTreeSet<String>>,
+    /// Each `extern` foreign symbol this unit calls, mapped to the calling
+    /// convention its declaration named (9.3:1b). Code generation reads the row
+    /// from here rather than re-deriving the target's own C row, so an
+    /// explicitly named convention and the `"C"` alias reach the backend the
+    /// same way.
+    pub(crate) foreign_symbols:
+        Arc<std::collections::BTreeMap<String, rue_target::CallingConvention>>,
 }
 
 impl CfgCodegenDomain {
@@ -654,7 +660,7 @@ impl CfgCodegenDomain {
     pub(crate) fn is_foreign_source_symbol(&self, source: &str) -> bool {
         self.symbol_mappings
             .get(source)
-            .is_some_and(|machine| self.foreign_symbols.contains(machine))
+            .is_some_and(|machine| self.foreign_symbols.contains_key(machine))
     }
 }
 
@@ -1998,7 +2004,7 @@ struct CfgSpliceState {
         AHashMap<rue_air::LocalAtomId<crate::StableDefinitionKey, crate::ModuleId>, usize>,
     symbol_mappings: std::collections::BTreeMap<String, String>,
     source_by_machine: std::collections::BTreeMap<String, String>,
-    foreign_symbols: std::collections::BTreeSet<String>,
+    foreign_symbols: std::collections::BTreeMap<String, rue_target::CallingConvention>,
     materialization_warnings: Vec<rue_error::CompileWarning>,
     warnings: Vec<rue_error::CompileWarning>,
     implicit_destructor_targets: std::collections::BTreeSet<crate::TypeInstanceKey>,
@@ -2274,8 +2280,7 @@ fn splice_callee(
     }
     for (source, machine) in callee.codegen.symbol_mappings.iter() {
         if state.symbol_mappings.get(source) == Some(machine)
-            && state.foreign_symbols.contains(machine)
-                != callee.codegen.foreign_symbols.contains(machine)
+            && state.foreign_symbols.get(machine) != callee.codegen.foreign_symbols.get(machine)
         {
             return Err(SpliceCalleeFailure::ConflictingForeignSymbol);
         }
@@ -2289,8 +2294,8 @@ fn splice_callee(
         .codegen
         .foreign_symbols
         .iter()
-        .filter(|symbol| !state.foreign_symbols.contains(*symbol))
-        .cloned()
+        .filter(|(symbol, _)| !state.foreign_symbols.contains_key(*symbol))
+        .map(|(symbol, convention)| (symbol.clone(), *convention))
         .collect::<Vec<_>>();
     let mut materialization_warning_additions = Vec::new();
     let mut warning_additions = Vec::new();
@@ -4057,9 +4062,10 @@ mod accessor_graph_tests {
                 source.clone(),
                 format!("{machine}__conflict"),
             )])),
-            foreign_symbols: Arc::new(std::collections::BTreeSet::from([
-                "__staged_foreign".to_owned()
-            ])),
+            foreign_symbols: Arc::new(std::collections::BTreeMap::from([(
+                "__staged_foreign".to_owned(),
+                rue_target::CallingConvention::X86_64SysV,
+            )])),
         });
         poisoned.implicit_destructor_targets = Arc::from([crate::TypeInstanceKey::I32]);
         poisoned.implicit_drop_glue_targets = Arc::from([crate::TypeInstanceKey::I64]);
@@ -4118,7 +4124,7 @@ mod accessor_graph_tests {
         );
 
         let mut poisoned = (*callee).clone();
-        let foreign_conflict = !state.foreign_symbols.contains(&machine);
+        let foreign_conflict = !state.foreign_symbols.contains_key(&machine);
         poisoned.codegen = Arc::new(CfgCodegenDomain {
             defined_symbol: poisoned.codegen.defined_symbol.clone(),
             symbol_mappings: Arc::new(std::collections::BTreeMap::from([(
@@ -4126,9 +4132,12 @@ mod accessor_graph_tests {
                 machine.clone(),
             )])),
             foreign_symbols: if foreign_conflict {
-                Arc::new(std::collections::BTreeSet::from([machine.clone()]))
+                Arc::new(std::collections::BTreeMap::from([(
+                    machine.clone(),
+                    rue_target::CallingConvention::X86_64SysV,
+                )]))
             } else {
-                Arc::new(std::collections::BTreeSet::new())
+                Arc::new(std::collections::BTreeMap::new())
             },
         });
         assert!(matches!(
@@ -4285,7 +4294,10 @@ mod accessor_graph_tests {
                 "foreign".to_owned(),
                 "ffi_symbol".to_owned(),
             )])),
-            foreign_symbols: Arc::new(std::collections::BTreeSet::from(["ffi_symbol".to_owned()])),
+            foreign_symbols: Arc::new(std::collections::BTreeMap::from([(
+                "ffi_symbol".to_owned(),
+                rue_target::CallingConvention::X86_64SysV,
+            )])),
         };
         assert!(foreign_domain.is_foreign_source_symbol("foreign"));
         assert!(!foreign_domain.is_foreign_source_symbol("missing"));

@@ -112,8 +112,7 @@ pub(crate) fn validate_pre_lowering_budget(
         arg_reg_count,
         return_reg_count,
         scheme,
-        rue_target::CallingConvention::X86_64SysV,
-        &|_| false,
+        &|_| None,
     )
 }
 
@@ -123,8 +122,7 @@ pub(crate) fn validate_pre_lowering_budget_for_target(
     arg_reg_count: u32,
     return_reg_count: u32,
     scheme: SavedRegScheme,
-    target_c_convention: rue_target::CallingConvention,
-    is_foreign_symbol: &dyn Fn(lasso::Spur) -> bool,
+    foreign_symbol_convention: &dyn Fn(lasso::Spur) -> Option<rue_target::CallingConvention>,
 ) -> CompileResult<bool> {
     let return_class =
         NativeCallAbi::new(type_pool, return_reg_count).classify_return(cfg.return_type());
@@ -141,17 +139,13 @@ pub(crate) fn validate_pre_lowering_budget_for_target(
             continue;
         };
         let call_args = cfg.get_call_args(&inst.data);
-        if is_foreign_symbol(*name)
+        if let Some(convention) = foreign_symbol_convention(*name)
             && crate::foreign_call::ForeignCallInputs::call_touches_aggregate(
                 cfg, inst.ty, call_args,
             )
         {
             crate::foreign_call::ForeignCallInputs::checked_call_area_bytes(
-                cfg,
-                type_pool,
-                inst.ty,
-                call_args,
-                target_c_convention,
+                cfg, type_pool, inst.ty, call_args, convention,
             )
             .map_err(|_| frame_budget_error(cfg, Some(value)))?;
             continue;
@@ -219,8 +213,7 @@ pub(crate) fn prepare_mir_with_backend<B: crate::backend::Backend>(
         B::ARG_REG_COUNT,
         B::RETURN_REG_COUNT,
         B::SAVED_REG_SCHEME,
-        target.c_calling_convention(),
-        &|name| symbols.is_foreign(&symbols.resolve(interner.resolve(&name))),
+        &|name| symbols.foreign_convention(&symbols.resolve(interner.resolve(&name))),
     )?;
     let param_storage = crate::param_storage::ParamStoragePlan::plan(
         cfg,
@@ -642,8 +635,7 @@ mod tests {
                 arg_regs,
                 ret_regs,
                 scheme,
-                convention,
-                &|_| true,
+                &|_| Some(convention),
             )
             .unwrap_err();
             assert!(matches!(
@@ -726,8 +718,7 @@ mod tests {
                     arg_regs,
                     ret_regs,
                     scheme,
-                    convention,
-                    &|_| true,
+                    &|_| Some(convention),
                 )
                 .is_err(),
                 "foreign scratch must count against the {convention:?} live sret area"

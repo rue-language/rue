@@ -728,10 +728,10 @@ fn the_c_by_value_classifier_agrees_across_sites_shapes_and_planes() {
 
             let mut param_types = vec![*live_ty];
             param_types.extend(std::iter::repeat_n(Type::I64, 9));
-            let export = ExportSignature::for_types(&pool, &param_types, *live_ty);
+            let export = ExportSignature::for_types(&pool, convention, &param_types, *live_ty);
             assert_eq!(
                 call,
-                export.lowered(target),
+                export.lowered(),
                 "{target:?}/{name}: an export must read the placement a call writes"
             );
 

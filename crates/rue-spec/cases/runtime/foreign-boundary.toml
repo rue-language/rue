@@ -3,25 +3,126 @@
 # Most of § 9.3 is not coverable here: the abort-at-boundary proof needs a C
 # caller linked to a Rue export, and the reverse-direction and ownership rules
 # describe undefined / programmer-responsibility behavior (see
-# KNOWN_UNCOVERED_NORMATIVE). The redeclaration rule is an ordinary
-# compile-time rejection, so it is pinned directly.
+# KNOWN_UNCOVERED_NORMATIVE). The ABI-string and redeclaration rules are
+# ordinary compile-time decisions, so they are pinned directly.
 
 [section]
 id = "runtime.foreign_boundary"
 spec_chapter = "9.3"
 name = "Foreign-Boundary Semantics"
-description = "Rules governing the target-C foreign boundary: foreign redeclaration agreement and the reserved entry-point symbol."
+description = "Rules governing the C foreign boundary: which ABI strings a declaration may write, foreign redeclaration agreement, and the reserved entry-point symbol."
 
 # =============================================================================
-# ABI legality (9.3:1b)
+# ABI legality (9.3:1b, 9.3:1c)
+#
+# The accepted spellings are `"C"` and the three calling-convention names. Each
+# named convention belongs to one target, so the accepting cases declare that
+# target and stop at the executable rather than running it.
 # =============================================================================
+
+[[case]]
+name = "foreign_c_abi_is_accepted"
+spec = ["9.3:1b"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "`\"C\"` names the compilation target's own C calling convention and is accepted"
+source = """
+extern "C" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_only = true
+
+[[case]]
+name = "foreign_x86_64_sysv_abi_is_accepted_on_its_target"
+spec = ["9.3:1b"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "`\"x86-64-sysv\"` names the SysV AMD64 convention and is accepted while targeting x86-64 Linux"
+source = """
+extern "x86-64-sysv" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 { 0 }
+"""
+target = "x86-64-linux"
+compile_only = true
+
+[[case]]
+name = "foreign_aarch64_aapcs_abi_is_accepted_on_its_target"
+spec = ["9.3:1b"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "`\"aarch64-aapcs\"` names AAPCS64 and is accepted while targeting AArch64 Linux"
+source = """
+extern "aarch64-aapcs" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 { 0 }
+"""
+target = "aarch64-linux"
+compile_only = true
+
+[[case]]
+name = "export_aarch64_aapcs_darwin_abi_is_accepted_on_its_target"
+spec = ["9.3:1b"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "`\"aarch64-aapcs-darwin\"` names Apple's arm64 row and is accepted, in export position, while targeting AArch64 macOS"
+source = """
+pub extern "aarch64-aapcs-darwin" fn twice(a: i32) -> i32 {
+    a + a
+}
+
+fn main() -> i32 { 0 }
+"""
+target = "aarch64-macos"
+compile_only = true
+
+[[case]]
+name = "foreign_convention_not_implemented_by_target_is_rejected"
+spec = ["9.3:1b", "9.3:1c"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "A named convention the compilation target does not implement is rejected, never replaced by the target's own"
+source = """
+extern "aarch64-aapcs" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 { 0 }
+"""
+target = "x86-64-linux"
+compile_fail = true
+error_contains = ["aarch64-aapcs", "x86-64-linux"]
+
+[[case]]
+name = "export_convention_of_another_target_is_rejected"
+spec = ["9.3:1c"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "An export naming AAPCS64 while targeting AArch64 macOS is rejected: the Darwin row is a different convention"
+source = """
+pub extern "aarch64-aapcs" fn twice(a: i32) -> i32 {
+    a + a
+}
+
+fn main() -> i32 { 0 }
+"""
+target = "aarch64-macos"
+compile_fail = true
+error_contains = ["aarch64-aapcs", "aarch64-macos"]
 
 [[case]]
 name = "foreign_unsupported_abi_is_rejected"
 spec = ["9.3:1b"]
 preview = "c_ffi"
 preview_should_pass = true
-description = "A foreign declaration with an ABI string other than C is rejected"
+description = "A foreign declaration with an ABI string that names no calling convention is rejected"
 source = """
 extern "Rust" {
     fn answer() -> i64;
@@ -31,6 +132,38 @@ fn main() -> i32 { 0 }
 """
 compile_fail = true
 error_contains = ["unsupported extern ABI", "\"C\""]
+
+[[case]]
+name = "foreign_c_unwind_abi_is_rejected"
+spec = ["9.3:1b"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "`\"C-unwind\"` is reserved (9.3:2) and names no accepted convention"
+source = """
+extern "C-unwind" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["unsupported extern ABI", "C-unwind"]
+
+[[case]]
+name = "foreign_native_convention_name_is_rejected"
+spec = ["9.3:1b"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "`\"rue\"` is the native convention, not a foreign boundary, so it is not an accepted ABI string"
+source = """
+extern "rue" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["unsupported extern ABI", "rue"]
 
 # =============================================================================
 # Foreign redeclaration (9.3:5, RUE-1218)

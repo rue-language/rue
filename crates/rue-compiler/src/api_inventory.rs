@@ -4880,7 +4880,7 @@ pub(super) use register_parse_import_parse;"#;
         });
     assert_eq!(
         (declarations.len(), fingerprint),
-        (213, 209_895_908_114_665_903),
+        (214, 1_253_032_129_469_309_576),
         "crate-visible declaration names, signatures, fields, or phase owners changed"
     );
 
@@ -5212,6 +5212,7 @@ struct:FrontierChildExecution
 enum:WarningBodyReferencesFailure
 enum:DeclarationShellBatchFailure
 enum:SemanticNucleusBatchFailure
+struct:DurableCExportRoot
 struct:SemanticNucleusProjection
 struct:LookupNameKey
 struct:LookupImportKey

@@ -97,8 +97,7 @@ impl CompilerSession {
                     projection
                         .c_export_roots
                         .iter()
-                        .cloned()
-                        .map(crate::FunctionInstanceKey::Definition),
+                        .map(|export| crate::FunctionInstanceKey::Definition(export.key.clone())),
                 );
                 (Some(main), roots)
             }

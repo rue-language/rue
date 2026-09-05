@@ -444,10 +444,15 @@ pub trait ValueLowerAdapter:
     /// single ABI slot names: floating-point when `float_width` is `Some`.
     fn reserve_typed_value_result(&mut self, float_width: Option<FloatWidth>) -> VReg;
     fn resolve_symbol(&self, symbol: Spur) -> String;
-    /// Whether `machine_symbol` (already resolved via
-    /// [`resolve_symbol`](Self::resolve_symbol)) names an `extern "C"` foreign
-    /// function, so its call crosses under the target-C ABI (ADR-0064 P2).
-    fn is_foreign_symbol(&self, machine_symbol: &str) -> bool;
+    /// The calling convention `machine_symbol` (already resolved via
+    /// [`resolve_symbol`](Self::resolve_symbol)) crosses under when it names an
+    /// `extern` foreign function, or `None` when it does not (ADR-0064 P2). The
+    /// row is the one its declaration named, resolved once in semantic analysis
+    /// (spec 9.3:1b), not re-derived from the backend's target.
+    fn foreign_symbol_convention(
+        &self,
+        machine_symbol: &str,
+    ) -> Option<rue_target::CallingConvention>;
     fn resolve_named_symbol(&self, symbol: &str) -> String;
     fn call_arg_register_banks(&self) -> crate::call_plan::AbiRegisterBanks;
     /// The target's RETURN register file, one bank per register class. Its
@@ -1765,14 +1770,15 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                 adapter.emit_runtime_call(plan)
             } else {
                 let symbol = adapter.resolve_symbol(*name);
-                let is_foreign = adapter.is_foreign_symbol(&symbol);
+                let foreign_convention = adapter.foreign_symbol_convention(&symbol);
                 // A foreign call that crosses an aggregate by value takes the
-                // dedicated target-C path (ADR-0064 P3): the native slot plan
-                // reverses multi-slot aggregates, disagreeing with C packing, so
+                // dedicated C path (ADR-0064 P3): the native slot plan reverses
+                // multi-slot aggregates, disagreeing with C packing, so
                 // aggregates are marshaled through their physical memory image in
                 // C field order. A scalars-only foreign call keeps P2's native
-                // plan with a boundary return extension.
-                if is_foreign
+                // plan with a boundary return extension. Either way the
+                // convention is the declaration's own.
+                if let Some(convention) = foreign_convention
                     && crate::foreign_call::ForeignCallInputs::call_touches_aggregate(
                         ctx.cfg, inst.ty, call_args,
                     )
@@ -1783,25 +1789,26 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                         ctx.type_pool,
                         inst.ty,
                         call_args,
-                        adapter.target_c_convention(),
+                        convention,
                     );
                     let result_vreg = adapter.reserve_typed_value_result(float_width(inst.ty));
                     adapter.emit_foreign_call(foreign_inputs, result_vreg)
                 } else {
-                    // An `extern "C"` scalar/pointer call (ADR-0064 P2): a scalar
+                    // An `extern` scalar/pointer call (ADR-0064 P2): a scalar
                     // return is re-extended to Rue's canonical 64-bit form because
                     // a C callee leaves the bits above the return's declared width
                     // unspecified. The rule comes from the shared `TargetCCallAbi`
-                    // classifier, not a backend-local choice.
-                    let foreign_return_extension = if is_foreign
-                        && matches!(inputs.return_plan, crate::call_plan::ReturnPlan::Scalar)
-                    {
-                        let ext = rue_air::TargetCCallAbi::new(adapter.target_c_convention())
-                            .scalar_return_extension(inst.ty);
-                        (!ext.is_noop()).then_some(ext)
-                    } else {
-                        None
-                    };
+                    // classifier reading the declaration's convention, not a
+                    // backend-local choice.
+                    let foreign_return_extension = foreign_convention
+                        .filter(|_| {
+                            matches!(inputs.return_plan, crate::call_plan::ReturnPlan::Scalar)
+                        })
+                        .map(|convention| {
+                            rue_air::TargetCCallAbi::new(convention)
+                                .scalar_return_extension(inst.ty)
+                        })
+                        .filter(|ext| !ext.is_noop());
                     // The result vreg mirrors the return's logical slot 0, so its
                     // class follows that slot's LEAF: a float-leaf aggregate
                     // result lands in an FP vreg, not a general-purpose one, and

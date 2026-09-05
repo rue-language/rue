@@ -472,6 +472,11 @@ pub enum ParsedDeclarationAstRef<'a> {
     },
     ExternFunction {
         function: &'a rue_parser::ast::ExternFn,
+        /// The ABI string its enclosing `extern` block wrote. A foreign
+        /// declaration's convention is a property of the block, so the member's
+        /// signature producer reads it from here rather than re-finding the
+        /// block.
+        abi: &'a str,
     },
     /// A `test "name" { .. }` declaration (ADR-0083 §1).
     Test(&'a rue_parser::ast::TestDecl),
@@ -909,7 +914,10 @@ impl ParsedModule {
                 (span_matches(function.span)
                     && name_matches(function.name.name, key.name.as_ref())
                     && key.owner.is_none())
-                .then_some(ParsedDeclarationAstRef::ExternFunction { function })
+                .then_some(ParsedDeclarationAstRef::ExternFunction {
+                    function,
+                    abi: block.abi.as_str(),
+                })
             }
             (
                 ParsedDeclarationAstLocator::TopLevel { item: ordinal },
@@ -3043,7 +3051,12 @@ fn build_definition_index(
                         false,
                         Arc::from([]),
                         function.span,
-                        vec![function.span],
+                        // The block's ABI string is part of every member's
+                        // signature: it selects the calling convention a call
+                        // to that member crosses under (spec 9.3:1b), so
+                        // editing it invalidates each member's signature
+                        // fingerprint exactly as editing a parameter type does.
+                        vec![block.abi_span, function.span],
                         None,
                         None,
                         Arc::from([]),
@@ -3525,7 +3538,7 @@ extern "C" { fn getpid() -> i32; }
                     );
                     (key.category, method.span)
                 }
-                ParsedDeclarationAstRef::ExternFunction { function } => {
+                ParsedDeclarationAstRef::ExternFunction { function, .. } => {
                     (C::ExternFunction, function.span)
                 }
                 ParsedDeclarationAstRef::Test(value) => (C::Test, value.span),

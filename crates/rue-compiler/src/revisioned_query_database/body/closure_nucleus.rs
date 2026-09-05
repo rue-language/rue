@@ -1169,17 +1169,23 @@ impl RevisionedQueryDatabase {
                         }
                     }
                     dependencies.extend(signature.dependencies.iter().cloned());
-                    let is_c_export = matches!(
-                        &signature.signature,
+                    let export_convention = match &signature.signature {
                         crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
                             is_c_export: true,
+                            foreign_convention,
                             ..
-                        }
-                    );
+                        } => *foreign_convention,
+                        _ => None,
+                    };
                     let semantic =
                         DeclarationSemanticValue::from_signature(identity, signature.signature);
-                    if is_c_export {
-                        c_export_roots.insert(semantic.identity.key.clone());
+                    if let Some(convention) = export_convention {
+                        c_export_roots.insert(
+                            crate::revisioned_query_database::DurableCExportRoot {
+                                key: semantic.identity.key.clone(),
+                                convention,
+                            },
+                        );
                     }
                     semantic
                 };

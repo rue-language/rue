@@ -58,6 +58,13 @@ pub(crate) enum ParsedSemanticSignature {
         is_unchecked: bool,
         is_extern: bool,
         is_c_export: bool,
+        /// The ABI the declaration wrote, still unresolved: `Some` exactly when
+        /// this is a foreign declaration or a C export, `None` for an ordinary
+        /// Rue callable. The parser has already rejected any string that names
+        /// no convention (9.3:1b), and signature resolution turns this into the
+        /// concrete [`rue_target::CallingConvention`] against the compilation
+        /// target — the one place the `"C"` alias is resolved.
+        foreign_abi: Option<rue_target::ForeignAbi>,
         is_accessor: bool,
         /// The declared accessor result qualifier. `Value` means no
         /// place-returning qualifier; it is retained even for invalid
@@ -403,6 +410,7 @@ pub(crate) fn project_semantic_signature(
                     is_unchecked,
                     is_extern,
                     is_c_export,
+                    abi: Option<&str>,
                     is_accessor,
                     accessor_result_mode,
                     body: Option<&rue_parser::ast::Expr>|
@@ -424,6 +432,11 @@ pub(crate) fn project_semantic_signature(
             is_unchecked,
             is_extern,
             is_c_export,
+            // The parser accepts only the ABI strings this table names, so a
+            // declaration that reached semantic analysis spells one of them;
+            // a program whose ABI string was rejected has already failed.
+            foreign_abi: abi
+                .map(|abi| rue_target::ForeignAbi::parse(abi).unwrap_or(rue_target::ForeignAbi::C)),
             is_accessor,
             accessor_result_mode,
             accessor_body: if is_accessor {
@@ -446,6 +459,7 @@ pub(crate) fn project_semantic_signature(
             function.is_unchecked,
             false,
             function.export_abi.is_some(),
+            function.export_abi.as_deref(),
             function.place_return.is_some(),
             if function.place_return.is_some_and(|mode| mode.is_inout()) {
                 crate::declaration_candidate::DeclarationParameterMode::Inout
@@ -456,7 +470,7 @@ pub(crate) fn project_semantic_signature(
             },
             Some(&function.body),
         ),
-        ParsedDeclarationAstRef::ExternFunction { function } => callable(
+        ParsedDeclarationAstRef::ExternFunction { function, abi } => callable(
             &function.params,
             function.return_type.as_ref(),
             false,
@@ -464,6 +478,7 @@ pub(crate) fn project_semantic_signature(
             false,
             true,
             false,
+            Some(abi),
             false,
             crate::declaration_candidate::DeclarationParameterMode::Value,
             None,
@@ -479,6 +494,7 @@ pub(crate) fn project_semantic_signature(
             false,
             false,
             false,
+            None,
             method.place_return.is_some(),
             if method.place_return.is_some_and(|mode| mode.is_inout()) {
                 crate::declaration_candidate::DeclarationParameterMode::Inout
@@ -584,6 +600,7 @@ pub(crate) fn project_semantic_signature(
             false,
             false,
             false,
+            None,
             false,
             crate::declaration_candidate::DeclarationParameterMode::Value,
             None,
@@ -878,6 +895,13 @@ pub(crate) enum DeclarationSignatureProjection {
         is_unchecked: bool,
         is_extern: bool,
         is_c_export: bool,
+        /// The convention this declaration's C boundary follows, already
+        /// resolved against the compilation target: `Some` exactly when
+        /// `is_extern` or `is_c_export`. Every later ABI consumer reads this
+        /// row instead of re-deriving "the C row for this target", so an
+        /// explicitly named convention and the `"C"` alias arrive at the same
+        /// place by the same route (9.3:1b).
+        foreign_convention: Option<rue_target::CallingConvention>,
     },
     Struct {
         fields: Arc<[(Arc<str>, DurableType)]>,
@@ -1140,6 +1164,7 @@ impl DeclarationSemanticValue {
                 is_unchecked,
                 is_extern: _,
                 is_c_export: _,
+                foreign_convention: _,
             } => DurableDeclarationPayload::Callable {
                 parameters,
                 result,

@@ -5,21 +5,36 @@ Status: verified against the compiler and runtime source for RUE-738.
 One value type names every calling convention in the tree,
 `rue_target::CallingConvention`, and its members are concrete conventions:
 
-| Member | Convention |
-| --- | --- |
-| `Rue` | the private native convention for calls between Rue functions |
-| `X86_64SysV` | System V AMD64 psABI |
-| `Aarch64Aapcs` | AAPCS64 as on Linux |
-| `Aarch64AapcsDarwin` | AAPCS64 with Apple's arm64 amendments |
+| Member | Name (`name()`) | Convention |
+| --- | --- | --- |
+| `Rue` | `rue` | the private native convention for calls between Rue functions |
+| `X86_64SysV` | `x86-64-sysv` | System V AMD64 psABI |
+| `Aarch64Aapcs` | `aarch64-aapcs` | AAPCS64 as on Linux |
+| `Aarch64AapcsDarwin` | `aarch64-aapcs-darwin` | AAPCS64 with Apple's arm64 amendments |
 
 `"C"` is an alias, not a member. One table, `CallingConvention::c_for_target`,
 resolves it from the whole compilation target — `x86-64-linux` to `X86_64SysV`,
 `aarch64-linux` to `Aarch64Aapcs`, `aarch64-macos` to `Aarch64AapcsDarwin` —
-and every C boundary consults it: `extern "C"` imports and exports, the
+and every C boundary consults it: `extern` imports and exports, the
 compiler-built memory routines, and the typed runtime-helper subset the compiler
 and runtime share through `rue-runtime-abi`. The alias is keyed by target rather
 than by architecture because the two AArch64 targets share an architecture and
 do not share a convention.
+
+An `extern` declaration may also name a C convention outright, writing that row's
+name from the middle column above instead of `"C"` (spec 9.3:1b, ADR-0064
+Amendment 2). `rue` is not among them: the native convention is not a foreign
+boundary, so naming it in an `extern` position describes no crossing.
+`rue_target::ForeignAbi` is that surface, and `parse_abi_string` reads the same
+name table `--emit abi` prints from, so the two cannot drift. The declaration's
+convention is resolved once — when its signature is checked, against the
+compilation target — and carried from there: the stable plane's `CallAbiFacts`,
+the foreign-symbol map code generation reads, the export thunk's
+`ExportSignature`, and the ABI report all take the resolved row rather than
+asking the target for its C row again. Because each C row is the convention of
+exactly one supported target, an accepted name places values exactly as `"C"`
+would on that target; naming a row the target does not implement is E1110
+(spec 9.3:1c).
 
 The native `Rue` convention borrows target register and stack rules but
 deliberately is not a C ABI.

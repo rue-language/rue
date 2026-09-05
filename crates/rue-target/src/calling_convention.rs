@@ -62,7 +62,10 @@ use crate::Target;
 /// The variants are concrete conventions, not families: there is no "target C"
 /// row to be resolved later. `"C"` is an alias that a [`Target`] resolves to one
 /// of these rows through [`CallingConvention::c_for_target`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// The ordering is declaration order and carries no meaning; it exists so a
+/// convention can sit inside the ordered durable facts that carry it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum CallingConvention {
     /// The native, unstable, compiler-chosen Rue convention (RUE-106): a
     /// by-value aggregate is returned one flattened ABI slot per return
@@ -325,6 +328,117 @@ impl CallingConvention {
             Self::Aarch64AapcsDarwin => "aarch64-aapcs-darwin",
         }
     }
+
+    /// The convention an `extern` ABI string names outright, or `None` when the
+    /// string names no foreign convention.
+    ///
+    /// This is [`name`](Self::name) read backwards, restricted to the psABI
+    /// rows: `"rue"` does not parse, because the native convention is not a
+    /// foreign boundary and an `extern` declaration naming it would describe no
+    /// crossing. `"C"` does not parse here either — it is not a convention but
+    /// an alias for one, which [`ForeignAbi`] resolves against a target.
+    pub fn parse_abi_string(name: &str) -> Option<Self> {
+        Self::C_ROWS
+            .into_iter()
+            .find(|convention| convention.name() == name)
+    }
+
+    /// The platform C conventions, in the order diagnostics list them. The
+    /// native row is deliberately absent: every member of this table is a
+    /// foreign boundary.
+    const C_ROWS: [Self; 3] = [
+        Self::X86_64SysV,
+        Self::Aarch64Aapcs,
+        Self::Aarch64AapcsDarwin,
+    ];
+
+    /// Whether `target` implements this convention.
+    ///
+    /// Answered from the one `"C"` alias table rather than a second list, so a
+    /// new target answers this question by answering that one. The native row is
+    /// implemented everywhere; each psABI row belongs to the single target whose
+    /// C boundary follows it.
+    pub fn is_implemented_by(self, target: Target) -> bool {
+        self.is_rue() || Self::c_for_target(target) == self
+    }
+
+    /// Every target that implements this convention, in [`Target::all`] order.
+    /// Diagnostics use it to say which target a rejected convention belongs to.
+    pub fn implementing_targets(self) -> impl Iterator<Item = Target> {
+        Target::all()
+            .iter()
+            .copied()
+            .filter(move |target| self.is_implemented_by(*target))
+    }
+}
+
+/// The calling convention an `extern` declaration names in source.
+///
+/// A foreign declaration writes either the alias `"C"`, which denotes whichever
+/// psABI the compilation target's C boundary follows, or one convention's own
+/// [`CallingConvention::name`] spelling, which denotes that row outright. The
+/// two forms stay apart only up to resolution: [`resolve`](Self::resolve) is the
+/// single place a declaration's written ABI becomes a [`CallingConvention`], and
+/// everything past it carries the row rather than the string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ForeignAbi {
+    /// `"C"`: the compilation target's own C convention.
+    C,
+    /// A psABI row named outright by its canonical name.
+    Explicit(CallingConvention),
+}
+
+impl ForeignAbi {
+    /// The ABI string that spells the target-C alias.
+    pub const C_ABI_STRING: &'static str = "C";
+
+    /// The declaration ABI `text` names, or `None` when no foreign boundary is
+    /// spelled that way.
+    ///
+    /// The accepted set is exactly `"C"` plus the psABI rows' own names, so the
+    /// spellings a declaration may write and the spellings `--emit abi` and
+    /// diagnostics print come from one table. `"C-unwind"` stays reserved and
+    /// does not parse (9.3:2), and neither does `"rue"`.
+    pub fn parse(text: &str) -> Option<Self> {
+        if text == Self::C_ABI_STRING {
+            return Some(Self::C);
+        }
+        CallingConvention::parse_abi_string(text).map(Self::Explicit)
+    }
+
+    /// Every ABI string a foreign declaration may write, in the order
+    /// diagnostics list them.
+    pub fn accepted_abi_strings() -> impl Iterator<Item = &'static str> {
+        std::iter::once(Self::C_ABI_STRING).chain(
+            CallingConvention::C_ROWS
+                .into_iter()
+                .map(CallingConvention::name),
+        )
+    }
+
+    /// The convention this declaration follows when compiled for `target`.
+    ///
+    /// This is the one place the `"C"` alias is resolved on a declaration's
+    /// behalf; an explicit row resolves to itself. Resolving does not ask
+    /// whether `target` implements the result —
+    /// [`is_implemented_by`](Self::is_implemented_by) is that question, and
+    /// 9.3:1b makes a declaration naming an unimplemented row ill-formed.
+    pub const fn resolve(self, target: Target) -> CallingConvention {
+        match self {
+            Self::C => CallingConvention::c_for_target(target),
+            Self::Explicit(convention) => convention,
+        }
+    }
+
+    /// The source spelling of this ABI: `"C"`, or the row's canonical name.
+    /// The inverse of [`parse`](Self::parse), which is what makes the written
+    /// spelling and the printed one one table.
+    pub const fn abi_string(self) -> &'static str {
+        match self {
+            Self::C => Self::C_ABI_STRING,
+            Self::Explicit(convention) => convention.name(),
+        }
+    }
 }
 
 impl core::fmt::Display for CallingConvention {
@@ -484,6 +598,97 @@ mod tests {
     #[should_panic(expected = "not a psABI row")]
     fn the_native_row_has_no_psabi_description() {
         let _ = CallingConvention::Rue.c_spec();
+    }
+
+    #[test]
+    fn every_c_row_parses_back_from_its_own_name() {
+        for target in Target::all() {
+            let convention = target.c_calling_convention();
+            assert_eq!(
+                CallingConvention::parse_abi_string(convention.name()),
+                Some(convention),
+                "the ABI string table and the name table must be one table"
+            );
+            assert_eq!(
+                ForeignAbi::parse(convention.name()),
+                Some(ForeignAbi::Explicit(convention))
+            );
+        }
+    }
+
+    #[test]
+    fn the_native_convention_is_not_a_foreign_abi() {
+        assert_eq!(CallingConvention::Rue.name(), "rue");
+        assert_eq!(CallingConvention::parse_abi_string("rue"), None);
+        assert_eq!(ForeignAbi::parse("rue"), None);
+    }
+
+    #[test]
+    fn only_the_declared_abi_spellings_parse() {
+        assert_eq!(ForeignAbi::parse("C"), Some(ForeignAbi::C));
+        for rejected in ["C-unwind", "Rust", "system", "c", "sysv64", ""] {
+            assert_eq!(
+                ForeignAbi::parse(rejected),
+                None,
+                "{rejected} must not parse"
+            );
+        }
+        assert_eq!(
+            ForeignAbi::accepted_abi_strings().collect::<Vec<_>>(),
+            vec!["C", "x86-64-sysv", "aarch64-aapcs", "aarch64-aapcs-darwin"]
+        );
+        for text in ForeignAbi::accepted_abi_strings() {
+            assert_eq!(
+                ForeignAbi::parse(text).map(ForeignAbi::abi_string),
+                Some(text),
+                "every listed spelling round-trips"
+            );
+        }
+    }
+
+    #[test]
+    fn the_c_alias_resolves_per_target_and_an_explicit_row_resolves_to_itself() {
+        for target in Target::all() {
+            assert_eq!(
+                ForeignAbi::C.resolve(*target),
+                target.c_calling_convention()
+            );
+            assert!(
+                ForeignAbi::C.resolve(*target).is_implemented_by(*target),
+                "the alias is implemented by every target by construction"
+            );
+        }
+        assert_eq!(
+            ForeignAbi::Explicit(CallingConvention::Aarch64Aapcs).resolve(Target::X86_64Linux),
+            CallingConvention::Aarch64Aapcs,
+            "resolution never falls back to the target's own row"
+        );
+    }
+
+    #[test]
+    fn each_c_row_is_implemented_by_exactly_one_target() {
+        for target in Target::all() {
+            let convention = target.c_calling_convention();
+            assert_eq!(
+                convention.implementing_targets().collect::<Vec<_>>(),
+                vec![*target]
+            );
+            for other in Target::all() {
+                assert_eq!(
+                    ForeignAbi::Explicit(convention)
+                        .resolve(*other)
+                        .is_implemented_by(*other),
+                    other == target,
+                    "a named row never resolves to the compiling target's own"
+                );
+            }
+        }
+        assert!(
+            Target::all()
+                .iter()
+                .all(|target| CallingConvention::Rue.is_implemented_by(*target)),
+            "the native row is not a foreign boundary and is never target-rejected"
+        );
     }
 
     #[test]

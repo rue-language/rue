@@ -445,6 +445,38 @@ compile_stdout_contains = [
     "parameter 8: i8, by value, stack +0 (1 byte, align 1), sign-extended from 8 bits",
 ]
 
+# RUE-2034: a declaration may name its convention outright, and the report reads
+# the convention the declaration named rather than re-deriving the target's `"C"`
+# row. Both directions are pinned, because the import planner and the export
+# thunk carry the row by separate routes.
+[[case]]
+name = "emit_abi_prints_an_explicitly_named_convention"
+description = "RUE-2034: an import and an export declared with an explicit convention name print that name in their blocks."
+files = [{ path = "main.rue", source = """
+extern "aarch64-aapcs-darwin" {
+    fn answer() -> i64;
+}
+
+pub extern "aarch64-aapcs-darwin" fn twice(a: i32) -> i32 {
+    a + a
+}
+
+fn main() -> i32 {
+    let total = checked { answer() };
+    let code: i32 = @intCast(total);
+    code
+}
+""" }]
+args = ["--emit", "abi", "--preview", "c_ffi", "--target", "aarch64-macos", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "=== ABI (aarch64-macos) ===",
+    "export twice",
+    "convention aarch64-aapcs-darwin, symbol twice",
+    "import answer",
+    "convention aarch64-aapcs-darwin, symbol answer",
+]
+
 # The `--emit` help text renders the stage table, so this is what makes a stage
 # that exists but is undocumented impossible.
 [[case]]

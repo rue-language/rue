@@ -940,7 +940,7 @@ impl CfgDomainProjection {
             ))
         };
         let mut symbol_mappings = std::collections::BTreeMap::new();
-        let mut foreign_symbols = std::collections::BTreeSet::new();
+        let mut foreign_symbols = std::collections::BTreeMap::new();
         for (live, stable) in &self.symbols {
             let source = interner.resolve(live).to_owned();
             let (machine, foreign) = match stable {
@@ -949,8 +949,10 @@ impl CfgDomainProjection {
                     // native symbol come from the same facts, and this map is
                     // keyed by a recursive callable identity.
                     let abi = call_abis.get(callable);
-                    let foreign = abi.is_some_and(|facts| facts.convention.is_c());
-                    let machine = if foreign {
+                    let foreign = abi
+                        .map(|facts| facts.convention)
+                        .filter(|convention| convention.is_c());
+                    let machine = if foreign.is_some() {
                         foreign_callable_symbol(callable).ok_or(CfgDomainFailure::Shape)?
                     } else if source == "main" {
                         source.clone()
@@ -972,8 +974,10 @@ impl CfgDomainProjection {
                         crate::semantic_identity::function_instance_from_specialization(identity)
                             .ok_or(CfgDomainFailure::Shape)?;
                     let abi = call_abis.get(&callable);
-                    let foreign = abi.is_some_and(|facts| facts.convention.is_c());
-                    let machine = if foreign {
+                    let foreign = abi
+                        .map(|facts| facts.convention)
+                        .filter(|convention| convention.is_c());
+                    let machine = if foreign.is_some() {
                         foreign_callable_symbol(&callable).ok_or(CfgDomainFailure::Shape)?
                     } else if source == "main" {
                         source.clone()
@@ -991,11 +995,11 @@ impl CfgDomainProjection {
                     (machine, foreign)
                 }
                 StableCfgSymbol::Runtime(symbol) | StableCfgSymbol::Intrinsic(symbol) => {
-                    (symbol.to_string(), false)
+                    (symbol.to_string(), None)
                 }
             };
-            if foreign {
-                foreign_symbols.insert(machine.clone());
+            if let Some(convention) = foreign {
+                foreign_symbols.insert(machine.clone(), convention);
             }
             if let Some(previous) = symbol_mappings.insert(source, machine.clone())
                 && previous != machine

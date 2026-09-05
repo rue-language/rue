@@ -352,11 +352,11 @@ pub struct Function {
     pub place_return: Option<PlaceReturn>,
     /// Function body
     pub body: Expr,
-    /// The C ABI string when this function is a `pub extern "C" fn` export
-    /// (ADR-0064 P4): `Some("C")` for an export exposed to C callers under its
-    /// unmangled name, `None` for an ordinary Rue function. The slot reserves
-    /// room for later ABI variants without a re-spelling, exactly as the import
-    /// `extern` block does.
+    /// The ABI string as written when this function is a `pub extern` export
+    /// (ADR-0064 P4): `Some` for an export exposed to C callers under its
+    /// unmangled name, `None` for an ordinary Rue function. Its accepted values
+    /// are the import `extern` block's (spec 9.3:1b), and semantic analysis
+    /// resolves the string to a concrete convention the same way.
     pub export_abi: Option<String>,
     /// Span covering the entire function
     pub span: Span,
@@ -371,9 +371,11 @@ pub struct Function {
 /// A foreign-declaration block: `extern "C" { fn getpid() -> i32; }`.
 ///
 /// Groups body-less foreign function declarations that share an ABI. The ABI
-/// string is a first-class part of the grammar (`"C"` is the only value the
-/// current C FFI phase accepts, ADR-0064). Everything inside the block is a
-/// foreign import lowered to an undefined linker symbol.
+/// string is a first-class part of the grammar: `"C"`, which the compilation
+/// target resolves to its own psABI, or a calling convention named outright
+/// (spec 9.3:1b, ADR-0064). The string is kept as written for diagnostics;
+/// semantic analysis resolves it to the concrete convention. Everything inside
+/// the block is a foreign import lowered to an undefined linker symbol.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternBlock {
     /// The ABI string as written (e.g. `"C"`).
