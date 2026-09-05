@@ -312,14 +312,16 @@ fn simplify_made_progress(stats: simplify::Stats) -> bool {
 /// true fixpoint, subject to the explicit round bound.
 fn run_cleanup_to_fixpoint(
     cfg: &mut crate::CfgEditor,
+    type_pool: &FrozenTypeInternPool,
     stats: &mut OptimizationStats,
     sequence: CleanupSequence,
 ) -> Result<(), CfgOptimizationError> {
-    run_cleanup_to_fixpoint_with_limit(cfg, stats, sequence, MAX_CLEANUP_ROUNDS)
+    run_cleanup_to_fixpoint_with_limit(cfg, type_pool, stats, sequence, MAX_CLEANUP_ROUNDS)
 }
 
 fn run_cleanup_to_fixpoint_with_limit(
     cfg: &mut crate::CfgEditor,
+    type_pool: &FrozenTypeInternPool,
     stats: &mut OptimizationStats,
     sequence: CleanupSequence,
     max_rounds: usize,
@@ -365,7 +367,7 @@ fn run_cleanup_to_fixpoint_with_limit(
                     let peephole_stats = peephole::run(cfg)?;
                     let peephole_progress = peephole_made_progress(peephole_stats);
                     stats.add_peephole(peephole_stats);
-                    let cse_stats = cse::run(cfg)?;
+                    let cse_stats = cse::run(cfg, type_pool)?;
                     let cse_progress = cse_made_progress(cse_stats);
                     stats.add_cse(cse_stats);
                     (forward_progress, peephole_progress, cse_progress)
@@ -645,7 +647,12 @@ pub fn optimize_with_budget(
                 // newly unreachable ownership actions are removed before
                 // forwarding and CSE inspect the graph.
                 if control_flow_folded {
-                    run_cleanup_to_fixpoint(&mut cfg, &mut stats, CleanupSequence::ControlFlow)?;
+                    run_cleanup_to_fixpoint(
+                        &mut cfg,
+                        type_pool,
+                        &mut stats,
+                        CleanupSequence::ControlFlow,
+                    )?;
                 }
 
                 // Value forwarding / copy propagation (RUE-914), at -O2/-O3 only.
@@ -665,7 +672,12 @@ pub fn optimize_with_budget(
                     // selector branch is folded.
                     let forwarding_made_progress = forward_made_progress(forward_stats);
                     if forwarding_made_progress {
-                        run_cleanup_to_fixpoint(&mut cfg, &mut stats, CleanupSequence::Forwarding)?;
+                        run_cleanup_to_fixpoint(
+                            &mut cfg,
+                            type_pool,
+                            &mut stats,
+                            CleanupSequence::Forwarding,
+                        )?;
                     }
                 }
 
@@ -676,7 +688,7 @@ pub fn optimize_with_budget(
                 // dead placeholders each replaced duplicate (and each forwarded
                 // load) leaves behind.
                 if matches!(level, OptLevel::O2 | OptLevel::O3) {
-                    let cse_stats = cse::run(&mut cfg)?;
+                    let cse_stats = cse::run(&mut cfg, type_pool)?;
                     stats.add_cse(cse_stats);
                 }
 
@@ -689,12 +701,15 @@ pub fn optimize_with_budget(
                 // the whole -O1/-O2 sequence so the invariant operands it keys
                 // on are as exposed as constant folding, simplification,
                 // forwarding, and CSE can make them, and before DCE, which
-                // sweeps anything the moves orphan. It hoists ONLY trap-free
-                // (`is_speculatable`) invariant ops into each loop's preheader;
-                // trapping invariant ops never move, because hoisting one into
-                // a zero-trip preheader would manufacture a trap the source
-                // never runs (the inverse of RUE-57). It recomputes dominators
-                // + loops per the ADR's recompute rule.
+                // sweeps anything the moves orphan. It hoists ONLY invariant
+                // ops that are both trap-free (`is_speculatable`) and not the
+                // materialization of an owned value, into each loop's
+                // preheader; trapping invariant ops never move, because
+                // hoisting one into a zero-trip preheader would manufacture a
+                // trap the source never runs (the inverse of RUE-57), and an
+                // owning materialization never moves, because one preheader
+                // evaluation would answer for a drop on every iteration. It
+                // recomputes dominators + loops per the ADR's recompute rule.
                 if matches!(level, OptLevel::O3) {
                     let preheader_stats = loops::normalize_preheaders(&mut cfg, type_pool)?;
                     stats.add_preheader_normalization(preheader_stats);
@@ -713,6 +728,7 @@ pub fn optimize_with_budget(
                         budget.used_blocks().saturating_sub(initial_blocks);
                     run_cleanup_to_fixpoint(
                         &mut cfg,
+                        type_pool,
                         &mut stats,
                         CleanupSequence::Unrolling {
                             revisit_clones: unroll.loops_unrolled > 0,
@@ -1033,6 +1049,7 @@ mod tests {
 
         run_cleanup_to_fixpoint_with_limit(
             &mut cfg,
+            &pool,
             &mut stats,
             CleanupSequence::Unrolling {
                 revisit_clones: true,
@@ -1070,8 +1087,14 @@ mod tests {
         let mut cfg = cfg.finish(&pool).unwrap().into_editor();
         let mut stats = OptimizationStats::default();
 
-        run_cleanup_to_fixpoint_with_limit(&mut cfg, &mut stats, CleanupSequence::Forwarding, 4)
-            .unwrap();
+        run_cleanup_to_fixpoint_with_limit(
+            &mut cfg,
+            &pool,
+            &mut stats,
+            CleanupSequence::Forwarding,
+            4,
+        )
+        .unwrap();
 
         assert_eq!(
             stats,
@@ -1095,6 +1118,7 @@ mod tests {
 
         run_cleanup_to_fixpoint_with_limit(
             &mut cfg,
+            &pool,
             &mut stats,
             CleanupSequence::Unrolling {
                 revisit_clones: true,
@@ -1122,21 +1146,33 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "still made progress after the maximum of 1 rounds")]
     fn cleanup_reports_bound_exhaustion_after_mutating_final_round() {
-        let (cfg, _) = cleanup_generation_cfg(2);
+        let (cfg, pool) = cleanup_generation_cfg(2);
         let mut cfg = cfg.into_editor();
         let mut stats = OptimizationStats::default();
-        run_cleanup_to_fixpoint_with_limit(&mut cfg, &mut stats, CleanupSequence::ControlFlow, 1)
-            .unwrap();
+        run_cleanup_to_fixpoint_with_limit(
+            &mut cfg,
+            &pool,
+            &mut stats,
+            CleanupSequence::ControlFlow,
+            1,
+        )
+        .unwrap();
     }
 
     #[test]
     #[cfg(not(debug_assertions))]
     fn cleanup_release_build_stops_at_bound_after_mutating_final_round() {
-        let (cfg, _) = cleanup_generation_cfg(2);
+        let (cfg, pool) = cleanup_generation_cfg(2);
         let mut cfg = cfg.into_editor();
         let mut stats = OptimizationStats::default();
-        run_cleanup_to_fixpoint_with_limit(&mut cfg, &mut stats, CleanupSequence::ControlFlow, 1)
-            .unwrap();
+        run_cleanup_to_fixpoint_with_limit(
+            &mut cfg,
+            &pool,
+            &mut stats,
+            CleanupSequence::ControlFlow,
+            1,
+        )
+        .unwrap();
         assert!(stats.simplify_branches_folded > 0);
     }
 

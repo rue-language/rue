@@ -278,7 +278,9 @@ path" principle applied to trap classification.
    `may_trap` (arithmetic, `IntCast`, indexed `PlaceRead`) and with no observable
    side effect (`Call`, `Intrinsic`, `Store`, `PlaceWrite`, `Alloc`, `Drop`,
    `StorageLive`/`StorageDead`). Bitwise/shift/comparison/`Not`/`BitNot` on
-   invariant operands are the sweet spot.
+   invariant operands are the sweet spot. Amended by RUE-2044: the candidate test
+   also rejects an op whose result type carries drop glue, because one preheader
+   materialization would answer for a `Drop` on every iteration.
 2. **Trapping invariant ops: do NOT hoist, initially.** Every `may_trap` op —
    `Add`/`Sub`/`Mul`/`Div`/`Mod`/`Neg`, `IntCast`, and indexed reads — stays in
    the loop body even when invariant, in the first version. This is
