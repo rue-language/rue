@@ -25,6 +25,23 @@
 //! through the `Target` correspondence in `rue-codegen`, so the alias has
 //! exactly one mapping table.
 //!
+//! ## Conventions as data
+//!
+//! Every psABI rule this compiler needs from a C row is a field of
+//! [`CConventionSpec`], and [`CallingConvention::c_spec`] is the one table that
+//! answers it: the argument and result register roster *sizes*, where the
+//! hidden indirect-result pointer travels and whether the callee echoes it, the
+//! call-boundary stack alignment and shadow space, how the outgoing argument
+//! area is packed, who extends a narrow integer, and which aggregate rule
+//! applies. The physical register *names* stay in the two code-generation
+//! backends, which map a roster index to a register; nothing else about a
+//! convention is a `match` anywhere else in the tree.
+//!
+//! The description lives here rather than in `rue-air` because it needs no type
+//! facts: every field is a property of the psABI alone. The classifier that
+//! reads it against a type's size, alignment, and scalar kind is
+//! `rue_air::lowered_signature`, which is where type facts first exist.
+//!
 //! ## Apple's arm64 amendments
 //!
 //! `Aarch64Aapcs` and `Aarch64AapcsDarwin` are separate rows because Apple's
@@ -78,6 +95,176 @@ pub enum StackedArgumentPacking {
     NaturalSize,
 }
 
+/// Which physical register bank a value class travels in.
+///
+/// The two banks exist on every target Rue supports: general-purpose integer
+/// and pointer registers, and the floating-point/SIMD file. The rosters are
+/// sized per convention by [`CConventionSpec`]; the register *names* live in the
+/// backends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CRegisterClass {
+    /// A general-purpose integer or pointer register.
+    Gp,
+    /// A floating-point / SIMD register (SysV's SSE class, AAPCS64's V bank).
+    Fp,
+}
+
+/// Where a psABI puts the hidden indirect-result (sret) pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SretRegisterKind {
+    /// An ordinary integer argument register: the pointer is the hidden first
+    /// argument and shifts every user argument one register right (SysV AMD64
+    /// `rdi`).
+    ArgumentRegister,
+    /// A register outside the ordinary argument roster, so user arguments still
+    /// start at roster index 0 (AAPCS64 `x8`, section 6.9).
+    DedicatedRegister,
+}
+
+/// Who is responsible for extending an integer narrower than its register.
+///
+/// Rue's internal invariant keeps every scalar canonically extended to 64 bits,
+/// which is at least as strong as any row asks of an argument. The rows differ
+/// only in what a *callee* may assume, which is what this records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NarrowIntegerExtension {
+    /// The bits above a narrow argument's declared width are unspecified, and a
+    /// callee that needs a wider value re-extends. A narrow *return* value's
+    /// high bits are likewise not the caller's to trust (SysV AMD64 leaves them
+    /// undefined; AAPCS64 defines only bits 0..31), so a caller re-extends from
+    /// the value's own declared width.
+    CalleeExtendsOnUse,
+    /// The caller must extend an argument narrower than 32 bits before it
+    /// crosses (Apple's arm64 amendment). Rue's canonical 64-bit form already
+    /// satisfies it, so this row needs no extra instruction on the import side.
+    CallerExtendsBelow32,
+}
+
+/// Which psABI rule classifies a by-value aggregate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AggregateClassificationRule {
+    /// SysV AMD64 section 3.2.3: classify each eightbyte, pass an aggregate of
+    /// at most two eightbytes in registers of the classified banks, and pass a
+    /// MEMORY class aggregate by value in the outgoing stack argument area,
+    /// consuming no registers.
+    SysVEightbyte,
+    /// AAPCS64 section 6.8.2: a composite of at most 16 bytes travels in
+    /// consecutive integer registers; a larger one is passed as a pointer to a
+    /// caller-owned copy (B.4 / C.12), which is *not* the SysV byval-on-stack
+    /// rule.
+    Aapcs64Composite,
+}
+
+/// Everything the compiler needs to know about one platform C convention.
+///
+/// This is the data the classifier and both backends read instead of matching on
+/// a [`CallingConvention`] row. A new row -- Win64, say -- is a new entry in
+/// [`CallingConvention::c_spec`] and nothing else: `shadow_space_bytes` is 0 on
+/// every current row precisely so that entry has a field to fill in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CConventionSpec {
+    /// How many general-purpose registers carry arguments before the outgoing
+    /// stack area begins (6 on SysV AMD64, 8 on AAPCS64).
+    pub gp_argument_registers: u32,
+    /// How many floating-point registers carry arguments (8 on every current
+    /// row). Unreached while the C boundary rejects floats; carried so the
+    /// float slice extends this table rather than rewriting it.
+    pub fp_argument_registers: u32,
+    /// How many general-purpose registers carry a result (`rax:rdx` on SysV
+    /// AMD64, `x0:x1` on AAPCS64).
+    pub gp_return_registers: u32,
+    /// How many floating-point registers carry a result (`xmm0:xmm1` on SysV
+    /// AMD64; `v0`-`v3` on AAPCS64, whose four-element HFA is the widest
+    /// float-classed result).
+    pub fp_return_registers: u32,
+    /// Where the hidden indirect-result pointer travels.
+    pub sret_register: SretRegisterKind,
+    /// Whether the callee must leave the hidden indirect-result pointer in the
+    /// primary result register on return (SysV AMD64 requires the `rax` echo;
+    /// AAPCS64's `x8` is not echoed).
+    pub sret_pointer_echoed_in_result_register: bool,
+    /// The stack alignment required at a `call` instruction.
+    pub call_stack_alignment: u32,
+    /// Bytes the caller reserves at the base of the outgoing argument area for
+    /// the callee's own use before the first stacked argument. Zero on every
+    /// current row; Win64's 32-byte register spill area is the reason the field
+    /// exists.
+    pub shadow_space_bytes: u32,
+    /// How the outgoing argument area is packed.
+    pub stacked_argument_packing: StackedArgumentPacking,
+    /// Who extends an integer narrower than its register.
+    pub narrow_integer_extension: NarrowIntegerExtension,
+    /// Which by-value aggregate rule applies.
+    pub aggregate_rule: AggregateClassificationRule,
+    /// The largest aggregate, in bytes, that crosses in registers rather than
+    /// through memory. Two eightbytes on both current rows.
+    pub max_aggregate_register_bytes: u64,
+}
+
+impl CConventionSpec {
+    /// The number of argument registers in `class`.
+    pub const fn argument_registers(&self, class: CRegisterClass) -> u32 {
+        match class {
+            CRegisterClass::Gp => self.gp_argument_registers,
+            CRegisterClass::Fp => self.fp_argument_registers,
+        }
+    }
+
+    /// The number of result registers in `class`.
+    pub const fn return_registers(&self, class: CRegisterClass) -> u32 {
+        match class {
+            CRegisterClass::Gp => self.gp_return_registers,
+            CRegisterClass::Fp => self.fp_return_registers,
+        }
+    }
+
+    /// Whether the hidden indirect-result pointer consumes the first ordinary
+    /// integer argument register, shifting user arguments right.
+    pub const fn sret_pointer_in_argument_register(&self) -> bool {
+        matches!(self.sret_register, SretRegisterKind::ArgumentRegister)
+    }
+}
+
+/// The SysV AMD64 row (x86-64 Linux).
+const X86_64_SYSV: CConventionSpec = CConventionSpec {
+    gp_argument_registers: 6,
+    fp_argument_registers: 8,
+    gp_return_registers: 2,
+    fp_return_registers: 2,
+    sret_register: SretRegisterKind::ArgumentRegister,
+    sret_pointer_echoed_in_result_register: true,
+    call_stack_alignment: 16,
+    shadow_space_bytes: 0,
+    stacked_argument_packing: StackedArgumentPacking::EightByteSlots,
+    narrow_integer_extension: NarrowIntegerExtension::CalleeExtendsOnUse,
+    aggregate_rule: AggregateClassificationRule::SysVEightbyte,
+    max_aggregate_register_bytes: 16,
+};
+
+/// The AAPCS64 row (AArch64 Linux).
+const AARCH64_AAPCS: CConventionSpec = CConventionSpec {
+    gp_argument_registers: 8,
+    fp_argument_registers: 8,
+    gp_return_registers: 2,
+    fp_return_registers: 4,
+    sret_register: SretRegisterKind::DedicatedRegister,
+    sret_pointer_echoed_in_result_register: false,
+    call_stack_alignment: 16,
+    shadow_space_bytes: 0,
+    stacked_argument_packing: StackedArgumentPacking::EightByteSlots,
+    narrow_integer_extension: NarrowIntegerExtension::CalleeExtendsOnUse,
+    aggregate_rule: AggregateClassificationRule::Aapcs64Composite,
+    max_aggregate_register_bytes: 16,
+};
+
+/// The Apple arm64 row (AArch64 macOS): AAPCS64 with Apple's two amendments
+/// Rue's supported surface reaches.
+const AARCH64_AAPCS_DARWIN: CConventionSpec = CConventionSpec {
+    stacked_argument_packing: StackedArgumentPacking::NaturalSize,
+    narrow_integer_extension: NarrowIntegerExtension::CallerExtendsBelow32,
+    ..AARCH64_AAPCS
+};
+
 impl CallingConvention {
     /// The convention a `"C"` boundary follows on `target`.
     ///
@@ -104,19 +291,29 @@ impl CallingConvention {
         !self.is_rue()
     }
 
-    /// How a stacked argument is laid out in the outgoing argument area under
-    /// this convention. Panics on [`CallingConvention::Rue`], whose stack
-    /// arguments are the native uniform 8-byte slot model rather than a psABI
-    /// argument area.
-    pub const fn stacked_argument_packing(self) -> StackedArgumentPacking {
+    /// This convention's complete psABI description. Panics on
+    /// [`CallingConvention::Rue`], which is not a psABI: the native convention's
+    /// rules are the classifier's own (`rue_air::NativeCallAbi`), not a row of
+    /// this table.
+    pub const fn c_spec(self) -> CConventionSpec {
         match self {
-            Self::X86_64SysV | Self::Aarch64Aapcs => StackedArgumentPacking::EightByteSlots,
-            Self::Aarch64AapcsDarwin => StackedArgumentPacking::NaturalSize,
+            Self::X86_64SysV => X86_64_SYSV,
+            Self::Aarch64Aapcs => AARCH64_AAPCS,
+            Self::Aarch64AapcsDarwin => AARCH64_AAPCS_DARWIN,
             Self::Rue => panic!(
-                "the native Rue convention has no psABI outgoing argument area; \
-                 stacked_argument_packing is a target-C question"
+                "the native Rue convention is not a psABI row; its rules live in \
+                 the native call-ABI classifier"
             ),
         }
+    }
+
+    /// How a stacked argument is laid out in the outgoing argument area under
+    /// this convention: the [`CConventionSpec`] field, spelled as a method for
+    /// the placement code that reads only it. Panics on
+    /// [`CallingConvention::Rue`], whose stack arguments are the native uniform
+    /// 8-byte slot model rather than a psABI argument area.
+    pub const fn stacked_argument_packing(self) -> StackedArgumentPacking {
+        self.c_spec().stacked_argument_packing
     }
 
     /// The canonical name of this convention, for diagnostics and dumps.
@@ -200,6 +397,93 @@ mod tests {
             CallingConvention::Aarch64AapcsDarwin.stacked_argument_packing(),
             StackedArgumentPacking::NaturalSize
         );
+    }
+
+    #[test]
+    fn every_c_row_has_a_complete_convention_description() {
+        for target in Target::all() {
+            let spec = target.c_calling_convention().c_spec();
+            assert!(
+                spec.gp_argument_registers > 0 && spec.gp_return_registers > 0,
+                "{target:?} must name a general-purpose roster"
+            );
+            assert!(
+                spec.fp_argument_registers > 0 && spec.fp_return_registers > 0,
+                "{target:?} must size its floating-point rosters so the float \
+                 boundary extends this table instead of rewriting it"
+            );
+            assert_eq!(
+                spec.call_stack_alignment, 16,
+                "every supported psABI aligns the stack to 16 bytes at a call"
+            );
+            assert_eq!(
+                spec.shadow_space_bytes, 0,
+                "no supported row reserves callee shadow space"
+            );
+            assert_eq!(spec.max_aggregate_register_bytes, 16);
+            assert_eq!(
+                spec.argument_registers(CRegisterClass::Gp),
+                spec.gp_argument_registers
+            );
+            assert_eq!(
+                spec.return_registers(CRegisterClass::Fp),
+                spec.fp_return_registers
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_psabi_families_differ_exactly_where_the_specifications_do() {
+        let sysv = CallingConvention::X86_64SysV.c_spec();
+        let aapcs = CallingConvention::Aarch64Aapcs.c_spec();
+        assert_eq!(sysv.gp_argument_registers, 6);
+        assert_eq!(aapcs.gp_argument_registers, 8);
+        // SysV passes the hidden result pointer as the hidden first argument in
+        // `rdi` and requires the `rax` echo; AAPCS64 uses the dedicated `x8`.
+        assert_eq!(sysv.sret_register, SretRegisterKind::ArgumentRegister);
+        assert!(sysv.sret_pointer_in_argument_register());
+        assert!(sysv.sret_pointer_echoed_in_result_register);
+        assert_eq!(aapcs.sret_register, SretRegisterKind::DedicatedRegister);
+        assert!(!aapcs.sret_pointer_in_argument_register());
+        assert!(!aapcs.sret_pointer_echoed_in_result_register);
+        assert_eq!(
+            sysv.aggregate_rule,
+            AggregateClassificationRule::SysVEightbyte
+        );
+        assert_eq!(
+            aapcs.aggregate_rule,
+            AggregateClassificationRule::Aapcs64Composite
+        );
+    }
+
+    #[test]
+    fn the_apple_row_amends_exactly_two_aapcs64_fields() {
+        let aapcs = CallingConvention::Aarch64Aapcs.c_spec();
+        let darwin = CallingConvention::Aarch64AapcsDarwin.c_spec();
+        assert_eq!(
+            darwin.stacked_argument_packing,
+            StackedArgumentPacking::NaturalSize
+        );
+        assert_eq!(
+            darwin.narrow_integer_extension,
+            NarrowIntegerExtension::CallerExtendsBelow32
+        );
+        // Everything else is AAPCS64 verbatim, which the struct update syntax
+        // guarantees and this pins against a hand-edited row drifting.
+        assert_eq!(
+            CConventionSpec {
+                stacked_argument_packing: aapcs.stacked_argument_packing,
+                narrow_integer_extension: aapcs.narrow_integer_extension,
+                ..darwin
+            },
+            aapcs
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "not a psABI row")]
+    fn the_native_row_has_no_psabi_description() {
+        let _ = CallingConvention::Rue.c_spec();
     }
 
     #[test]

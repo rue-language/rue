@@ -24,10 +24,29 @@ do not share a convention.
 The native `Rue` convention borrows target register and stack rules but
 deliberately is not a C ABI.
 
-Rue does not yet support general foreign imports or exports. In particular,
-the runtime's zero-argument process entry into Rue `main` is not evidence that
-an arbitrary C caller can invoke an arbitrary Rue function. This audit records
-the boundary that exists today and the gaps an FFI implementation must close.
+Every psABI rule the compiler needs from a C row is *data*: `CConventionSpec`,
+beside `CallingConvention` in `rue-target`, carries the argument and result
+roster sizes for both register banks, where the hidden indirect-result pointer
+travels and whether the callee echoes it, the call-boundary stack alignment and
+the callee shadow space, how the outgoing argument area is packed, who extends a
+narrow integer, and which aggregate rule applies. `docs/runtime-abi.md` tabulates
+the three rows. Only the register *names* live in the two code-generation
+backends, which map a roster index to a register.
+
+One function reads that data against a type's facts:
+`rue_air::lower_c_signature` answers where every argument and the result of a
+`"C"` signature lives, and its `LoweredSignature` is consumed by every C
+crossing site — the `extern "C"` import planner, the `pub extern "C" fn` export
+thunk, and the stable query plane's `compiler.call-abi`. That single answer is
+ADR-0064's ratified acceptance criterion (the by-value classifier agreeing across
+calls, returns, exports, and callbacks) discharged by construction rather than by
+review; `the_c_by_value_classifier_agrees_across_sites_shapes_and_planes` pins it
+for every scalar kind, both pointer flavors, and `@repr(c)` struct shapes on the
+eightbyte boundaries, on both planes and every convention row. Callbacks do not
+exist yet and will be the fourth consumer of the same function.
+
+This audit records the boundary that exists today and the gaps an FFI
+implementation must close.
 
 ## Normative references
 
@@ -55,6 +74,11 @@ supported representation.
 | Aggregate argument order | Logical slots reversed within each value | Logical slots reversed within each value | Natural order; current parameters are scalars and pointers |
 | Call-site stack alignment | 16 bytes | 16 bytes | 16 bytes |
 | Red zone use | None | None | None |
+
+The `extern "C"` import and export paths are not this runtime subset: they reach
+every placement the C rows describe — stacked scalars and composites, SysV
+byval-on-stack, AAPCS64 by-reference copies, register-packed aggregates, and both
+indirect-result conventions — through the one lowered signature.
 
 ## Native Rue convention
 
@@ -128,9 +152,9 @@ Apple arm64 permits a 128-byte red zone, but Rue does not use it. Apple's other
 amendments are answered by the `Aarch64AapcsDarwin` convention row rather than
 by an operating-system test inside a backend:
 
-- **Stacked scalars take their natural size and alignment.** The foreign-call
-  planner packs the outgoing argument area per
-  `CallingConvention::stacked_argument_packing`, so on macOS a stacked `i8`,
+- **Stacked scalars take their natural size and alignment.** The signature
+  lowering packs the outgoing argument area per the convention's
+  `stacked_argument_packing`, so on macOS a stacked `i8`,
   `i16`, `i32`, `i64` tail lies at offsets 0, 2, 4, 8 where AAPCS64 and SysV put
   it at 0, 8, 16, 24, and the AArch64 lowerer commits each store at the C width
   (`strb`/`strh`/`str w`/`str`). A stacked composite keeps whole eightbytes at
@@ -141,9 +165,10 @@ by an operating-system test inside a backend:
 - **The caller extends arguments narrower than 32 bits.** Rue's canonical
   64-bit-extension invariant already produces a value satisfying it, so the
   import side needs nothing Darwin-specific; a unit assertion pins that every C
-  row asks for the same extension. The export thunk re-extends narrow arguments
-  in place on every row, because the native body needs the canonical 64-bit
-  form, which is stronger than Apple's 32-bit guarantee.
+  row asks for the same extension. The export thunk loads every incoming narrow
+  value through its canonical extension on every row, because the native body
+  needs the canonical 64-bit form, which is stronger than Apple's 32-bit
+  guarantee.
 - **Variadic arguments go on the stack.** Out of scope: variadic `extern "C"`
   declarations are rejected.
 
@@ -151,6 +176,38 @@ The typed runtime-helper subset still has no sub-32-bit or stack parameters, so
 these amendments do not change it today; they govern the `extern "C"` import and
 export paths, which do reach stacked arguments and narrow scalars. Native Rue
 continues to use its uniform 8-byte slot model on macOS.
+
+## Rue-to-C export thunks
+
+A `pub extern "C" fn` is compiled as an ordinary native body under a mangled
+symbol, plus one extra object whose single global symbol is the unmangled C name.
+That object's body reads the export's `LoweredSignature` in the callee direction
+— the C caller has already put every argument where the lowering says it goes —
+and adapts each value to what the native body expects.
+
+The adaptation is small because the compact memory image of a `@repr(c)`
+aggregate *is* its C object layout, and the native convention's indirect
+transports already move that exact image through memory:
+
+- A by-value aggregate the native classifier rules indirect is handed to the body
+  as a pointer to the C caller's own bytes, wherever they are: the saved incoming
+  argument registers, the caller's outgoing argument area, or the caller-owned
+  copy an AAPCS64 by-reference argument points at. Nothing is repacked.
+- A direct native crossing is marshaled leaf by leaf through the compact image
+  map — each leaf loaded at its physical width through its canonical extension —
+  and a multi-slot value's slots are reversed, which is the native convention's
+  rule.
+- When both directions are indirect, the C caller's indirect-result storage *is*
+  the native body's sret storage, so the result is never copied; SysV's `rax`
+  echo is then a reload of the saved pointer. When the native body returns in
+  registers, the thunk writes each returned slot into the C image at its own byte
+  position, zeroing padding first so the image is deterministic.
+
+The signature classes semantic analysis still rejects for an export are about
+identity rather than marshaling: a generic (`comptime`) function has no single C
+symbol, a `borrow`/`inout` parameter has no C spelling, and the name `main` is
+the program's own entry point (E1106, spec 9.3:6). Aggregate parameters and
+returns and parameter lists past the argument-register budget all cross.
 
 ## Typed target-C runtime subset
 
@@ -207,13 +264,22 @@ The probe covers:
 - allocation and mutation through the `StrBuf` runtime boundary.
 
 `cli.c_ffi` covers the `extern "C"` import and export paths. Its executing
-cases pair a Rue program with a C archive on x86-64 Linux and AArch64 Linux;
+cases pair a Rue program with a C archive on x86-64 Linux and AArch64 Linux.
+`x86_64_linux_aggregate_exports_called_from_c` and its AArch64 pair cover the
+export direction where the two conventions disagree most: a C caller passes an
+8-byte `@repr(c)` struct by value and receives one back, passes a 24-byte struct
+(byval on the stack under SysV, by reference under AAPCS64) and receives one
+through caller storage, and calls a nine-scalar export whose tail is stacked
+under both rows. The 24-byte case also checks SysV's `rax` echo by reading the
+returned struct back *through the returned pointer*, in a hand-written assembly
+archive member; AAPCS64 has no echo to check, and its dedicated `x8` path is
+exercised by the compiler-generated caller.
 `aarch64_macos_narrow_exports_build_under_the_apple_row` compiles and links a
 narrow-parameter export for AArch64 macOS, so the Apple row's export thunks are
 generated, encoded, and placed in a Mach-O image on every host and executed on
 the macOS CI host. There is no macOS C-caller archive, so the Apple row's
-stacked-argument packing is proved by backend unit tests over the shared
-foreign-call planner rather than by execution.
+stacked-argument packing is proved by unit tests over the shared signature
+lowering rather than by execution.
 
 Backend tests additionally enforce that the typed runtime manifest stays within
 each backend's implemented register-only subset and that its boundary resolves
@@ -238,19 +304,19 @@ return-representation change.
 
 ## Requirements for future FFI work
 
-Before general FFI can claim conformance, its target-C path must independently
-cover at least:
+C layout and classification for supported by-value aggregates, direct and
+indirect C aggregate returns including AAPCS64 `x8`, and narrow-integer
+extension at every import and export boundary are covered by the one lowered
+signature and its executing cases. What remains open:
 
-- C layout and classification for supported by-value aggregates;
 - Apple's byte-exact placement of a stacked composite argument, which needs
   byte-granular marshaling rather than the whole-eightbyte image stores the
   current path emits;
-- direct and indirect C aggregate returns, including AAPCS64 `x8`;
-- floating-point/vector arguments and results if exposed;
+- floating-point/vector arguments and results, which the boundary still rejects;
 - variadic calls, or an explicit diagnostic rejecting them;
-- narrow integer extension at every import and export boundary;
 - pointer provenance, mutability, and lifetime rules; and
-- executable C-to-Rue and Rue-to-C harnesses for every supported target.
+- an executable Rue-to-C harness on macOS, so the C-caller/C-callee matrix is
+  two-sided on every supported target.
 
 Until those paths exist, native Rue functions and native-layout values are not
 an FFI surface.

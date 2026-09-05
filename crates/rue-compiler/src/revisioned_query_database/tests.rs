@@ -242,6 +242,7 @@ const EXPECTED_REVISIONED_QUERY_TESTS: &[&str] = &[
     "staged_runtime_parameter_scope_is_inserted_once",
     "successor_revisions_carry_observations_but_new_epochs_reread",
     "test_probe_specializations_share_one_candidate_plan_arc",
+    "the_c_by_value_classifier_agrees_across_sites_shapes_and_planes",
     "the_revision_symbol_space_is_one_generation_per_revision",
     "toolchain_demand_maps_all_five_artifact_kinds_across_nested_method",
     "toolchain_demand_uses_typed_artifact_intrinsics_not_source_mentions",

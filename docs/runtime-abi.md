@@ -79,6 +79,53 @@ native convention, compares both boundaries with System V AMD64, AAPCS64, and
 Apple's arm64 amendments, and defines the executable evidence required before
 the C subset is expanded.
 
+## Conventions are data, and one function places a signature
+
+Every psABI rule the compiler needs from a C row is a field of
+`CConventionSpec`, which sits beside `CallingConvention` in `rue-target`, and
+`CallingConvention::c_spec` is the one table that answers it:
+
+| Field | `X86_64SysV` | `Aarch64Aapcs` | `Aarch64AapcsDarwin` |
+| --- | --- | --- | --- |
+| General-purpose argument registers | 6 | 8 | 8 |
+| Floating-point argument registers | 8 | 8 | 8 |
+| General-purpose result registers | 2 | 2 | 2 |
+| Floating-point result registers | 2 | 4 | 4 |
+| Indirect-result pointer | first argument register | dedicated register | dedicated register |
+| Callee echoes it in the result register | yes | no | no |
+| Call-boundary stack alignment | 16 | 16 | 16 |
+| Callee shadow space | 0 | 0 | 0 |
+| Stacked-argument packing | 8-byte slots | 8-byte slots | natural size |
+| Narrow-integer extension | callee extends on use | callee extends on use | caller extends below 32 |
+| Aggregate rule | SysV eightbyte | AAPCS64 composite | AAPCS64 composite |
+| Largest register-passed aggregate | 16 bytes | 16 bytes | 16 bytes |
+
+Only the register *names* live elsewhere: each code-generation backend maps a
+roster index to its own register. Shadow space is zero on every current row; the
+field exists so a Win64 row is an entry in this table rather than a new branch.
+
+`rue_air::lower_c_signature` is the one function that reads this data against a
+type's facts — a size, an alignment, a scalar's width and signedness — and
+answers where every value of a `"C"` signature lives. Its `LoweredSignature`
+gives each argument a placement (consecutive registers of a bank starting at a
+roster index, a byte offset and footprint in the outgoing argument area, or a
+pointer to a caller-owned copy) plus the narrow-integer extension its value
+carries, and gives the result registers, indirect caller storage, or nothing.
+
+Three sites consume that one answer, which is why an import, an export, and the
+query plane cannot disagree about a placement:
+
+- the `extern "C"` import planner, which writes the places and calls;
+- the `pub extern "C" fn` export thunk, which reads the same places in the
+  callee direction and adapts them to the native convention its body follows;
+  and
+- the stable query plane's `compiler.call-abi`, which projects the same facts
+  from canonical layout values and revision-stable type keys.
+
+Floating-point rosters and the classifier's SSE eightbyte class are carried but
+unreached: the C boundary still rejects `f32`/`f64`, so every eightbyte
+classifies INTEGER and every scalar is general-purpose today.
+
 ## Target C calling conventions
 
 All callable runtime helpers cross the C boundary, so their convention is
@@ -120,9 +167,10 @@ than by an operating-system test in a backend:
   audit note records Apple's byte-exact composite placement as still open.
 - **The caller extends arguments narrower than 32 bits.** Rue's canonical
   64-bit-extension invariant already satisfies this on the import side. On the
-  export side the thunk re-extends narrow arguments in place for every row: the
-  native body needs the canonical 64-bit form, which is stronger than what any C
-  caller promises, and re-extending an already-extended value is a no-op.
+  export side the thunk loads every incoming narrow value through its canonical
+  extension on every row: the native body needs the canonical 64-bit form, which
+  is stronger than what any C caller promises, and extending an already-extended
+  value is a no-op.
 
 Apple's variadic amendment is out of scope: variadic `extern "C"` declarations
 are rejected.

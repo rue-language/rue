@@ -2757,34 +2757,6 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                         index + 1
                     )));
                 }
-                if let Some(parameter) = parameters.iter().find(|parameter| {
-                    matches!(
-                        parameter.ty,
-                        crate::durable_semantics::DurableType::Nominal(_)
-                            | crate::durable_semantics::DurableType::Array { .. }
-                    )
-                }) {
-                    return Err(reject(format!(
-                        "aggregate parameter `{}` is not supported by the P4 export thunk (register repacking across the export boundary is future work); pass a pointer instead",
-                        durable_type_diagnostic_name(&parameter.ty)
-                    )));
-                }
-                if matches!(
-                    result,
-                    crate::durable_semantics::DurableType::Nominal(_)
-                        | crate::durable_semantics::DurableType::Array { .. }
-                ) {
-                    return Err(reject(format!(
-                        "aggregate return `{}` is not supported by the P4 export thunk",
-                        durable_type_diagnostic_name(&result)
-                    )));
-                }
-                if parameters.len() > 6 {
-                    return Err(reject(format!(
-                        "{} scalar parameters exceed the 6-register argument budget the P4 export thunk supports; reduce the parameter count",
-                        parameters.len()
-                    )));
-                }
             }
             Ok(Output::Callable {
                 parameters: parameters.into(),

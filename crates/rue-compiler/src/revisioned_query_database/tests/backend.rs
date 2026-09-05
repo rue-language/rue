@@ -546,6 +546,213 @@ fn request_call_abi(
     facts.clone()
 }
 
+/// The by-value C classifier must agree across every crossing site — calls,
+/// returns, exports, and (once they exist) callbacks — for every supported type
+/// shape, which is ADR-0064's ratified acceptance criterion. It must also agree
+/// across the two planes: the live classifier walks a request-scoped type pool,
+/// the stable query plane walks canonical layout values and revision-stable type
+/// keys, and only the projections differ.
+///
+/// The shapes below are the ones that can disagree: every scalar kind and both
+/// pointer flavors, and `@repr(c)`-shaped structs sitting on the eightbyte
+/// boundaries (1, 2, 8, 9, 16, 17, 24 bytes), with interior padding, nested, and
+/// with an array field. `@repr(c)` is a guarantee marker rather than a layout
+/// change under the compact-layout default, so the source declares the shapes as
+/// ordinary structs and the classification is byte-identical.
+#[test]
+fn the_c_by_value_classifier_agrees_across_sites_shapes_and_planes() {
+    use lasso::ThreadedRodeo;
+    use rue_air::{
+        ArgConvention, CAbiTypeFacts, StructDef, StructField, Type, TypeInternPool,
+        c_abi_type_facts, lower_c_signature,
+    };
+    use rue_codegen::export_thunk::ExportSignature;
+
+    let source = source_snapshot(
+        &[(
+            1,
+            "/main.rue",
+            "main.rue",
+            "struct One { a: u8 }\n\
+             struct Two { a: u16 }\n\
+             struct Eight { a: i64 }\n\
+             struct Nine { a: [u8; 9] }\n\
+             struct Sixteen { a: i64, b: i64 }\n\
+             struct Seventeen { a: [u8; 17] }\n\
+             struct TwentyFour { a: i64, b: i64, c: i64 }\n\
+             struct Padded { a: u8, b: u32, c: u16 }\n\
+             struct Nested { p: Padded, q: Eight }\n\
+             struct Arrayed { xs: [i32; 5] }",
+        )],
+        1,
+    );
+    let module = ModuleId::from_logical_path("main.rue").unwrap();
+
+    let pool = TypeInternPool::new();
+    let interner = ThreadedRodeo::new();
+    let register = |name: &str, fields: Vec<(&str, Type)>| {
+        let id = pool
+            .register_struct(
+                interner.get_or_intern(name),
+                StructDef {
+                    name: name.into(),
+                    fields: fields
+                        .into_iter()
+                        .map(|(field, ty)| StructField {
+                            name: field.into(),
+                            ty,
+                        })
+                        .collect(),
+                    is_copy: false,
+                    is_linear: false,
+                    declared_linear: false,
+                    destructor: None,
+                    is_builtin: false,
+                    is_pub: false,
+                    file_id: rue_span::FileId::DEFAULT,
+                },
+            )
+            .0;
+        Type::new_struct(id)
+    };
+    let bytes9 = Type::new_array(pool.intern_array_from_type(Type::U8, 9));
+    let bytes17 = Type::new_array(pool.intern_array_from_type(Type::U8, 17));
+    let ints5 = Type::new_array(pool.intern_array_from_type(Type::I32, 5));
+    let one = register("One", vec![("a", Type::U8)]);
+    let two = register("Two", vec![("a", Type::U16)]);
+    let eight = register("Eight", vec![("a", Type::I64)]);
+    let nine = register("Nine", vec![("a", bytes9)]);
+    let sixteen = register("Sixteen", vec![("a", Type::I64), ("b", Type::I64)]);
+    let seventeen = register("Seventeen", vec![("a", bytes17)]);
+    let twenty_four = register(
+        "TwentyFour",
+        vec![("a", Type::I64), ("b", Type::I64), ("c", Type::I64)],
+    );
+    let padded = register(
+        "Padded",
+        vec![("a", Type::U8), ("b", Type::U32), ("c", Type::U16)],
+    );
+    let nested = register("Nested", vec![("p", padded), ("q", eight)]);
+    let arrayed = register("Arrayed", vec![("xs", ints5)]);
+    let pointee = Type::new_ptr_const(pool.intern_ptr_const_from_type(Type::I32));
+    let mut_pointee = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::I32));
+    let pool = pool.freeze();
+
+    let named =
+        |name: &str| named_type_instance(&module, name, crate::StableDefinitionKind::Struct);
+    let shapes: Vec<(&str, crate::TypeInstanceKey, Type)> = vec![
+        ("i8", crate::TypeInstanceKey::I8, Type::I8),
+        ("i16", crate::TypeInstanceKey::I16, Type::I16),
+        ("i32", crate::TypeInstanceKey::I32, Type::I32),
+        ("i64", crate::TypeInstanceKey::I64, Type::I64),
+        ("u8", crate::TypeInstanceKey::U8, Type::U8),
+        ("u16", crate::TypeInstanceKey::U16, Type::U16),
+        ("u32", crate::TypeInstanceKey::U32, Type::U32),
+        ("u64", crate::TypeInstanceKey::U64, Type::U64),
+        ("bool", crate::TypeInstanceKey::Bool, Type::BOOL),
+        (
+            "*const i32",
+            crate::TypeInstanceKey::PtrConst(Node::new(crate::TypeInstanceKey::I32)),
+            pointee,
+        ),
+        (
+            "*mut i32",
+            crate::TypeInstanceKey::PtrMut(Node::new(crate::TypeInstanceKey::I32)),
+            mut_pointee,
+        ),
+        ("One", named("One"), one),
+        ("Two", named("Two"), two),
+        ("Eight", named("Eight"), eight),
+        ("Nine", named("Nine"), nine),
+        ("Sixteen", named("Sixteen"), sixteen),
+        ("Seventeen", named("Seventeen"), seventeen),
+        ("TwentyFour", named("TwentyFour"), twenty_four),
+        ("Padded", named("Padded"), padded),
+        ("Nested", named("Nested"), nested),
+        ("Arrayed", named("Arrayed"), arrayed),
+    ];
+
+    let mut database = RevisionedQueryDatabase::default();
+    let revision = revision_for(&mut database, &source);
+    // Coverage of the placement classes the shape set is chosen to reach, so a
+    // future edit that quietly stops exercising one of them fails here rather
+    // than passing vacuously.
+    let mut seen_registers = false;
+    let mut seen_stack = false;
+    let mut seen_indirect = false;
+    let mut seen_sret = false;
+    for target in crate::Target::all().iter().copied() {
+        let convention = target.c_calling_convention();
+        for (name, stable_key, live_ty) in &shapes {
+            let attempt =
+                request_layout_for_target(&database, revision, stable_key.clone(), target);
+            let terminal = attempt.terminal().unwrap();
+            let rue_query::QueryOutcome::Success(crate::type_queries::LayoutValue::Available(
+                canonical,
+            )) = terminal.outcome()
+            else {
+                panic!("layout query failed for {name}: {terminal:?}");
+            };
+            let stable_facts =
+                super::super::semantic::stable_c_abi_type_facts(canonical, stable_key);
+            let live_facts = c_abi_type_facts(&pool, *live_ty);
+            assert_eq!(
+                stable_facts, live_facts,
+                "{target:?}/{name}: the two planes must project one set of C facts"
+            );
+
+            // The signature under test: one by-value parameter of this shape
+            // returning the same shape, plus a nine-scalar tail that forces the
+            // argument roster to overflow, so every site is compared on a
+            // register case and a stacked case at once.
+            let mut parameters = vec![(live_facts, ArgConvention::ByValue)];
+            parameters.extend(std::iter::repeat_n(
+                (
+                    CAbiTypeFacts::Scalar {
+                        kind: rue_air::CAbiScalarKind::RegisterWidth,
+                        class: rue_target::CRegisterClass::Gp,
+                    },
+                    ArgConvention::ByValue,
+                ),
+                9,
+            ));
+            let call = lower_c_signature(convention, &parameters, live_facts);
+
+            let mut stable_parameters = parameters.clone();
+            stable_parameters[0] = (stable_facts, ArgConvention::ByValue);
+            assert_eq!(
+                call,
+                lower_c_signature(convention, &stable_parameters, stable_facts),
+                "{target:?}/{name}: the stable plane must place every value identically"
+            );
+
+            let mut param_types = vec![*live_ty];
+            param_types.extend(std::iter::repeat_n(Type::I64, 9));
+            let export = ExportSignature::for_types(&pool, &param_types, *live_ty);
+            assert_eq!(
+                call,
+                export.lowered(target),
+                "{target:?}/{name}: an export must read the placement a call writes"
+            );
+
+            for argument in call.arguments() {
+                match argument.location {
+                    rue_air::ArgLocation::Registers { .. } => seen_registers = true,
+                    rue_air::ArgLocation::Stack { .. } => seen_stack = true,
+                    rue_air::ArgLocation::Indirect { .. } => seen_indirect = true,
+                    rue_air::ArgLocation::Omitted => {}
+                }
+            }
+            seen_sret |= call.ret().uses_sret();
+        }
+    }
+    assert!(
+        seen_registers && seen_stack && seen_indirect && seen_sret,
+        "the shape set must reach every placement class: registers={seen_registers} \
+         stack={seen_stack} indirect={seen_indirect} sret={seen_sret}"
+    );
+}
+
 #[test]
 fn call_abi_classifies_native_target_c_named_destructor_and_drop_glue_on_both_targets() {
     use crate::type_queries::{CallAbiArgumentClass as A, CallAbiReturnClass as R};
@@ -1268,27 +1475,31 @@ fn call_abi_target_c_classification_matches_the_live_classifier_on_both_targets(
             "return extension parity for {name}"
         );
     };
+    // The stable plane's aggregate classes must name the same places the live
+    // plane's signature lowering does, for the one-parameter signature each of
+    // these declarations has.
     let assert_aggregate = |facts: &crate::type_queries::CallAbiFacts,
-                            abi: &TargetCCallAbi,
+                            convention: rue_target::CallingConvention,
                             live_ty: Type,
                             name: &str| {
         use crate::type_queries::{CallAbiArgumentClass as A, CallAbiReturnClass as R};
-        let layout = pool.layout(live_ty);
-        match (
-            facts.arguments[0].class,
-            abi.classify_aggregate_arg(layout.size, layout.alignment),
-        ) {
+        let live_facts = rue_air::c_abi_type_facts(&pool, live_ty);
+        let lowered = rue_air::lower_c_signature(
+            convention,
+            &[(live_facts, rue_air::ArgConvention::ByValue)],
+            live_facts,
+        );
+        match (facts.arguments[0].class, lowered.arguments()[0].location) {
             (
                 A::CIntegerRegisters { eightbytes },
-                rue_air::AggregateArgClass::IntegerRegisters {
-                    eightbytes: live_eightbytes,
-                },
-            ) => assert_eq!(eightbytes, live_eightbytes, "eightbyte parity for {name}"),
+                rue_air::ArgLocation::Registers { count, .. },
+            ) => assert_eq!(eightbytes, count, "eightbyte parity for {name}"),
             (
                 A::CByValueStack { size, alignment },
-                rue_air::AggregateArgClass::ByValueStack {
+                rue_air::ArgLocation::Stack {
                     size: live_size,
                     align: live_align,
+                    ..
                 },
             ) => assert_eq!(
                 (size, alignment),
@@ -1297,9 +1508,10 @@ fn call_abi_target_c_classification_matches_the_live_classifier_on_both_targets(
             ),
             (
                 A::CByReferenceCopy { size, alignment },
-                rue_air::AggregateArgClass::ByReferenceCopy {
+                rue_air::ArgLocation::Indirect {
                     size: live_size,
                     align: live_align,
+                    ..
                 },
             ) => assert_eq!(
                 (size, alignment),
@@ -1310,24 +1522,17 @@ fn call_abi_target_c_classification_matches_the_live_classifier_on_both_targets(
                 panic!("aggregate argument parity mismatch for {name}: {stable:?} != {live:?}")
             }
         }
-        match (
-            facts.return_class,
-            abi.classify_aggregate_return(layout.size, layout.alignment),
-        ) {
+        match (facts.return_class, lowered.ret()) {
             (
                 R::CIntegerRegisters { eightbytes },
-                rue_air::AggregateReturnClass::IntegerRegisters {
-                    eightbytes: live_eightbytes,
-                },
-            ) => assert_eq!(
-                eightbytes, live_eightbytes,
-                "return eightbyte parity for {name}"
-            ),
+                rue_air::LoweredReturn::Registers { count, .. },
+            ) => assert_eq!(eightbytes, count, "return eightbyte parity for {name}"),
             (
                 R::CIndirect { size, alignment },
-                rue_air::AggregateReturnClass::Indirect {
+                rue_air::LoweredReturn::Sret {
                     size: live_size,
                     align: live_align,
+                    ..
                 },
             ) => assert_eq!(
                 (size, alignment),
@@ -1382,10 +1587,10 @@ fn call_abi_target_c_classification_matches_the_live_classifier_on_both_targets(
         // up to two, exactly two, and past the 16-byte register limit
         // where the psABIs diverge (SysV byval stack, AAPCS64 reference
         // to a caller copy; sret for returns on both).
-        assert_aggregate(&request("c_eight"), &abi, c_inner, "c_eight");
-        assert_aggregate(&request("c_twelve"), &abi, c_twelve, "c_twelve");
-        assert_aggregate(&request("c_sixteen"), &abi, c_nested, "c_sixteen");
-        assert_aggregate(&request("c_large"), &abi, c_large, "c_large");
+        assert_aggregate(&request("c_eight"), convention, c_inner, "c_eight");
+        assert_aggregate(&request("c_twelve"), convention, c_twelve, "c_twelve");
+        assert_aggregate(&request("c_sixteen"), convention, c_nested, "c_sixteen");
+        assert_aggregate(&request("c_large"), convention, c_large, "c_large");
     }
 }
 

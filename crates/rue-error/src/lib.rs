@@ -3717,13 +3717,14 @@ pub enum ErrorKind {
     )]
     ExternVariadicUnsupported,
 
-    /// A `pub extern "C" fn` Rue-to-C export (ADR-0064 P4) has a signature the
-    /// export-thunk lowering cannot bridge yet. The P4 export thunk marshals
-    /// only integer/pointer scalars that fit the target's argument-register
-    /// budget: an aggregate parameter or return, or a scalar parameter list
-    /// wider than the register budget, is rejected here rather than silently
-    /// mis-marshaled, and an export whose C name collides with the program
-    /// entry point (`main`) is rejected to keep the entry symbol unambiguous.
+    /// A `pub extern "C" fn` Rue-to-C export (ADR-0064 P4) has a signature that
+    /// cannot name one C entry point. The export thunk marshals every
+    /// C-passable signature the boundary admits — scalars, pointers, `@repr(c)`
+    /// aggregates by value in either direction, and parameter lists past the
+    /// argument-register budget — so what is left here is about *identity*
+    /// rather than marshaling: a generic function has no single C symbol, a
+    /// `borrow`/`inout` parameter has no C spelling, and a name colliding with
+    /// the program entry point (`main`) would make the entry symbol ambiguous.
     #[error("`pub extern \"C\" fn` export `{name}` is not supported: {reason} (ADR-0064 P4)")]
     ExportSignatureUnsupported {
         /// The export's C symbol name.

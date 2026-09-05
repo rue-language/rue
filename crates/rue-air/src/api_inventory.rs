@@ -1460,6 +1460,7 @@ fn comptime_instdata_evaluation_has_one_production_authority() {
         ("intrinsic", include_str!("intrinsic.rs")),
         ("layout", include_str!("layout.rs")),
         ("lib", include_str!("lib.rs")),
+        ("lowered_signature", include_str!("lowered_signature.rs")),
         ("module_registry", include_str!("module_registry.rs")),
         ("param_arena", include_str!("param_arena.rs")),
         ("path_norm", include_str!("path_norm.rs")),

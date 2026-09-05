@@ -310,23 +310,20 @@ fn check_c_ffi_safe<P: FfiTypePool>(
 
 /// Predicate 3: can `ty` cross a C boundary *by value* in the current phase?
 ///
-/// This is the classifier seam, kept in lock-step with the
-/// [`TargetCCallAbi`](crate::call_abi::TargetCCallAbi) classifier that lowers
-/// each crossing. P2 (RUE-1056) widened it from the P1 register-only set to the
-/// **full integer scalar set** — every signed and unsigned integer width, `bool`
-/// as the 1-byte `_Bool`, and raw pointers, the scalars the target-C classifier
-/// assigns to a single integer register with a defined narrow-integer extension
-/// ([`ScalarAbiExtension`](crate::call_abi::ScalarAbiExtension)).
-///
-/// P3 (RUE-1057) widens it again to **C-classifiable aggregates**: a struct that
-/// is marked `@repr(c)` and satisfies [`has_c_layout`] and [`c_ffi_safe`] (i.e.
-/// is [`repr_c_marker_eligible`]) is now passable by value. The target-C
-/// classifier assigns it eightbyte-wise — ≤16-byte structs pack into one or two
-/// integer registers in C field order; larger structs go to memory
-/// ([`AggregateArgClass`](crate::call_abi::AggregateArgClass) /
-/// [`AggregateReturnClass`](crate::call_abi::AggregateReturnClass)). In the
-/// integer-only core every eightbyte classifies INTEGER; a field type that would
-/// classify SSE cannot exist until RUE-714 adds floats (P5).
+/// This is the classifier seam, kept in lock-step with
+/// [`lower_c_signature`](crate::lower_c_signature), the one function that places
+/// each crossing. The admitted set is the **full integer scalar set** — every
+/// signed and unsigned integer width, `bool` as the 1-byte `_Bool`, and raw
+/// pointers, the scalars the placement assigns to a single integer register with
+/// a defined narrow-integer extension
+/// ([`ScalarAbiExtension`](crate::call_abi::ScalarAbiExtension)) — plus
+/// **C-classifiable aggregates**: a struct marked `@repr(c)` that satisfies
+/// [`has_c_layout`] and [`c_ffi_safe`] (i.e. is [`repr_c_marker_eligible`]) is
+/// passable by value. The placement assigns an aggregate eightbyte-wise — ≤16
+/// bytes packs into one or two registers in C field order; larger goes to memory
+/// by the convention's own rule. In the integer-only core every eightbyte
+/// classifies INTEGER; a field type that would classify SSE cannot exist until
+/// RUE-714 adds floats (P5).
 ///
 /// Fixed arrays stay rejected here (`NotRegisterPassable`) — C decays an array
 /// parameter to a pointer, so a by-value array is not a boundary type; it is

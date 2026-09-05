@@ -435,7 +435,7 @@ pub(crate) fn compile_rooted_with_session_with_cancellation(
                     options.target,
                     &export.exported_symbol,
                     &export.native_symbol,
-                    &export.param_types,
+                    &export.signature,
                 ));
             }
             crate::linking::link_internal_structured_units_with_warnings_and_cancellation(

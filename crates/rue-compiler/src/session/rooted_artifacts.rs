@@ -313,29 +313,48 @@ pub(super) fn collect_rooted_exports(
         .collect::<BTreeSet<_>>();
     cfgs.iter()
         .filter(|cfg| export_roots.contains(&cfg.function))
-        .map(|cfg| {
-            let mut param_types = vec![rue_air::Type::I64; cfg.record.cfg.num_params() as usize];
-            for block in cfg.record.cfg.blocks() {
-                for &value in &block.insts {
-                    let instruction = cfg.record.cfg.get_inst(value);
-                    if let rue_cfg::CfgInstData::Param { index } = instruction.data
-                        && let Some(slot) = param_types.get_mut(index as usize)
-                    {
-                        *slot = instruction.ty;
-                    }
-                }
-            }
-            crate::program_image_plan::RootedExportThunk {
-                function: cfg.function.clone(),
-                exported_symbol: match &cfg.function {
-                    crate::FunctionInstanceKey::Definition(key) => key.name().to_owned(),
-                    _ => unreachable!("C export roots are source definitions"),
-                },
-                native_symbol: cfg.record.codegen.defined_symbol.to_string(),
-                param_types,
-            }
+        .map(|cfg| crate::program_image_plan::RootedExportThunk {
+            function: cfg.function.clone(),
+            exported_symbol: match &cfg.function {
+                crate::FunctionInstanceKey::Definition(key) => key.name().to_owned(),
+                _ => unreachable!("C export roots are source definitions"),
+            },
+            native_symbol: cfg.record.codegen.defined_symbol.to_string(),
+            signature: export_signature(cfg),
         })
         .collect()
+}
+
+/// One export's complete ABI description, projected from its optimized CFG.
+///
+/// The parameter types come from the one AIR recovery the callee's own
+/// parameter layout was derived from (`rue_air::body_parameter_types`), so the
+/// thunk marshals exactly the values the native body expects — including a
+/// parameter the body never reads, which has no `Param` instruction to recover a
+/// type from. A C export's parameters are all by value (semantic analysis
+/// rejects `borrow`/`inout` in an export signature), so every one carries a
+/// type.
+pub(crate) fn export_signature(cfg: &RootedCfgUnit) -> rue_codegen::export_thunk::ExportSignature {
+    let types = rue_air::body_parameter_types(&cfg.record.air);
+    let parameter_types = cfg
+        .record
+        .cfg
+        .source_param_abi()
+        .iter()
+        .map(|parameter| {
+            parameter
+                .ty
+                .or_else(|| types.get(&parameter.start_slot).copied())
+                .expect(
+                    "a C export's by-value parameter carries a source type in its analyzed body",
+                )
+        })
+        .collect::<Vec<_>>();
+    rue_codegen::export_thunk::ExportSignature::for_types(
+        &cfg.record.type_pool,
+        &parameter_types,
+        cfg.record.cfg.return_type(),
+    )
 }
 
 pub(super) fn sort_rooted_warnings(graph: &RootedBodyGraph, warnings: &mut Vec<CompileWarning>) {

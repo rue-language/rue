@@ -1837,10 +1837,10 @@ pub(super) fn stable_type_is_strbuf(ty: &crate::TypeInstanceKey) -> bool {
 /// The stable plane's projection of a scalar type key onto its target-C
 /// width-and-signedness class; the extension operation itself lives on
 /// [`rue_air::CAbiScalarKind::extension`], shared with the live classifier.
-pub(super) fn c_scalar_extension(ty: &crate::TypeInstanceKey) -> rue_air::ScalarAbiExtension {
+pub(super) fn c_scalar_kind(ty: &crate::TypeInstanceKey) -> rue_air::CAbiScalarKind {
     use crate::TypeInstanceKey as T;
     use rue_air::CAbiScalarKind as K;
-    let kind = match ty {
+    match ty {
         T::I8 => K::I8,
         T::I16 => K::I16,
         T::I32 => K::I32,
@@ -1851,8 +1851,35 @@ pub(super) fn c_scalar_extension(ty: &crate::TypeInstanceKey) -> rue_air::Scalar
         // Register-width scalars (i64/u64, pointers) and every remaining key
         // this projection can see need no extension.
         _ => K::RegisterWidth,
-    };
-    kind.extension()
+    }
+}
+
+/// The stable plane's projection of one type onto the target-C classification
+/// facts.
+///
+/// The live classifier makes the same projection from the request-scoped type
+/// pool ([`rue_air::c_abi_type_facts`]); both then classify through the one
+/// kernel, [`rue_air::lower_c_signature`]. That is why an `extern "C"` import,
+/// a `pub extern "C" fn` export, and this query cannot disagree about where a
+/// value crosses.
+pub(super) fn stable_c_abi_type_facts(
+    layout: &crate::type_queries::CanonicalLayout,
+    ty: &crate::TypeInstanceKey,
+) -> rue_air::CAbiTypeFacts {
+    if stable_type_is_aggregate(ty) {
+        return rue_air::CAbiTypeFacts::Aggregate {
+            size: layout.size,
+            align: layout.alignment,
+        };
+    }
+    if layout.abi_slots == 0 {
+        return rue_air::CAbiTypeFacts::ZeroSized;
+    }
+    let kind = c_scalar_kind(ty);
+    rue_air::CAbiTypeFacts::Scalar {
+        kind,
+        class: kind.register_class(),
+    }
 }
 
 /// The stable plane's projection of one type onto the shared native
@@ -1949,55 +1976,97 @@ pub(super) fn evaluate_call_abi(
     // still walks parameters in signature order and stops at the first
     // failure, so which failure a caller sees is unchanged.
     let mut parameter_terminals = parameter_terminals.iter();
-    let mut arguments = Vec::with_capacity(signature.parameters.len());
-    for (mode, ty) in &signature.parameters {
+    let mut layouts = Vec::with_capacity(signature.parameters.len());
+    for (mode, _) in &signature.parameters {
         if !matches!(mode, DurableParameterMode::Value) {
+            layouts.push(None);
+            continue;
+        }
+        let Some(terminal) = parameter_terminals.next() else {
+            unreachable!("the batch carries one layout per by-value parameter")
+        };
+        match layout_from_terminal(terminal) {
+            Ok(layout) => layouts.push(Some(layout)),
+            Err(failure) => {
+                return Ok(QueryOutput::success(CallAbiValue::Failure(failure))
+                    .with_terminal_kind(QueryTerminalKind::Failure));
+            }
+        }
+    }
+    let return_layout = match layout_from_terminal(return_terminal) {
+        Ok(layout) => layout,
+        Err(failure) => {
+            return Ok(QueryOutput::success(CallAbiValue::Failure(failure))
+                .with_terminal_kind(QueryTerminalKind::Failure));
+        }
+    };
+
+    // A C boundary is placed by the one classification function every crossing
+    // site consumes; the native convention keeps its own decision tree. The
+    // stable plane projects the facts from canonical layout values and stable
+    // type keys, and the live classifier projects the same facts from the
+    // request-scoped type pool, so the two planes classify identically.
+    let lowered = (!convention.is_rue()).then(|| {
+        let parameters = signature
+            .parameters
+            .iter()
+            .zip(&layouts)
+            .map(|((mode, ty), layout)| match (mode, layout) {
+                (DurableParameterMode::Value, Some(layout)) => (
+                    stable_c_abi_type_facts(layout, ty),
+                    rue_air::ArgConvention::ByValue,
+                ),
+                // A reference parameter is one pointer whatever it points at,
+                // so it contributes no layout and needs none.
+                _ => (
+                    rue_air::CAbiTypeFacts::by_reference_pointer(),
+                    rue_air::ArgConvention::ByReference,
+                ),
+            })
+            .collect::<Vec<_>>();
+        rue_air::lower_c_signature(
+            convention,
+            &parameters,
+            stable_c_abi_type_facts(return_layout, &signature.result),
+        )
+    });
+
+    let mut arguments = Vec::with_capacity(signature.parameters.len());
+    for (index, ((mode, ty), layout)) in signature.parameters.iter().zip(&layouts).enumerate() {
+        let Some(layout) = layout else {
             arguments.push(CallAbiArgument {
                 mode: *mode,
                 value_slots: 1,
                 class: A::Reference,
             });
             continue;
-        }
-        let Some(terminal) = parameter_terminals.next() else {
-            unreachable!("the batch carries one layout per by-value parameter")
         };
-        let layout = match layout_from_terminal(terminal) {
-            Ok(layout) => layout,
-            Err(failure) => {
-                return Ok(QueryOutput::success(CallAbiValue::Failure(failure))
-                    .with_terminal_kind(QueryTerminalKind::Failure));
-            }
-        };
-        let class = if convention.is_rue() {
-            match stable_native_abi_facts(layout, ty).classify_arg(rue_air::ArgConvention::ByValue)
+        let class = match &lowered {
+            None => match stable_native_abi_facts(layout, ty)
+                .classify_arg(rue_air::ArgConvention::ByValue)
             {
                 rue_air::ArgClass::Omitted => A::Omitted,
                 rue_air::ArgClass::Direct { slot_count } => A::NativeDirect { slots: slot_count },
                 rue_air::ArgClass::Indirect => A::NativeIndirect,
-            }
-        } else if layout.size == 0 {
-            A::Omitted
-        } else if !stable_type_is_aggregate(ty) {
-            A::CScalar {
-                extension: c_scalar_extension(ty),
-            }
-        } else {
-            match rue_air::TargetCCallAbi::new(convention)
-                .classify_aggregate_arg(layout.size, layout.alignment)
-            {
-                rue_air::AggregateArgClass::IntegerRegisters { eightbytes } => {
-                    A::CIntegerRegisters { eightbytes }
-                }
-                rue_air::AggregateArgClass::ByValueStack { size, align } => A::CByValueStack {
-                    size,
-                    alignment: align,
-                },
-                rue_air::AggregateArgClass::ByReferenceCopy { size, align } => {
-                    A::CByReferenceCopy {
+            },
+            Some(lowered) => {
+                let argument = lowered.arguments()[index];
+                match argument.location {
+                    rue_air::ArgLocation::Omitted => A::Omitted,
+                    _ if !stable_type_is_aggregate(ty) => A::CScalar {
+                        extension: argument.extension,
+                    },
+                    rue_air::ArgLocation::Registers { count, .. } => {
+                        A::CIntegerRegisters { eightbytes: count }
+                    }
+                    rue_air::ArgLocation::Stack { size, align, .. } => A::CByValueStack {
                         size,
                         alignment: align,
-                    }
+                    },
+                    rue_air::ArgLocation::Indirect { size, align, .. } => A::CByReferenceCopy {
+                        size,
+                        alignment: align,
+                    },
                 }
             }
         };
@@ -2007,45 +2076,39 @@ pub(super) fn evaluate_call_abi(
             class,
         });
     }
-    let return_layout = match layout_from_terminal(return_terminal) {
-        Ok(layout) => layout,
-        Err(failure) => {
-            return Ok(QueryOutput::success(CallAbiValue::Failure(failure))
-                .with_terminal_kind(QueryTerminalKind::Failure));
-        }
-    };
-    let return_class = if convention.is_rue() {
-        let budget = rue_air::native_return_register_budget(key.configuration.target.arch());
-        match stable_native_abi_facts(return_layout, &signature.result).classify_return(budget) {
-            rue_air::ReturnClass::ZeroSized => R::ZeroSized,
-            rue_air::ReturnClass::Scalar => R::Scalar {
-                extension: rue_air::ScalarAbiExtension::None,
-            },
-            rue_air::ReturnClass::Registers { slot_count } => {
-                R::NativeRegisters { slots: slot_count }
-            }
-            rue_air::ReturnClass::Indirect { slot_count } => {
-                R::NativeIndirect { slots: slot_count }
+    let return_class = match &lowered {
+        None => {
+            let budget = rue_air::native_return_register_budget(key.configuration.target.arch());
+            match stable_native_abi_facts(return_layout, &signature.result).classify_return(budget)
+            {
+                rue_air::ReturnClass::ZeroSized => R::ZeroSized,
+                rue_air::ReturnClass::Scalar => R::Scalar {
+                    extension: rue_air::ScalarAbiExtension::None,
+                },
+                rue_air::ReturnClass::Registers { slot_count } => {
+                    R::NativeRegisters { slots: slot_count }
+                }
+                rue_air::ReturnClass::Indirect { slot_count } => {
+                    R::NativeIndirect { slots: slot_count }
+                }
             }
         }
-    } else if return_layout.abi_slots == 0 {
-        R::ZeroSized
-    } else if !stable_type_is_aggregate(&signature.result) {
-        R::Scalar {
-            extension: c_scalar_extension(&signature.result),
-        }
-    } else {
-        match rue_air::TargetCCallAbi::new(convention)
-            .classify_aggregate_return(return_layout.size, return_layout.alignment)
-        {
-            rue_air::AggregateReturnClass::IntegerRegisters { eightbytes } => {
-                R::CIntegerRegisters { eightbytes }
+        Some(lowered) => match lowered.ret() {
+            rue_air::LoweredReturn::Void => R::ZeroSized,
+            rue_air::LoweredReturn::Registers {
+                count, extension, ..
+            } => {
+                if stable_type_is_aggregate(&signature.result) {
+                    R::CIntegerRegisters { eightbytes: count }
+                } else {
+                    R::Scalar { extension }
+                }
             }
-            rue_air::AggregateReturnClass::Indirect { size, align } => R::CIndirect {
+            rue_air::LoweredReturn::Sret { size, align, .. } => R::CIndirect {
                 size,
                 alignment: align,
             },
-        }
+        },
     };
     Ok(QueryOutput::success(CallAbiValue::Available(
         CallAbiFacts {

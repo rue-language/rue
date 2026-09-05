@@ -1,29 +1,33 @@
-//! Target-independent planning for `extern "C"` foreign calls (ADR-0064 P3).
+//! Lowering for `extern "C"` foreign calls (ADR-0064 P3).
 //!
-//! P2 crossed only scalars and pointers, which occupy one integer register each
-//! and reuse the native call plan with a boundary return extension. P3 adds
-//! **C-classifiable aggregates**, whose target-C crossing disagrees with the
-//! native slot model — the native planner decomposes an aggregate one slot per
-//! leaf and *reverses* the slots (the register-packing audit's key finding),
-//! whereas C packs fields into eightbytes in ascending memory order. So a foreign
-//! call that touches an aggregate is planned here, entirely separate from the
-//! native `CallPlan`, and lowered through each aggregate's **physical memory
-//! image** (which, for a `@repr(c)` struct of scalar/pointer fields, is exactly
-//! the C object layout under the compact-layout default).
+//! A target-C crossing disagrees with the native slot model — the native
+//! planner decomposes an aggregate one slot per leaf and *reverses* the slots
+//! (the register-packing audit's key finding), whereas C packs fields into
+//! eightbytes in ascending memory order. So a foreign call that touches an
+//! aggregate is planned here, entirely separate from the native `CallPlan`, and
+//! lowered through each aggregate's **physical memory image** (which, for a
+//! `@repr(c)` struct of scalar/pointer fields, is exactly the C object layout
+//! under the compact-layout default).
 //!
-//! This module classifies each argument and return with the target-C authority,
-//! carries the aggregate's compact image map, and drives the shared
-//! register/stack/sret event sequence. The two backends implement only the
-//! physical register, stack, instruction, and image-operation leaves, so
-//! neither can grow a second ABI sequence.
+//! ## Where the classification lives
+//!
+//! This module does not classify or place anything. It projects each argument
+//! and the return onto [`rue_air::CAbiTypeFacts`], asks
+//! [`rue_air::lower_c_signature`] where every value goes, and then drives the
+//! shared register/stack/sret event sequence against that answer. The same
+//! function answers the export thunk (`crate::export_thunk`), which is what
+//! makes an import and an export of one signature agree by construction rather
+//! than by review. The two backends implement only the physical register,
+//! stack, instruction, and image-operation leaves, so neither can grow a second
+//! ABI sequence.
 
 use rue_air::layout::PaddingRange;
 use rue_air::{
-    AggregateArgClass, AggregateReturnClass, FrozenTypeInternPool, ScalarAbiExtension,
-    TargetCCallAbi, Type,
+    ArgConvention, ArgLocation, CAbiScalarKind, CAbiTypeFacts, FrozenTypeInternPool, LoweredReturn,
+    LoweredSignature, PointerLocation, ScalarAbiExtension, Type, lower_c_signature,
 };
 use rue_cfg::{Cfg, CfgCallArg, CfgValue};
-use rue_target::{CallingConvention, StackedArgumentPacking};
+use rue_target::CallingConvention;
 
 use crate::frame_layout::{
     FrameBudgetExceeded, checked_aligned_region_bytes, checked_call_area_from_stack_bytes,
@@ -80,107 +84,153 @@ impl AggregateImage {
     pub fn eightbytes(&self) -> u32 {
         self.size.div_ceil(8)
     }
+
+    /// The classification facts this image presents at the C boundary.
+    pub fn facts(&self) -> CAbiTypeFacts {
+        CAbiTypeFacts::Aggregate {
+            size: u64::from(self.size),
+            align: u64::from(self.align),
+        }
+    }
 }
 
-/// How one foreign-call argument crosses the target-C boundary.
+/// One value crossing into a foreign call. *Where* it crosses is the lowered
+/// signature's answer, not this enum's: the two variants distinguish only how
+/// the backend materializes the value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForeignArg {
     /// A scalar or pointer, already canonically extended in its vreg by Rue's
-    /// internal invariant — occupies one integer register (or spills to the
-    /// stack once the integer registers are exhausted).
-    ///
-    /// `natural_bytes` is the scalar's declared C width (1, 2, 4, or 8). It is
-    /// the footprint a stacked copy occupies under a psABI that packs its
-    /// outgoing argument area at natural size (Apple's arm64 amendment); under
-    /// the 8-byte-slot rule the whole slot is written and the width is unused.
-    Scalar { value: CfgValue, natural_bytes: u32 },
-    /// A ≤16-byte aggregate packed into one or two integer registers in C field
-    /// order ([`AggregateArgClass::IntegerRegisters`]).
-    AggregateRegisters {
+    /// internal invariant, so it needs no boundary instruction on the way out.
+    Scalar {
+        /// The CFG value carrying it.
         value: CfgValue,
-        image: AggregateImage,
+        /// Its width-and-signedness class, which fixes the footprint a stacked
+        /// copy takes under Apple's natural-size packing.
+        kind: CAbiScalarKind,
     },
-    /// A >16-byte aggregate passed by value in the outgoing stack argument area
-    /// (SysV MEMORY class, [`AggregateArgClass::ByValueStack`]).
-    AggregateByvalStack {
+    /// A C-classifiable aggregate, marshaled through its compact memory image.
+    Aggregate {
+        /// The CFG value carrying it.
         value: CfgValue,
-        image: AggregateImage,
-    },
-    /// A >16-byte aggregate passed as a pointer to a caller-owned copy (AAPCS64,
-    /// [`AggregateArgClass::ByReferenceCopy`]).
-    AggregateByRefCopy {
-        value: CfgValue,
+        /// Its compact memory image.
         image: AggregateImage,
     },
 }
 
-/// How a foreign call's return value crosses the target-C boundary.
+impl ForeignArg {
+    /// The classification facts this argument presents at the C boundary.
+    pub fn facts(&self) -> CAbiTypeFacts {
+        match self {
+            Self::Scalar { kind, .. } => CAbiTypeFacts::Scalar {
+                kind: *kind,
+                class: kind.register_class(),
+            },
+            Self::Aggregate { image, .. } => image.facts(),
+        }
+    }
+
+    /// The CFG value this argument reads.
+    pub fn value(&self) -> CfgValue {
+        match self {
+            Self::Scalar { value, .. } | Self::Aggregate { value, .. } => *value,
+        }
+    }
+
+    /// Whether a stacked copy of this argument is packed as a scalar (Apple's
+    /// natural-size amendment) rather than as whole eightbytes.
+    fn packs_as_scalar(&self) -> bool {
+        matches!(self, Self::Scalar { .. })
+    }
+}
+
+/// How a foreign call's return value crosses. *Where* it crosses — result
+/// registers or caller storage — is the lowered signature's answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForeignReturn {
     /// Unit / never / empty: no materialized value.
     ZeroSized,
-    /// A scalar returned in the primary result register; `ext` re-extends it to
-    /// Rue's canonical 64-bit form (a C callee leaves the high bits unspecified).
-    Scalar { ext: ScalarAbiExtension },
-    /// A ≤16-byte aggregate returned in one or two result registers (`rax:rdx` /
-    /// `x0:x1`) in C field order; the backend bridges the registers through the
-    /// image buffer to reconstruct the native slots.
-    AggregateRegisters { image: AggregateImage },
-    /// A >16-byte aggregate returned indirectly through caller storage (sret);
-    /// the callee writes the C image, the backend reads the native slots back.
-    AggregateSret { image: AggregateImage },
+    /// A scalar; the lowered signature names the re-extension that restores
+    /// Rue's canonical 64-bit form (a C callee leaves the high bits
+    /// unspecified).
+    Scalar,
+    /// An aggregate, reconstructed through its compact memory image.
+    Aggregate {
+        /// Its compact memory image.
+        image: AggregateImage,
+    },
 }
 
-/// A classified foreign call: the C symbol, every argument and the return, plus
-/// the convention whose classifier produced them.
+impl ForeignReturn {
+    /// The classification facts this return presents at the C boundary.
+    fn facts(&self, scalar: CAbiTypeFacts) -> CAbiTypeFacts {
+        match self {
+            Self::ZeroSized => CAbiTypeFacts::ZeroSized,
+            Self::Scalar => scalar,
+            Self::Aggregate { image } => image.facts(),
+        }
+    }
+}
+
+/// A classified foreign call: the C symbol, every argument and the return, and
+/// the lowered signature that places them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForeignCallInputs {
     /// The resolved (unmangled) C symbol the undefined reference targets.
-    pub symbol: String,
-    /// The convention the compilation target's `"C"` alias resolves to. Always
-    /// a C row; the native Rue convention never reaches this path.
-    pub convention: CallingConvention,
-    pub args: Vec<ForeignArg>,
-    pub ret: ForeignReturn,
+    symbol: String,
+    args: Vec<ForeignArg>,
+    ret: ForeignReturn,
+    signature: LoweredSignature,
 }
 
 impl ForeignCallInputs {
+    /// Classify and place a foreign call to `symbol` under `convention`.
+    ///
+    /// `return_facts` describes the return type; for a scalar return it carries
+    /// the scalar kind whose extension the caller applies on the way back.
+    pub fn new(
+        symbol: String,
+        convention: CallingConvention,
+        args: Vec<ForeignArg>,
+        ret: ForeignReturn,
+        return_facts: CAbiTypeFacts,
+    ) -> Self {
+        let parameters = args
+            .iter()
+            .map(|arg| (arg.facts(), ArgConvention::ByValue))
+            .collect::<Vec<_>>();
+        let signature = lower_c_signature(convention, &parameters, ret.facts(return_facts));
+        Self {
+            symbol,
+            args,
+            ret,
+            signature,
+        }
+    }
+
     /// The C symbol this call targets.
     pub fn symbol_ref(&self) -> &str {
         &self.symbol
     }
-}
 
-/// The target-independent placement portion of foreign-call lowering.
-///
-/// Backends still own how a placed value is materialized and how the call
-/// frame is adjusted (pushes on SysV versus stores on AAPCS64). They consume
-/// this plan for the decisions which must be identical: aggregate pieces are
-/// all-or-nothing with respect to the remaining integer registers, by-value
-/// images consume their full eightbyte width, and by-reference copies consume
-/// one pointer argument. Keeping those decisions here prevents the two
-/// instruction-selection adapters from drifting while preserving their
-/// target-specific MIR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ForeignArgPlacement {
-    Register {
-        arg_index: usize,
-    },
-    Stack {
-        arg_index: usize,
-        /// Byte offset of this argument from the base of the outgoing argument
-        /// area.
-        offset: u64,
-    },
+    /// The convention the compilation target's `"C"` alias resolves to. Always
+    /// a C row; the native Rue convention never reaches this path.
+    pub fn convention(&self) -> CallingConvention {
+        self.signature.convention()
+    }
+
+    /// The lowered signature that places every argument and the return.
+    pub fn signature(&self) -> &LoweredSignature {
+        &self.signature
+    }
 }
 
 /// One store into the outgoing argument area, in ascending-offset order.
 ///
 /// `bytes` is the number of low bytes of `value` the store must commit: 1, 2, 4,
-/// or 8. Under [`StackedArgumentPacking::EightByteSlots`] it is always 8. Under
-/// [`StackedArgumentPacking::NaturalSize`] a stacked *scalar* names its own C
-/// width, so an `i8` writes one byte at the next free byte and an `i16` starts
-/// at the next even offset.
+/// or 8. Under the 8-byte-slot packing it is always 8. Under Apple's
+/// natural-size packing a stacked *scalar* names its own C width, so an `i8`
+/// writes one byte at the next free byte and an `i16` starts at the next even
+/// offset.
 ///
 /// `offset` is always a multiple of `bytes`, which is what makes every store
 /// encodable in AArch64's scaled `imm12` addressing mode.
@@ -199,300 +249,64 @@ pub(crate) struct ForeignStackArea {
     pub(crate) bytes: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ForeignArgShape {
-    /// Number of integer eightbytes (or one pointer) consumed by the argument.
-    pieces: u64,
-    /// Storage retained for a by-reference argument copy.
-    byref_bytes: u64,
-    /// Whether this argument may use integer argument registers.
-    can_register: bool,
-    /// Whether the argument is a scalar or pointer rather than a composite.
-    /// Only the natural-size packing rule reads it.
-    scalar: bool,
-    /// A scalar's declared C width in bytes (1, 2, 4, or 8). Only the
-    /// natural-size packing rule reads it, and only for a scalar.
-    natural_bytes: u64,
-}
-
-impl ForeignArgShape {
-    /// The footprint and alignment this argument claims in the outgoing
-    /// argument area under `packing`.
-    ///
-    /// Apple's amendment is applied to stacked *scalars*, which is where Rue's
-    /// supported C surface differs from the generic 8-byte-slot rule: a stacked
-    /// `i8` occupies one byte, an `i16` starts at the next even offset. A
-    /// composite keeps whole eightbytes at 8-byte alignment under every row,
-    /// because it crosses through its eightbyte image and a byte-exact copy
-    /// would need marshaling this path does not have — the one Apple stack
-    /// amendment still open, recorded in
-    /// `docs/notes/ffi-abi-conformance-audit.md`. Keeping composites on whole
-    /// eightbytes is also what keeps every store's offset a multiple of its
-    /// width, so each one encodes in AArch64's scaled addressing mode.
-    fn stack_extent(self, packing: StackedArgumentPacking) -> (u64, u64) {
-        match packing {
-            StackedArgumentPacking::NaturalSize if self.scalar => {
-                let bytes = self.natural_bytes.clamp(1, 8);
-                (bytes, bytes)
-            }
-            StackedArgumentPacking::EightByteSlots | StackedArgumentPacking::NaturalSize => {
-                (self.pieces.saturating_mul(8), 8)
-            }
-        }
-    }
-
-    /// The width of each store this argument makes into the outgoing area: its
-    /// packed footprint for a scalar, one whole eightbyte per piece otherwise.
-    fn store_widths(self, packing: StackedArgumentPacking) -> impl Iterator<Item = u64> {
-        let (size, _) = self.stack_extent(packing);
-        let width = if self.scalar { size } else { 8 };
-        (0..self.pieces).map(move |_| width)
-    }
-}
-
-/// Round `value` up to a multiple of `align`, refusing rather than wrapping.
-///
-/// `align` is always one of the psABI's argument alignments (1, 2, 4, or 8), so
-/// the power-of-two mask below is exact; [`ForeignArgShape::stack_extent`] is
-/// the only producer.
-fn align_up(value: u64, align: u64) -> Result<u64, FrameBudgetExceeded> {
-    value
-        .checked_add(align - 1)
-        .map(|sum| sum & !(align - 1))
-        .ok_or(FrameBudgetExceeded)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ForeignPlacementPlan {
-    placements: Vec<ForeignArgPlacement>,
-    byref_bytes: u64,
-    /// Bytes the outgoing argument area occupies before call alignment.
-    stack_bytes: u64,
-    sret_in_argument_register: bool,
-}
-
-impl ForeignPlacementPlan {
-    /// Reserved size of the outgoing argument area: the packed footprint
-    /// rounded to the call-boundary alignment.
-    fn stack_area_bytes(&self) -> Result<u32, FrameBudgetExceeded> {
-        checked_aligned_region_bytes(self.stack_bytes)
-    }
-}
-
-fn place_foreign_args(
-    shapes: &[ForeignArgShape],
-    int_register_budget: u64,
-    sret_in_argument_register: bool,
-    packing: StackedArgumentPacking,
-) -> Result<ForeignPlacementPlan, FrameBudgetExceeded> {
-    let mut used_registers = u64::from(sret_in_argument_register);
-    let mut placements = Vec::with_capacity(shapes.len());
-    let mut byref_bytes = 0_u64;
-    let mut stack_bytes = 0_u64;
-
-    let stack = |shape: &ForeignArgShape,
-                 arg_index: usize,
-                 stack_bytes: &mut u64|
-     -> Result<ForeignArgPlacement, FrameBudgetExceeded> {
-        let (size, align) = shape.stack_extent(packing);
-        let offset = align_up(*stack_bytes, align)?;
-        *stack_bytes = offset.checked_add(size).ok_or(FrameBudgetExceeded)?;
-        Ok(ForeignArgPlacement::Stack { arg_index, offset })
-    };
-
-    for (arg_index, shape) in shapes.iter().enumerate() {
-        byref_bytes = byref_bytes
-            .checked_add(shape.byref_bytes)
-            .ok_or(FrameBudgetExceeded)?;
-        let placement = if shape.can_register {
-            let register_end = used_registers
-                .checked_add(shape.pieces)
-                .ok_or(FrameBudgetExceeded)?;
-            if register_end <= int_register_budget {
-                used_registers = register_end;
-                ForeignArgPlacement::Register { arg_index }
-            } else {
-                stack(shape, arg_index, &mut stack_bytes)?
-            }
-        } else {
-            stack(shape, arg_index, &mut stack_bytes)?
-        };
-        placements.push(placement);
-    }
-
-    Ok(ForeignPlacementPlan {
-        placements,
-        byref_bytes,
-        stack_bytes,
-        sret_in_argument_register,
-    })
-}
-
-fn shape_from_foreign_arg(arg: &ForeignArg) -> ForeignArgShape {
-    match arg {
-        ForeignArg::Scalar { natural_bytes, .. } => ForeignArgShape {
-            pieces: 1,
-            byref_bytes: 0,
-            can_register: true,
-            scalar: true,
-            natural_bytes: u64::from(*natural_bytes),
-        },
-        ForeignArg::AggregateRegisters { image, .. } => ForeignArgShape {
-            pieces: u64::from(image.eightbytes()),
-            byref_bytes: 0,
-            can_register: true,
-            scalar: false,
-            natural_bytes: u64::from(image.size),
-        },
-        ForeignArg::AggregateByvalStack { image, .. } => ForeignArgShape {
-            pieces: u64::from(image.eightbytes()),
-            byref_bytes: 0,
-            can_register: false,
-            scalar: false,
-            natural_bytes: u64::from(image.size),
-        },
-        // A by-reference copy crosses as one pointer, which is a
-        // register-width scalar wherever it lands.
-        ForeignArg::AggregateByRefCopy { image, .. } => ForeignArgShape {
-            pieces: 1,
-            byref_bytes: u64::from(image.storage_bytes),
-            can_register: true,
-            scalar: true,
-            natural_bytes: 8,
-        },
-    }
-}
-
-fn shape_from_cfg_arg(
-    cfg: &Cfg,
-    type_pool: &FrozenTypeInternPool,
-    abi: TargetCCallAbi,
-    arg: &CfgCallArg,
-) -> Result<ForeignArgShape, FrameBudgetExceeded> {
-    let ty = cfg.get_inst(arg.value).ty;
-    if !is_aggregate(ty) {
-        return Ok(ForeignArgShape {
-            pieces: 1,
-            byref_bytes: 0,
-            can_register: true,
-            scalar: true,
-            natural_bytes: u64::from(abi.scalar_arg_extension(ty).natural_bytes()),
-        });
-    }
-
-    let layout = type_pool.layout(ty);
-    let copy_bytes = || checked_aligned_region_bytes(layout.size).map(u64::from);
-    Ok(
-        match abi.classify_aggregate_arg(layout.size, layout.alignment) {
-            AggregateArgClass::IntegerRegisters { eightbytes } => ForeignArgShape {
-                pieces: u64::from(eightbytes),
-                byref_bytes: 0,
-                can_register: true,
-                scalar: false,
-                natural_bytes: layout.size,
-            },
-            AggregateArgClass::ByValueStack { .. } => ForeignArgShape {
-                pieces: layout.size.div_ceil(8),
-                byref_bytes: 0,
-                can_register: false,
-                scalar: false,
-                natural_bytes: layout.size,
-            },
-            AggregateArgClass::ByReferenceCopy { .. } => ForeignArgShape {
-                pieces: 1,
-                byref_bytes: copy_bytes()?,
-                can_register: true,
-                scalar: true,
-                natural_bytes: 8,
-            },
-        },
-    )
-}
-
-impl ForeignArgPlacement {
-    #[inline]
-    pub const fn arg_index(self) -> usize {
-        match self {
-            Self::Register { arg_index } | Self::Stack { arg_index, .. } => arg_index,
-        }
-    }
-}
-
+/// A foreign call ready to lower: the classified values plus the signature that
+/// places them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ForeignCallPlan {
-    /// Classified call consumed by the backend adapters.
     inputs: ForeignCallInputs,
-    /// Every user argument's placement, retaining source order for lowering
-    /// side effects and deterministic virtual-register numbering.
-    placements: Vec<ForeignArgPlacement>,
-    /// Per-argument shapes, retained so the driver can ask each stacked
-    /// argument how wide each of its stores is.
-    shapes: Vec<ForeignArgShape>,
-    /// How the convention lays out the outgoing argument area.
-    packing: StackedArgumentPacking,
-    /// Reserved size of the outgoing argument area, call-aligned.
-    stack_area_bytes: u32,
-    /// Total storage reserved for AAPCS64 by-reference argument copies.
-    byref_bytes: u32,
-    /// SysV consumes the hidden sret pointer from the integer argument budget;
-    /// AAPCS64 puts it in the dedicated x8 register instead.
-    sret_in_argument_register: bool,
 }
 
 impl ForeignCallPlan {
-    /// Plan argument placement after classification, preserving aggregate
-    /// all-or-nothing register allocation and source ordering.
-    pub fn new(inputs: ForeignCallInputs, int_register_budget: usize) -> Self {
-        let abi = TargetCCallAbi::new(inputs.convention);
-        let packing = abi.stacked_argument_packing();
-        let sret_in_argument_register = matches!(&inputs.ret, ForeignReturn::AggregateSret { .. })
-            && !abi.sret_pointer_in_dedicated_register();
-        let shapes = inputs
-            .args
-            .iter()
-            .map(shape_from_foreign_arg)
-            .collect::<Vec<_>>();
-        let placement = place_foreign_args(
-            &shapes,
-            u64::try_from(int_register_budget).expect("foreign register budget must fit u64"),
-            sret_in_argument_register,
-            packing,
-        )
-        .expect("foreign argument placement must pass frame-budget preflight");
-        let stack_area_bytes = placement
-            .stack_area_bytes()
-            .expect("foreign stack area must pass frame-budget preflight");
+    pub(crate) fn new(inputs: ForeignCallInputs) -> Self {
+        Self { inputs }
+    }
 
-        Self {
-            inputs,
-            placements: placement.placements,
-            shapes,
-            packing,
-            stack_area_bytes,
-            byref_bytes: u32::try_from(placement.byref_bytes)
-                .expect("foreign argument storage must fit u32"),
-            sret_in_argument_register,
-        }
+    fn signature(&self) -> &LoweredSignature {
+        self.inputs.signature()
+    }
+
+    /// Reserved size of the outgoing argument area, call-aligned.
+    fn stack_area_bytes(&self) -> u32 {
+        self.signature().stack_bytes()
+    }
+
+    /// Total storage reserved for by-reference argument copies, each rounded to
+    /// the frame's 16-byte allocation granule.
+    fn byref_bytes(&self) -> u32 {
+        self.signature()
+            .indirect_copy_sizes()
+            .map(|(size, _)| {
+                checked_aligned_region_bytes(u64::from(size))
+                    .expect("foreign argument storage must pass frame-budget preflight")
+            })
+            .fold(0u32, |total, bytes| {
+                total
+                    .checked_add(bytes)
+                    .expect("foreign argument storage must fit u32")
+            })
     }
 
     /// The stores one stacked argument makes: its eightbyte (or narrower)
     /// pieces at ascending offsets from the argument's own packed offset.
-    fn stack_stores(
-        &self,
-        arg_index: usize,
-        offset: u64,
-        values: &[VReg],
-    ) -> Vec<ForeignStackStore> {
-        let widths = self.shapes[arg_index].store_widths(self.packing);
+    fn stack_stores(&self, arg_index: usize, values: &[VReg]) -> Vec<ForeignStackStore> {
+        let ArgLocation::Stack { offset, size, .. } =
+            self.signature().arguments()[arg_index].location
+        else {
+            panic!("stack stores are only emitted for a stacked argument");
+        };
+        let bytes = if self.inputs.args[arg_index].packs_as_scalar() {
+            size
+        } else {
+            8
+        };
         values
             .iter()
-            .zip(widths)
             .enumerate()
-            .map(|(piece, (value, bytes))| ForeignStackStore {
+            .map(|(piece, value)| ForeignStackStore {
                 value: *value,
-                offset: u32::try_from(offset + piece as u64 * 8)
-                    .expect("foreign stack offset must fit u32"),
-                bytes: u32::try_from(bytes).expect("foreign stack store width must fit u32"),
+                offset: offset
+                    + u32::try_from(piece * 8).expect("foreign stack offset must fit u32"),
+                bytes,
             })
             .collect()
     }
@@ -507,14 +321,18 @@ impl ForeignCallPlan {
     pub(crate) fn stack_area_for_test(&self, values: &[VReg]) -> ForeignStackArea {
         let mut values = values.iter().copied();
         let mut stores = Vec::new();
-        for placement in &self.placements {
-            let ForeignArgPlacement::Stack { arg_index, offset } = placement else {
+        for (arg_index, argument) in self.signature().arguments().iter().enumerate() {
+            let ArgLocation::Stack { size, .. } = argument.location else {
                 continue;
             };
-            let pieces = self.shapes[*arg_index].pieces as usize;
+            let pieces = if self.inputs.args[arg_index].packs_as_scalar() {
+                1
+            } else {
+                (size / 8) as usize
+            };
             let taken = (&mut values).take(pieces).collect::<Vec<_>>();
             assert_eq!(taken.len(), pieces, "one vreg per stacked piece");
-            stores.extend(self.stack_stores(*arg_index, *offset, &taken));
+            stores.extend(self.stack_stores(arg_index, &taken));
         }
         assert!(
             values.next().is_none(),
@@ -522,7 +340,7 @@ impl ForeignCallPlan {
         );
         ForeignStackArea {
             stores,
-            bytes: self.stack_area_bytes,
+            bytes: self.stack_area_bytes(),
         }
     }
 }
@@ -546,8 +364,8 @@ pub(crate) trait ForeignCallLoweringBackend {
     fn foreign_byref_copy(&mut self, value: CfgValue, image: &AggregateImage) -> VReg;
     /// Reserve the outgoing argument area and commit every store in it. The
     /// area's size and each store's offset and width are the convention's
-    /// decision, made once in [`ForeignCallPlan`]; the backend chooses only the
-    /// instructions.
+    /// decision, made once by the lowered signature; the backend chooses only
+    /// the instructions.
     fn foreign_emit_stack_args(&mut self, stack: &ForeignStackArea);
     fn foreign_emit_register_args(&mut self, int_ops: &[VReg]);
     fn foreign_assign_sret(&mut self, sret_ptr: VReg);
@@ -577,69 +395,70 @@ pub(crate) fn lower_foreign_call<B: ForeignCallLoweringBackend>(
     primary: VReg,
 ) -> crate::value_plan::MaterializedValue {
     assert_eq!(
-        inputs.convention,
+        inputs.convention(),
         backend.target_c_convention(),
         "foreign call convention disagrees with the selected backend"
     );
-    let abi = TargetCCallAbi::new(backend.target_c_convention());
-    let budget = usize::try_from(abi.int_arg_register_budget())
-        .expect("target-C integer argument budget must fit usize");
     assert_eq!(
-        budget,
+        usize::try_from(inputs.signature().spec().gp_argument_registers)
+            .expect("target-C integer argument budget must fit usize"),
         backend.foreign_int_arg_register_count(),
         "backend argument-register roster disagrees with target-C ABI"
     );
-    let plan = ForeignCallPlan::new(inputs, budget);
+    let plan = ForeignCallPlan::new(inputs);
+    let sret_in_argument_register = plan.signature().sret_in_argument_register();
+    let stack_area_bytes = plan.stack_area_bytes();
+    let byref_bytes = plan.byref_bytes();
+    let return_uses_sret = plan.signature().ret().uses_sret();
     let inputs = &plan.inputs;
 
     // Establish indirect-result storage first; it remains live through the
     // call and is released only after its native slots have been reconstructed.
-    let sret_ptr = match &inputs.ret {
-        ForeignReturn::AggregateSret { image } => Some(backend.foreign_reserve_sret(image)),
+    let sret_ptr = match (&inputs.ret, return_uses_sret) {
+        (ForeignReturn::Aggregate { image }, true) => Some(backend.foreign_reserve_sret(image)),
         _ => None,
     };
 
     let mut int_ops = Vec::new();
     let mut stack = ForeignStackArea {
         stores: Vec::new(),
-        bytes: plan.stack_area_bytes,
+        bytes: stack_area_bytes,
     };
-    if plan.sret_in_argument_register {
+    if sret_in_argument_register {
         int_ops.push(sret_ptr.expect("SysV sret placement requires storage"));
     }
-    for placement in &plan.placements {
-        let arg_index = placement.arg_index();
-        let arg = &inputs.args[arg_index];
-        let values = match arg {
-            ForeignArg::Scalar { value, .. } => vec![backend.foreign_get_vreg(*value)],
-            ForeignArg::AggregateRegisters { value, image }
-            | ForeignArg::AggregateByvalStack { value, image } => {
-                if matches!(arg, ForeignArg::AggregateByvalStack { .. })
-                    && inputs.convention != CallingConvention::X86_64SysV
-                {
-                    panic!(
-                        "AAPCS64 passes a >16-byte aggregate by reference to a caller copy, not \
-                         byval-on-stack; ByValueStack is a SysV-only class"
-                    );
-                }
-                backend.foreign_image_arg_eightbytes(*value, image)
-            }
-            ForeignArg::AggregateByRefCopy { value, image } => {
-                assert!(
-                    matches!(
-                        inputs.convention,
-                        CallingConvention::Aarch64Aapcs | CallingConvention::Aarch64AapcsDarwin
-                    ),
-                    "SysV AMD64 does not pass foreign aggregates by reference"
-                );
+    for (arg_index, (arg, argument)) in inputs
+        .args
+        .iter()
+        .zip(plan.signature().arguments())
+        .enumerate()
+    {
+        let values = match (arg, argument.location) {
+            (_, ArgLocation::Omitted) => continue,
+            (ForeignArg::Scalar { value, .. }, _) => vec![backend.foreign_get_vreg(*value)],
+            (ForeignArg::Aggregate { value, image }, ArgLocation::Indirect { .. }) => {
                 vec![backend.foreign_byref_copy(*value, image)]
             }
+            (ForeignArg::Aggregate { value, image }, _) => {
+                backend.foreign_image_arg_eightbytes(*value, image)
+            }
         };
-        match placement {
-            ForeignArgPlacement::Register { .. } => int_ops.extend(values),
-            ForeignArgPlacement::Stack { offset, .. } => stack
-                .stores
-                .extend(plan.stack_stores(arg_index, *offset, &values)),
+        match argument.location {
+            ArgLocation::Registers { .. } => int_ops.extend(values),
+            ArgLocation::Indirect {
+                pointer: PointerLocation::Register { .. },
+                ..
+            } => int_ops.extend(values),
+            ArgLocation::Stack { .. } => stack.stores.extend(plan.stack_stores(arg_index, &values)),
+            ArgLocation::Indirect {
+                pointer: PointerLocation::Stack { offset },
+                ..
+            } => stack.stores.push(ForeignStackStore {
+                value: values[0],
+                offset,
+                bytes: 8,
+            }),
+            ArgLocation::Omitted => unreachable!("an omitted argument was skipped above"),
         }
     }
 
@@ -649,31 +468,35 @@ pub(crate) fn lower_foreign_call<B: ForeignCallLoweringBackend>(
     backend.foreign_emit_stack_args(&stack);
     backend.foreign_emit_register_args(&int_ops);
     if let Some(sret_ptr) = sret_ptr {
-        if !plan.sret_in_argument_register {
+        if !sret_in_argument_register {
             backend.foreign_assign_sret(sret_ptr);
         }
     }
     backend.foreign_issue_call(inputs.symbol_ref());
     backend.foreign_cleanup_stack(&stack);
-    backend.foreign_cleanup_byref(plan.byref_bytes);
+    backend.foreign_cleanup_byref(byref_bytes);
 
-    let slots = match &inputs.ret {
-        ForeignReturn::ZeroSized => {
+    let slots = match (&inputs.ret, plan.signature().ret()) {
+        (ForeignReturn::ZeroSized, _) | (_, LoweredReturn::Void) => {
             backend.foreign_zero_result(primary);
             Vec::new()
         }
-        ForeignReturn::Scalar { ext } => {
-            backend.foreign_scalar_result(primary, *ext);
+        (ForeignReturn::Scalar, LoweredReturn::Registers { extension, .. }) => {
+            backend.foreign_scalar_result(primary, extension);
             Vec::new()
         }
-        ForeignReturn::AggregateRegisters { image } => {
+        (ForeignReturn::Aggregate { image }, LoweredReturn::Registers { .. }) => {
             backend.foreign_register_result(primary, image)
         }
-        ForeignReturn::AggregateSret { image } => backend.foreign_sret_result(
-            primary,
-            image,
-            sret_ptr.expect("sret return requires storage"),
-        ),
+        (ForeignReturn::Aggregate { image }, LoweredReturn::Sret { .. }) => backend
+            .foreign_sret_result(
+                primary,
+                image,
+                sret_ptr.expect("sret return requires storage"),
+            ),
+        (ForeignReturn::Scalar, LoweredReturn::Sret { .. }) => {
+            unreachable!("a scalar return never crosses through caller storage")
+        }
     };
     if let Some(&slot) = slots.first() {
         backend.foreign_move_primary(primary, slot);
@@ -684,7 +507,7 @@ pub(crate) fn lower_foreign_call<B: ForeignCallLoweringBackend>(
 impl ForeignCallInputs {
     /// Whether a foreign call to `return_ty` with `args` needs the aggregate
     /// path at all: true when the return or any argument is an aggregate
-    /// (struct/array) type. A scalars-only foreign call keeps P2's native-plan
+    /// (struct/array) type. A scalars-only foreign call keeps the native-plan
     /// route with a boundary return extension.
     pub(crate) fn call_touches_aggregate(cfg: &Cfg, return_ty: Type, args: &[CfgCallArg]) -> bool {
         is_aggregate(return_ty)
@@ -694,10 +517,10 @@ impl ForeignCallInputs {
     }
 
     /// Compute the simultaneous transient area of an aggregate foreign call
-    /// using the target-C classifier that the lowerers consume. This accounts
-    /// for hidden sret storage, SysV by-value stack cells, AAPCS64 caller-owned
-    /// by-reference copies, and argument-register exhaustion that spills
-    /// pointers/eightbytes to the outgoing stack area.
+    /// from the same lowered signature the lowerers consume. This accounts for
+    /// hidden sret storage, byval stack cells, caller-owned by-reference
+    /// copies, and argument-register exhaustion that spills pointers and
+    /// eightbytes to the outgoing stack area.
     pub(crate) fn checked_call_area_bytes(
         cfg: &Cfg,
         type_pool: &FrozenTypeInternPool,
@@ -705,101 +528,73 @@ impl ForeignCallInputs {
         args: &[CfgCallArg],
         convention: CallingConvention,
     ) -> Result<u32, FrameBudgetExceeded> {
-        let abi = TargetCCallAbi::new(convention);
-        let register_budget = u64::from(abi.int_arg_register_budget());
-        let sret_storage_bytes = if is_aggregate(return_ty) {
-            let layout = type_pool.layout(return_ty);
-            match abi.classify_aggregate_return(layout.size, layout.alignment) {
-                AggregateReturnClass::Indirect { .. } => {
-                    u64::from(checked_aligned_region_bytes(layout.size)?)
-                }
-                _ => 0,
-            }
-        } else {
-            0
-        };
-        let sret_in_argument_register =
-            sret_storage_bytes > 0 && !abi.sret_pointer_in_dedicated_register();
-        let shapes = args
+        let parameters = args
             .iter()
-            .map(|arg| shape_from_cfg_arg(cfg, type_pool, abi, arg))
-            .collect::<Result<Vec<_>, _>>()?;
-        let placement = place_foreign_args(
-            &shapes,
-            register_budget,
-            sret_in_argument_register,
-            abi.stacked_argument_packing(),
-        )?;
-        let mut indirect_bytes = 0_u64;
+            .map(|arg| {
+                (
+                    rue_air::c_abi_type_facts(type_pool, cfg.get_inst(arg.value).ty),
+                    ArgConvention::ByValue,
+                )
+            })
+            .collect::<Vec<_>>();
+        let signature = lower_c_signature(
+            convention,
+            &parameters,
+            rue_air::c_abi_type_facts(type_pool, return_ty),
+        );
 
-        for (arg, shape) in args.iter().zip(&shapes) {
+        let sret_storage_bytes = match signature.ret() {
+            LoweredReturn::Sret { size, .. } => {
+                u64::from(checked_aligned_region_bytes(u64::from(size))?)
+            }
+            _ => 0,
+        };
+        let mut indirect_bytes = 0_u64;
+        for (arg, argument) in args.iter().zip(signature.arguments()) {
             let ty = cfg.get_inst(arg.value).ty;
             if !is_aggregate(ty) {
                 continue;
             }
-
             let layout = type_pool.layout(ty);
-            match abi.classify_aggregate_arg(layout.size, layout.alignment) {
-                AggregateArgClass::IntegerRegisters { .. } => {
-                    // The backend marshals every register-packed aggregate
-                    // through a temporary image buffer. It is short-lived, but
-                    // can overlap the hidden sret area and any earlier AAPCS64
-                    // caller-owned copies.
-                    let scratch = checked_aligned_region_bytes(layout.size)?;
-                    checked_call_area_from_stack_bytes(
-                        0,
-                        sret_storage_bytes,
-                        indirect_bytes
-                            .checked_add(u64::from(scratch))
-                            .ok_or(crate::frame_layout::FrameBudgetExceeded)?,
-                    )?;
-                }
-                AggregateArgClass::ByValueStack { .. } => {
-                    // SysV still needs a temporary C image before its
-                    // eightbytes are copied into the outgoing stack area.
-                    let scratch = checked_aligned_region_bytes(layout.size)?;
-                    checked_call_area_from_stack_bytes(
-                        0,
-                        sret_storage_bytes,
-                        indirect_bytes
-                            .checked_add(u64::from(scratch))
-                            .ok_or(crate::frame_layout::FrameBudgetExceeded)?,
-                    )?;
-                }
-                AggregateArgClass::ByReferenceCopy { .. } => {
+            match argument.location {
+                ArgLocation::Indirect { size, .. } => {
                     indirect_bytes = indirect_bytes
-                        .checked_add(shape.byref_bytes)
-                        .ok_or(crate::frame_layout::FrameBudgetExceeded)?;
+                        .checked_add(u64::from(checked_aligned_region_bytes(u64::from(size))?))
+                        .ok_or(FrameBudgetExceeded)?;
                 }
+                // A register-packed or byval-stacked aggregate is marshaled
+                // through a temporary image buffer. It is short-lived, but can
+                // overlap the hidden sret area and any earlier caller-owned
+                // copies.
+                ArgLocation::Registers { .. } | ArgLocation::Stack { .. } => {
+                    let scratch = checked_aligned_region_bytes(layout.size)?;
+                    checked_call_area_from_stack_bytes(
+                        0,
+                        sret_storage_bytes,
+                        indirect_bytes
+                            .checked_add(u64::from(scratch))
+                            .ok_or(FrameBudgetExceeded)?,
+                    )?;
+                }
+                ArgLocation::Omitted => {}
             }
         }
 
-        assert_eq!(
-            indirect_bytes, placement.byref_bytes,
-            "foreign-call preflight and placement disagree on by-reference storage"
-        );
-
-        if is_aggregate(return_ty) {
-            let layout = type_pool.layout(return_ty);
-            match abi.classify_aggregate_return(layout.size, layout.alignment) {
-                AggregateReturnClass::IntegerRegisters { .. } => {
-                    // Return-image scratch is allocated after outgoing stack
-                    // and AAPCS64 by-reference areas are released, so it is a
-                    // separate peak from the call-boundary reservation.
-                    let scratch = checked_aligned_region_bytes(layout.size)?;
-                    checked_call_area_from_stack_bytes(0, 0, u64::from(scratch))?;
-                }
-                AggregateReturnClass::Indirect { .. } => {}
-            }
+        if is_aggregate(return_ty) && !signature.ret().uses_sret() {
+            // Return-image scratch is allocated after outgoing stack and
+            // by-reference areas are released, so it is a separate peak from
+            // the call-boundary reservation.
+            let scratch = checked_aligned_region_bytes(type_pool.layout(return_ty).size)?;
+            checked_call_area_from_stack_bytes(0, 0, u64::from(scratch))?;
         }
         checked_call_area_from_stack_bytes(
-            u64::from(placement.stack_area_bytes()?),
+            u64::from(signature.stack_bytes()),
             sret_storage_bytes,
             indirect_bytes,
         )
     }
 
-    /// Classify a foreign call through the shared [`TargetCCallAbi`] authority.
+    /// Classify a foreign call through the shared target-C authority.
     pub(crate) fn from_cfg(
         symbol: String,
         cfg: &Cfg,
@@ -808,7 +603,6 @@ impl ForeignCallInputs {
         args: &[CfgCallArg],
         convention: CallingConvention,
     ) -> Self {
-        let abi = TargetCCallAbi::new(convention);
         let planned_args = args
             .iter()
             .map(|arg| {
@@ -819,51 +613,45 @@ impl ForeignCallInputs {
                     "an `extern \"C\"` argument is always by value; inout/borrow do not cross a \
                      C boundary"
                 );
-                if !is_aggregate(ty) {
-                    return ForeignArg::Scalar {
+                if is_aggregate(ty) {
+                    ForeignArg::Aggregate {
                         value,
-                        natural_bytes: abi.scalar_arg_extension(ty).natural_bytes(),
-                    };
-                }
-                let image = AggregateImage::for_type(type_pool, ty);
-                match abi.classify_aggregate_arg(image.size as u64, image.align as u64) {
-                    AggregateArgClass::IntegerRegisters { .. } => {
-                        ForeignArg::AggregateRegisters { value, image }
+                        image: AggregateImage::for_type(type_pool, ty),
                     }
-                    AggregateArgClass::ByValueStack { .. } => {
-                        ForeignArg::AggregateByvalStack { value, image }
-                    }
-                    AggregateArgClass::ByReferenceCopy { .. } => {
-                        ForeignArg::AggregateByRefCopy { value, image }
+                } else {
+                    ForeignArg::Scalar {
+                        value,
+                        kind: live_scalar_kind(ty),
                     }
                 }
             })
             .collect();
 
-        let ret = if !is_aggregate(return_ty) {
-            match type_pool.abi_slot_count(return_ty) {
-                0 => ForeignReturn::ZeroSized,
-                _ => ForeignReturn::Scalar {
-                    ext: abi.scalar_return_extension(return_ty),
-                },
+        let return_facts = rue_air::c_abi_type_facts(type_pool, return_ty);
+        let ret = if is_aggregate(return_ty) {
+            ForeignReturn::Aggregate {
+                image: AggregateImage::for_type(type_pool, return_ty),
             }
+        } else if matches!(return_facts, CAbiTypeFacts::ZeroSized) {
+            ForeignReturn::ZeroSized
         } else {
-            let image = AggregateImage::for_type(type_pool, return_ty);
-            match abi.classify_aggregate_return(image.size as u64, image.align as u64) {
-                AggregateReturnClass::IntegerRegisters { .. } => {
-                    ForeignReturn::AggregateRegisters { image }
-                }
-                AggregateReturnClass::Indirect { .. } => ForeignReturn::AggregateSret { image },
-            }
+            ForeignReturn::Scalar
         };
 
-        Self {
-            symbol,
-            convention,
-            args: planned_args,
-            ret,
-        }
+        Self::new(symbol, convention, planned_args, ret, return_facts)
     }
+}
+
+/// The live plane's projection of a target-C-passable scalar onto its
+/// width-and-signedness class.
+fn live_scalar_kind(ty: Type) -> CAbiScalarKind {
+    CAbiScalarKind::for_live_type(ty).unwrap_or_else(|| {
+        panic!(
+            "target-C classification called on unsupported type {:?}; \
+             c_passable_by_value gates the boundary before lowering",
+            ty.kind()
+        )
+    })
 }
 
 /// Whether `ty` is an aggregate (struct or fixed array) — the types whose
@@ -896,178 +684,174 @@ mod tests {
     }
 
     fn scalar(index: u32) -> ForeignArg {
-        narrow_scalar(index, 8)
+        narrow_scalar(index, CAbiScalarKind::RegisterWidth)
     }
 
-    fn narrow_scalar(index: u32, natural_bytes: u32) -> ForeignArg {
+    fn narrow_scalar(index: u32, kind: CAbiScalarKind) -> ForeignArg {
         ForeignArg::Scalar {
             value: CfgValue::from_raw(index),
-            natural_bytes,
+            kind,
         }
     }
 
-    fn shape(pieces: u64, byref_bytes: u64, can_register: bool) -> ForeignArgShape {
-        ForeignArgShape {
-            pieces,
-            byref_bytes,
-            can_register,
-            scalar: false,
-            natural_bytes: pieces.saturating_mul(8),
+    fn aggregate(index: u32, image: AggregateImage) -> ForeignArg {
+        ForeignArg::Aggregate {
+            value: CfgValue::from_raw(index),
+            image,
         }
     }
 
-    fn stack_offsets(plan: &ForeignCallPlan) -> Vec<u64> {
-        plan.placements
+    fn word_return() -> CAbiTypeFacts {
+        CAbiTypeFacts::ZeroSized
+    }
+
+    fn plan(
+        convention: CallingConvention,
+        args: Vec<ForeignArg>,
+        ret: ForeignReturn,
+    ) -> ForeignCallPlan {
+        let return_facts = match &ret {
+            ForeignReturn::Aggregate { image } => image.facts(),
+            _ => word_return(),
+        };
+        ForeignCallPlan::new(ForeignCallInputs::new(
+            "f".into(),
+            convention,
+            args,
+            ret,
+            return_facts,
+        ))
+    }
+
+    fn stack_offsets(plan: &ForeignCallPlan) -> Vec<u32> {
+        plan.signature()
+            .arguments()
             .iter()
-            .filter_map(|placement| match placement {
-                ForeignArgPlacement::Stack { offset, .. } => Some(*offset),
-                ForeignArgPlacement::Register { .. } => None,
+            .filter_map(|argument| match argument.location {
+                ArgLocation::Stack { offset, .. } => Some(offset),
+                ArgLocation::Indirect {
+                    pointer: PointerLocation::Stack { offset },
+                    ..
+                } => Some(offset),
+                _ => None,
             })
             .collect()
     }
 
+    fn is_register(plan: &ForeignCallPlan, index: usize) -> bool {
+        matches!(
+            plan.signature().arguments()[index].location,
+            ArgLocation::Registers { .. }
+                | ArgLocation::Indirect {
+                    pointer: PointerLocation::Register { .. },
+                    ..
+                }
+        )
+    }
+
     #[test]
     fn sysv_hidden_sret_and_aggregate_placement_are_shared_decisions() {
-        let inputs = ForeignCallInputs {
-            symbol: "f".into(),
-            convention: CallingConvention::X86_64SysV,
-            args: vec![
+        let plan = plan(
+            CallingConvention::X86_64SysV,
+            vec![
                 scalar(0),
-                ForeignArg::AggregateRegisters {
-                    value: CfgValue::from_raw(1),
-                    image: image(16),
-                },
+                aggregate(1, image(16)),
                 scalar(2),
                 scalar(3),
                 scalar(4),
             ],
-            ret: ForeignReturn::AggregateSret { image: image(24) },
-        };
-        let plan = ForeignCallPlan::new(inputs, 6);
+            ForeignReturn::Aggregate { image: image(24) },
+        );
 
-        assert!(plan.sret_in_argument_register);
-        assert_eq!(plan.placements.len(), 5);
-        assert!(matches!(
-            plan.placements[0],
-            ForeignArgPlacement::Register { .. }
-        ));
-        assert!(matches!(
-            plan.placements[1],
-            ForeignArgPlacement::Register { .. }
-        ));
-        assert!(matches!(
-            plan.placements[2],
-            ForeignArgPlacement::Register { .. }
-        ));
-        assert!(matches!(
-            plan.placements[3],
-            ForeignArgPlacement::Register { .. }
-        ));
-        assert!(matches!(
-            plan.placements[4],
-            ForeignArgPlacement::Stack { offset: 0, .. }
-        ));
+        assert!(plan.signature().sret_in_argument_register());
+        assert_eq!(plan.signature().arguments().len(), 5);
+        for index in 0..4 {
+            assert!(
+                is_register(&plan, index),
+                "argument {index} takes registers"
+            );
+        }
+        assert_eq!(stack_offsets(&plan), vec![0]);
     }
 
     #[test]
     fn aapcs_byref_storage_does_not_consume_a_register_per_byte() {
-        let inputs = ForeignCallInputs {
-            symbol: "f".into(),
-            convention: CallingConvention::Aarch64Aapcs,
-            args: vec![ForeignArg::AggregateByRefCopy {
-                value: CfgValue::from_raw(0),
-                image: image(24),
-            }],
-            ret: ForeignReturn::ZeroSized,
-        };
-        let plan = ForeignCallPlan::new(inputs, 8);
+        let plan = plan(
+            CallingConvention::Aarch64Aapcs,
+            vec![aggregate(0, image(24))],
+            ForeignReturn::ZeroSized,
+        );
 
-        assert!(!plan.sret_in_argument_register);
-        assert_eq!(plan.byref_bytes, 32);
-        assert!(matches!(
-            plan.placements[0],
-            ForeignArgPlacement::Register { .. }
-        ));
+        assert!(!plan.signature().sret_in_argument_register());
+        assert_eq!(plan.byref_bytes(), 32);
+        assert!(is_register(&plan, 0));
     }
 
     /// The byval tail of a call whose arguments overflow the eight AAPCS64
     /// integer registers. Every argument after the eighth is stacked, so the two
     /// AAPCS rows can be compared on identical inputs.
-    fn narrow_tail_inputs(convention: CallingConvention) -> ForeignCallInputs {
-        let mut args = vec![ForeignArg::AggregateRegisters {
-            value: CfgValue::from_raw(0),
-            image: image(8),
-        }];
+    fn narrow_tail_args() -> Vec<ForeignArg> {
+        let mut args = vec![aggregate(0, image(8))];
         // Seven register-width scalars fill x1..x7 behind the aggregate in x0.
         args.extend((1..8).map(scalar));
         // The stacked tail: i8, i16, i32, i64.
-        args.push(narrow_scalar(8, 1));
-        args.push(narrow_scalar(9, 2));
-        args.push(narrow_scalar(10, 4));
-        args.push(narrow_scalar(11, 8));
-        ForeignCallInputs {
-            symbol: "narrow_tail".into(),
-            convention,
-            args,
-            ret: ForeignReturn::ZeroSized,
-        }
+        args.push(narrow_scalar(8, CAbiScalarKind::I8));
+        args.push(narrow_scalar(9, CAbiScalarKind::I16));
+        args.push(narrow_scalar(10, CAbiScalarKind::I32));
+        args.push(narrow_scalar(11, CAbiScalarKind::RegisterWidth));
+        args
+    }
+
+    fn narrow_tail_plan(convention: CallingConvention) -> ForeignCallPlan {
+        plan(convention, narrow_tail_args(), ForeignReturn::ZeroSized)
     }
 
     #[test]
     fn a_narrow_scalar_tail_takes_whole_slots_under_aapcs_and_packs_under_darwin() {
-        let aapcs = ForeignCallPlan::new(narrow_tail_inputs(CallingConvention::Aarch64Aapcs), 8);
+        let aapcs = narrow_tail_plan(CallingConvention::Aarch64Aapcs);
         // AAPCS64 gives every stacked argument its own 8-byte slot.
         assert_eq!(stack_offsets(&aapcs), vec![0, 8, 16, 24]);
-        assert_eq!(aapcs.stack_area_bytes, 32);
+        assert_eq!(aapcs.stack_area_bytes(), 32);
 
-        let darwin =
-            ForeignCallPlan::new(narrow_tail_inputs(CallingConvention::Aarch64AapcsDarwin), 8);
+        let darwin = narrow_tail_plan(CallingConvention::Aarch64AapcsDarwin);
         // Apple's amendment packs each argument at its natural size and
         // alignment: i8 at 0, i16 at 2 (aligned), i32 at 4, i64 at 8.
         assert_eq!(stack_offsets(&darwin), vec![0, 2, 4, 8]);
         // 16 packed bytes, already call-aligned.
-        assert_eq!(darwin.stack_area_bytes, 16);
+        assert_eq!(darwin.stack_area_bytes(), 16);
     }
 
     #[test]
     fn only_the_darwin_row_narrows_a_stacked_scalar_store() {
-        let plan = ForeignCallPlan::new(narrow_tail_inputs(CallingConvention::Aarch64Aapcs), 8);
-        let stores = plan.stack_stores(8, 0, &[VReg::new(1)]);
+        let plan = narrow_tail_plan(CallingConvention::Aarch64Aapcs);
+        let stores = plan.stack_stores(8, &[VReg::new(1)]);
         assert_eq!(stores[0].bytes, 8, "AAPCS64 writes the whole 8-byte slot");
 
-        let plan =
-            ForeignCallPlan::new(narrow_tail_inputs(CallingConvention::Aarch64AapcsDarwin), 8);
-        assert_eq!(plan.stack_stores(8, 0, &[VReg::new(1)])[0].bytes, 1);
-        assert_eq!(plan.stack_stores(9, 2, &[VReg::new(1)])[0].bytes, 2);
-        assert_eq!(plan.stack_stores(10, 4, &[VReg::new(1)])[0].bytes, 4);
-        assert_eq!(plan.stack_stores(11, 8, &[VReg::new(1)])[0].bytes, 8);
+        let plan = narrow_tail_plan(CallingConvention::Aarch64AapcsDarwin);
+        assert_eq!(plan.stack_stores(8, &[VReg::new(1)])[0].bytes, 1);
+        assert_eq!(plan.stack_stores(9, &[VReg::new(1)])[0].bytes, 2);
+        assert_eq!(plan.stack_stores(10, &[VReg::new(1)])[0].bytes, 4);
+        assert_eq!(plan.stack_stores(11, &[VReg::new(1)])[0].bytes, 8);
     }
 
     #[test]
     fn x86_64_is_unaffected_by_the_apple_amendment() {
         // The same narrow tail on SysV: six integer registers, then whole
         // 8-byte slots for every stacked argument regardless of its C width.
-        let mut args = vec![ForeignArg::AggregateRegisters {
-            value: CfgValue::from_raw(0),
-            image: image(8),
-        }];
+        let mut args = vec![aggregate(0, image(8))];
         args.extend((1..6).map(scalar));
-        args.push(narrow_scalar(6, 1));
-        args.push(narrow_scalar(7, 2));
-        args.push(narrow_scalar(8, 4));
-        let plan = ForeignCallPlan::new(
-            ForeignCallInputs {
-                symbol: "narrow_tail".into(),
-                convention: CallingConvention::X86_64SysV,
-                args,
-                ret: ForeignReturn::ZeroSized,
-            },
-            6,
+        args.push(narrow_scalar(6, CAbiScalarKind::I8));
+        args.push(narrow_scalar(7, CAbiScalarKind::I16));
+        args.push(narrow_scalar(8, CAbiScalarKind::I32));
+        let plan = plan(
+            CallingConvention::X86_64SysV,
+            args,
+            ForeignReturn::ZeroSized,
         );
         assert_eq!(stack_offsets(&plan), vec![0, 8, 16]);
-        assert_eq!(plan.stack_area_bytes, 32);
+        assert_eq!(plan.stack_area_bytes(), 32);
         for arg_index in 6..9 {
-            assert_eq!(plan.stack_stores(arg_index, 0, &[VReg::new(1)])[0].bytes, 8);
+            assert_eq!(plan.stack_stores(arg_index, &[VReg::new(1)])[0].bytes, 8);
         }
     }
 
@@ -1081,26 +865,19 @@ mod tests {
         let args = (0..8)
             .map(scalar)
             .chain([
-                narrow_scalar(8, 1),
-                ForeignArg::AggregateRegisters {
-                    value: CfgValue::from_raw(9),
-                    image: image_aligned(12, 4),
-                },
-                narrow_scalar(10, 4),
+                narrow_scalar(8, CAbiScalarKind::I8),
+                aggregate(9, image_aligned(12, 4)),
+                narrow_scalar(10, CAbiScalarKind::I32),
             ])
             .collect();
-        let plan = ForeignCallPlan::new(
-            ForeignCallInputs {
-                symbol: "composite_tail".into(),
-                convention: CallingConvention::Aarch64AapcsDarwin,
-                args,
-                ret: ForeignReturn::ZeroSized,
-            },
-            8,
+        let plan = plan(
+            CallingConvention::Aarch64AapcsDarwin,
+            args,
+            ForeignReturn::ZeroSized,
         );
         assert_eq!(stack_offsets(&plan), vec![0, 8, 24]);
-        assert_eq!(plan.stack_area_bytes, 32);
-        let stores = plan.stack_stores(9, 8, &[VReg::new(1), VReg::new(2)]);
+        assert_eq!(plan.stack_area_bytes(), 32);
+        let stores = plan.stack_stores(9, &[VReg::new(1), VReg::new(2)]);
         assert_eq!(stores.len(), 2);
         assert_eq!((stores[0].offset, stores[0].bytes), (8, 8));
         assert_eq!((stores[1].offset, stores[1].bytes), (16, 8));
@@ -1115,12 +892,12 @@ mod tests {
             CallingConvention::Aarch64Aapcs,
             CallingConvention::Aarch64AapcsDarwin,
         ] {
-            let plan = ForeignCallPlan::new(narrow_tail_inputs(convention), 8);
-            for (arg_index, placement) in plan.placements.iter().enumerate() {
-                let ForeignArgPlacement::Stack { offset, .. } = placement else {
+            let plan = narrow_tail_plan(convention);
+            for (arg_index, argument) in plan.signature().arguments().iter().enumerate() {
+                if !matches!(argument.location, ArgLocation::Stack { .. }) {
                     continue;
-                };
-                for store in plan.stack_stores(arg_index, *offset, &[VReg::new(1)]) {
+                }
+                for store in plan.stack_stores(arg_index, &[VReg::new(1)]) {
                     assert_eq!(
                         store.offset % store.bytes,
                         0,
@@ -1131,34 +908,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn placement_arithmetic_reports_budget_overflow_without_panicking() {
-        let packing = StackedArgumentPacking::EightByteSlots;
-        let byref_overflow = place_foreign_args(
-            &[shape(0, u64::MAX, false), shape(0, 1, false)],
-            0,
-            false,
-            packing,
-        );
-        assert!(byref_overflow.is_err());
-
-        let stack_overflow = place_foreign_args(
-            &[shape(u64::MAX, 0, false), shape(1, 0, false)],
-            0,
-            false,
-            packing,
-        );
-        assert!(stack_overflow.is_err());
-
-        let register_overflow = place_foreign_args(
-            &[shape(u64::MAX, 0, true), shape(1, 0, true)],
-            u64::MAX,
-            false,
-            packing,
-        );
-        assert!(register_overflow.is_err());
     }
 
     #[derive(Debug)]
@@ -1280,23 +1029,33 @@ mod tests {
         }
     }
 
+    fn inputs(
+        symbol: &str,
+        convention: CallingConvention,
+        args: Vec<ForeignArg>,
+        ret: ForeignReturn,
+    ) -> ForeignCallInputs {
+        let return_facts = match &ret {
+            ForeignReturn::Aggregate { image } => image.facts(),
+            _ => CAbiTypeFacts::ZeroSized,
+        };
+        ForeignCallInputs::new(symbol.into(), convention, args, ret, return_facts)
+    }
+
     #[test]
     fn shared_driver_preserves_sysv_and_aapcs_event_order() {
-        let sysv_inputs = ForeignCallInputs {
-            symbol: "sysv_fn".into(),
-            convention: CallingConvention::X86_64SysV,
-            args: vec![
+        let sysv_inputs = inputs(
+            "sysv_fn",
+            CallingConvention::X86_64SysV,
+            vec![
                 scalar(0),
-                ForeignArg::AggregateRegisters {
-                    value: CfgValue::from_raw(1),
-                    image: image(16),
-                },
+                aggregate(1, image(16)),
                 scalar(2),
                 scalar(3),
                 scalar(4),
             ],
-            ret: ForeignReturn::AggregateSret { image: image(24) },
-        };
+            ForeignReturn::Aggregate { image: image(24) },
+        );
         let mut sysv = TraceBackend::new(CallingConvention::X86_64SysV, 6);
         let sysv_result = lower_foreign_call(&mut sysv, sysv_inputs, VReg::new(0));
         assert_eq!(sysv_result.slots.len(), 1);
@@ -1319,15 +1078,12 @@ mod tests {
             ]
         );
 
-        let aapcs_inputs = ForeignCallInputs {
-            symbol: "aapcs_fn".into(),
-            convention: CallingConvention::Aarch64Aapcs,
-            args: vec![
+        let aapcs_inputs = inputs(
+            "aapcs_fn",
+            CallingConvention::Aarch64Aapcs,
+            vec![
                 scalar(0),
-                ForeignArg::AggregateByRefCopy {
-                    value: CfgValue::from_raw(1),
-                    image: image(24),
-                },
+                aggregate(1, image(24)),
                 scalar(2),
                 scalar(3),
                 scalar(4),
@@ -1337,8 +1093,8 @@ mod tests {
                 scalar(8),
                 scalar(9),
             ],
-            ret: ForeignReturn::AggregateSret { image: image(24) },
-        };
+            ForeignReturn::Aggregate { image: image(24) },
+        );
         let mut aapcs = TraceBackend::new(CallingConvention::Aarch64Aapcs, 8);
         let aapcs_result = lower_foreign_call(&mut aapcs, aapcs_inputs, VReg::new(0));
         assert_eq!(aapcs_result.slots.len(), 1);
@@ -1367,12 +1123,12 @@ mod tests {
             ]
         );
 
-        let register_return_inputs = ForeignCallInputs {
-            symbol: "aapcs_register_fn".into(),
-            convention: CallingConvention::Aarch64Aapcs,
-            args: Vec::new(),
-            ret: ForeignReturn::AggregateRegisters { image: image(16) },
-        };
+        let register_return_inputs = inputs(
+            "aapcs_register_fn",
+            CallingConvention::Aarch64Aapcs,
+            Vec::new(),
+            ForeignReturn::Aggregate { image: image(16) },
+        );
         let mut register_return = TraceBackend::new(CallingConvention::Aarch64Aapcs, 8);
         let register_result =
             lower_foreign_call(&mut register_return, register_return_inputs, VReg::new(0));
@@ -1396,7 +1152,12 @@ mod tests {
         let mut darwin = TraceBackend::new(CallingConvention::Aarch64AapcsDarwin, 8);
         lower_foreign_call(
             &mut darwin,
-            narrow_tail_inputs(CallingConvention::Aarch64AapcsDarwin),
+            inputs(
+                "narrow_tail",
+                CallingConvention::Aarch64AapcsDarwin,
+                narrow_tail_args(),
+                ForeignReturn::ZeroSized,
+            ),
             VReg::new(0),
         );
         assert!(
@@ -1410,7 +1171,12 @@ mod tests {
         let mut linux = TraceBackend::new(CallingConvention::Aarch64Aapcs, 8);
         lower_foreign_call(
             &mut linux,
-            narrow_tail_inputs(CallingConvention::Aarch64Aapcs),
+            inputs(
+                "narrow_tail",
+                CallingConvention::Aarch64Aapcs,
+                narrow_tail_args(),
+                ForeignReturn::ZeroSized,
+            ),
             VReg::new(0),
         );
         assert!(

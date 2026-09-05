@@ -6937,7 +6937,8 @@ mod tests {
         convention: rue_target::CallingConvention,
     ) -> crate::foreign_call::ForeignStackArea {
         use crate::foreign_call::{AggregateImage, ForeignArg, ForeignCallInputs, ForeignReturn};
-        let mut args = vec![ForeignArg::AggregateRegisters {
+        use rue_air::{CAbiScalarKind, CAbiTypeFacts};
+        let mut args = vec![ForeignArg::Aggregate {
             value: CfgValue::from_raw(0),
             image: AggregateImage {
                 map: Vec::new(),
@@ -6950,24 +6951,32 @@ mod tests {
         }];
         args.extend((1..8).map(|index| ForeignArg::Scalar {
             value: CfgValue::from_raw(index),
-            natural_bytes: 8,
+            kind: CAbiScalarKind::RegisterWidth,
         }));
-        for (index, natural_bytes) in [(8, 1), (9, 2), (10, 4), (11, 8)] {
+        for (index, kind) in [
+            (8, CAbiScalarKind::I8),
+            (9, CAbiScalarKind::I16),
+            (10, CAbiScalarKind::I32),
+            (11, CAbiScalarKind::RegisterWidth),
+        ] {
             args.push(ForeignArg::Scalar {
                 value: CfgValue::from_raw(index),
-                natural_bytes,
+                kind,
             });
         }
-        crate::foreign_call::ForeignCallPlan::new(
-            ForeignCallInputs {
-                symbol: "narrow_tail".into(),
-                convention,
-                args,
-                ret: ForeignReturn::ZeroSized,
-            },
-            ARG_REGS.len(),
-        )
-        .stack_area_for_test(&[VReg::new(80), VReg::new(81), VReg::new(82), VReg::new(83)])
+        crate::foreign_call::ForeignCallPlan::new(ForeignCallInputs::new(
+            "narrow_tail".into(),
+            convention,
+            args,
+            ForeignReturn::ZeroSized,
+            CAbiTypeFacts::ZeroSized,
+        ))
+        .stack_area_for_test(&[
+            VReg::new(80),
+            VReg::new(81),
+            VReg::new(82),
+            VReg::new(83),
+        ])
     }
 
     #[test]
