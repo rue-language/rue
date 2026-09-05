@@ -4,14 +4,18 @@
 # This matrix probes sizes around the register boundaries in every pass/return
 # combination for structs, bare arrays, and methods.
 #
-# The convention (RUE-106, see crate::cfg_lower::type_uses_sret_return in
-# rue-codegen):
-#   - Args: one 8-byte ABI slot per aggregate slot; slots past the arg
-#     registers (x86-64: 6, aarch64: 8) go on the caller's stack, and the
-#     callee prologue copies them into its frame param area.
-#   - Returns: aggregates that fit the return registers (x86-64: 6, aarch64:
-#     8) use them; larger aggregates — and StrBuf always — return via a
-#     caller-allocated sret buffer whose address is a hidden first argument.
+# The convention (ADR-0084, see crate::cfg_lower::type_uses_sret_return in
+# rue-codegen): the native row is the compilation target's C row with a wider
+# return bank.
+#   - Args: placed exactly as the target's C row places them — SysV eightbyte
+#     classification, the AAPCS64 composite rules — so an aggregate past the
+#     register-passed threshold crosses byval on the caller's stack or through
+#     a caller-owned copy.
+#   - Returns: an aggregate whose eightbytes fit the native result bank
+#     (x86-64: six general-purpose plus eight floating-point; aarch64: eight of
+#     each) comes back one register per eightbyte; a larger one comes back
+#     through the target row's own indirect-result register (`rdi` with the
+#     `rax` echo on SysV, `x8` on AAPCS64).
 # All sizes here (5/7/9 slots) pass and return correctly on both backends.
 
 [section]
@@ -246,8 +250,10 @@ stdout = """
 hello
 """
 
-# sret + user args: the hidden sret pointer shifts every user argument by one
-# ABI slot; callee and caller must agree on the shift.
+# An indirect result plus user args: the hidden result pointer takes the target
+# row's own register — SysV's first argument register, which shifts every user
+# argument one register right, or AAPCS64's dedicated `x8`, which shifts none —
+# and the callee and its caller must agree about which.
 [[case]]
 name = "string_return_with_args"
 differential_opt = true
@@ -337,3 +343,196 @@ stdout = """
 36
 136
 """
+
+# =============================================================================
+# Return-bank shapes (ADR-0084, RUE-2038 / RUE-2010)
+# =============================================================================
+# A result is classified by exactly the rule its target's C row applies to an
+# argument of the same shape, read against the wider native result bank, so the
+# same value crosses in the same register file in both directions. These pin the
+# shapes where the two banks and the two marshaling forms meet. Each is pinned
+# to one target and executed on the matching native CI host.
+
+[[case]]
+name = "x86_64_linux_float_carrying_returns_use_the_float_bank"
+description = "A one-field float struct, a one-element float array, and a float-carrying enum each come back in the floating-point result bank on x86-64."
+files = [{ path = "main.rue", source = """
+struct Q { f: f64 }
+
+enum Reading { None, Value(f64) }
+
+fn mk() -> Q { Q { f: 2.5 } }
+fn row() -> [f64; 1] { [1.5] }
+fn reading() -> Reading { Reading.Value(0.25) }
+
+fn main() -> i32 {
+    let q = mk();
+    let r = row();
+    @dbg(q.f);
+    @dbg(r[0]);
+    match reading() {
+        Reading.None => @dbg(0.0),
+        Reading.Value(v) => @dbg(v),
+    }
+    @float_to_int(q.f + 0.5)
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = """
+2.5
+1.5
+0.25
+"""
+exit_code = 3
+
+[[case]]
+name = "aarch64_linux_float_carrying_returns_use_the_float_bank"
+description = "A one-field float struct, a one-element float array, and a float-carrying enum each come back in the floating-point result bank on AArch64."
+files = [{ path = "main.rue", source = """
+struct Q { f: f64 }
+
+enum Reading { None, Value(f64) }
+
+fn mk() -> Q { Q { f: 2.5 } }
+fn row() -> [f64; 1] { [1.5] }
+fn reading() -> Reading { Reading.Value(0.25) }
+
+fn main() -> i32 {
+    let q = mk();
+    let r = row();
+    @dbg(q.f);
+    @dbg(r[0]);
+    match reading() {
+        Reading.None => @dbg(0.0),
+        Reading.Value(v) => @dbg(v),
+    }
+    @float_to_int(q.f + 0.5)
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = """
+2.5
+1.5
+0.25
+"""
+exit_code = 3
+
+[[case]]
+name = "x86_64_linux_mixed_bank_returns_round_trip"
+description = "A `{i64, f64}` result spans both result banks and a `{f32, f32, i32}` result marshals through its compact image, on x86-64."
+files = [{ path = "main.rue", source = """
+struct Mixed { a: i64, b: f64 }
+struct Packed { a: f32, b: f32, c: i32 }
+struct Narrow { a: u8, b: u8, c: u8, d: u8 }
+
+fn mixed() -> Mixed { Mixed { a: 7, b: 2.5 } }
+fn packed() -> Packed { Packed { a: 1.5, b: 2.5, c: 4 } }
+fn narrow() -> Narrow { Narrow { a: 1, b: 2, c: 3, d: 4 } }
+
+fn main() -> i32 {
+    let m = mixed();
+    let p = packed();
+    let n = narrow();
+    @dbg(m.a);
+    @dbg(m.b);
+    @dbg(p.a);
+    @dbg(p.b);
+    @dbg(p.c);
+    @dbg(n.a + n.b + n.c + n.d);
+    0
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = """
+7
+2.5
+1.5
+2.5
+4
+10
+"""
+exit_code = 0
+
+[[case]]
+name = "aarch64_linux_mixed_bank_returns_round_trip"
+description = "A `{i64, f64}` result, a `{f32, f32, i32}` result, and a four-byte packed struct each round-trip through the AArch64 result bank."
+files = [{ path = "main.rue", source = """
+struct Mixed { a: i64, b: f64 }
+struct Packed { a: f32, b: f32, c: i32 }
+struct Narrow { a: u8, b: u8, c: u8, d: u8 }
+
+fn mixed() -> Mixed { Mixed { a: 7, b: 2.5 } }
+fn packed() -> Packed { Packed { a: 1.5, b: 2.5, c: 4 } }
+fn narrow() -> Narrow { Narrow { a: 1, b: 2, c: 3, d: 4 } }
+
+fn main() -> i32 {
+    let m = mixed();
+    let p = packed();
+    let n = narrow();
+    @dbg(m.a);
+    @dbg(m.b);
+    @dbg(p.a);
+    @dbg(p.b);
+    @dbg(p.c);
+    @dbg(n.a + n.b + n.c + n.d);
+    0
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = """
+7
+2.5
+1.5
+2.5
+4
+10
+"""
+exit_code = 0
+
+[[case]]
+name = "x86_64_linux_a_four_field_float_struct_returns_in_the_float_bank"
+description = "A four-field `f64` struct is four SSE eightbytes on x86-64 and comes back in `xmm0`-`xmm3`, past what SysV's own two result registers hold."
+files = [{ path = "main.rue", source = """
+struct Quad { a: f64, b: f64, c: f64, d: f64 }
+
+fn quad() -> Quad { Quad { a: 1.5, b: 2.5, c: 3.5, d: 4.5 } }
+
+fn main() -> i32 {
+    let q = quad();
+    @dbg(q.a + q.b + q.c + q.d);
+    0
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = "12.0\n"
+exit_code = 0
+
+[[case]]
+name = "aarch64_linux_a_four_field_float_struct_returns_in_the_float_bank"
+description = "A four-field `f64` struct is an AAPCS64 homogeneous floating-point aggregate and comes back in `v0`-`v3`."
+files = [{ path = "main.rue", source = """
+struct Quad { a: f64, b: f64, c: f64, d: f64 }
+
+fn quad() -> Quad { Quad { a: 1.5, b: 2.5, c: 3.5, d: 4.5 } }
+
+fn main() -> i32 {
+    let q = quad();
+    @dbg(q.a + q.b + q.c + q.d);
+    0
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = "12.0\n"
+exit_code = 0

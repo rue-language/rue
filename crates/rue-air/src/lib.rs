@@ -44,9 +44,8 @@ mod type_properties;
 mod types;
 
 pub use call_abi::{
-    ArgConvention, CAbiScalarKind, NativeAbiTypeFacts, NativeCallAbi, ReturnClass,
-    ScalarAbiExtension, TargetCCallAbi, aggregate_leaves, c_abi_type_facts, is_multislot_aggregate,
-    is_slot_identical_layout, native_return_register_budget,
+    ArgConvention, CAbiScalarKind, NativeCallAbi, ScalarAbiExtension, TargetCCallAbi,
+    aggregate_leaves, c_abi_type_facts, is_multislot_aggregate, is_slot_identical_layout,
 };
 pub use exact_decimal::canonical_decimal_literal;
 pub use exact_decimal::finite_float_literal_bits;
@@ -85,7 +84,7 @@ pub use lowered_signature::{
     AggregateLeaves, ArgLocation, ArgumentArea, CAbiLeaf, CAbiLeafKind, CAbiTypeFacts,
     EightbyteClass, EightbyteClasses, LoweredArgument, LoweredReturn, LoweredSignature,
     MAX_LEAF_CLASSIFIED_BYTES, PointerLocation, RegisterPiece, RegisterPieces, StackedPlacement,
-    lower_c_signature, lower_native_signature,
+    lower_c_signature, lower_native_return, lower_native_signature,
 };
 pub use module_registry::ModuleRegistry;
 pub use param_arena::{ParamArena, ParamRange, ParamRangeData};

@@ -85,11 +85,11 @@ fn foreign_argument_register(class: rue_target::CRegisterClass, index: u32) -> R
     ARG_REGS[index as usize]
 }
 
-/// Return value registers for the internal Rue convention (SysV only defines
-/// rax/rdx; the rest are caller-saved scratch regs we extend the convention
-/// with for multi-slot aggregate returns). Aggregates with more slots than
-/// this — and builtin String always — return via sret instead; see
-/// `crate::cfg_lower::type_uses_sret_return`. (RUE-106)
+/// The native convention's result registers (ADR-0084). SysV AMD64 defines
+/// only `rax:rdx`; the native bank extends it with four more caller-saved
+/// registers, ordered so C's own pair is its prefix. A result whose eightbytes
+/// do not fit this bank comes back through the row's indirect-result register
+/// instead; see `crate::cfg_lower::type_uses_sret_return`.
 pub(super) const RET_REGS: [Reg; 6] = [Reg::Rax, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9, Reg::R10];
 
 /// Floating-point return registers. A float-classed return slot travels in the
@@ -127,15 +127,20 @@ const _: () = {
     }
 };
 
-/// The target's return-register file, one bank per register class: a
-/// general-purpose slot lands in [`RET_REGS`], a float-classed one in
-/// [`FP_RET_REGS`].
-pub(super) const fn return_register_banks() -> crate::call_plan::AbiRegisterBanks {
-    crate::call_plan::AbiRegisterBanks {
-        gp: RET_REGS.len(),
-        fp: FP_RET_REGS.len(),
-    }
-}
+// The physical result rosters are this backend's half of the native return
+// bank the classifier spends, so they are pinned against the convention
+// description rather than restating its numbers.
+const _: () = {
+    let spec = rue_target::ConventionSpec::native(X86_64_TARGET).spec();
+    assert!(
+        RET_REGS.len() as u32 == spec.gp_return_registers,
+        "the general-purpose result roster must be the native return bank's width"
+    );
+    assert!(
+        FP_RET_REGS.len() as u32 == spec.fp_return_registers,
+        "the floating-point result roster must be the native return bank's width"
+    );
+};
 
 /// CFG to X86Mir lowering.
 pub struct CfgLower<'a> {
@@ -835,7 +840,7 @@ impl<'a> CfgLower<'a> {
             &ctx,
             &mut self,
             None,
-            return_register_banks(),
+            rue_target::ConventionSpec::native(X86_64_TARGET),
             cancellation,
         )?;
         Ok(self.mir)
@@ -863,7 +868,7 @@ impl<'a> CfgLower<'a> {
             &ctx,
             &mut self,
             Some(&mut debug_info),
-            return_register_banks(),
+            rue_target::ConventionSpec::native(X86_64_TARGET),
             cancellation,
         )?;
         Ok((self.mir, debug_info))
@@ -1354,6 +1359,7 @@ impl<'a> CfgLower<'a> {
             ReturnPlan::Sret {
                 slot_count,
                 storage_bytes,
+                ..
             } => {
                 let slots = if let Some(map) = &plan.compact_return_image {
                     // Compact aggregate return (RUE-1004): read the callee-written
@@ -1396,33 +1402,28 @@ impl<'a> CfgLower<'a> {
                 slots
             }
             ReturnPlan::Registers { slot_count } => {
-                assert_eq!(
-                    plan.return_slot_regs.len(),
-                    slot_count as usize,
-                    "a register return must name a return register for every slot"
-                );
-                plan.return_slot_regs
-                    .iter()
-                    .map(|reg| match *reg {
-                        crate::call_plan::ReturnSlotReg::Gp(index) => {
-                            let slot = self.mir.alloc_vreg();
-                            self.mir.push(X86Inst::MovRR {
-                                dst: Operand::Virtual(slot),
-                                src: Operand::Physical(RET_REGS[index]),
-                            });
-                            slot
-                        }
-                        crate::call_plan::ReturnSlotReg::Fp { index, width } => {
-                            let slot = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
-                            self.mir.push(X86Inst::FloatMov {
-                                dst: Operand::Virtual(slot),
-                                src: Operand::Physical(FP_RET_REGS[index]),
-                                width,
-                            });
-                            slot
-                        }
-                    })
-                    .collect()
+                let registers = plan
+                    .return_registers
+                    .as_ref()
+                    .expect("a register return names its result registers");
+                let eightbytes = self.read_return_registers(registers);
+                match &registers.image {
+                    // The eightbytes are the value's leaves: they need no
+                    // marshaling, and there is one per logical slot.
+                    None => {
+                        assert_eq!(
+                            eightbytes.len(),
+                            slot_count as usize,
+                            "a direct register return carries one leaf per result register"
+                        );
+                        eightbytes
+                    }
+                    // The leaves packed together: read them back out of the
+                    // image the eightbytes carry.
+                    Some(image) => {
+                        crate::agg_slots::unmarshal_return_leaves(self, &eightbytes, image)
+                    }
+                }
             }
             ReturnPlan::Scalar => Vec::new(),
             ReturnPlan::ZeroSized => Vec::new(),
@@ -1468,6 +1469,102 @@ impl<'a> CfgLower<'a> {
             });
         }
         crate::value_plan::MaterializedValue { primary, slots }
+    }
+
+    /// Write one register-returned value into the result registers the shared
+    /// lowering named for it.
+    ///
+    /// When the value's leaves are its eightbytes each leaf moves straight into
+    /// its register; otherwise the leaves are marshaled through the value's
+    /// compact image first, and a floating-point piece then carries an image
+    /// lane whose bits move whole.
+    fn write_return_registers(
+        &mut self,
+        registers: &crate::call_plan::ReturnRegisters,
+        slots: &[VReg],
+    ) {
+        let eightbytes = match &registers.image {
+            None => slots.to_vec(),
+            Some(image) => crate::agg_slots::marshal_return_eightbytes(self, slots, image),
+        };
+        let marshaled = registers.image.is_some();
+        assert_eq!(
+            registers.regs.len(),
+            eightbytes.len(),
+            "a register return names a result register for every eightbyte"
+        );
+        for (reg, value) in registers.regs.iter().zip(&eightbytes).rev() {
+            match *reg {
+                crate::call_plan::ReturnSlotReg::Gp(index) => self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Physical(RET_REGS[index]),
+                    src: Operand::Virtual(*value),
+                }),
+                crate::call_plan::ReturnSlotReg::Fp { index, width } => {
+                    let source = if marshaled {
+                        let lane = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
+                        self.mir.push(X86Inst::BitsToFloat {
+                            dst: Operand::Virtual(lane),
+                            src: Operand::Virtual(*value),
+                            width,
+                        });
+                        lane
+                    } else {
+                        *value
+                    };
+                    self.mir.push(X86Inst::FloatMov {
+                        dst: Operand::Physical(FP_RET_REGS[index]),
+                        src: Operand::Virtual(source),
+                        width,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Read one register-returned value's eightbytes out of the result
+    /// registers the shared lowering named for them.
+    ///
+    /// A general-purpose piece is copied as it stands. A floating-point piece
+    /// carrying a marshaled image lane is a bit pattern rather than a number,
+    /// so it moves into a general-purpose vreg for the image store; one
+    /// carrying the value's own float leaf stays in the floating-point file.
+    fn read_return_registers(
+        &mut self,
+        registers: &crate::call_plan::ReturnRegisters,
+    ) -> Vec<VReg> {
+        let marshaled = registers.image.is_some();
+        registers
+            .regs
+            .iter()
+            .map(|reg| match *reg {
+                crate::call_plan::ReturnSlotReg::Gp(index) => {
+                    let slot = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(slot),
+                        src: Operand::Physical(RET_REGS[index]),
+                    });
+                    slot
+                }
+                crate::call_plan::ReturnSlotReg::Fp { index, width } => {
+                    let value = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
+                    self.mir.push(X86Inst::FloatMov {
+                        dst: Operand::Virtual(value),
+                        src: Operand::Physical(FP_RET_REGS[index]),
+                        width,
+                    });
+                    if !marshaled {
+                        return value;
+                    }
+                    let bits = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::FloatToBits {
+                        dst: Operand::Virtual(bits),
+                        src: Operand::Virtual(value),
+                        width,
+                    });
+                    bits
+                }
+            })
+            .collect()
     }
 
     /// Extend a foreign scalar return (in `vreg`) to its canonical 64-bit form
@@ -3786,9 +3883,9 @@ impl<'a> CfgLower<'a> {
                     ReturnValuePlan::Aggregate {
                         slots,
                         return_plan,
-                        slot_regs,
+                        registers,
                     } => {
-                        if return_plan.uses_sret() {
+                        if let crate::call_plan::ReturnPlan::Sret { echoed, .. } = return_plan {
                             let return_ty = self.ctx.cfg.return_type();
                             match crate::types::aggregate_physical_slot_map(
                                 self.ctx.type_pool,
@@ -3815,26 +3912,21 @@ impl<'a> CfgLower<'a> {
                                     None => crate::agg_slots::store_slots_to_sret(self, &slots),
                                 },
                             }
+                            // SysV AMD64 requires the callee to leave the
+                            // indirect-result pointer in `rax` on return.
+                            if echoed {
+                                crate::agg_slots::SlotBackend::emit_sret_pointer_echo(self);
+                            }
                         } else {
-                            assert_eq!(
-                                slot_regs.len(),
-                                slots.len(),
-                                "a register return must name a return register for every slot"
-                            );
-                            for (reg, slot) in slot_regs.iter().zip(&slots).rev() {
-                                self.mir.push(match *reg {
-                                    crate::call_plan::ReturnSlotReg::Gp(index) => X86Inst::MovRR {
-                                        dst: Operand::Physical(RET_REGS[index]),
-                                        src: Operand::Virtual(*slot),
-                                    },
-                                    crate::call_plan::ReturnSlotReg::Fp { index, width } => {
-                                        X86Inst::FloatMov {
-                                            dst: Operand::Physical(FP_RET_REGS[index]),
-                                            src: Operand::Virtual(*slot),
-                                            width,
-                                        }
-                                    }
-                                });
+                            match registers.as_ref() {
+                                Some(registers) => self.write_return_registers(registers, &slots),
+                                // A zero-sized aggregate names no result
+                                // register because it has no bytes to carry.
+                                None => assert!(
+                                    slots.is_empty(),
+                                    "only a zero-sized aggregate return names no \
+                                     result register"
+                                ),
                             }
                         }
                         self.mir.push(X86Inst::Ret);
@@ -4047,9 +4139,6 @@ impl crate::value_plan::ValueLowerAdapter for CfgLower<'_> {
             gp: ARG_REGS.len(),
             fp: FP_ARG_REGS.len(),
         }
-    }
-    fn return_register_banks(&self) -> crate::call_plan::AbiRegisterBanks {
-        return_register_banks()
     }
     fn emit_value(
         &mut self,
@@ -4340,6 +4429,40 @@ impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
 impl crate::agg_slots::SlotBackend for CfgLower<'_> {
     fn ctx(&self) -> &crate::cfg_lower::CfgLowerContext<'_> {
         &self.ctx
+    }
+    fn reserve_image_scratch(&mut self, bytes: u32) -> VReg {
+        self.mir.push(X86Inst::AddRI {
+            dst: Operand::Physical(Reg::Rsp),
+            imm: -checked_displacement_bytes(u64::from(bytes))
+                .expect("scratch image must fit displacement"),
+        });
+        let pointer = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(pointer),
+            src: Operand::Physical(Reg::Rsp),
+        });
+        pointer
+    }
+    fn release_image_scratch(&mut self, bytes: u32) {
+        self.mir.push(X86Inst::AddRI {
+            dst: Operand::Physical(Reg::Rsp),
+            imm: checked_displacement_bytes(u64::from(bytes))
+                .expect("scratch image must fit displacement"),
+        });
+    }
+    fn emit_sret_pointer_echo(&mut self) {
+        let pointer = self.mir.alloc_vreg();
+        let slot = self.ctx.sret_ptr_slot();
+        let offset = self.ctx.local_offset(slot);
+        self.mir.push(X86Inst::MovRM {
+            dst: Operand::Virtual(pointer),
+            base: Reg::Rbp,
+            offset,
+        });
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::Rax),
+            src: Operand::Virtual(pointer),
+        });
     }
     fn slot_cache(&mut self) -> &mut AHashMap<CfgValue, Vec<VReg>> {
         &mut self.struct_slot_vregs
@@ -5038,16 +5161,6 @@ mod tests {
     #[should_panic(expected = "compact u32 tag representation")]
     fn marshal_tag_rejects_unrepresentable_discriminant() {
         let _ = compact_tag_discriminant(u32::MAX as u64 + 1);
-    }
-
-    #[test]
-    fn physical_return_register_roster_matches_the_abi_kernel_budget() {
-        assert_eq!(
-            RET_REGS.len() as u32,
-            rue_air::native_return_register_budget(rue_target::Arch::X86_64),
-            "the backend's return-register roster and the classification \
-             kernel's budget must agree"
-        );
     }
 
     fn span() -> Span {

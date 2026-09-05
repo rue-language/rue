@@ -103,9 +103,9 @@ return-register bank wider than C's** ([ADR-0084](../designs/0084-native-calling
 Its *arguments* are placed by exactly the rules that target's C row places them
 by, computed by `rue_air::lower_native_signature` — the same walk over the same
 placement state `lower_c_signature` runs, differing only in that the return is
-handed in rather than decided. Its *returns* keep the wider bank and the
-hidden-first-ordinary-argument sret described below; the return phase (RUE-2038)
-retires those, and the return rows here are rewritten with it.
+handed in rather than decided. Its *returns* are classified by the same rules
+through `rue_air::lower_native_return`, read against a wider result roster, so
+the whole convention is the target's C row plus two raised register counts.
 
 ### Arguments
 
@@ -149,26 +149,32 @@ same classifier both ends read (`CallPlan::from_slot_values` at the caller,
 `ParamStoragePlan` at the callee), and it is transitional: RUE-2039 collapses the
 remaining convention branches.
 
-### Returns (phase 2 territory)
+### Returns
 
-Native direct aggregate results use logical order. x86-64 extends the result
-register set to six slots (`rax`, `rdx`, `rcx`, `r8`, `r9`, `r10`), although
-System V AMD64 supplies at most two integer eightbytes. AArch64 extends direct
-results through `x0`-`x7`, although AAPCS64 integer-like composite results are
-limited to `x0` and `x1` before indirect return is needed.
+A result is classified by the target C row's own aggregate rule — SysV eightbyte
+classification, the AAPCS64 composite rules including the homogeneous
+floating-point aggregate — against the **native return bank**, which is wider
+than C's and has C's own result registers as its prefix:
 
-`StrBuf` and sufficiently large structs and arrays use native indirect return.
-The caller allocates a 16-byte-aligned buffer and supplies its address as a
-hidden first native argument, shifting user arguments. This differs on both
-targets:
+- **x86-64**: six general-purpose result registers (`rax`, `rdx`, `rcx`, `r8`,
+  `r9`, `r10`) and eight floating-point ones (`xmm0`-`xmm7`), where System V
+  AMD64 itself supplies `rax:rdx` and `xmm0:xmm1`.
+- **AArch64**: eight general-purpose result registers (`x0`-`x7`) and eight
+  floating-point ones (`v0`-`v7`), where AAPCS64 itself supplies `x0:x1` and
+  `v0`-`v3`.
 
-- System V AMD64 uses `rdi` for the hidden address and requires the callee to
-  return that address in `rax`; native Rue does not promise the `rax` echo.
-- AAPCS64 uses dedicated register `x8` for the indirect-result address; native
-  Rue uses `x0`.
+An aggregate whose eightbytes fit that bank comes back **one result register per
+eightbyte, in ascending memory order** — a `{i64, f64}` in `rax` and `xmm0`, a
+`{u8, u8, u8, u8}` in one register through its compact image. `StrBuf` has no
+special rule: its three eightbytes fit the bank and come back in registers.
+A result that does not fit the bank comes back through the target C row's own
+indirect-result register: `rdi` with the `rax` echo on System V AMD64, the
+dedicated `x8` on AAPCS64, with the caller allocating a 16-byte-aligned buffer.
 
-Consequently, neither direct aggregate returns nor native indirect returns may
-be exposed as C entry points without a target-C lowering path.
+Because C's result registers are a prefix of the native bank, **any result
+within C's own bank is placed identically under both rows**, so an export thunk
+for such a signature has no return adaptation left to do, and the two
+conventions differ by one stateable sentence.
 
 ### Preserved machine state
 
@@ -246,10 +252,13 @@ it and that is usually the same place:
 - A value whose leaves pack together crosses as the image's eightbytes, loaded
   whole.
 - When both directions are indirect, the C caller's indirect-result storage *is*
-  the native body's sret storage, so the result is never copied; SysV's `rax`
-  echo is then a reload of the saved pointer. When the native body returns in
-  registers, the thunk writes each returned slot into the C image at its own byte
-  position, zeroing padding first so the image is deterministic.
+  the native body's storage, so the result is never copied; SysV's `rax` echo is
+  then a reload of the saved pointer. When the native body returns its leaves in
+  result registers, the thunk writes each into the C image at its own byte
+  position, zeroing padding first so the image is deterministic. When the native
+  body returns the value's *eightbytes* — the compact image, which is the C
+  image — they are already the C result registers if C returns in registers, and
+  are staged and copied into the caller's storage if it does not.
 
 The signature classes semantic analysis still rejects for an export are about
 identity rather than marshaling: a generic (`comptime`) function has no single C
@@ -313,11 +322,13 @@ It is evidence rather than commentary because it consumes what code generation
 consumes and nothing else: a C boundary's placements come from
 `rue_air::lower_c_signature` through the same `ForeignCallInputs` /
 `ExportSignature` projections the import lowering and the export thunk build,
-and the native side's come from `rue_air::lower_native_signature` plus the
-`ReturnPlan` the return phase still owns. Register *names* are asked of the
-backend that owns the roster. A `pub extern "C" fn` export prints both halves of
-its crossing, so what its entry thunk has left to do — a re-extension per narrow
-scalar, and the return adaptation — is visible side by side.
+and the native side's come from `rue_air::lower_native_signature` and
+`rue_air::lower_native_return` through the same `return_plan` /
+`return_registers` projections the call planner and both return paths build.
+Register *names* are asked of the backend that owns the roster. A
+`pub extern "C" fn` export prints both halves of its crossing, so what its entry
+thunk has left to do — a re-extension per narrow scalar, and the adaptation of a
+result the two banks place differently — is visible side by side.
 
 One thing the stage cannot show is an FFI-predicate failure beside the function
 that caused it: the predicates reject an `extern` or export *signature* while
@@ -336,7 +347,7 @@ CLI harness's structural executable validation.
 The probe covers:
 
 - native argument-register exhaustion and native stack arguments;
-- a nine-slot native aggregate indirect return;
+- a native aggregate indirect return whose eightbytes exceed the result bank;
 - values kept live across a target-C runtime call, exercising preserved state;
 - signed `i8` and unsigned `u8` extension into 64-bit debug helpers;
 - scalar target-C results and pointer/length inputs;
@@ -354,6 +365,15 @@ under both rows. The 24-byte case also checks SysV's `rax` echo by reading the
 returned struct back *through the returned pointer*, in a hand-written assembly
 archive member; AAPCS64 has no echo to check, and its dedicated `x8` path is
 exercised by the compiler-generated caller.
+`x86_64_linux_wide_aggregate_return_called_from_c` and its AArch64 pair add the
+return shape the two banks disagree about: a 20-byte `@repr(c)` struct of narrow
+fields, three eightbytes to the native convention and an indirect result to
+every C row. A C caller passes one by value and receives one back through its
+own storage, so the entry thunk's staged copy — the returned eightbytes into a
+scratch buffer, then exactly the result's own bytes into the caller's storage —
+is executed rather than only encoded.
+`wide_packed_struct_export_builds_on_every_row` and its two target pairs compile
+and link the same export for all three rows, including Apple arm64.
 `aarch64_macos_narrow_exports_build_under_the_apple_row` compiles and links a
 narrow-parameter export for AArch64 macOS, so the Apple row's export thunks are
 generated, encoded, and placed in a Mach-O image on every host and executed on

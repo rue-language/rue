@@ -13,11 +13,10 @@
 //!   ([`crate::foreign_call::ForeignCallInputs`]) and the export thunk
 //!   ([`crate::export_thunk::ExportSignature`]) build;
 //! * the native Rue convention reads [`rue_air::lower_native_signature`] for
-//!   its arguments — the same placement the callee's parameter storage plan and
-//!   every caller of that signature read (ADR-0084) — and
-//!   [`rue_air::NativeCallAbi`] through [`return_plan`] and
-//!   [`crate::call_plan::return_slot_regs`] for the result, which keeps its own
-//!   wider bank until RUE-2038.
+//!   its arguments and [`rue_air::lower_native_return`] — through
+//!   [`return_plan`] and [`return_registers`] — for its result: the same
+//!   placements the callee's parameter storage plan, its return path, and every
+//!   caller of that signature read (ADR-0084).
 //!
 //! Physical register *names* stay in the two backends: this module asks
 //! [`TargetRegisters`] for the name of a roster index and never restates a
@@ -43,15 +42,12 @@
 use lasso::ThreadedRodeo;
 use rue_air::{
     ArgLocation, FrozenTypeInternPool, LoweredReturn, LoweredSignature, PointerLocation,
-    ScalarAbiExtension, SourceParamAbi, Type, ValidatedAir, native_return_register_budget,
+    RegisterPieces, ScalarAbiExtension, SourceParamAbi, Type, ValidatedAir,
 };
 use rue_cfg::{CfgInstData, CfgValue, ValidatedCfg};
 use rue_target::{Arch, CRegisterClass, CallingConvention, SretRegisterKind, Target};
 
-use crate::call_plan::{
-    AbiRegisterBanks, AbiSlotClass, AbiSlotLocation, ReturnPlan, ReturnSlotReg, return_plan,
-    return_slot_regs,
-};
+use crate::call_plan::{AbiSlotClass, ReturnPlan, ReturnSlotReg, return_plan, return_registers};
 use crate::native_abi::{NativeArg, native_by_value_arg};
 
 // ============================================================================
@@ -141,13 +137,6 @@ impl TargetRegisters {
             Arch::Aarch64 => crate::aarch64::DEDICATED_SRET_REGISTER_NAME,
         }
     }
-
-    fn return_banks(self) -> AbiRegisterBanks {
-        AbiRegisterBanks {
-            gp: self.roster(RegisterRole::Result, CRegisterClass::Gp).len(),
-            fp: self.roster(RegisterRole::Result, CRegisterClass::Fp).len(),
-        }
-    }
 }
 
 // ============================================================================
@@ -196,8 +185,10 @@ pub enum CPlacement {
         size: u32,
         align: u32,
     },
-    /// In result registers.
-    Result { class: CRegisterClass, count: u32 },
+    /// In result registers: one piece per eightbyte, in ascending memory
+    /// order. A result can span both banks, so the pieces are named
+    /// individually rather than as one run.
+    Result { pieces: RegisterPieces },
     /// Through caller storage whose address crosses as a hidden argument.
     Sret {
         register: SretRegisterKind,
@@ -246,7 +237,7 @@ impl From<LoweredReturn> for CPlacement {
     fn from(ret: LoweredReturn) -> Self {
         match ret {
             LoweredReturn::Void => Self::Void,
-            LoweredReturn::Registers { class, count, .. } => Self::Result { class, count },
+            LoweredReturn::Registers { pieces, .. } => Self::Result { pieces },
             LoweredReturn::Sret {
                 register,
                 echoed,
@@ -266,9 +257,10 @@ impl From<LoweredReturn> for CPlacement {
 ///
 /// The native convention places every argument exactly where the compilation
 /// target's C row places it (ADR-0084), so an argument's placement *is* a
-/// [`CPlacement`]. The result still classifies natively — the wider return bank
-/// and the hidden-first-argument sret — so it keeps its own arms until phase 2
-/// retires them.
+/// [`CPlacement`]. The result is classified by the same rules against a wider
+/// result roster, which is what the two return arms below describe: the
+/// registers an aggregate's eightbytes occupy, or the caller storage its
+/// indirect result is written to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativePlacement {
     /// No slot at all (a zero-sized result).
@@ -281,10 +273,11 @@ pub enum NativePlacement {
         /// One placement per leaf.
         leaves: Vec<CPlacement>,
     },
-    /// The result is written to caller storage whose address is the hidden
-    /// first argument register.
+    /// The result is written to caller storage whose address travels in the
+    /// target row's own indirect-result register.
     Sret {
-        location: AbiSlotLocation,
+        register: SretRegisterKind,
+        echoed: bool,
         slot_count: u32,
         storage_bytes: u32,
     },
@@ -449,13 +442,9 @@ fn native_side(
     type_pool: &FrozenTypeInternPool,
     target: Target,
 ) -> AbiSide {
-    let registers = TargetRegisters::new(target);
     let return_type = cfg.return_type();
-    let plan = return_plan(
-        type_pool,
-        return_type,
-        native_return_register_budget(target.arch()),
-    );
+    let pairing = rue_target::ConventionSpec::native(target);
+    let plan = return_plan(type_pool, return_type, pairing);
 
     // Two recoveries, because a body records the two parameter kinds
     // differently: a by-value parameter through its drop entry or `Param`
@@ -505,12 +494,8 @@ fn native_side(
         parameters_facts.extend(native.facts().into_iter().map(|facts| (facts, convention)));
         spans.push(start..parameters_facts.len());
     }
-    let pairing = rue_target::ConventionSpec::native(target);
-    let signature = rue_air::lower_native_signature(
-        pairing,
-        &parameters_facts,
-        native_incoming_return(pairing, plan),
-    );
+    let signature =
+        rue_air::lower_native_signature(pairing, &parameters_facts, native_incoming_return(plan));
 
     let parameters = modes
         .iter()
@@ -546,7 +531,7 @@ fn native_side(
                 plan,
                 type_pool,
                 return_type,
-                registers,
+                pairing,
             )),
             extension: ScalarAbiExtension::None,
         },
@@ -556,14 +541,16 @@ fn native_side(
 
 /// The already-decided return the native argument placement is computed
 /// against: only the hidden indirect-result pointer affects where arguments go.
-fn native_incoming_return(pairing: rue_target::ConventionSpec, plan: ReturnPlan) -> LoweredReturn {
-    if !plan.uses_sret() {
+fn native_incoming_return(plan: ReturnPlan) -> LoweredReturn {
+    let ReturnPlan::Sret {
+        register, echoed, ..
+    } = plan
+    else {
         return LoweredReturn::Void;
-    }
-    let spec = pairing.spec();
+    };
     LoweredReturn::Sret {
-        register: spec.sret_register,
-        echoed: spec.sret_pointer_echoed_in_result_register,
+        register,
+        echoed,
         size: rue_air::SLOT_BYTES as u32,
         align: rue_air::SLOT_BYTES as u32,
     }
@@ -573,7 +560,7 @@ fn native_return_placement(
     plan: ReturnPlan,
     type_pool: &FrozenTypeInternPool,
     ty: Type,
-    registers: TargetRegisters,
+    pairing: rue_target::ConventionSpec,
 ) -> NativePlacement {
     match plan {
         ReturnPlan::ZeroSized => NativePlacement::None,
@@ -581,7 +568,8 @@ fn native_return_placement(
             slots: vec![(primary_return_class(type_pool, ty), 0)],
         },
         ReturnPlan::Registers { .. } => NativePlacement::ReturnRegisters {
-            slots: return_slot_regs(type_pool, ty, registers.return_banks())
+            slots: return_registers(type_pool, ty, pairing)
+                .regs
                 .into_iter()
                 .map(|register| match register {
                     ReturnSlotReg::Gp(index) => (CRegisterClass::Gp, index as u32),
@@ -592,10 +580,13 @@ fn native_return_placement(
         ReturnPlan::Sret {
             slot_count,
             storage_bytes,
+            register,
+            echoed,
         } => NativePlacement::Sret {
-            // The hidden pointer is the hidden first ordinary argument, so it
-            // takes the first general-purpose argument register.
-            location: AbiSlotLocation::GpReg(0),
+            // The indirect-result pointer travels where the target's own C row
+            // puts it (ADR-0084).
+            register,
+            echoed,
             slot_count,
             storage_bytes,
         },
@@ -828,29 +819,48 @@ fn register_run(
     )
 }
 
-fn native_slot_text(registers: TargetRegisters, location: AbiSlotLocation) -> String {
-    match location {
-        AbiSlotLocation::GpReg(index) => register_run(
-            registers,
-            RegisterRole::Argument,
-            CRegisterClass::Gp,
-            index as u32,
-            1,
-            "register",
-        ),
-        AbiSlotLocation::FpReg(index) => register_run(
-            registers,
-            RegisterRole::Argument,
-            CRegisterClass::Fp,
-            index as u32,
-            1,
-            "register",
-        ),
-        AbiSlotLocation::Stack {
-            offset,
-            size,
-            align,
-        } => format!("stack +{offset} ({}, align {align})", bytes(size)),
+/// The register the hidden indirect-result pointer travels in under `register`:
+/// the first general-purpose argument register when the row makes the pointer a
+/// hidden first argument, and the row's dedicated register otherwise.
+fn sret_pointer_text(registers: TargetRegisters, register: SretRegisterKind) -> String {
+    match register {
+        SretRegisterKind::ArgumentRegister => registers.argument(CRegisterClass::Gp, 0).to_owned(),
+        SretRegisterKind::DedicatedRegister => registers.dedicated_sret().to_owned(),
+    }
+}
+
+/// The result registers a value comes back in, named one per eightbyte. A run
+/// of one bank reads as a run; a result split across banks names each piece,
+/// because there is no single roster to run over.
+fn result_register_text(
+    registers: TargetRegisters,
+    pieces: &[(CRegisterClass, u32)],
+    noun: &str,
+) -> String {
+    let noun = format!("{noun} register");
+    match pieces {
+        [] => "no value".to_owned(),
+        [(class, index)] => register_run(registers, RegisterRole::Result, *class, *index, 1, &noun),
+        many if many.iter().all(|(class, _)| *class == many[0].0)
+            && many
+                .iter()
+                .enumerate()
+                .all(|(offset, (_, index))| *index == many[0].1 + offset as u32) =>
+        {
+            register_run(
+                registers,
+                RegisterRole::Result,
+                many[0].0,
+                many[0].1,
+                many.len() as u32,
+                &noun,
+            )
+        }
+        many => many
+            .iter()
+            .map(|(class, index)| registers.result(*class, *index).to_owned())
+            .collect::<Vec<_>>()
+            .join(", "),
     }
 }
 
@@ -935,13 +945,14 @@ fn c_placement_text(registers: TargetRegisters, placement: CPlacement) -> String
             c_pointer_text(registers, pointer),
             bytes(size)
         ),
-        CPlacement::Result { class, count } => register_run(
+        CPlacement::Result { pieces } => result_register_text(
             registers,
-            RegisterRole::Result,
-            class,
-            0,
-            count,
-            "result register",
+            &pieces
+                .as_slice()
+                .iter()
+                .map(|piece| (piece.class, piece.index))
+                .collect::<Vec<_>>(),
+            "result",
         ),
         CPlacement::Sret {
             register,
@@ -949,12 +960,7 @@ fn c_placement_text(registers: TargetRegisters, placement: CPlacement) -> String
             size,
             align,
         } => {
-            let pointer = match register {
-                SretRegisterKind::ArgumentRegister => {
-                    registers.argument(CRegisterClass::Gp, 0).to_owned()
-                }
-                SretRegisterKind::DedicatedRegister => registers.dedicated_sret().to_owned(),
-            };
+            let pointer = sret_pointer_text(registers, register);
             let echo = if echoed {
                 format!(", echoed in {}", registers.result(CRegisterClass::Gp, 0))
             } else {
@@ -989,15 +995,21 @@ fn native_placement_text(
                 .collect(),
         ),
         NativePlacement::Sret {
-            location,
+            register,
+            echoed,
             slot_count,
             storage_bytes,
         } => (
             format!(
-                "sret: pointer in {} to {} ({} of caller storage)",
-                native_slot_text(registers, *location),
+                "sret: pointer in {} to {} ({} of caller storage){}",
+                sret_pointer_text(registers, *register),
                 slots(*slot_count),
-                bytes(*storage_bytes)
+                bytes(*storage_bytes),
+                if *echoed {
+                    format!(", echoed in {}", registers.result(CRegisterClass::Gp, 0))
+                } else {
+                    String::new()
+                }
             ),
             Vec::new(),
         ),
@@ -1005,32 +1017,18 @@ fn native_placement_text(
             slots: return_slots,
         } => match return_slots.as_slice() {
             [] => ("no value".to_owned(), Vec::new()),
-            [(class, index)] => (
-                register_run(
-                    registers,
-                    RegisterRole::Result,
-                    *class,
-                    *index,
-                    1,
-                    "return register",
-                ),
+            [_] => (
+                result_register_text(registers, return_slots, "return"),
                 Vec::new(),
             ),
             many => (
-                slots(many.len() as u32),
+                format!("{} eightbytes", many.len()),
                 many.iter()
                     .enumerate()
-                    .map(|(logical, (class, index))| {
+                    .map(|(index, piece)| {
                         format!(
-                            "slot {logical}: {}",
-                            register_run(
-                                registers,
-                                RegisterRole::Result,
-                                *class,
-                                *index,
-                                1,
-                                "return register",
-                            )
+                            "eightbyte {index}: {}",
+                            result_register_text(registers, std::slice::from_ref(piece), "return")
                         )
                     })
                     .collect(),

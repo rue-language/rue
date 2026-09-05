@@ -9,7 +9,6 @@ fn production_generate_entry_points_require_validated_cfg() {
         "type Reg;",
         "const ARCH",
         "const ARG_REG_COUNT",
-        "const RETURN_REG_COUNT",
         "fn lower(",
         "fn allocate(",
         "fn peephole(",

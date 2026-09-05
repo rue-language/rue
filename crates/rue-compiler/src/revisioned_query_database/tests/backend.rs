@@ -803,6 +803,7 @@ fn the_c_by_value_classifier_agrees_across_sites_shapes_and_planes() {
         ])
         .collect();
     let mut seen_fp_registers = false;
+    let mut seen_fp_result = false;
     for target in crate::Target::all().iter().copied() {
         let pairing = rue_target::ConventionSpec::native(target);
         for (name, stable_key, live_ty) in &native_shapes {
@@ -860,11 +861,56 @@ fn the_c_by_value_classifier_agrees_across_sites_shapes_and_planes() {
                         .any(|piece| piece.class == rue_target::CRegisterClass::Fp);
                 }
             }
+
+            // The return direction reads the same facts through the same
+            // classification (ADR-0084), so the two planes agree about a result
+            // exactly as they agree about an argument — and a shape that
+            // crosses in the floating-point roster comes back in it.
+            let result = rue_air::lower_native_return(pairing, live_facts);
+            assert_eq!(
+                result,
+                rue_air::lower_native_return(pairing, stable_facts),
+                "{target:?}/{name}: the stable plane must place every native result identically"
+            );
+            let argument_banks = |location: rue_air::ArgLocation| match location {
+                rue_air::ArgLocation::Registers { pieces } => Some(
+                    pieces
+                        .as_slice()
+                        .iter()
+                        .map(|piece| piece.class)
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            };
+            let solo = rue_air::lower_native_signature(
+                pairing,
+                &[(live_facts, ArgConvention::ByValue)],
+                rue_air::LoweredReturn::Void,
+            );
+            if let (Some(argument), rue_air::LoweredReturn::Registers { pieces, .. }) =
+                (argument_banks(solo.arguments()[0].location), result)
+            {
+                assert_eq!(
+                    argument,
+                    pieces
+                        .as_slice()
+                        .iter()
+                        .map(|piece| piece.class)
+                        .collect::<Vec<_>>(),
+                    "{target:?}/{name}: a value that crosses in registers comes back \
+                     in the same banks"
+                );
+                seen_fp_result |= pieces
+                    .as_slice()
+                    .iter()
+                    .any(|piece| piece.class == rue_target::CRegisterClass::Fp);
+            }
         }
     }
     assert!(
-        seen_fp_registers,
-        "the native shape set must reach the floating-point roster"
+        seen_fp_registers && seen_fp_result,
+        "the native shape set must reach the floating-point roster in both \
+         directions: arguments={seen_fp_registers} results={seen_fp_result}"
     );
 }
 
@@ -907,9 +953,12 @@ fn call_abi_classifies_native_target_c_named_destructor_and_drop_glue_on_both_ta
         assert_eq!(
             native.return_class,
             if target == crate::Target::X86_64Linux {
-                R::NativeIndirect { slots: 7 }
+                R::Indirect {
+                    size: 56,
+                    alignment: 8,
+                }
             } else {
-                R::NativeRegisters { slots: 7 }
+                R::Registers { eightbytes: 7 }
             }
         );
 
@@ -1019,9 +1068,12 @@ fn call_abi_batches_layouts_across_mixed_modes_and_duplicate_parameter_types() {
         assert_eq!(
             mixed.return_class,
             if target == crate::Target::X86_64Linux {
-                R::NativeIndirect { slots: 7 }
+                R::Indirect {
+                    size: 56,
+                    alignment: 8,
+                }
             } else {
-                R::NativeRegisters { slots: 7 }
+                R::Registers { eightbytes: 7 }
             }
         );
 
@@ -1097,9 +1149,12 @@ fn call_abi_resolves_value_specialized_array_layout_on_both_targets() {
         assert_eq!(
             facts.return_class,
             if target == crate::Target::X86_64Linux {
-                R::NativeIndirect { slots: 7 }
+                R::Indirect {
+                    size: 56,
+                    alignment: 8,
+                }
             } else {
-                R::NativeRegisters { slots: 7 }
+                R::Registers { eightbytes: 7 }
             }
         );
         assert_eq!(facts.arguments.len(), 2);
@@ -1262,10 +1317,8 @@ fn live_native_placements(
     target: crate::Target,
     parameters: &[(rue_air::ArgConvention, rue_air::Type)],
     result: rue_air::Type,
-    budget: u32,
 ) -> Vec<rue_air::ArgLocation> {
     let pairing = rue_target::ConventionSpec::native(target);
-    let spec = pairing.spec();
     let facts = parameters
         .iter()
         .map(|(convention, ty)| {
@@ -1275,20 +1328,7 @@ fn live_native_placements(
             )
         })
         .collect::<Vec<_>>();
-    let ret = match rue_air::NativeCallAbi::new(pool, budget).classify_return(result) {
-        rue_air::ReturnClass::ZeroSized => rue_air::LoweredReturn::Void,
-        rue_air::ReturnClass::Indirect { slot_count } => rue_air::LoweredReturn::Sret {
-            register: spec.sret_register,
-            echoed: spec.sret_pointer_echoed_in_result_register,
-            size: slot_count.saturating_mul(rue_air::SLOT_BYTES as u32),
-            align: rue_air::SLOT_BYTES as u32,
-        },
-        other => rue_air::LoweredReturn::Registers {
-            class: rue_target::CRegisterClass::Gp,
-            count: other.slot_count().max(1),
-            extension: rue_air::ScalarAbiExtension::None,
-        },
-    };
+    let ret = live_native_return(pool, target, result);
     rue_air::lower_native_signature(pairing, &facts, ret)
         .arguments()
         .iter()
@@ -1296,26 +1336,54 @@ fn live_native_placements(
         .collect()
 }
 
+/// The live plane's native return placement for `result` on `target`.
+fn live_native_return(
+    pool: &rue_air::FrozenTypeInternPool,
+    target: crate::Target,
+    result: rue_air::Type,
+) -> rue_air::LoweredReturn {
+    rue_air::lower_native_return(
+        rue_target::ConventionSpec::native(target),
+        rue_codegen::native_abi::native_by_value_arg(pool, result).facts()[0],
+    )
+}
+
 /// One stable return classification against the live classifier's answer.
 fn assert_native_return_parity(
     stable: crate::type_queries::CallAbiReturnClass,
-    live: rue_air::ReturnClass,
+    live: rue_air::LoweredReturn,
+    aggregate: bool,
     context: &str,
 ) {
     use crate::type_queries::CallAbiReturnClass as R;
     match (stable, live) {
-        (R::ZeroSized, rue_air::ReturnClass::ZeroSized) => {}
+        (R::ZeroSized, rue_air::LoweredReturn::Void) => {}
         (
             R::Scalar {
                 extension: rue_air::ScalarAbiExtension::None,
             },
-            rue_air::ReturnClass::Scalar,
-        ) => {}
-        (R::NativeRegisters { slots }, rue_air::ReturnClass::Registers { slot_count }) => {
-            assert_eq!(slots, slot_count, "register slot parity for {context}");
+            rue_air::LoweredReturn::Registers { .. },
+        ) if !aggregate => {}
+        (R::Registers { eightbytes }, rue_air::LoweredReturn::Registers { pieces, .. }) => {
+            assert_eq!(
+                eightbytes,
+                pieces.len(),
+                "result register parity for {context}"
+            );
         }
-        (R::NativeIndirect { slots }, rue_air::ReturnClass::Indirect { slot_count }) => {
-            assert_eq!(slots, slot_count, "indirect slot parity for {context}");
+        (
+            R::Indirect { size, alignment },
+            rue_air::LoweredReturn::Sret {
+                size: live_size,
+                align: live_align,
+                ..
+            },
+        ) => {
+            assert_eq!(
+                (size, alignment),
+                (live_size, live_align),
+                "indirect result parity for {context}"
+            );
         }
         (stable, live) => {
             panic!("return classification parity mismatch for {context}: {stable:?} != {live:?}")
@@ -1434,11 +1502,8 @@ fn call_abi_native_classification_matches_the_live_classifier_on_both_targets() 
 
     let mut database = RevisionedQueryDatabase::default();
     let revision = revision_for(&mut database, &source);
-    for (target, budget) in [
-        (crate::Target::X86_64Linux, 6u32),
-        (crate::Target::Aarch64Linux, 8u32),
-    ] {
-        let live = NativeCallAbi::new(&pool, budget);
+    for target in [crate::Target::X86_64Linux, crate::Target::Aarch64Linux] {
+        let live = NativeCallAbi::new(&pool);
         let by_value = ArgConvention::ByValue;
         let cases: Vec<(&str, Vec<(ArgConvention, Type)>, Type)> = vec![
             (
@@ -1489,7 +1554,7 @@ fn call_abi_native_classification_matches_the_live_classifier_on_both_targets() 
                 "{name} is a native callable"
             );
             assert_eq!(facts.arguments.len(), params.len(), "arity of {name}");
-            let placements = live_native_placements(&pool, target, params, *result, budget);
+            let placements = live_native_placements(&pool, target, params, *result);
             for ((argument, (convention, ty)), location) in
                 facts.arguments.iter().zip(params).zip(&placements)
             {
@@ -1503,7 +1568,8 @@ fn call_abi_native_classification_matches_the_live_classifier_on_both_targets() 
             }
             assert_native_return_parity(
                 facts.return_class,
-                live.classify_return(*result),
+                live_native_return(&pool, target, *result),
+                rue_codegen::types::is_multislot_aggregate(&pool, *result),
                 &format!("{name} return on {target:?}"),
             );
         }
@@ -1520,18 +1586,20 @@ fn call_abi_native_classification_matches_the_live_classifier_on_both_targets() 
             target,
         );
         assert_eq!(
-            live.classify_return(flag),
-            rue_air::ReturnClass::Scalar,
-            "live plane reports a discriminant-only enum return as a scalar"
+            live_native_return(&pool, target, flag)
+                .register_pieces()
+                .len(),
+            1,
+            "live plane reports a discriminant-only enum return as one scalar register"
         );
         assert_eq!(
             flag_facts.return_class,
-            crate::type_queries::CallAbiReturnClass::NativeRegisters { slots: 1 },
-            "stable plane projects a discriminant-only enum return as one register slot"
+            crate::type_queries::CallAbiReturnClass::Registers { eightbytes: 1 },
+            "stable plane projects a discriminant-only enum return as one result register"
         );
         assert_native_arg_parity(
             &flag_facts.arguments[0],
-            live_native_placements(&pool, target, &[(by_value, flag)], flag, budget)[0],
+            live_native_placements(&pool, target, &[(by_value, flag)], flag)[0],
             live.arg_slot_width(flag, ArgConvention::ByValue),
             false,
             &format!("flag argument on {target:?}"),
@@ -1558,7 +1626,7 @@ fn call_abi_native_classification_matches_the_live_classifier_on_both_targets() 
             wide_facts.arguments[0].class,
             A::Registers { eightbytes: 2 }
         ));
-        assert_eq!(wide_facts.return_class, R::NativeRegisters { slots: 2 });
+        assert_eq!(wide_facts.return_class, R::Registers { eightbytes: 2 });
         // `{u32, u32}` is eight bytes: one register, its two leaves packed into
         // the one eightbyte. Its return still classifies natively.
         let narrow_facts = request("narrow");
@@ -1566,7 +1634,9 @@ fn call_abi_native_classification_matches_the_live_classifier_on_both_targets() 
             narrow_facts.arguments[0].class,
             A::Registers { eightbytes: 1 }
         ));
-        assert_eq!(narrow_facts.return_class, R::NativeIndirect { slots: 2 });
+        // `{u32, u32}` packs into one eightbyte in both directions now that the
+        // return classifies through the same lowering as the argument.
+        assert_eq!(narrow_facts.return_class, R::Registers { eightbytes: 1 });
         let one_narrow_facts = request("one_narrow");
         assert!(matches!(
             one_narrow_facts.arguments[0].class,
@@ -1574,7 +1644,7 @@ fn call_abi_native_classification_matches_the_live_classifier_on_both_targets() 
         ));
         assert_eq!(
             one_narrow_facts.return_class,
-            R::NativeRegisters { slots: 1 }
+            R::Registers { eightbytes: 1 }
         );
         // `{{u32, u32}, u64}` is sixteen bytes: two registers on SysV, and two
         // consecutive integer registers under the AAPCS64 composite rule.
@@ -1587,19 +1657,32 @@ fn call_abi_native_classification_matches_the_live_classifier_on_both_targets() 
         assert!(matches!(refs_facts.arguments[0].class, A::Reference));
         assert!(matches!(refs_facts.arguments[1].class, A::Reference));
 
-        // Pin the return-register budget boundary explicitly: budget - 1
-        // and budget fit in registers, budget + 1 goes indirect.
+        // Pin the native return bank's boundary explicitly: an aggregate whose
+        // eightbytes fit the bank comes back in registers, one past it through
+        // caller storage.
         let boundary = |name: &str| request(name).return_class;
         match target {
             crate::Target::X86_64Linux => {
-                assert_eq!(boundary("five"), R::NativeRegisters { slots: 5 });
-                assert_eq!(boundary("six"), R::NativeRegisters { slots: 6 });
-                assert_eq!(boundary("seven"), R::NativeIndirect { slots: 7 });
+                assert_eq!(boundary("five"), R::Registers { eightbytes: 5 });
+                assert_eq!(boundary("six"), R::Registers { eightbytes: 6 });
+                assert_eq!(
+                    boundary("seven"),
+                    R::Indirect {
+                        size: 56,
+                        alignment: 8
+                    }
+                );
             }
             _ => {
-                assert_eq!(boundary("seven"), R::NativeRegisters { slots: 7 });
-                assert_eq!(boundary("eight"), R::NativeRegisters { slots: 8 });
-                assert_eq!(boundary("nine"), R::NativeIndirect { slots: 9 });
+                assert_eq!(boundary("seven"), R::Registers { eightbytes: 7 });
+                assert_eq!(boundary("eight"), R::Registers { eightbytes: 8 });
+                assert_eq!(
+                    boundary("nine"),
+                    R::Indirect {
+                        size: 72,
+                        alignment: 8
+                    }
+                );
             }
         }
     }
@@ -1753,12 +1836,15 @@ fn call_abi_target_c_classification_matches_the_live_classifier_on_both_targets(
             }
         }
         match (facts.return_class, lowered.ret()) {
+            (R::Registers { eightbytes }, rue_air::LoweredReturn::Registers { pieces, .. }) => {
+                assert_eq!(
+                    eightbytes,
+                    pieces.len(),
+                    "return eightbyte parity for {name}"
+                )
+            }
             (
-                R::CIntegerRegisters { eightbytes },
-                rue_air::LoweredReturn::Registers { count, .. },
-            ) => assert_eq!(eightbytes, count, "return eightbyte parity for {name}"),
-            (
-                R::CIndirect { size, alignment },
+                R::Indirect { size, alignment },
                 rue_air::LoweredReturn::Sret {
                     size: live_size,
                     align: live_align,
@@ -1878,18 +1964,19 @@ fn call_abi_strbuf_return_uses_sret_on_both_planes() {
     let mut database = RevisionedQueryDatabase::default();
     let revision =
         database.source_revision(&crate::session::ExactSourceInput::new(&snapshot), &snapshot);
-    for (target, budget) in [
-        (crate::Target::X86_64Linux, 6u32),
-        (crate::Target::Aarch64Linux, 8u32),
-    ] {
-        let live = NativeCallAbi::new(&pool, budget);
-        // The canonical StrBuf always returns through sret even though its
-        // three slots fit the return-register budget. Its 24 bytes are past
-        // every row's register-passed aggregate, so a by-value argument is SysV
-        // MEMORY class or an AAPCS64 caller-owned copy.
+    for target in [crate::Target::X86_64Linux, crate::Target::Aarch64Linux] {
+        let live = NativeCallAbi::new(&pool);
+        // `StrBuf` has no special rule (ADR-0084): its three eightbytes fit the
+        // native return bank, so it comes back in three result registers. Its
+        // 24 bytes are still past every row's register-passed *argument*, so a
+        // by-value argument is SysV MEMORY class or an AAPCS64 caller-owned
+        // copy.
         assert_eq!(
-            live.classify_return(strbuf),
-            rue_air::ReturnClass::Indirect { slot_count: 3 }
+            live_native_return(&pool, target, strbuf)
+                .register_pieces()
+                .len(),
+            3,
+            "StrBuf returns in three result registers on {target:?}"
         );
         let facts = request_call_abi(
             &database,
@@ -1900,17 +1987,11 @@ fn call_abi_strbuf_return_uses_sret_on_both_planes() {
         assert_eq!(facts.convention, rue_target::CallingConvention::Rue);
         assert_eq!(
             facts.return_class,
-            crate::type_queries::CallAbiReturnClass::NativeIndirect { slots: 3 }
+            crate::type_queries::CallAbiReturnClass::Registers { eightbytes: 3 }
         );
         assert_native_arg_parity(
             &facts.arguments[0],
-            live_native_placements(
-                &pool,
-                target,
-                &[(ArgConvention::ByValue, strbuf)],
-                strbuf,
-                budget,
-            )[0],
+            live_native_placements(&pool, target, &[(ArgConvention::ByValue, strbuf)], strbuf)[0],
             live.arg_slot_width(strbuf, ArgConvention::ByValue),
             false,
             &format!("StrBuf echo argument on {target:?}"),

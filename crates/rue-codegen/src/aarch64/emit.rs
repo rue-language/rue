@@ -562,18 +562,17 @@ impl<'a> Emitter<'a> {
     /// parameter slot when no grouped plan was supplied (RUE-1005).
     fn param_homing_or_per_slot(&self) -> Vec<crate::codegen_pipeline::ParamHoming> {
         if self.param_homing.is_empty() {
-            let abi_shift = self.has_sret as u32;
+            // AAPCS64 carries the indirect-result pointer in the dedicated
+            // `x8`, so an sret return shifts no user argument (ADR-0084).
             (0..self.num_params)
                 .map(|slot| crate::codegen_pipeline::ParamHoming {
                     start_slot: slot,
                     class: crate::call_plan::AbiSlotClass::Gp,
                     narrow_stack_load: None,
-                    location: if (slot + abi_shift) < 8 {
-                        crate::call_plan::AbiSlotLocation::GpReg((slot + abi_shift) as usize)
+                    location: if slot < 8 {
+                        crate::call_plan::AbiSlotLocation::GpReg(slot as usize)
                     } else {
-                        crate::call_plan::AbiSlotLocation::stack_slot(
-                            (slot + abi_shift - 8) as usize,
-                        )
+                        crate::call_plan::AbiSlotLocation::stack_slot((slot - 8) as usize)
                     },
                 })
                 .collect()
@@ -909,9 +908,9 @@ impl<'a> Emitter<'a> {
         //   ...
         //   [fp-16-callee_saved_size-(num_locals+1)*8] = param 0
         //
-        // AAPCS64: first 8 args in x0-x7. When the function returns via sret,
-        // the hidden buffer pointer is the first ABI argument, shifting every
-        // user param by one slot.
+        // AAPCS64: first 8 args in x0-x7. An sret return carries its hidden
+        // buffer pointer in the dedicated `x8` instead, so it shifts no user
+        // parameter (ADR-0084).
         let param_regs = [
             Reg::X0,
             Reg::X1,
@@ -1017,15 +1016,15 @@ impl<'a> Emitter<'a> {
             }
         }
 
-        // Save the incoming sret pointer (hidden first argument, x0) to its
-        // dedicated frame slot, one past the param area. The return path
-        // loads it back to store the result through.
+        // Save the incoming indirect-result pointer — AAPCS64's dedicated `x8`
+        // (section 6.9) — to its own frame slot, one past the param area. The
+        // return path loads it back to store the result through.
         if self.has_sret {
             let slot = self.frame_local_slots + self.num_params;
             let offset = crate::frame_layout::aarch64_slot_offset(self.callee_saved.len(), slot);
             self.begin_inst();
-            self.emit_str(param_regs[0], Reg::Fp, offset);
-            end_inst!(self, "str {}, [x29, #{}] ; sret ptr", param_regs[0], offset);
+            self.emit_str(Reg::X8, Reg::Fp, offset);
+            end_inst!(self, "str {}, [x29, #{}] ; sret ptr", Reg::X8, offset);
         }
     }
 

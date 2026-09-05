@@ -46,12 +46,14 @@ that is intentionally not C-compatible or stable across compiler revisions.
 [ADR-0084](designs/0084-native-calling-convention.md) is the reference for that
 convention: it stays unspecified and free to change between revisions, and it is
 the compilation target's C convention plus a return bank wider than C's. Its
-*arguments* are already placed by exactly those C rules, computed by
+*arguments* are placed by exactly those C rules, computed by
 `rue_air::lower_native_signature` — the same placement walk `lower_c_signature`
-runs, with the return handed in rather than decided, because the native return
-bank is wider than any `CConventionSpec` describes. Its *returns* still classify
-natively, which RUE-2038 finishes. The runtime helper boundary below is
-unaffected — its helpers are C calls and already follow the target's C row.
+runs, with the return handed in rather than decided. Its *returns* are
+classified by the same rules through `rue_air::lower_native_return`, read
+against the wider result roster `ConventionSpec::native` describes, and a result
+that does not fit that bank travels through the target row's own
+indirect-result register. The runtime helper boundary below is unaffected — its
+helpers are C calls and already follow the target's C row.
 
 Both boundaries name their convention with one value type,
 `rue_target::CallingConvention`, whose members are concrete conventions:

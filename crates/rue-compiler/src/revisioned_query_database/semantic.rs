@@ -1915,16 +1915,6 @@ pub(super) fn stable_type_is_aggregate(ty: &crate::TypeInstanceKey) -> bool {
     }
 }
 
-pub(super) fn stable_type_is_strbuf(ty: &crate::TypeInstanceKey) -> bool {
-    matches!(
-        ty,
-        crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(definition))
-            if definition.module().is_trusted_standard_library()
-                && definition.kind() == crate::StableDefinitionKind::Struct
-                && definition.name() == "StrBuf"
-    )
-}
-
 /// The stable plane's projection of a scalar type key onto its target-C
 /// width-and-signedness class; the extension operation itself lives on
 /// [`rue_air::CAbiScalarKind::extension`], shared with the live classifier.
@@ -1982,23 +1972,6 @@ pub(super) fn stable_c_abi_type_facts(
     rue_air::CAbiTypeFacts::Scalar {
         kind,
         class: kind.register_class(),
-    }
-}
-
-/// The stable plane's projection of one type onto the shared native
-/// classification kernel: the canonical layout supplies the slot count and
-/// slot-identity, the stable type keys supply the aggregate and `StrBuf`
-/// predicates. The decision tree itself lives on
-/// [`rue_air::NativeAbiTypeFacts`].
-pub(super) fn stable_native_abi_facts(
-    layout: &crate::type_queries::CanonicalLayout,
-    ty: &crate::TypeInstanceKey,
-) -> rue_air::NativeAbiTypeFacts {
-    rue_air::NativeAbiTypeFacts {
-        abi_slots: layout.abi_slots,
-        aggregate: stable_type_is_aggregate(ty),
-        strbuf: stable_type_is_strbuf(ty),
-        slot_identical: layout.slot_identical,
     }
 }
 
@@ -2128,39 +2101,16 @@ pub(super) fn evaluate_call_abi(
             ),
         })
         .collect::<Vec<_>>();
-    let native_return_budget =
-        rue_air::native_return_register_budget(key.configuration.target.arch());
-    let native_return = stable_native_abi_facts(return_layout, &signature.result)
-        .classify_return(native_return_budget);
+    // The result classifies through the same lowering as the arguments: the
+    // native convention returns by the target C row's own aggregate rule read
+    // against a wider register bank, and the C row by its own (ADR-0084).
+    let result_facts = stable_c_abi_type_facts(return_layout, &signature.result);
     let lowered = if convention.is_rue() {
         let pairing = rue_target::ConventionSpec::native(key.configuration.target);
-        let spec = pairing.spec();
-        // Only one fact about the return reaches argument placement: whether a
-        // hidden indirect-result pointer takes an ordinary argument register
-        // ahead of every user argument. Phase 2 (RUE-2038) replaces the rest.
-        let ret = match native_return {
-            rue_air::ReturnClass::ZeroSized => rue_air::LoweredReturn::Void,
-            rue_air::ReturnClass::Scalar | rue_air::ReturnClass::Registers { .. } => {
-                rue_air::LoweredReturn::Registers {
-                    class: rue_target::CRegisterClass::Gp,
-                    count: native_return.slot_count().max(1),
-                    extension: rue_air::ScalarAbiExtension::None,
-                }
-            }
-            rue_air::ReturnClass::Indirect { slot_count } => rue_air::LoweredReturn::Sret {
-                register: spec.sret_register,
-                echoed: spec.sret_pointer_echoed_in_result_register,
-                size: slot_count.saturating_mul(rue_air::SLOT_BYTES as u32),
-                align: rue_air::SLOT_BYTES as u32,
-            },
-        };
+        let ret = rue_air::lower_native_return(pairing, result_facts);
         rue_air::lower_native_signature(pairing, &parameters, ret)
     } else {
-        rue_air::lower_c_signature(
-            convention,
-            &parameters,
-            stable_c_abi_type_facts(return_layout, &signature.result),
-        )
+        rue_air::lower_c_signature(convention, &parameters, result_facts)
     };
 
     let mut arguments = Vec::with_capacity(signature.parameters.len());
@@ -2197,38 +2147,24 @@ pub(super) fn evaluate_call_abi(
             class,
         });
     }
-    // The return still classifies by convention: the native bank is wider than
-    // any C row's and the phase that unifies them is RUE-2038.
-    let return_class = if convention.is_rue() {
-        match native_return {
-            rue_air::ReturnClass::ZeroSized => R::ZeroSized,
-            rue_air::ReturnClass::Scalar => R::Scalar {
-                extension: rue_air::ScalarAbiExtension::None,
-            },
-            rue_air::ReturnClass::Registers { slot_count } => {
-                R::NativeRegisters { slots: slot_count }
-            }
-            rue_air::ReturnClass::Indirect { slot_count } => {
-                R::NativeIndirect { slots: slot_count }
-            }
-        }
-    } else {
-        match lowered.ret() {
-            rue_air::LoweredReturn::Void => R::ZeroSized,
-            rue_air::LoweredReturn::Registers {
-                count, extension, ..
-            } => {
-                if stable_type_is_aggregate(&signature.result) {
-                    R::CIntegerRegisters { eightbytes: count }
-                } else {
-                    R::Scalar { extension }
+    // Both rows describe a result the same way, because both place it by the
+    // same rule (ADR-0084): an aggregate takes one result register per
+    // eightbyte, or caller storage.
+    let return_class = match lowered.ret() {
+        rue_air::LoweredReturn::Void => R::ZeroSized,
+        rue_air::LoweredReturn::Registers { pieces, extension } => {
+            if stable_type_is_aggregate(&signature.result) {
+                R::Registers {
+                    eightbytes: pieces.len(),
                 }
+            } else {
+                R::Scalar { extension }
             }
-            rue_air::LoweredReturn::Sret { size, align, .. } => R::CIndirect {
-                size,
-                alignment: align,
-            },
         }
+        rue_air::LoweredReturn::Sret { size, align, .. } => R::Indirect {
+            size,
+            alignment: align,
+        },
     };
     Ok(QueryOutput::success(CallAbiValue::Available(
         CallAbiFacts {

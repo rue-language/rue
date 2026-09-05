@@ -132,6 +132,19 @@ pub(crate) trait SlotBackend: BoundsCheckBackend {
 
     fn emit_set_float_zero(&mut self, dst: VReg, width: crate::value_plan::FloatWidth);
 
+    /// Reserve `bytes` of transient stack scratch and produce a vreg holding
+    /// its base address. Paired with [`release_image_scratch`](Self::release_image_scratch).
+    fn reserve_image_scratch(&mut self, bytes: u32) -> VReg;
+
+    /// Release the scratch a matching [`reserve_image_scratch`](Self::reserve_image_scratch)
+    /// claimed.
+    fn release_image_scratch(&mut self, bytes: u32);
+
+    /// Leave the incoming indirect-result pointer in the primary result
+    /// register on the way out, which SysV AMD64 requires of an sret callee
+    /// and AAPCS64 does not (ADR-0084).
+    fn emit_sret_pointer_echo(&mut self);
+
     /// Allocate a fresh label for a tag-dispatch marshalling edge (RUE-1037).
     fn alloc_marshal_label(&mut self) -> crate::vreg::LabelId;
 
@@ -741,6 +754,55 @@ fn load_leaf<B: SlotBackend>(
         (None, None) => b.emit_load_through_ptr(dst, ptr, phys.byte_offset),
         (None, Some(access)) => b.emit_narrow_load_through_ptr(dst, ptr, phys.byte_offset, access),
     }
+}
+
+/// Callee side of a marshaled register return (ADR-0084): write the result's
+/// leaves into a scratch image at their compact byte offsets and read the
+/// eightbytes the convention places back out of it.
+///
+/// This is the return direction of the argument path's
+/// `materialize_image_eightbytes`; both run against the same [`NativeImage`],
+/// so a value packs into result registers exactly as it packs into argument
+/// registers. Only used when the value's leaves are not already its eightbytes.
+pub(crate) fn marshal_return_eightbytes<B: SlotBackend>(
+    b: &mut B,
+    vals: &[VReg],
+    image: &crate::native_abi::NativeImage,
+) -> Vec<VReg> {
+    let ptr = b.reserve_image_scratch(image.storage_bytes);
+    match &image.kind {
+        crate::native_abi::NativeImageKind::Map { map, padding } => {
+            store_enum_slots_through_ptr(b, vals, ptr, map, padding)
+        }
+        crate::native_abi::NativeImageKind::Dispatch(dispatch) => {
+            store_dispatch_image(b, vals, ptr, dispatch)
+        }
+    }
+    let eightbytes = load_through_ptr(b, ptr, image.eightbytes());
+    b.release_image_scratch(image.storage_bytes);
+    eightbytes
+}
+
+/// Caller side of a marshaled register return: write the eightbytes the result
+/// registers carried into a scratch image and read the value's leaves back out
+/// of it. The exact inverse of [`marshal_return_eightbytes`].
+pub(crate) fn unmarshal_return_leaves<B: SlotBackend>(
+    b: &mut B,
+    eightbytes: &[VReg],
+    image: &crate::native_abi::NativeImage,
+) -> Vec<VReg> {
+    let ptr = b.reserve_image_scratch(image.storage_bytes);
+    store_slots_through_ptr(b, eightbytes, ptr, 0);
+    let leaves = match &image.kind {
+        crate::native_abi::NativeImageKind::Map { map, .. } => {
+            load_enum_slots_through_ptr(b, ptr, map)
+        }
+        crate::native_abi::NativeImageKind::Dispatch(dispatch) => {
+            load_dispatch_image(b, ptr, dispatch)
+        }
+    };
+    b.release_image_scratch(image.storage_bytes);
+    leaves
 }
 
 /// Tag-dispatched counterpart of [`store_slots_to_sret_compact`] (RUE-1037):

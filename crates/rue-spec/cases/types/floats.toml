@@ -65,6 +65,74 @@ expected_stdout = """
 exit_code = 0
 
 [[case]]
+name = "float_carrying_aggregates_round_trip_through_a_by_value_return"
+spec = ["3.12:2"]
+description = "A struct, an array, and an enum payload holding floats each come back from a function by value with their values intact"
+source = """
+struct Q { f: f64 }
+
+enum Reading { None, Value(f64) }
+
+fn make_struct() -> Q { Q { f: 2.5 } }
+
+fn make_array() -> [f64; 1] { [1.5] }
+
+fn make_enum() -> Reading { Reading.Value(0.25) }
+
+fn main() -> i32 {
+    let q = make_struct();
+    let row = make_array();
+    let reading = make_enum();
+    @dbg(q.f);
+    @dbg(row[0]);
+    match reading {
+        Reading.None => @dbg(0.0),
+        Reading.Value(v) => @dbg(v),
+    }
+    @float_to_int(q.f + 0.5)
+}
+"""
+expected_stdout = """
+2.5
+1.5
+0.25
+"""
+exit_code = 3
+
+[[case]]
+name = "an_aggregate_mixing_floats_and_integers_returns_by_value"
+spec = ["3.12:2"]
+description = "A struct whose fields span both a float and an integer, and one whose two f32 fields share a machine word with an i32, each survive a by-value return"
+source = """
+struct Mixed { a: i64, b: f64 }
+
+struct Packed { a: f32, b: f32, c: i32 }
+
+fn mixed() -> Mixed { Mixed { a: 7, b: 2.5 } }
+
+fn packed() -> Packed { Packed { a: 1.5, b: 2.5, c: 4 } }
+
+fn main() -> i32 {
+    let m = mixed();
+    let p = packed();
+    @dbg(m.a);
+    @dbg(m.b);
+    @dbg(p.a);
+    @dbg(p.b);
+    @dbg(p.c);
+    0
+}
+"""
+expected_stdout = """
+7
+2.5
+1.5
+2.5
+4
+"""
+exit_code = 0
+
+[[case]]
 name = "comptime_float_has_no_runtime_representation"
 spec = ["3.12:3"]
 description = "A binding annotated comptime_float cannot exist at run time, so the annotation itself is rejected"

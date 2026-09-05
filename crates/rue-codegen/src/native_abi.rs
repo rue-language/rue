@@ -234,6 +234,17 @@ impl NativeArg {
         }
     }
 
+    /// The same question for a *result*: whether the value's leaf vregs are the
+    /// eightbytes the result registers `pieces` name, or the value marshals
+    /// through its compact image on the way to them.
+    ///
+    /// Both directions of a crossing consult one predicate, which is what makes
+    /// a callee's stores and its caller's reads agree about a bank by
+    /// construction (ADR-0084).
+    pub fn marshal_in_registers(&self, pieces: rue_air::RegisterPieces) -> NativeArgMarshal {
+        self.marshal(ArgLocation::Registers { pieces })
+    }
+
     /// The banks the value's own leaf vregs live in, before the placement is
     /// consulted.
     fn eightbyte_classes(&self) -> NativeArgMarshal {

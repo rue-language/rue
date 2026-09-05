@@ -42,7 +42,7 @@ use rue_air::{
     PointerLocation, SLOT_BYTES, SourceParamAbi, lower_native_signature,
 };
 use rue_cfg::{Cfg, CfgArgMode, CfgInstData, PlaceBase};
-use rue_target::{ConventionSpec, SretRegisterKind};
+use rue_target::ConventionSpec;
 
 use crate::call_plan::{AbiRegisterBanks, AbiSlotClass, AbiSlotLocation};
 use crate::codegen_pipeline::ParamHoming;
@@ -110,10 +110,14 @@ pub(crate) struct ParamStoragePlan {
     unmarshals: Vec<ParamUnmarshal>,
 }
 
-/// The already-decided return a callee's parameters are placed against: phase 1
-/// of ADR-0084 switches arguments only, so all argument placement needs to know
-/// is whether a hidden indirect-result pointer takes an ordinary argument
-/// register ahead of every user parameter.
+/// The already-classified return a callee's parameters are placed against.
+///
+/// Only one fact about a result moves an argument: whether the hidden
+/// indirect-result pointer takes an ordinary argument register ahead of every
+/// user parameter, which is the target row's own sret rule — SysV AMD64's
+/// hidden first argument, AAPCS64's dedicated `x8` (ADR-0084). The registers a
+/// result occupies never move a parameter, so the size and alignment here are
+/// nominal.
 fn incoming_return(pairing: ConventionSpec, has_sret: bool) -> LoweredReturn {
     if !has_sret {
         return LoweredReturn::Void;
@@ -438,14 +442,6 @@ impl ParamStoragePlan {
             &parameters,
             incoming_return(native_convention, has_sret),
         );
-        if has_sret {
-            assert_eq!(
-                signature.spec().sret_register,
-                SretRegisterKind::ArgumentRegister,
-                "the native convention takes its indirect-result pointer in the \
-                 first ordinary argument register"
-            );
-        }
 
         let scan = scan_param_references(cfg, type_pool);
         let mut slots = Vec::with_capacity(num_params as usize);

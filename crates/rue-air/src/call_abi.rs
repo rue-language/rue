@@ -1,30 +1,20 @@
-//! Canonical native call-ABI classifier (ADR-0052 phase 5).
+//! Per-type call-ABI facts: the projections one placement walk reads.
 //!
-//! One authority that answers a single question: *how does a value of a given
-//! type come back from a call on this target* — in registers, or indirectly
-//! through caller storage (sret). ADR-0052's third representation ("call ABI
-//! classification") is deliberately separate from the physical slot *count*: an
-//! aggregate return uses sret exactly when its flattened slot count exceeds the
-//! return-register budget. Its value is that both code-generation backends, the
-//! sret/return-budget decision sites, and the oracle's model of the call
-//! contract consult *one* place instead of each rediscovering
-//! `slot_count > budget`.
-//!
-//! *Arguments* are not classified here. The native convention places them
-//! exactly where the compilation target's C row places them (ADR-0084), which
-//! is [`lower_native_signature`](crate::lower_native_signature)'s answer against
-//! the same [`CAbiTypeFacts`] a C crossing presents; this module keeps the
-//! physical parameter-slot width the CFG contract and the oracle track
-//! ([`NativeCallAbi::arg_slot_width`]). The return joins them in RUE-2038.
+//! Where a value crosses a call boundary — native or foreign — is answered once
+//! by [`lower_c_signature`](crate::lower_c_signature) and
+//! [`lower_native_signature`](crate::lower_native_signature) against the
+//! convention description in `rue-target` (ADR-0064, ADR-0084). This module is
+//! the other half: the *facts* those functions classify. It projects a live
+//! type onto [`CAbiTypeFacts`] ([`c_abi_type_facts`], [`aggregate_leaves`]),
+//! answers the per-convention scalar extension questions a C crossing asks
+//! ([`TargetCCallAbi`], [`CAbiScalarKind`]), and keeps the native
+//! value-decomposition width the CFG parameter contract and the oracle's call
+//! contract track ([`NativeCallAbi::arg_slot_width`]) — a layout measure, not a
+//! placement.
 //!
 //! Which convention governs a boundary is named by exactly one value type,
 //! [`rue_target::CallingConvention`], whose rows are the native Rue convention
-//! and the concrete platform psABIs. This module answers the *native* decision
-//! tree ([`NativeAbiTypeFacts`]) and the per-convention scalar facts a C
-//! crossing needs ([`TargetCCallAbi`], [`CAbiScalarKind`]). Where a value
-//! crosses a C boundary is answered once by
-//! [`lower_c_signature`](crate::lower_c_signature), which reads the convention
-//! description in `rue-target` against the facts [`c_abi_type_facts`] projects.
+//! and the concrete platform psABIs.
 //!
 //! ## Two planes, one policy kernel
 //!
@@ -32,149 +22,14 @@
 //! classifiers here walk the request-scoped [`FrozenTypeInternPool`], while the
 //! stable query plane (`compiler.call-abi` in `rue-compiler`) walks its own
 //! revision-stable type keys and canonical layout values and must not hold a
-//! live pool. Both project per-type facts and then consult the same pure
-//! kernel — [`NativeAbiTypeFacts`] for the native decision tree,
-//! [`CAbiTypeFacts`] plus [`CAbiScalarKind`] for the target-C placement and
-//! extensions, [`native_return_register_budget`] and
-//! [`rue_target::CallingConvention::c_for_target`] for the per-target numbers —
-//! so the classification policy itself has exactly one production home.
-//!
-//! ## Memory-first transitional rule (ADR-0052 ratified ruling 9)
-//!
-//! The rule survives on the *return* only, until RUE-2038 places returns through
-//! the shared lowering as well: a multi-slot aggregate whose compact
-//! representation is not slot-identical cannot be expressed by the register
-//! return bank, so this classifier rules it indirect (sret).
+//! live pool. Both project per-type facts and then run the same placement walk
+//! — [`CAbiTypeFacts`] plus [`CAbiScalarKind`] against the convention
+//! description [`rue_target::ConventionSpec`] carries — so the classification
+//! policy itself has exactly one production home.
 
 use crate::lowered_signature::CAbiTypeFacts;
 use crate::{FrozenTypeInternPool, Type, TypeKind};
-use rue_target::{
-    Arch, CConventionSpec, CRegisterClass, CallingConvention, StackedArgumentPacking,
-};
-
-/// The native return-register budget for a target architecture: how many
-/// flattened eight-byte slots an aggregate return may occupy before it must
-/// cross through caller storage (sret). This is the single policy home of the
-/// per-target number; each backend's physical return-register roster is pinned
-/// against it by that backend's tests, and the stable query plane consults it
-/// directly instead of restating the numbers.
-pub const fn native_return_register_budget(arch: Arch) -> u32 {
-    match arch {
-        Arch::X86_64 => 6,
-        Arch::Aarch64 => 8,
-    }
-}
-
-/// Target-independent facts about one value type at a native call boundary:
-/// the pure classification kernel both planes share.
-///
-/// The live classifier ([`NativeCallAbi`]) projects these facts from the
-/// [`FrozenTypeInternPool`]; the stable query plane projects them from its
-/// canonical layout value and stable type keys. The projections differ by
-/// representation, but the decision tree — zero-sized omission, the `StrBuf`
-/// sret rule, the return-register budget, and the compact memory-first
-/// indirectness rule — lives only here, so the two planes cannot drift.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NativeAbiTypeFacts {
-    /// Flattened eight-byte ABI slot count (0 for a zero-sized type).
-    pub abi_slots: u32,
-    /// Whether the plane's own aggregate predicate holds for the type. The
-    /// planes project this differently on purpose: the live classifier keeps a
-    /// discriminant-only enum scalar, while the stable projection reports it as
-    /// its one register slot. Both crossings are physically identical; each
-    /// plane's projection is preserved by feeding its own predicate in.
-    pub aggregate: bool,
-    /// Whether the type is the canonical trusted standard-library `StrBuf`,
-    /// which always returns through sret.
-    pub strbuf: bool,
-    /// Whether the compact physical layout is byte-for-byte identical to the
-    /// flattened slot representation (see [`is_slot_identical_layout`]).
-    pub slot_identical: bool,
-}
-
-impl NativeAbiTypeFacts {
-    /// Classify a by-value return: zero-sized returns nothing; `StrBuf`, an
-    /// aggregate over the return-register budget, and a multi-slot aggregate
-    /// the compact layout cannot express slot-identically use sret; any other
-    /// aggregate returns in registers; everything else is a scalar.
-    pub const fn classify_return(self, ret_reg_budget: u32) -> ReturnClass {
-        if self.abi_slots == 0 {
-            return ReturnClass::ZeroSized;
-        }
-        if self.strbuf
-            || (self.aggregate && self.abi_slots > ret_reg_budget)
-            || self.crosses_indirectly_under_compact()
-        {
-            return ReturnClass::Indirect {
-                slot_count: self.abi_slots,
-            };
-        }
-        if self.aggregate {
-            ReturnClass::Registers {
-                slot_count: self.abi_slots,
-            }
-        } else {
-            ReturnClass::Scalar
-        }
-    }
-
-    /// Physical parameter-slot width of one argument (ADR-0052
-    /// representation 2): one pointer slot by reference, the flattened slot
-    /// count by value. Deliberately independent of the compact transitional
-    /// classification — see [`NativeCallAbi::arg_slot_width`].
-    pub const fn arg_slot_width(self, convention: ArgConvention) -> u32 {
-        match convention {
-            ArgConvention::ByReference => 1,
-            ArgConvention::ByValue => self.abi_slots,
-        }
-    }
-
-    /// The memory-first rule (ADR-0052 ruling 9) as the *return* still applies
-    /// it: a multi-slot aggregate whose compact representation is not
-    /// slot-identical cannot come back through the register return bank and must
-    /// use sret — unless it occupies exactly one ABI slot (RUE-1035), where one
-    /// register transports the compact image losslessly. RUE-2038 replaces this
-    /// with the shared lowering, as ADR-0084 replaced the argument half.
-    const fn crosses_indirectly_under_compact(self) -> bool {
-        self.abi_slots > 1 && self.aggregate && !self.slot_identical
-    }
-}
-
-/// How a by-value return value crosses the call boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReturnClass {
-    /// Zero-sized: no return register and no caller storage.
-    ZeroSized,
-    /// A single scalar returned in the target's primary return register.
-    Scalar,
-    /// A complete aggregate returned one flattened slot per return register.
-    Registers {
-        /// Number of flattened return slots.
-        slot_count: u32,
-    },
-    /// A complete aggregate written to caller-provided storage, whose address
-    /// is passed as a hidden first argument (sret).
-    Indirect {
-        /// Number of flattened return slots the callee writes.
-        slot_count: u32,
-    },
-}
-
-impl ReturnClass {
-    /// Number of flattened return slots represented by this classification.
-    pub const fn slot_count(self) -> u32 {
-        match self {
-            Self::ZeroSized => 0,
-            Self::Scalar => 1,
-            Self::Registers { slot_count } | Self::Indirect { slot_count } => slot_count,
-        }
-    }
-
-    /// Whether the return crosses indirectly through caller storage (sret).
-    pub const fn uses_sret(self) -> bool {
-        matches!(self, Self::Indirect { .. })
-    }
-}
+use rue_target::{CConventionSpec, CRegisterClass, CallingConvention, StackedArgumentPacking};
 
 /// How an argument is presented at the source level, before ABI classification.
 ///
@@ -189,82 +44,27 @@ pub enum ArgConvention {
     ByReference,
 }
 
-/// The native call-ABI classifier: the [`CallingConvention::Rue`] implementation.
+/// The native convention's *physical slot* measure.
 ///
-/// Consumes the canonical slot decomposition and the target's return-register
-/// budget. Argument register partitioning is a downstream concern of the
-/// per-backend lowerer (it counts materialized ABI slots against
-/// `arg_reg_budget`), so the budget is not stored here.
+/// Where a native value crosses is [`lower_native_signature`](crate::lower_native_signature)'s
+/// answer against the same [`CAbiTypeFacts`] a C crossing presents (ADR-0084);
+/// what survives here is the value-decomposition width the CFG parameter
+/// contract and the oracle's call contract track, which is a layout measure
+/// rather than a placement.
 #[derive(Debug, Clone, Copy)]
 pub struct NativeCallAbi<'a> {
     type_pool: &'a FrozenTypeInternPool,
-    ret_reg_budget: u32,
 }
 
 impl<'a> NativeCallAbi<'a> {
-    /// Build the native classifier for a target whose return-register budget is
-    /// `ret_reg_budget` (6 on x86-64, 8 on AArch64).
-    pub fn new(type_pool: &'a FrozenTypeInternPool, ret_reg_budget: u32) -> Self {
-        Self {
-            type_pool,
-            ret_reg_budget,
-        }
-    }
-
-    /// Build the native classifier for argument-side queries only
-    /// ([`classify_arg`](Self::classify_arg) and
-    /// [`arg_slot_width`](Self::arg_slot_width)), which do not depend on the
-    /// return-register budget.
-    ///
-    /// The target-independent oracle uses this to model the native call
-    /// contract without knowing a target's return registers; calling a
-    /// return-classification method on the result is not meaningful.
-    pub fn for_arguments(type_pool: &'a FrozenTypeInternPool) -> Self {
-        // The return-register budget is never read by the argument-side
-        // queries, so a sentinel is sound here.
-        Self {
-            type_pool,
-            ret_reg_budget: 0,
-        }
+    /// Build the native slot measure over `type_pool`.
+    pub fn new(type_pool: &'a FrozenTypeInternPool) -> Self {
+        Self { type_pool }
     }
 
     /// The convention this classifier implements.
     pub const fn abi(&self) -> CallingConvention {
         CallingConvention::Rue
-    }
-
-    /// Project the kernel facts for `ty` from the live type pool. This is the
-    /// live plane's representation-specific walk; the classification decision
-    /// itself lives on [`NativeAbiTypeFacts`].
-    fn facts(&self, ty: Type) -> NativeAbiTypeFacts {
-        let abi_slots = self.type_pool.abi_slot_count(ty);
-        NativeAbiTypeFacts {
-            abi_slots,
-            aggregate: is_multislot_aggregate(ty, abi_slots),
-            strbuf: matches!(
-                ty.kind(),
-                TypeKind::Struct(struct_id) if self.type_pool.is_strbuf(struct_id)
-            ),
-            slot_identical: is_slot_identical_layout(self.type_pool, ty),
-        }
-    }
-
-    /// Classify how a by-value return of `ty` crosses the boundary.
-    ///
-    /// Reproduces the historical decision exactly: zero-sized returns nothing;
-    /// canonical `StrBuf` and any aggregate whose flattened slot count exceeds
-    /// the return-register budget use sret; a smaller aggregate returns in
-    /// registers; everything else is a scalar. Under the compact layout a
-    /// non-slot-identical aggregate is forced indirect (memory-first rule).
-    pub fn classify_return(&self, ty: Type) -> ReturnClass {
-        self.facts(ty).classify_return(self.ret_reg_budget)
-    }
-
-    /// Whether a by-value return of `ty` uses the sret convention. Thin
-    /// predicate over [`classify_return`] for the decision sites that only need
-    /// the boolean.
-    pub fn return_is_sret(&self, ty: Type) -> bool {
-        self.classify_return(ty).uses_sret()
     }
 
     /// Physical parameter-slot width of one argument: the value-decomposition
@@ -290,11 +90,10 @@ impl<'a> NativeCallAbi<'a> {
 /// Structs and arrays always do; a discriminant-only enum stays a scalar, and
 /// an enum with a payload becomes an aggregate exactly when its slot count says
 /// so (oversized enums route through the same slot-count policy per RUE-946).
-/// This is the single authority behind both halves of a call: the classifier
-/// that decides `Registers`/`Scalar` here and code generation's slots-versus-
-/// primary materialization, which cannot disagree about which types are
-/// aggregates without a call passing a value in a shape the other side never
-/// expects.
+/// This is the single authority behind both halves of a call: the call planner
+/// and code generation's slots-versus-primary materialization, which cannot
+/// disagree about which types are aggregates without a call passing a value in
+/// a shape the other side never expects.
 pub fn is_multislot_aggregate(ty: Type, slot_count: u32) -> bool {
     matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_))
         || (ty.is_enum() && slot_count > 1)
@@ -307,10 +106,9 @@ pub fn is_multislot_aggregate(ty: Type, slot_count: u32) -> bool {
 /// True for eight-byte leaves (`i64`/`u64`/pointers, the recovery scalar) and
 /// zero-sized / compile-time-only types, and for aggregates built entirely from
 /// slot-identical leaves. Narrow scalars (one/two/four bytes) and enums (narrow
-/// tag) are not slot-identical. This is the single authority both the compact
-/// call-ABI transitional rule above and code generation's narrow-access refusal
-/// (RUE-974) consult, so they cannot disagree about which types the compact
-/// layout leaves unchanged.
+/// tag) are not slot-identical. This is the single authority code generation's
+/// narrow-access refusal (RUE-974) consults, so no two sites disagree about
+/// which types the compact layout leaves unchanged.
 pub fn is_slot_identical_layout<P: crate::FfiTypePool + ?Sized>(type_pool: &P, ty: Type) -> bool {
     match ty.kind() {
         // Eight-byte leaves and the recovery scalar: identical in both models.
@@ -982,16 +780,6 @@ mod tests {
     }
 
     #[test]
-    fn return_class_slot_count_and_sret_predicate_agree() {
-        assert_eq!(ReturnClass::ZeroSized.slot_count(), 0);
-        assert_eq!(ReturnClass::Scalar.slot_count(), 1);
-        assert_eq!(ReturnClass::Registers { slot_count: 3 }.slot_count(), 3);
-        assert_eq!(ReturnClass::Indirect { slot_count: 9 }.slot_count(), 9);
-        assert!(!ReturnClass::Registers { slot_count: 3 }.uses_sret());
-        assert!(ReturnClass::Indirect { slot_count: 9 }.uses_sret());
-    }
-
-    #[test]
     fn sret_pointer_register_and_echo_diverge_by_psabi() {
         let sysv = TargetCCallAbi::sysv_amd64();
         let aapcs = TargetCCallAbi::aapcs64();
@@ -1001,12 +789,6 @@ mod tests {
         // AAPCS64: dedicated x8, not echoed.
         assert!(aapcs.sret_pointer_in_dedicated_register());
         assert!(!aapcs.sret_pointer_echoed_in_result_register());
-    }
-
-    #[test]
-    fn per_arch_native_budget_has_one_home() {
-        assert_eq!(native_return_register_budget(Arch::X86_64), 6);
-        assert_eq!(native_return_register_budget(Arch::Aarch64), 8);
     }
 
     #[test]
@@ -1088,83 +870,6 @@ mod tests {
                 "{convention} must materialize the 1-byte `_Bool` 0/1 contract"
             );
             assert!(abi.scalar_arg_extension(Type::I64).is_noop());
-        }
-    }
-
-    #[test]
-    fn native_facts_kernel_decision_table() {
-        let scalar = NativeAbiTypeFacts {
-            abi_slots: 1,
-            aggregate: false,
-            strbuf: false,
-            slot_identical: true,
-        };
-        let aggregate = |abi_slots: u32, slot_identical: bool| NativeAbiTypeFacts {
-            abi_slots,
-            aggregate: true,
-            strbuf: false,
-            slot_identical,
-        };
-        for budget in [6u32, 8] {
-            // Zero-sized values vanish in both positions.
-            let zero = NativeAbiTypeFacts {
-                abi_slots: 0,
-                aggregate: true,
-                strbuf: false,
-                slot_identical: true,
-            };
-            assert_eq!(zero.classify_return(budget), ReturnClass::ZeroSized);
-
-            assert_eq!(scalar.classify_return(budget), ReturnClass::Scalar);
-            // By-reference is one pointer slot regardless of the facts.
-            assert_eq!(
-                aggregate(budget + 1, true).arg_slot_width(ArgConvention::ByReference),
-                1
-            );
-
-            // The return-register budget boundary: budget - 1 and budget fit,
-            // budget + 1 goes through sret. Arguments ignore the budget.
-            assert_eq!(
-                aggregate(budget - 1, true).classify_return(budget),
-                ReturnClass::Registers {
-                    slot_count: budget - 1
-                }
-            );
-            assert_eq!(
-                aggregate(budget, true).classify_return(budget),
-                ReturnClass::Registers { slot_count: budget }
-            );
-            assert_eq!(
-                aggregate(budget + 1, true).classify_return(budget),
-                ReturnClass::Indirect {
-                    slot_count: budget + 1
-                }
-            );
-
-            // The compact memory-first rule on the return: a multi-slot
-            // non-slot-identical aggregate comes back through sret; a
-            // single-slot one still fits one register (RUE-1035).
-            assert_eq!(
-                aggregate(2, false).classify_return(budget),
-                ReturnClass::Indirect { slot_count: 2 }
-            );
-            assert_eq!(
-                aggregate(1, false).classify_return(budget),
-                ReturnClass::Registers { slot_count: 1 }
-            );
-
-            // Canonical StrBuf always returns through sret, even under budget.
-            let strbuf = NativeAbiTypeFacts {
-                abi_slots: 3,
-                aggregate: true,
-                strbuf: true,
-                slot_identical: true,
-            };
-            assert_eq!(
-                strbuf.classify_return(budget),
-                ReturnClass::Indirect { slot_count: 3 }
-            );
-            assert_eq!(strbuf.arg_slot_width(ArgConvention::ByValue), 3);
         }
     }
 
