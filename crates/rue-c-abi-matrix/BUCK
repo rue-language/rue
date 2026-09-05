@@ -1,0 +1,39 @@
+load("//crates:defs.bzl", "rue_binary")
+load("//:test_defs.bzl", "rue_sh_test")
+
+# The generated C-boundary conformance matrix (RUE-2035). This binary IS the
+# harness: it emits the paired C and Rue sources, drives `cc`, `ar`, the real
+# compiler, and the linked executable, and compares the run against checksums it
+# computed from the same table. Its `#[cfg(test)]` module unit-tests the
+# generator itself (grid completeness, position derivation, name uniqueness,
+# literal ranges), so the macro's generated `rue-c-abi-matrix-test` target is
+# kept: those assertions need no compiler and no C toolchain.
+rue_binary(
+    name = "rue-c-abi-matrix",
+    deps = [
+        "//crates/rue-target:rue-target",
+        "//crates/rue-test-runner:rue-test-runner",
+        "//third-party:libtest2-mimic",
+        "//third-party:tempfile",
+    ],
+)
+
+# The execution matrix. `platform = "native"` because it is a host-only
+# assertion by construction: it compiles for the machine it runs on and executes
+# what it linked, so the AArch64 Linux and Apple arm64 rows are proven only by
+# the native lanes, which select this target from the live graph through the
+# label. `rue_not_quick` keeps `scripts/rue quick` meaning "unit tests only" —
+# this one spawns a C toolchain and the compiler.
+#
+# The harness speaks the libtest protocol (libtest2-mimic), which is what lets a
+# host with no `cc` on PATH report each trial as *ignored* rather than passing
+# silently or failing, matching the CLI corpus's `requires_system_linker` rule.
+rue_sh_test(
+    name = "c-abi-matrix-test",
+    platform = "native",
+    labels = ["rue_not_quick"],
+    test = ":rue-c-abi-matrix",
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+    },
+)

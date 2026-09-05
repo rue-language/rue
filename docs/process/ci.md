@@ -161,7 +161,13 @@ self-enrolls through its graph attribute. Neither requires a workflow or
 validator target-list edit. The fake-tool shell suites (`//:wrapper-script-tests`
 and its siblings) carry the same label so the macOS lane runs them under the
 stock Bash 3.2; the repetition is declared in
-`scripts/validate-test-duplication.py`.
+`scripts/validate-test-duplication.py`. So is
+`//crates/rue-c-abi-matrix:c-abi-matrix-test`, the generated C-boundary
+conformance matrix: it generates paired C and Rue sources for the host, compiles
+the C side with the host `cc`, links through it, and runs the result, so each
+psABI row — SysV AMD64, AAPCS64, and the Apple arm64 amendments — is proven only
+on the lane where that row is native. It reports every trial as ignored on a
+host with no `cc`. See `docs/notes/ffi-abi-conformance-audit.md`.
 
 The native lanes set `RUE_PLATFORM_CASE_SELECTION=native` through
 `scripts/run-native-platform-corpus.sh`. Both manifest-driven harnesses then

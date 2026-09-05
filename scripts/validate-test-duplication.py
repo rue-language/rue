@@ -155,6 +155,7 @@ ALLOWANCES = (
         kind="per-target",
         targets=(
             "//crates/rue-allocator:rue-allocator-test",
+            "//crates/rue-c-abi-matrix:c-abi-matrix-test",
             "//crates/rue-codegen:rue-codegen-test",
             "//crates/rue-linker:rue-linker-test",
             "//crates/rue-runtime-abi:rue-runtime-abi-test",
@@ -174,7 +175,10 @@ ALLOWANCES = (
             "The focused compiler host-conditional target is included because "
             "its ignored platform_native_ rows intentionally execute on Linux "
             "premerge and both native hosts; the broad compiler test selection "
-            "is Linux-only. "
+            "is Linux-only. The generated C-boundary matrix is included for the "
+            "same reason: it compiles for and executes on the host it runs on, "
+            "so each row's psABI — SysV AMD64, AAPCS64, and the Apple arm64 "
+            "amendments — is proven only where that row is native. "
             "Each target here repeats on its own; an overlap BETWEEN any two of "
             "them is a different fact and is not covered by this entry."
         ),

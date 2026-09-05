@@ -325,14 +325,76 @@ exercised by the compiler-generated caller.
 `aarch64_macos_narrow_exports_build_under_the_apple_row` compiles and links a
 narrow-parameter export for AArch64 macOS, so the Apple row's export thunks are
 generated, encoded, and placed in a Mach-O image on every host and executed on
-the macOS CI host. There is no macOS C-caller archive, so the Apple row's
-stacked-argument packing is proved by unit tests over the shared signature
-lowering rather than by execution.
+the macOS CI host. That case has no C caller of its own; the generated matrix
+below supplies one, and the Apple row's stacked-argument packing is additionally
+pinned by unit tests over the shared signature lowering.
+
+### The generated conformance matrix
+
+The cases above are hand-written, and each one's C side is hand-assembled
+machine code. That does not scale to a matrix, so
+`//crates/rue-c-abi-matrix:c-abi-matrix-test` generates one. At test time it
+emits paired C and Rue sources, compiles the C side with the host `cc`, compiles
+the Rue side with the real driver, links the two with `--linker cc
+--link-archive`, runs the executable, and compares its stdout with checksums the
+generator computed from the same table it emitted both sources from.
+
+The grid is shape x position x direction x ABI spelling:
+
+- **Shapes** (20): `i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `i64`, `u64`, `bool`,
+  `ptr const u8`, and ten `@repr(c)` structs chosen for the classification
+  boundaries — `{u8}`, `{u8,u8}`, `{i32,i32}`, `{i64,u8}`, `{i64,i64}`,
+  `{i64,i64,u8}`, `{i64,i64,i64}`, `{u8,i64}`, a nested `{{i32,i32},i64}`, and
+  `{[u8;4],i32}`. Floats are still rejected at the boundary; the table is shaped
+  so adding them is a table edit.
+- **Positions** (5): argument 0, the convention's last argument register, the
+  first stack slot, a deep stack slot, and the result type. The indices come
+  from `CConventionSpec::gp_argument_registers`, so a convention with a
+  different register budget moves them without a source edit. Every other
+  argument is an `i64` filler, and every cell also stacks arguments.
+- **Directions** (2): import (Rue calls generated C) and export (a generated C
+  driver calls a `pub extern` Rue function).
+- **ABI spellings** (2): `"C"` and the host row's own name, so the alias and the
+  explicit spelling are proven equal by execution rather than by inspection.
+
+Every cell reduces its whole argument list to one `u64` checksum: each filler,
+and each *leaf* of the shape separately, contributes its 64-bit pattern times
+its own odd multiplier, accumulated with wrapping arithmetic on both sides. A
+swapped field, a truncated half, a missing sign extension, or a slot read from
+the wrong stack offset changes the sum, and the failure report names the
+direction, shape, position, ABI spelling, and function. Return-position cells
+also round-trip a seed: the callee answers a deliberately different value when
+the seed did not arrive intact, so a broken argument crossing cannot hide behind
+a correct result.
+
+That is 400 cells in four generated programs — one per direction and spelling —
+which compile, link, and run in about five seconds. The generated C is
+freestanding on every row: no headers, no libc, fixed-width typedefs spelled
+from the target's data model with `_Static_assert`s holding them, and no
+platform conditionals. Linking goes through `cc` because the objects `cc`
+produces carry relocation and section kinds the internal linker's static subset
+does not promise to handle.
+
+The target is host-only by construction and carries the `rue_platform_native`
+label, so the native lanes run it: SysV AMD64 on linux-x64, AAPCS64 on
+linux-arm64, and the Apple arm64 row on macos-arm64. A host with no `cc` and
+`ar` on `PATH` reports every trial as ignored rather than failing. Run it with
+`./buck2 test //crates/rue-c-abi-matrix:c-abi-matrix-test`; `scripts/rue
+premerge` includes it, and `scripts/rue quick` deliberately does not.
+
+One gap the grid does *not* close is the open Apple amendment above. Every
+filler is an `i64`, so a stacked composite is followed by an 8-byte-aligned
+argument that re-aligns the outgoing area, and the difference between Apple's
+natural-size footprint and the whole-eightbyte one Rue emits is absorbed rather
+than observed. Distinguishing them needs a filler narrower than a slot next to a
+stacked composite, which is worth adding with the byte-granular marshaling that
+would make it pass.
 
 Backend tests additionally enforce that the typed runtime manifest stays within
 each backend's implemented register-only subset and that its boundary resolves
-to that backend's C convention row. The C-caller/C-callee matrix is still
-one-sided on macOS; a macOS C toolchain probe would close it.
+to that backend's C convention row. The generated matrix makes the
+C-caller/C-callee matrix two-sided on every supported host, macOS included,
+because the macOS lane compiles the same generated C with the host toolchain.
 
 ## Finding
 
@@ -361,10 +423,12 @@ signature and its executing cases. What remains open:
   byte-granular marshaling rather than the whole-eightbyte image stores the
   current path emits;
 - floating-point/vector arguments and results, which the boundary still rejects;
-- variadic calls, or an explicit diagnostic rejecting them;
-- pointer provenance, mutability, and lifetime rules; and
-- an executable Rue-to-C harness on macOS, so the C-caller/C-callee matrix is
-  two-sided on every supported target.
+- variadic calls, or an explicit diagnostic rejecting them; and
+- pointer provenance, mutability, and lifetime rules.
+
+The executable Rue-to-C harness on macOS that this list used to ask for is the
+generated conformance matrix above: it runs both directions on every native
+host, so the C-caller/C-callee matrix is no longer one-sided there.
 
 Until those paths exist, native Rue functions and native-layout values are not
 an FFI surface.
