@@ -371,14 +371,6 @@ pub struct CallPlan {
     /// call, before the sret read-back. Zero when no argument crosses
     /// indirectly.
     pub caller_indirect_bytes: u32,
-    /// For a call across an `extern "C"` target-C boundary (ADR-0064 P2), the
-    /// narrow-integer extension the caller must apply to a **scalar** return so
-    /// it becomes Rue's canonical 64-bit form — a C callee leaves the bits above
-    /// the return's declared width unspecified. `None` for a native Rue call, a
-    /// non-scalar return, or a register-width scalar that needs no extension. The
-    /// value is resolved from the shared [`rue_air::TargetCCallAbi`] classifier so
-    /// both backends apply the same rule.
-    pub foreign_return_extension: Option<rue_air::ScalarAbiExtension>,
 }
 
 /// Input metadata for one CFG call argument. This is copied out of the CFG
@@ -800,9 +792,6 @@ impl CallPlan {
             stack_slot_count,
             stack_bytes,
             caller_indirect_bytes,
-            // Set by the caller (the value-plan Call arm) for an `extern "C"`
-            // foreign target with a scalar return; native calls leave it None.
-            foreign_return_extension: None,
         }
     }
 
@@ -844,7 +833,6 @@ impl CallPlan {
             )
             .expect("call stack area must pass frame-budget preflight"),
             caller_indirect_bytes: 0,
-            foreign_return_extension: None,
         }
     }
 }
@@ -1041,7 +1029,6 @@ mod tests {
             stack_slot_count: 0,
             stack_bytes: 0,
             caller_indirect_bytes: 0,
-            foreign_return_extension: None,
         };
 
         assert!(plan.user_args[0].slots.is_empty());
