@@ -30,21 +30,30 @@ contexts:
     - match: //.*$
       scope: comment.line.double-slash.rue
 
+  # Every word matched here comes from the lexer's keyword table
+  # (`rue_lexer::KEYWORDS`); the `keywords` and `types` alternations together
+  # must name it exactly, which the rue-spec unit tests check.
   keywords:
     # Control flow
-    - match: \b(if|else|while|loop|match|return|break|continue)\b
+    - match: \b(break|continue|else|for|if|in|loop|match|return|while|yield)\b
       scope: keyword.control.rue
-    # Declaration keywords
-    - match: \b(fn|let|mut|struct|enum)\b
+    # Declarations and modifiers
+    - match: \b(borrow|checked|comptime|const|drop|enum|extern|fn|impl|inout|let|linear|mut|pub|struct|unchecked)\b
       scope: keyword.declaration.rue
     # Boolean literals
-    - match: \b(true|false)\b
+    - match: \b(false|true)\b
       scope: constant.language.boolean.rue
+    # The receiver
+    - match: \b(self)\b
+      scope: variable.language.self.rue
 
   types:
     # Primitive types
-    - match: \b(i8|i16|i32|i64|u8|u16|u32|u64|bool)\b
+    - match: \b(bool|i16|i32|i64|i8|u16|u32|u64|u8)\b
       scope: storage.type.primitive.rue
+    # The enclosing struct type, the pointer constructor, and the type of types
+    - match: \b(Self|ptr|type)\b
+      scope: storage.type.rue
     # Unit type
     - match: \(\)
       scope: storage.type.unit.rue

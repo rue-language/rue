@@ -2035,6 +2035,97 @@ mod tests {
         validate_appendix_grammar(Path::new("docs/spec/src")).unwrap();
     }
 
+    /// Every word named by a keyword table in the specification's keyword
+    /// chapter: the keywords of 2.4:2 and the reserved type names of 2.4:3,
+    /// which together are the words a program cannot use as an identifier.
+    fn spec_keyword_tables(spec_dir: &Path) -> Vec<String> {
+        let path = spec_dir.join("02-lexical-structure/04-keywords.md");
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+        let mut spellings: Vec<String> = text
+            .lines()
+            .filter_map(|line| {
+                let cell = line.strip_prefix("| `")?;
+                let (spelling, _) = cell.split_once('`')?;
+                Some(spelling.to_owned())
+            })
+            .collect();
+        assert!(
+            !spellings.is_empty(),
+            "{} has no keyword table",
+            path.display()
+        );
+        spellings.sort();
+        spellings
+    }
+
+    /// Every word the website's syntax definition highlights as a keyword,
+    /// taken from the alternations of its `keywords` and `types` contexts.
+    fn syntax_definition_keywords(path: &Path) -> Vec<String> {
+        let text = fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+        let mut context = String::new();
+        let mut spellings = Vec::new();
+        for line in text.lines() {
+            if let Some(name) = line
+                .strip_prefix("  ")
+                .filter(|rest| !rest.starts_with([' ', '-', '#']))
+                .and_then(|rest| rest.strip_suffix(':'))
+            {
+                context = name.to_owned();
+                continue;
+            }
+            if context != "keywords" && context != "types" {
+                continue;
+            }
+            // Only word alternations (`\b(a|b)\b`) name keywords; the other
+            // matches in these contexts are literal syntax such as `\(\)`.
+            let Some(alternation) = line
+                .split_once("\\b(")
+                .and_then(|(_, rest)| rest.split_once(")\\b"))
+                .map(|(alternation, _)| alternation)
+            else {
+                continue;
+            };
+            spellings.extend(alternation.split('|').map(str::to_owned));
+        }
+        assert!(
+            !spellings.is_empty(),
+            "{} has no keyword alternation",
+            path.display()
+        );
+        spellings.sort();
+        spellings
+    }
+
+    fn lexer_keywords() -> Vec<String> {
+        rue_lexer::KEYWORDS
+            .iter()
+            .map(|keyword| (*keyword).to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn specification_keyword_tables_match_the_lexer() {
+        // The lexer's token table is the authority on what a keyword is; the
+        // chapter is normative text about the same set, so the two are pinned
+        // to each other rather than maintained in parallel.
+        assert_eq!(
+            spec_keyword_tables(Path::new("docs/spec/src")),
+            lexer_keywords(),
+            "docs/spec/src/02-lexical-structure/04-keywords.md and rue_lexer::KEYWORDS disagree"
+        );
+    }
+
+    #[test]
+    fn website_syntax_definition_highlights_every_keyword() {
+        assert_eq!(
+            syntax_definition_keywords(Path::new("website/syntaxes/rue.sublime-syntax")),
+            lexer_keywords(),
+            "website/syntaxes/rue.sublime-syntax and rue_lexer::KEYWORDS disagree"
+        );
+    }
+
     #[test]
     fn appendix_grammar_reports_all_undefined_symbols_in_order() {
         let spec_dir = tempfile::tempdir().unwrap();

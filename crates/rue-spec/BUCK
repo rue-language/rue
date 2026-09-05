@@ -18,6 +18,9 @@ rue_binary(
         "//third-party:tempfile",
         "//third-party:toml",
     ],
+    # The keyword cross-checks read `rue_lexer::KEYWORDS`, the canonical
+    # keyword list, and nothing in the binary itself needs the lexer.
+    test_deps = ["//crates/rue-lexer:rue-lexer"],
 )
 
 # The spec test cases, as an input of the //:spec-tests suite (so a cases/

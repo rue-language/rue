@@ -10,42 +10,17 @@ pub fn arb_ident() -> impl Strategy<Value = String> {
     // Start with letter or underscore, followed by alphanumerics
     prop::string::string_regex("[a-z_][a-z0-9_]{0,15}")
         .expect("valid regex")
-        .prop_filter("not a keyword", |s| !is_keyword(s))
+        .prop_filter("not a reserved word", |s| !is_reserved_word(s))
 }
 
-fn is_keyword(s: &str) -> bool {
-    matches!(
-        s,
-        "fn" | "let"
-            | "mut"
-            | "if"
-            | "else"
-            | "match"
-            | "while"
-            | "loop"
-            | "break"
-            | "continue"
-            | "return"
-            | "true"
-            | "false"
-            | "struct"
-            | "enum"
-            | "impl"
-            | "drop"
-            | "linear"
-            | "self"
-            | "i8"
-            | "i16"
-            | "i32"
-            | "i64"
-            | "u8"
-            | "u16"
-            | "u32"
-            | "u64"
-            | "bool"
-            | "inout"
-            | "borrow"
-    )
+/// Whether the lexer takes `s` as something other than an identifier.
+///
+/// The keyword set is `rue_lexer::KEYWORDS`, the lexer's own token table, so
+/// this generator cannot fall behind a new keyword and emit source the parser
+/// rejects. The wildcard `_` is not a keyword (spec 2.4 lists none) but lexes
+/// to its own pattern token, so it is excluded here as well.
+fn is_reserved_word(s: &str) -> bool {
+    s == "_" || rue_lexer::is_keyword(s)
 }
 
 /// Generate a primitive type name.
@@ -318,11 +293,28 @@ mod tests {
     use proptest::test_runner::TestRunner;
 
     #[test]
-    fn test_arb_ident_not_keyword() {
+    fn test_arb_ident_lexes_as_an_identifier() {
         let mut runner = TestRunner::default();
         for _ in 0..100 {
             let val = arb_ident().new_tree(&mut runner).unwrap().current();
-            assert!(!is_keyword(&val), "generated keyword: {}", val);
+            assert!(!is_reserved_word(&val), "generated reserved word: {}", val);
+            // The filter exists so the generator never hands the parser a
+            // keyword; the lexer is the authority on whether it succeeded.
+            let (tokens, _) = rue_lexer::Lexer::new(&val)
+                .tokenize()
+                .unwrap_or_else(|error| panic!("{val} failed to lex: {error}"));
+            assert!(
+                matches!(tokens[0].kind, rue_lexer::TokenKind::Ident(_)),
+                "{val} lexed as {:?}",
+                tokens[0].kind
+            );
+        }
+    }
+
+    #[test]
+    fn test_reserved_words_cover_the_lexer_keywords() {
+        for keyword in rue_lexer::KEYWORDS {
+            assert!(is_reserved_word(keyword), "{keyword} is not filtered out");
         }
     }
 

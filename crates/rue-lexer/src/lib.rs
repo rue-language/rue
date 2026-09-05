@@ -65,6 +65,92 @@ pub fn interner_exhausted_error() -> rue_error::CompileError {
     )))
 }
 
+/// Every keyword token, ordered by spelling.
+///
+/// Keywords are the reserved words of spec 2.4:2 together with the reserved
+/// type names of 2.4:3 — the words the token table takes before the identifier
+/// rule, so no program can bind one. `self` and `Self` are keywords by that
+/// rule; `_` is not, because spec 2.4 lists no wildcard and the token table
+/// classifies `Underscore` as a pattern token. A consumer that needs "may not
+/// be an identifier" therefore excludes the wildcard on its own.
+///
+/// This list and `TokenKind::keyword_spelling` are the only places a keyword
+/// is written down: [`KEYWORDS`] is computed from them, and the match in
+/// `keyword_spelling` is exhaustive, so a new `TokenKind` variant does not
+/// compile until it says whether it is a keyword.
+const KEYWORD_TOKENS: &[TokenKind] = &[
+    TokenKind::SelfType,
+    TokenKind::Bool,
+    TokenKind::Borrow,
+    TokenKind::Break,
+    TokenKind::Checked,
+    TokenKind::Comptime,
+    TokenKind::Const,
+    TokenKind::Continue,
+    TokenKind::Drop,
+    TokenKind::Else,
+    TokenKind::Enum,
+    TokenKind::Extern,
+    TokenKind::False,
+    TokenKind::Fn,
+    TokenKind::For,
+    TokenKind::I16,
+    TokenKind::I32,
+    TokenKind::I64,
+    TokenKind::I8,
+    TokenKind::If,
+    TokenKind::Impl,
+    TokenKind::In,
+    TokenKind::Inout,
+    TokenKind::Let,
+    TokenKind::Linear,
+    TokenKind::Loop,
+    TokenKind::Match,
+    TokenKind::Mut,
+    TokenKind::Ptr,
+    TokenKind::Pub,
+    TokenKind::Return,
+    TokenKind::SelfValue,
+    TokenKind::Struct,
+    TokenKind::True,
+    TokenKind::Type,
+    TokenKind::U16,
+    TokenKind::U32,
+    TokenKind::U64,
+    TokenKind::U8,
+    TokenKind::Unchecked,
+    TokenKind::While,
+    TokenKind::Yield,
+];
+
+const KEYWORD_SPELLINGS: [&str; KEYWORD_TOKENS.len()] = {
+    let mut spellings = [""; KEYWORD_TOKENS.len()];
+    let mut index = 0;
+    while index < KEYWORD_TOKENS.len() {
+        spellings[index] = match KEYWORD_TOKENS[index].keyword_spelling() {
+            Some(spelling) => spelling,
+            None => panic!("KEYWORD_TOKENS lists a token that is not a keyword"),
+        };
+        index += 1;
+    }
+    spellings
+};
+
+/// Every keyword spelling, ordered by spelling.
+///
+/// Consumers outside the lexer — the fuzz identifier generator, the
+/// specification keyword tables, the website syntax definition — read this
+/// slice or are tested against it rather than repeating the list.
+pub const KEYWORDS: &[&str] = &KEYWORD_SPELLINGS;
+
+/// Whether `word` is a keyword and so cannot be used as an identifier.
+///
+/// The wildcard `_` is not a keyword, though it is equally unavailable as an
+/// identifier; a caller that generates identifiers must reject it separately.
+pub fn is_keyword(word: &str) -> bool {
+    KEYWORDS.contains(&word)
+}
+
 /// Token kinds in the Rue language.
 ///
 /// This enum is `Copy` since all variants contain only small, copyable data:
@@ -197,6 +283,112 @@ pub enum TokenKind {
 }
 
 impl TokenKind {
+    /// The source spelling of this token when it is a keyword.
+    ///
+    /// The match is exhaustive by design: a new `TokenKind` variant does not
+    /// compile until it says whether it is a keyword, which is what keeps
+    /// [`KEYWORDS`] complete.
+    pub const fn keyword_spelling(self) -> Option<&'static str> {
+        Some(match self {
+            TokenKind::Fn => "fn",
+            TokenKind::Let => "let",
+            TokenKind::Mut => "mut",
+            TokenKind::Inout => "inout",
+            TokenKind::Borrow => "borrow",
+            TokenKind::If => "if",
+            TokenKind::Else => "else",
+            TokenKind::Match => "match",
+            TokenKind::While => "while",
+            TokenKind::Loop => "loop",
+            TokenKind::For => "for",
+            TokenKind::In => "in",
+            TokenKind::Break => "break",
+            TokenKind::Continue => "continue",
+            TokenKind::Return => "return",
+            TokenKind::Yield => "yield",
+            TokenKind::True => "true",
+            TokenKind::False => "false",
+            TokenKind::Struct => "struct",
+            TokenKind::Enum => "enum",
+            TokenKind::Impl => "impl",
+            TokenKind::Drop => "drop",
+            TokenKind::Linear => "linear",
+            TokenKind::SelfValue => "self",
+            TokenKind::SelfType => "Self",
+            TokenKind::Comptime => "comptime",
+            TokenKind::Pub => "pub",
+            TokenKind::Const => "const",
+            TokenKind::Checked => "checked",
+            TokenKind::Unchecked => "unchecked",
+            TokenKind::Ptr => "ptr",
+            TokenKind::Extern => "extern",
+            TokenKind::I8 => "i8",
+            TokenKind::I16 => "i16",
+            TokenKind::I32 => "i32",
+            TokenKind::I64 => "i64",
+            TokenKind::U8 => "u8",
+            TokenKind::U16 => "u16",
+            TokenKind::U32 => "u32",
+            TokenKind::U64 => "u64",
+            TokenKind::Bool => "bool",
+            TokenKind::Type => "type",
+            // Not keywords: the wildcard pattern, the literal and identifier
+            // classes, every operator and punctuator, and end of file.
+            TokenKind::Underscore
+            | TokenKind::Int(_)
+            | TokenKind::Float(_)
+            | TokenKind::String(_)
+            | TokenKind::Ident(_)
+            | TokenKind::Plus
+            | TokenKind::Minus
+            | TokenKind::Star
+            | TokenKind::Slash
+            | TokenKind::Percent
+            | TokenKind::Eq
+            | TokenKind::EqEq
+            | TokenKind::Bang
+            | TokenKind::BangEq
+            | TokenKind::Lt
+            | TokenKind::Gt
+            | TokenKind::LtEq
+            | TokenKind::GtEq
+            | TokenKind::AmpAmp
+            | TokenKind::PipePipe
+            | TokenKind::Amp
+            | TokenKind::Pipe
+            | TokenKind::Caret
+            | TokenKind::Tilde
+            | TokenKind::LtLt
+            | TokenKind::GtGt
+            | TokenKind::PlusEq
+            | TokenKind::MinusEq
+            | TokenKind::StarEq
+            | TokenKind::SlashEq
+            | TokenKind::PercentEq
+            | TokenKind::AmpEq
+            | TokenKind::PipeEq
+            | TokenKind::CaretEq
+            | TokenKind::LtLtEq
+            | TokenKind::GtGtEq
+            | TokenKind::LParen
+            | TokenKind::RParen
+            | TokenKind::LBrace
+            | TokenKind::RBrace
+            | TokenKind::LBracket
+            | TokenKind::RBracket
+            | TokenKind::Arrow
+            | TokenKind::FatArrow
+            | TokenKind::ColonColon
+            | TokenKind::Colon
+            | TokenKind::Semi
+            | TokenKind::Comma
+            | TokenKind::Dot
+            | TokenKind::At
+            | TokenKind::Question
+            | TokenKind::Eof => return None,
+        })
+    }
+
     /// Get a human-readable name for this token kind.
     pub fn name(&self) -> &'static str {
         match self {
@@ -413,5 +605,67 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Question => write!(f, "QUESTION"),
             TokenKind::Eof => write!(f, "EOF"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keywords_are_sorted_and_unique() {
+        let mut sorted = KEYWORDS.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted, KEYWORDS.to_vec());
+    }
+
+    #[test]
+    fn every_keyword_spelling_lexes_to_its_own_token() {
+        for spelling in KEYWORDS {
+            let (tokens, _) = Lexer::new(spelling)
+                .tokenize()
+                .unwrap_or_else(|error| panic!("keyword {spelling} failed to lex: {error}"));
+            assert_eq!(
+                tokens.len(),
+                2,
+                "keyword {spelling} lexed to {tokens:?} instead of one token and EOF"
+            );
+            assert_eq!(tokens[0].kind.keyword_spelling(), Some(*spelling));
+            assert_eq!(tokens[1].kind, TokenKind::Eof);
+        }
+    }
+
+    #[test]
+    fn the_wildcard_is_a_pattern_token_not_a_keyword() {
+        // Spec 2.4 lists no wildcard, so `_` is absent from KEYWORDS even
+        // though it is equally unavailable as an identifier.
+        let (tokens, _) = Lexer::new("_").tokenize().expect("`_` lexes");
+        assert_eq!(tokens[0].kind, TokenKind::Underscore);
+        assert_eq!(TokenKind::Underscore.keyword_spelling(), None);
+        assert!(!is_keyword("_"));
+    }
+
+    #[test]
+    fn non_keyword_tokens_have_no_keyword_spelling() {
+        for kind in [
+            TokenKind::Int(7),
+            TokenKind::Plus,
+            TokenKind::LBrace,
+            TokenKind::Arrow,
+            TokenKind::Eof,
+        ] {
+            assert_eq!(kind.keyword_spelling(), None, "{kind} is not a keyword");
+        }
+    }
+
+    #[test]
+    fn is_keyword_answers_for_reserved_words_only() {
+        assert!(is_keyword("fn"));
+        assert!(is_keyword("Self"));
+        assert!(is_keyword("type"));
+        assert!(!is_keyword("main"));
+        assert!(!is_keyword("Fn"));
+        assert!(!is_keyword(""));
     }
 }
