@@ -4880,7 +4880,7 @@ pub(super) use register_parse_import_parse;"#;
         });
     assert_eq!(
         (declarations.len(), fingerprint),
-        (214, 1_253_032_129_469_309_576),
+        (215, 5_525_279_941_277_473_575),
         "crate-visible declaration names, signatures, fields, or phase owners changed"
     );
 
@@ -5358,6 +5358,7 @@ fn:probe_ready_body_facts
 fn:publish_lookup_root
 fn:production_declarations
 fn:durable_decl
+fn:query_runtime
 struct:DurableDeclSource
 fn:from_declarations
 fn:with_anonymous_nominals

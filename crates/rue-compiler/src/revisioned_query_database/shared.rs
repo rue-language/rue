@@ -805,6 +805,38 @@ pub(crate) struct RevisionedQueryDatabase {
     >,
 }
 
+/// The database owns the query runtime, so the database ends its worker
+/// threads.
+///
+/// Worker threads cannot wait for the last reference to the runtime core.
+/// Registered families are built in one pass, and every edge that runs
+/// backwards in that order is closed by back-patching an `Arc<OnceLock<..>>`
+/// the earlier family's evaluator already captured — the body-transaction
+/// evaluator, the semantic nucleus, and the type-facts family in
+/// `registrations`. Each back-patched value holds strong `QueryFamily` handles,
+/// and the body-transaction evaluator holds a `QueryRuntime` outright, so the
+/// registered family graph contains reference cycles that no database field can
+/// break. Dropping the database releases only part of the reference count on
+/// the core; the core, and with it the executor, survives the session.
+///
+/// A process that compiles one program per session — the oracle-diff harness
+/// compiles one per corpus case — would therefore accumulate a runtime's worth
+/// of 8 MiB threads per program until the host refused another one, which
+/// stopped 282 cases of a corpus run against `kern.num_taskthreads` (RUE-2043).
+///
+/// This database is the owner that can name the moment the threads are no
+/// longer needed: it is a plain value inside `CompilerSession`, reachable only
+/// through `&mut self` methods, so no request can be in flight when it is
+/// destroyed. Registration's own `CompilerQueryRuntime` cannot own that moment
+/// — it is a temporary the constructor drops before the database exists — and
+/// a batch dispatched onto a runtime whose owner has shut it down is refused
+/// with `rue_query::WorkerSpawnFailure` rather than served.
+impl Drop for RevisionedQueryDatabase {
+    fn drop(&mut self) {
+        self.runtime.shutdown_workers();
+    }
+}
+
 impl RevisionedQueryDatabase {
     /// Runtime-wide retention belongs to the shared database owner rather than
     /// any compiler phase. This is a read-only projection of the one canonical

@@ -498,6 +498,36 @@ impl QueryRuntime {
         }
     }
 
+    /// Ends this runtime's physical worker threads.
+    ///
+    /// Thread creation is the one host resource a query runtime holds, and its
+    /// owner must be able to release it at a point it chooses, because dropping
+    /// the last reference to the core is not a moment that reliably arrives: an
+    /// evaluator graph is free to hold `QueryFamily` and `QueryRuntime` handles
+    /// in cycles. The full account is at the destructor of `rue-compiler`'s
+    /// `RevisionedQueryDatabase` (RUE-2043).
+    ///
+    /// Call this from the owner that can prove no request is in flight; for the
+    /// compiler that is the destructor of the database holding the runtime. The
+    /// runtime stays a valid value afterwards but owns no workers, and a
+    /// registered batch dispatched onto it is refused with a
+    /// [`WorkerSpawnFailure`](crate::WorkerSpawnFailure) rather than served:
+    /// this is teardown by an owner that is finished, not a way to pause.
+    pub fn shutdown_workers(&self) {
+        self.core.batch_executor.shutdown();
+    }
+
+    /// Physical worker threads this runtime owns right now.
+    ///
+    /// Zero before the first registered batch dispatches one, and zero again
+    /// after [`shutdown_workers`](Self::shutdown_workers) joins them. Paired
+    /// with [`RuntimeMetrics::batch_worker_thread_births`](crate::RuntimeMetrics)
+    /// it is the per-runtime statement of the ownership invariant: the threads
+    /// a runtime created are gone, not merely unreferenced.
+    pub fn live_worker_threads(&self) -> usize {
+        self.core.batch_executor.live_worker_count()
+    }
+
     /// Creates a typed family with deterministic FIFO terminal retention.
     ///
     /// This convenience form assigns no heap-owned success-value charge. A
