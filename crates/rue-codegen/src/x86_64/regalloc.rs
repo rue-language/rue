@@ -1444,10 +1444,9 @@ impl RegAlloc {
                         }
                         Ok(Operand::Physical(scratch))
                     }
-                    None => Err(CompileError::without_span(ErrorKind::LinkError(format!(
-                        "internal codegen error: virtual register {} was not allocated",
-                        vreg.index()
-                    )))),
+                    None => Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+                        format!("virtual register {} was not allocated", vreg.index()),
+                    ))),
                 }
             }
             Operand::Physical(reg) => Ok(Operand::Physical(reg)),
@@ -1781,9 +1780,43 @@ mod tests {
         ALLOCATABLE_REGS, CALLEE_SAVED_REGS, CALLER_SAVED_REGS, COMPACT_CALLEE_SAVED_REGS,
         FP_CALLER_SAVED_REGS, Operand, Reg, RegAlloc, SCRATCH_VALUE, VReg, X86Inst, X86Mir,
     };
+    use crate::index_map::IndexMap;
     use crate::reg_class::RegClass;
-    use crate::regalloc::{Allocation, RegAllocBackend, RematerializeOp};
+    use crate::regalloc::{
+        Allocation, AllocationContext, CoalesceResult, RegAllocBackend, RematerializeOp,
+        RewriteBuffer,
+    };
     use ahash::AHashSet;
+    use rue_error::ErrorCode;
+
+    #[test]
+    fn an_unallocated_virtual_register_is_an_internal_codegen_error() {
+        // Rewriting reads the assignment liveness promised for every operand.
+        // No MIR the driver accepts reaches the missing-assignment arm, so the
+        // rewriter is driven directly against an allocation that leaves the
+        // operand unassigned.
+        let mut allocation: IndexMap<VReg, Option<Allocation<Reg>>> = IndexMap::with_capacity(1);
+        allocation.resize(1, None);
+        let coalesce_result = CoalesceResult::empty();
+        let context = AllocationContext::for_test(&allocation, &coalesce_result);
+        let mut buffer = RewriteBuffer::new();
+
+        let error = RegAlloc::rewrite_inst(
+            &context,
+            &mut buffer,
+            X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rdi),
+                src: Operand::Virtual(VReg::new(0)),
+            },
+        )
+        .expect_err("an unassigned virtual register must fail the rewrite");
+
+        assert_eq!(error.kind.code(), ErrorCode::INTERNAL_CODEGEN_ERROR);
+        assert!(
+            error.to_string().contains("was not allocated"),
+            "unexpected message: {error}"
+        );
+    }
 
     #[test]
     fn the_register_file_keeps_gp_and_fp_registers_separate() {
