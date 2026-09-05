@@ -1245,6 +1245,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
+        // `@panic` reports its own site. The runtime writes the `trap:panic`
+        // record from inside the panic helper, so the staging call is the whole
+        // of the lowering's addition and it is the same in a test image and in
+        // an ordinary executable: there is no descriptor 3 in the latter, the
+        // record write fails with `EBADF` as designed, and the pinned stderr
+        // line spec 4.13:5c fixes is the whole report (RUE-2019).
+        let str_ty = self.get_or_create_str_struct(span)?;
+
         if args.is_empty() {
             // Panic with no message: still a real trap (RUE-319). Emitting an
             // Intrinsic with zero args (not a UnitConst) is what makes cfg_lower
@@ -1252,13 +1260,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // silent no-op. `@panic` has type `!` (never): it diverges and never
             // returns, so it participates in never coercion just like a `-> !`
             // call, `return`, or `break` (spec 3.4:2, 4.13:5c; RUE-512).
-            let air_ref = air.add_intrinsic(
+            let site = self.stage_failure_site(air, ctx, str_ty, span)?;
+            let panic_ref = air.add_intrinsic(
                 crate::IntrinsicOperation::PanicNoMessage,
                 self.known_symbols().panic,
                 &[],
                 Type::NEVER,
                 span,
             )?;
+            let air_ref = air.add_block(&[site], panic_ref, Type::NEVER, span)?;
             ctx.divergence_kinds
                 .insert(super::super::context::DivergenceKind::Panic);
             return Ok(AnalysisResult::diverged(air_ref, Type::NEVER));
@@ -1284,6 +1294,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         } else {
             (arg_result.air_ref, Vec::new())
         };
+        // The message is materialized before the site is staged, never after:
+        // evaluating it can itself abort — a bounds check inside it traps
+        // without staging anything — and a site staged first would be adopted
+        // by that inner failure and report this line for it.
+        let site = self.stage_failure_site(air, ctx, str_ty, span)?;
         let intrinsic_ref = air.add_intrinsic(
             crate::IntrinsicOperation::Panic,
             self.known_symbols().panic,
@@ -1291,8 +1306,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             Type::NEVER,
             span,
         )?;
+        let reported = air.add_block(&[arg_ref, site], intrinsic_ref, Type::NEVER, span)?;
         let air_ref =
-            self.wrap_value_with_temp_scope(air, intrinsic_ref, Type::NEVER, span, temp_scope)?;
+            self.wrap_value_with_temp_scope(air, reported, Type::NEVER, span, temp_scope)?;
         // An operand that diverges prevents the explicit panic call from
         // being reached; the context already records that operand's edge.
         // Only a normally evaluated message establishes the panic exemption.
@@ -1428,31 +1444,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AirRef> {
         let str_ty = self.get_or_create_str_struct(span)?;
-        // A site the host cannot resolve is reported as the empty file at 0:0
-        // rather than as a compile error: the ABI accepts an absent location,
-        // and a report that cannot name its line is still a better failure than
-        // no report.
-        let (path, line, column) = self
-            .body_source_coordinate(span)
-            .unwrap_or_else(|| (std::sync::Arc::from(""), 0, 0));
-        let file = self.synthesized_string(air, ctx, &path, str_ty, span);
-        let line = air.add_inst(AirInst {
-            data: AirInstData::Const(u64::from(line)),
-            ty: Type::U32,
-            span,
-        });
-        let column = air.add_inst(AirInst {
-            data: AirInstData::Const(u64::from(column)),
-            ty: Type::U32,
-            span,
-        });
-        let site = self.runtime_channel_call(
-            air,
-            crate::RuntimeCallKind::TestFailureSite,
-            &[file, line, column],
-            Type::UNIT,
-            span,
-        )?;
+        let site = self.stage_failure_site(air, ctx, str_ty, span)?;
 
         // Which of the two pinned stderr forms this is, stated rather than
         // inferred from the message's length: `@assert(cond, "")` is the
@@ -1752,30 +1744,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let right_text = render(air, right)?;
 
         // A site the host cannot resolve is reported as the empty file at 0:0
-        // rather than as a compile error: the ABI accepts an absent location,
-        // and a report that cannot name its line is still a better failure than
-        // no report.
-        let (path, line, column) = self
-            .body_source_coordinate(span)
-            .unwrap_or_else(|| (std::sync::Arc::from(""), 0, 0));
-        let file = self.synthesized_string(air, ctx, &path, str_ty, span);
-        let line = air.add_inst(AirInst {
-            data: AirInstData::Const(u64::from(line)),
-            ty: Type::U32,
-            span,
-        });
-        let column = air.add_inst(AirInst {
-            data: AirInstData::Const(u64::from(column)),
-            ty: Type::U32,
-            span,
-        });
-        let site = self.runtime_channel_call(
-            air,
-            crate::RuntimeCallKind::TestFailureSite,
-            &[file, line, column],
-            Type::UNIT,
-            span,
-        )?;
+        let site = self.stage_failure_site(air, ctx, str_ty, span)?;
 
         // The message is pinned by the kind inside the runtime helper, which is
         // what keeps this terminal call to the six registers every runtime

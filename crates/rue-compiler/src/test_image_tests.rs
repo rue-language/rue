@@ -215,15 +215,28 @@ fn platform_native_an_early_exit_produces_no_completion_frame() {
     );
 }
 
-/// A trapping body takes the ordinary runtime abort path and writes no frame.
+/// A trapping body takes the ordinary runtime abort path, and reports it on
+/// the channel with the site of the `@panic` that caused it (RUE-2019).
+///
+/// The record's kind and message are exactly what the runner would otherwise
+/// have read off stderr, so what the frame adds is the location — without it
+/// the failure could only name the `test` declaration's header. The pinned
+/// stderr line and the exit status are unchanged (spec 4.13:5c).
 #[test]
 #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
-fn platform_native_a_trapping_test_exits_101_without_a_frame() {
+fn platform_native_a_trapping_test_reports_its_site_and_exits_101() {
     let (image, _) = dispatch_fixture();
     let run = run_test_image(&image, "trap", "0000000000000002");
     assert_eq!(run.status, Some(101));
     assert_eq!(run.stderr, "panic: boom\n");
-    assert_eq!(run.channel, "");
+    assert_eq!(
+        run.channel,
+        concat!(
+            "{\"record\":\"failure\",\"schema\":\"1.0\",\"kind\":\"trap:panic\",",
+            "\"message\":\"panic: boom\",",
+            "\"location\":{\"file\":\"main.rue\",\"line\":3,\"column\":24}}\n",
+        )
+    );
 }
 
 /// Every malformed or out-of-range selector is one pinned diagnostic and exit

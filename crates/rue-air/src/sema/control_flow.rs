@@ -2052,31 +2052,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
         };
 
-        // A site the host cannot resolve is reported as the empty file at 0:0
-        // rather than as a compile error: the ABI accepts an absent location
-        // (the staging helper's file view may be empty), and a report that
-        // cannot name its line is still a better failure than no report.
-        let (path, line, column) = self
-            .body_source_coordinate(span)
-            .unwrap_or_else(|| (Arc::from(""), 0, 0));
-        let file = self.synthesized_string(air, ctx, &path, str_ty, span);
-        let line = air.add_inst(AirInst {
-            data: AirInstData::Const(u64::from(line)),
-            ty: Type::U32,
-            span,
-        });
-        let column = air.add_inst(AirInst {
-            data: AirInstData::Const(u64::from(column)),
-            ty: Type::U32,
-            span,
-        });
-        let site = self.runtime_channel_call(
-            air,
-            crate::RuntimeCallKind::TestFailureSite,
-            &[file, line, column],
-            Type::UNIT,
-            span,
-        )?;
+        let site = self.stage_failure_site(air, ctx, str_ty, span)?;
 
         let kind = self.synthesized_string(air, ctx, TEST_FAILURE_KIND, str_ty, span);
         let message = self.synthesized_string(air, ctx, TEST_FAILURE_MESSAGE, str_ty, span);
@@ -2131,6 +2107,51 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             })
             .collect::<Vec<_>>();
         Ok(air.add_call(Some(runtime), name, &args, ty, span)?)
+    }
+
+    /// Stage the source location the next failure record will carry.
+    ///
+    /// Every producer of an ADR-0083 §5.1 report reaches this: a test body's
+    /// `?` failure arm, the assertion family, and — since RUE-2019 — `@panic`
+    /// and the slice bounds check, whose records the runtime writes from inside
+    /// the trap helper. The staged site is consumed by whatever aborts next, so
+    /// this call must be the last thing before that terminal call: anything
+    /// evaluated in between could abort on a path that stages nothing and would
+    /// then adopt this site.
+    ///
+    /// A site the host cannot resolve is staged as the empty file at 0:0 rather
+    /// than reported as a compile error: the ABI accepts an absent location,
+    /// and a report that cannot name its line is still a better failure than no
+    /// report. The runner answers an empty location from the test declaration's
+    /// header.
+    pub(in crate::sema) fn stage_failure_site(
+        &mut self,
+        air: &mut Air,
+        ctx: &mut AnalysisContext,
+        str_ty: Type,
+        span: Span,
+    ) -> CompileResult<AirRef> {
+        let (path, line, column) = self
+            .body_source_coordinate(span)
+            .unwrap_or_else(|| (Arc::from(""), 0, 0));
+        let file = self.synthesized_string(air, ctx, &path, str_ty, span);
+        let line = air.add_inst(AirInst {
+            data: AirInstData::Const(u64::from(line)),
+            ty: Type::U32,
+            span,
+        });
+        let column = air.add_inst(AirInst {
+            data: AirInstData::Const(u64::from(column)),
+            ty: Type::U32,
+            span,
+        });
+        self.runtime_channel_call(
+            air,
+            crate::RuntimeCallKind::TestFailureSite,
+            &[file, line, column],
+            Type::UNIT,
+            span,
+        )
     }
 
     /// Materialize one compiler-authored `str` run in this body.

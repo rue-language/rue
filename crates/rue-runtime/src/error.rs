@@ -202,8 +202,17 @@ crate::define_runtime_implementation! {
     ///
     /// # Behavior
     ///
-    /// 1. Writes `"error: index out of bounds\n"` to stderr (best-effort)
-    /// 2. Exits with code 101
+    /// 1. Writes a `trap:bounds_check` failure record to the channel
+    ///    (best-effort)
+    /// 2. Writes `"error: index out of bounds\n"` to stderr (best-effort)
+    /// 3. Exits with code 101
+    ///
+    /// The record carries whatever site
+    /// [`crate::test_channel::__rue_test_failure_site`] staged (RUE-2019). A
+    /// slice index stages its own before it traps; the fixed-array check the
+    /// compiler emits below AIR stages none, so its record names no file and
+    /// the runner answers from the test declaration's header, exactly as it
+    /// did when the class was read off stderr.
     ///
     /// # ABI
     ///
@@ -220,6 +229,7 @@ crate::define_runtime_implementation! {
     /// already performs compile-time checks for constant indices, so this
     /// handler is only reached for dynamic indices that fail at runtime.
     pub extern "C" fn __rue_bounds_check() -> ! {
+        crate::test_channel::report_bounds_check();
         // Build error message byte-by-byte to avoid macOS linker bug with byte strings
         let mut msg = [0u8; 27];
         msg[0] = b'e';
@@ -305,18 +315,55 @@ crate::define_runtime_implementation! {
     }
 }
 
+/// Write the pinned `panic: {message}` line to stderr and exit 101.
+///
+/// This is [`__rue_panic`]'s stderr half without the ADR-0083 §5.1 channel
+/// report the exported helper writes first. The assertion family reaches it
+/// directly: each of those helpers has already written its own, more specific
+/// `failure` frame, and a second `trap:panic` frame from the same aborting
+/// process would be noise on a channel whose first frame is the verdict.
+pub(crate) fn panic_stderr(message: &[u8]) -> ! {
+    // "panic: " built byte-by-byte to avoid the macOS byte-string linker bug.
+    let mut prefix = [0u8; 7];
+    prefix[0] = b'p';
+    prefix[1] = b'a';
+    prefix[2] = b'n';
+    prefix[3] = b'i';
+    prefix[4] = b'c';
+    prefix[5] = b':';
+    prefix[6] = b' ';
+    platform::write_stderr(&prefix);
+    if !message.is_empty() {
+        platform::write_stderr(message);
+    }
+    let newline = [b'\n'];
+    platform::write_stderr(&newline);
+    platform::exit(101)
+}
+
 crate::define_runtime_implementation! {
     /// Runtime error: explicit `@panic(msg)` with a message.
     ///
-    /// Called by code generated for the `@panic("...")` intrinsic. Writes
-    /// `"panic: "`, the user-supplied message bytes, and a trailing newline to
-    /// stderr, then exits with code 101 (the same abort path as the other
-    /// runtime traps: division by zero, overflow, bounds, cast overflow).
+    /// Called by code generated for the `@panic("...")` intrinsic. Writes a
+    /// `trap:panic` failure record on the ADR-0083 §5.1 channel carrying
+    /// whatever site [`crate::test_channel::__rue_test_failure_site`] staged,
+    /// then `"panic: "`, the user-supplied message bytes, and a trailing
+    /// newline to stderr, then exits with code 101 (the same abort path as the
+    /// other runtime traps: division by zero, overflow, bounds, cast overflow).
+    ///
+    /// The record goes first so a failure is recorded even if the stderr write
+    /// is lost, and it carries the pinned stderr line as its message, so a test
+    /// runner reading the channel and one reading stderr publish the same kind
+    /// and the same text — the record adds only the site (RUE-2019). In an
+    /// ordinary executable there is no descriptor 3 and the record write fails
+    /// with `EBADF` as designed, which is why `@panic` lowers the same way in
+    /// every build.
     ///
     /// # Behavior
     ///
-    /// 1. Writes `"panic: {msg}\n"` to stderr (best-effort)
-    /// 2. Exits with code 101
+    /// 1. Writes a `trap:panic` failure record to the channel (best-effort)
+    /// 2. Writes `"panic: {msg}\n"` to stderr (best-effort)
+    /// 3. Exits with code 101
     ///
     /// # ABI
     ///
@@ -334,38 +381,30 @@ crate::define_runtime_implementation! {
     /// initialized bytes that stay valid for the call. `ptr` may be null when
     /// `len == 0`.
     pub unsafe extern "C" fn __rue_panic(ptr: *const u8, len: u64) -> ! {
-        // "panic: " built byte-by-byte to avoid the macOS byte-string linker bug.
-        let mut prefix = [0u8; 7];
-        prefix[0] = b'p';
-        prefix[1] = b'a';
-        prefix[2] = b'n';
-        prefix[3] = b'i';
-        prefix[4] = b'c';
-        prefix[5] = b':';
-        prefix[6] = b' ';
-        platform::write_stderr(&prefix);
-        // SAFETY: the caller guarantees `ptr`/`len` describe a valid byte range.
-        if len > 0 {
+        let message = if len > 0 {
             // SAFETY: the caller guarantees a non-null pointer valid for `len`
             // initialized bytes when the length is positive.
-            let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
-            platform::write_stderr(bytes);
-        }
-        let newline = [b'\n'];
-        platform::write_stderr(&newline);
-        platform::exit(101)
+            unsafe { core::slice::from_raw_parts(ptr, len as usize) }
+        } else {
+            &[]
+        };
+        crate::test_channel::report_panic(message);
+        panic_stderr(message)
     }
 }
 
 crate::define_runtime_implementation! {
     /// Runtime error: explicit `@panic()` with no message.
     ///
-    /// Called by code generated for the message-less `@panic()` intrinsic.
+    /// Called by code generated for the message-less `@panic()` intrinsic. It
+    /// reports the same `trap:panic` record [`__rue_panic`] does, under this
+    /// form's own pinned stderr line (RUE-2019).
     ///
     /// # Behavior
     ///
-    /// 1. Writes `"panic\n"` to stderr (best-effort)
-    /// 2. Exits with code 101
+    /// 1. Writes a `trap:panic` failure record to the channel (best-effort)
+    /// 2. Writes `"panic\n"` to stderr (best-effort)
+    /// 3. Exits with code 101
     ///
     /// # ABI
     ///
@@ -375,6 +414,7 @@ crate::define_runtime_implementation! {
     ///
     /// No arguments. Never returns.
     pub extern "C" fn __rue_panic_no_msg() -> ! {
+        crate::test_channel::report_panic_no_message();
         let mut msg = [0u8; 6];
         msg[0] = b'p';
         msg[1] = b'a';
