@@ -117,51 +117,26 @@ fn arithmetic(input: &mut Vec<u8>, rng: &mut SimpleRng) {
     input[idx] = input[idx].wrapping_add(delta as u8);
 }
 
-/// Insert a Rue keyword at a random position.
+/// Insert a Rue keyword or operator at a random position.
 fn splice_keyword(input: &mut Vec<u8>, rng: &mut SimpleRng) {
-    const KEYWORDS: &[&[u8]] = &[
-        b"fn",
-        b"let",
-        b"mut",
-        b"if",
-        b"else",
-        b"match",
-        b"while",
-        b"loop",
-        b"break",
-        b"continue",
-        b"return",
-        b"true",
-        b"false",
-        b"struct",
-        b"enum",
-        b"impl",
-        b"i32",
-        b"i64",
-        b"u32",
-        b"u64",
-        b"bool",
-        b"->",
-        b"=>",
-        b"::",
-        b"==",
-        b"!=",
-        b"<=",
-        b">=",
-        b"&&",
-        b"||",
-        b"<<",
-        b">>",
+    // Keywords come from the lexer's token table, so the mutator splices every
+    // reserved word the compiler knows rather than a stale subset.
+    const OPERATORS: &[&str] = &[
+        "->", "=>", "::", "==", "!=", "<=", ">=", "&&", "||", "<<", ">>",
     ];
 
     if input.len() >= 65536 {
         return;
     }
 
-    let keyword = KEYWORDS[rng.next_usize(KEYWORDS.len())];
+    let choice = rng.next_usize(rue_lexer::KEYWORDS.len() + OPERATORS.len());
+    let spliced = match rue_lexer::KEYWORDS.get(choice) {
+        Some(keyword) => *keyword,
+        None => OPERATORS[choice - rue_lexer::KEYWORDS.len()],
+    };
     let idx = rng.next_usize(input.len() + 1);
 
-    for (i, &b) in keyword.iter().enumerate() {
+    for (i, &b) in spliced.as_bytes().iter().enumerate() {
         input.insert(idx + i, b);
     }
 }
