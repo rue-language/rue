@@ -154,6 +154,16 @@ impl RootedCfgOutput {
         &self.graph.declarations
     }
 
+    /// The `pub extern "C" fn` exports this rooted set carries, each with the
+    /// signature the entry thunk is generated from.
+    ///
+    /// This is the same [`collect_rooted_exports`] intersection the codegen
+    /// projection publishes, so an ABI presentation and a real link describe one
+    /// export set.
+    pub(crate) fn c_export_thunks(&self) -> Vec<crate::program_image_plan::RootedExportThunk> {
+        collect_rooted_exports(&self.graph, &self.cfgs)
+    }
+
     pub(crate) fn anonymous_nominals(
         &self,
     ) -> &[crate::durable_semantics::DurableAnonymousNominal] {

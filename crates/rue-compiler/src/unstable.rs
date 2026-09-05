@@ -587,6 +587,7 @@ pub enum PresentationStage {
     RegAlloc,
     Asm,
     StackFrame,
+    Abi,
 }
 
 /// One explicitly unstable textual presentation request.
@@ -1034,6 +1035,67 @@ impl PresentationOutput {
     }
 }
 
+/// Render the `--emit abi` report for one rooted reached set.
+///
+/// Order is part of the presentation's contract, so it is fixed here rather
+/// than left to iteration incident:
+///
+/// 1. Every reached function — ordinary functions, methods, and the generic
+///    instances that were reached — in the rooted CFG order, which is the order
+///    `--emit air` and `--emit cfg` already present. A `pub extern "C" fn`
+///    export takes an export block there instead of a function block, so its C
+///    entry and the native body it forwards to appear together.
+/// 2. Then every reached `extern "C"` import, deduplicated by C symbol and
+///    ordered by it. An import has no body and therefore no place in the
+///    function order; a signature disagreement between two call sites of one
+///    symbol is already a semantic error, so one block per symbol is complete.
+fn write_abi_presentation(text: &mut String, rooted: &RootedCfgOutput, target: crate::Target) {
+    let exports = rooted.c_export_thunks();
+    let mut imports = std::collections::BTreeMap::new();
+    for function in rooted.functions() {
+        let record = &function.record;
+        let symbols = rue_codegen::MachineSymbolResolver::new_with_foreign(
+            &record.codegen.symbol_mappings,
+            &record.codegen.foreign_symbols,
+        );
+        for report in rue_codegen::abi_report::import_abi_reports(
+            &record.cfg,
+            &record.interner,
+            &symbols,
+            &record.type_pool,
+            target,
+        ) {
+            imports.entry(report.name.clone()).or_insert(report);
+        }
+        let report = match exports
+            .iter()
+            .find(|export| export.function == function.function)
+        {
+            Some(export) => rue_codegen::abi_report::export_abi_report(
+                &export.exported_symbol,
+                &export.native_symbol,
+                &export.signature,
+                &record.cfg,
+                &record.air,
+                &record.type_pool,
+                target,
+            ),
+            None => rue_codegen::abi_report::function_abi_report(
+                &record.cfg,
+                &record.air,
+                &record.source_name,
+                &record.codegen.defined_symbol,
+                &record.type_pool,
+                target,
+            ),
+        };
+        writeln!(text, "{report}").expect("write to String");
+    }
+    for report in imports.into_values() {
+        writeln!(text, "{report}").expect("write to String");
+    }
+}
+
 /// Query the canonical reached-body/CFG artifact used by codegen.
 pub fn rooted_cfg(
     session: &mut crate::CompilerSession,
@@ -1272,6 +1334,10 @@ impl crate::CompilerSession {
                             _ => unreachable!("backend request has a backend presentation stage"),
                         }
                     }
+                } else if matches!(stage, PresentationStage::Abi) {
+                    let rooted = self.rooted_cfg(request.options)?;
+                    write_abi_presentation(&mut text, &rooted, request.options.target);
+                    warnings = rooted.warnings;
                 } else {
                     let rooted = self.rooted_cfg(request.options)?;
                     warnings = rooted.warnings;
@@ -1317,7 +1383,8 @@ impl crate::CompilerSession {
                             | PresentationStage::Mir
                             | PresentationStage::Liveness
                             | PresentationStage::RegAlloc
-                            | PresentationStage::Asm => unreachable!(),
+                            | PresentationStage::Asm
+                            | PresentationStage::Abi => unreachable!(),
                         }
                     }
                 }
@@ -1464,6 +1531,7 @@ mod codegen_unit_tests {
                 PresentationStage::Air,
                 PresentationStage::Cfg,
                 PresentationStage::StackFrame,
+                PresentationStage::Abi,
             ] {
                 frontend
                     .unstable_present(PresentationRequest {

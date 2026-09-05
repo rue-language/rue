@@ -36,6 +36,34 @@ use rue_target::Target;
 // Re-export from parent
 pub use super::{EmittedCode, EmittedRelocation, MachineCode};
 
+/// Physical names of the general-purpose argument roster, in roster order.
+///
+/// The ABI report (`--emit abi`) asks the backend for the name of a roster
+/// index instead of restating a roster of its own, so renaming or reordering
+/// [`cfg_lower::ARG_REGS`] moves the report with it. SysV's own argument
+/// registers are these six.
+pub(crate) const GP_ARGUMENT_REGISTER_NAMES: [&str; 6] =
+    crate::roster_names!(cfg_lower::ARG_REGS; 0 1 2 3 4 5);
+
+/// Physical names of the floating-point argument roster, in roster order.
+pub(crate) const FP_ARGUMENT_REGISTER_NAMES: [&str; 8] =
+    crate::roster_names!(cfg_lower::FP_ARG_REGS; 0 1 2 3 4 5 6 7);
+
+/// Physical names of the general-purpose return roster, in roster order. SysV's
+/// own result registers are its first two, `rax:rdx`.
+pub(crate) const GP_RETURN_REGISTER_NAMES: [&str; 6] =
+    crate::roster_names!(cfg_lower::RET_REGS; 0 1 2 3 4 5);
+
+/// Physical names of the floating-point return roster, in roster order.
+pub(crate) const FP_RETURN_REGISTER_NAMES: [&str; 8] =
+    crate::roster_names!(cfg_lower::FP_RET_REGS; 0 1 2 3 4 5 6 7);
+
+/// SysV AMD64 passes the hidden indirect-result pointer in the first ordinary
+/// argument register rather than a dedicated one, so no register outside the
+/// roster carries it. The name exists so the report's per-target lookup is
+/// total.
+pub(crate) const DEDICATED_SRET_REGISTER_NAME: &str = "rdi";
+
 struct X86CodegenBackend;
 
 pub(crate) fn prepare_backend(

@@ -246,6 +246,39 @@ assuming that arbitrary C signatures share the native Rue slot rules. Backend
 unit guards fail if a manifest helper exceeds the current register-only budget;
 adding such a helper requires implementing and testing target-C stack placement.
 
+## Reading a placement out of the compiler
+
+`rue --emit abi <root>` prints, for every function the root module reaches, the
+convention its signature follows and where each parameter and the result
+actually travels — a register by name, a byte offset in the outgoing argument
+area, a pointer to a caller-owned copy, or nothing at all for a zero-sized
+value. It is the answer to "why is this argument on the stack" and "which
+registers carry this return" without reading assembly.
+
+The stage honors `--target`, so a Darwin placement is readable on any host:
+
+```console
+rue --emit abi --preview c_ffi --target aarch64-macos main.rue
+```
+
+It is evidence rather than commentary because it consumes what code generation
+consumes and nothing else: a C boundary's placements come from
+`rue_air::lower_c_signature` through the same `ForeignCallInputs` /
+`ExportSignature` projections the import lowering and the export thunk build,
+and the native side's come from `NativeCallAbi` plus the shared
+`assign_abi_slots` / `ReturnPlan` slot plan. Register *names* are asked of the
+backend that owns the roster. A `pub extern "C" fn` export prints both halves of
+its crossing, so the work its entry thunk performs — the native convention's
+reversed aggregate slots against C's ascending eightbytes — is visible side by
+side.
+
+One thing the stage cannot show is an FFI-predicate failure beside the function
+that caused it: the predicates reject an `extern` or export *signature* while
+that signature is resolved, before any body is analyzed, so the compile fails
+with the ordinary `E1104` diagnostic — which carries the failing field path and
+the reject reason — and no report is printed. `emit.abi` (UI) pins the report
+text on all three rows; `cli.emit_pipeline` pins the failure path.
+
 ## Executable evidence
 
 `cli.abi_conformance` compiles and independently links one probe for each

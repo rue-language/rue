@@ -45,6 +45,9 @@ pub(crate) enum EmitStage {
     Asm,
     /// Emit stack frame layout per function.
     StackFrame,
+    /// Emit the calling convention and per-value placement of every reachable
+    /// function's signature.
+    Abi,
     /// Emit the source dependency graph discovered while loading imports.
     Deps,
 }
@@ -97,6 +100,7 @@ pub(crate) fn emit_requires_semantic(stages: &[EmitStage]) -> bool {
                 | EmitStage::RegAlloc
                 | EmitStage::Asm
                 | EmitStage::StackFrame
+                | EmitStage::Abi
         )
     })
 }
@@ -179,6 +183,7 @@ impl std::str::FromStr for EmitStage {
             "regalloc" => Ok(EmitStage::RegAlloc),
             "asm" => Ok(EmitStage::Asm),
             "stackframe" => Ok(EmitStage::StackFrame),
+            "abi" => Ok(EmitStage::Abi),
             "deps" => Ok(EmitStage::Deps),
             _ => Err(ParseEmitStageError(s.to_string())),
         }
@@ -187,7 +192,8 @@ impl std::str::FromStr for EmitStage {
 
 impl EmitStage {
     pub(crate) fn all_names() -> &'static str {
-        "tokens, ast, rir, air, cfg, lowering, mir, liveness, regalloc, asm, stackframe, deps"
+        "tokens, ast, rir, air, cfg, lowering, mir, liveness, regalloc, asm, stackframe, abi, \
+         deps"
     }
 }
 
@@ -312,6 +318,7 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
             EmitStage::RegAlloc => PresentationStage::RegAlloc,
             EmitStage::Asm => PresentationStage::Asm,
             EmitStage::StackFrame => PresentationStage::StackFrame,
+            EmitStage::Abi => PresentationStage::Abi,
             EmitStage::Deps => continue,
         };
         if matches!(stage, EmitStage::Tokens | EmitStage::Ast) {
@@ -389,6 +396,10 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
                 println!("{}", output.as_str());
             }
             EmitStage::StackFrame => {
+                print!("{}", output.as_str());
+            }
+            EmitStage::Abi => {
+                println!("=== ABI ({}) ===", compile_options.target);
                 print!("{}", output.as_str());
             }
             // Dependency presentation returns before frontend planning above.

@@ -134,7 +134,7 @@ pub use sema::{
     SemanticProducedAnonymousMethodType, SemanticProducedAnonymousNominal,
     SemanticProducedAnonymousNominalShape, SourceParamAbi, analyze_provider_anonymous_body,
     analyze_provider_ordinary_body, analyze_provider_specialized_body, body_parameter_types,
-    comptime_depth_over_limit, next_comptime_depth,
+    by_reference_parameter_pointee_types, comptime_depth_over_limit, next_comptime_depth,
 };
 pub use sema::{
     ComptimeDiagnosticSite, ComptimeIntegerOperation, ComptimeMatchPattern,

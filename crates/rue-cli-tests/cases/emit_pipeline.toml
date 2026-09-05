@@ -365,3 +365,92 @@ fn main() -> i32 {
 args = ["--target", "aarch64-macos", "--emit", "air", "main.rue"]
 compile_only = true
 compile_stdout_contains = ["enum_variant #", "::1"]
+
+# RUE-2033: `--emit abi` reports where every value of every reachable signature
+# travels. An FFI-safety failure is the one thing it cannot report *beside* a
+# function: the predicate rejects the `extern` signature while that signature is
+# resolved, before any body is analyzed, so there is no function to describe and
+# the driver's ordinary error path runs instead. The diagnostic still carries
+# the FfiPredicateFailure data — the failing field path and the reject reason —
+# which is what makes the question answerable without the stage.
+[[case]]
+name = "emit_abi_ffi_predicate_failure_takes_the_error_path"
+description = "RUE-2033: an extern signature naming an FFI-ineligible type fails before signatures exist, so --emit abi reports the predicate failure and prints no report."
+files = [{ path = "main.rue", source = """
+struct Plain {
+    a: i64,
+}
+
+@repr(c)
+struct Holder {
+    inner: Plain,
+}
+
+extern "C" {
+    fn take(h: Holder) -> i64;
+}
+
+fn main() -> i32 {
+    let h = Holder { inner: Plain { a: 1 } };
+    let r = checked { take(h) };
+    let code: i32 = @intCast(r);
+    code
+}
+""" }]
+args = ["--emit", "abi", "--preview", "c_ffi", "main.rue"]
+compile_fail = true
+error_contains = [
+    "E1104",
+    "`Holder` is not FFI-eligible",
+    "field `inner` of type `Plain`",
+    "a nested aggregate must itself be marked `@repr(c)`",
+]
+compile_stdout_not_contains = ["=== ABI", "import take"]
+
+# RUE-2033: the stage is target-driven like the other backend emits, so the
+# Darwin row's placements are readable on any host. The `i8` behind eight
+# register-width arguments is that row's visible amendment: one byte at its
+# natural alignment rather than a whole eightbyte.
+[[case]]
+name = "emit_abi_honors_the_requested_target"
+description = "RUE-2033: --emit abi --target aarch64-macos prints the Darwin row's placements on any host."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn wide(
+        a: i64,
+        b: i64,
+        c: i64,
+        d: i64,
+        e: i64,
+        f: i64,
+        g: i64,
+        h: i64,
+        tail: i8,
+    ) -> i64;
+}
+
+fn main() -> i32 {
+    let total = checked { wide(1, 2, 3, 4, 5, 6, 7, 8, 9) };
+    let code: i32 = @intCast(total);
+    code
+}
+""" }]
+args = ["--emit", "abi", "--preview", "c_ffi", "--target", "aarch64-macos", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "=== ABI (aarch64-macos) ===",
+    "import wide",
+    "convention aarch64-aapcs-darwin, symbol wide",
+    "parameter 7: i64, by value, gp register 7 (x7)",
+    "parameter 8: i8, by value, stack +0 (1 byte, align 1), sign-extended from 8 bits",
+]
+
+# The `--emit` help text renders the stage table, so this is what makes a stage
+# that exists but is undocumented impossible.
+[[case]]
+name = "emit_abi_is_listed_in_the_help_text"
+description = "RUE-2033: `abi` appears in the --emit stage list the help text renders."
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
+args = ["--help"]
+compile_only = true
+compile_stdout_contains = ["--emit <stage>", "regalloc, asm, stackframe, abi, deps"]
