@@ -421,3 +421,85 @@ fn main() -> i32 {
     0
 }
 """ }]
+
+# ── std.mem.replace at a drop-glue T (RUE-2013) ──────────────────────────────
+#
+# `let old = dst;` moves out of the `inout` borrow (E0437), so a `replace`
+# written that way compiles only at a `Copy` `T`. This case pins the drop-glue
+# instantiations: a StrBuf, repeated replacement of a heap value, and a struct
+# with an observable destructor whose drop lines prove each replaced value's
+# destructor runs exactly once — the allocator has no double-free detection, so
+# only a counted destructor can observe that property.
+[[case]]
+name = "mem_replace_copy_and_drop_glue"
+description = "std.mem.replace returns the old value and stores the new one for a Copy T, a StrBuf T, and a drop fn T whose destructor runs exactly once (RUE-2013)."
+differential_opt = true
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+stdout = """i64 old=5 new=6
+strbuf old=before new=after
+loop old=seed
+loop old=payload-0
+loop old=payload-1
+loop old=payload-2
+loop final=payload-3
+got old 0
+drop 0
+got old 1
+drop 1
+got old 2
+drop 2
+end d=3
+drop 3
+"""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+struct D {
+    v: i64,
+}
+
+drop fn D(self) {
+    println("drop " + @to_string(self.v));
+}
+
+fn main() -> i32 {
+    // Copy T: the instantiation that already compiled.
+    let mut x: i64 = 5;
+    let six: i64 = 6;
+    let oldx: i64 = std.mem.replace(i64, inout x, six);
+    println("i64 old=" + @to_string(oldx) + " new=" + @to_string(x));
+
+    // Drop-glue T: E0437 before RUE-2013.
+    let mut s: StrBuf = "before";
+    let olds = std.mem.replace(StrBuf, inout s, "after");
+    println("strbuf old=" + olds + " new=" + s);
+
+    // Repeated replacement of a heap value: a lost write or an aliased block
+    // prints the wrong line.
+    let mut cur: StrBuf = "seed";
+    let mut i: i64 = 0;
+    while i < 4 {
+        let next: StrBuf = "payload-" + @to_string(i);
+        let old = std.mem.replace(StrBuf, inout cur, next);
+        println("loop old=" + old);
+        i += 1;
+    }
+    println("loop final=" + cur);
+
+    // A destructor that reports: each replaced value drops exactly once, at
+    // the end of the iteration that received it, and the last value drops at
+    // the end of main after "end d=3".
+    let mut d = D { v: 0 };
+    let mut j: i64 = 1;
+    while j < 4 {
+        let old = std.mem.replace(D, inout d, D { v: j });
+        println("got old " + @to_string(old.v));
+        j += 1;
+    }
+    println("end d=" + @to_string(d.v));
+    0
+}
+""" }]

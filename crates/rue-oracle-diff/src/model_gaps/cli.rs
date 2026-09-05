@@ -491,6 +491,14 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::PointerRead),
         &[],
     ),
+    // `std.mem.replace` delegates to `swap`, whose bytewise exchange is spelled
+    // in raw-pointer intrinsics, so this case reaches the same unmodeled read.
+    Entry::new(
+        "cli.std_core",
+        "mem_replace_copy_and_drop_glue",
+        intrinsic(UnsupportedIntrinsicKind::PointerRead),
+        &[],
+    ),
     // Output observation is modeled now; this case still reaches its genuine
     // text parsing boundary while formatting the StrBuf consumers.
     Entry::new(
