@@ -70,9 +70,13 @@
 //     drop-glue `T` is a compile error (E0711, via `@require_trivially_droppable`
 //     in their bodies) that directs you to `get_ref` for a read, or `pop` to move
 //     it out. This is exactly Swift's rule
-//     that a non-copyable element cannot use a by-value `get` subscript. Storing,
+//     that a non-copyable element cannot use a by-value `get` subscript. The
+//     searching reads `index_of`/`contains` compare a by-copy read with `==`
+//     and carry the same gate (RUE-2049). Storing,
 //     pushing, popping, and dropping a drop-glue element stay legal (RUE-646) —
-//     only the by-copy *read* is gated. Lifting that to borrow-returning reads
+//     only the by-copy *read* is gated; `swap`/`reverse` exchange slots rather
+//     than duplicating them, so they stay ungated and work for any `T`.
+//     Lifting the gated reads to borrow-returning reads
 //     (a projection/yield accessor, Hylo-style) is now `get_ref` (RUE-1017).
 //   * Multi-slot aggregate element types (e.g. a two-field struct) work as long
 //     as they are trivially droppable: every aggregate is laid out
@@ -310,9 +314,13 @@ pub fn ArrayBuf(comptime T: type) -> type {
 
         // --- extra operations (Standard library v1, RUE-673) ---
 
-        // Exchange the elements at `i` and `j` (both must be in bounds). Uses a
-        // by-copy read of each slot, so this is for trivially-droppable (`Copy`)
-        // `T` (RUE-651); a swap of owned elements would need in-place borrows.
+        // Exchange the elements at `i` and `j` (both must be in bounds). Each
+        // slot's value is read out and then written back into the OTHER slot,
+        // so every element still has exactly one owner and neither read leaves
+        // an aliasing duplicate behind: unlike `get`/`get_or` this is an
+        // exchange of ownership, not a copy, and it is ungated and sound for a
+        // drop-glue `T` (RUE-2049). The writes deliberately bypass `set`, which
+        // would drop the value the other read already moved out.
         fn swap(inout self, i: u64, j: u64) {
             if i < self.len && j < self.len && i != j {
                 let a = self.core.read_at(i);
@@ -322,7 +330,8 @@ pub fn ArrayBuf(comptime T: type) -> type {
             }
         }
 
-        // Reverse the elements in place. COPY-`T` (uses `swap`).
+        // Reverse the elements in place. Sound for any `T`: it only exchanges
+        // slots through `swap`, never duplicating an element.
         fn reverse(inout self) {
             if self.len > 1 {
                 let mut i: u64 = 0;
@@ -348,9 +357,15 @@ pub fn ArrayBuf(comptime T: type) -> type {
             }
         }
 
-        // Index of the first element equal to `x`, or `None`. COPY-`T` ONLY
-        // (compares by-copy reads with `==`).
+        // Index of the first element equal to `x`, or `None`. COPY-`T` ONLY:
+        // each candidate is read out by copy to compare it with `==`, and that
+        // copy aliases the still-live slot, so a drop-glue element would run
+        // its destructor once per comparison and again when the buffer is
+        // dropped — a double-free (RUE-651). The gate is stated first, so an
+        // owning element type is named here rather than silently miscompiled
+        // (RUE-2049); it was missing while `get`/`get_or` carried theirs.
         fn index_of(borrow self, x: T) -> option.Option(u64) {
+            @require_trivially_droppable(T);
             let O = option.Option(u64);
             let mut i: u64 = 0;
             while i < self.len {
@@ -363,8 +378,11 @@ pub fn ArrayBuf(comptime T: type) -> type {
             O.None
         }
 
-        // Whether any element equals `x`. COPY-`T` ONLY.
+        // Whether any element equals `x`. COPY-`T` ONLY, for `index_of`'s
+        // reason; the gate is repeated here so the error names this call rather
+        // than one inside `index_of`.
         fn contains(borrow self, x: T) -> bool {
+            @require_trivially_droppable(T);
             let O = option.Option(u64);
             match self.index_of(x) {
                 O.Some(i) => true,

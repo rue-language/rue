@@ -7,6 +7,14 @@
 //     const std = @import("std");
 //     let P = std.tuple.Pair(i64, i64);
 //     let p = P.new(40, 2);          // p.first == 40, p.second == 2
+//
+// ANY-`T`, deliberately ungated. `new` MOVES its components into the fields and
+// nothing here reads a field back out, so a pair or triple never duplicates a
+// component: an owning component such as a `StrBuf` is legal and is dropped
+// exactly once with the aggregate. A `Pair`/`Triple` is Copy exactly when all
+// of its components are (3.8:2), which is why the by-copy readers of the
+// containers that STORE one — `ArrayBuf.get`, `BinaryHeap`, `PriorityQueue` —
+// carry the element gate instead (RUE-2049).
 
 // A 2-tuple.
 pub fn Pair(comptime A: type, comptime B: type) -> type {

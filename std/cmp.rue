@@ -1,13 +1,25 @@
 // std.cmp — ordering and comparison utilities.
 //
 // Comparison and the min/max/clamp helpers are generic over any type whose
-// values support the built-in relational operators (`<`, `>`, `==`) — every
-// integer type today. `Ordering` is the three-way comparison result.
+// values support the built-in relational operators (`<`, `>`, `==`) — the
+// integer and floating-point types today. `Ordering` is the three-way
+// comparison result.
 //
 //     const std = @import("std");
 //     let o = std.cmp.cmp(i64, 3, 7);        // Ordering.Less
 //     let m = std.cmp.min(i64, 3, 7);        // 3
 //     let c = std.cmp.clamp(i64, 12, 0, 9);  // 9
+//
+// UNGATED ON PURPOSE. These take their operands BY VALUE and return one of
+// them, so nothing here duplicates a value: an argument that is not returned is
+// simply dropped, and even an owning `T` would be sound. The real restriction
+// is the operator — `<`/`>`/`==` are defined for integers and floats only — and
+// Rue has no intrinsic that expresses "orderable". The drop-glue gate the
+// containers use is neither necessary nor sufficient for that (RUE-2049), so
+// there is none here. Calling one of these with, say, a `StrBuf` still reports
+// the operator mismatch (E0206, "expected integer or floating-point type")
+// against the comparison in this file. Gating that honestly needs traits
+// (RUE-246); until then this comment is the contract.
 
 // The result of a three-way comparison.
 pub enum Ordering {

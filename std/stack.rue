@@ -7,9 +7,18 @@
 //     s.push(20);
 //     let top = s.pop();     // Some(20)
 //
-// `push`/`pop` work for any element type. `peek` reads the top element BY COPY,
-// so it is usable only for trivially-droppable (`Copy`) `T` — reading an owned
-// element by copy is rejected (RUE-651); use `pop` to move an owned element out.
+// `new`, `push`, `pop`, `clear` and the borrowing `peek_ref` work for any
+// element type and are deliberately ungated, so a stack of owning values is
+// legal (RUE-646). `peek` reads the top element BY COPY, so it needs a Copy
+// `T`: the copy would otherwise alias the still-live top slot and double-free
+// it at scope exit (RUE-651). It states the half Rue can gate as its FIRST
+// statement — `@require_trivially_droppable(T)` (E0711), which names an owning
+// `T` at the `peek` call instead of reporting it from `ArrayBuf.get` a frame
+// deeper (RUE-2049). The gate covers the drop-glue half only; a `@copy`-less
+// struct has no drop glue, so it passes the gate and `peek` copies it bitwise
+// with no diagnostic at all until the language has a Copy gate (RUE-2028).
+// Marking such a struct `@copy` is the fix. Use `peek_ref` to read an owning
+// top element in place, or `pop` to move it out.
 
 const arraybuf = @import("arraybuf.rue");
 const option = @import("option.rue");
@@ -42,8 +51,12 @@ pub fn Stack(comptime T: type) -> type {
             self.buf.pop()
         }
 
-        // The top element by copy, or `None` when empty. COPY-`T` ONLY (RUE-651).
+        // The top element by copy, or `None` when empty. COPY-`T` ONLY
+        // (RUE-651); the gate is stated first so an owning `T` is named here
+        // rather than inside `ArrayBuf.get` (RUE-2049). `peek_ref` reads an
+        // owning element in place and `pop` moves it out.
         fn peek(borrow self) -> option.Option(T) {
+            @require_trivially_droppable(T);
             let O = option.Option(T);
             let n = self.buf.len();
             if n == 0 {

@@ -8,6 +8,10 @@
 //     bs.set(5);
 //     bs.test(5);      // true
 //     bs.count();      // 1
+//
+// Not generic in an element type: the backing store is a fixed `ArrayBuf(u64)`
+// of words and the API speaks in bit indices, so there is no element type to
+// gate (RUE-2049). Its by-copy word reads are always `u64` reads.
 
 const arraybuf = @import("arraybuf.rue");
 

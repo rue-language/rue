@@ -16,6 +16,16 @@
 // NOTE: calling a generic (`comptime T`) helper here from another module with a
 // bare integer literal currently fails to coerce the literal (RUE-693); bind a
 // typed local until that lands.
+//
+// UNGATED ON PURPOSE, like `std.cmp`. Every generic helper here takes its
+// operands by value and returns a computed value, so nothing duplicates an
+// argument; the restriction is arithmetic, not ownership — `T` has to be an
+// integer type (or, in the float section, `f32`/`f64`). Rue has no intrinsic
+// that expresses that, and `@require_trivially_droppable` would state the wrong
+// thing: it is neither necessary nor sufficient for "is an integer" (RUE-2049).
+// A non-numeric `T` therefore still reports the operator mismatch (E0206,
+// "expected integer type") against the arithmetic in this file. An honest gate
+// needs traits (RUE-246).
 
 const option = @import("option.rue");
 

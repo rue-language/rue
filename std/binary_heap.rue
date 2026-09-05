@@ -2,9 +2,26 @@
 // ArrayBuf(T), and PriorityQueue(P, V): a min-heap keyed by an integer priority
 // `P` carrying a payload `V`.
 //
-// Both read elements by copy while sifting, so they are for trivially-droppable
-// (`Copy`) element/payload types (RUE-651). A custom-comparator heap is the M4
-// follow-up (needs function values, RUE-643).
+// COPY-ELEMENT-ONLY. Every sift compares two elements read out of the buffer by
+// copy (`_less` uses the by-copy `ArrayBuf.get`), so an element that stays live
+// in its slot is duplicated rather than consumed — what a Copy type does
+// (3.8:1). Reading a drop-glue element that way would alias its owned buffer
+// and double-free at scope exit (RUE-651).
+//
+// Rue has no intrinsic that gates on Copy, so `push`, `pop` and `peek` — every
+// entry point that sifts or reads — state the half they can as their FIRST
+// statement: `@require_trivially_droppable` (E0711) rejects an owning element
+// type and names it, instead of the E0206 the `a < b` comparison inside `_less`
+// used to raise several frames deeper (RUE-2049). `PriorityQueue` gates `P` and
+// `V` separately so the message names the offending half rather than the
+// enclosing `Pair(P, V)`. The gate covers the drop-glue half only: a
+// `@copy`-less struct has no drop glue and passes it, because the language has
+// no Copy gate (RUE-2028) — but such a struct has no `<` either, so the sift
+// still rejects it with E0206 against the `a < b` inside `_less`, and it cannot
+// be heap-ordered in any case.
+//
+// `new`, `len` and `is_empty` never read an element, so they stay ungated. A
+// custom-comparator heap is the M4 follow-up (needs function values, RUE-643).
 //
 //     const std = @import("std");
 //     let H = std.binary_heap.BinaryHeap(i64);
@@ -72,8 +89,10 @@ pub fn BinaryHeap(comptime T: type) -> type {
             }
         }
 
-        // Insert `x`.
+        // Insert `x`. COPY-`T` ONLY (the sift-up compares by-copy reads).
         fn push(inout self, x: T) {
+            // Gated first, so an owning `T` is named here (module header).
+            @require_trivially_droppable(T);
             self.data.push(x);
             let mut i = self.data.len() - 1;
             while i > 0 {
@@ -89,11 +108,16 @@ pub fn BinaryHeap(comptime T: type) -> type {
 
         // The smallest element by copy, or `None`. COPY-`T` ONLY.
         fn peek(borrow self) -> option.Option(T) {
+            // Gated first, so an owning `T` is named here (module header).
+            @require_trivially_droppable(T);
             self.data.get(0)
         }
 
         // Remove and return the smallest element, or `None` when empty.
+        // COPY-`T` ONLY (the sift-down compares by-copy reads).
         fn pop(inout self) -> option.Option(T) {
+            // Gated first, so an owning `T` is named here (module header).
+            @require_trivially_droppable(T);
             let O = option.Option(T);
             let n = self.data.len();
             if n == 0 {
@@ -111,8 +135,12 @@ pub fn BinaryHeap(comptime T: type) -> type {
 }
 
 // A min-priority queue: a `BinaryHeap` of `(priority, payload)` pairs ordered by
-// priority. `P` and `V` must be `Copy` (RUE-651). `pop` returns the whole
-// `Pair(P, V)` — read `.first` (priority) and `.second` (payload).
+// priority. COPY-ONLY in both parameters, for `BinaryHeap`'s reason: sifting
+// compares `Pair(P, V)` values read out of the buffer by copy (RUE-651).
+// `push`/`pop` gate `P` and `V` separately as their first statements, so an
+// owning payload is named as `V` rather than folded into `Pair(P, V)`
+// (RUE-2049). `pop` returns the whole `Pair(P, V)` — read `.first` (priority)
+// and `.second` (payload).
 pub fn PriorityQueue(comptime P: type, comptime V: type) -> type {
     let Item = tuple.Pair(P, V);
     let Buf = arraybuf.ArrayBuf(Item);
@@ -171,6 +199,10 @@ pub fn PriorityQueue(comptime P: type, comptime V: type) -> type {
 
         // Insert `payload` with priority `prio`.
         fn push(inout self, prio: P, payload: V) {
+            // Gated first and per parameter, so the offending half is the one
+            // named rather than the enclosing `Pair(P, V)` (module header).
+            @require_trivially_droppable(P);
+            @require_trivially_droppable(V);
             let it = Item.new(prio, payload);
             self.data.push(it);
             let mut i = self.data.len() - 1;
@@ -187,6 +219,10 @@ pub fn PriorityQueue(comptime P: type, comptime V: type) -> type {
 
         // Remove and return the min-priority `(priority, payload)` pair.
         fn pop(inout self) -> option.Option(Item) {
+            // Gated first and per parameter, so the offending half is the one
+            // named rather than the enclosing `Pair(P, V)` (module header).
+            @require_trivially_droppable(P);
+            @require_trivially_droppable(V);
             let O = option.Option(Item);
             let n = self.data.len();
             if n == 0 {

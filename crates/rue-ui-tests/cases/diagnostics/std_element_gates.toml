@@ -1,0 +1,696 @@
+[section]
+id = "diagnostics.std-element-gates"
+name = "std Copy-element gates (E0711)"
+description = """
+Several std generics read their element by copy, or duplicate a `filler` into
+every slot, and so require a Copy element type. Until RUE-2049 most of them
+stated that only in a comment, and a non-Copy instantiation failed several
+frames deep inside std with an unrelated error: `std.sort.quicksort(StrBuf, ..)`
+reported E0206 "expected integer type" against a `get_or(hi, 0)` default in
+`std/sort.rue`, and `Deque(StrBuf).new(fill)` reported E0437 "cannot move out of
+inout parameter `self`" against the filler copy in `_grow_to`.
+
+Rue has no intrinsic that gates on Copy, so each of those entry points now
+states the half it can as its FIRST statement — `@require_trivially_droppable`
+(E0711), the same gate `ArrayBuf.get`/`get_or` and `Grid2D.new` already carried.
+An owning element type is named at the entry point instead of surfacing as an
+unrelated error deeper in std. The gate line belongs to the library, not the
+caller, so each `e0711_` case pins the user-call anchor (RUE-2026): the primary
+span is the caller's own `test.rue` line and the gate keeps the labelled
+secondary span "the element type is required to be trivially droppable here".
+
+The gate covers the drop-glue half of Copy only. A struct that is not marked
+`@copy` has no drop glue, so it passes the gate, and what happens next depends
+on the container (RUE-2028): `Stack.peek`, `Queue.peek` and `Queue.dequeue`
+copy it bitwise with no diagnostic at all, `sort` and `BinaryHeap` reject it
+with E0206 against the `<` that orders it, the filler-duplicating constructors
+reject it with E0437 at the filler copy, and only `Grid2D` reaches E0205 — the
+residual gap `trivially_droppable_gate.toml` pins. Marking such a struct
+`@copy` is the fix in every case.
+
+The last group here pins the operations deliberately left UNGATED, which must
+keep working for an owning element type: `Stack`/`Queue` push, pop and
+`peek_ref`, and `ArrayBuf.swap`/`reverse`, which exchange slots rather than
+duplicating them.
+"""
+
+# --- std.sort: all four public entry points ---
+
+[[case]]
+name = "e0711_sort_quicksort_owning_element_rejected"
+description = "`quicksort` names the owning element type at its own gate instead of reporting E0206 against a `get_or` integer default inside std/sort.rue."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let A = std.arraybuf.ArrayBuf(StrBuf);
+    let mut v = A.new();
+    std.sort.quicksort(StrBuf, inout v);
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "`StrBuf`",
+    "test.rue:7:",
+    "the element type is required to be trivially droppable here",
+]
+
+[[case]]
+name = "e0711_sort_insertion_sort_owning_element_rejected"
+description = "`insertion_sort` carries the same gate."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let A = std.arraybuf.ArrayBuf(StrBuf);
+    let mut v = A.new();
+    std.sort.insertion_sort(StrBuf, inout v);
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "`StrBuf`",
+    "test.rue:7:",
+    "the element type is required to be trivially droppable here",
+]
+
+[[case]]
+name = "e0711_sort_is_sorted_owning_element_rejected"
+description = "`is_sorted` reads both comparison operands by copy and carries the same gate."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let A = std.arraybuf.ArrayBuf(StrBuf);
+    let mut v = A.new();
+    let ok = std.sort.is_sorted(StrBuf, borrow v);
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "`StrBuf`",
+    "test.rue:7:",
+    "the element type is required to be trivially droppable here",
+]
+
+[[case]]
+name = "e0711_sort_binary_search_owning_element_rejected"
+description = "`binary_search` is gated too, in place of the E0205 moved-value error its `target` default used to raise."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let A = std.arraybuf.ArrayBuf(StrBuf);
+    let mut v = A.new();
+    let hit = std.sort.binary_search(StrBuf, borrow v, "needle");
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "`StrBuf`",
+    "test.rue:7:",
+    "the element type is required to be trivially droppable here",
+]
+
+[[case]]
+name = "sort_copy_element_compiles"
+description = "The Copy control: sorting, ordering check and search over `i64` still compile and run."
+source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let A = std.arraybuf.ArrayBuf(i64);
+    let O = std.option.Option(u64);
+    let mut v = A.new();
+    v.push(5); v.push(1); v.push(4); v.push(1); v.push(5); v.push(9); v.push(2); v.push(6);
+    std.sort.quicksort(i64, inout v);
+    if !std.sort.is_sorted(i64, borrow v) {
+        return 90;
+    }
+    let mut w = A.new();
+    w.push(3); w.push(1); w.push(2);
+    std.sort.insertion_sort(i64, inout w);
+    if !std.sort.is_sorted(i64, borrow w) {
+        return 91;
+    }
+    match std.sort.binary_search(i64, borrow v, 6) { O.Some(i) => @intCast(i), O.None => 99 }
+}
+"""
+compile_fail = false
+real_std = true
+exit_code = 6
+
+[[case]]
+name = "sort_float_element_compiles"
+description = "`std.sort` no longer assumes an INTEGER element: the reads go through `ArrayBuf.get` rather than an `get_or(i, 0)` integer default, so a float buffer sorts."
+source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let A = std.arraybuf.ArrayBuf(f64);
+    let mut v = A.new();
+    v.push(3.5); v.push(1.25); v.push(2.75);
+    std.sort.quicksort(f64, inout v);
+    if std.sort.is_sorted(f64, borrow v) { 7 } else { 0 }
+}
+"""
+compile_fail = false
+real_std = true
+exit_code = 7
+
+# --- std.arraybuf: the searching reads that were missing a gate ---
+
+[[case]]
+name = "e0711_arraybuf_index_of_owning_element_rejected"
+description = "`ArrayBuf.index_of` compares a by-copy read with `==`; before RUE-2049 it was ungated and ran the element's drop glue once per comparison AND again with the buffer — a double drop."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let A = std.arraybuf.ArrayBuf(StrBuf);
+    let mut v = A.new();
+    let needle: StrBuf = "a";
+    let hit = v.index_of(needle);
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "`StrBuf`",
+    "test.rue:8:",
+    "the element type is required to be trivially droppable here",
+]
+
+[[case]]
+name = "e0711_arraybuf_contains_owning_element_rejected"
+description = "`contains` repeats the gate so the error names this call rather than one inside `index_of`."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let A = std.arraybuf.ArrayBuf(StrBuf);
+    let mut v = A.new();
+    let needle: StrBuf = "a";
+    let hit = v.contains(needle);
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "`StrBuf`",
+    "test.rue:8:",
+    "the element type is required to be trivially droppable here",
+]
+
+[[case]]
+name = "arraybuf_search_copy_element_compiles"
+description = "The Copy control for the searching reads."
+source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let A = std.arraybuf.ArrayBuf(i64);
+    let O = std.option.Option(u64);
+    let mut v = A.new();
+    v.push(10); v.push(20); v.push(30);
+    let at = match v.index_of(30) { O.Some(i) => @intCast(i), O.None => 99 };
+    if v.contains(20) { at + 40 } else { 0 }
+}
+"""
+compile_fail = false
+real_std = true
+exit_code = 42
+
+# --- filler-duplicating representations: the constructor is the gate ---
+
+[[case]]
+name = "e0711_deque_owning_element_rejected_at_new"
+description = "`Deque.new(filler)` copies the filler into every ring slot, so the whole representation is Copy-only; the gate replaces E0437 against `self.filler` inside `_grow_to`."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let D = std.deque.Deque(StrBuf);
+    let mut d = D.new("filler");
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "`StrBuf`",
+    "test.rue:6:",
+    "the element type is required to be trivially droppable here",
+]
+
+[[case]]
+name = "deque_copy_element_compiles"
+description = "The Copy control for `Deque`."
+source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let D = std.deque.Deque(i64);
+    let O = std.option.Option(i64);
+    let mut d = D.new(0);
+    d.push_back(2);
+    d.push_front(1);
+    let a = match d.pop_front() { O.Some(x) => @intCast(x), O.None => 0 };
+    let b = match d.pop_back() { O.Some(x) => @intCast(x), O.None => 0 };
+    a * 10 + b
+}
+"""
+compile_fail = false
+real_std = true
+exit_code = 12
+
+[[case]]
+name = "e0711_intmap_owning_value_rejected_at_new"
+description = "`IntMap.new(filler)` fills a fresh table with the filler on every rehash, so the value type is gated at the constructor."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let M = std.intmap.IntMap(StrBuf);
+    let mut m = M.new("filler");
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "`StrBuf`",
+    "test.rue:6:",
+    "the element type is required to be trivially droppable here",
+]
+
+[[case]]
+name = "intmap_copy_value_compiles"
+description = "The Copy control for `IntMap`."
+source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let M = std.intmap.IntMap(i64);
+    let O = std.option.Option(i64);
+    let mut m = M.new(0);
+    m.insert(42, 7);
+    match m.get(42) { O.Some(v) => @intCast(v), O.None => 0 }
+}
+"""
+compile_fail = false
+real_std = true
+exit_code = 7
+
+[[case]]
+name = "e0711_strmap_owning_value_rejected_at_new"
+description = "`StrMap` gates its VALUE type the same way; its `StrBuf` keys are pooled by the module itself and are unaffected."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let M = std.strmap.StrMap(StrBuf);
+    let mut m = M.new("filler");
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "`StrBuf`",
+    "test.rue:6:",
+    "the element type is required to be trivially droppable here",
+]
+
+[[case]]
+name = "strmap_copy_value_compiles"
+description = "The Copy control for `StrMap`: an owning key with a Copy value is still fine."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let M = std.strmap.StrMap(u64);
+    let O = std.option.Option(u64);
+    let mut m = M.new(0);
+    let k: StrBuf = "hello";
+    m.insert(borrow k, 11);
+    match m.get(borrow k) { O.Some(v) => @intCast(v), O.None => 0 }
+}
+"""
+compile_fail = false
+real_std = true
+exit_code = 11
+
+# --- by-copy readers on the ArrayBuf-backed adapters ---
+
+[[case]]
+name = "e0711_queue_dequeue_owning_element_rejected"
+description = "`Queue.dequeue` leaves the head slot live and takes the element by copy, so it is gated; `peek_ref` and a moving drain stay available."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let Q = std.queue.Queue(StrBuf);
+    let mut q = Q.new();
+    let front = q.dequeue();
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "`StrBuf`",
+    "test.rue:7:",
+    "the element type is required to be trivially droppable here",
+]
+
+[[case]]
+name = "e0711_queue_peek_owning_element_rejected"
+description = "`Queue.peek` is gated at the queue rather than reporting from `ArrayBuf.get` a frame deeper."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let Q = std.queue.Queue(StrBuf);
+    let mut q = Q.new();
+    let front = q.peek();
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "`StrBuf`",
+    "test.rue:7:",
+    "the element type is required to be trivially droppable here",
+]
+
+[[case]]
+name = "queue_copy_element_compiles"
+description = "The Copy control for `Queue`."
+source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let Q = std.queue.Queue(i64);
+    let O = std.option.Option(i64);
+    let mut q = Q.new();
+    q.enqueue(3); q.enqueue(4);
+    let p = match q.peek() { O.Some(x) => @intCast(x), O.None => 0 };
+    let d = match q.dequeue() { O.Some(x) => @intCast(x), O.None => 0 };
+    p * 10 + d
+}
+"""
+compile_fail = false
+real_std = true
+exit_code = 33
+
+[[case]]
+name = "e0711_stack_peek_owning_element_rejected"
+description = "`Stack.peek` is the only Copy-only operation on `Stack`; it is gated at the stack."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let S = std.stack.Stack(StrBuf);
+    let mut s = S.new();
+    let top = s.peek();
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "`StrBuf`",
+    "test.rue:7:",
+    "the element type is required to be trivially droppable here",
+]
+
+[[case]]
+name = "stack_copy_element_compiles"
+description = "The Copy control for `Stack`."
+source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let S = std.stack.Stack(i64);
+    let O = std.option.Option(i64);
+    let mut s = S.new();
+    s.push(1); s.push(2);
+    let p = match s.peek() { O.Some(x) => @intCast(x), O.None => 0 };
+    let q = match s.pop() { O.Some(x) => @intCast(x), O.None => 0 };
+    p * 10 + q
+}
+"""
+compile_fail = false
+real_std = true
+exit_code = 22
+
+# --- binary heaps: every sifting entry point ---
+
+[[case]]
+name = "e0711_binary_heap_push_owning_element_rejected"
+description = "`BinaryHeap.push` sifts up through by-copy comparisons; the gate replaces E0206 against `a < b` inside `_less`."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let H = std.binary_heap.BinaryHeap(StrBuf);
+    let mut h = H.new();
+    h.push("a");
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "`StrBuf`",
+    "test.rue:7:",
+    "the element type is required to be trivially droppable here",
+]
+
+[[case]]
+name = "e0711_binary_heap_pop_owning_element_rejected"
+description = "`BinaryHeap.pop` sifts down and is gated the same way."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let H = std.binary_heap.BinaryHeap(StrBuf);
+    let mut h = H.new();
+    let smallest = h.pop();
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "`StrBuf`",
+    "test.rue:7:",
+    "the element type is required to be trivially droppable here",
+]
+
+[[case]]
+name = "e0711_binary_heap_peek_owning_element_rejected"
+description = "`BinaryHeap.peek` reads the root by copy."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let H = std.binary_heap.BinaryHeap(StrBuf);
+    let mut h = H.new();
+    let smallest = h.peek();
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "`StrBuf`",
+    "test.rue:7:",
+    "the element type is required to be trivially droppable here",
+]
+
+[[case]]
+name = "binary_heap_copy_element_compiles"
+description = "The Copy control for `BinaryHeap`."
+source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let H = std.binary_heap.BinaryHeap(i64);
+    let O = std.option.Option(i64);
+    let mut h = H.new();
+    h.push(5); h.push(1); h.push(3);
+    let p = match h.peek() { O.Some(x) => @intCast(x), O.None => 0 };
+    let q = match h.pop() { O.Some(x) => @intCast(x), O.None => 0 };
+    p * 10 + q
+}
+"""
+compile_fail = false
+real_std = true
+exit_code = 11
+
+[[case]]
+name = "e0711_priority_queue_owning_payload_rejected"
+description = "`PriorityQueue` gates `P` and `V` separately, so an owning PAYLOAD is named as `StrBuf` rather than folded into `Pair(i64, StrBuf)`."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let PQ = std.binary_heap.PriorityQueue(i64, StrBuf);
+    let mut q = PQ.new();
+    q.push(1, "payload");
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "`StrBuf`",
+    "test.rue:7:",
+    "the element type is required to be trivially droppable here",
+]
+
+[[case]]
+name = "priority_queue_copy_types_compile"
+description = "The Copy control for `PriorityQueue`: the smallest priority's payload comes back first."
+source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let PQ = std.binary_heap.PriorityQueue(i64, i64);
+    let Item = std.tuple.Pair(i64, i64);
+    let O = std.option.Option(Item);
+    let mut q = PQ.new();
+    q.push(5, 50);
+    q.push(1, 10);
+    match q.pop() { O.Some(it) => @intCast(it.second), O.None => 0 }
+}
+"""
+compile_fail = false
+real_std = true
+exit_code = 10
+
+# --- deliberately UNGATED: operations that never duplicate an element ---
+
+[[case]]
+name = "stack_of_owning_elements_stays_ungated"
+description = "`Stack` push/pop/`peek_ref` never duplicate an element, so a stack of `StrBuf` keeps working (RUE-646) — the gate is on `peek` alone."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let S = std.stack.Stack(StrBuf);
+    let O = std.option.Option(StrBuf);
+    let mut s = S.new();
+    let a: StrBuf = "alpha";
+    s.push(a);
+    let n: u64 = s.peek_ref().len();
+    match s.pop() { O.Some(v) => @intCast(n), O.None => 0 }
+}
+"""
+compile_fail = false
+real_std = true
+exit_code = 5
+
+[[case]]
+name = "queue_of_owning_elements_stays_ungated"
+description = "`Queue` enqueue and `peek_ref` are ungated for the same reason."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let Q = std.queue.Queue(StrBuf);
+    let mut q = Q.new();
+    let a: StrBuf = "abcd";
+    q.enqueue(a);
+    @intCast(q.peek_ref().len())
+}
+"""
+compile_fail = false
+real_std = true
+exit_code = 4
+
+[[case]]
+name = "arraybuf_swap_and_reverse_of_owning_elements_stay_ungated"
+description = "`ArrayBuf.swap` writes each slot's value into the OTHER slot, an exchange of ownership rather than a copy, so it and `reverse` stay ungated and sound for an owning element type."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let A = std.arraybuf.ArrayBuf(StrBuf);
+    let mut v = A.new();
+    let a: StrBuf = "aa";
+    let b: StrBuf = "bbb";
+    v.push(a); v.push(b);
+    v.swap(0, 1);
+    v.reverse();
+    @intCast(v.get_ref(1).len())
+}
+"""
+compile_fail = false
+real_std = true
+exit_code = 3
