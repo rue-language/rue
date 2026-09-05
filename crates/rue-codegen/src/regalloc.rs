@@ -1437,7 +1437,26 @@ pub struct AllocationContext<'a, Reg: Copy + Eq + std::hash::Hash> {
     coalesce_result: &'a CoalesceResult,
 }
 
-impl<Reg: Copy + Eq + std::hash::Hash> AllocationContext<'_, Reg> {
+impl<'a, Reg: Copy + Eq + std::hash::Hash> AllocationContext<'a, Reg> {
+    /// Assemble a context over caller-owned allocation state.
+    ///
+    /// Only [`RegAllocDriver`] builds one during a compile, from state it
+    /// owns. Backend tests use this to hand a rewriter a chosen allocation —
+    /// including one that leaves a virtual register unassigned, which is the
+    /// invariant failure each rewriter reports and which no MIR the driver
+    /// accepts can produce, since liveness ranges every operand a rewriter
+    /// reads.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        allocation: &'a IndexMap<VReg, Option<Allocation<Reg>>>,
+        coalesce_result: &'a CoalesceResult,
+    ) -> Self {
+        Self {
+            allocation,
+            coalesce_result,
+        }
+    }
+
     /// Return the final assignment for a virtual register.
     pub fn allocation(&self, vreg: VReg) -> Option<Allocation<Reg>> {
         let representative = self.coalesce_result.representative(vreg);

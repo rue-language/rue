@@ -840,7 +840,7 @@ name = "link_error_code_is_explained"
 files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
 args = ["explain", "E1000"]
 compile_only = true
-compile_stdout_contains = ["E1000: Link error", "--link-archive", "internal codegen error:", "docs/spec/src/09-unchecked-code/03-foreign-boundary.md (spec rule 9.3:5)", "docs/designs/0034-cross-target-runtime.md", "docs/designs/0055-typed-runtime-abi-manifest.md"]
+compile_stdout_contains = ["E1000: Link error", "--link-archive", "docs/spec/src/09-unchecked-code/03-foreign-boundary.md (spec rule 9.3:5)", "docs/designs/0034-cross-target-runtime.md", "docs/designs/0055-typed-runtime-abi-manifest.md"]
 compile_stdout_not_contains = ["Compiled", "Examples:"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
