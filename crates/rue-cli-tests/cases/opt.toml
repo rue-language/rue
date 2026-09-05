@@ -1,14 +1,21 @@
 # Optimization-correctness regression tests.
 #
-# These compile at -O2 and assert that mandatory runtime traps (overflow,
-# divide-by-zero, out-of-bounds) still fire even when the trapping op's result
-# is unused. DCE used to eliminate these (RUE-57), silently turning exit 101
-# into exit 0 at -O1+. See crates/rue-cfg/src/opt/dce.rs has_side_effects.
+# Two obligations the optimizer must not optimize away.
+#
+# The trap cases compile at -O2 and assert that mandatory runtime traps
+# (overflow, divide-by-zero, out-of-bounds) still fire even when the trapping
+# op's result is unused. DCE used to eliminate these (RUE-57), silently turning
+# exit 101 into exit 0 at -O1+. See crates/rue-cfg/src/opt/dce.rs
+# has_side_effects.
+#
+# The ownership cases (RUE-2044) run at every level via `differential_opt` and
+# assert that a value with drop glue is materialized once per drop. See
+# crates/rue-cfg/src/opt/classify.rs materializes_owned_value.
 
 [section]
 id = "cli.opt"
 name = "Optimization correctness"
-description = "Mandatory runtime traps must survive optimization passes."
+description = "Mandatory runtime traps and single-owner materialization must survive optimization passes."
 
 [[case]]
 name = "dce_keeps_overflow_panic_at_O2"
@@ -157,3 +164,239 @@ fn main() -> i32 {
 args = ["main.rue", "-O2", "-o", "prog"]
 exit_code = 101
 runtime_error_contains = ["integer overflow"]
+
+# ---------------------------------------------------------------------------
+# Owning literals are materialized once per drop (RUE-2044).
+#
+# A `StrBuf` literal lowers to a `StringConst` whose result type carries drop
+# glue, so the CFG owes it one `Drop` on every path that produced it. It is
+# nonetheless a constant-shaped, non-trapping, non-observable instruction, which
+# is exactly what made the optimizer treat it as a reusable pure computation:
+# CSE merged two identical literals in sibling scopes, leaving the second scope
+# initializing its local from a value the first had already dropped, and LICM
+# hoisted one out of a loop body, leaving a single materialization answering for
+# a drop per iteration. The ownership verifier rejected both as an internal
+# error, so these cases fail by refusing to compile at the affected level rather
+# than by printing the wrong text.
+#
+# The obligation is about the result type, not the opcode: `struct_init`,
+# `enum_init` and `array_init` of an owning type carry it too, and hoisting one
+# of those out of a loop is how a user `drop fn` struct, an `Option(StrBuf)` and
+# a `[StrBuf; N]` reached the same verifier rejection with no `StringConst` in
+# the program at all.
+#
+# Each block below keeps its literal unused, which is what lets forwarding move
+# the drop onto the literal itself; a block that borrows its local instead (the
+# controls at the end) never reached the verifier. Every case is
+# `differential_opt`, so the -O2/-O3 result must match the -O0 baseline, and the
+# printed lines pin the number of times each scope actually ran.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "owning_literals_in_sibling_scopes"
+differential_opt = true
+description = "RUE-2044 repro: two identical StrBuf literals in sibling scopes, each dropped at its scope end."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    { let _k: StrBuf = "a-local"; println("one"); }
+    { let _k: StrBuf = "a-local"; println("two"); }
+    0
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "one\ntwo\n"
+exit_code = 0
+
+[[case]]
+name = "owning_literals_in_a_scope_then_a_branch_arm"
+differential_opt = true
+description = "The dominating scope's literal must not be reused by the branch arm below it, which the dominator-scoped value-number table still has it available for."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    { let _k: StrBuf = "a-local"; println("one"); }
+    let n: i32 = 1;
+    if n > 0 { let _k: StrBuf = "a-local"; println("two"); }
+    0
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "one\ntwo\n"
+exit_code = 0
+
+[[case]]
+name = "owning_literal_in_loop_body"
+differential_opt = true
+description = "One StrBuf literal per iteration, with nothing to merge it against: hoisting it to the preheader would leave a single materialization dropped three times."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    let mut i: i32 = 0;
+    while i < 3 {
+        let _k: StrBuf = "seed";
+        println("tick");
+        i = i + 1;
+    }
+    0
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "tick\ntick\ntick\n"
+exit_code = 0
+
+[[case]]
+name = "owning_literals_in_an_accessor_body_outside_main"
+differential_opt = true
+description = "The same pair inside a helper whose body also splices an ArrayBuf accessor: the merge is about two allocations in one function, not about main or about a particular statement shape."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const B = std.arraybuf.ArrayBuf(i64);
+fn head(borrow b: B) -> i64 {
+    { let _k: StrBuf = "a-local"; }
+    { let _k: StrBuf = "a-local"; }
+    b.get_ref(0) + 0
+}
+fn main() -> i32 {
+    let mut b = B.new();
+    b.push(42);
+    println("head " + @to_string(head(borrow b)));
+    0
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "head 42\n"
+exit_code = 0
+
+[[case]]
+name = "owning_struct_literals_in_scopes_and_a_loop"
+differential_opt = true
+description = "A user `drop fn` struct literal is an owning materialization with no StringConst anywhere: its aggregate constructor must stay one per scope and one per iteration, which the printed drops count."
+files = [{ path = "main.rue", source = """
+struct Res { v: i32 }
+drop fn Res(self) { println("drop"); }
+fn main() -> i32 {
+    { let _r = Res { v: 1 }; }
+    { let _r = Res { v: 1 }; }
+    let mut i: i32 = 0;
+    while i < 2 { let _r = Res { v: 5 }; i = i + 1; }
+    0
+}
+""" }]
+stdout = "drop\ndrop\ndrop\ndrop\n"
+exit_code = 0
+
+[[case]]
+name = "owning_enum_payloads_in_a_loop"
+differential_opt = true
+description = "The same obligation through `enum_init`: an Option(StrBuf) construction owns its payload, so neither variant may be built once in the preheader for a loop that drops one per iteration."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const O = std.option.Option(StrBuf);
+fn main() -> i32 {
+    let mut i: i32 = 0;
+    while i < 3 {
+        let _o: O = O.None;
+        let _p: O = O.Some("seed");
+        i = i + 1;
+    }
+    println("ok");
+    0
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "ok\n"
+exit_code = 0
+
+[[case]]
+name = "owning_array_literals_in_scopes_and_a_loop"
+differential_opt = true
+description = "The same obligation through `array_init`: an array of StrBuf owns its elements, so the array literal is materialized once per scope and once per iteration."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    { let _a: [StrBuf; 2] = ["x", "x"]; }
+    { let _a: [StrBuf; 2] = ["x", "x"]; }
+    let mut i: i32 = 0;
+    while i < 2 { let _a: [StrBuf; 1] = ["x"]; i = i + 1; }
+    println("ok");
+    0
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "ok\n"
+exit_code = 0
+
+[[case]]
+name = "distinct_owning_literals_in_sibling_scopes"
+differential_opt = true
+description = "Control: two scopes whose literals differ never keyed equal, so this shape compiled all along and must keep its independent contents."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    { let k: StrBuf = "a-local"; println(k); }
+    { let k: StrBuf = "b-local"; println(k); }
+    0
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "a-local\nb-local\n"
+exit_code = 0
+
+[[case]]
+name = "owning_literals_in_sibling_scopes_that_use_their_local"
+differential_opt = true
+description = "The same shape with each scope reading its own literal: the contents must stay independent, so a merge would show up as text."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    { let k: StrBuf = "a-local"; println(k); }
+    { let mut k: StrBuf = "a-local"; k.push_str("!"); println(k); }
+    0
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "a-local\na-local!\n"
+exit_code = 0
+
+[[case]]
+name = "owning_literals_inside_repeated_struct_literals"
+differential_opt = true
+description = "A field-held owning literal is a keyed StringConst like any other: on trunk one materialization fed both struct initializers, which the verifier never saw because the Drop sits on the struct. Each struct must now get its own."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+struct Holder { name: StrBuf }
+fn main() -> i32 {
+    { let h: Holder = Holder { name: "a-local" }; println(h.name); }
+    { let h: Holder = Holder { name: "a-local" }; println(h.name); }
+    0
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "a-local\na-local\n"
+exit_code = 0
+
+[[case]]
+name = "non_owning_string_literals_stay_shareable"
+differential_opt = true
+description = "Control: a `str` literal carries no drop glue, so the ownership guard leaves the ordinary constant path alone."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: str = "a-local";
+    let b: str = "a-local";
+    println(a);
+    println(b);
+    if a == b { 0 } else { 1 }
+}
+""" }]
+stdout = "a-local\na-local\n"
+exit_code = 0

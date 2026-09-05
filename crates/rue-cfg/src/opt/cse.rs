@@ -34,6 +34,20 @@
 //! * everything else (allocs, stores, struct/array/enum construction, casts,
 //!   drops, storage markers) — either side-effecting or not a pure value.
 //!
+//! ### Owning results are never keyed
+//!
+//! A keyed opcode is not automatically a reusable computation: a `StringConst`
+//! typed as an owning struct (a `StrBuf` literal, say) materializes a value with
+//! drop glue, and a `Param` read can name an owning parameter. The CFG owes each
+//! such materialization exactly one `Drop` on every path that produced it, so
+//! merging two of them makes one value answer for two drops — the second scope
+//! then initializes its local from a value the first scope already dropped, and
+//! the ownership verifier rejects the CFG. Every candidate is therefore filtered
+//! by [`super::classify::materializes_owned_value`], the shared ownership axis
+//! LICM consults for the same reason, before its key is computed. The predicate
+//! reads the type pool's canonical `needs_drop` fact, so this pass and the
+//! verifier cannot disagree about which values own resources.
+//!
 //! ### Never-written parameter reads (RUE-914)
 //!
 //! Each `Param { index }` re-materializes the parameter's ABI-slot value, so two
@@ -86,9 +100,12 @@
 //! [`super::simplify`], RUE-794). DCE then removes the now-unused `Const(0)`
 //! placeholders.
 
-use crate::{BlockId, Cfg, CfgInstData, CfgValue, Type};
 use ahash::AHashMap;
+use rue_air::FrozenTypeInternPool;
 
+use crate::{BlockId, Cfg, CfgInstData, CfgValue, Type};
+
+use super::classify;
 use super::slot_facts;
 
 /// Work counters for one run (RUE-794 convention): a single forward scan of
@@ -149,13 +166,22 @@ fn commutative(tag: u8, a: CfgValue, b: CfgValue, ty: Type) -> VnKey {
 
 /// Compute the value-number key for `value`, resolving operands through the
 /// substitution map. Returns `None` for instructions this pass does not number
-/// (memory reads, calls, and everything with side effects or non-value results).
+/// (memory reads, calls, everything with side effects or non-value results, and
+/// anything whose result owns resources).
 fn key_of(
     cfg: &Cfg,
+    type_pool: &FrozenTypeInternPool,
     value: CfgValue,
     never_written_param: &[bool],
     r: impl Fn(CfgValue) -> CfgValue,
 ) -> Option<VnKey> {
+    // An owning result is materialized, not computed: its single-drop
+    // obligation is per occurrence, so no two occurrences are interchangeable
+    // however identical their operands. Filtering here covers every keyed
+    // opcode at once rather than trusting each arm to stay scalar.
+    if classify::materializes_owned_value(cfg, type_pool, value) {
+        return None;
+    }
     let inst = cfg.get_inst(value);
     let ty = inst.ty;
     Some(match inst.data {
@@ -210,6 +236,7 @@ fn key_of(
 /// which the dominator-tree walk removes when it exits the block's subtree.
 fn scan_block(
     cfg: &mut Cfg,
+    type_pool: &FrozenTypeInternPool,
     block_id: BlockId,
     never_written_param: &[bool],
     subst: &mut [Option<CfgValue>],
@@ -221,7 +248,9 @@ fn scan_block(
         let value = cfg.get_block(block_id).insts[i];
         stats.insts_scanned += 1;
 
-        let Some(key) = key_of(cfg, value, never_written_param, |v| resolve(subst, v)) else {
+        let Some(key) = key_of(cfg, type_pool, value, never_written_param, |v| {
+            resolve(subst, v)
+        }) else {
             continue;
         };
 
@@ -245,7 +274,7 @@ fn scan_block(
 
 /// Run dominator-scoped CSE. Call at `-O2`/`-O3` after simplification and
 /// before DCE (which sweeps the dead placeholders).
-pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
+pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, crate::CfgEditError> {
     let mut stats = Stats::default();
     // `subst[dup] = first` for every replaced duplicate. Each entry points to a
     // definition that dominates it, so global chain resolution stays valid.
@@ -279,6 +308,7 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
             Event::Enter(block) => {
                 let introduced = scan_block(
                     cfg,
+                    type_pool,
                     block,
                     &never_written_param,
                     &mut subst,
@@ -311,6 +341,7 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
         }
         let introduced = scan_block(
             cfg,
+            type_pool,
             block,
             &never_written_param,
             &mut subst,
@@ -340,8 +371,51 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
 mod tests {
     use super::*;
     use crate::{CfgArgMode, CfgCallArg, CfgInst, Terminator, Type};
-    use lasso::{Key, Spur};
+    use lasso::{Key, Spur, ThreadedRodeo};
+    use rue_air::{StructDef, TypeInternPool};
     use rue_span::Span;
+
+    /// The scalar types every value-numbering test uses carry no drop glue, so
+    /// an empty pool answers the ownership axis for all of them.
+    fn test_type_pool() -> FrozenTypeInternPool {
+        TypeInternPool::new().freeze()
+    }
+
+    /// A pool holding one struct with a destructor and one without, so a test
+    /// can put an owning and a non-owning result type side by side.
+    fn owning_and_plain_struct_pool() -> (FrozenTypeInternPool, Type, Type) {
+        let interner = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let register = |name: &str, destructor: Option<&str>| {
+            Type::new_struct(
+                pool.register_struct(
+                    interner.get_or_intern(name),
+                    StructDef {
+                        name: name.into(),
+                        fields: Vec::new(),
+                        is_copy: false,
+                        is_linear: false,
+                        declared_linear: false,
+                        destructor: destructor.map(Into::into),
+                        is_builtin: false,
+                        is_pub: false,
+                        file_id: rue_span::FileId::DEFAULT,
+                    },
+                )
+                .0,
+            )
+        };
+        let owning = register("Owning", Some("Owning.__drop"));
+        let plain = register("Plain", None);
+        let pool = pool.freeze();
+        assert!(pool.type_needs_drop(owning));
+        assert!(!pool.type_needs_drop(plain));
+        (pool, owning, plain)
+    }
+
+    fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
+        super::run(cfg, &test_type_pool())
+    }
 
     fn make_cfg() -> Cfg {
         let mut cfg = Cfg::new(Type::I32, 0, 0, "test".to_string(), vec![]);
@@ -381,6 +455,102 @@ mod tests {
             else_block,
             else_args: crate::payload::CfgElseArgs::EMPTY,
         }
+    }
+
+    #[test]
+    fn test_owning_string_constant_is_not_merged() {
+        // Two identical `StrBuf`-shaped literals: each materialization owes its
+        // own drop, so neither is keyed however identical the constant. A plain
+        // integer constant beside them still collapses, which is what pins the
+        // guard to ownership rather than to the `StringConst` opcode.
+        let (pool, owning, _) = owning_and_plain_struct_pool();
+        let mut cfg = make_cfg();
+        let first = push(&mut cfg, CfgInstData::StringConst(0), owning);
+        let second = push(&mut cfg, CfgInstData::StringConst(0), owning);
+        let number = push(&mut cfg, CfgInstData::Const(7), Type::I32);
+        let duplicate_number = push(&mut cfg, CfgInstData::Const(7), Type::I32);
+        cfg.set_terminator(
+            cfg.entry,
+            Terminator::Return {
+                value: Some(duplicate_number),
+            },
+        );
+
+        let stats = super::run(&mut cfg, &pool).unwrap();
+        assert_eq!(
+            stats.duplicates_replaced, 1,
+            "only the integer constant is a reusable computation"
+        );
+        assert!(matches!(
+            cfg.get_inst(first).data,
+            CfgInstData::StringConst(0)
+        ));
+        assert!(matches!(
+            cfg.get_inst(second).data,
+            CfgInstData::StringConst(0)
+        ));
+        assert!(matches!(cfg.get_inst(number).data, CfgInstData::Const(7)));
+        assert!(matches!(
+            cfg.get_inst(duplicate_number).data,
+            CfgInstData::Const(0)
+        ));
+        assert!(matches!(
+            cfg.get_block(cfg.entry).terminator,
+            Terminator::Return { value: Some(v) } if v == number
+        ));
+    }
+
+    #[test]
+    fn test_non_owning_struct_string_constant_still_merges() {
+        // The guard reads the result type's drop glue, not the opcode: a
+        // `StringConst` typed as a struct without a destructor — the shape a
+        // `str` slice has — remains an ordinary keyed constant.
+        let (pool, _, plain) = owning_and_plain_struct_pool();
+        let mut cfg = make_cfg();
+        let first = push(&mut cfg, CfgInstData::StringConst(0), plain);
+        let second = push(&mut cfg, CfgInstData::StringConst(0), plain);
+        cfg.set_terminator(
+            cfg.entry,
+            Terminator::Return {
+                value: Some(second),
+            },
+        );
+
+        let stats = super::run(&mut cfg, &pool).unwrap();
+        assert_eq!(stats.duplicates_replaced, 1);
+        assert!(matches!(cfg.get_inst(second).data, CfgInstData::Const(0)));
+        assert!(matches!(
+            cfg.get_block(cfg.entry).terminator,
+            Terminator::Return { value: Some(v) } if v == first
+        ));
+    }
+
+    #[test]
+    fn test_owning_parameter_reads_are_not_merged() {
+        // A never-written parameter of an owning type is still a per-read
+        // materialization: keying it would hand two consumers one value to
+        // drop.
+        let (pool, owning, _) = owning_and_plain_struct_pool();
+        let mut cfg = make_cfg();
+        let first = push(&mut cfg, CfgInstData::Param { index: 0 }, owning);
+        let second = push(&mut cfg, CfgInstData::Param { index: 0 }, owning);
+        cfg.set_terminator(
+            cfg.entry,
+            Terminator::Return {
+                value: Some(second),
+            },
+        );
+
+        let stats = super::run(&mut cfg, &pool).unwrap();
+        assert_eq!(stats.duplicates_replaced, 0);
+        assert!(matches!(
+            cfg.get_inst(first).data,
+            CfgInstData::Param { index: 0 }
+        ));
+        assert!(matches!(
+            cfg.get_inst(second).data,
+            CfgInstData::Param { index: 0 }
+        ));
     }
 
     #[test]

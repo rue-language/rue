@@ -3952,6 +3952,19 @@ impl FrozenTypeInternPool {
             .needs_drop
     }
 
+    /// Whether dropping `ty` requires a destructor or nested drop glue, or
+    /// `None` when `ty` is not a complete root carrying finalized containment
+    /// metadata.
+    ///
+    /// A caller that queries every type it encounters — an optimizer pass
+    /// classifying each instruction's result type, say — needs the total
+    /// answer, because a handle it did not choose must fail closed rather than
+    /// abort the compilation that [`Self::type_needs_drop`] asserts against.
+    pub fn try_type_needs_drop(&self, ty: Type) -> Option<bool> {
+        self.inner.validate_complete_root(ty).ok()?;
+        self.inner.facts_for_type(ty).map(|facts| facts.needs_drop)
+    }
+
     /// Return the flattened runtime ABI width of `ty` in eight-byte slots.
     pub fn abi_slot_count(&self, ty: Type) -> u32 {
         self.try_abi_slot_count(ty)

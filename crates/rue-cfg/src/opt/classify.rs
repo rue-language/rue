@@ -1,13 +1,14 @@
-//! Shared trap / speculation classifier for optimizer passes.
+//! Shared trap / speculation / ownership classifier for optimizer passes.
 //!
-//! DCE, LICM (RUE-927), and unrolling (RUE-928) all need to reason about whether
-//! a CFG instruction can *trap* — either abort with a Rue-defined runtime panic
-//! or fault during an unsafe memory access. The latter is a conservative
-//! classification for speculation and DCE safety, not a statement about Rue's
-//! raw-pointer semantics. Historically that knowledge lived only inside DCE's
-//! private `has_side_effects` predicate, which conflated two independent axes.
-//! ADR-0054 §2 makes this module the single place that names the trapping set,
-//! so the two axes cannot drift apart across the passes that consult them.
+//! DCE, CSE, LICM (RUE-927), and unrolling (RUE-928) all need to reason about
+//! whether a CFG instruction can *trap* — either abort with a Rue-defined
+//! runtime panic or fault during an unsafe memory access — whether it is
+//! *observable*, and whether it *materializes a value that owns resources*. The
+//! fault case is a conservative classification for speculation and DCE safety,
+//! not a statement about Rue's raw-pointer semantics. ADR-0054 §2 makes this
+//! module the single place that names those sets, so the axes cannot drift apart
+//! across the passes that consult them and no pass grows a private purity model
+//! of its own.
 //!
 //! ## Why a module in `opt` (not `CfgInstData` methods)
 //!
@@ -21,7 +22,7 @@
 //! function taking `(&Cfg, CfgValue)` matches DCE's existing call shape exactly
 //! and lets LICM/unrolling reuse it verbatim.
 //!
-//! ## The two axes (defined independently)
+//! ## The three axes (defined independently)
 //!
 //! - [`may_trap`]: the instruction can panic or fault at runtime — overflow-checked
 //!   arithmetic (`Add`/`Sub`/`Mul`/`Neg`), division checks (`Div`/`Mod`), the
@@ -34,12 +35,22 @@
 //!   result value — `Call`, `Intrinsic`, `Alloc`, `Store`, `ParamStore`,
 //!   `PlaceWrite`, `Drop`, `StorageLive`/`StorageDead`. This is the axis DCE
 //!   needs to keep an op live even when its result is unused.
+//! - [`materializes_owned_value`]: the instruction's result type carries drop
+//!   glue, so the value it produces owns resources and the CFG owes it exactly
+//!   one `Drop` per materialization. This is the axis CSE and LICM need: a pass
+//!   that lets one evaluation stand in for several — merging two occurrences,
+//!   or hoisting one out of a loop — turns that one obligation into many, and
+//!   the ownership verifier rejects the result.
 //!
-//! These axes are orthogonal: arithmetic is *pure but trapping* (`may_trap` yet
-//! no observable effect), while `Store` is *effecting but non-trapping*. That
-//! pure-but-trapping case is exactly what motivates the split — DCE must keep it,
-//! LICM must refuse to hoist it, and neither can be expressed with a single
-//! "has effects" bit.
+//! The axes are orthogonal: arithmetic is *pure but trapping* (`may_trap` yet no
+//! observable effect), while `Store` is *effecting but non-trapping*. That
+//! pure-but-trapping case is exactly what motivates the first split — DCE must
+//! keep it, LICM must refuse to hoist it, and neither can be expressed with a
+//! single "has effects" bit. Ownership is a third independent direction: a
+//! `StringConst` typed as an owning struct, and any aggregate constructor built
+//! from one, neither traps nor is observable, yet is still not a reusable
+//! computation. Each consumer takes the axes it needs — DCE the first two, CSE
+//! the third, LICM the speculation combination and the third.
 //!
 //! ## `is_speculatable`
 //!
@@ -53,8 +64,11 @@
 //!
 //! Bitwise ops, shifts (counts are masked per spec, so they never trap),
 //! comparisons, `Not`/`BitNot`, constants, direct non-indexed `PlaceRead`/`Load`,
-//! and the aggregate constructors are the speculatable set — the ops LICM may
-//! hoist.
+//! and the aggregate constructors are the speculatable set. Speculation is about
+//! *when* an op may run, so it says nothing about ownership; LICM combines it
+//! with [`materializes_owned_value`] to decide what it may hoist.
+
+use rue_air::FrozenTypeInternPool;
 
 use crate::{Cfg, CfgInstData, CfgValue, Projection};
 
@@ -141,6 +155,34 @@ pub(crate) fn is_speculatable(cfg: &Cfg, value: CfgValue) -> bool {
     !may_trap(cfg, value) && !has_observable_side_effect(cfg, value)
 }
 
+/// Returns `true` if `value` materializes a value that owns resources — one
+/// whose type carries drop glue.
+///
+/// The CFG's ownership discipline pairs each such materialization with exactly
+/// one `Drop` on every path that produced it. A transform that lets a single
+/// evaluation serve several dynamic occurrences therefore may not touch these
+/// values, whatever the other two axes say: CSE merging two occurrences would
+/// leave the second consumer reading a value the first already dropped, and
+/// LICM hoisting one into a preheader would leave a single materialization
+/// dropped once per iteration.
+///
+/// The answer comes from the frozen type pool's canonical `needs_drop` fact —
+/// the same fact CFG construction uses to place drops and the verifier uses to
+/// check them — so the optimizer cannot disagree with either about what owns
+/// resources.
+///
+/// A frozen pool answers for every type an optimized graph can name, so the
+/// missing-fact arm is unreachable; it fails closed as owning, which costs
+/// optimization rather than soundness.
+pub(crate) fn materializes_owned_value(
+    cfg: &Cfg,
+    type_pool: &FrozenTypeInternPool,
+    value: CfgValue,
+) -> bool {
+    let ty = cfg.get_inst(value).ty;
+    type_pool.try_type_needs_drop(ty).unwrap_or(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,6 +212,52 @@ mod tests {
 
     fn konst(cfg: &mut Cfg, v: u64) -> CfgValue {
         add(cfg, CfgInstData::Const(v), Type::I32)
+    }
+
+    // --- The ownership axis: independent of the other two, and read from the
+    //     type pool's canonical `needs_drop` fact. ---
+
+    #[test]
+    fn owning_result_types_are_materializations() {
+        let interner = lasso::ThreadedRodeo::default();
+        let pool = rue_air::TypeInternPool::new();
+        let register = |name: &str, destructor: Option<&str>| {
+            rue_air::Type::new_struct(
+                pool.register_struct(
+                    interner.get_or_intern(name),
+                    rue_air::StructDef {
+                        name: name.into(),
+                        fields: Vec::new(),
+                        is_copy: false,
+                        is_linear: false,
+                        declared_linear: false,
+                        destructor: destructor.map(Into::into),
+                        is_builtin: false,
+                        is_pub: false,
+                        file_id: rue_span::FileId::DEFAULT,
+                    },
+                )
+                .0,
+            )
+        };
+        let owning = register("Owning", Some("Owning.__drop"));
+        let plain = register("Plain", None);
+        let pool = pool.freeze();
+
+        let mut cfg = make_cfg();
+        let owned_literal = add(&mut cfg, CfgInstData::StringConst(0), owning);
+        let plain_literal = add(&mut cfg, CfgInstData::StringConst(0), plain);
+        let number = konst(&mut cfg, 1);
+
+        assert!(materializes_owned_value(&cfg, &pool, owned_literal));
+        assert!(!materializes_owned_value(&cfg, &pool, plain_literal));
+        assert!(!materializes_owned_value(&cfg, &pool, number));
+
+        // Orthogonal to the other two axes: the owning literal neither traps
+        // nor is observable, so speculation alone would let a pass move it.
+        assert!(!may_trap(&cfg, owned_literal));
+        assert!(!has_observable_side_effect(&cfg, owned_literal));
+        assert!(is_speculatable(&cfg, owned_literal));
     }
 
     // --- The trap axis: every trapping op reports may_trap and is NOT

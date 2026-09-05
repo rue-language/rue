@@ -1831,8 +1831,10 @@ mod tests {
         // the newly added clone-revisit passes are enabled.
         let mut control = cfg.clone();
         let mut control_stats = super::super::OptimizationStats::default();
+        let type_pool = rue_air::TypeInternPool::new().freeze();
         super::super::run_cleanup_to_fixpoint(
             &mut control,
+            &type_pool,
             &mut control_stats,
             super::super::CleanupSequence::Unrolling {
                 revisit_clones: false,
@@ -1843,6 +1845,7 @@ mod tests {
 
         super::super::run_cleanup_to_fixpoint(
             &mut cfg,
+            &type_pool,
             &mut stats,
             super::super::CleanupSequence::Unrolling {
                 revisit_clones: true,

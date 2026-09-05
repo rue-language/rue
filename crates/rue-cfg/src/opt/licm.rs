@@ -5,18 +5,30 @@
 //! instead of once per iteration. This pass implements the **trap-free-only**
 //! variant ADR-0054 §2 specifies: it is the first `-O3`-only pass.
 //!
-//! ## The governing rule — never manufacture a trap
+//! ## The governing rule
 //!
 //! Hoisting moves an op from "once per iteration" to "once in the preheader,
-//! before the loop's entry test". If the loop runs **zero** iterations, a
-//! hoisted op executes on a path the source never took. For a *trapping* op that
-//! invents a trap out of thin air — the exact inverse of RUE-57, where DCE
-//! *deleted* a mandatory trap. So **only [`classify::is_speculatable`] ops move**
-//! (neither `may_trap` nor observable). Every trapping invariant op —
+//! before the loop's entry test", so one evaluation answers for every iteration
+//! and also for none. Two obligations follow, and together they say **only
+//! speculatable ops that do not materialize an owned value move**.
+//!
+//! *Never manufacture a trap.* If the loop runs **zero** iterations, a hoisted
+//! op executes on a path the source never took. For a *trapping* op that invents
+//! a trap out of thin air — the exact inverse of RUE-57, where DCE *deleted* a
+//! mandatory trap. So a candidate must be [`classify::is_speculatable`] (neither
+//! `may_trap` nor observable), and every trapping invariant op —
 //! `Add`/`Sub`/`Mul`/`Div`/`Mod`/`Neg`, `IntCast`, an indirect or indexed
 //! `PlaceRead` — stays in the loop body even when invariant. Guarded hoisting of
 //! trapping ops is RUE-934, after loop rotation lands; there is no cleverness
 //! here.
+//!
+//! *Never make one materialization answer for many drops.* A value whose type
+//! carries drop glue owes the CFG one `Drop` per materialization, so a candidate
+//! must also not be a [`classify::materializes_owned_value`]: hoisted, its single
+//! preheader evaluation would be dropped once per iteration, which the ownership
+//! verifier rejects (RUE-2044). Speculation does not cover this — a `StrBuf`
+//! literal, and the aggregate constructors that build one, neither trap nor are
+//! observable — so ownership is a separate test beside the speculation test.
 //!
 //! ## Invariance
 //!
@@ -142,11 +154,8 @@ pub struct Stats {
 /// Run loop-invariant code motion. Call at `-O3` only, after the `-O2` passes
 /// and before DCE (see the module docs). The caller must first establish
 /// canonical preheaders with `loops::normalize_preheaders`. Returns its work
-/// counters. The type-pool parameter is retained for the pass API contract.
-pub fn run(
-    cfg: &mut Cfg,
-    _type_pool: &FrozenTypeInternPool,
-) -> Result<Stats, CfgOptimizationError> {
+/// counters. The type pool answers the ownership axis of the hoist test.
+pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, CfgOptimizationError> {
     // Every directed cycle contains an edge whose target is no later than its
     // source in the total block-id order. Proving that no such edge exists is
     // therefore enough to skip both dominator construction and loop discovery.
@@ -192,6 +201,7 @@ pub fn run(
         stats.loops_analyzed += 1;
         hoist_loop(
             cfg,
+            type_pool,
             forest.get(id),
             &mut def_block,
             &reachable,
@@ -287,6 +297,7 @@ impl HoistWorkspace {
 
 fn hoist_loop(
     cfg: &mut Cfg,
+    type_pool: &FrozenTypeInternPool,
     lp: &NaturalLoop,
     def_block: &mut Vec<Option<BlockId>>,
     reachable: &super::dce::BitSet,
@@ -322,7 +333,7 @@ fn hoist_loop(
     for &block in &lp.body {
         for &value in &cfg.get_block(block).insts {
             stats.instructions_examined += 1;
-            if is_hoist_candidate(cfg, value, &slot_facts) {
+            if is_hoist_candidate(cfg, type_pool, value, &slot_facts) {
                 candidate[value.as_u32() as usize] = true;
                 candidate_values.push(value);
             }
@@ -413,13 +424,27 @@ fn hoist_loop(
 }
 
 /// Whether `value` is eligible to hoist on its own merits, independent of its
-/// operands: speculatable (never traps, no observable effect), not a block
-/// parameter, and — for a memory read — only when its direct root is invariant.
-fn is_hoist_candidate(cfg: &Cfg, value: CfgValue, slot_facts: &LoopSlotFacts) -> bool {
+/// operands: speculatable (never traps, no observable effect), not the
+/// materialization of an owning value, not a block parameter, and — for a
+/// memory read — only when its direct root is invariant.
+fn is_hoist_candidate(
+    cfg: &Cfg,
+    type_pool: &FrozenTypeInternPool,
+    value: CfgValue,
+    slot_facts: &LoopSlotFacts,
+) -> bool {
     // Trapping or observable ops never move (ADR-0054 §2). This already excludes
     // arithmetic, IntCast, indirect/indexed PlaceRead, calls, stores, allocs,
     // drops, and the storage markers.
     if !classify::is_speculatable(cfg, value) {
+        return false;
+    }
+    // A value that owns resources is materialized once per drop. Speculation
+    // says nothing about that: a `StringConst` typed as an owning struct, or an
+    // aggregate built from one, neither traps nor is observable, yet hoisting it
+    // into the preheader would leave one materialization answering for a drop on
+    // every iteration.
+    if classify::materializes_owned_value(cfg, type_pool, value) {
         return false;
     }
     match &cfg.get_inst(value).data {
@@ -476,6 +501,73 @@ mod tests {
 
     fn test_type_pool() -> FrozenTypeInternPool {
         rue_air::TypeInternPool::new().freeze()
+    }
+
+    /// Two single-field structs that differ only in drop glue, for the
+    /// ownership axis of the hoist test. Both carry one `i32` field so a
+    /// `StructInit` over [`LoopShape::a`] is verifier-clean.
+    struct OwnershipTypes {
+        pool: FrozenTypeInternPool,
+        owning: Type,
+        owning_id: rue_air::StructId,
+        plain: Type,
+        plain_id: rue_air::StructId,
+    }
+
+    fn ownership_types() -> OwnershipTypes {
+        let interner = lasso::ThreadedRodeo::default();
+        let pool = rue_air::TypeInternPool::new();
+        let register = |name: &str, destructor: Option<&str>| {
+            let id = pool
+                .register_struct(
+                    interner.get_or_intern(name),
+                    rue_air::StructDef {
+                        name: name.into(),
+                        fields: vec![rue_air::StructField {
+                            name: "v".to_string(),
+                            ty: Type::I32,
+                        }],
+                        is_copy: false,
+                        is_linear: false,
+                        declared_linear: false,
+                        destructor: destructor.map(Into::into),
+                        is_builtin: false,
+                        is_pub: false,
+                        file_id: rue_span::FileId::DEFAULT,
+                    },
+                )
+                .0;
+            (Type::new_struct(id), id)
+        };
+        let (owning, owning_id) = register("Owning", Some("Owning.__drop"));
+        let (plain, plain_id) = register("Plain", None);
+        let pool = pool.freeze();
+        assert!(pool.type_needs_drop(owning));
+        assert!(!pool.type_needs_drop(plain));
+        OwnershipTypes {
+            pool,
+            owning,
+            owning_id,
+            plain,
+            plain_id,
+        }
+    }
+
+    /// Push a one-field `StructInit` of `ty` over `field` into `block`.
+    fn struct_init(
+        cfg: &mut Cfg,
+        block: BlockId,
+        struct_id: rue_air::StructId,
+        ty: Type,
+        field: CfgValue,
+    ) -> CfgValue {
+        let fields = cfg.push_struct_fields([field]).unwrap();
+        push(
+            cfg,
+            block,
+            CfgInstData::StructInit { struct_id, fields },
+            ty,
+        )
     }
 
     /// Exercise LICM through the same canonical-preheader boundary as O3.
@@ -588,6 +680,50 @@ mod tests {
         assert_eq!(block_of(&s.cfg, inv), Some(s.entry));
         assert!(!s.cfg.get_block(s.body).insts.contains(&inv));
         s.cfg.verify_with_fixture_pool().unwrap();
+    }
+
+    #[test]
+    fn refuses_to_hoist_an_owning_materialization() {
+        // A `StringConst` typed as an owning struct is speculatable — it cannot
+        // trap and has no observable effect — and it is loop-invariant. It must
+        // still stay in the body: one preheader materialization would answer for
+        // a drop on every iteration.
+        let t = ownership_types();
+        let mut s = single_loop();
+        let literal = push(&mut s.cfg, s.body, CfgInstData::StringConst(0), t.owning);
+        s.cfg.verify_with_type_pool(&t.pool).unwrap();
+
+        let stats = run(&mut s.cfg, &t.pool).unwrap();
+        assert_eq!(stats.invariants_hoisted, 0);
+        assert_eq!(block_of(&s.cfg, literal), Some(s.body));
+        s.cfg.verify_with_type_pool(&t.pool).unwrap();
+    }
+
+    #[test]
+    fn refuses_to_hoist_an_owning_aggregate_constructor() {
+        // An aggregate constructor is speculatable too, and invariant when its
+        // fields are, so the ownership axis is the only thing separating these
+        // two runs: the same `StructInit` over a struct without drop glue still
+        // hoists. This is what keeps a user `drop fn` struct literal, an
+        // `Option(StrBuf)` construction, and a `[StrBuf; N]` literal in the loop
+        // body — none of them a `StringConst`.
+        let t = ownership_types();
+
+        let mut owned = single_loop();
+        let kept = struct_init(&mut owned.cfg, owned.body, t.owning_id, t.owning, owned.a);
+        owned.cfg.verify_with_type_pool(&t.pool).unwrap();
+        let stats = run(&mut owned.cfg, &t.pool).unwrap();
+        assert_eq!(stats.invariants_hoisted, 0);
+        assert_eq!(block_of(&owned.cfg, kept), Some(owned.body));
+        owned.cfg.verify_with_type_pool(&t.pool).unwrap();
+
+        let mut plain = single_loop();
+        let hoisted = struct_init(&mut plain.cfg, plain.body, t.plain_id, t.plain, plain.a);
+        plain.cfg.verify_with_type_pool(&t.pool).unwrap();
+        let stats = run(&mut plain.cfg, &t.pool).unwrap();
+        assert_eq!(stats.invariants_hoisted, 1);
+        assert_eq!(block_of(&plain.cfg, hoisted), Some(plain.entry));
+        plain.cfg.verify_with_type_pool(&t.pool).unwrap();
     }
 
     #[test]
