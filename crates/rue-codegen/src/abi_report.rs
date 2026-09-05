@@ -10,7 +10,7 @@
 //!   `pub extern "C" fn` export — reads [`rue_air::lower_c_signature`]'s
 //!   [`LoweredSignature`], the one placement function every C crossing site
 //!   consumes, through the very same projections the import lowering
-//!   ([`crate::foreign_call::ForeignCallInputs`]) and the export thunk
+//!   ([`crate::foreign_call::ForeignCallInputs`]) and the export entry
 //!   ([`crate::export_thunk::ExportSignature`]) build;
 //! * the native Rue convention reads [`rue_air::lower_native_signature`] for
 //!   its arguments and [`rue_air::lower_native_return`] — through
@@ -339,8 +339,8 @@ pub enum AbiFunctionKind {
     /// A reached `extern "C"` import: a C side only, since Rue compiles no body
     /// for it.
     Import,
-    /// A `pub extern "C" fn` export: the C entry thunk and the native body it
-    /// forwards to.
+    /// A `pub extern "C" fn` export: the C entry — an alias of the native body
+    /// or a thunk — and the native body itself.
     Export,
 }
 
@@ -365,6 +365,9 @@ pub struct AbiFunctionReport {
     pub c: Option<AbiSide>,
     /// The native side, present for a function and an export.
     pub native: Option<AbiSide>,
+    /// How an export's C symbol is reached — as a second name for the native
+    /// body, or through a thunk and then why. Present only for an export.
+    pub entry: Option<crate::export_thunk::CEntry>,
     /// The target whose rosters name the registers.
     pub target: Target,
 }
@@ -672,15 +675,17 @@ pub fn function_abi_report(
         kind: AbiFunctionKind::Function,
         c: None,
         native: Some(native_side(cfg, air, Some(symbol), type_pool, target)),
+        entry: None,
         target,
     }
 }
 
-/// One `pub extern "C" fn` export: the C entry the thunk implements, and the
-/// native body it forwards to.
+/// One `pub extern "C" fn` export: its C entry and the native body that entry
+/// names or forwards to.
 ///
-/// `signature` is the very [`crate::export_thunk::ExportSignature`] the thunk
-/// generator consumes, so the C side printed here is the C side emitted.
+/// `signature` is the very [`crate::export_thunk::ExportSignature`] the entry
+/// is decided and generated from, so the C side printed here is the C side
+/// emitted, and the entry line is the decision actually taken.
 pub fn export_abi_report(
     exported_symbol: &str,
     native_symbol: &str,
@@ -707,6 +712,7 @@ pub fn export_abi_report(
             return_type,
         )),
         native: Some(native),
+        entry: Some(signature.c_entry(target)),
         target,
     }
 }
@@ -764,6 +770,7 @@ pub fn import_abi_reports(
                 type_text(type_pool, Some(inst.ty)),
             )),
             native: None,
+            entry: None,
             target,
         });
     }
@@ -1082,8 +1089,20 @@ impl std::fmt::Display for AbiFunctionReport {
         let registers = TargetRegisters::new(self.target);
         writeln!(f, "{} {}", self.kind.keyword(), self.name)?;
         // An export prints both halves of the crossing it owns: the C entry
-        // callers see, then the native body the thunk forwards to.
+        // callers see, then the native body behind it.
         if self.kind == AbiFunctionKind::Export {
+            // Whether a C caller enters the native body directly is the fact
+            // the two sides below are read against (ADR-0084), so it is stated
+            // before them.
+            match &self.entry {
+                Some(crate::export_thunk::CEntry::Alias) => {
+                    writeln!(f, "  c entry: alias of the native body")?
+                }
+                Some(crate::export_thunk::CEntry::Thunk(reason)) => {
+                    writeln!(f, "  c entry: thunk, because {reason}")?
+                }
+                None => {}
+            }
             if let Some(side) = &self.c {
                 writeln!(f, "  c side")?;
                 write_side(f, side, registers, "    ")?;

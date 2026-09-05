@@ -1418,6 +1418,7 @@ fn add_runtime_archive_to_linker_with_cancellation(
 pub(crate) fn link_internal_structured_with_warnings_and_cancellation(
     options: &CompileOptions,
     objects: &[crate::object_query::CollectedObjectProjection],
+    export_aliases: &ExportAliasNames,
     export_thunk_objects: &[Vec<u8>],
     warnings: &[CompileWarning],
     cancellation: &rue_query::CancellationToken,
@@ -1431,7 +1432,13 @@ pub(crate) fn link_internal_structured_with_warnings_and_cancellation(
         |linker| {
             for collected in objects {
                 check_cancellation(cancellation)?;
-                admit_structured_unit(linker, &collected.unit, options.target, cancellation)?;
+                admit_structured_unit(
+                    linker,
+                    &collected.unit,
+                    options.target,
+                    export_aliases,
+                    cancellation,
+                )?;
             }
             Ok(())
         },
@@ -1441,6 +1448,7 @@ pub(crate) fn link_internal_structured_with_warnings_and_cancellation(
 pub(crate) fn link_internal_structured_units_with_warnings_and_cancellation(
     options: &CompileOptions,
     units: &[crate::codegen_query::CollectedCodegenUnit],
+    export_aliases: &ExportAliasNames,
     export_thunk_objects: &[Vec<u8>],
     warnings: &[CompileWarning],
     cancellation: &rue_query::CancellationToken,
@@ -1454,7 +1462,13 @@ pub(crate) fn link_internal_structured_units_with_warnings_and_cancellation(
         |linker| {
             for collected in units {
                 check_cancellation(cancellation)?;
-                admit_structured_unit(linker, &collected.unit, options.target, cancellation)?;
+                admit_structured_unit(
+                    linker,
+                    &collected.unit,
+                    options.target,
+                    export_aliases,
+                    cancellation,
+                )?;
             }
             Ok(())
         },
@@ -1491,6 +1505,10 @@ fn link_internal_structured_admission_with_cancellation(
     )
 }
 
+/// The unmangled C names each native body defines besides its own symbol,
+/// keyed by that symbol: the exports whose C entry is an alias (ADR-0084).
+pub(crate) type ExportAliasNames = std::collections::BTreeMap<String, Vec<String>>;
+
 fn add_export_thunks(
     linker: &mut Linker,
     export_thunk_objects: &[Vec<u8>],
@@ -1514,11 +1532,15 @@ fn admit_structured_unit(
     linker: &mut Linker,
     unit: &crate::codegen_query::CodegenUnit,
     target: Target,
+    export_aliases: &ExportAliasNames,
     cancellation: &rue_query::CancellationToken,
 ) -> CancellableLinkResult<()> {
     let object = crate::backend::project_backend_structured_object_with_cancellation(
         unit,
         target,
+        export_aliases
+            .get(unit.defined_symbol.as_ref())
+            .map_or(&[][..], Vec::as_slice),
         cancellation,
     )?;
     linker

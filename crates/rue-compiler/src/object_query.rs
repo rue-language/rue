@@ -225,7 +225,10 @@ pub(crate) fn evaluate_object_projection(
         return Ok(object_failure(errors.clone()));
     };
     context.record_work(rue_query::WorkItem::new("object.projection.attempts", 1));
-    let value = match crate::backend::project_backend_object(unit, key.target) {
+    // The cached projection is keyed by the codegen unit alone, so it carries
+    // no export alias; the program image re-projects the few bodies an aliased
+    // export names.
+    let value = match crate::backend::project_backend_object(unit, key.target, &[]) {
         Ok(bytes) => {
             ObjectProjectionValue::Available(Arc::new(ObjectProjection::from_bytes(bytes)))
         }

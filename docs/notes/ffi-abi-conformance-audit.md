@@ -29,7 +29,7 @@ boundary, so naming it in an `extern` position describes no crossing.
 name table `--emit abi` prints from, so the two cannot drift. The declaration's
 convention is resolved once — when its signature is checked, against the
 compilation target — and carried from there: the stable plane's `CallAbiFacts`,
-the foreign-symbol map code generation reads, the export thunk's
+the foreign-symbol map code generation reads, the export entry's
 `ExportSignature`, and the ABI report all take the resolved row rather than
 asking the target for its C row again. Because each C row is the convention of
 exactly one supported target, an accepted name places values exactly as `"C"`
@@ -52,7 +52,7 @@ One function reads that data against a type's facts:
 `rue_air::lower_c_signature` answers where every argument and the result of a
 `"C"` signature lives, and its `LoweredSignature` is consumed by every C
 crossing site — the `extern "C"` import planner, the `pub extern "C" fn` export
-thunk, and the stable query plane's `compiler.call-abi`. That single answer is
+entry, and the stable query plane's `compiler.call-abi`. That single answer is
 ADR-0064's ratified acceptance criterion (the by-value classifier agreeing across
 calls, returns, exports, and callbacks) discharged by construction rather than by
 review; `the_c_by_value_classifier_agrees_across_sites_shapes_and_planes` pins it
@@ -172,9 +172,9 @@ indirect-result register: `rdi` with the `rax` echo on System V AMD64, the
 dedicated `x8` on AAPCS64, with the caller allocating a 16-byte-aligned buffer.
 
 Because C's result registers are a prefix of the native bank, **any result
-within C's own bank is placed identically under both rows**, so an export thunk
-for such a signature has no return adaptation left to do, and the two
-conventions differ by one stateable sentence.
+within C's own bank is placed identically under both rows**, so an export of such
+a signature has no return adaptation to do, and the two conventions differ by one
+stateable sentence.
 
 ### Preserved machine state
 
@@ -214,10 +214,10 @@ by an operating-system test inside a backend:
 - **The caller extends arguments narrower than 32 bits.** Rue's canonical
   64-bit-extension invariant already produces a value satisfying it, so the
   import side needs nothing Darwin-specific; a unit assertion pins that every C
-  row asks for the same extension. The export thunk loads every incoming narrow
-  value through its canonical extension on every row, because the native body
-  needs the canonical 64-bit form, which is stronger than Apple's 32-bit
-  guarantee.
+  row asks for the same extension. A narrow parameter is what keeps an export's
+  entry thunk on every row, and that thunk loads the incoming value through its
+  canonical extension, because the native body needs the canonical 64-bit form,
+  which is stronger than Apple's 32-bit guarantee.
 - **Variadic arguments go on the stack.** Out of scope: variadic `extern "C"`
   declarations are rejected.
 
@@ -226,21 +226,48 @@ these amendments do not change it today; they govern the `extern "C"` import and
 export paths, which do reach stacked arguments and narrow scalars. Native Rue
 continues to use its uniform 8-byte slot model on macOS.
 
-## Rue-to-C export thunks
+## Rue-to-C export entries
 
 A `pub extern "C" fn` is compiled as an ordinary native body under a mangled
-symbol, plus one extra object whose single global symbol is the unmangled C name.
-That object's body reads the export's `LoweredSignature` in the callee direction
-— the C caller has already put every argument where the lowering says it goes —
-and adapts each value to what the native body expects.
+symbol. Its unmangled C name is one of two things:
 
-The adaptation is small because both conventions place arguments by the same
-rules — the native row *is* the target's C row with a wider return bank — and
-because the compact memory image of a `@repr(c)` aggregate is its C object
-layout. The native side is placed by `rue_air::lower_native_signature` against
-the very facts the C side was placed by, so an export naming the target's own
-row moves each argument from where C left it to where the native body expects
-it and that is usually the same place:
+- an **alias**: a second global symbol at the native body's own entry, defined
+  by that body's object, so a C caller enters the body directly and no extra
+  object exists. This is the common case, because both conventions place
+  arguments by the same rules and C's result registers are a prefix of the
+  native return bank (ADR-0084).
+- a **thunk**: one extra object whose single global symbol is the C name, whose
+  body reads the export's `LoweredSignature` in the callee direction — the C
+  caller has already put every argument where the lowering says it goes — and
+  adapts each value to what the native body expects.
+
+`ExportSignature::c_entry` is the one predicate that decides, and it keeps the
+thunk whenever anything is left to do:
+
+- a **narrow scalar parameter** that reaches the body as one of its own leaves.
+  A C caller leaves the bits above the declared width unspecified — Apple's row
+  promises more, but Rue does not rely on one row's guarantee for a rule that
+  must hold on all of them — while the native body reads a canonical 64-bit
+  value, so the entry re-extends it.
+- a **result the two banks carry differently**: one that fits the native bank
+  and not C's comes back in registers where a C caller expects caller storage,
+  and one handed over leaf by leaf still has to be assembled into the C image
+  with its padding zeroed.
+- a **parameter the two rows place differently**, which under ADR-0084 happens
+  only as a consequence of such a result: a hidden indirect-result pointer that
+  is an ordinary first argument shifts every later argument one register right
+  under one row and not the other.
+
+Everything else — aggregates within C's bank, register-width scalars, stacked
+tails, an indirect result larger than either bank, and a narrow *result*, which
+the body already leaves canonically extended — reduces to an alias.
+
+What a thunk does when it is kept is small for the same reasons the alias case
+exists, and because the compact memory image of a `@repr(c)` aggregate is its C
+object layout. The native side is placed by `rue_air::lower_native_signature`
+against the very facts the C side was placed by, so the thunk moves each
+argument from where C left it to where the native body expects it and that is
+usually the same place:
 
 - A value the native convention passes by reference is handed to the body as a
   pointer to the C caller's own bytes, wherever they are: the saved incoming
@@ -254,11 +281,13 @@ it and that is usually the same place:
 - When both directions are indirect, the C caller's indirect-result storage *is*
   the native body's storage, so the result is never copied; SysV's `rax` echo is
   then a reload of the saved pointer. When the native body returns its leaves in
-  result registers, the thunk writes each into the C image at its own byte
-  position, zeroing padding first so the image is deterministic. When the native
-  body returns the value's *eightbytes* — the compact image, which is the C
-  image — they are already the C result registers if C returns in registers, and
-  are staged and copied into the caller's storage if it does not.
+  result registers and those leaves are not already the C image's eightbytes,
+  the thunk writes each into the C image at its own byte position, zeroing
+  padding first so the image is deterministic. When the native body returns the
+  value's *eightbytes* — the compact image, which is the C image — they are
+  already the C result registers if C returns in registers, and are staged and
+  copied into the caller's storage if it does not. A result the thunk would only
+  copy back where it already is keeps the export an alias instead.
 
 The signature classes semantic analysis still rejects for an export are about
 identity rather than marshaling: a generic (`comptime`) function has no single C
@@ -321,14 +350,15 @@ rue --emit abi --preview c_ffi --target aarch64-macos main.rue
 It is evidence rather than commentary because it consumes what code generation
 consumes and nothing else: a C boundary's placements come from
 `rue_air::lower_c_signature` through the same `ForeignCallInputs` /
-`ExportSignature` projections the import lowering and the export thunk build,
+`ExportSignature` projections the import lowering and the export entry build,
 and the native side's come from `rue_air::lower_native_signature` and
 `rue_air::lower_native_return` through the same `return_plan` /
 `return_registers` projections the call planner and both return paths build.
 Register *names* are asked of the backend that owns the roster. A
-`pub extern "C" fn` export prints both halves of its crossing, so what its entry
-thunk has left to do — a re-extension per narrow scalar, and the adaptation of a
-result the two banks place differently — is visible side by side.
+`pub extern "C" fn` export prints both halves of its crossing, headed by whether
+its C entry is an alias of the native body or a thunk and, when it is a thunk,
+which disagreement keeps it — a re-extension per narrow scalar, a result the two
+banks place differently, or the argument shift such a result causes.
 
 One thing the stage cannot show is an FFI-predicate failure beside the function
 that caused it: the predicates reject an `extern` or export *signature* while
@@ -356,6 +386,11 @@ The probe covers:
 
 `cli.c_ffi` covers the `extern "C"` import and export paths. Its executing
 cases pair a Rue program with a C archive on x86-64 Linux and AArch64 Linux.
+`x86_64_linux_aliased_export_called_from_c` and its AArch64 pair execute the
+alias entry: the same C caller as `x86_64_linux_export_called_from_c`, over
+exports whose parameters are register-width, so the C symbol it calls is a
+second name for the native body rather than a thunk. The narrow-parameter pair
+beside it keeps its thunks, so both entry shapes are executed under one caller.
 `x86_64_linux_aggregate_exports_called_from_c` and its AArch64 pair cover the
 export direction where the two conventions disagree most: a C caller passes an
 8-byte `@repr(c)` struct by value and receives one back, passes a 24-byte struct

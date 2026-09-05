@@ -474,6 +474,28 @@ impl StructuredObject {
             format,
         }
     }
+
+    /// Define `name` as an additional global symbol at the start of this
+    /// object's code, so a reference to it resolves to the same address as the
+    /// object's own defined symbol.
+    ///
+    /// The byte-container counterpart is [`crate::ObjectBuilder::alias`]; both
+    /// exist because a `pub extern "C" fn` whose C and native placements agree
+    /// is emitted as a second name for its native body rather than as a
+    /// forwarding object (ADR-0084).
+    #[must_use]
+    pub fn with_alias(mut self, name: impl Into<String>) -> Self {
+        let (section_index, size) = (self.symbols[0].section_index, self.symbols[0].size);
+        self.symbols.push(Symbol {
+            name: name.into(),
+            section_index,
+            value: 0,
+            size,
+            binding: SymbolBinding::Global,
+            sym_type: SymbolType::Func,
+        });
+        self
+    }
 }
 
 fn atoms_size(atoms: &[Arc<[u8]>]) -> u64 {

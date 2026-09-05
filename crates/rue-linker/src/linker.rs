@@ -2768,6 +2768,153 @@ mod tests {
     }
 
     #[test]
+    fn an_alias_reaches_the_code_it_shares_with_its_object_s_own_symbol() {
+        // A `pub extern "C" fn` whose two conventions agree is emitted as an
+        // extra global name on the native body's object (ADR-0084), so a
+        // caller that names the alias must reach exactly the code a caller that
+        // names the body reaches. The body also carries a string constant, so
+        // the alias symbol is proved not to disturb the local string symbols
+        // that follow it in either container's symbol table.
+        for target in [
+            Target::X86_64Linux,
+            Target::Aarch64Linux,
+            Target::Aarch64Macos,
+        ] {
+            let (body_code, body_relocations) = match target {
+                Target::X86_64Linux => (
+                    vec![0x48, 0x8D, 0x05, 0, 0, 0, 0, 0xC3],
+                    vec![CodeRelocation {
+                        offset: 3,
+                        symbol: ".rodata.str0".into(),
+                        rel_type: RelocationType::Pc32,
+                        addend: -4,
+                    }],
+                ),
+                Target::Aarch64Linux | Target::Aarch64Macos => (
+                    vec![0, 0, 0, 0, 0, 0, 0, 0, 0xC0, 0x03, 0x5F, 0xD6],
+                    vec![
+                        CodeRelocation {
+                            offset: 0,
+                            symbol: ".rodata.str0".into(),
+                            rel_type: RelocationType::AdrpPage21,
+                            addend: 0,
+                        },
+                        CodeRelocation {
+                            offset: 4,
+                            symbol: ".rodata.str0".into(),
+                            rel_type: RelocationType::AddLo12,
+                            addend: 0,
+                        },
+                    ],
+                ),
+            };
+            let call = |symbol: &str| match target {
+                Target::X86_64Linux => (
+                    vec![0xE8, 0, 0, 0, 0, 0xC3],
+                    vec![CodeRelocation {
+                        offset: 1,
+                        symbol: symbol.to_owned(),
+                        rel_type: RelocationType::Plt32,
+                        addend: -4,
+                    }],
+                ),
+                Target::Aarch64Linux | Target::Aarch64Macos => (
+                    vec![0, 0, 0, 0, 0xC0, 0x03, 0x5F, 0xD6],
+                    vec![CodeRelocation {
+                        offset: 0,
+                        symbol: symbol.to_owned(),
+                        rel_type: RelocationType::Call26,
+                        addend: 0,
+                    }],
+                ),
+            };
+            let body_object = |alias: Option<&str>| {
+                let mut builder = ObjectBuilder::new(target, "body")
+                    .code(body_code.clone())
+                    .strings(vec!["literal".into()]);
+                if let Some(alias) = alias {
+                    builder = builder.alias(alias);
+                }
+                for relocation in &body_relocations {
+                    builder = builder.relocation(relocation.clone());
+                }
+                builder.build()
+            };
+            let main_object = |called: &str| {
+                let (code, relocations) = call(called);
+                let mut builder = ObjectBuilder::new(target, "main").code(code);
+                for relocation in relocations {
+                    builder = builder.relocation(relocation);
+                }
+                builder.build()
+            };
+            let link = |objects: [Vec<u8>; 2]| {
+                let mut linker = Linker::new(target);
+                for bytes in objects {
+                    linker
+                        .add_object(ObjectFile::parse(&bytes).unwrap())
+                        .unwrap();
+                }
+                linker.link("main").unwrap()
+            };
+
+            // Calling the alias links to the same image as calling the body.
+            assert_eq!(
+                link([body_object(Some("entry")), main_object("entry")]),
+                link([body_object(None), main_object("body")]),
+                "{target:?}"
+            );
+
+            // The structured input the internal link admits defines the alias
+            // the same way the byte container does.
+            let mut structured_linker = Linker::new(target);
+            structured_linker
+                .add_structured_object(
+                    crate::StructuredObject::function(
+                        target,
+                        "body",
+                        Arc::from([Arc::from(body_code.as_slice())]),
+                        Arc::from([Arc::from(*b"literal")]),
+                        body_relocations
+                            .iter()
+                            .map(|relocation| crate::StructuredRelocation {
+                                offset: relocation.offset,
+                                symbol: relocation.symbol.clone(),
+                                rel_type: relocation.rel_type,
+                                addend: relocation.addend,
+                            })
+                            .collect(),
+                    )
+                    .with_alias("entry"),
+                )
+                .unwrap();
+            let (main_code, main_relocations) = call("entry");
+            structured_linker
+                .add_structured_object(crate::StructuredObject::function(
+                    target,
+                    "main",
+                    Arc::from([Arc::from(main_code.as_slice())]),
+                    Arc::from([]),
+                    main_relocations
+                        .into_iter()
+                        .map(|relocation| crate::StructuredRelocation {
+                            offset: relocation.offset,
+                            symbol: relocation.symbol,
+                            rel_type: relocation.rel_type,
+                            addend: relocation.addend,
+                        })
+                        .collect(),
+                ))
+                .unwrap();
+            assert_eq!(
+                link([body_object(Some("entry")), main_object("entry")]),
+                structured_linker.link("main").unwrap(),
+                "{target:?}"
+            );
+        }
+    }
+
+    #[test]
     fn structured_relocations_and_rodata_layout_match_serialized_objects() {
         for target in [
             Target::X86_64Linux,

@@ -235,13 +235,15 @@ import wide
 
 # An export owns both halves of one crossing, so its block prints both: the C
 # entry a foreign caller writes (two eightbytes in, two result registers out)
-# and the native body the thunk forwards to. Both sides place the argument
-# identically — the native convention is this target's own C row — and both
-# place the result identically too, because C's result registers are a prefix
-# of the native bank, so nothing is left for the thunk to adapt.
+# and the native body behind it. Both sides place the argument identically — the
+# native convention is this target's own C row — and both place the result
+# identically too, because C's result registers are a prefix of the native bank.
+# Nothing is left to adapt, so the block is headed by the consequence: the C
+# symbol is an alias of the native body and a foreign caller enters it directly
+# (ADR-0084).
 [[case]]
 name = "export_two_field_struct_in_and_out"
-description = "A `pub extern \\\"C\\\" fn` export prints its C side and the native side it forwards to."
+description = "A `pub extern \\\"C\\\" fn` export whose two sides agree prints both of them and reports its C entry as an alias of the native body."
 target = "x86-64-linux"
 preview = "c_ffi"
 preview_should_pass = true
@@ -262,6 +264,7 @@ fn main() -> i32 {
 """
 expected_abi = """
 export swap
+  c entry: alias of the native body
   c side
     convention x86-64-sysv, symbol swap
     parameter 0: Pair$test_2erue, by value, gp registers 0-1 (rdi, rsi)
@@ -278,6 +281,145 @@ export swap
 function main
   convention rue, symbol main
   return: i32, gp return register 0 (rax)
+  outgoing argument area: 0 bytes
+"""
+
+# The two disagreements that keep an entry thunk, and the reason the report
+# gives for each:
+#
+#   scale   a narrow scalar parameter. The C row leaves the bits above `i32`
+#           unspecified — the `sign-extended from 32 bits` on its C line is what
+#           the *caller* of a C function does, not a promise to a callee — while
+#           the native body reads a canonical 64-bit value, so the entry
+#           re-extends it. The narrow *result* needs nothing: the body already
+#           leaves it extended.
+#   rotate  a result the two banks carry differently. Three eightbytes fit the
+#           native return bank and exceed SysV's two, so the body returns in
+#           registers where a C caller expects its own storage.
+[[case]]
+name = "export_entries_that_keep_a_thunk_say_why"
+description = "An export with a narrow parameter and one whose result exceeds C's return bank each report the disagreement that keeps their entry thunk."
+target = "x86-64-linux"
+preview = "c_ffi"
+preview_should_pass = true
+source = """
+@repr(c)
+struct Triple {
+    a: i64,
+    b: i64,
+    c: i64,
+}
+
+pub extern "C" fn scale(n: i32) -> i32 {
+    n + n
+}
+
+pub extern "C" fn rotate(t: Triple) -> Triple {
+    Triple { a: t.c, b: t.a, c: t.b }
+}
+
+fn main() -> i32 {
+    0
+}
+"""
+expected_abi = """
+export scale
+  c entry: thunk, because parameter 0 is re-extended
+  c side
+    convention x86-64-sysv, symbol scale
+    parameter 0: i32, by value, gp register 0 (rdi), sign-extended from 32 bits
+    return: i32, gp result register 0 (rax), sign-extended from 32 bits
+    outgoing argument area: 0 bytes
+  native side
+    convention rue, symbol __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s5_7363616c65t0_
+    parameter 0: i32, by value, gp register 0 (rdi)
+    return: i32, gp return register 0 (rax)
+    outgoing argument area: 0 bytes
+
+export rotate
+  c entry: thunk, because the result is adapted
+  c side
+    convention x86-64-sysv, symbol rotate
+    parameter 0: Triple$test_2erue, by value, stack +0 (24 bytes, align 8)
+    return: Triple$test_2erue, sret: pointer in rdi, echoed in rax (24 bytes, align 8)
+    outgoing argument area: 32 bytes
+  native side
+    convention rue, symbol __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s6_726f74617465t0_
+    parameter 0: Triple$test_2erue, by value, stack +0 (24 bytes, align 8)
+    return: Triple$test_2erue, 3 eightbytes
+      eightbyte 0: gp return register 0 (rax)
+      eightbyte 1: gp return register 1 (rdx)
+      eightbyte 2: gp return register 2 (rcx)
+    outgoing argument area: 32 bytes
+
+function main
+  convention rue, symbol main
+  return: i32, gp return register 0 (rax)
+  outgoing argument area: 0 bytes
+"""
+
+# The same two answers on the Apple row, whose stacked natural-size packing and
+# caller-extension amendment are the two places one might expect a different
+# decision. Neither changes it: an aggregate within the C bank is an alias, and
+# a narrow scalar keeps its thunk on every row, because Rue does not rely on one
+# row's caller-extension guarantee for a rule that must hold on all of them.
+[[case]]
+name = "export_entries_answer_the_same_way_on_the_apple_row"
+description = "An aliased aggregate export and a thunked narrow-parameter export report the same entries under the Apple arm64 row."
+target = "aarch64-macos"
+preview = "c_ffi"
+preview_should_pass = true
+source = """
+@repr(c)
+struct Pair {
+    lo: i64,
+    hi: i64,
+}
+
+pub extern "C" fn swap(p: Pair) -> Pair {
+    Pair { lo: p.hi, hi: p.lo }
+}
+
+pub extern "C" fn scale(n: i16) -> i16 {
+    n + n
+}
+
+fn main() -> i32 {
+    0
+}
+"""
+expected_abi = """
+export swap
+  c entry: alias of the native body
+  c side
+    convention aarch64-aapcs-darwin, symbol swap
+    parameter 0: Pair$test_2erue, by value, gp registers 0-1 (x0, x1)
+    return: Pair$test_2erue, gp result registers 0-1 (x0, x1)
+    outgoing argument area: 0 bytes
+  native side
+    convention rue, symbol __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s4_73776170t0_
+    parameter 0: Pair$test_2erue, by value, gp registers 0-1 (x0, x1)
+    return: Pair$test_2erue, 2 eightbytes
+      eightbyte 0: gp return register 0 (x0)
+      eightbyte 1: gp return register 1 (x1)
+    outgoing argument area: 0 bytes
+
+export scale
+  c entry: thunk, because parameter 0 is re-extended
+  c side
+    convention aarch64-aapcs-darwin, symbol scale
+    parameter 0: i16, by value, gp register 0 (x0), sign-extended from 16 bits
+    return: i16, gp result register 0 (x0), sign-extended from 16 bits
+    outgoing argument area: 0 bytes
+  native side
+    convention rue, symbol __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s5_7363616c65t0_
+    parameter 0: i16, by value, gp register 0 (x0)
+    return: i16, gp return register 0 (x0)
+    outgoing argument area: 0 bytes
+
+function main
+  convention rue, symbol main
+  return: i32, gp return register 0 (x0)
   outgoing argument area: 0 bytes
 """
 

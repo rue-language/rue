@@ -143,10 +143,11 @@ Three sites consume that one answer, which is why an import, an export, and the
 query plane cannot disagree about a placement:
 
 - the `extern "C"` import planner, which writes the places and calls;
-- the `pub extern "C" fn` export thunk, which reads the same places in the
+- the `pub extern "C" fn` export entry, which reads the same places in the
   callee direction and adapts them to the native convention its body follows —
   itself placed by `lower_native_signature` against the same facts, so the two
-  halves usually agree outright; and
+  halves usually agree outright and the C symbol is emitted as an alias of the
+  native body rather than as a thunk (ADR-0084); and
 - the stable query plane's `compiler.call-abi`, which projects the same facts
   from canonical layout values and revision-stable type keys.
 
@@ -196,10 +197,10 @@ than by an operating-system test in a backend:
   audit note records Apple's byte-exact composite placement as still open.
 - **The caller extends arguments narrower than 32 bits.** Rue's canonical
   64-bit-extension invariant already satisfies this on the import side. On the
-  export side the thunk loads every incoming narrow value through its canonical
-  extension on every row: the native body needs the canonical 64-bit form, which
-  is stronger than what any C caller promises, and extending an already-extended
-  value is a no-op.
+  export side a narrow parameter is what keeps an entry thunk on every row, and
+  that thunk loads the incoming value through its canonical extension: the
+  native body needs the canonical 64-bit form, which is stronger than what any C
+  caller promises, and extending an already-extended value is a no-op.
 
 Apple's variadic amendment is out of scope: variadic `extern "C"` declarations
 are rejected.

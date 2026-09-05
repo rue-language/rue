@@ -110,6 +110,9 @@ pub struct ObjectBuilder {
     pub relocations: Vec<CodeRelocation>,
     /// String constants (for .rodata section).
     pub strings: Vec<String>,
+    /// Additional global names for the same code, each defined at offset 0 of
+    /// the code section alongside [`Self::name`].
+    pub aliases: Vec<String>,
 }
 
 /// A relocation in generated code.
@@ -135,7 +138,21 @@ impl ObjectBuilder {
             code: Vec::new(),
             relocations: Vec::new(),
             strings: Vec::new(),
+            aliases: Vec::new(),
         }
+    }
+
+    /// Define `name` as an additional global symbol at the start of this
+    /// object's code, so a reference to it resolves to the same address as
+    /// [`Self::name`].
+    ///
+    /// This is how a `pub extern "C" fn` whose C and native placements agree
+    /// gets its unmangled C entry (ADR-0084): the export name is a second name
+    /// for the native body rather than a forwarding object of its own.
+    #[must_use]
+    pub fn alias(mut self, name: impl Into<String>) -> Self {
+        self.aliases.push(name.into());
+        self
     }
 
     /// Set the machine code.
@@ -216,6 +233,14 @@ impl ObjectBuilder {
         strtab.extend_from_slice(self.name.as_bytes());
         strtab.push(0);
 
+        // Alias names, each a second global definition of the same code.
+        let mut alias_name_offsets = Vec::with_capacity(self.aliases.len());
+        for alias in &self.aliases {
+            alias_name_offsets.push(strtab.len());
+            strtab.extend_from_slice(alias.as_bytes());
+            strtab.push(0);
+        }
+
         // Add string constant symbol names to strtab
         let mut string_symbol_offsets = Vec::new();
         for i in 0..self.strings.len() {
@@ -252,6 +277,7 @@ impl ObjectBuilder {
         // 2: .rodata section symbol (if has_rodata)
         // 3..3+N: string constant symbols (local, in .rodata)
         // then: function symbol (global)
+        // then: alias symbols (global, same .text offset as the function)
         // then: external symbols (undefined)
 
         let mut symtab = Vec::new();
@@ -306,6 +332,18 @@ impl ObjectBuilder {
         symtab.extend_from_slice(&(self.code.len() as u64).to_le_bytes()); // st_size
         next_sym_idx += 1;
         let _ = func_sym_idx; // suppress unused warning
+
+        // Alias symbols (global): the same code start under another name, so
+        // each carries the function symbol's section, value, and size.
+        for &name_offset in &alias_name_offsets {
+            symtab.extend_from_slice(&(name_offset as u32).to_le_bytes()); // st_name
+            symtab.push(elf_st_info(STB_GLOBAL, STT_FUNC)); // st_info
+            symtab.push(0); // st_other
+            symtab.extend_from_slice(&ElfSectionLayout::TEXT.to_le_bytes()); // st_shndx: .text
+            symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_value
+            symtab.extend_from_slice(&(self.code.len() as u64).to_le_bytes()); // st_size
+            next_sym_idx += 1;
+        }
 
         // External symbols (undefined)
         let first_extern_sym = next_sym_idx;
@@ -673,6 +711,17 @@ impl ObjectBuilder {
         strtab.extend_from_slice(macho_name.as_bytes());
         strtab.push(0);
 
+        // Alias names, each a second global definition of the same code. They
+        // sit immediately after the function symbol so that the string and
+        // undefined-external symbols keep one contiguous block after them.
+        let mut alias_name_offsets = Vec::with_capacity(self.aliases.len());
+        for alias in &self.aliases {
+            alias_name_offsets.push(strtab.len());
+            strtab.extend_from_slice(crate::util::add_macho_underscore(alias).as_bytes());
+            strtab.push(0);
+        }
+        let num_alias_syms = alias_name_offsets.len();
+
         // String constant symbols (private external, for rodata)
         // Include function name in symbol to avoid collisions when linking multiple object files
         // IMPORTANT: Only create symbols for non-empty strings that have actual rodata content.
@@ -740,7 +789,8 @@ impl ObjectBuilder {
         // r_symbolnum=0 in relocations as invalid. By putting function first,
         // string symbols start at index 1+.
         let num_local_syms = 0; // No local symbols - all are external
-        let num_extern_syms = 1 + num_string_syms + num_extern_symbols; // function + non-empty strings + external refs
+        // function + aliases + non-empty strings + external refs
+        let num_extern_syms = 1 + num_alias_syms + num_string_syms + num_extern_symbols;
         let num_syms = num_local_syms + num_extern_syms;
 
         // String table follows symbol table
@@ -854,7 +904,7 @@ impl ObjectBuilder {
         //   - Local symbols: 0 (we have none - all are N_EXT)
         //   - External defined symbols: function + string constants
         //   - Undefined symbols: external references
-        let num_extdef = 1 + num_string_syms; // function + string symbols
+        let num_extdef = 1 + num_alias_syms + num_string_syms; // function + aliases + string symbols
         let num_undef = num_extern_symbols;
 
         macho.extend_from_slice(&LC_DYSYMTAB.to_le_bytes()); // cmd
@@ -932,21 +982,29 @@ impl ObjectBuilder {
                 // Look up the symbol index for this string
                 let sym_idx = string_sym_indices[string_id]
                     .expect("empty string relocations should have been filtered out");
-                // Non-empty string: symbol index is 1 + sym_idx (function is at 0)
-                (1 + sym_idx as u32, true)
+                // Non-empty string: the function and its aliases come first.
+                (1 + num_alias_syms as u32 + sym_idx as u32, true)
             } else {
-                // External symbol (function or undefined external)
-                // First check if it's the function itself
+                // External symbol (function, one of its aliases, or an
+                // undefined external). The function is at index 0 and its
+                // aliases follow it, in the order they were added.
                 if reloc.symbol == self.name {
-                    // Function symbol is at index 0
                     (0_u32, true)
+                } else if let Some(alias) =
+                    self.aliases.iter().position(|name| *name == reloc.symbol)
+                {
+                    (1 + alias as u32, true)
                 } else {
                     // Undefined external symbol. Every non-string relocation
                     // registered its symbol in the table above, so this lookup
                     // cannot miss.
                     let sym_idx = extern_symbol_indices[reloc.symbol.as_str()];
-                    // Undefined externals start after function and non-empty string symbols
-                    (1 + num_string_syms as u32 + sym_idx as u32, true)
+                    // Undefined externals follow the function, its aliases, and
+                    // the non-empty string symbols.
+                    (
+                        1 + num_alias_syms as u32 + num_string_syms as u32 + sym_idx as u32,
+                        true,
+                    )
                 }
             };
 
@@ -1005,7 +1063,8 @@ impl ObjectBuilder {
         // n_value: 8 bytes
 
         // All symbols are external (N_EXT set) for ARM64 relocation compatibility.
-        // Symbol table order: function, string constants, undefined externals.
+        // Symbol table order: function, aliases, string constants, undefined
+        // externals.
         // IMPORTANT: Function must be at index 0 so that string symbols start at
         // index 1+. macOS linker rejects r_symbolnum=0 in relocations as invalid.
 
@@ -1016,7 +1075,16 @@ impl ObjectBuilder {
         macho.extend_from_slice(&0_u16.to_le_bytes()); // n_desc
         macho.extend_from_slice(&0_u64.to_le_bytes()); // n_value (function start; __text is at addr 0)
 
-        // Symbols 1..N: String constant symbols, defined in the rodata section.
+        // Alias symbols: the same code start under another name.
+        for &name_offset in &alias_name_offsets {
+            macho.extend_from_slice(&(name_offset as u32).to_le_bytes()); // n_strx
+            macho.push(N_EXT | N_SECT); // n_type: external, defined in section
+            macho.push(1); // n_sect: section 1 (__text)
+            macho.extend_from_slice(&0_u16.to_le_bytes()); // n_desc
+            macho.extend_from_slice(&0_u64.to_le_bytes()); // n_value (__text is at addr 0)
+        }
+
+        // String constant symbols, defined in the rodata section.
         // These are plain N_SECT (truly local) symbols, so they are not exported,
         // avoiding duplicate symbol errors when linking multiple object files
         // that each have their own string constants.

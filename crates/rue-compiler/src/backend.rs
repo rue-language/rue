@@ -3,9 +3,10 @@
 // ============================================================================
 
 /// Collect the unmangled C symbol names of every `pub extern "C" fn` export in
-/// the lowered program (ADR-0064 P4). Each is the raw name under which a C-ABI
-/// entry thunk exposes the exported Rue function to separately compiled C
-/// callers; the name is the export's source identifier (no mangling).
+/// the lowered program (ADR-0064 P4). Each is the raw name under which the
+/// export's C entry — an alias of the native body, or a thunk — exposes the
+/// exported Rue function to separately compiled C callers; the name is the
+/// export's source identifier (no mangling).
 #[cfg(test)]
 pub(crate) fn collect_export_symbols(rir: &rue_rir::Rir, interner: &ThreadedRodeo) -> Vec<String> {
     rir.iter()
@@ -54,9 +55,14 @@ pub(crate) fn validate_backend_functions(
 /// Project one canonical `CodegenUnit` into the linker-owned object builder.
 /// The builder currently accepts owned strings and byte vectors, so this leaf
 /// makes transient copies without retaining a second compiler-side product.
+///
+/// `aliases` are additional global names defined at the unit's entry: the
+/// unmangled C symbols of the `pub extern "C" fn` exports this body is the
+/// entry of, for the exports whose two conventions agree (ADR-0084).
 pub(crate) fn project_backend_object(
     unit: &crate::codegen_query::CodegenUnit,
     target: Target,
+    aliases: &[String],
 ) -> CompileResult<Vec<u8>> {
     // Object serialization runs after code generation, so it is a sibling leaf
     // of `codegen` rather than one of its subphases (RUE-786).
@@ -76,6 +82,9 @@ pub(crate) fn project_backend_object(
     let mut obj_builder = ObjectBuilder::new(target, unit.defined_symbol.to_string())
         .code(text.atoms[0].to_vec())
         .strings(strings);
+    for alias in aliases {
+        obj_builder = obj_builder.alias(alias.clone());
+    }
 
     for reloc in unit.relocations.iter() {
         let rel_type = map_linker_relocation(target, reloc.kind)?;
@@ -196,10 +205,12 @@ fn canonical_codegen_sections(
 pub(crate) fn project_backend_structured_object(
     unit: &crate::codegen_query::CodegenUnit,
     target: Target,
+    aliases: &[String],
 ) -> CompileResult<rue_linker::StructuredObject> {
     match project_backend_structured_object_with_cancellation(
         unit,
         target,
+        aliases,
         &rue_query::CancellationToken::new(),
     ) {
         Ok(object) => Ok(object),
@@ -227,6 +238,7 @@ pub(crate) fn project_backend_structured_object(
 pub(crate) fn project_backend_structured_object_with_cancellation(
     unit: &crate::codegen_query::CodegenUnit,
     target: Target,
+    aliases: &[String],
     cancellation: &rue_query::CancellationToken,
 ) -> Result<rue_linker::StructuredObject, crate::session::PipelineRequestControl> {
     if cancellation.is_canceled() {
@@ -255,35 +267,37 @@ pub(crate) fn project_backend_structured_object_with_cancellation(
             rue_query::QueryAbort::Canceled,
         ));
     }
-    Ok(rue_linker::StructuredObject::function(
+    let mut object = rue_linker::StructuredObject::function(
         target,
         unit.defined_symbol.to_string(),
         text.atoms.clone(),
         rodata.atoms.clone(),
         relocations,
-    ))
+    );
+    for alias in aliases {
+        object = object.with_alias(alias.clone());
+    }
+    Ok(object)
 }
 
-/// Emit the C-ABI entry thunk objects for every `pub extern "C" fn` export
-/// (ADR-0064 P4).
+/// Decide the C entry of every `pub extern "C" fn` export among `functions`.
 ///
 /// Each exported function was already code-generated as an ordinary native body
-/// under its mangled `machine_name`; this adds one extra object per export whose
-/// single global symbol is the unmangled C name (the export's source identifier)
-/// and whose body receives arguments per the target-C convention and adapts them
-/// to the native convention the body follows.
+/// under its mangled `machine_name`. Its unmangled C name is either an alias of
+/// that body or a thunk object of its own, exactly as
+/// [`generate_export_entry`] decides for a rooted export.
 #[cfg(test)]
-pub(crate) fn generate_export_thunk_objects(
+pub(crate) fn generate_export_entries(
     functions: &[crate::session::RootedCfgUnit],
     options: &CompileOptions,
     export_symbols: &[String],
-) -> Vec<Vec<u8>> {
+) -> Vec<ExportEntry> {
     if export_symbols.is_empty() {
         return Vec::new();
     }
     let export_set: std::collections::BTreeSet<&str> =
         export_symbols.iter().map(String::as_str).collect();
-    let mut objects = Vec::new();
+    let mut entries = Vec::new();
     for function in functions {
         let Some(exported_symbol) = function
             .definition_source_name()
@@ -291,16 +305,94 @@ pub(crate) fn generate_export_thunk_objects(
         else {
             continue;
         };
-        objects.push(generate_export_thunk_object(
+        entries.push(generate_export_entry(
             options.target,
-            exported_symbol,
-            &function.record.codegen.defined_symbol,
-            // Exports reaching this test-only path are declared `"C"`, so the
-            // target's own row is the row their declaration resolved to.
-            &crate::session::export_signature(function, options.target.c_calling_convention()),
+            &crate::program_image_plan::RootedExport {
+                function: function.function.clone(),
+                exported_symbol: exported_symbol.to_owned(),
+                native_symbol: function.record.codegen.defined_symbol.to_string(),
+                // Exports reaching this test-only path are declared `"C"`, so
+                // the target's own row is the row their declaration resolved
+                // to.
+                signature: crate::session::export_signature(
+                    function,
+                    options.target.c_calling_convention(),
+                ),
+            },
         ));
     }
-    objects
+    entries
+}
+
+/// One `pub extern "C" fn` export's C entry, as a link consumes it.
+///
+/// An export is one of two things (ADR-0084): an *alias*, when the target's C
+/// row and the native convention place every value of its signature
+/// identically and the C symbol is therefore emitted as a second global name
+/// for the native body; or a *thunk*, an object of its own that adapts what the
+/// two rows still disagree about and forwards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExportEntry {
+    pub(crate) exported_symbol: String,
+    pub(crate) native_symbol: String,
+    /// The thunk object's bytes, or `None` for an alias, which has no object.
+    pub(crate) object: Option<Vec<u8>>,
+}
+
+impl ExportEntry {
+    /// Whether the C symbol is a second name for the native body.
+    pub(crate) fn is_alias(&self) -> bool {
+        self.object.is_none()
+    }
+}
+
+/// Decide one export's C entry and emit its thunk object when it needs one.
+pub(crate) fn generate_export_entry(
+    target: Target,
+    export: &crate::program_image_plan::RootedExport,
+) -> ExportEntry {
+    let object = export.signature.c_entry(target).is_thunk().then(|| {
+        generate_export_thunk_object(
+            target,
+            &export.exported_symbol,
+            &export.native_symbol,
+            &export.signature,
+        )
+    });
+    ExportEntry {
+        exported_symbol: export.exported_symbol.clone(),
+        native_symbol: export.native_symbol.clone(),
+        object,
+    }
+}
+
+/// The alias names each native body carries, keyed by that body's symbol.
+///
+/// Every export whose C entry is an alias contributes its unmangled C name to
+/// the object of the body it names, which is where the definition lives.
+pub(crate) fn export_alias_names(
+    entries: &[ExportEntry],
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut aliases: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for entry in entries.iter().filter(|entry| entry.is_alias()) {
+        aliases
+            .entry(entry.native_symbol.clone())
+            .or_default()
+            .push(entry.exported_symbol.clone());
+    }
+    for names in aliases.values_mut() {
+        names.sort();
+    }
+    aliases
+}
+
+/// The thunk objects a link admits, one per export that still needs one.
+pub(crate) fn export_thunk_objects(entries: &[ExportEntry]) -> Vec<Vec<u8>> {
+    entries
+        .iter()
+        .filter_map(|entry| entry.object.clone())
+        .collect()
 }
 
 pub(crate) fn generate_export_thunk_object(
@@ -562,7 +654,7 @@ fn main() -> i32 {
     }
 
     fn assert_byte_projection_rejects(unit: &CodegenUnit, expected: &str) {
-        let error = project_backend_object(unit, Target::X86_64Linux).unwrap_err();
+        let error = project_backend_object(unit, Target::X86_64Linux, &[]).unwrap_err();
         assert!(
             matches!(&error.kind, ErrorKind::InternalCodegenError(message) if message.contains(expected)),
             "unexpected projection error: {error}"
@@ -571,7 +663,7 @@ fn main() -> i32 {
 
     fn assert_projection_rejects(unit: CodegenUnit, expected: &str) {
         assert_byte_projection_rejects(&unit, expected);
-        let error = project_backend_structured_object(&unit, Target::X86_64Linux).unwrap_err();
+        let error = project_backend_structured_object(&unit, Target::X86_64Linux, &[]).unwrap_err();
         assert!(
             matches!(&error.kind, ErrorKind::InternalCodegenError(message) if message.contains(expected)),
             "unexpected structured projection error: {error}"
@@ -748,7 +840,7 @@ fn main() -> i32 {
             };
             let mut unit = canonical_projection_unit(b"\x90\xc3", &atom_bytes);
             unit.relocations = relocations.into();
-            let actual = project_backend_object(&unit, target).unwrap();
+            let actual = project_backend_object(&unit, target, &[]).unwrap();
             let mut expected = ObjectBuilder::new(target, "main")
                 .code(vec![0x90, 0xc3])
                 .strings(strings.clone());
@@ -762,7 +854,7 @@ fn main() -> i32 {
     #[test]
     fn structured_projection_reuses_codegen_atoms() {
         let unit = canonical_projection_unit(b"\xC3", &[b"literal"]);
-        let object = project_backend_structured_object(&unit, Target::X86_64Linux).unwrap();
+        let object = project_backend_structured_object(&unit, Target::X86_64Linux, &[]).unwrap();
         assert!(std::sync::Arc::ptr_eq(
             &object.section_atoms(0).unwrap()[0],
             &unit.sections[0].atoms[0]
@@ -771,7 +863,7 @@ fn main() -> i32 {
             &object.section_atoms(1).unwrap()[0],
             &unit.sections[1].atoms[0]
         ));
-        let serialized = project_backend_object(&unit, Target::X86_64Linux).unwrap();
+        let serialized = project_backend_object(&unit, Target::X86_64Linux, &[]).unwrap();
         let parsed = ObjectFile::parse(&serialized).unwrap();
         assert_eq!(
             parsed.sections[parsed.section_map[".text"]].data.as_slice(),

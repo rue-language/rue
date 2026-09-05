@@ -131,22 +131,43 @@ impl PartialEq for ProgramImageUnit {
 
 impl Eq for ProgramImageUnit {}
 
-/// The deterministic contribution of a C-ABI export thunk.  Thunks are not
-/// codegen terminals, but their object bytes are a compiler-owned link input
-/// and therefore have a separate, explicit plan entry.
+/// The deterministic contribution of one `pub extern "C" fn` export's C entry.
+/// An entry is not a codegen terminal — it is either a thunk object, a
+/// compiler-owned link input of its own, or an alias name carried by the native
+/// body's object — so it has a separate, explicit plan entry either way.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProgramImageExportThunk {
+pub(crate) struct ProgramImageExportEntry {
     pub(crate) exported_symbol: String,
     pub(crate) native_symbol: String,
+    /// The thunk object's bytes for a thunk entry, and the alias binding itself
+    /// for an alias entry, so a plan that switches between the two is a change.
     pub(crate) content_digest: ContentDigest,
 }
 
+/// Domain separator for an alias entry's digest, which stands in for the thunk
+/// object bytes an alias does not have.
+const EXPORT_ALIAS_DIGEST_DOMAIN: &[u8] = b"rue.program-image.export-alias\0v1\0";
+
+impl ProgramImageExportEntry {
+    fn from_entry(entry: &backend::ExportEntry) -> Self {
+        Self {
+            exported_symbol: entry.exported_symbol.clone(),
+            native_symbol: entry.native_symbol.clone(),
+            content_digest: match &entry.object {
+                Some(bytes) => bytes_digest(b"rue.program-image.export-thunk\0v1\0", bytes),
+                None => bytes_digest(EXPORT_ALIAS_DIGEST_DOMAIN, entry.native_symbol.as_bytes()),
+            },
+        }
+    }
+}
+
 /// Rooted C-export metadata projected from the exact optimized CFG terminal.
-/// It contains only the ABI facts needed to build the forwarding thunk, already
-/// resolved to sizes, offsets, and widths, so the record outlives the type pool
-/// it was projected from and compares by ABI meaning rather than by pool handle.
+/// It contains only the ABI facts needed to decide the export's C entry and
+/// build a forwarding thunk when it needs one, already resolved to sizes,
+/// offsets, and widths, so the record outlives the type pool it was projected
+/// from and compares by ABI meaning rather than by pool handle.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RootedExportThunk {
+pub(crate) struct RootedExport {
     pub(crate) function: crate::FunctionInstanceKey,
     pub(crate) exported_symbol: String,
     pub(crate) native_symbol: String,
@@ -158,7 +179,7 @@ pub(crate) struct RootedExportThunk {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProgramImagePlan {
     pub(crate) units: Vec<ProgramImageUnit>,
-    pub(crate) export_thunks: Vec<ProgramImageExportThunk>,
+    pub(crate) export_entries: Vec<ProgramImageExportEntry>,
     pub(crate) target: Target,
     pub(crate) object_format: ProgramObjectFormat,
     pub(crate) entry_point: &'static str,
@@ -180,9 +201,9 @@ pub(crate) struct ProgramImagePlanDelta {
     pub(crate) added: Vec<ProgramImageUnit>,
     pub(crate) changed: Vec<ProgramImageUnit>,
     pub(crate) removed: Vec<ProgramImageUnit>,
-    pub(crate) added_export_thunks: Vec<ProgramImageExportThunk>,
-    pub(crate) changed_export_thunks: Vec<ProgramImageExportThunk>,
-    pub(crate) removed_export_thunks: Vec<ProgramImageExportThunk>,
+    pub(crate) added_export_entries: Vec<ProgramImageExportEntry>,
+    pub(crate) changed_export_entries: Vec<ProgramImageExportEntry>,
+    pub(crate) removed_export_entries: Vec<ProgramImageExportEntry>,
     /// Target, object format, runtime, or entry changes invalidate the whole
     /// fresh link. They have no meaningful add/change/remove unit mapping.
     pub(crate) link_context_changed: bool,
@@ -216,28 +237,28 @@ impl ProgramImagePlan {
                 delta.removed.push((**unit).clone());
             }
         }
-        let before_thunks = previous
-            .export_thunks
+        let before_entries = previous
+            .export_entries
             .iter()
-            .map(|thunk| (thunk.exported_symbol.as_str(), thunk))
+            .map(|entry| (entry.exported_symbol.as_str(), entry))
             .collect::<BTreeMap<_, _>>();
-        let after_thunks = self
-            .export_thunks
+        let after_entries = self
+            .export_entries
             .iter()
-            .map(|thunk| (thunk.exported_symbol.as_str(), thunk))
+            .map(|entry| (entry.exported_symbol.as_str(), entry))
             .collect::<BTreeMap<_, _>>();
-        for (symbol, thunk) in &after_thunks {
-            match before_thunks.get(symbol) {
-                None => delta.added_export_thunks.push((**thunk).clone()),
-                Some(previous) if *previous != *thunk => {
-                    delta.changed_export_thunks.push((**thunk).clone())
+        for (symbol, entry) in &after_entries {
+            match before_entries.get(symbol) {
+                None => delta.added_export_entries.push((**entry).clone()),
+                Some(previous) if *previous != *entry => {
+                    delta.changed_export_entries.push((**entry).clone())
                 }
                 Some(_) => {}
             }
         }
-        for (symbol, thunk) in &before_thunks {
-            if !after_thunks.contains_key(symbol) {
-                delta.removed_export_thunks.push((**thunk).clone());
+        for (symbol, entry) in &before_entries {
+            if !after_entries.contains_key(symbol) {
+                delta.removed_export_entries.push((**entry).clone());
             }
         }
         delta.link_context_changed = self.target != previous.target
@@ -251,13 +272,15 @@ impl ProgramImagePlan {
     }
 }
 
-/// Retains the plan's canonical terminals and the already-projected export
-/// thunk bytes.  The adapter consumes this once; it never re-enters backend
+/// Retains the plan's canonical terminals and the already-decided export
+/// entries.  The adapter consumes this once; it never re-enters backend
 /// lowering, allocation, or emission.
 pub(crate) struct ProgramImage {
     pub(crate) plan: ProgramImagePlan,
     inputs: ProgramImageInputs,
-    export_thunk_objects: Vec<Vec<u8>>,
+    /// Every export's C entry: the thunk objects a link admits, and the alias
+    /// names the native bodies' own objects already carry.
+    export_entries: Vec<backend::ExportEntry>,
 }
 
 /// The durable image remains byte-backed for object consumers and future
@@ -271,7 +294,7 @@ impl ProgramImage {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn from_rooted(
         objects: Vec<CollectedObjectProjection>,
-        exports: Vec<RootedExportThunk>,
+        exports: Vec<RootedExport>,
         options: &CompileOptions,
     ) -> MultiErrorResult<Self> {
         uncancellable(
@@ -287,7 +310,7 @@ impl ProgramImage {
 
     pub(crate) fn from_rooted_with_cancellation(
         objects: Vec<CollectedObjectProjection>,
-        exports: Vec<RootedExportThunk>,
+        exports: Vec<RootedExport>,
         options: &CompileOptions,
         cancellation: &rue_query::CancellationToken,
     ) -> CancellableImageResult<Self> {
@@ -300,28 +323,32 @@ impl ProgramImage {
             &exports,
             cancellation,
         )?;
-        let mut export_thunk_objects = Vec::with_capacity(exports.len());
+        let mut export_entries = Vec::with_capacity(exports.len());
         for export in &exports {
             check_cancellation(cancellation)?;
-            export_thunk_objects.push(backend::generate_export_thunk_object(
-                options.target,
-                &export.exported_symbol,
-                &export.native_symbol,
-                &export.signature,
-            ));
+            export_entries.push(backend::generate_export_entry(options.target, export));
         }
+        // An aliased export's C symbol is defined by the native body's own
+        // object, so the bodies that carry one are re-projected with their
+        // alias names. The cached projection is keyed by the codegen unit
+        // alone, which does not know the program's export set.
+        let objects = project_export_aliases_with_cancellation(
+            objects,
+            &export_entries,
+            options,
+            cancellation,
+        )?;
         let plan = ProgramImagePlan::from_rooted_inputs_with_cancellation(
             &objects,
             unit_identities,
-            &exports,
             options,
-            &export_thunk_objects,
+            &export_entries,
             cancellation,
         )?;
         Ok(Self {
             plan,
             inputs: objects,
-            export_thunk_objects,
+            export_entries,
         })
     }
 
@@ -334,13 +361,12 @@ impl ProgramImage {
     ) -> MultiErrorResult<Self> {
         validate_program_image_inputs(&units, functions, export_symbols)?;
         backend::validate_backend_functions(functions)?;
-        let export_thunk_objects =
-            backend::generate_export_thunk_objects(functions, options, export_symbols);
+        let export_entries = backend::generate_export_entries(functions, options, export_symbols);
         let export_set = export_symbols
             .iter()
             .map(String::as_str)
             .collect::<BTreeSet<_>>();
-        let expected_thunks = functions
+        let expected_entries = functions
             .iter()
             .filter(|function| {
                 function
@@ -348,39 +374,39 @@ impl ProgramImage {
                     .is_some_and(|name| export_set.contains(name))
             })
             .count();
-        if export_thunk_objects.len() != expected_thunks {
+        if export_entries.len() != expected_entries {
             return Err(CompileErrors::from(CompileError::without_span(
                 ErrorKind::InternalError(
-                    "C-ABI export thunk projection did not produce one object per export".into(),
+                    "C-ABI export projection did not produce one entry per export".into(),
                 ),
             )));
         }
+        let aliases = backend::export_alias_names(&export_entries);
         let objects = units
             .into_iter()
             .map(|collected| {
-                backend::project_backend_object(&collected.unit, options.target).map(|bytes| {
-                    CollectedObjectProjection {
-                        function: collected.function,
-                        unit: collected.unit,
-                        object: std::sync::Arc::new(
-                            crate::object_query::ObjectProjection::from_bytes(bytes),
-                        ),
-                    }
+                backend::project_backend_object(
+                    &collected.unit,
+                    options.target,
+                    aliases
+                        .get(collected.unit.defined_symbol.as_ref())
+                        .map_or(&[][..], Vec::as_slice),
+                )
+                .map(|bytes| CollectedObjectProjection {
+                    function: collected.function,
+                    unit: collected.unit,
+                    object: std::sync::Arc::new(crate::object_query::ObjectProjection::from_bytes(
+                        bytes,
+                    )),
                 })
             })
             .collect::<Result<Vec<_>, _>>()
             .map_err(CompileErrors::from)?;
-        let plan = ProgramImagePlan::from_inputs(
-            &objects,
-            functions,
-            export_symbols,
-            options,
-            &export_thunk_objects,
-        )?;
+        let plan = ProgramImagePlan::from_inputs(&objects, options, &export_entries)?;
         Ok(Self {
             plan,
             inputs: objects,
-            export_thunk_objects,
+            export_entries,
         })
     }
 
@@ -409,7 +435,7 @@ impl ProgramImage {
                 ))),
             ));
         }
-        let mut objects = Vec::with_capacity(self.inputs.len() + self.export_thunk_objects.len());
+        let mut objects = Vec::with_capacity(self.inputs.len() + self.export_entries.len());
         for collected in &self.inputs {
             check_cancellation(cancellation)?;
             objects.push(clone_bytes_with_cancellation(
@@ -422,9 +448,13 @@ impl ProgramImage {
             object_bytes = objects.iter().map(Vec::len).sum::<usize>(),
             "codegen complete"
         );
-        for thunk in &self.export_thunk_objects {
+        for object in self
+            .export_entries
+            .iter()
+            .filter_map(|entry| entry.object.as_ref())
+        {
             check_cancellation(cancellation)?;
-            objects.push(clone_bytes_with_cancellation(thunk, cancellation)?);
+            objects.push(clone_bytes_with_cancellation(object, cancellation)?);
         }
         Ok(objects)
     }
@@ -466,7 +496,8 @@ impl ProgramImage {
                 linking::link_internal_structured_with_warnings_and_cancellation(
                     options,
                     &self.inputs,
-                    &self.export_thunk_objects,
+                    &backend::export_alias_names(&self.export_entries),
+                    &backend::export_thunk_objects(&self.export_entries),
                     warnings,
                     cancellation,
                 )
@@ -485,6 +516,43 @@ impl ProgramImage {
     }
 }
 
+/// Re-project every native body that carries an export alias.
+///
+/// The object-projection query is keyed by one codegen unit, which is a
+/// per-function fact; whether that function's unmangled C name is an alias of
+/// it is a property of the program's export set. The image therefore re-runs the
+/// projection for the few bodies an export names, leaving every other cached
+/// projection untouched.
+fn project_export_aliases_with_cancellation(
+    objects: Vec<CollectedObjectProjection>,
+    export_entries: &[backend::ExportEntry],
+    options: &CompileOptions,
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableImageResult<Vec<CollectedObjectProjection>> {
+    let aliases = backend::export_alias_names(export_entries);
+    if aliases.is_empty() {
+        return Ok(objects);
+    }
+    let mut projected = Vec::with_capacity(objects.len());
+    for collected in objects {
+        check_cancellation(cancellation)?;
+        let Some(names) = aliases.get(collected.unit.defined_symbol.as_ref()) else {
+            projected.push(collected);
+            continue;
+        };
+        let bytes = backend::project_backend_object(&collected.unit, options.target, names)
+            .map_err(|error| {
+                crate::session::PipelineRequestControl::Compile(CompileErrors::from(error))
+            })?;
+        projected.push(CollectedObjectProjection {
+            function: collected.function,
+            unit: collected.unit,
+            object: std::sync::Arc::new(crate::object_query::ObjectProjection::from_bytes(bytes)),
+        });
+    }
+    Ok(projected)
+}
+
 fn clone_bytes_with_cancellation(
     bytes: &[u8],
     cancellation: &rue_query::CancellationToken,
@@ -501,9 +569,8 @@ impl ProgramImagePlan {
     fn from_rooted_inputs_with_cancellation(
         units: &[CollectedObjectProjection],
         unit_identities: Vec<String>,
-        exports: &[RootedExportThunk],
         options: &CompileOptions,
-        export_thunk_objects: &[Vec<u8>],
+        export_entries: &[backend::ExportEntry],
         cancellation: &rue_query::CancellationToken,
     ) -> CancellableImageResult<Self> {
         let mut plan_units = Vec::with_capacity(units.len());
@@ -520,23 +587,19 @@ impl ProgramImagePlan {
             left.identity.cmp(&right.identity)
         })?;
 
-        let mut export_thunks = Vec::with_capacity(exports.len());
-        for (export, bytes) in exports.iter().zip(export_thunk_objects) {
+        let mut plan_entries = Vec::with_capacity(export_entries.len());
+        for entry in export_entries {
             check_cancellation(cancellation)?;
-            export_thunks.push(ProgramImageExportThunk {
-                exported_symbol: export.exported_symbol.clone(),
-                native_symbol: export.native_symbol.clone(),
-                content_digest: bytes_digest(b"rue.program-image.export-thunk\0v1\0", bytes),
-            });
+            plan_entries.push(ProgramImageExportEntry::from_entry(entry));
         }
-        cancellable_sort_by(&mut export_thunks, cancellation, |left, right| {
+        cancellable_sort_by(&mut plan_entries, cancellation, |left, right| {
             left.exported_symbol
                 .cmp(&right.exported_symbol)
                 .then_with(|| left.native_symbol.cmp(&right.native_symbol))
         })?;
         Self::finish_with_cancellation(
             plan_units,
-            export_thunks,
+            plan_entries,
             units.iter().map(|unit| unit.unit.as_ref()),
             options,
             cancellation,
@@ -546,10 +609,8 @@ impl ProgramImagePlan {
     #[cfg(test)]
     fn from_inputs(
         units: &[CollectedObjectProjection],
-        functions: &[RootedCfgUnit],
-        export_symbols: &[String],
         options: &CompileOptions,
-        export_thunk_objects: &[Vec<u8>],
+        export_entries: &[backend::ExportEntry],
     ) -> MultiErrorResult<Self> {
         let mut plan_units = units
             .iter()
@@ -562,28 +623,11 @@ impl ProgramImagePlan {
             .collect::<Vec<_>>();
         plan_units.sort_by(|left, right| left.identity.cmp(&right.identity));
 
-        let export_set = export_symbols
+        let mut plan_entries = export_entries
             .iter()
-            .map(String::as_str)
-            .collect::<BTreeSet<_>>();
-        let mut export_thunks = functions
-            .iter()
-            .filter_map(|function| {
-                function
-                    .definition_source_name()
-                    .filter(|name| export_set.contains(name))
-                    .map(|name| (function, name))
-            })
-            .zip(export_thunk_objects)
-            .map(
-                |((function, exported_symbol), bytes)| ProgramImageExportThunk {
-                    exported_symbol: exported_symbol.to_owned(),
-                    native_symbol: function.record.codegen.defined_symbol.to_string(),
-                    content_digest: bytes_digest(b"rue.program-image.export-thunk\0v1\0", bytes),
-                },
-            )
+            .map(ProgramImageExportEntry::from_entry)
             .collect::<Vec<_>>();
-        export_thunks.sort_by(|left, right| {
+        plan_entries.sort_by(|left, right| {
             left.exported_symbol
                 .cmp(&right.exported_symbol)
                 .then_with(|| left.native_symbol.cmp(&right.native_symbol))
@@ -591,7 +635,7 @@ impl ProgramImagePlan {
 
         Self::finish(
             plan_units,
-            export_thunks,
+            plan_entries,
             units.iter().map(|unit| unit.unit.as_ref()),
             options,
         )
@@ -600,14 +644,14 @@ impl ProgramImagePlan {
     #[cfg_attr(not(test), allow(dead_code))]
     fn finish<'a>(
         plan_units: Vec<ProgramImageUnit>,
-        export_thunks: Vec<ProgramImageExportThunk>,
+        export_entries: Vec<ProgramImageExportEntry>,
         units: impl IntoIterator<Item = &'a crate::codegen_query::CodegenUnit>,
         options: &CompileOptions,
     ) -> MultiErrorResult<Self> {
         uncancellable(
             Self::finish_with_cancellation(
                 plan_units,
-                export_thunks,
+                export_entries,
                 units,
                 options,
                 &rue_query::CancellationToken::new(),
@@ -618,7 +662,7 @@ impl ProgramImagePlan {
 
     fn finish_with_cancellation<'a>(
         plan_units: Vec<ProgramImageUnit>,
-        export_thunks: Vec<ProgramImageExportThunk>,
+        export_entries: Vec<ProgramImageExportEntry>,
         units: impl IntoIterator<Item = &'a crate::codegen_query::CodegenUnit>,
         options: &CompileOptions,
         cancellation: &rue_query::CancellationToken,
@@ -645,7 +689,7 @@ impl ProgramImagePlan {
 
         let plan = Self {
             units: plan_units,
-            export_thunks,
+            export_entries,
             target: options.target,
             object_format: if options.target.is_macho() {
                 ProgramObjectFormat::MachO
@@ -691,14 +735,14 @@ fn validate_program_image_inputs(
     if export_set.len() != export_symbols.len() {
         return duplicate_plan_input("C-ABI export symbol", "duplicate export declaration");
     }
-    let mut thunk_identities = BTreeSet::new();
+    let mut entry_identities = BTreeSet::new();
     for exported_symbol in functions
         .iter()
         .filter_map(RootedCfgUnit::definition_source_name)
         .filter(|name| export_set.contains(name))
     {
-        if !thunk_identities.insert(exported_symbol) {
-            return duplicate_plan_input("C-ABI export thunk identity", exported_symbol);
+        if !entry_identities.insert(exported_symbol) {
+            return duplicate_plan_input("C-ABI export entry identity", exported_symbol);
         }
     }
 
@@ -746,7 +790,7 @@ fn validate_program_image_inputs(
 
 fn validate_rooted_program_image_inputs_with_cancellation(
     units: &[CollectedObjectProjection],
-    exports: &[RootedExportThunk],
+    exports: &[RootedExport],
     cancellation: &rue_query::CancellationToken,
 ) -> CancellableImageResult<Vec<String>> {
     check_cancellation(cancellation)?;
@@ -855,10 +899,10 @@ fn validate_program_image_plan(plan: &ProgramImagePlan) -> MultiErrorResult<()> 
             return duplicate_plan_input("defined symbol", &unit.defined_symbol);
         }
     }
-    let mut thunk_identities = BTreeSet::new();
-    for thunk in &plan.export_thunks {
-        if !thunk_identities.insert(thunk.exported_symbol.as_str()) {
-            return duplicate_plan_input("C-ABI export thunk identity", &thunk.exported_symbol);
+    let mut entry_identities = BTreeSet::new();
+    for entry in &plan.export_entries {
+        if !entry_identities.insert(entry.exported_symbol.as_str()) {
+            return duplicate_plan_input("C-ABI export entry identity", &entry.exported_symbol);
         }
     }
     Ok(())
@@ -1044,7 +1088,7 @@ mod tests {
     fn plan(units: Vec<ProgramImageUnit>) -> ProgramImagePlan {
         ProgramImagePlan {
             units,
-            export_thunks: Vec::new(),
+            export_entries: Vec::new(),
             target: Target::X86_64Linux,
             object_format: ProgramObjectFormat::Elf,
             entry_point: "_start",
@@ -1089,23 +1133,23 @@ mod tests {
     }
 
     #[test]
-    fn delta_covers_export_thunks_and_plan_wide_link_inputs() {
-        let thunk = |symbol: &str, digest_byte| ProgramImageExportThunk {
+    fn delta_covers_export_entries_and_plan_wide_link_inputs() {
+        let thunk = |symbol: &str, digest_byte| ProgramImageExportEntry {
             exported_symbol: symbol.to_owned(),
             native_symbol: format!("native_{symbol}"),
             content_digest: [digest_byte; 32],
         };
         let mut before = plan(vec![]);
-        before.export_thunks = vec![thunk("removed", 1), thunk("changed", 1)];
+        before.export_entries = vec![thunk("removed", 1), thunk("changed", 1)];
         let mut after = plan(vec![]);
-        after.export_thunks = vec![thunk("added", 1), thunk("changed", 2)];
+        after.export_entries = vec![thunk("added", 1), thunk("changed", 2)];
         after
             .required_runtime_symbols
             .push("__rue_memcpy".to_owned());
         let delta = after.delta_from(&before).unwrap();
-        assert_eq!(delta.added_export_thunks, vec![thunk("added", 1)]);
-        assert_eq!(delta.changed_export_thunks, vec![thunk("changed", 2)]);
-        assert_eq!(delta.removed_export_thunks, vec![thunk("removed", 1)]);
+        assert_eq!(delta.added_export_entries, vec![thunk("added", 1)]);
+        assert_eq!(delta.changed_export_entries, vec![thunk("changed", 2)]);
+        assert_eq!(delta.removed_export_entries, vec![thunk("removed", 1)]);
         assert!(delta.link_context_changed);
     }
 
@@ -1218,9 +1262,11 @@ mod tests {
 
     /// A C export's linker-visible name is the identifier its declaration
     /// spells, independently of the module-qualified internal symbol its native
-    /// body carries (ADR-0064 P4, RUE-1125).
+    /// body carries (ADR-0064 P4, RUE-1125). This signature places identically
+    /// under both conventions, so that name is an alias defined by the body's
+    /// own object, and the two containers must define it the same way.
     #[test]
-    fn export_thunks_carry_the_declared_c_name_over_a_module_qualified_body() {
+    fn export_entries_carry_the_declared_c_name_over_a_module_qualified_body() {
         let source = "pub extern \"C\" fn rue_answer() -> i32 { 42 }\n\
                       fn main() -> i32 { 0 }";
         let snapshot = crate::SourceSnapshot::single("main.rue", source).unwrap();
@@ -1254,14 +1300,14 @@ mod tests {
             "the export's native body is an ordinary module-qualified callable"
         );
         assert_eq!(
-            image.plan.export_thunks.len(),
+            image.plan.export_entries.len(),
             1,
             "{:?}",
-            image.plan.export_thunks
+            image.plan.export_entries
         );
-        assert_eq!(image.plan.export_thunks[0].exported_symbol, "rue_answer");
+        assert_eq!(image.plan.export_entries[0].exported_symbol, "rue_answer");
         assert_eq!(
-            image.plan.export_thunks[0].native_symbol,
+            image.plan.export_entries[0].native_symbol,
             exported.record.codegen.defined_symbol.as_ref()
         );
 
@@ -1272,7 +1318,7 @@ mod tests {
         let structured_link = image.fresh_link(&options, &[]).unwrap().elf;
         assert_eq!(
             structured_link, byte_link,
-            "retained units plus a serialized export thunk must match the byte-container link"
+            "retained units carrying an export alias must match the byte-container link"
         );
     }
 
@@ -1293,7 +1339,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_export_thunk_identities_are_rejected() {
+    fn duplicate_export_entry_identities_are_rejected() {
         let (units, mut functions, options) = session_inputs("fn main() -> i32 { 0 }");
         let exported = functions[0]
             .definition_source_name()
@@ -1306,7 +1352,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("duplicate C-ABI export thunk identity")
+                .contains("duplicate C-ABI export entry identity")
         );
     }
 

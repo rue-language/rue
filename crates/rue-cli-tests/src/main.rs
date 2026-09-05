@@ -411,11 +411,14 @@ fn synthesize_answer_archive(target: Target) -> TestResult<Vec<u8>> {
         ));
     }
 
-    // --- P4 export-thunk C-caller members (ADR-0064 P4, RUE-1058) ------------
+    // --- P4 export C-caller members (ADR-0064 P4, RUE-1058) ------------------
     //
     // These are the *inverse* of every member above: instead of a leaf a Rue
     // program calls, each is a C-convention caller that invokes a Rue function
-    // *exported* to C (`pub extern "C" fn`) through its C-ABI entry thunk. A P4
+    // *exported* to C (`pub extern "C" fn`) through its C entry — an alias of
+    // the native body, or an entry thunk where the two conventions still
+    // disagree (ADR-0084). Which one a case gets is the export signature's
+    // answer, and both are exercised by the cases that share these drivers. A P4
     // program imports one of these as an ordinary `extern "C"` leaf; the member
     // then calls back into the Rue export, proving a separately compiled C
     // caller reaches an exported Rue function across the target-C boundary. The
