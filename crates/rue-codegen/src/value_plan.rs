@@ -455,11 +455,6 @@ pub trait ValueLowerAdapter:
     ) -> Option<rue_target::CallingConvention>;
     fn resolve_named_symbol(&self, symbol: &str) -> String;
     fn call_arg_register_banks(&self) -> crate::call_plan::AbiRegisterBanks;
-    /// The target's RETURN register file, one bank per register class. Its
-    /// general-purpose width is the return-register budget the native return
-    /// classifier spends; its floating-point width places a float-leaf return
-    /// slot (see [`crate::call_plan::return_slot_regs`]).
-    fn return_register_banks(&self) -> crate::call_plan::AbiRegisterBanks;
     fn emit_value(&mut self, plan: ValueEmissionPlan) -> ValueResult;
     fn emit_call(&mut self, plan: CallPlan) -> ValueResult;
     /// Emit an `extern "C"` foreign call (ADR-0064 P3). Every foreign call
@@ -1756,7 +1751,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                 inst.ty,
                 call_args,
                 &by_ref_plans,
-                adapter.return_register_banks().gp as u32,
+                adapter.native_convention(),
             );
             let result = if let Some(runtime) = *runtime {
                 let helper = runtime.helper();
@@ -1810,19 +1805,11 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                         Some(result_vreg),
                     );
                     plan.result_float_width = result_float_width;
-                    // A register-returned aggregate reads each slot back from the
-                    // return register its LEAF class names, so a one-slot float
-                    // struct comes back in the FP bank the callee wrote.
-                    if matches!(
-                        inputs.return_plan,
-                        crate::call_plan::ReturnPlan::Registers { .. }
-                    ) {
-                        plan.return_slot_regs = crate::call_plan::return_slot_regs(
-                            ctx.type_pool,
-                            inst.ty,
-                            adapter.return_register_banks(),
-                        );
-                    }
+                    // A register-returned aggregate reads each eightbyte back
+                    // from the result register the shared lowering named for it,
+                    // so a one-slot float struct comes back in the FP bank the
+                    // callee wrote.
+                    plan.return_registers = inputs.return_registers.clone();
                     adapter.emit_call(plan)
                 }
             };

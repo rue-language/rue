@@ -21,11 +21,14 @@
 //! the native convention is the compilation target's C convention with a wider
 //! return bank (ADR-0084), so [`rue_air::lower_native_signature`] answers where
 //! the native body expects each argument, exactly as the callee's own parameter
-//! plan (`crate::param_storage`) asks it. The two conventions therefore agree
-//! about every argument whenever the export names the target's own C row, and
-//! what remains of the thunk is the re-extension a narrow scalar needs and the
-//! return adaptation phase 2 owns. [`ExportSignature`] is the pairing of the two
-//! views, built once from the type pool by [`ExportSignature::for_types`].
+//! plan (`crate::param_storage`) asks it, and [`rue_air::lower_native_return`]
+//! answers where its result comes back. The two conventions therefore agree
+//! about every argument whenever the export names the target's own C row, and —
+//! because C's result registers are a prefix of the native bank — about every
+//! result within C's own bank. What remains of the thunk is the re-extension a
+//! narrow scalar needs and the adaptation of a result the two banks place
+//! differently. [`ExportSignature`] is the pairing of the two views, built once
+//! from the type pool by [`ExportSignature::for_types`].
 //!
 //! ## Why the compact image is the C image
 //!
@@ -53,10 +56,12 @@
 
 use rue_air::{
     ArgConvention, ArgLocation, CAbiTypeFacts, FrozenTypeInternPool, LoweredReturn,
-    LoweredSignature, NativeAbiTypeFacts, PaddingRange, PointerLocation, Type, lower_c_signature,
-    lower_native_signature, native_return_register_budget,
+    LoweredSignature, PaddingRange, PointerLocation, Type, lower_c_signature, lower_native_return,
+    lower_native_signature,
 };
-use rue_target::{Arch, CRegisterClass, CallingConvention, SretRegisterKind, Target};
+use rue_target::{
+    Arch, CRegisterClass, CallingConvention, ConventionSpec, SretRegisterKind, Target,
+};
 
 #[cfg(test)]
 use rue_air::ScalarAbiExtension;
@@ -102,14 +107,22 @@ pub enum NativeReturn {
     /// One scalar in the primary result register, already in Rue's canonical
     /// form — which is exactly what a C caller accepts, so it passes through.
     Scalar,
-    /// One slot per flattened leaf in the return registers, in ascending slot
-    /// order; each leaf names where that slot belongs in the C image.
+    /// One result register per flattened leaf, in ascending slot order,
+    /// because every leaf starts its own eightbyte; each leaf names where that
+    /// slot belongs in the C image.
     Registers {
         /// The value's flattened leaves, in ascending image order.
         leaves: Vec<ImageLeaf>,
     },
+    /// One result register per eightbyte of the value's compact image, because
+    /// its leaves pack together. The compact image *is* the C image, so those
+    /// eightbytes are already the ones a C caller expects.
+    Eightbytes {
+        /// How many eightbytes the image spans.
+        count: u32,
+    },
     /// The body writes the value's compact image into caller storage whose
-    /// address is the hidden first native ABI slot.
+    /// address travels in the target row's own indirect-result register.
     Sret,
 }
 
@@ -135,13 +148,17 @@ pub struct ExportSignature {
     convention: CallingConvention,
     parameters: Vec<ExportParameter>,
     result: CAbiTypeFacts,
-    /// The return's native classification kernel input. The native decision
-    /// also needs the target's return-register budget, which is an
-    /// architecture fact the thunk generator supplies, so the facts travel and
-    /// the classification happens at generation.
-    return_facts: NativeAbiTypeFacts,
+    /// Whether the result is an aggregate rather than a scalar, which decides
+    /// whether a register return names leaves or a single canonical value.
+    result_is_aggregate: bool,
+    /// Whether the native convention hands the result's leaves over as
+    /// themselves rather than packing them into the image's eightbytes.
+    return_leaves_are_eightbytes: bool,
     return_leaves: Vec<ImageLeaf>,
     return_padding: Vec<PaddingRange>,
+    /// The result's byte size, which is how much of the C caller's storage an
+    /// indirect return fills.
+    return_bytes: u32,
 }
 
 impl ExportSignature {
@@ -173,9 +190,12 @@ impl ExportSignature {
             convention,
             parameters,
             result: rue_air::c_abi_type_facts(type_pool, return_type),
-            return_facts: native_return_facts(type_pool, return_type),
+            result_is_aggregate: crate::types::is_multislot_aggregate(type_pool, return_type),
+            return_leaves_are_eightbytes: native_leaves_are_eightbytes(type_pool, return_type),
             return_leaves: image_leaves(type_pool, return_type),
             return_padding: type_pool.compact_image_padding_ranges(return_type),
+            return_bytes: u32::try_from(type_pool.layout(return_type).size)
+                .expect("an export result size fits u32"),
         }
     }
 
@@ -190,19 +210,30 @@ impl ExportSignature {
         lower_c_signature(self.convention, &parameters, self.result)
     }
 
-    /// How the native body returns on `target`, whose architecture fixes the
-    /// return-register budget.
+    /// How the native body returns on `target`, whose C row plus the wider
+    /// native return bank fixes the placement (ADR-0084).
+    ///
+    /// The facts are the C ones: an export's result is a C-passable type, whose
+    /// compact image is its C object layout, so the two conventions classify
+    /// the same bytes and differ only in how many registers they will spend on
+    /// them.
     fn native_return(&self, target: Target) -> NativeReturn {
-        match self
-            .return_facts
-            .classify_return(native_return_register_budget(target.arch()))
-        {
-            rue_air::ReturnClass::ZeroSized => NativeReturn::Void,
-            rue_air::ReturnClass::Scalar => NativeReturn::Scalar,
-            rue_air::ReturnClass::Registers { .. } => NativeReturn::Registers {
-                leaves: self.return_leaves.clone(),
-            },
-            rue_air::ReturnClass::Indirect { .. } => NativeReturn::Sret,
+        match lower_native_return(ConventionSpec::native(target), self.result) {
+            LoweredReturn::Void => NativeReturn::Void,
+            LoweredReturn::Registers { pieces, .. } => {
+                if !self.result_is_aggregate {
+                    NativeReturn::Scalar
+                } else if self.return_leaves_are_eightbytes {
+                    NativeReturn::Registers {
+                        leaves: self.return_leaves.clone(),
+                    }
+                } else {
+                    NativeReturn::Eightbytes {
+                        count: pieces.len(),
+                    }
+                }
+            }
+            LoweredReturn::Sret { .. } => NativeReturn::Sret,
         }
     }
 }
@@ -242,19 +273,6 @@ fn native_leaves_are_eightbytes(type_pool: &FrozenTypeInternPool, ty: Type) -> b
     match crate::native_abi::native_by_value_arg(type_pool, ty) {
         crate::native_abi::NativeArg::Aggregate { image } => image.direct_leaves().is_some(),
         _ => true,
-    }
-}
-
-/// The native classification kernel input for an export's return type.
-fn native_return_facts(type_pool: &FrozenTypeInternPool, ty: Type) -> NativeAbiTypeFacts {
-    let abi_slots = type_pool.abi_slot_count(ty);
-    NativeAbiTypeFacts {
-        abi_slots,
-        aggregate: crate::types::is_multislot_aggregate(type_pool, ty),
-        // An export's return is a C-passable `@repr(c)` type; the canonical
-        // `StrBuf` is not one, so it never reaches this projection.
-        strbuf: false,
-        slot_identical: rue_air::is_slot_identical_layout(type_pool, ty),
     }
 }
 
@@ -307,6 +325,9 @@ enum NativeSlotDestination {
     /// Native argument register `index` of the general-purpose roster. Every
     /// export type is C-passable, so no value reaches the floating-point one.
     Register { index: u32 },
+    /// The target row's dedicated indirect-result register, outside the
+    /// argument roster (AAPCS64 `x8`, section 6.9).
+    SretRegister,
     /// Byte `offset` of the outgoing native argument area.
     Stack { offset: u32 },
 }
@@ -354,7 +375,7 @@ struct ThunkPlan {
     slot_offsets: Vec<u32>,
     /// `(native argument register, staging cell)` for every register-passed
     /// value, in placement order.
-    register_loads: Vec<(u32, u32)>,
+    register_loads: Vec<(Option<u32>, u32)>,
     /// Frame offset of the incoming C argument register save block.
     save_base: u32,
     /// Frame offset holding the C caller's indirect-result pointer, when the C
@@ -377,6 +398,17 @@ enum ReturnImage {
     /// A scratch buffer in the thunk's frame, because the C return travels in
     /// result registers.
     Scratch { offset: u32 },
+    /// The native body returned the value's whole eightbytes but the C return
+    /// is indirect: the eightbytes are staged in a scratch buffer, which can
+    /// take whole-eightbyte stores, and the result's own bytes are then copied
+    /// into the C caller's storage, which is exactly `bytes` long and no better
+    /// aligned than `align`.
+    StagedCallerStorage {
+        scratch: u32,
+        pointer_offset: u32,
+        bytes: u32,
+        align: u32,
+    },
 }
 
 impl ThunkPlan {
@@ -425,14 +457,16 @@ impl ThunkPlan {
 
         let mut slots: Vec<(NativeSlotSource, NativeSlotDestination)> = Vec::new();
         if matches!(native_return, NativeReturn::Sret) {
-            assert!(
-                native.sret_in_argument_register(),
-                "the native convention passes its indirect-result pointer as the \
-                 hidden first ordinary argument"
-            );
+            // The native convention takes its target row's own indirect-result
+            // rule (ADR-0084): SysV AMD64's hidden first ordinary argument, or
+            // AAPCS64's dedicated `x8` outside the roster.
             slots.push((
                 NativeSlotSource::ReturnStorage,
-                NativeSlotDestination::Register { index: 0 },
+                if native.sret_in_argument_register() {
+                    NativeSlotDestination::Register { index: 0 }
+                } else {
+                    NativeSlotDestination::SretRegister
+                },
             ));
         }
         let mut leaves = Vec::with_capacity(signature.parameters.len());
@@ -526,17 +560,38 @@ impl ThunkPlan {
         };
 
         let return_image = match (c.ret(), &native_return) {
+            // The native body returned whole eightbytes and the C caller wants
+            // them in its own storage: stage them where a whole-eightbyte store
+            // is in bounds, then copy the result's own bytes across.
+            (LoweredReturn::Sret { .. }, NativeReturn::Eightbytes { count }) => {
+                let scratch = align_up(next, 16);
+                next = scratch + align_up(count * 8, 16);
+                Some(ReturnImage::StagedCallerStorage {
+                    scratch,
+                    pointer_offset: c_sret_offset.expect("an indirect C return saves its pointer"),
+                    bytes: signature.return_bytes,
+                    align: match signature.result {
+                        CAbiTypeFacts::Aggregate { align, .. } => {
+                            u32::try_from(align).expect("an aggregate alignment fits u32")
+                        }
+                        _ => 1,
+                    },
+                })
+            }
             (LoweredReturn::Sret { .. }, _) => Some(ReturnImage::CallerStorage {
                 pointer_offset: c_sret_offset.expect("an indirect C return saves its pointer"),
             }),
-            (LoweredReturn::Registers { count, .. }, NativeReturn::Registers { .. })
-            | (LoweredReturn::Registers { count, .. }, NativeReturn::Sret)
+            (LoweredReturn::Registers { pieces, .. }, NativeReturn::Registers { .. })
+            | (LoweredReturn::Registers { pieces, .. }, NativeReturn::Sret)
                 if !matches!(signature.result, CAbiTypeFacts::Scalar { .. }) =>
             {
                 let offset = align_up(next, 16);
-                next = offset + align_up(count * 8, 16);
+                next = offset + align_up(pieces.len() * 8, 16);
                 Some(ReturnImage::Scratch { offset })
             }
+            // The native body returned the compact image's eightbytes and the C
+            // return is those same eightbytes in the same registers: C's result
+            // registers are a prefix of the native bank, so nothing crosses.
             _ => None,
         };
 
@@ -587,7 +642,13 @@ impl ThunkPlan {
                 NativeSlotDestination::Register { index } => {
                     let offset = stage_base + staged * 8;
                     staged += 1;
-                    register_loads.push((index, offset));
+                    register_loads.push((Some(index), offset));
+                    slot_offsets.push(offset);
+                }
+                NativeSlotDestination::SretRegister => {
+                    let offset = stage_base + staged * 8;
+                    staged += 1;
+                    register_loads.push((None, offset));
                     slot_offsets.push(offset);
                 }
                 NativeSlotDestination::Stack { offset } => slot_offsets.push(offset),
@@ -652,6 +713,10 @@ impl ThunkPlan {
                             emitter.base_from_saved_pointer(pointer_offset)
                         }
                         ReturnImage::Scratch { offset } => emitter.base_from_frame(offset),
+                        ReturnImage::StagedCallerStorage { .. } => unreachable!(
+                            "a staged return is a register return; a native sret \
+                             return writes its storage directly"
+                        ),
                     }
                     emitter.store_base(destination);
                 }
@@ -681,7 +746,10 @@ impl ThunkPlan {
         }
 
         for (register, offset) in &self.register_loads {
-            emitter.load_argument_register(*register, *offset);
+            match register {
+                Some(index) => emitter.load_argument_register(*index, *offset),
+                None => emitter.load_sret_register(*offset),
+            }
         }
         emitter.call(native_symbol);
 
@@ -713,7 +781,36 @@ impl ThunkPlan {
             ReturnImage::CallerStorage { pointer_offset } => {
                 emitter.base_from_saved_pointer(pointer_offset)
             }
-            ReturnImage::Scratch { offset } => emitter.base_from_frame(offset),
+            ReturnImage::Scratch { offset }
+            | ReturnImage::StagedCallerStorage {
+                scratch: offset, ..
+            } => emitter.base_from_frame(offset),
+        }
+
+        if let (
+            NativeReturn::Eightbytes { count },
+            ReturnImage::StagedCallerStorage {
+                scratch,
+                pointer_offset,
+                bytes,
+                align,
+            },
+        ) = (&self.native_return, image)
+        {
+            // Stage the whole eightbytes, then hand the C caller exactly the
+            // bytes its storage holds.
+            for index in 0..*count {
+                emitter.store_return_register(
+                    index,
+                    ImageLeaf {
+                        byte_offset: index * 8,
+                        width: 8,
+                        signed: false,
+                    },
+                );
+            }
+            emitter.base_from_saved_pointer(pointer_offset);
+            emitter.copy_image_bytes(scratch, bytes, align);
         }
 
         if let NativeReturn::Registers { .. } = self.native_return {
@@ -734,13 +831,13 @@ impl ThunkPlan {
         }
 
         match self.c.ret() {
-            LoweredReturn::Registers { class, count, .. } => {
+            LoweredReturn::Registers { pieces, .. } => {
                 assert_eq!(
-                    class,
-                    CRegisterClass::Gp,
+                    pieces.uniform_class(),
+                    Some(CRegisterClass::Gp),
                     "the C boundary still returns only general-purpose values"
                 );
-                for index in 0..count {
+                for index in 0..pieces.len() {
                     emitter.load_result_register(index, index * 8);
                 }
             }
@@ -797,6 +894,9 @@ trait ThunkEmitter {
     fn store_base(&mut self, destination: u32);
     /// Native argument register `index` := frame + `offset`.
     fn load_argument_register(&mut self, index: u32, offset: u32);
+    /// The native convention's dedicated indirect-result register := frame +
+    /// `offset`.
+    fn load_sret_register(&mut self, offset: u32);
     /// Call the native body.
     fn call(&mut self, symbol: &str);
     /// base + `leaf.byte_offset` := the low `leaf.width` bytes of native return
@@ -808,16 +908,28 @@ trait ThunkEmitter {
     fn load_result_register(&mut self, index: u32, offset: u32);
     /// The primary C result register := the pointer stored at frame + `offset`.
     fn echo_sret_pointer(&mut self, offset: u32);
+    /// base + 0 .. base + `byte_count` := frame + `source_offset` .. , copied in
+    /// 8/4/2/1-byte steps of at most `max_width` bytes, each naturally aligned
+    /// within the image, so no store runs past the C caller's storage or past
+    /// the alignment that storage is guaranteed.
+    fn copy_image_bytes(&mut self, source_offset: u32, byte_count: u32, max_width: u32);
 }
 
 /// Zeroing a padding run, largest naturally-aligned store first.
 fn zero_runs(offset: u32, len: u32) -> Vec<(u32, u32)> {
+    image_runs(offset, len, 8)
+}
+
+/// The 8/4/2/1-byte steps that cover `len` bytes from `offset`, each naturally
+/// aligned within the image and none wider than `max_width`.
+fn image_runs(offset: u32, len: u32, max_width: u32) -> Vec<(u32, u32)> {
     let mut runs = Vec::new();
     let mut position = offset;
     let end = offset + len;
+    let cap = max_width.clamp(1, 8);
     while position < end {
         let mut width = 8;
-        while width > 1 && (position % width != 0 || position + width > end) {
+        while width > 1 && (width > cap || position % width != 0 || position + width > end) {
             width /= 2;
         }
         runs.push((position, width));
@@ -992,6 +1104,10 @@ impl ThunkEmitter for X86Emitter {
         self.load_frame(X86_ARG_REGS[index as usize], offset);
     }
 
+    fn load_sret_register(&mut self, _offset: u32) {
+        unreachable!("SysV AMD64 has no dedicated indirect-result register");
+    }
+
     fn call(&mut self, symbol: &str) {
         self.code.push(0xE8);
         let offset = self.code.len() as u64;
@@ -1055,6 +1171,34 @@ impl ThunkEmitter for X86Emitter {
 
     fn echo_sret_pointer(&mut self, offset: u32) {
         self.load_frame(X86_RESULT_REGS[0], offset);
+    }
+
+    fn copy_image_bytes(&mut self, source_offset: u32, byte_count: u32, max_width: u32) {
+        // `rax` is free here: the native result registers were already staged
+        // to the frame, and the C result registers are written after this.
+        for (position, width) in image_runs(0, byte_count, max_width) {
+            let source = Self::frame_disp(source_offset + position);
+            let destination = Self::frame_disp(position);
+            match width {
+                8 => {
+                    self.mem(&[0x8B], X86_RAX, X86_RSP, source, true, false);
+                    self.mem(&[0x89], X86_RAX, X86_BASE, destination, true, false);
+                }
+                4 => {
+                    self.mem(&[0x8B], X86_RAX, X86_RSP, source, false, false);
+                    self.mem(&[0x89], X86_RAX, X86_BASE, destination, false, false);
+                }
+                2 => {
+                    self.mem(&[0x0F, 0xB7], X86_RAX, X86_RSP, source, true, false);
+                    self.code.push(0x66);
+                    self.mem(&[0x89], X86_RAX, X86_BASE, destination, false, false);
+                }
+                _ => {
+                    self.mem(&[0x0F, 0xB6], X86_RAX, X86_RSP, source, true, false);
+                    self.mem(&[0x88], X86_RAX, X86_BASE, destination, false, true);
+                }
+            }
+        }
     }
 }
 
@@ -1223,6 +1367,10 @@ impl ThunkEmitter for Aarch64Emitter {
         self.load64(index, A64_SP, offset);
     }
 
+    fn load_sret_register(&mut self, offset: u32) {
+        self.load64(A64_SRET, A64_SP, offset);
+    }
+
     fn call(&mut self, symbol: &str) {
         let offset = (self.words.len() * 4) as u64;
         self.words.push(0x9400_0000); // bl <native>
@@ -1259,6 +1407,19 @@ impl ThunkEmitter for Aarch64Emitter {
 
     fn echo_sret_pointer(&mut self, _offset: u32) {
         unreachable!("AAPCS64 does not echo the indirect-result pointer");
+    }
+
+    fn copy_image_bytes(&mut self, source_offset: u32, byte_count: u32, max_width: u32) {
+        for (position, width) in image_runs(0, byte_count, max_width) {
+            let (load, store) = match width {
+                8 => (0xF940_0000, 0xF900_0000),
+                4 => (0xB940_0000, 0xB900_0000),
+                2 => (0x7940_0000, 0x7900_0000),
+                _ => (0x3940_0000, 0x3900_0000),
+            };
+            self.access(load, width, A64_VALUE, A64_SP, source_offset + position);
+            self.access(store, width, A64_VALUE, A64_BASE, position);
+        }
     }
 }
 
@@ -1337,12 +1498,9 @@ mod tests {
             convention: CallingConvention::X86_64SysV,
             parameters,
             result: CAbiTypeFacts::ZeroSized,
-            return_facts: NativeAbiTypeFacts {
-                abi_slots: 0,
-                aggregate: false,
-                strbuf: false,
-                slot_identical: true,
-            },
+            result_is_aggregate: false,
+            return_leaves_are_eightbytes: true,
+            return_bytes: 0,
             return_leaves: Vec::new(),
             return_padding: Vec::new(),
         }
@@ -1379,12 +1537,9 @@ mod tests {
                 },
             }],
             result: CAbiTypeFacts::integer_aggregate(24, 8),
-            return_facts: NativeAbiTypeFacts {
-                abi_slots: 3,
-                aggregate: true,
-                strbuf: false,
-                slot_identical: true,
-            },
+            result_is_aggregate: true,
+            return_leaves_are_eightbytes: true,
+            return_bytes: 24,
             return_leaves: leaves,
             return_padding: Vec::new(),
         }
@@ -1416,12 +1571,9 @@ mod tests {
                 },
             }],
             result: CAbiTypeFacts::integer_aggregate(8, 4),
-            return_facts: NativeAbiTypeFacts {
-                abi_slots: 2,
-                aggregate: true,
-                strbuf: false,
-                slot_identical: false,
-            },
+            result_is_aggregate: true,
+            return_leaves_are_eightbytes: false,
+            return_bytes: 8,
             return_leaves: leaves,
             return_padding: Vec::new(),
         }
@@ -1480,12 +1632,9 @@ mod tests {
                     })
                     .collect(),
                 result,
-                return_facts: NativeAbiTypeFacts {
-                    abi_slots: 1,
-                    aggregate: false,
-                    strbuf: false,
-                    slot_identical: false,
-                },
+                result_is_aggregate: false,
+                return_leaves_are_eightbytes: true,
+                return_bytes: 8,
                 return_leaves: vec![scalar_leaf(2, true)],
                 return_padding: Vec::new(),
             };
@@ -1684,34 +1833,89 @@ mod tests {
     fn a_packed_pair_crosses_as_one_eightbyte_of_its_image() {
         for target in [Target::X86_64Linux, Target::Aarch64Linux] {
             let plan = ThunkPlan::new(target, &on(target, &pair_signature()));
-            // Eight bytes of narrow fields: the return still crosses through
-            // caller storage, and the argument's two leaves pack into the one
+            // Eight bytes of narrow fields: both conventions return the one
+            // eightbyte of the value's compact image in the first result
+            // register, and the argument's two leaves pack into the one
             // eightbyte the convention gives them.
-            assert_eq!(plan.native_return, NativeReturn::Sret);
+            assert_eq!(plan.native_return, NativeReturn::Eightbytes { count: 1 });
             assert_eq!(
                 plan.slots
                     .iter()
                     .map(|(source, _)| *source)
                     .collect::<Vec<_>>(),
-                vec![
-                    NativeSlotSource::ReturnStorage,
-                    NativeSlotSource::Eightbyte {
-                        parameter: 0,
-                        index: 0
-                    },
-                ],
-                "the hidden return pointer takes the first argument register, and \
-                 the packed pair the second"
+                vec![NativeSlotSource::Eightbyte {
+                    parameter: 0,
+                    index: 0
+                }],
+                "no hidden return pointer crosses, so the packed pair takes the \
+                 first argument register"
             );
-            // The C side returns the eight bytes in one register, so the image
-            // is assembled in the thunk's own frame.
-            assert!(matches!(
-                plan.return_image,
-                Some(ReturnImage::Scratch { .. })
-            ));
+            // The eightbyte the native body returned is the eightbyte C wants.
+            assert_eq!(plan.return_image, None);
             // The argument arrived in one register, so its image is the saved
             // register cell.
             assert!(matches!(plan.bases[0], ImageBase::Frame { .. }));
+        }
+    }
+
+    /// A `{i32 x 5}`-shaped export: 20 bytes, five narrow leaves that pack into
+    /// three eightbytes, so the native convention returns those eightbytes in
+    /// three result registers while every C row returns the value indirectly.
+    fn wide_packed_signature() -> ExportSignature {
+        let leaves: Vec<ImageLeaf> = (0..5)
+            .map(|index| ImageLeaf {
+                byte_offset: index * 4,
+                width: 4,
+                signed: true,
+            })
+            .collect();
+        ExportSignature {
+            convention: CallingConvention::X86_64SysV,
+            parameters: Vec::new(),
+            result: CAbiTypeFacts::integer_aggregate(20, 4),
+            result_is_aggregate: true,
+            return_leaves_are_eightbytes: false,
+            return_bytes: 20,
+            return_leaves: leaves,
+            return_padding: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_result_the_native_bank_holds_and_c_returns_indirectly_is_staged_and_copied() {
+        // The native body hands back three whole eightbytes; the C caller's
+        // storage is exactly twenty bytes, so the eightbytes are staged where a
+        // whole-eightbyte store is in bounds and only the result's own bytes
+        // are copied across.
+        for target in [
+            Target::X86_64Linux,
+            Target::Aarch64Linux,
+            Target::Aarch64Macos,
+        ] {
+            let signature = on(target, &wide_packed_signature());
+            let plan = ThunkPlan::new(target, &signature);
+            assert_eq!(
+                plan.native_return,
+                NativeReturn::Eightbytes { count: 3 },
+                "{target:?}: the native bank holds three eightbytes"
+            );
+            assert!(
+                plan.c.ret().uses_sret(),
+                "{target:?}: C returns 20 bytes indirectly"
+            );
+            let Some(ReturnImage::StagedCallerStorage { bytes, align, .. }) = plan.return_image
+            else {
+                panic!(
+                    "{target:?}: expected a staged copy, got {:?}",
+                    plan.return_image
+                );
+            };
+            assert_eq!((bytes, align), (20, 4));
+            let code = generate_export_thunk(target, "native", &signature);
+            assert!(!code.code.is_empty(), "{target:?} must encode the thunk");
+            if target.arch() == Arch::Aarch64 {
+                assert_eq!(code.code.len() % 4, 0);
+            }
         }
     }
 
@@ -1837,12 +2041,9 @@ mod tests {
                     },
                 }],
                 result: CAbiTypeFacts::integer_aggregate(width.into(), width.into()),
-                return_facts: NativeAbiTypeFacts {
-                    abi_slots: 1,
-                    aggregate: true,
-                    strbuf: false,
-                    slot_identical: width == 8,
-                },
+                result_is_aggregate: true,
+                return_leaves_are_eightbytes: true,
+                return_bytes: width.into(),
                 return_leaves: leaves,
                 return_padding: vec![PaddingRange {
                     start: u64::from(width),

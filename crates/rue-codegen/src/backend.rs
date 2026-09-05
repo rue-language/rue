@@ -34,7 +34,6 @@ pub(crate) trait Backend {
     const ARCH: rue_target::Arch;
     const ARG_REG_COUNT: u32;
     const FP_ARG_REG_COUNT: u32;
-    const RETURN_REG_COUNT: u32;
     const SAVED_REG_SCHEME: SavedRegScheme;
 
     fn lower(

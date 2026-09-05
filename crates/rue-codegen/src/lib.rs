@@ -1377,21 +1377,25 @@ mod tests {
 
     #[test]
     fn normal_and_assembly_entry_points_match_with_sret_and_spills() {
+        let x86_64 = rue_target::ConventionSpec::native(rue_target::Target::X86_64Linux);
+        let aarch64 = rue_target::ConventionSpec::native(rue_target::Target::Aarch64Linux);
+        // Seven eightbytes exceed x86-64's six-register result bank and fit
+        // AArch64's eight.
         let (threshold_cfg, threshold_types, _) = aggregate_cfg(7);
         assert!(cfg_lower::fn_uses_sret_return(
             &threshold_cfg,
             &threshold_types,
-            6
+            x86_64
         ));
         assert!(!cfg_lower::fn_uses_sret_return(
             &threshold_cfg,
             &threshold_types,
-            8
+            aarch64
         ));
 
         let (cfg, type_pool, interner) = aggregate_cfg(40);
-        assert!(cfg_lower::fn_uses_sret_return(&cfg, &type_pool, 6));
-        assert!(cfg_lower::fn_uses_sret_return(&cfg, &type_pool, 8));
+        assert!(cfg_lower::fn_uses_sret_return(&cfg, &type_pool, x86_64));
+        assert!(cfg_lower::fn_uses_sret_return(&cfg, &type_pool, aarch64));
         let strings = vec!["pipeline parity sentinel".to_owned()];
         let request = BackendArtifactRequest {
             lowering: true,

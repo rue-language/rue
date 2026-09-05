@@ -167,25 +167,26 @@ impl PartialEq for CallAbiFacts {
 
 impl Eq for CallAbiFacts {}
 
+/// Where one classified signature's result travels.
+///
+/// The native convention returns by the same aggregate rule the target's C row
+/// applies, read against a wider register bank (ADR-0084), so both rows are
+/// described by the same classes: how many result registers an aggregate
+/// occupies, or the caller storage it is written to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CallAbiReturnClass {
+    /// Zero-sized: no result register and no caller storage.
     ZeroSized,
+    /// One scalar in the primary result register of its bank, carrying
+    /// `extension`.
     Scalar {
         extension: rue_air::ScalarAbiExtension,
     },
-    NativeRegisters {
-        slots: u32,
-    },
-    NativeIndirect {
-        slots: u32,
-    },
-    CIntegerRegisters {
-        eightbytes: u32,
-    },
-    CIndirect {
-        size: u32,
-        alignment: u32,
-    },
+    /// An aggregate in result registers, one per eightbyte.
+    Registers { eightbytes: u32 },
+    /// An aggregate through caller storage whose address travels in the
+    /// convention's indirect-result register.
+    Indirect { size: u32, alignment: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

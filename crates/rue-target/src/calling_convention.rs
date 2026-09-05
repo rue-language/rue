@@ -75,12 +75,13 @@ use crate::Target;
 /// convention can sit inside the ordered durable facts that carry it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum CallingConvention {
-    /// The native, unstable, compiler-chosen Rue convention (RUE-106): a
-    /// by-value aggregate is returned one flattened ABI slot per return
-    /// register, or via sret when it does not fit; canonical `StrBuf` always
-    /// returns via sret; a by-reference `inout` / `borrow` argument is one
-    /// pointer slot; a by-value argument occupies one slot per leaf, reversed
-    /// within each multi-slot value.
+    /// The native, unstable, compiler-chosen Rue convention (ADR-0084): the
+    /// compilation target's own C row with a wider return bank. Arguments,
+    /// stacked packing, and the indirect-result register are the C row's
+    /// verbatim; a result classifies by the same aggregate rule against six
+    /// general-purpose return registers on x86-64 and eight on AArch64, plus
+    /// eight floating-point ones on each, ordered so the C row's own result
+    /// registers are a prefix.
     Rue,
     /// The System V AMD64 psABI, as used on x86-64 Linux.
     X86_64SysV,
@@ -207,9 +208,16 @@ pub struct CConventionSpec {
     pub narrow_integer_extension: NarrowIntegerExtension,
     /// Which by-value aggregate rule applies.
     pub aggregate_rule: AggregateClassificationRule,
-    /// The largest aggregate, in bytes, that crosses in registers rather than
-    /// through memory. Two eightbytes on both current rows.
+    /// The largest aggregate, in bytes, that crosses *as an argument* in
+    /// registers rather than through memory. Two eightbytes on both current
+    /// rows.
     pub max_aggregate_register_bytes: u64,
+    /// The largest aggregate, in bytes, that comes *back* in registers rather
+    /// than through an indirect result. Two eightbytes on every C row, and the
+    /// native return bank's own width under
+    /// [`ConventionSpec::native`](crate::ConventionSpec::native), which is what
+    /// makes the native bank wider than C's (ADR-0084).
+    pub max_aggregate_return_bytes: u64,
 }
 
 impl CConventionSpec {
@@ -250,6 +258,7 @@ const X86_64_SYSV: CConventionSpec = CConventionSpec {
     narrow_integer_extension: NarrowIntegerExtension::CalleeExtendsOnUse,
     aggregate_rule: AggregateClassificationRule::SysVEightbyte,
     max_aggregate_register_bytes: 16,
+    max_aggregate_return_bytes: 16,
 };
 
 /// The AAPCS64 row (AArch64 Linux).
@@ -266,6 +275,7 @@ const AARCH64_AAPCS: CConventionSpec = CConventionSpec {
     narrow_integer_extension: NarrowIntegerExtension::CalleeExtendsOnUse,
     aggregate_rule: AggregateClassificationRule::Aapcs64Composite,
     max_aggregate_register_bytes: 16,
+    max_aggregate_return_bytes: 16,
 };
 
 /// The Apple arm64 row (AArch64 macOS): AAPCS64 with Apple's two amendments
@@ -303,9 +313,9 @@ impl CallingConvention {
     }
 
     /// This convention's complete psABI description. Panics on
-    /// [`CallingConvention::Rue`], which is not a psABI: the native convention's
-    /// rules are the classifier's own (`rue_air::NativeCallAbi`), not a row of
-    /// this table.
+    /// [`CallingConvention::Rue`], which is not a psABI: the native convention
+    /// borrows its target's row and widens the return bank, which is what
+    /// [`ConventionSpec::native`] builds.
     pub const fn c_spec(self) -> CConventionSpec {
         match self {
             Self::X86_64SysV => X86_64_SYSV,
@@ -398,6 +408,36 @@ pub struct ConventionSpec {
     spec: CConventionSpec,
 }
 
+/// How many floating-point registers the native return bank holds on every
+/// target: SysV's `xmm0`-`xmm7` and AAPCS64's `v0`-`v7`, each a superset of the
+/// row's own two or four result registers.
+const NATIVE_FP_RETURN_REGISTERS: u32 = 8;
+
+/// How many general-purpose registers the native return bank holds on
+/// `target`: `rax, rdx, rcx, r8, r9, r10` on x86-64 and `x0`-`x7` on AArch64,
+/// each beginning with the target C row's own result registers (ADR-0084).
+///
+/// Every register past the C row's own is caller-saved under each supported
+/// row, so the wider bank imposes no new save obligation at a call site.
+const fn native_gp_return_registers(target: Target) -> u32 {
+    match target {
+        Target::X86_64Linux => 6,
+        Target::Aarch64Linux | Target::Aarch64Macos => 8,
+    }
+}
+
+/// The native aggregate-return threshold: the whole native bank's width in
+/// bytes, so an aggregate comes back in registers whenever its eightbytes fit
+/// the bank at all and the per-bank rosters decide the rest.
+const fn native_return_bank_bytes(gp_return_registers: u32) -> u64 {
+    let widest = if gp_return_registers > NATIVE_FP_RETURN_REGISTERS {
+        gp_return_registers
+    } else {
+        NATIVE_FP_RETURN_REGISTERS
+    };
+    widest as u64 * 8
+}
+
 impl ConventionSpec {
     /// The pairing for one platform C row: the row beside its own psABI
     /// description.
@@ -422,25 +462,26 @@ impl ConventionSpec {
     }
 
     /// The pairing for the native Rue convention on `target`: the target's own
-    /// C description, amended where the native convention differs from it.
+    /// C description with a wider return bank (ADR-0084).
     ///
     /// The native convention places arguments exactly as the target's C row
-    /// does, so every other field of the description is the C row's verbatim.
-    /// The two amendments are the sret rule: the hidden indirect-result
-    /// pointer is the hidden *first ordinary argument*, so it shifts every user
-    /// argument one general-purpose register right on every target, and it is
-    /// not echoed in the primary result register. AAPCS64's dedicated `x8` and
-    /// SysV's `rax` echo belong to the C rows; the native return bank is wider
-    /// than C's and is fed to the classifier rather than derived from this
-    /// description (RUE-2038 owns the native return classification that moves
-    /// AAPCS64 onto `x8`).
+    /// does and takes that row's own indirect-result rule — `rdi` with the
+    /// `rax` echo on SysV AMD64, the dedicated `x8` on AAPCS64 — so every field
+    /// but the result roster is the C row's verbatim. The amendment is the
+    /// return bank: six general-purpose result registers on x86-64 and eight on
+    /// AArch64, eight floating-point ones on each, and an aggregate-return
+    /// threshold to match, ordered so the C row's own result registers are a
+    /// prefix of the native bank. A value that fits C's bank therefore comes
+    /// back exactly where C would put it.
     pub const fn native(target: Target) -> Self {
         let spec = CallingConvention::c_for_target(target).c_spec();
+        let gp_return_registers = native_gp_return_registers(target);
         Self {
             convention: CallingConvention::Rue,
             spec: CConventionSpec {
-                sret_register: SretRegisterKind::ArgumentRegister,
-                sret_pointer_echoed_in_result_register: false,
+                gp_return_registers,
+                fp_return_registers: NATIVE_FP_RETURN_REGISTERS,
+                max_aggregate_return_bytes: native_return_bank_bytes(gp_return_registers),
                 ..spec
             },
         }
@@ -625,6 +666,7 @@ mod tests {
                 "no supported row reserves callee shadow space"
             );
             assert_eq!(spec.max_aggregate_register_bytes, 16);
+            assert_eq!(spec.max_aggregate_return_bytes, 16);
             assert_eq!(
                 spec.argument_registers(CRegisterClass::Gp),
                 spec.gp_argument_registers
@@ -709,24 +751,33 @@ mod tests {
     }
 
     #[test]
-    fn the_native_pairing_amends_exactly_the_sret_rule_of_its_targets_c_row() {
+    fn the_native_pairing_amends_exactly_the_return_bank_of_its_targets_c_row() {
         for target in Target::all() {
             let c = target.c_calling_convention().c_spec();
             let native = ConventionSpec::native(*target);
             assert_eq!(native.convention(), CallingConvention::Rue);
             assert!(native.is_native());
             let spec = native.spec();
-            // The hidden indirect-result pointer is the hidden first ordinary
-            // argument on every target, with no echo.
-            assert_eq!(spec.sret_register, SretRegisterKind::ArgumentRegister);
-            assert!(spec.sret_pointer_in_argument_register());
-            assert!(!spec.sret_pointer_echoed_in_result_register);
+            // The indirect-result rule is the target C row's own, so a native
+            // result that does not fit the bank travels exactly where a C one
+            // would: `rdi` with the `rax` echo on SysV, the dedicated `x8` on
+            // AAPCS64.
+            assert_eq!(spec.sret_register, c.sret_register);
+            assert_eq!(
+                spec.sret_pointer_echoed_in_result_register,
+                c.sret_pointer_echoed_in_result_register
+            );
+            // The bank is wider than the row's own, and C's registers are a
+            // prefix of it.
+            assert!(spec.gp_return_registers > c.gp_return_registers);
+            assert!(spec.fp_return_registers >= c.fp_return_registers);
+            assert!(spec.max_aggregate_return_bytes > c.max_aggregate_return_bytes);
             // Everything else is the target's own C description verbatim.
             assert_eq!(
                 CConventionSpec {
-                    sret_register: c.sret_register,
-                    sret_pointer_echoed_in_result_register: c
-                        .sret_pointer_echoed_in_result_register,
+                    gp_return_registers: c.gp_return_registers,
+                    fp_return_registers: c.fp_return_registers,
+                    max_aggregate_return_bytes: c.max_aggregate_return_bytes,
                     ..spec
                 },
                 c,
@@ -737,19 +788,21 @@ mod tests {
     }
 
     #[test]
-    fn the_native_pairing_differs_from_the_c_pairing_only_on_aarch64() {
-        // SysV already puts the hidden pointer in the first argument register
-        // and echoes it; the native convention keeps the placement and drops
-        // the echo. AAPCS64's dedicated `x8` is a C-row rule the native
-        // convention does not share.
+    fn the_native_return_bank_is_six_registers_wide_on_x86_64_and_eight_on_aarch64() {
         let sysv = ConventionSpec::native(Target::X86_64Linux).spec();
+        assert_eq!(sysv.gp_return_registers, 6);
+        assert_eq!(sysv.fp_return_registers, 8);
+        assert_eq!(sysv.max_aggregate_return_bytes, 64);
         assert_eq!(sysv.gp_argument_registers, 6);
-        assert!(sysv.sret_pointer_in_argument_register());
         for target in [Target::Aarch64Linux, Target::Aarch64Macos] {
             let c = ConventionSpec::c_for_target(target).spec();
             let native = ConventionSpec::native(target).spec();
-            assert!(!c.sret_pointer_in_argument_register());
-            assert!(native.sret_pointer_in_argument_register());
+            assert_eq!(native.gp_return_registers, 8);
+            assert_eq!(native.fp_return_registers, 8);
+            assert_eq!(native.max_aggregate_return_bytes, 64);
+            // The dedicated `x8` indirect-result register is the C row's rule
+            // and the native convention's alike.
+            assert!(!native.sret_pointer_in_argument_register());
             assert_eq!(native.stacked_argument_packing, c.stacked_argument_packing);
         }
     }

@@ -14,7 +14,7 @@ description = "Per-function convention and per-value placement for native functi
 
 [[case]]
 name = "native_multislot_aggregate_argument_and_sret_return"
-description = "A 56-byte by-value aggregate is SysV MEMORY class natively as well, so it crosses byval in the outgoing argument area consuming no register; the same aggregate returns through sret, whose hidden pointer takes argument register 0."
+description = "A 56-byte by-value aggregate is SysV MEMORY class natively as well, so it crosses byval in the outgoing argument area consuming no register; seven eightbytes exceed the native result bank, so it comes back through SysV's own indirect-result register and `rax` echo."
 target = "x86-64-linux"
 source = """
 struct Wide {
@@ -42,7 +42,7 @@ expected_abi = """
 function __rue_fn_test_2erue__through
   convention rue, symbol __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s7_7468726f756768t0_
   parameter 0: Wide$test_2erue, by value, stack +0 (56 bytes, align 8)
-  return: Wide$test_2erue, sret: pointer in gp register 0 (rdi) to 7 slots (64 bytes of caller storage)
+  return: Wide$test_2erue, sret: pointer in rdi to 7 slots (64 bytes of caller storage), echoed in rax
   outgoing argument area: 64 bytes
 
 function main
@@ -236,9 +236,9 @@ import wide
 # An export owns both halves of one crossing, so its block prints both: the C
 # entry a foreign caller writes (two eightbytes in, two result registers out)
 # and the native body the thunk forwards to. Both sides place the argument
-# identically — the native convention is this target's own C row — so what is
-# left for the thunk is the return, which the wider native bank still spells
-# differently.
+# identically — the native convention is this target's own C row — and both
+# place the result identically too, because C's result registers are a prefix
+# of the native bank, so nothing is left for the thunk to adapt.
 [[case]]
 name = "export_two_field_struct_in_and_out"
 description = "A `pub extern \\\"C\\\" fn` export prints its C side and the native side it forwards to."
@@ -270,9 +270,9 @@ export swap
   native side
     convention rue, symbol __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s4_73776170t0_
     parameter 0: Pair$test_2erue, by value, gp registers 0-1 (rdi, rsi)
-    return: Pair$test_2erue, 2 slots
-      slot 0: gp return register 0 (rax)
-      slot 1: gp return register 1 (rdx)
+    return: Pair$test_2erue, 2 eightbytes
+      eightbyte 0: gp return register 0 (rax)
+      eightbyte 1: gp return register 1 (rdx)
     outgoing argument area: 0 bytes
 
 function main
@@ -331,13 +331,14 @@ function main
 """
 
 # A by-value aggregate whose leaves pack together (an `[i32; 8]` field) is
-# classified by its compact image like any other value: 40 bytes is past SysV's
-# sixteen, so it is MEMORY class and crosses byval in the outgoing argument area
-# — and the same type returns through sret, whose hidden pointer is the first
-# argument register even though no user argument takes one.
+# classified by its compact image in both directions: 40 bytes is past SysV's
+# sixteen, so an *argument* is MEMORY class and crosses byval in the outgoing
+# argument area, while a *result* is five eightbytes — inside the native bank's
+# six general-purpose result registers, though far past SysV's own two — and its
+# nine value-decomposition slots pack into them through that same image.
 [[case]]
 name = "native_compact_indirect_argument_states_its_pointee_slots"
-description = "A 40-byte by-value aggregate crosses natively where SysV puts it: byval in the outgoing argument area, past the hidden sret pointer."
+description = "A 40-byte by-value aggregate crosses natively where SysV puts it — byval in the outgoing argument area — and comes back in the five result registers its eightbytes fill."
 target = "x86-64-linux"
 source = """
 struct Block {
@@ -359,7 +360,12 @@ expected_abi = """
 function __rue_fn_test_2erue__through
   convention rue, symbol __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s7_7468726f756768t0_
   parameter 0: Block$test_2erue, by value, stack +0 (40 bytes, align 8)
-  return: Block$test_2erue, sret: pointer in gp register 0 (rdi) to 9 slots (80 bytes of caller storage)
+  return: Block$test_2erue, 5 eightbytes
+    eightbyte 0: gp return register 0 (rax)
+    eightbyte 1: gp return register 1 (rdx)
+    eightbyte 2: gp return register 2 (rcx)
+    eightbyte 3: gp return register 3 (r8)
+    eightbyte 4: gp return register 4 (r9)
   outgoing argument area: 48 bytes
 
 function main

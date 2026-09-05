@@ -16,7 +16,7 @@
 # stdout.
 #
 # TYPE shapes (rows):
-#   S1   struct, 1 slot        S8    struct, 8 slots (> the 6-register budget)
+#   S1   struct, 1 slot        S8    struct, 8 narrow slots (four eightbytes)
 #   S2   struct, 2 slots       NEST  nested struct (Inner in Outer)
 #   S3   struct, 3 slots       ARR   fixed array [i32; N]
 #   AOS  array-of-struct       ENUM  payload enum
@@ -251,11 +251,13 @@ fn main() -> i32 {
 stdout = "3\n6\n9\n"
 
 # =============================================================================
-# S8 — struct, 8 slots (exceeds the 6-register return/arg budget -> sret path)
+# S8 — struct, 8 narrow slots: 32 bytes, so four eightbytes to the convention
 # =============================================================================
 
 # param by-value -> return -> control-flow join, all eight slots survive
-# (RUE-13 class: >6-slot by-value aggregates once ICE'd / dropped slots).
+# (RUE-13 class: wide by-value aggregates once ICE'd / dropped slots). Its
+# eight narrow leaves pack into four eightbytes, which cross through the
+# value's compact image in both directions.
 [[case]]
 name = "s8_param_return_join"
 files = [{ path = "main.rue", source = """
@@ -628,16 +630,16 @@ fn main() -> i32 {
 """ }]
 stdout = "17\n"
 
-# by-value return at each backend's return-register budget (RUE-946). An enum
-# is 1 discriminant slot + widest payload, so an N-i32 payload is N+1 slots.
-# The register budget is 6 on x86-64 and 8 on aarch64; oversized returns must
-# switch to sret instead of indexing past the return-register array. The
-# divergent middle sizes (7 and 8 slots) are registers on one backend and sret
-# on the other, so both policy arms run on every CI platform. Each case prints
-# a position-weighted payload sum, so any single dropped or misrouted slot
-# changes the output.
+# by-value returns of growing payload enums (RUE-946). An enum is one
+# discriminant plus its widest payload, and its result is classified by the
+# compact image those occupy against the native return bank — six
+# general-purpose result registers on x86-64 and eight on aarch64 — so a value
+# past the bank comes back through the row's indirect-result register instead of
+# indexing past the result-register array. These sizes straddle both banks, and
+# each case prints a position-weighted payload sum, so any single dropped or
+# misrouted eightbyte changes the output.
 
-# 6 slots: at the x86-64 budget, registers on both backends.
+# A five-i32 payload.
 [[case]]
 name = "enum_return_at_x86_budget"
 args = ["main.rue", "-o", "prog"]
@@ -657,7 +659,7 @@ fn main() -> i32 {
 """ }]
 stdout = "55\n"
 
-# 7 slots: sret on x86-64, registers on aarch64.
+# A six-i32 payload.
 [[case]]
 name = "enum_return_above_x86_budget"
 args = ["main.rue", "-o", "prog"]
@@ -677,7 +679,7 @@ fn main() -> i32 {
 """ }]
 stdout = "91\n"
 
-# 8 slots: sret on x86-64, at the aarch64 budget in registers.
+# A seven-i32 payload.
 [[case]]
 name = "enum_return_at_aarch64_budget"
 args = ["main.rue", "-o", "prog"]
@@ -697,7 +699,7 @@ fn main() -> i32 {
 """ }]
 stdout = "140\n"
 
-# 9 slots: above both budgets, sret on every backend (the RUE-946 ICE repro).
+# An eight-i32 payload — the RUE-946 ICE repro.
 [[case]]
 name = "enum_return_above_all_budgets"
 args = ["main.rue", "-o", "prog"]

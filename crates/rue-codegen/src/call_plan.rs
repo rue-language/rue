@@ -6,16 +6,18 @@
 //! those slots for their ABI.
 
 use rue_air::{
-    ArgConvention, ArgLocation, FrozenTypeInternPool, LoweredReturn, NativeCallAbi,
-    PointerLocation, RegisterPiece, ReturnClass, lower_native_signature,
+    ArgConvention, ArgLocation, FrozenTypeInternPool, LoweredReturn, PointerLocation,
+    RegisterPiece, lower_native_signature,
 };
 // `ScalarAbiExtension` is referenced by fully-qualified path in the struct so it
 // stays visible to readers of the field; no direct import is needed.
 use rue_cfg::{Cfg, CfgArgMode, CfgCallArg, Type};
 use rue_runtime_abi::{ReservedExportClass, ReservedExportId};
-use rue_target::{CRegisterClass, CallingConvention, ConventionSpec};
+use rue_target::{CRegisterClass, CallingConvention, ConventionSpec, SretRegisterKind};
 
-use crate::native_abi::{NativeArg, NativeArgMarshal, NativeImage, native_arg};
+use crate::native_abi::{
+    NativeArg, NativeArgMarshal, NativeImage, native_arg, native_by_value_arg,
+};
 
 use crate::types;
 use crate::vreg::VReg;
@@ -218,43 +220,15 @@ impl AbiSlotLocation {
     }
 }
 
-/// Assign each result slot a register of its own bank, in order, or `None` once
-/// that bank's roster is spent. A spent roster still counts the slot, so the
-/// banks stay independent of each other.
-fn claim_bank_registers(
-    classes: impl IntoIterator<Item = AbiSlotClass>,
-    banks: AbiRegisterBanks,
-) -> impl Iterator<Item = Option<AbiSlotLocation>> {
-    let mut gp = 0usize;
-    let mut fp = 0usize;
-    classes.into_iter().map(move |class| match class {
-        AbiSlotClass::Gp => {
-            let index = gp;
-            gp += 1;
-            (index < banks.gp).then_some(AbiSlotLocation::GpReg(index))
-        }
-        AbiSlotClass::Fp(_) => {
-            let index = fp;
-            fp += 1;
-            (index < banks.fp).then_some(AbiSlotLocation::FpReg(index))
-        }
-    })
-}
-
-/// Where one logical slot of a REGISTER-RETURNED aggregate travels.
+/// Where one eightbyte of a REGISTER-RETURNED value travels.
 ///
-/// A return slot's bank follows its LEAF type, exactly as an argument slot's
-/// class does ([`AbiSlotClass`]): `struct P { field: f64 }` hands its one slot
-/// to the first floating-point return register, not to a general-purpose one.
-/// Keeping one rule for both directions is what stops the same type from
-/// crossing in an XMM/V register as an argument and a GP register as a return,
-/// which is how a general-purpose vreg came to hold an FP-classed slot.
-///
-/// Only a ONE-SLOT aggregate can reach this today: a wider aggregate holding a
-/// float is not slot-identical under the compact layout, so
-/// `NativeAbiTypeFacts::classify_return` sends it through sret instead. The
-/// assignment below is written for the general case anyway, so the rule does
-/// not have to be rediscovered when that changes.
+/// The bank and roster index are the lowered return's own
+/// ([`rue_air::lower_native_return`]): a result's eightbytes are classified by
+/// exactly the rule the target's C row applies to an argument's, read against
+/// the wider native return bank (ADR-0084). A `struct P { field: f64 }`
+/// therefore comes back in the first floating-point result register — the same
+/// bank it would cross in as an argument — and a `{i64, f64}` comes back with
+/// one eightbyte in each bank.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReturnSlotReg {
     /// Return register `index` of the general-purpose bank.
@@ -266,40 +240,69 @@ pub enum ReturnSlotReg {
     },
 }
 
-/// The ABI slot classes of `ty`'s logical slots, in logical slot order: one
-/// class per aggregate leaf, floating-point leaves in the FP bank.
-pub fn aggregate_slot_classes(type_pool: &FrozenTypeInternPool, ty: Type) -> Vec<AbiSlotClass> {
-    crate::types::aggregate_leaf_types(type_pool, ty)
-        .into_iter()
-        .map(AbiSlotClass::for_leaf)
-        .collect()
+/// How a register-returned value's eightbytes reach the result registers.
+///
+/// The two shapes are the argument path's, read in the other direction
+/// ([`NativeArgMarshal`]): when every leaf starts its own eightbyte and travels
+/// in the bank the classification named, the leaf vregs *are* the eightbytes
+/// and nothing is marshaled; otherwise the value's leaves are written into a
+/// scratch image at their compact byte offsets and the eightbytes are read out
+/// of it, which is what packs `{u8, u8, u8, u8}` into one result register.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReturnRegisters {
+    /// One result register per eightbyte, in ascending memory order.
+    pub regs: Vec<ReturnSlotReg>,
+    /// The compact image the value marshals through, or `None` when the
+    /// value's own leaf vregs are its eightbytes.
+    pub image: Option<NativeImage>,
 }
 
-/// Assign every logical slot of a register-returned aggregate of type `ty` to a
-/// return register, counting each bank independently.
+impl ReturnRegisters {
+    /// How many eightbytes cross.
+    pub fn eightbytes(&self) -> usize {
+        self.regs.len()
+    }
+}
+
+/// The result registers a register-returned value of type `ty` occupies under
+/// `pairing`, and the image it marshals through when its leaves are not its
+/// eightbytes.
 ///
-/// `banks` is the target's return-register file. A slot that does not fit a
-/// bank is a classification error rather than a stack argument: the return
-/// classifier only answers `Registers` when every slot fits.
-pub fn return_slot_regs(
+/// Both ends of a native return consult this, so a callee's stores and its
+/// caller's reads cannot disagree about a bank or a byte offset.
+pub fn return_registers(
     type_pool: &FrozenTypeInternPool,
     ty: Type,
-    banks: AbiRegisterBanks,
-) -> Vec<ReturnSlotReg> {
-    let classes = aggregate_slot_classes(type_pool, ty);
-    // A result has no argument area to overflow into, so the bank assignment
-    // is the whole answer and a slot that does not fit is a classification
-    // error rather than a stacked slot.
-    claim_bank_registers(classes.clone(), banks)
-        .zip(classes)
-        .map(|(location, class)| match (location, class) {
-            (Some(AbiSlotLocation::GpReg(index)), _) => ReturnSlotReg::Gp(index),
-            (Some(AbiSlotLocation::FpReg(index)), AbiSlotClass::Fp(width)) => {
-                ReturnSlotReg::Fp { index, width }
-            }
-            _ => panic!("a register-returned aggregate slot must fit a return register bank"),
+    pairing: ConventionSpec,
+) -> ReturnRegisters {
+    let native = native_by_value_arg(type_pool, ty);
+    let lowered = rue_air::lower_native_return(pairing, native.facts()[0]);
+    let LoweredReturn::Registers { pieces, .. } = lowered else {
+        panic!("only a register return names result registers");
+    };
+    let marshal = native.marshal_in_registers(pieces);
+    assert_eq!(
+        marshal.eightbyte_count(),
+        pieces.len() as usize,
+        "one eightbyte per result register the classification named"
+    );
+    let regs = pieces
+        .as_slice()
+        .iter()
+        .enumerate()
+        .map(|(index, piece)| match marshal.class(index, piece.class) {
+            AbiSlotClass::Gp => ReturnSlotReg::Gp(piece.index as usize),
+            AbiSlotClass::Fp(width) => ReturnSlotReg::Fp {
+                index: piece.index as usize,
+                width,
+            },
         })
-        .collect()
+        .collect();
+    let image = match (&marshal, native) {
+        (NativeArgMarshal::Image { .. }, NativeArg::Aggregate { image }) => Some(image),
+        _ => None,
+    };
+    ReturnRegisters { regs, image }
 }
 
 /// The hidden caller-provided return storage, when the return uses sret.
@@ -307,8 +310,10 @@ pub fn return_slot_regs(
 pub struct HiddenSretPlan {
     /// The vreg containing the address of the caller-owned storage.
     pub pointer: VReg,
-    /// The logical ABI position of the hidden pointer.
-    pub abi_slot: usize,
+    /// Where the hidden pointer travels: an ordinary argument register — and
+    /// then it is also the first entry of the plan's ABI slots — or the row's
+    /// dedicated indirect-result register, which the backend writes itself.
+    pub register: SretRegisterKind,
     /// Number of logical return slots written by the callee.
     pub slot_count: u32,
     /// Caller storage size, rounded up to the call-stack alignment.
@@ -320,12 +325,24 @@ pub struct HiddenSretPlan {
 pub enum ReturnPlan {
     /// Unit/never/empty aggregates have no materialized slots.
     ZeroSized,
-    /// A one-slot scalar is returned in the target's primary return register.
+    /// A one-slot scalar is returned in the primary result register of its own
+    /// bank.
     Scalar,
-    /// A complete aggregate is returned one logical slot per return register.
+    /// A complete aggregate is returned in result registers, one per eightbyte
+    /// ([`return_registers`]); `slot_count` is the value's own leaf count,
+    /// which the two ends marshal to and from those eightbytes.
     Registers { slot_count: u32 },
-    /// A complete aggregate is written to caller-provided storage.
-    Sret { slot_count: u32, storage_bytes: u32 },
+    /// A complete aggregate is written to caller-provided storage whose address
+    /// travels in the target row's own indirect-result register.
+    Sret {
+        slot_count: u32,
+        storage_bytes: u32,
+        /// Where the hidden pointer travels.
+        register: SretRegisterKind,
+        /// Whether the callee leaves the pointer in the primary result
+        /// register (SysV AMD64's `rax` echo).
+        echoed: bool,
+    },
 }
 
 impl ReturnPlan {
@@ -340,6 +357,19 @@ impl ReturnPlan {
 
     pub const fn uses_sret(self) -> bool {
         matches!(self, Self::Sret { .. })
+    }
+
+    /// Whether the hidden indirect-result pointer takes an ordinary argument
+    /// register, shifting every user argument one general-purpose register
+    /// right (SysV AMD64), rather than the row's dedicated one (AAPCS64 `x8`).
+    pub const fn sret_in_argument_register(self) -> bool {
+        matches!(
+            self,
+            Self::Sret {
+                register: SretRegisterKind::ArgumentRegister,
+                ..
+            }
+        )
     }
 }
 
@@ -356,10 +386,11 @@ pub struct CallPlan {
     pub abi_classes: Vec<AbiSlotClass>,
     pub abi_locations: Vec<AbiSlotLocation>,
     pub return_plan: ReturnPlan,
-    /// For a [`ReturnPlan::Registers`] return, the return register each logical
-    /// slot arrives in (see [`return_slot_regs`]). Empty for every other return
-    /// plan, which has no register slots to read back.
-    pub return_slot_regs: Vec<ReturnSlotReg>,
+    /// For a [`ReturnPlan::Registers`] return, the result register each
+    /// eightbyte arrives in and the image it is read apart through (see
+    /// [`return_registers`]). `None` for every other return plan, which has no
+    /// register pieces to read back.
+    pub return_registers: Option<ReturnRegisters>,
     /// For a compact aggregate returned via sret under `aggregate_layout`
     /// (ADR-0052 phase 5.7, RUE-1004), the internal-slot → physical-byte image
     /// the callee writes and the caller reads back through the sret buffer.
@@ -426,6 +457,9 @@ pub struct CallInputs {
     /// convention classifies and the marshaling that reaches its placement.
     pub natives: Vec<NativeArg>,
     pub return_plan: ReturnPlan,
+    /// For a register return, the result register each eightbyte arrives in and
+    /// the image the value is read apart through. `None` for every other return.
+    pub return_registers: Option<ReturnRegisters>,
     /// The compact sret image for the return type, when it is a non-slot-identical
     /// aggregate returned via sret under `aggregate_layout` (RUE-1004). See
     /// [`CallPlan::compact_return_image`].
@@ -442,7 +476,7 @@ impl CallInputs {
         return_ty: Type,
         args: &[CfgCallArg],
         by_ref_plans: &[Option<crate::value_plan::ByRefAddressPlan>],
-        ret_reg_budget: u32,
+        pairing: ConventionSpec,
     ) -> Self {
         assert_eq!(
             args.len(),
@@ -482,7 +516,12 @@ impl CallInputs {
                 }
             })
             .collect();
-        let return_plan = return_plan(type_pool, return_ty, ret_reg_budget);
+        let return_plan = return_plan(type_pool, return_ty, pairing);
+        // A register return names one result register per eightbyte, and the
+        // image the value is read apart through when its leaves are not those
+        // eightbytes. Both ends of the call read this one answer.
+        let return_registers = matches!(return_plan, ReturnPlan::Registers { .. })
+            .then(|| return_registers(type_pool, return_ty, pairing));
         // A compact aggregate returned via sret carries its physical image so both
         // the callee write and the caller read-back marshal the same bytes.
         let compact_return_image = if return_plan.uses_sret() {
@@ -501,6 +540,7 @@ impl CallInputs {
             args,
             natives,
             return_plan,
+            return_registers,
             compact_return_image,
             compact_return_dispatch,
         }
@@ -585,32 +625,28 @@ pub trait CallMaterializer {
     fn materialize_eightbyte_as_float(&mut self, bits: VReg) -> VReg;
 }
 
-/// The already-decided return a native signature is placed against.
+/// The already-classified return an argument placement is computed against.
 ///
-/// Phase 1 of ADR-0084 switches arguments only, so return classification stays
-/// [`ReturnPlan`]'s and this projects it onto the one fact argument placement
-/// depends on: whether a hidden indirect-result pointer takes an ordinary
-/// argument register ahead of every user argument.
-fn lowered_return(pairing: ConventionSpec, plan: ReturnPlan) -> LoweredReturn {
-    let spec = pairing.spec();
+/// Only one fact about a result reaches argument placement: whether a hidden
+/// indirect-result pointer takes an ordinary argument register ahead of every
+/// user argument, which is the target row's own sret rule (ADR-0084). The
+/// registers a result occupies never move an argument, so this projection is
+/// placement-equivalent to the return's own lowering.
+fn lowered_return(plan: ReturnPlan) -> LoweredReturn {
     match plan {
         ReturnPlan::ZeroSized => LoweredReturn::Void,
-        ReturnPlan::Scalar => LoweredReturn::Registers {
-            class: CRegisterClass::Gp,
-            count: 1,
-            extension: rue_air::ScalarAbiExtension::None,
-        },
-        ReturnPlan::Registers { slot_count } => LoweredReturn::Registers {
-            class: CRegisterClass::Gp,
-            count: slot_count,
+        ReturnPlan::Scalar | ReturnPlan::Registers { .. } => LoweredReturn::Registers {
+            pieces: rue_air::RegisterPieces::one(CRegisterClass::Gp, 0),
             extension: rue_air::ScalarAbiExtension::None,
         },
         ReturnPlan::Sret {
             slot_count,
             storage_bytes: _,
+            register,
+            echoed,
         } => LoweredReturn::Sret {
-            register: spec.sret_register,
-            echoed: spec.sret_pointer_echoed_in_result_register,
+            register,
+            echoed,
             size: slot_count.saturating_mul(rue_air::SLOT_BYTES as u32),
             align: rue_air::SLOT_BYTES as u32,
         },
@@ -898,8 +934,7 @@ impl CallPlan {
             parameters.extend(native.facts().into_iter().map(|facts| (facts, convention)));
             spans.push(start..parameters.len());
         }
-        let signature =
-            lower_native_signature(pairing, &parameters, lowered_return(pairing, return_plan));
+        let signature = lower_native_signature(pairing, &parameters, lowered_return(return_plan));
 
         let mut hidden_sret = None;
         let mut abi_slots = Vec::new();
@@ -909,23 +944,32 @@ impl CallPlan {
         if let ReturnPlan::Sret {
             slot_count,
             storage_bytes,
+            register,
+            ..
         } = return_plan
         {
-            assert!(
+            assert_eq!(
                 signature.sret_in_argument_register(),
-                "the native convention passes its indirect-result pointer as the \
-                 hidden first ordinary argument"
+                matches!(register, SretRegisterKind::ArgumentRegister),
+                "the return's indirect-result rule and the placement it was \
+                 computed against must be one rule"
             );
             let pointer = materializer.materialize_sret_pointer(storage_bytes);
             hidden_sret = Some(HiddenSretPlan {
                 pointer,
-                abi_slot: 0,
+                register,
                 slot_count,
                 storage_bytes,
             });
-            abi_slots.push(pointer);
-            abi_classes.push(AbiSlotClass::Gp);
-            abi_locations.push(AbiSlotLocation::GpReg(0));
+            // Under SysV AMD64 the pointer is the hidden first ordinary
+            // argument and takes its register from the argument roster; under
+            // AAPCS64 it takes the dedicated `x8`, which is outside the roster
+            // and which the backend writes itself.
+            if signature.sret_in_argument_register() {
+                abi_slots.push(pointer);
+                abi_classes.push(AbiSlotClass::Gp);
+                abi_locations.push(AbiSlotLocation::GpReg(0));
+            }
         }
 
         let mut user_args = Vec::with_capacity(args.len());
@@ -974,7 +1018,7 @@ impl CallPlan {
             return_plan,
             // Set by the caller (the value-plan Call arm), which holds the
             // return type and the target's return-register banks.
-            return_slot_regs: Vec::new(),
+            return_registers: None,
             compact_return_image,
             compact_return_dispatch,
             result,
@@ -1032,7 +1076,7 @@ impl CallPlan {
             abi_classes,
             abi_locations,
             return_plan: ReturnPlan::ZeroSized,
-            return_slot_regs: Vec::new(),
+            return_registers: None,
             compact_return_image: None,
             compact_return_dispatch: None,
             result: None,
@@ -1044,21 +1088,39 @@ impl CallPlan {
     }
 }
 
-/// The one shared return policy.  Return classification (scalar / registers /
-/// sret) is delegated to the canonical call-ABI classifier
-/// [`NativeCallAbi::classify_return`]; this function only maps its result onto
-/// the codegen [`ReturnPlan`], adding the caller-storage byte size that sret
-/// needs. Keeping the classification in the shared authority is what makes both
-/// backends and the oracle agree by construction.
-pub fn return_plan(type_pool: &FrozenTypeInternPool, ty: Type, ret_reg_budget: u32) -> ReturnPlan {
-    match NativeCallAbi::new(type_pool, ret_reg_budget).classify_return(ty) {
-        ReturnClass::ZeroSized => ReturnPlan::ZeroSized,
-        ReturnClass::Scalar => ReturnPlan::Scalar,
-        ReturnClass::Registers { slot_count } => ReturnPlan::Registers { slot_count },
-        ReturnClass::Indirect { slot_count } => ReturnPlan::Sret {
+/// The one shared return policy: where a native result of `ty` comes back
+/// under `pairing`.
+///
+/// The decision is [`rue_air::lower_native_return`]'s against the same
+/// [`CAbiTypeFacts`](rue_air::CAbiTypeFacts) an argument of that type presents,
+/// so a value crosses in the same bank in both directions by construction
+/// (ADR-0084). This function only projects that answer onto the codegen
+/// [`ReturnPlan`], adding the leaf count both ends reconstruct and the
+/// caller-storage byte size sret needs.
+pub fn return_plan(
+    type_pool: &FrozenTypeInternPool,
+    ty: Type,
+    pairing: ConventionSpec,
+) -> ReturnPlan {
+    let native = native_by_value_arg(type_pool, ty);
+    let slot_count = type_pool.abi_slot_count(ty);
+    match rue_air::lower_native_return(pairing, native.facts()[0]) {
+        LoweredReturn::Void => ReturnPlan::ZeroSized,
+        LoweredReturn::Registers { .. } => {
+            if matches!(native, NativeArg::Aggregate { .. }) {
+                ReturnPlan::Registers { slot_count }
+            } else {
+                ReturnPlan::Scalar
+            }
+        }
+        LoweredReturn::Sret {
+            register, echoed, ..
+        } => ReturnPlan::Sret {
             slot_count,
             storage_bytes: checked_aligned_cell_region_bytes(u64::from(slot_count))
                 .expect("sret storage must pass frame-budget preflight"),
+            register,
+            echoed,
         },
     }
 }
@@ -1344,7 +1406,9 @@ mod tests {
         assert_eq!(
             ReturnPlan::Sret {
                 slot_count: 3,
-                storage_bytes: 32
+                storage_bytes: 32,
+                register: SretRegisterKind::ArgumentRegister,
+                echoed: true,
             }
             .slot_count(),
             3
@@ -1387,6 +1451,8 @@ mod tests {
             ReturnPlan::Sret {
                 slot_count: 3,
                 storage_bytes: 32,
+                register: SretRegisterKind::ArgumentRegister,
+                echoed: true,
             },
             &args,
             &natives,
@@ -1407,7 +1473,10 @@ mod tests {
                 AbiSlotLocation::GpReg(2),
             ]
         );
-        assert_eq!(rue.hidden_sret.unwrap().abi_slot, 0);
+        assert_eq!(
+            rue.hidden_sret.unwrap().register,
+            SretRegisterKind::ArgumentRegister
+        );
         assert_eq!(rue.stack_slot_count, 0);
         assert_eq!(rue.stack_bytes, 0);
         assert_eq!(rue.user_args[1].mode, UserArgMode::Borrow);
@@ -1441,6 +1510,86 @@ mod tests {
         assert_eq!(
             plan.abi_locations,
             vec![AbiSlotLocation::GpReg(0), AbiSlotLocation::GpReg(1)]
+        );
+    }
+
+    #[test]
+    fn a_result_is_classified_by_the_same_rule_and_bank_in_both_directions() {
+        // A `{f64}` comes back in the floating-point bank it would cross in as
+        // an argument, which is why the RUE-2010 disagreement cannot recur;
+        // a `{i64, f64}` splits across the two banks; and `{i32, i32}` packs
+        // into one result register through its image.
+        let x86_64 = ConventionSpec::native(rue_target::Target::X86_64Linux);
+        let (pool, one_float) = pool_with_struct(&[Type::F64]);
+        let registers = return_registers(&pool, one_float, x86_64);
+        assert!(registers.image.is_none(), "one leaf, one eightbyte");
+        assert_eq!(
+            registers.regs,
+            vec![ReturnSlotReg::Fp {
+                index: 0,
+                width: crate::value_plan::FloatWidth::F64,
+            }]
+        );
+
+        let (pool, split) = pool_with_struct(&[Type::I64, Type::F64]);
+        let registers = return_registers(&pool, split, x86_64);
+        assert!(registers.image.is_none());
+        assert_eq!(
+            registers.regs,
+            vec![
+                ReturnSlotReg::Gp(0),
+                ReturnSlotReg::Fp {
+                    index: 0,
+                    width: crate::value_plan::FloatWidth::F64,
+                },
+            ]
+        );
+
+        let (pool, packed) = pool_with_struct(&[Type::I32, Type::I32]);
+        assert_eq!(
+            return_plan(&pool, packed, x86_64),
+            ReturnPlan::Registers { slot_count: 2 },
+            "two narrow leaves share one eightbyte and come back in one register"
+        );
+        let registers = return_registers(&pool, packed, x86_64);
+        assert!(
+            registers.image.is_some(),
+            "leaves that pack together marshal through the compact image"
+        );
+        assert_eq!(registers.regs, vec![ReturnSlotReg::Gp(0)]);
+    }
+
+    #[test]
+    fn a_result_past_the_bank_takes_its_rows_own_indirect_register() {
+        // Nine eightbytes exceed both banks. The pointer travels where the C
+        // row puts it: SysV's hidden first argument with the `rax` echo, and
+        // AAPCS64's dedicated `x8` with none (ADR-0084).
+        let (pool, wide) = pool_with_struct(&[Type::I64; 9]);
+        assert_eq!(
+            return_plan(
+                &pool,
+                wide,
+                ConventionSpec::native(rue_target::Target::X86_64Linux)
+            ),
+            ReturnPlan::Sret {
+                slot_count: 9,
+                storage_bytes: 80,
+                register: SretRegisterKind::ArgumentRegister,
+                echoed: true,
+            }
+        );
+        assert_eq!(
+            return_plan(
+                &pool,
+                wide,
+                ConventionSpec::native(rue_target::Target::Aarch64Linux)
+            ),
+            ReturnPlan::Sret {
+                slot_count: 9,
+                storage_bytes: 80,
+                register: SretRegisterKind::DedicatedRegister,
+                echoed: false,
+            }
         );
     }
 

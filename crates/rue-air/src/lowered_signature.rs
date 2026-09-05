@@ -505,12 +505,18 @@ impl RegisterPieces {
         index: 0,
     };
 
-    /// `count` consecutive registers of one bank, starting at `first_index`.
-    pub fn consecutive(class: CRegisterClass, first_index: u32, count: u32) -> Self {
-        let mut pieces = Self {
+    /// No registers at all: the identity a placement builds up from, and what a
+    /// value that occupies no register reports.
+    pub fn empty() -> Self {
+        Self {
             pieces: [Self::EMPTY_PIECE; Self::CAPACITY],
             len: 0,
-        };
+        }
+    }
+
+    /// `count` consecutive registers of one bank, starting at `first_index`.
+    pub fn consecutive(class: CRegisterClass, first_index: u32, count: u32) -> Self {
+        let mut pieces = Self::empty();
         for offset in 0..count {
             pieces.push(RegisterPiece {
                 class,
@@ -632,15 +638,17 @@ pub struct LoweredArgument {
 pub enum LoweredReturn {
     /// No value crosses back.
     Void,
-    /// `count` result registers of `class`, low eightbyte first (C field order
-    /// for an aggregate). `extension` is the operation that restores Rue's
-    /// canonical 64-bit form to a narrow scalar whose high bits the callee left
+    /// In result registers: one piece per eightbyte, or per homogeneous
+    /// floating-point member, in ascending memory order — that is, C field
+    /// order. A scalar is one piece. Each piece names its own bank and roster
+    /// index, because a result can span both banks: SysV AMD64 returns a
+    /// `{i64, f64}` struct with its first eightbyte in `rax` and its second in
+    /// `xmm0`. `extension` is the operation that restores Rue's canonical
+    /// 64-bit form to a narrow scalar whose high bits the callee left
     /// unspecified; it is [`ScalarAbiExtension::None`] for an aggregate.
     Registers {
-        /// The register bank.
-        class: CRegisterClass,
-        /// How many consecutive result registers the value occupies.
-        count: u32,
+        /// The result registers the value occupies.
+        pieces: RegisterPieces,
         /// The extension a returning scalar needs.
         extension: ScalarAbiExtension,
     },
@@ -663,6 +671,23 @@ impl LoweredReturn {
     /// Whether the result crosses through caller storage.
     pub const fn uses_sret(self) -> bool {
         matches!(self, Self::Sret { .. })
+    }
+
+    /// The result registers the value occupies, empty for every other return.
+    pub fn register_pieces(self) -> RegisterPieces {
+        match self {
+            Self::Registers { pieces, .. } => pieces,
+            Self::Void | Self::Sret { .. } => RegisterPieces::empty(),
+        }
+    }
+
+    /// The extension a returning scalar needs, [`ScalarAbiExtension::None`]
+    /// for every other return.
+    pub const fn extension(self) -> ScalarAbiExtension {
+        match self {
+            Self::Registers { extension, .. } => extension,
+            Self::Void | Self::Sret { .. } => ScalarAbiExtension::None,
+        }
     }
 }
 
@@ -961,11 +986,12 @@ pub fn lower_c_signature(
 ///
 /// Arguments are placed by exactly the rules `pairing` describes, which for
 /// [`ConventionSpec::native`] are the compilation target's own C rules
-/// (ADR-0084). The return is an input rather than a decision because the native
-/// return bank is wider than any C row's and no [`CConventionSpec`] describes
-/// it: the caller classifies the return and hands it in, and this function
-/// honors the one consequence a return has for argument placement — a native
-/// sret pointer is the hidden first ordinary argument, so it shifts every user
+/// (ADR-0084). The return is an input rather than a decision so that a caller
+/// holding an already-classified result — the codegen return plan, the export
+/// thunk — hands in the one it will actually emit; [`lower_native_return`] is
+/// how that result is classified. Only one consequence of a return reaches
+/// argument placement, and this function honors it: under a row whose hidden
+/// indirect-result pointer is an ordinary first argument, it shifts every user
 /// argument one general-purpose register right.
 pub fn lower_native_signature(
     pairing: ConventionSpec,
@@ -1123,12 +1149,67 @@ fn lower_aggregate_argument(
     }
 }
 
+/// Classify one *native* result against `pairing`.
+///
+/// The native convention returns by exactly the rules below — the compilation
+/// target's own aggregate rule, SysV eightbyte classification or the AAPCS64
+/// composite rules — read against the wider return bank
+/// [`ConventionSpec::native`] describes (ADR-0084). C's own result registers
+/// are a prefix of that bank, so a value that fits C's bank is placed exactly
+/// where [`lower_c_signature`] would place it, which is what lets an export be
+/// an alias of its native body.
+///
+/// The one thing the native row does *not* borrow is the narrow-return
+/// extension. Rue's canonical 64-bit-extension invariant is stronger than any
+/// C row's: a native callee leaves a narrow scalar already extended, so its
+/// caller has nothing to restore, while a C callee leaves the high bits
+/// unspecified and its caller re-extends from the declared width.
+pub fn lower_native_return(pairing: ConventionSpec, result: CAbiTypeFacts) -> LoweredReturn {
+    match lower_return(&pairing.spec(), result) {
+        LoweredReturn::Registers { pieces, .. } => LoweredReturn::Registers {
+            pieces,
+            extension: ScalarAbiExtension::None,
+        },
+        other => other,
+    }
+}
+
+/// Assign one result register per eightbyte of `classes`, each from its own
+/// bank in ascending memory order, or `None` when either result roster is too
+/// narrow to hold its share.
+///
+/// The banks are counted independently, exactly as the argument rosters are:
+/// SysV AMD64 returns `{i64, f64}` in `rax` and `xmm0`, spending one register
+/// of each.
+fn claim_return_registers(
+    spec: &CConventionSpec,
+    classes: &EightbyteClasses,
+) -> Option<RegisterPieces> {
+    for class in [CRegisterClass::Gp, CRegisterClass::Fp] {
+        if classes.registers_in(class) > spec.return_registers(class) {
+            return None;
+        }
+    }
+    let mut used = [0_u32; 2];
+    let mut pieces = RegisterPieces::empty();
+    for eightbyte in classes.as_slice() {
+        let class = eightbyte.register_class();
+        let bank = match class {
+            CRegisterClass::Gp => 0,
+            CRegisterClass::Fp => 1,
+        };
+        let index = used[bank];
+        used[bank] += 1;
+        pieces.push(RegisterPiece { class, index });
+    }
+    Some(pieces)
+}
+
 fn lower_return(spec: &CConventionSpec, result: CAbiTypeFacts) -> LoweredReturn {
     match result {
         CAbiTypeFacts::ZeroSized => LoweredReturn::Void,
         CAbiTypeFacts::Scalar { kind, class } => LoweredReturn::Registers {
-            class,
-            count: 1,
+            pieces: RegisterPieces::one(class, 0),
             extension: kind.extension(),
         },
         CAbiTypeFacts::Aggregate {
@@ -1147,27 +1228,27 @@ fn lower_return(spec: &CConventionSpec, result: CAbiTypeFacts) -> LoweredReturn 
                 && members <= spec.return_registers(CRegisterClass::Fp)
             {
                 return LoweredReturn::Registers {
-                    class: CRegisterClass::Fp,
-                    count: members,
+                    pieces: RegisterPieces::consecutive(CRegisterClass::Fp, 0, members),
                     extension: ScalarAbiExtension::None,
                 };
             }
             let memory_by_alignment = !aapcs && leaves.has_unaligned_leaf();
-            if !memory_by_alignment && size <= spec.max_aggregate_register_bytes {
-                let count = eightbytes(size);
+            let count = eightbytes(size);
+            if !memory_by_alignment
+                && size <= spec.max_aggregate_return_bytes
+                && count <= EightbyteClasses::CAPACITY
+            {
                 let classes = if aapcs {
                     EightbyteClasses::all_integer(count)
                 } else {
                     EightbyteClasses::classify(leaves, count)
                 };
-                return LoweredReturn::Registers {
-                    class: classes.uniform_register_class().expect(
-                        "a result split across register banks needs the per-piece \
-                         return locations RUE-2038 gives it",
-                    ),
-                    count: classes.len(),
-                    extension: ScalarAbiExtension::None,
-                };
+                if let Some(pieces) = claim_return_registers(spec, &classes) {
+                    return LoweredReturn::Registers {
+                        pieces,
+                        extension: ScalarAbiExtension::None,
+                    };
+                }
             }
             LoweredReturn::Sret {
                 register: spec.sret_register,
@@ -1238,6 +1319,14 @@ mod tests {
         ArgLocation::Registers {
             pieces: RegisterPieces::consecutive(CRegisterClass::Fp, first_index, count),
         }
+    }
+
+    fn return_pieces(ret: LoweredReturn) -> Vec<(CRegisterClass, u32)> {
+        ret.register_pieces()
+            .as_slice()
+            .iter()
+            .map(|piece| (piece.class, piece.index))
+            .collect()
     }
 
     fn pieces(location: ArgLocation) -> Vec<(CRegisterClass, u32)> {
@@ -1513,8 +1602,7 @@ mod tests {
         assert_eq!(
             signature.ret(),
             LoweredReturn::Registers {
-                class: CRegisterClass::Gp,
-                count: 1,
+                pieces: RegisterPieces::one(CRegisterClass::Gp, 0),
                 extension: ScalarAbiExtension::Signed { from_bits: 16 }
             }
         );
@@ -1523,8 +1611,7 @@ mod tests {
             assert_eq!(
                 signature.ret(),
                 LoweredReturn::Registers {
-                    class: CRegisterClass::Gp,
-                    count,
+                    pieces: RegisterPieces::consecutive(CRegisterClass::Gp, 0, count),
                     extension: ScalarAbiExtension::None
                 }
             );
@@ -1772,16 +1859,14 @@ mod tests {
         assert_eq!(
             lower_c_signature(SYSV, &[], pair).ret(),
             LoweredReturn::Registers {
-                class: CRegisterClass::Fp,
-                count: 1,
+                pieces: RegisterPieces::consecutive(CRegisterClass::Fp, 0, 1),
                 extension: ScalarAbiExtension::None
             }
         );
         assert_eq!(
             lower_c_signature(AAPCS, &[], pair).ret(),
             LoweredReturn::Registers {
-                class: CRegisterClass::Fp,
-                count: 2,
+                pieces: RegisterPieces::consecutive(CRegisterClass::Fp, 0, 2),
                 extension: ScalarAbiExtension::None
             }
         );
@@ -1789,8 +1874,7 @@ mod tests {
         assert_eq!(
             lower_c_signature(AAPCS, &[], three).ret(),
             LoweredReturn::Registers {
-                class: CRegisterClass::Fp,
-                count: 3,
+                pieces: RegisterPieces::consecutive(CRegisterClass::Fp, 0, 3),
                 extension: ScalarAbiExtension::None
             }
         );
@@ -1798,6 +1882,118 @@ mod tests {
             lower_c_signature(SYSV, &[], three).ret().uses_sret(),
             "24 bytes exceeds SysV's two-eightbyte result budget"
         );
+    }
+
+    #[test]
+    fn a_result_split_across_banks_names_a_register_of_each() {
+        // SysV AMD64 classifies each eightbyte of a result independently, so a
+        // `{i64, f64}` struct comes back in `rax` and `xmm0` — one register of
+        // each bank, each numbered from its own roster.
+        let split = leafy_facts(&[CAbiLeaf::integer(0, 8), CAbiLeaf::f64(8)]);
+        let ret = lower_c_signature(SYSV, &[], split).ret();
+        assert_eq!(
+            return_pieces(ret),
+            vec![(CRegisterClass::Gp, 0), (CRegisterClass::Fp, 0)]
+        );
+        // AAPCS64 returns a composite that is not a homogeneous floating-point
+        // aggregate in consecutive integer registers whatever its members are.
+        assert_eq!(
+            return_pieces(lower_c_signature(AAPCS, &[], split).ret()),
+            vec![(CRegisterClass::Gp, 0), (CRegisterClass::Gp, 1)]
+        );
+    }
+
+    #[test]
+    fn the_native_return_bank_is_wider_than_cs_and_starts_where_cs_does() {
+        // Three eightbytes exceed every C row's result budget and fit every
+        // native one, and the native placement begins at the same registers C
+        // would have used.
+        let three = CAbiTypeFacts::integer_aggregate(24, 8);
+        for target in Target::all() {
+            let c = lower_c_signature(target.c_calling_convention(), &[], three).ret();
+            assert!(c.uses_sret(), "{target:?}: 24 bytes exceeds C's bank");
+            let native = lower_native_return(ConventionSpec::native(*target), three);
+            assert_eq!(
+                return_pieces(native),
+                vec![
+                    (CRegisterClass::Gp, 0),
+                    (CRegisterClass::Gp, 1),
+                    (CRegisterClass::Gp, 2)
+                ],
+                "{target:?}: the native bank returns three eightbytes in registers"
+            );
+        }
+    }
+
+    #[test]
+    fn a_native_result_past_the_bank_takes_its_rows_own_indirect_register() {
+        // Past the bank the native convention is the C row verbatim: SysV's
+        // hidden first argument with the `rax` echo, AAPCS64's dedicated `x8`
+        // with none.
+        let huge = CAbiTypeFacts::integer_aggregate(128, 8);
+        for target in Target::all() {
+            let c_spec = target.c_calling_convention().c_spec();
+            assert_eq!(
+                lower_native_return(ConventionSpec::native(*target), huge),
+                LoweredReturn::Sret {
+                    register: c_spec.sret_register,
+                    echoed: c_spec.sret_pointer_echoed_in_result_register,
+                    size: 128,
+                    align: 8,
+                },
+                "{target:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_narrow_native_result_needs_no_re_extension() {
+        // The canonical 64-bit form is the native convention's invariant, so a
+        // caller has nothing to restore; a C callee leaves the high bits
+        // unspecified and its caller does.
+        let narrow = CAbiTypeFacts::Scalar {
+            kind: CAbiScalarKind::I16,
+            class: CRegisterClass::Gp,
+        };
+        for target in Target::all() {
+            assert_eq!(
+                lower_native_return(ConventionSpec::native(*target), narrow).extension(),
+                ScalarAbiExtension::None,
+                "{target:?}"
+            );
+            assert_eq!(
+                lower_c_signature(target.c_calling_convention(), &[], narrow)
+                    .ret()
+                    .extension(),
+                ScalarAbiExtension::Signed { from_bits: 16 },
+                "{target:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_native_result_that_fits_cs_bank_lands_exactly_where_c_puts_it() {
+        // The prefix property an export alias stands on: every result within
+        // C's own bank is placed identically by the two rows.
+        let within_c = [
+            CAbiTypeFacts::integer_aggregate(8, 8),
+            CAbiTypeFacts::integer_aggregate(16, 8),
+            leafy_facts(&[CAbiLeaf::f64(0), CAbiLeaf::f64(8)]),
+            leafy_facts(&[CAbiLeaf::integer(0, 8), CAbiLeaf::f64(8)]),
+            CAbiTypeFacts::Scalar {
+                kind: CAbiScalarKind::RegisterWidth,
+                class: CRegisterClass::Gp,
+            },
+        ];
+        for target in Target::all() {
+            for result in within_c {
+                assert_eq!(
+                    lower_c_signature(target.c_calling_convention(), &[], result).ret(),
+                    lower_native_return(ConventionSpec::native(*target), result),
+                    "{target:?}: {result:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1932,31 +2128,32 @@ mod tests {
     }
 
     #[test]
-    fn a_native_sret_shifts_user_arguments_on_every_target() {
-        // The native hidden indirect-result pointer is an ordinary first
-        // argument on both architectures, so it costs the first
-        // general-purpose argument register everywhere — unlike AAPCS64's
-        // dedicated `x8`, which leaves user arguments at roster index 0.
-        let sret = LoweredReturn::Sret {
-            register: SretRegisterKind::ArgumentRegister,
-            echoed: false,
-            size: 64,
-            align: 8,
-        };
+    fn a_native_sret_takes_its_rows_own_indirect_result_register() {
+        // The native indirect-result rule is the target C row's, so the shift
+        // it costs is the row's own: SysV's hidden first argument moves every
+        // user argument one general-purpose register right, and AAPCS64's
+        // dedicated `x8` leaves them at roster index 0.
+        let huge = CAbiTypeFacts::integer_aggregate(128, 8);
         for target in Target::all() {
+            let ret = lower_native_return(ConventionSpec::native(*target), huge);
+            assert!(ret.uses_sret());
             let native =
-                lower_native_signature(ConventionSpec::native(*target), &[word(), word()], sret);
-            assert!(native.sret_in_argument_register());
-            assert_eq!(native.arguments()[0].location, registers(1, 1));
-            assert_eq!(native.arguments()[1].location, registers(2, 1));
+                lower_native_signature(ConventionSpec::native(*target), &[word(), word()], ret);
+            let shift = u32::from(native.sret_in_argument_register());
+            assert_eq!(
+                native.sret_in_argument_register(),
+                target
+                    .c_calling_convention()
+                    .c_spec()
+                    .sret_pointer_in_argument_register(),
+                "{target:?}: the native sret rule is its C row's"
+            );
+            assert_eq!(native.arguments()[0].location, registers(shift, 1));
+            assert_eq!(native.arguments()[1].location, registers(shift + 1, 1));
         }
         // The same shape at the AAPCS64 C boundary keeps `x0` for the user's
-        // first argument, which is the difference the pairing carries.
-        let c = lower_c_signature(
-            CallingConvention::Aarch64Aapcs,
-            &[word(), word()],
-            CAbiTypeFacts::integer_aggregate(64, 8),
-        );
+        // first argument, which the native row now shares.
+        let c = lower_c_signature(CallingConvention::Aarch64Aapcs, &[word(), word()], huge);
         assert!(!c.sret_in_argument_register());
         assert_eq!(c.arguments()[0].location, registers(0, 1));
     }
@@ -2018,8 +2215,7 @@ mod tests {
                 ConventionSpec::native(*target),
                 &[word()],
                 LoweredReturn::Registers {
-                    class: CRegisterClass::Gp,
-                    count: 6,
+                    pieces: RegisterPieces::consecutive(CRegisterClass::Gp, 0, 6),
                     extension: ScalarAbiExtension::None,
                 },
             );

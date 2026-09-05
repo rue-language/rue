@@ -20,7 +20,7 @@
 use std::fmt;
 
 use lasso::{Key, ThreadedRodeo};
-use rue_air::{FrozenTypeInternPool, NativeCallAbi, StructId, TypeKind};
+use rue_air::{FrozenTypeInternPool, StructId, TypeKind};
 use rue_cfg::{BlockId, Cfg, CfgValue, Type};
 
 use crate::types;
@@ -255,37 +255,27 @@ fn format_cfg_inst_data_impl(
 // Internal calling convention helpers
 // ============================================================================
 
-/// Does a by-value return of `ty` use the sret convention (caller-allocated
-/// return buffer, pointer passed as a hidden first argument) instead of
-/// return registers?
+/// Does a by-value return of `ty` use the indirect-result convention
+/// (caller-allocated return buffer, pointer in the target row's own
+/// indirect-result register) instead of result registers?
 ///
-/// The internal Rue calling convention for aggregate returns (RUE-106):
+/// The native convention returns a value in registers whenever its eightbytes
+/// fit the native return bank — six general-purpose registers on x86-64 and
+/// eight on AArch64, plus eight floating-point ones on each — classified by the
+/// compilation target's own C aggregate rule (ADR-0084). Otherwise the callee
+/// writes the value's compact image through a caller-provided pointer that
+/// travels where the C row puts it: `rdi` with the `rax` echo on SysV AMD64,
+/// the dedicated `x8` on AAPCS64.
 ///
-/// - Aggregates whose flattened slot count fits in the backend's return
-///   registers (`ret_reg_budget`: 6 on x86-64, 8 on aarch64) are returned
-///   with one slot per return register.
-/// - Canonical `StrBuf` always returns via sret, regardless of fitting in
-///   registers. Runtime producers such as `__rue_read_line` and
-///   `__rue_to_string` take an out-pointer first, and source-defined `StrBuf`
-///   functions use the same type-wide convention. (RUE-92)
-/// - Any other aggregate with more slots than `ret_reg_budget` also returns
-///   via sret: the caller allocates `slot_count * frame_cell_bytes()` bytes
-///   (16-aligned) on
-///   its stack and passes the buffer address as a hidden first argument
-///   (shifting all user arguments by one ABI slot); the callee stores every
-///   slot through that pointer before returning. (RUE-13/78/91)
-///
-/// Scalars and unit never use sret.
-///
-/// The decision itself is owned by the canonical call-ABI classifier
-/// [`rue_air::NativeCallAbi`] (ADR-0052 phase 5); this is the thin boolean
-/// predicate the sret decision sites and both backends consult.
+/// The decision itself is [`rue_air::lower_native_return`]'s, reached through
+/// [`crate::call_plan::return_plan`]; this is the thin boolean predicate the
+/// sret decision sites and both backends consult.
 pub fn type_uses_sret_return(
     type_pool: &FrozenTypeInternPool,
     ty: Type,
-    ret_reg_budget: u32,
+    pairing: rue_target::ConventionSpec,
 ) -> bool {
-    NativeCallAbi::new(type_pool, ret_reg_budget).return_is_sret(ty)
+    crate::call_plan::return_plan(type_pool, ty, pairing).uses_sret()
 }
 
 /// Does this function return its value via the sret convention?
@@ -294,9 +284,9 @@ pub fn type_uses_sret_return(
 pub(crate) fn fn_uses_sret_return(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
-    ret_reg_budget: u32,
+    pairing: rue_target::ConventionSpec,
 ) -> bool {
-    type_uses_sret_return(type_pool, cfg.return_type(), ret_reg_budget)
+    type_uses_sret_return(type_pool, cfg.return_type(), pairing)
 }
 
 // ============================================================================

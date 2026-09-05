@@ -5,7 +5,7 @@
 //! those passes run — and the distinction between spill-placement slots and
 //! emitted-frame locals — is common to every machine-code emission entry point.
 
-use rue_air::{ArgConvention, FrozenTypeInternPool, NativeCallAbi, ReturnClass};
+use rue_air::{ArgConvention, FrozenTypeInternPool};
 use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue, ValidatedCfg};
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use tracing::info_span;
@@ -108,30 +108,20 @@ pub(crate) fn validate_pre_lowering_budget(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
     native_convention: rue_target::ConventionSpec,
-    return_reg_count: u32,
     scheme: SavedRegScheme,
 ) -> CompileResult<bool> {
-    validate_pre_lowering_budget_for_target(
-        cfg,
-        type_pool,
-        native_convention,
-        return_reg_count,
-        scheme,
-        &|_| None,
-    )
+    validate_pre_lowering_budget_for_target(cfg, type_pool, native_convention, scheme, &|_| None)
 }
 
 pub(crate) fn validate_pre_lowering_budget_for_target(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
     native_convention: rue_target::ConventionSpec,
-    return_reg_count: u32,
     scheme: SavedRegScheme,
     foreign_symbol_convention: &dyn Fn(lasso::Spur) -> Option<rue_target::CallingConvention>,
 ) -> CompileResult<bool> {
-    let return_class =
-        NativeCallAbi::new(type_pool, return_reg_count).classify_return(cfg.return_type());
-    let has_sret = return_class.uses_sret();
+    let has_sret =
+        crate::call_plan::return_plan(type_pool, cfg.return_type(), native_convention).uses_sret();
     let base_slots = checked_slot_sum([cfg.num_locals(), cfg.num_params(), u32::from(has_sret)])
         .ok_or_else(|| frame_budget_error(cfg, None))?;
     FrameLayout::try_new(scheme, 0, base_slots).map_err(|_| frame_budget_error(cfg, None))?;
@@ -150,14 +140,14 @@ pub(crate) fn validate_pre_lowering_budget_for_target(
             .map_err(|_| frame_budget_error(cfg, Some(value)))?;
             continue;
         }
-        let sret_bytes =
-            match NativeCallAbi::new(type_pool, return_reg_count).classify_return(inst.ty) {
-                ReturnClass::Indirect { slot_count } => u64::from(
-                    crate::frame_layout::checked_aligned_cell_region_bytes(u64::from(slot_count))
-                        .map_err(|_| frame_budget_error(cfg, Some(value)))?,
-                ),
-                _ => 0,
-            };
+        let sret_bytes = match crate::call_plan::return_plan(type_pool, inst.ty, native_convention)
+        {
+            crate::call_plan::ReturnPlan::Sret { slot_count, .. } => u64::from(
+                crate::frame_layout::checked_aligned_cell_region_bytes(u64::from(slot_count))
+                    .map_err(|_| frame_budget_error(cfg, Some(value)))?,
+            ),
+            _ => 0,
+        };
         let arguments = call_args
             .iter()
             .map(|arg| {
@@ -205,7 +195,6 @@ pub(crate) fn prepare_mir_with_backend<B: crate::backend::Backend>(
         cfg,
         type_pool,
         rue_target::ConventionSpec::native(target),
-        B::RETURN_REG_COUNT,
         B::SAVED_REG_SCHEME,
         &|name| symbols.foreign_convention(&symbols.resolve(interner.resolve(&name))),
     )?;
@@ -385,7 +374,6 @@ mod tests {
         const ARCH: Arch = Arch::X86_64;
         const ARG_REG_COUNT: u32 = 6;
         const FP_ARG_REG_COUNT: u32 = 8;
-        const RETURN_REG_COUNT: u32 = 6;
         const SAVED_REG_SCHEME: SavedRegScheme = SavedRegScheme::X86_64;
 
         fn lower(
@@ -558,21 +546,14 @@ mod tests {
         let cfg = Cfg::new(Type::UNIT, max_slots, 0, "boundary".into(), vec![]);
 
         assert!(
-            validate_pre_lowering_budget(
-                &cfg,
-                &type_pool,
-                X86_64_NATIVE,
-                6,
-                SavedRegScheme::X86_64,
-            )
-            .is_ok()
+            validate_pre_lowering_budget(&cfg, &type_pool, X86_64_NATIVE, SavedRegScheme::X86_64)
+                .is_ok()
         );
         assert!(
             validate_pre_lowering_budget(
                 &cfg,
                 &type_pool,
                 AARCH64_NATIVE,
-                8,
                 SavedRegScheme::Aarch64,
             )
             .is_err(),
@@ -585,7 +566,6 @@ mod tests {
                 &over_boundary,
                 &type_pool,
                 X86_64_NATIVE,
-                6,
                 SavedRegScheme::X86_64,
             )
             .is_err(),
@@ -598,7 +578,6 @@ mod tests {
                 &param_boundary,
                 &type_pool,
                 X86_64_NATIVE,
-                6,
                 SavedRegScheme::X86_64,
             )
             .is_ok()
@@ -633,22 +612,19 @@ mod tests {
         cfg.append_call(entry, None, Spur::default(), args, huge, Span::default())
             .unwrap();
 
-        for (native, ret_regs, scheme, convention) in [
+        for (native, scheme, convention) in [
             (
                 X86_64_NATIVE,
-                6,
                 SavedRegScheme::X86_64,
                 rue_target::CallingConvention::X86_64SysV,
             ),
             (
                 AARCH64_NATIVE,
-                8,
                 SavedRegScheme::Aarch64,
                 rue_target::CallingConvention::Aarch64Aapcs,
             ),
             (
                 AARCH64_DARWIN_NATIVE,
-                8,
                 SavedRegScheme::Aarch64,
                 rue_target::CallingConvention::Aarch64AapcsDarwin,
             ),
@@ -657,7 +633,6 @@ mod tests {
                 &cfg,
                 &type_pool,
                 native,
-                ret_regs,
                 scheme,
                 &|_| Some(convention),
             )
@@ -670,14 +645,9 @@ mod tests {
 
         // Keep the native planner's cumulative indirect+sret guard covered as
         // well; the target-C cases above exercise the distinct foreign shapes.
-        let error = validate_pre_lowering_budget(
-            &cfg,
-            &type_pool,
-            X86_64_NATIVE,
-            6,
-            SavedRegScheme::X86_64,
-        )
-        .unwrap_err();
+        let error =
+            validate_pre_lowering_budget(&cfg, &type_pool, X86_64_NATIVE, SavedRegScheme::X86_64)
+                .unwrap_err();
         assert!(matches!(
             error.kind,
             rue_error::ErrorKind::FunctionFrameTooLarge { .. }
@@ -721,22 +691,19 @@ mod tests {
         // aggregate argument's 16-byte image scratch is live alongside it
         // during lowering. Both target-C lowerers must reject that peak before
         // their stack adjustments are emitted.
-        for (native, ret_regs, scheme, convention) in [
+        for (native, scheme, convention) in [
             (
                 X86_64_NATIVE,
-                6,
                 SavedRegScheme::X86_64,
                 rue_target::CallingConvention::X86_64SysV,
             ),
             (
                 AARCH64_NATIVE,
-                8,
                 SavedRegScheme::Aarch64,
                 rue_target::CallingConvention::Aarch64Aapcs,
             ),
             (
                 AARCH64_DARWIN_NATIVE,
-                8,
                 SavedRegScheme::Aarch64,
                 rue_target::CallingConvention::Aarch64AapcsDarwin,
             ),
@@ -746,7 +713,6 @@ mod tests {
                     &cfg,
                     &type_pool,
                     native,
-                    ret_regs,
                     scheme,
                     &|_| Some(convention),
                 )

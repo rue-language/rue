@@ -2916,8 +2916,7 @@ impl<'a> Interp<'a> {
             CfgArgMode::Normal => rue_air::ArgConvention::ByValue,
             CfgArgMode::Inout | CfgArgMode::Borrow => rue_air::ArgConvention::ByReference,
         };
-        rue_air::NativeCallAbi::for_arguments(self.type_pool()).arg_slot_width(ty, convention)
-            as usize
+        rue_air::NativeCallAbi::new(self.type_pool()).arg_slot_width(ty, convention) as usize
     }
 
     /// Validate the caller's complete physical argument layout against the

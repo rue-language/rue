@@ -240,6 +240,11 @@ mod sharding;
 ///   on the stack under SysV, by reference under AAPCS64) returned through
 ///   caller storage, and nine scalars whose tail is stacked. It encodes what it
 ///   observed into one integer.
+/// - `ffi_call_wide_return(int a, b, c, d, e) -> long` — a C caller that passes
+///   and receives a 20-byte `@repr(c)` struct by value through a Rue export.
+///   That result is three eightbytes to the native convention and an indirect
+///   result to every C row, so the export's entry thunk must stage the returned
+///   eightbytes and copy the result's own bytes into the C caller's storage.
 /// - `ffi_sret_echo_ok() -> long` — the SysV `rax` echo of the hidden result
 ///   pointer, checked by using the *returned* pointer; AAPCS64 has no echo, so
 ///   its member answers 1.
@@ -602,6 +607,49 @@ fn synthesize_answer_archive(target: Target) -> TestResult<Vec<u8>> {
             Vec::new(),
         ),
     };
+    // A C caller that passes a 20-byte `@repr(c)` struct by value to a Rue
+    // export and receives one back — the result shape the two conventions place
+    // differently, three eightbytes to the native convention and an indirect
+    // result to every C row. `clang -O2 -c` (x86-64) and
+    // `clang --target=aarch64-linux-gnu -O1 -c` produced the `.text` below for:
+    //
+    //   typedef struct { int a, b, c, d, e; } Five;   /* 20 bytes */
+    //   long ffi_call_wide_return(int a, int b, int c, int d, int e) {
+    //       Five v; v.a = a; v.b = b; v.c = c; v.d = d; v.e = e;
+    //       Five w = rue_five_shift(v);                /* {5,1,2,3,4} */
+    //       return (long)w.a * 10000 + w.b * 1000 + w.c * 100 + w.d * 10 + w.e;
+    //   }                                             /* 51234 */
+    //
+    // The five scalars arrive as arguments rather than a literal so the driver
+    // needs no `.rodata`, which this archive's members do not carry.
+    let (wide_return_code, wide_return_relocs): (Vec<u8>, Vec<(u64, &str)>) = match target.arch() {
+        Arch::X86_64 => (
+            vec![
+                0x48, 0x83, 0xEC, 0x48, 0x89, 0x7C, 0x24, 0x20, 0x89, 0x74, 0x24, 0x24, 0x89, 0x54,
+                0x24, 0x28, 0x89, 0x4C, 0x24, 0x2C, 0x44, 0x89, 0x44, 0x24, 0x30, 0x8B, 0x44, 0x24,
+                0x30, 0x89, 0x44, 0x24, 0x10, 0x0F, 0x10, 0x44, 0x24, 0x20, 0x0F, 0x11, 0x04, 0x24,
+                0x48, 0x8D, 0x7C, 0x24, 0x34, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x63, 0x44, 0x24,
+                0x34, 0x48, 0x69, 0xC0, 0x10, 0x27, 0x00, 0x00, 0x48, 0x63, 0x4C, 0x24, 0x38, 0x48,
+                0x69, 0xC9, 0xE8, 0x03, 0x00, 0x00, 0x48, 0x01, 0xC1, 0x48, 0x63, 0x44, 0x24, 0x3C,
+                0x48, 0x6B, 0xC0, 0x64, 0x48, 0x01, 0xC8, 0x48, 0x63, 0x4C, 0x24, 0x40, 0x48, 0x8D,
+                0x0C, 0x89, 0x48, 0x8D, 0x0C, 0x48, 0x48, 0x63, 0x44, 0x24, 0x44, 0x48, 0x01, 0xC8,
+                0x48, 0x83, 0xC4, 0x48, 0xC3,
+            ],
+            vec![(48, "rue_five_shift")],
+        ),
+        Arch::Aarch64 => (
+            vec![
+                0xFF, 0x03, 0x01, 0xD1, 0xFD, 0x7B, 0x03, 0xA9, 0xFD, 0xC3, 0x00, 0x91, 0xE0, 0x0B,
+                0x00, 0xB9, 0xA8, 0x53, 0x00, 0xD1, 0xE0, 0x23, 0x00, 0x91, 0xE1, 0x8B, 0x01, 0x29,
+                0xE3, 0x93, 0x02, 0x29, 0x00, 0x00, 0x00, 0x94, 0xA9, 0xA3, 0x7D, 0x69, 0x0A, 0x7D,
+                0x80, 0x52, 0x08, 0x7D, 0x2A, 0x9B, 0x0A, 0xE2, 0x84, 0x52, 0x28, 0x21, 0x2A, 0x9B,
+                0x89, 0x0C, 0x80, 0x52, 0xAB, 0xAB, 0x7E, 0x69, 0x68, 0x21, 0x29, 0x9B, 0x49, 0x01,
+                0x80, 0x52, 0x48, 0x21, 0x29, 0x9B, 0xA9, 0xC3, 0x9F, 0xB8, 0xFD, 0x7B, 0x43, 0xA9,
+                0x00, 0x01, 0x09, 0x8B, 0xFF, 0x03, 0x01, 0x91, 0xC0, 0x03, 0x5F, 0xD6,
+            ],
+            vec![(32, "rue_five_shift")],
+        ),
+    };
     let mut caller_objects: Vec<(String, Vec<u8>)> = Vec::new();
     for (symbol, code, relocs) in [
         ("ffi_call_exports", call_exports_code, call_exports_relocs),
@@ -611,6 +659,7 @@ fn synthesize_answer_archive(target: Target) -> TestResult<Vec<u8>> {
             call_struct_exports_code,
             call_struct_exports_relocs,
         ),
+        ("ffi_call_wide_return", wide_return_code, wide_return_relocs),
         ("ffi_sret_echo_ok", sret_echo_code, sret_echo_relocs),
     ] {
         let mut builder = rue_linker::ObjectBuilder::new(target, symbol).code(code);

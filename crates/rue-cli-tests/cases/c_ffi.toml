@@ -900,6 +900,143 @@ execute_if_native = true
 stdout = "605310201285\n"
 exit_code = 0
 
+# The same 20-byte result, crossed the other way: a C caller in the answer
+# archive passes a `Five` by value into the export's C entry and receives one
+# back through its own storage, so the staged copy the thunk performs is
+# executed rather than only encoded. `{5,1,2,3,4}` encodes to 51234.
+
+[[case]]
+name = "x86_64_linux_wide_aggregate_return_called_from_c"
+description = "A C caller receives a 20-byte `@repr(c)` struct from a Rue export through its C entry thunk on x86-64, where SysV returns it indirectly and the native body returns three eightbytes."
+files = [{ path = "main.rue", source = """
+@repr(c)
+struct Five { a: i32, b: i32, c: i32, d: i32, e: i32 }
+
+pub extern "C" fn rue_five_shift(v: Five) -> Five {
+    Five { a: v.e, b: v.a, c: v.b, d: v.c, e: v.d }
+}
+
+extern "C" {
+    fn ffi_call_wide_return(a: i32, b: i32, c: i32, d: i32, e: i32) -> i64;
+}
+
+fn main() -> i32 {
+    @dbg(checked { ffi_call_wide_return(1, 2, 3, 4, 5) });
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "x86-64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = "51234\n"
+exit_code = 0
+
+[[case]]
+name = "aarch64_linux_wide_aggregate_return_called_from_c"
+description = "A C caller receives a 20-byte `@repr(c)` struct from a Rue export through its C entry thunk on AArch64, where both rows return it through storage addressed by the dedicated `x8`."
+files = [{ path = "main.rue", source = """
+@repr(c)
+struct Five { a: i32, b: i32, c: i32, d: i32, e: i32 }
+
+pub extern "C" fn rue_five_shift(v: Five) -> Five {
+    Five { a: v.e, b: v.a, c: v.b, d: v.c, e: v.d }
+}
+
+extern "C" {
+    fn ffi_call_wide_return(a: i32, b: i32, c: i32, d: i32, e: i32) -> i64;
+}
+
+fn main() -> i32 {
+    @dbg(checked { ffi_call_wide_return(1, 2, 3, 4, 5) });
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "aarch64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = "51234\n"
+exit_code = 0
+
+# A `pub extern "C" fn` whose result is inside the native return bank but past
+# every C row's — a 20-byte `@repr(c)` struct of narrow fields, three eightbytes
+# to the native convention and an indirect result to C. Its entry thunk stages
+# the native body's eightbytes and copies exactly the result's own bytes into
+# the C caller's storage, so it must encode and link on every row. The matching
+# native host executes the image; every other host validates it structurally.
+[[case]]
+name = "wide_packed_struct_export_builds_on_every_row"
+description = "A `pub extern \"C\" fn` returning a 20-byte `@repr(c)` struct of narrow fields compiles and links on every convention row, exercising the staged return copy its entry thunk needs."
+files = [{ path = "main.rue", source = """
+@repr(c)
+struct Five { a: i32, b: i32, c: i32, d: i32, e: i32 }
+
+pub extern "C" fn rue_five_shift(v: Five) -> Five {
+    Five { a: v.e, b: v.a, c: v.b, d: v.c, e: v.d }
+}
+
+fn main() -> i32 {
+    let shifted = rue_five_shift(Five { a: 1, b: 2, c: 3, d: 4, e: 5 });
+    @dbg(shifted.a);
+    @dbg(shifted.e);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = "5\n4\n"
+exit_code = 0
+
+[[case]]
+name = "aarch64_wide_packed_struct_export_builds_under_aapcs64"
+description = "The same 20-byte `@repr(c)` result compiles and links for aarch64-linux, where the native indirect-result register is the dedicated `x8`."
+files = [{ path = "main.rue", source = """
+@repr(c)
+struct Five { a: i32, b: i32, c: i32, d: i32, e: i32 }
+
+pub extern "C" fn rue_five_shift(v: Five) -> Five {
+    Five { a: v.e, b: v.a, c: v.b, d: v.c, e: v.d }
+}
+
+fn main() -> i32 {
+    let shifted = rue_five_shift(Five { a: 1, b: 2, c: 3, d: 4, e: 5 });
+    @dbg(shifted.a);
+    @dbg(shifted.e);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = "5\n4\n"
+exit_code = 0
+
+[[case]]
+name = "aarch64_macos_wide_packed_struct_export_builds_under_the_apple_row"
+description = "The same 20-byte `@repr(c)` result compiles and links for aarch64-macos under the Apple arm64 row."
+files = [{ path = "main.rue", source = """
+@repr(c)
+struct Five { a: i32, b: i32, c: i32, d: i32, e: i32 }
+
+pub extern "C" fn rue_five_shift(v: Five) -> Five {
+    Five { a: v.e, b: v.a, c: v.b, d: v.c, e: v.d }
+}
+
+fn main() -> i32 {
+    let shifted = rue_five_shift(Five { a: 1, b: 2, c: 3, d: 4, e: 5 });
+    @dbg(shifted.a);
+    @dbg(shifted.e);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--target", "aarch64-macos", "-o", "prog"]
+executable_target = "aarch64-macos"
+execute_if_native = true
+stdout = "5\n4\n"
+exit_code = 0
+
 # --- P4 export diagnostics (compile-fail) -----------------------------------
 
 [[case]]
