@@ -34,8 +34,7 @@ test "Stack of owned StrBuf moves elements out with pop" {
     let b: StrBuf = "second";
     s.push(a);
     s.push(b);
-    // RUE-2012: `@assert_eq(s.peek_ref(), "second")` on Stack(StrBuf) is
-    // E9000 "mandatory accessor CFG splice failed"; restore it when that lands.
+    @assert_eq(s.peek_ref(), "second");
     @assert_eq(s.len(), 2);
     match s.pop() {
         OptS.Some(v) => @assert_eq(v, "second"),

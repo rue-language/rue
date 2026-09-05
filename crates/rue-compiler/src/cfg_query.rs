@@ -2112,7 +2112,10 @@ fn plan_codegen_symbol_mappings(
     Ok(additions)
 }
 
-fn accessor_splice_failure_message(error: SpliceCalleeFailure) -> String {
+fn accessor_splice_failure_message(
+    error: SpliceCalleeFailure,
+    type_pool: &rue_air::FrozenTypeInternPool,
+) -> String {
     match error {
         SpliceCalleeFailure::Domain(error) => {
             format!("accessor CFG domain import failed: {error:?}")
@@ -2124,13 +2127,19 @@ fn accessor_splice_failure_message(error: SpliceCalleeFailure) -> String {
             "accessor local atom has no imported string id".to_owned()
         }
         SpliceCalleeFailure::Splice(error) => {
-            format!("mandatory accessor CFG splice failed: {error}")
+            format!(
+                "mandatory accessor CFG splice failed: {}",
+                error.describe(type_pool)
+            )
         }
         error => format!("accessor CFG splice merge failed: {error}"),
     }
 }
 
-fn general_splice_failure_message(error: SpliceCalleeFailure) -> String {
+fn general_splice_failure_message(
+    error: SpliceCalleeFailure,
+    type_pool: &rue_air::FrozenTypeInternPool,
+) -> String {
     match error {
         SpliceCalleeFailure::Domain(error) => {
             format!("general inline CFG domain import failed: {error:?}")
@@ -2141,7 +2150,12 @@ fn general_splice_failure_message(error: SpliceCalleeFailure) -> String {
         SpliceCalleeFailure::MissingAtomString => {
             "general inline local atom has no imported string id".to_owned()
         }
-        SpliceCalleeFailure::Splice(error) => format!("general inline splice failed: {error}"),
+        SpliceCalleeFailure::Splice(error) => {
+            format!(
+                "general inline splice failed: {}",
+                error.describe(type_pool)
+            )
+        }
         error => format!("general inline splice merge failed: {error}"),
     }
 }
@@ -2500,7 +2514,7 @@ pub(crate) fn evaluate_optimized_cfg(
             Err(SpliceCalleeFailure::Canceled(abort)) => return Err(abort),
             Err(error) => {
                 return Ok(QueryOutput::success(internal_failure(
-                    accessor_splice_failure_message(error),
+                    accessor_splice_failure_message(error, &record.type_pool),
                     record.body_span,
                 ))
                 .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
@@ -3035,7 +3049,7 @@ pub(crate) fn apply_general_inlining(
                     continue;
                 }
                 Err(error) => {
-                    failed = Some(general_splice_failure_message(error));
+                    failed = Some(general_splice_failure_message(error, &record.type_pool));
                     break;
                 }
             }
@@ -4476,14 +4490,18 @@ mod accessor_graph_tests {
             "accessor CFG domain import failed: {error:?}",
             "imported accessor CFG failed verification: {error}",
             "accessor local atom has no imported string id",
-            "mandatory accessor CFG splice failed: {error}",
+            "mandatory accessor CFG splice failed: {}",
             "general inline CFG domain import failed: {error:?}",
             "imported general inline CFG failed verification: {error}",
             "general inline local atom has no imported string id",
-            "general inline splice failed: {error}",
+            "general inline splice failed: {}",
         ] {
             assert!(production.contains(legacy_message));
         }
+        // Both splice ICE messages name their types through the frozen pool.
+        // `Display` alone renders every struct as `<struct#7>`, which is what
+        // made RUE-2012's report undiagnosable.
+        assert_eq!(production.matches("error.describe(type_pool)").count(), 2);
 
         let domains = include_str!("durable_cfg.rs");
         let lookup = domains
