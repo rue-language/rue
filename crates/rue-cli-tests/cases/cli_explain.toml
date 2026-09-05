@@ -831,17 +831,20 @@ compile_stdout_contains = ["E0950: Bit cast width mismatch", "Reinterpret across
 compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
-# The linker/target tranche covers both active codes in E1000-E1099. Neither
-# has a Rue program that produces it — E1000 is raised by the linker over
-# objects and archives, and nothing constructs E1001's kind — so both pages
-# omit the examples section and state their reproduction controls in prose.
+# The linker/target tranche covers both active codes in E1000-E1099. E1000's
+# examples are the preview-gated pair: a foreign call whose symbol no archive
+# defines, and a program whose C-boundary symbol is defined in the link. Both
+# need `--preview c_ffi`, so the rendered explanation states that requirement
+# beside each example title. E1001 has no Rue program that produces it —
+# nothing constructs its kind — so its page omits the examples section and
+# states its reproduction controls in prose.
 [[case]]
 name = "link_error_code_is_explained"
 files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
 args = ["explain", "E1000"]
 compile_only = true
-compile_stdout_contains = ["E1000: Link error", "--link-archive", "docs/spec/src/09-unchecked-code/03-foreign-boundary.md (spec rule 9.3:5)", "docs/designs/0034-cross-target-runtime.md", "docs/designs/0055-typed-runtime-abi-manifest.md"]
-compile_stdout_not_contains = ["Compiled", "Examples:"]
+compile_stdout_contains = ["E1000: Link error", "--link-archive", "Examples:", "Foreign symbol nothing linked defines (requires --preview c_ffi):", "Link a definition for the C-boundary symbol (requires --preview c_ffi):", "docs/spec/src/09-unchecked-code/03-foreign-boundary.md (spec rule 9.3:5)", "docs/designs/0034-cross-target-runtime.md", "docs/designs/0055-typed-runtime-abi-manifest.md"]
+compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
 [[case]]

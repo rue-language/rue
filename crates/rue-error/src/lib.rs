@@ -197,6 +197,46 @@ pub struct ErrorCodeExample {
     pub source: &'static str,
     /// The result the canonical compiler must produce for this example.
     pub outcome: ErrorCodeExampleOutcome,
+    /// Preview feature names this example must be compiled with, spelled as
+    /// [`PreviewFeature::name`] spells them for `--preview`. Empty for the
+    /// overwhelming majority of examples, which are stable-language programs.
+    /// Names rather than a `PreviewFeature` set, because a declaration is
+    /// data: consumers parse them with the same [`std::str::FromStr`]
+    /// implementation the driver uses for `--preview`, so an unspelled
+    /// feature fails loudly in the example harness.
+    pub preview: &'static [&'static str],
+}
+
+impl ErrorCodeExample {
+    /// The preview features this example must be compiled with.
+    ///
+    /// The names are resolved with the same [`std::str::FromStr`] the driver
+    /// applies to `--preview <name>`, so every consumer that compiles an
+    /// example — the example harnesses in particular — agrees with the
+    /// command line about what a declared name means, and a name that no
+    /// longer resolves is reported rather than quietly dropped.
+    pub fn preview_features(&self) -> Result<PreviewFeatures, ParsePreviewFeatureError> {
+        self.preview.iter().map(|name| name.parse()).collect()
+    }
+
+    /// The command-line flags a reader must add to reproduce this example,
+    /// for instance `--preview c_ffi`, or `None` when the example needs none.
+    ///
+    /// Both renderers of an explanation — `rue explain` and the generated
+    /// error pages — project this one spelling, so a preview-gated example
+    /// states the same requirement wherever it is read.
+    pub fn preview_flags(&self) -> Option<String> {
+        if self.preview.is_empty() {
+            return None;
+        }
+        Some(
+            self.preview
+                .iter()
+                .map(|feature| format!("--preview {feature}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+    }
 }
 
 /// The compiler result promised by an [`ErrorCodeExample`].
@@ -255,7 +295,13 @@ macro_rules! define_error_codes {
     (retired: [$($retired:literal),* $(,)?]; $( $(#[$meta:meta])* $name:ident = $value:literal $(=> {
         explanation: $explanation:literal,
         likely_cause: $likely_cause:literal,
-        examples: [$($example:expr),* $(,)?],
+        examples: [$(ErrorCodeExample {
+            title: $example_title:literal,
+            source: $example_source:literal,
+            outcome: $example_outcome:path
+            $(, preview: [$($example_preview:literal),* $(,)?])?
+            $(,)?
+        }),* $(,)?],
         references: [$($reference:expr),* $(,)?] $(,)?
     })?; )*) => {
         impl ErrorCode {
@@ -281,7 +327,12 @@ macro_rules! define_error_codes {
                     code: ErrorCode::$name,
                     explanation: $explanation,
                     likely_cause: $likely_cause,
-                    examples: &[$($example),*],
+                    examples: &[$(ErrorCodeExample {
+                        title: $example_title,
+                        source: $example_source,
+                        outcome: $example_outcome,
+                        preview: &[$($($example_preview),*)?],
+                    }),*],
                     references: &[$($reference),*],
                 },
             )?)*
@@ -2094,7 +2145,10 @@ define_error_codes! {
     LINK_ERROR = 1000 => {
         explanation: "E1000 reports a failure in the last stage of a compile: turning the generated objects, the embedded per-target Rue runtime archive, and any `--link-archive` inputs into an executable. One code covers the whole link step, and the message carries the specific failure — a symbol no linked archive defines, an archive that cannot be opened or parsed, a relocation the linker cannot apply, an invalid or empty embedded runtime archive, or a failure to spawn, wait on, or read the output of the external linker selected with `--linker <command>`. Rue links with its own internal linker by default, so most E1000 text comes from that linker rather than from a host toolchain; when a system linker is selected instead, its stderr is captured and forwarded verbatim inside the message. E1000 carries no source span, because the link step operates on objects rather than on source text and there is no expression to point at.",
         likely_cause: "The common cause is an `extern \"C\"` foreign declaration (preview feature `c_ffi`) whose symbol nothing linked defines. The message names the symbol and lists everything searched — the bundled Rue runtime archive followed by each `--link-archive <path>` in the order given — so supply the archive that defines the symbol, or correct the symbol's spelling. A `--link-archive` path that cannot be opened, and an archive whose members cannot be parsed, report under the same code and name the path. When `--linker <command>` selects a system linker, the text quoted after `linker '<command>' failed:` is that linker's own stderr and states the real cause.",
-        examples: [],
+        examples: [
+            ErrorCodeExample { title: "Foreign symbol nothing linked defines", source: "extern \"C\" {\n    fn missing_symbol() -> i32;\n}\n\nfn main() -> i32 {\n    checked { missing_symbol() }\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["c_ffi"] },
+            ErrorCodeExample { title: "Link a definition for the C-boundary symbol", source: "pub extern \"C\" fn answer() -> i32 {\n    42\n}\n\nfn main() -> i32 {\n    answer()\n}", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["c_ffi"] },
+        ],
         references: [
             ErrorCodeReference { title: "Foreign declarations link one definition", path: "docs/spec/src/09-unchecked-code/03-foreign-boundary.md", rule: Some("9.3:5") },
             ErrorCodeReference { title: "Per-target runtime archives", path: "docs/designs/0034-cross-target-runtime.md", rule: None },
@@ -4588,15 +4642,16 @@ mod tests {
             assert!(std::ptr::eq(explanation.metadata, metadata));
             assert!(!explanation.explanation.is_empty());
             assert!(!explanation.likely_cause.is_empty());
-            // Every explanation carries at most two worked examples. The
-            // linker/target tranche is the one band that carries none: E1000
-            // is raised by the linker over objects and archives, and no path
-            // constructs the kind behind E1001 at all, so neither has a Rue
-            // program the example harness could compile.
+            // Every explanation carries at most two worked examples. E1001 is
+            // the one code that carries none: nothing constructs the kind
+            // behind it, so no Rue program reaches it. E1000 does have one —
+            // a foreign call whose symbol no archive defines — and, like any
+            // example that needs a language feature still under preview, it
+            // declares the `--preview` names it must be compiled with.
             assert!(explanation.examples.len() <= 2);
             assert_eq!(
                 explanation.examples.is_empty(),
-                (1000..=1001).contains(&declaration.code.0),
+                declaration.code.0 == 1001,
                 "{} example presence must match its tranche",
                 declaration.code
             );
@@ -4604,6 +4659,12 @@ mod tests {
             for example in explanation.examples {
                 assert!(!example.title.is_empty());
                 assert!(!example.source.is_empty());
+                assert!(
+                    example.preview_features().is_ok(),
+                    "{} example {:?} names an unknown preview feature",
+                    declaration.code,
+                    example.title
+                );
             }
             for reference in explanation.references {
                 assert!(!reference.title.is_empty());

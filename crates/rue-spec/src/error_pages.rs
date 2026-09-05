@@ -155,10 +155,14 @@ pub fn generate(spec_dir: &Path, designs_dir: &Path) -> Result<Vec<GeneratedPage
                             example.title
                         ));
                     }
-                    page.push_str(&format!(
-                        "\n### {}\n\n```rue\n{}\n```\n",
-                        example.title, example.source
-                    ));
+                    page.push_str(&format!("\n### {}\n", example.title));
+                    // An example of a feature still behind a preview gate
+                    // reproduces only with that gate open; `rue explain`
+                    // states the same requirement from the same declaration.
+                    if let Some(flags) = example.preview_flags() {
+                        page.push_str(&format!("\nRequires `{flags}`.\n"));
+                    }
+                    page.push_str(&format!("\n```rue\n{}\n```\n", example.source));
                 }
             }
             if !explanation.references.is_empty() {
