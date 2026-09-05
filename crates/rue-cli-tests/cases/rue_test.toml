@@ -810,7 +810,7 @@ compile_stdout_contains = [
     '"stderr":{"bytes_total":0,"digest":"sha256:',
     '"stdout":{"bytes_total":0,"digest":"sha256:',
     '"verdict":"pass"',
-    '{"crash":0,"event":"run_finished","failed":0,"passed":1,"test_candidates":"none","timeout":0,',
+    '{"compile_error":0,"crash":0,"event":"run_finished","failed":0,"passed":1,"test_candidates":"none","timeout":0,',
 ]
 # A pass carries digests, never inline bytes, and retains no scratch directory.
 compile_stdout_not_contains = ['"data"', "scratch_dir", '"shard"']
@@ -1619,3 +1619,454 @@ compile_stdout_contains = [
     '"verdict":"fail"',
     '"crash":0,"event":"run_finished","failed":1,"passed":0',
 ]
+
+# ==================== per-test compile_error verdicts ====================
+#
+# RUE-2017 (ADR-0083 §3): a test whose closure fails to analyze is a verdict,
+# not a run abort. These cases pin the four things the contract turns on — the
+# other tests still run, the verdict and its `diagnostics` field, the exit
+# status, and the attribution of a broken helper to every dependent test — plus
+# the two boundaries: `--list` still lists a test whose body does not analyze,
+# and a failure outside every test closure is still exit `2` with no events.
+
+[[case]]
+name = "a_broken_test_is_a_verdict_and_the_others_still_run"
+description = """
+ADR-0083 §3: one test's semantic error excludes that test from the image and
+runs every other. The run exits `1` — a `compile_error` is a failed test — and
+the summary names the class separately from `failed`, because "did not compile"
+and "ran and failed" send a reader to different places.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "aaa is broken" {
+    let wrong: i32 = true;
+    @assert(wrong == 1);
+}
+
+test "bbb still runs" {
+    @assert(2 + 2 == 4);
+}
+
+test "ccc still runs too" {
+    @assert(1 < 2);
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    "COMPILE ERROR tests.rue::aaa is broken",
+    "compile_error: type mismatch: expected i32, found bool  (tests.rue:2:5)",
+    "the diagnostic is on stderr; the test was excluded from the image",
+    "2 passed, 1 compile error (",
+]
+compile_stdout_not_contains = ["FAIL ", "bbb still runs", "ccc still runs too"]
+compile_stderr_contains = ["type mismatch: expected i32, found bool", "tests.rue:2:5"]
+
+[[case]]
+name = "a_compile_error_event_carries_the_verdict_and_its_diagnostics"
+description = """
+The event schema (test-events.md). `duration_ms` is `0` and both captures are
+empty because no process existed; `scratch_dir` is absent for the same reason.
+The failure record's `diagnostics` array is the same object `--error-format
+json` writes on stderr — a `1.0`-additive field — and `run_finished` gains the
+`compile_error` count alphabetically ahead of `crash`. Object keys are
+alphabetical, so a field rename or a dropped field fails this case.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "does not analyze" {
+    let wrong: i32 = true;
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"duration_ms":0,"event":"test_finished","failure":{"diagnostics":[{"code":"E0206","helps":[],"message":"type mismatch: expected i32, found bool","notes":[],"severity":"error","spans":[{"column":5,',
+    '"file":"tests.rue","label":null,"line":2,"primary":true,',
+    '"kind":"compile_error","location":{"column":5,"file":"tests.rue","line":2}',
+    '"message":"type mismatch: expected i32, found bool","payload":"E0206: type mismatch: expected i32, found bool"}',
+    '"stderr":{"bytes_total":0,"data":"","encoding":"utf8"}',
+    '"verdict":"compile_error"',
+    '"compile_error":1,"crash":0,"event":"run_finished","failed":0,"passed":0',
+]
+compile_stdout_not_contains = ['"scratch_dir"']
+compile_stderr_contains = ["type mismatch: expected i32, found bool"]
+
+[[case]]
+name = "a_broken_helper_is_one_verdict_per_dependent_test"
+description = """
+Maintainer ruling (2026-09-04): a helper several tests share that fails to
+analyze yields one `compile_error` verdict per dependent test, not a whole-run
+failure. The independent test is untouched, and the diagnostic reaches stderr
+once for the run however many tests it excluded — the copies in the events are
+the attribution.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "helpers.rue", source = """
+pub fn broken() -> i32 {
+    let wrong: i32 = true;
+    wrong
+}
+
+pub fn fine() -> i32 {
+    7
+}
+""" },
+    { path = "tests.rue", source = """
+const helpers = @import("helpers.rue");
+
+test "aaa reaches the broken helper" {
+    @assert(helpers.broken() == 1);
+}
+
+test "bbb reaches it too" {
+    @assert(helpers.broken() == 2);
+}
+
+test "ccc reaches only the good one" {
+    @assert(helpers.fine() == 7);
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    "COMPILE ERROR tests.rue::aaa reaches the broken helper",
+    "COMPILE ERROR tests.rue::bbb reaches it too",
+    "1 passed, 2 compile errors (",
+]
+compile_stdout_not_contains = ["COMPILE ERROR tests.rue::ccc reaches only the good one"]
+compile_stderr_contains = ["helpers.rue:2:5"]
+
+[[case]]
+name = "a_broken_destructor_is_a_verdict_for_the_tests_that_destroy_the_value"
+description = """
+A `drop fn` is reached by destruction, not by a call, and the glue that calls it
+is synthesized — so the attribution walk crosses that edge through the closure's
+own drop-glue plans (ADR-0083 §3). A broken destructor is therefore its
+dependents' verdict, exactly as a broken helper is, rather than the whole-run
+failure it would be if destruction were not an edge. The test that destroys no
+such value still runs.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+struct Res { v: i32 }
+
+drop fn Res(self) {
+    let wrong: i32 = true;
+}
+
+test "aaa destroys one" {
+    let r = Res { v: 1 };
+    @assert(r.v == 1);
+}
+
+test "bbb destroys one too" {
+    let r = Res { v: 2 };
+    @assert(r.v == 2);
+}
+
+test "ccc destroys nothing" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    "COMPILE ERROR tests.rue::aaa destroys one",
+    "COMPILE ERROR tests.rue::bbb destroys one too",
+    "1 passed, 2 compile errors (",
+]
+compile_stdout_not_contains = ["COMPILE ERROR tests.rue::ccc destroys nothing"]
+compile_stderr_contains = ["tests.rue:4:5"]
+
+[[case]]
+name = "a_wholly_broken_selection_still_emits_a_complete_stream"
+description = """
+test-events.md's "no event before the test image exists" stays true by defining
+the image as the surviving roots' link: with no surviving root the dispatcher
+still links, so the run emits `run_started`, both finishes, and `run_finished`,
+and exits `1`. An empty stream with exit `2` is reserved for a failure outside
+every test closure.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "aaa" {
+    let wrong: i32 = true;
+}
+
+test "bbb" {
+    let also_wrong: i32 = false;
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"event":"run_started"',
+    '"plan":{"selected":2,"total":2}',
+    '"event":"test_started","id":"tests.rue::aaa"',
+    '"event":"test_started","id":"tests.rue::bbb"',
+    '"compile_error":2,"crash":0,"event":"run_finished","failed":0,"passed":0',
+]
+
+[[case]]
+name = "a_listing_still_names_a_test_whose_body_does_not_analyze"
+description = """
+ADR-0083 §3: the declaration parsed, so `--list` reports it. Dropping it would
+also renumber every later ordinal, and a listing a run cannot be dispatched from
+is worse than no listing.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "aaa is broken" {
+    let wrong: i32 = true;
+}
+
+test "bbb is fine" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--list"]
+driver_exit_code = 0
+compile_stdout_contains = ["tests.rue::aaa is broken", "tests.rue::bbb is fine"]
+
+[[case]]
+name = "a_listing_prints_the_diagnostics_of_a_body_that_does_not_analyze"
+description = """
+A listing lists every declaration and exits `0`, but it is not silent about the
+closure: the analysis diagnostics reach stderr exactly as the run path writes
+them, through the same renderer and the same `--error-format`. A listing that
+swallowed them would tell a reader the suite is fine when the run will report
+those tests as `compile_error`.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "helpers.rue", source = """
+pub fn broken() -> i32 {
+    let wrong: i32 = true;
+    wrong
+}
+""" },
+    { path = "tests.rue", source = """
+const helpers = @import("helpers.rue");
+
+test "aaa reaches the broken helper" {
+    @assert(helpers.broken() == 1);
+}
+
+test "bbb reaches nothing broken" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--list"]
+driver_exit_code = 0
+compile_stdout_contains = [
+    "tests.rue::aaa reaches the broken helper",
+    "tests.rue::bbb reaches nothing broken",
+]
+compile_stderr_contains = [
+    "type mismatch: expected i32, found bool",
+    "helpers.rue:2:5",
+]
+
+[[case]]
+name = "a_json_listing_keeps_the_records_on_stdout_and_the_diagnostics_on_stderr"
+description = """
+The `--list --format json` half of the same rule. The records stream on stdout
+unchanged — one per declaration, no `run_started`, no `run_finished` — while the
+analysis diagnostics go to stderr, which stays the authoritative diagnostic
+stream. A machine consumer parsing stdout is unaffected by the disclosure.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "helpers.rue", source = """
+pub fn broken() -> i32 {
+    let wrong: i32 = true;
+    wrong
+}
+""" },
+    { path = "tests.rue", source = """
+const helpers = @import("helpers.rue");
+
+test "aaa reaches the broken helper" {
+    @assert(helpers.broken() == 1);
+}
+
+test "bbb reaches nothing broken" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--list", "--format", "json", "--error-format", "json"]
+driver_exit_code = 0
+compile_stdout_contains = [
+    '"event":"test","file":"tests.rue","id":"tests.rue::aaa reaches the broken helper"',
+    '"event":"test","file":"tests.rue","id":"tests.rue::bbb reaches nothing broken"',
+]
+compile_stdout_not_contains = ['"event":"run_started"', '"event":"run_finished"', '"severity"']
+compile_stderr_contains = [
+    '"code":"E0206"',
+    '"message":"type mismatch: expected i32, found bool"',
+]
+
+[[case]]
+name = "a_filter_narrows_the_run_set_and_not_the_analysis_root_set"
+description = """
+Ruled, ADR-0083 §2: `--filter` narrows the run set, never the analysis root set,
+so the whole closure still compiles and the broken test's diagnostic still
+reaches stderr. Only the selected test's verdict is reported, and the run exits
+`0` because no selected test is a `compile_error`.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "aaa is broken" {
+    let wrong: i32 = true;
+}
+
+test "bbb is selected" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--filter", "bbb is selected", "--format", "json"]
+driver_exit_code = 0
+compile_stdout_contains = [
+    '"plan":{"selected":1,"total":2}',
+    '"event":"test_started","id":"tests.rue::bbb is selected"',
+    '"verdict":"pass"',
+    '"compile_error":0,"crash":0,"event":"run_finished","failed":0,"passed":1',
+]
+compile_stdout_not_contains = ['"verdict":"compile_error"', "aaa is broken"]
+compile_stderr_contains = ["type mismatch: expected i32, found bool"]
+
+[[case]]
+name = "a_failure_outside_every_test_closure_is_still_a_stopped_run"
+description = """
+The boundary of the per-test contract (ADR-0083 §3). A failing import belongs to
+no test's closure, so it is still diagnostics on stderr, an empty event stream,
+and exit `2` — never a `run_started` for a run that never began.
+"""
+files = [
+    { path = "main.rue", source = """
+const missing = @import("nowhere.rue");
+
+fn main() -> i32 {
+    0
+}
+
+test "never reached" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--format", "json"]
+driver_exit_code = 2
+compile_stdout_not_contains = ['"event":"run_started"', '"event":"run_finished"']
+
+[[case]]
+name = "residual_a_declaration_that_fails_to_analyze_is_still_a_stopped_run"
+description = """
+A known residual of the per-test contract, pinned so it is executable rather
+than prose. The per-test verdict covers a *body* that fails to analyze; a
+*declaration* that fails — a struct field type here, and equally a function
+signature or a `const` initializer — is closure-fatal: it stops the reachability
+walk itself, so the closure it left behind is incomplete and attributing the
+stop to the roots walked so far would name an arbitrary subset. It therefore
+stays a whole-run failure with an empty event stream and exit `2`, even though
+exactly one test reaches the broken declaration and the other is independent.
+Attributing declaration failures is tracked as follow-up work; when it lands
+this case becomes a per-test `compile_error` and is rewritten, not deleted.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+struct Broken { v: Nope }
+
+test "aaa uses the broken declaration" {
+    let value = Broken { v: 1 };
+    @assert(value.v == 1);
+}
+
+test "bbb is independent" {
+    @assert(1 == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 2
+compile_stdout_not_contains = ['"event":"run_started"', '"event":"run_finished"', '"verdict"']
+compile_stderr_contains = ["unknown type 'Nope'"]

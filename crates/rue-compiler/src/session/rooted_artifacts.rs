@@ -299,6 +299,11 @@ pub(super) struct RootedBodyGraph {
     /// dispatcher ordinals are the same table rather than two sorts of the
     /// same declarations.
     pub(super) test_inventory: Arc<[crate::test_inventory::RootedTest]>,
+    /// The tests this request excluded from its root set because their
+    /// closures failed to analyze (ADR-0083 §3). They keep their ordinals in
+    /// `test_inventory` — the dispatcher's table has a hole where each one sat
+    /// — so a `compile_error` verdict never renumbers a later test.
+    pub(super) excluded_tests: Arc<[crate::FunctionInstanceKey]>,
     pub(super) closure: crate::body_query::BodyClosureOutput,
     pub(super) work: crate::CanonicalSemanticWork,
 }

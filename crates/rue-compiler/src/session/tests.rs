@@ -5735,11 +5735,17 @@ fn test_inventory_orders_every_module_by_stable_id() {
     let mut session = CompilerSession::new();
     publish_with_test_imports(&mut session, &source);
 
-    let inventory = crate::unstable::test_inventory(
+    let listing = crate::unstable::test_inventory(
         &mut session,
         &test_declaration_options(crate::RootSelection::Tests),
     )
     .expect("the test closure analyzes");
+    assert!(
+        listing.failure_diagnostics.is_empty(),
+        "a closure that analyzes has nothing to report: {:?}",
+        listing.failure_diagnostics
+    );
+    let inventory = listing.inventory;
 
     let ids = inventory
         .entries
@@ -5777,8 +5783,9 @@ fn test_inventory_performs_no_codegen() {
     session.update(&source).into_result().unwrap();
 
     let options = test_declaration_options(crate::RootSelection::Tests);
-    let inventory =
-        crate::unstable::test_inventory(&mut session, &options).expect("the closure analyzes");
+    let inventory = crate::unstable::test_inventory(&mut session, &options)
+        .expect("the closure analyzes")
+        .inventory;
     assert_eq!(inventory.entries.len(), 1);
     assert_eq!(inventory.entries[0].id, "main.rue::lists");
     assert!(
@@ -5916,6 +5923,290 @@ fn the_test_dispatcher_survives_general_inlining() {
         );
         assert_eq!(test_units(&tests), ["empty", "trivial"], "at {opt_level:?}");
     }
+}
+
+/// A test whose closure fails to analyze is excluded from the image and
+/// reported as one `compile_error` verdict, while every other test still links
+/// (ADR-0083 §3).
+///
+/// The excluded test keeps its ordinal: ordinals are the inventory's own
+/// indices, and renumbering would make a `--list` and a run disagree about what
+/// a selector means.
+#[test]
+fn a_broken_test_body_excludes_only_its_own_test() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        "test \"aaa broken\" { let x: i32 = true; }\n\
+         test \"bbb fine\" { let _y = 1; }\n",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+    crate::test_support::TestDiscoveryHost::new(&source)
+        .unwrap()
+        .drive(&mut session)
+        .unwrap();
+
+    let image = crate::unstable::test_image_in_compile_scope(
+        &mut session,
+        &test_declaration_options(crate::RootSelection::Tests),
+    )
+    .expect("the surviving test still links");
+    assert_eq!(
+        image
+            .inventory
+            .entries
+            .iter()
+            .map(|entry| (entry.id.as_str(), entry.ordinal))
+            .collect::<Vec<_>>(),
+        [("main.rue::aaa broken", 0), ("main.rue::bbb fine", 1)],
+        "every declaration is inventoried, in stable-ID order"
+    );
+    assert_eq!(image.compile_failures.len(), 1);
+    assert_eq!(image.compile_failures[0].entry.id, "main.rue::aaa broken");
+    assert_eq!(
+        image.compile_failures[0].entry.ordinal, 0,
+        "an excluded test keeps its ordinal"
+    );
+    assert_eq!(image.failure_diagnostics.len(), 1);
+    assert!(
+        image
+            .failure_diagnostics
+            .iter()
+            .all(|error| matches!(error.kind, ErrorKind::TypeMismatch { .. })),
+        "unexpected diagnostics: {:?}",
+        image.failure_diagnostics
+    );
+}
+
+/// A `drop fn` is reached by destruction rather than by a call, and it is
+/// still ordinary analyzed source, so a broken one is its dependents' verdict
+/// (ADR-0083 §3).
+///
+/// The glue that calls a destructor is synthesized and cannot fail, so the
+/// attribution walk has to follow the closure's drop-glue plans to cross that
+/// edge. Without it the failed body would be reachable from no test root and
+/// the walk's honest fallback would fail the whole run.
+#[test]
+fn a_broken_destructor_fails_the_tests_whose_values_are_destroyed() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        "struct Res { v: i32 }\n\
+         drop fn Res(self) { let bad: i32 = true; }\n\
+         test \"aaa destroys one\" { let r = Res { v: 1 }; }\n\
+         test \"bbb destroys one too\" { let r = Res { v: 2 }; }\n\
+         test \"ccc destroys nothing\" { let _c = 1; }\n",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+    crate::test_support::TestDiscoveryHost::new(&source)
+        .unwrap()
+        .drive(&mut session)
+        .unwrap();
+
+    let image = crate::unstable::test_image_in_compile_scope(
+        &mut session,
+        &test_declaration_options(crate::RootSelection::Tests),
+    )
+    .expect("the test that destroys nothing still links");
+    assert_eq!(
+        image
+            .compile_failures
+            .iter()
+            .map(|failure| failure.entry.id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "main.rue::aaa destroys one",
+            "main.rue::bbb destroys one too"
+        ],
+        "destruction is an attribution edge, and only for the values destroyed"
+    );
+    assert_eq!(
+        image.failure_diagnostics.len(),
+        1,
+        "the destructor's diagnostic reaches stderr once"
+    );
+}
+
+/// A helper several tests share attributes one diagnostic to every dependent
+/// test, and to no other (ADR-0083 §3, maintainer ruling 2026-09-04).
+///
+/// This is the attribution the per-test contract turns on: the broken body is
+/// not a test, so it is found by walking the closure's own call relation
+/// backwards to the roots that reach it.
+#[test]
+fn a_broken_helper_fails_every_test_that_reaches_it_and_no_other() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        "fn broken() -> i32 { let bad: i32 = true; bad }\n\
+         fn fine() -> i32 { 1 }\n\
+         test \"aaa reaches broken\" { let _a = broken(); }\n\
+         test \"bbb reaches broken too\" { let _b = broken(); }\n\
+         test \"ccc independent\" { let _c = fine(); }\n",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+    crate::test_support::TestDiscoveryHost::new(&source)
+        .unwrap()
+        .drive(&mut session)
+        .unwrap();
+
+    let image = crate::unstable::test_image_in_compile_scope(
+        &mut session,
+        &test_declaration_options(crate::RootSelection::Tests),
+    )
+    .expect("the independent test still links");
+    assert_eq!(
+        image
+            .compile_failures
+            .iter()
+            .map(|failure| failure.entry.id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "main.rue::aaa reaches broken",
+            "main.rue::bbb reaches broken too"
+        ],
+        "both dependents fail; the independent test does not"
+    );
+    assert!(
+        image
+            .compile_failures
+            .iter()
+            .all(|failure| failure.errors.len() == 1),
+        "each dependent carries the helper's own diagnostic"
+    );
+    assert_eq!(
+        image.failure_diagnostics.len(),
+        1,
+        "the diagnostic stderr publishes is the broken body's, once"
+    );
+}
+
+/// Every test broken is still an image: the dispatcher links alone, so the
+/// runner emits a complete event stream rather than the empty one a whole-run
+/// compile failure produces (ADR-0083 §3).
+#[test]
+fn a_wholly_broken_selection_still_links_its_dispatcher() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        "test \"aaa\" { let x: i32 = true; }\ntest \"bbb\" { let y: i32 = false; }\n",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+    crate::test_support::TestDiscoveryHost::new(&source)
+        .unwrap()
+        .drive(&mut session)
+        .unwrap();
+
+    let image = crate::unstable::test_image_in_compile_scope(
+        &mut session,
+        &test_declaration_options(crate::RootSelection::Tests),
+    )
+    .expect("an image with no runnable test still links");
+    assert_eq!(image.compile_failures.len(), 2);
+    assert_eq!(image.inventory.entries.len(), 2);
+    assert!(!image.output.elf.is_empty(), "the dispatcher is the image");
+}
+
+/// A listing reports declarations, so a test whose body does not analyze is
+/// still listed: its declaration parsed (ADR-0083 §3). It publishes that body's
+/// diagnostics alongside the entries rather than swallowing them, so the caller
+/// can write them to stderr exactly as a run does (ADR-0083 §2).
+#[test]
+fn a_listing_still_names_a_test_whose_body_does_not_analyze() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        "test \"aaa broken\" { let x: i32 = true; }\ntest \"bbb fine\" { }\n",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+
+    let listing = crate::unstable::test_inventory(
+        &mut session,
+        &test_declaration_options(crate::RootSelection::Tests),
+    )
+    .expect("a listing tolerates a body that does not analyze");
+    assert_eq!(
+        listing
+            .inventory
+            .entries
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>(),
+        ["main.rue::aaa broken", "main.rue::bbb fine"]
+    );
+    assert_eq!(
+        listing.failure_diagnostics.len(),
+        1,
+        "the broken body's diagnostic reaches the caller: {:?}",
+        listing.failure_diagnostics
+    );
+    let analysis = session
+        .rooted_test_closure_analysis(&test_declaration_options(crate::RootSelection::Tests))
+        .expect("the run path attributes the same failure");
+    assert_eq!(
+        listing.failure_diagnostics, analysis.diagnostics,
+        "a listing and the run it previews report the same diagnostics"
+    );
+}
+
+/// A second-request failure never costs the first request's diagnostics: the
+/// excluded roots the second request runs with were derived from the first
+/// request's failures, so reporting only the second pass would print the
+/// consequence and hide the cause. The composition is checked here rather than
+/// driven from source because the second request analyzes a subset of the
+/// first's closure, so no program is known that fails only the second time.
+#[test]
+fn a_second_analysis_failure_keeps_the_first_analysis_diagnostics_first() {
+    let undefined =
+        |name: &str| CompileError::without_span(ErrorKind::UndefinedVariable(name.to_owned()));
+    let merged = crate::unstable::carrying_first_pass(
+        crate::CompileErrors::from(vec![undefined("alpha"), undefined("bravo")]),
+        crate::CompileErrors::from(vec![undefined("bravo"), undefined("charlie")]),
+    );
+    assert_eq!(
+        merged
+            .iter()
+            .map(|error| format!("{:?}", error.kind))
+            .collect::<Vec<_>>(),
+        ["alpha", "bravo", "charlie"]
+            .map(|name| format!("{:?}", ErrorKind::UndefinedVariable(name.to_owned())))
+            .to_vec(),
+        "the first pass comes first, and a diagnostic both passes report is carried once"
+    );
+}
+
+/// The excluded test's body reaches no CFG unit, and the surviving one does —
+/// exclusion, not stubbing (ADR-0083 §3).
+#[test]
+fn an_excluded_test_lowers_no_body() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        "test \"aaa broken\" { let x: i32 = true; }\ntest \"bbb fine\" { let _y = 1; }\n",
+    )
+    .unwrap();
+    let mut session = CompilerSession::new();
+    crate::test_support::TestDiscoveryHost::new(&source)
+        .unwrap()
+        .drive(&mut session)
+        .unwrap();
+
+    let excluded = crate::unstable::test_image_in_compile_scope(
+        &mut session,
+        &test_declaration_options(crate::RootSelection::Tests),
+    )
+    .expect("the surviving test links")
+    .compile_failures;
+    assert_eq!(excluded.len(), 1);
+
+    // The image request left the exclusion behind it, so an ordinary rooted
+    // CFG for the same options is the whole-closure request again and still
+    // reports the diagnostic.
+    let errors = session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Tests))
+        .err()
+        .expect("the unrestricted request still fails");
+    assert_eq!(errors.len(), 1);
 }
 
 /// `extern "C"` exports are executable-only (ADR-0083 §1). A test image links

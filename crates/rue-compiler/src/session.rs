@@ -279,6 +279,17 @@ pub struct CompilerSession {
     /// unstable test bridge. It corrupts a canonical projection at the next
     /// observation point without reviving a retired selected-result store.
     oracle_fault: Option<crate::unstable::DifferentialOracleFault>,
+    /// Test roots this request must not analyze, lower, or link (ADR-0083 §3).
+    ///
+    /// Set by the test-image request alone, through
+    /// `with_excluded_test_roots`, for exactly the tests whose closures failed
+    /// to analyze. It is request state rather than a `CompileOptions` field
+    /// because no caller can supply it: it is derived from a first analysis of
+    /// the very request that then re-asks with it. It reaches every memo key
+    /// that depends on it — the body closure is keyed by its roots, the
+    /// dispatcher's CFG by its table — so no downstream artifact built from
+    /// the fuller root set can be selected in its place.
+    excluded_test_roots: Arc<[crate::FunctionInstanceKey]>,
     /// Opaque import lifecycle and selector authority. Its fields are private
     /// to `import_discovery_owner`, making sibling reachability compiler-enforced.
     imports: ImportDiscoveryOwner,

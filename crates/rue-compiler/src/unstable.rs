@@ -744,6 +744,18 @@ pub struct TestInventory {
     pub entries: Vec<TestInventoryEntry>,
 }
 
+/// A listing: every declared test, and the analysis failures behind them.
+#[derive(Debug, Clone, Default)]
+pub struct TestListing {
+    pub inventory: TestInventory,
+    /// Every diagnostic from a body in the closure that failed to analyze,
+    /// once each however many tests reach it. A listing lists every
+    /// declaration and succeeds either way; these are what a caller writes to
+    /// stderr, so a reader is never told a suite is fine when the run will
+    /// report those tests as `compile_error` (ADR-0083 §2).
+    pub failure_diagnostics: crate::CompileErrors,
+}
+
 /// Analyze a test closure and publish its ordered inventory, without codegen.
 ///
 /// This is the discovery half of ADR-0083 §2's `--list`: semantic analysis of
@@ -757,11 +769,46 @@ pub struct TestInventory {
 pub fn test_inventory(
     session: &mut crate::CompilerSession,
     options: &crate::CompileOptions,
-) -> crate::MultiErrorResult<TestInventory> {
+) -> crate::MultiErrorResult<TestListing> {
     require_test_root_selection(options)?;
-    Ok(TestInventory {
-        entries: session.rooted_test_inventory(options)?,
+    let listing = session.rooted_test_inventory(options)?;
+    Ok(TestListing {
+        inventory: TestInventory {
+            entries: listing.entries,
+        },
+        failure_diagnostics: listing.diagnostics,
     })
+}
+
+/// One test excluded from a test image because its closure failed to analyze.
+///
+/// The test keeps its `ordinal` — ordinals are the inventory's own indices, so
+/// renumbering would make a `--list` and a run disagree about what a selector
+/// means — and the image holds that ordinal open rather than dispatching it
+/// (ADR-0083 §3).
+#[derive(Debug, Clone)]
+pub struct TestCompileFailure {
+    pub entry: TestInventoryEntry,
+    /// The diagnostics of every body in this test's closure that failed. A
+    /// helper several tests share reports the same diagnostics under each of
+    /// them: stderr publishes them once, and this is the attribution copy.
+    pub errors: crate::CompileErrors,
+}
+
+/// A linked test image, its inventory, and the tests it could not link.
+#[derive(Debug)]
+pub struct TestImage {
+    pub output: crate::CompileOutput,
+    /// Every declared test, in stable-ID order, whether or not the image can
+    /// run it.
+    pub inventory: TestInventory,
+    /// The tests excluded from the image, in ordinal order. Each is a
+    /// `compile_error` verdict rather than a run (ADR-0083 §3).
+    pub compile_failures: Vec<TestCompileFailure>,
+    /// Every diagnostic behind those exclusions, once each however many tests
+    /// reach it. stderr is the authoritative diagnostic stream, so this is what
+    /// a caller prints there — byte for byte what a whole-run failure printed.
+    pub failure_diagnostics: crate::CompileErrors,
 }
 
 /// Link the test image for a request's closure and publish its inventory.
@@ -772,15 +819,75 @@ pub fn test_inventory(
 /// ordinal as its selector. The returned inventory is what assigns those
 /// ordinals, so a caller never has to re-derive them.
 ///
+/// Each test item is its own root, so a semantic error in one test's closure
+/// excludes that test — and every other test whose closure reaches the same
+/// broken body — while every remaining test is linked and runnable. Only a
+/// failure outside every test closure fails the request as a whole.
+///
 /// `options.root_selection` must be [`crate::RootSelection::Tests`].
 pub fn test_image_in_compile_scope(
     session: &mut crate::CompilerSession,
     options: &crate::CompileOptions,
-) -> crate::MultiErrorResult<(crate::CompileOutput, TestInventory)> {
+) -> crate::MultiErrorResult<TestImage> {
     require_test_root_selection(options)?;
-    let entries = session.rooted_test_inventory(options)?;
-    let image = session.executable_in_compile_scope(options)?;
-    Ok((image, TestInventory { entries }))
+    let analysis = session.rooted_test_closure_analysis(options)?;
+    let inventory = TestInventory {
+        entries: analysis
+            .inventory
+            .iter()
+            .map(|test| test.entry.clone())
+            .collect(),
+    };
+    let compile_failures = analysis
+        .failed
+        .iter()
+        .map(|failure| TestCompileFailure {
+            entry: failure.test.entry.clone(),
+            errors: failure.errors.clone(),
+        })
+        .collect::<Vec<_>>();
+    let excluded: std::sync::Arc<[crate::FunctionInstanceKey]> = analysis
+        .failed
+        .iter()
+        .map(|failure| failure.test.identity.clone())
+        .collect::<Vec<_>>()
+        .into();
+    // The second request analyzes a smaller root set, so it can fail where the
+    // first did not.
+    let output = match session.with_excluded_test_roots(excluded, |session| {
+        session.executable_in_compile_scope(options)
+    }) {
+        Ok(output) => output,
+        Err(second) => return Err(carrying_first_pass(analysis.diagnostics, second)),
+    };
+    Ok(TestImage {
+        output,
+        inventory,
+        compile_failures,
+        failure_diagnostics: analysis.diagnostics,
+    })
+}
+
+/// Report a second-pass failure without losing the first pass's diagnostics.
+///
+/// The excluded roots the second request runs with were derived from the first
+/// request's failures, so those diagnostics are the reason the second request
+/// looks the way it does. Reporting only the second pass would print the
+/// consequence and hide the cause. The first pass comes first because it is
+/// what the reader's source actually says; a diagnostic both passes produced is
+/// carried once, because stderr publishes each diagnostic exactly one time
+/// however many requests observed it (ADR-0083 §3).
+pub(crate) fn carrying_first_pass(
+    first: crate::CompileErrors,
+    second: crate::CompileErrors,
+) -> crate::CompileErrors {
+    let mut errors = first;
+    for error in second.into_iter() {
+        if !errors.iter().any(|seen| seen == &error) {
+            errors.push(error);
+        }
+    }
+    errors
 }
 
 fn require_test_root_selection(options: &crate::CompileOptions) -> crate::MultiErrorResult<()> {

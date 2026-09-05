@@ -18,12 +18,25 @@
 //!     // every digit — see `hex digits` below
 //!     if flags >= 16 { __rue_test_usage_error(); return 2; }
 //!     if ordinal >= <test count> { __rue_test_usage_error(); return 2; }
+//!     // one guard per excluded ordinal — see `excluded tests`
+//!     if ordinal == <excluded> { __rue_test_usage_error(); return 2; }
 //!     __rue_test_normalize_process();
 //!     match ordinal { 0 => test_0(), 1 => test_1(), ..., _ => () }
 //!     __rue_test_complete();
 //!     return 0;
 //! }
 //! ```
+//!
+//! # excluded tests
+//!
+//! A test whose closure failed to analyze is excluded from the image and gets
+//! a `compile_error` verdict rather than a run (ADR-0083 §3). It keeps its
+//! ordinal — ordinals are the inventory's indices, and renumbering would make
+//! a listing and a run disagree about what a selector means — so its slot in
+//! the table is `None` and it gets a guard instead of a match arm. The runner
+//! never spawns it, so the guard is for an alternative runner enumerating with
+//! `--list`: dispatching an excluded ordinal must be the same refusal a
+//! malformed selector gets, not a silent success with no body run.
 //!
 //! # Why it imports nothing
 //!
@@ -100,10 +113,11 @@ const LOCAL_SLOTS: u32 = ORDINAL_SLOT + 1;
 /// Build the canonical dispatcher body for one ordered test table.
 ///
 /// `table` is the request's tests in inventory order (`test_inventory`), so
-/// element `n` is the body selector `n` runs. This function is pure and cheap:
+/// element `n` is the body selector `n` runs, and `None` is an excluded test
+/// whose ordinal is held open. This function is pure and cheap:
 /// the CFG evaluator and the fact selector that prepares its inputs both call
 /// it rather than passing an already-built body through a memo key.
-pub(crate) fn synthesize_test_dispatcher(table: &[crate::FunctionInstanceKey]) -> Body {
+pub(crate) fn synthesize_test_dispatcher(table: &[Option<crate::FunctionInstanceKey>]) -> Body {
     let mut builder = Builder::default();
     let mut statements = Vec::new();
 
@@ -221,6 +235,20 @@ pub(crate) fn synthesize_test_dispatcher(table: &[crate::FunctionInstanceKey]) -
     let out_of_range = builder.add(Data::Ge(selected, count), Ty::Bool);
     statements.push(builder.selector_error_guard(out_of_range));
 
+    // Excluded ordinals take the same path an out-of-range one does. A guard
+    // per hole rather than a match arm because an arm's value is the unit an
+    // ordinary test call produces, and this one has to leave the function: the
+    // guard shape already expresses `report and return 2`, and holes are rare.
+    for (ordinal, entry) in table.iter().enumerate() {
+        if entry.is_some() {
+            continue;
+        }
+        let selected = builder.load(ORDINAL_SLOT, Ty::U64);
+        let excluded = builder.constant(ordinal as u64, Ty::U64);
+        let matched = builder.add(Data::Eq(selected, excluded), Ty::Bool);
+        statements.push(builder.selector_error_guard(matched));
+    }
+
     // Normalization runs before the body so the test observes the pinned
     // inventory (§3) and never the selector that varies per test.
     statements.push(builder.add(
@@ -234,6 +262,9 @@ pub(crate) fn synthesize_test_dispatcher(table: &[crate::FunctionInstanceKey]) -
     let scrutinee = builder.load(ORDINAL_SLOT, Ty::U64);
     let mut arms = Vec::with_capacity(table.len() + 1);
     for (ordinal, function) in table.iter().enumerate() {
+        let Some(function) = function else {
+            continue;
+        };
         let call = builder.add(
             Data::Call {
                 function: function.clone(),
@@ -246,8 +277,9 @@ pub(crate) fn synthesize_test_dispatcher(table: &[crate::FunctionInstanceKey]) -
             body: call,
         });
     }
-    // The range guard above already rejected every ordinal without an arm, so
-    // this one exists to make the match exhaustive rather than to be taken.
+    // The range and exclusion guards above already rejected every ordinal
+    // without an arm, so this one exists to make the match exhaustive rather
+    // than to be taken.
     let unreached = builder.add(Data::UnitConst, Ty::Unit);
     arms.push(SemanticBodyMatchArm {
         pattern: SemanticBodyPattern::Wildcard,

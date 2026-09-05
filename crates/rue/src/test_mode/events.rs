@@ -168,6 +168,15 @@ pub(crate) struct FailureRecord {
     pub(crate) comparison: Option<Comparison>,
     /// The runner's own explanation, when it could not trust what it read.
     pub(crate) runner_note: Option<String>,
+    /// The compiler diagnostics behind a `compile_error` verdict, as the same
+    /// JSON objects `--error-format json` emits for them (ADR-0083 §3).
+    /// **Absent** on every other failure.
+    ///
+    /// stderr remains the authoritative diagnostic stream and carries these
+    /// once for the run, whatever `--error-format` it was given; this copy is
+    /// the attribution — which test each diagnostic excluded — and a helper
+    /// several tests share reports the same objects under each of them.
+    pub(crate) diagnostics: Option<Vec<Value>>,
 }
 
 /// What a comparison assertion's failure frame carried, plus the runner's own
@@ -232,6 +241,9 @@ impl FailureRecord {
                 ),
             );
         }
+        if let Some(diagnostics) = &self.diagnostics {
+            object.insert("diagnostics".to_owned(), Value::Array(diagnostics.clone()));
+        }
         if let Some(note) = &self.runner_note {
             object.insert("runner_note".to_owned(), Value::String(note.clone()));
         }
@@ -285,6 +297,8 @@ pub(crate) enum Event {
         failed: usize,
         timeout: usize,
         crash: usize,
+        /// Selected tests whose closures failed to analyze (ADR-0083 §3).
+        compile_error: usize,
         wall_ms: u64,
         unimported_test_files: Option<Vec<UnimportedFile>>,
         test_candidates: CandidateSource,
@@ -419,6 +433,7 @@ impl Event {
                 failed,
                 timeout,
                 crash,
+                compile_error,
                 wall_ms,
                 unimported_test_files,
                 test_candidates,
@@ -428,6 +443,7 @@ impl Event {
                 object.insert("failed".to_owned(), Value::from(*failed));
                 object.insert("timeout".to_owned(), Value::from(*timeout));
                 object.insert("crash".to_owned(), Value::from(*crash));
+                object.insert("compile_error".to_owned(), Value::from(*compile_error));
                 object.insert("wall_ms".to_owned(), Value::from(*wall_ms));
                 if let Some(files) = unimported_test_files {
                     object.insert(
@@ -719,6 +735,72 @@ mod tests {
         );
     }
 
+    /// The `compile_error` event's shape (test-events.md): the ordinary
+    /// `test_finished` object, with `diagnostics` where a runtime failure has
+    /// none, and no `scratch_dir` because no process existed. Keys stay
+    /// alphabetical, so `diagnostics` sorts ahead of `kind`.
+    #[test]
+    fn a_compile_error_event_carries_its_diagnostics_and_no_scratch_directory() {
+        let line = Event::TestFinished(Box::new(TestFinished {
+            id: "app/t.rue::broken".to_owned(),
+            verdict: Verdict::CompileError,
+            duration_ms: 0,
+            failure: Some(FailureRecord {
+                kind: "compile_error".to_owned(),
+                message: "type mismatch".to_owned(),
+                location: Some(Location {
+                    file: "app/t.rue".to_owned(),
+                    line: 2,
+                    column: 5,
+                }),
+                payload: Some("E0206: type mismatch".to_owned()),
+                diagnostics: Some(vec![serde_json::json!({"code": "E0206"})]),
+                ..FailureRecord::default()
+            }),
+            stdout: Capture::new(Vec::new(), 0, false),
+            stderr: Capture::new(Vec::new(), 0, false),
+            scratch_dir: None,
+            repro: vec!["/opt/rue/bin/rue".to_owned()],
+            repro_env: Vec::new(),
+        }))
+        .to_ndjson();
+        assert!(line.contains("\"verdict\":\"compile_error\""), "{line}");
+        assert!(line.contains("\"duration_ms\":0"), "{line}");
+        assert!(
+            line.contains(
+                "\"failure\":{\"diagnostics\":[{\"code\":\"E0206\"}],\"kind\":\"compile_error\""
+            ),
+            "{line}"
+        );
+        assert!(
+            line.contains("\"capability_summary\":{\"status\":\"unavailable\"}"),
+            "a compile error is summarized like every other verdict: {line}"
+        );
+        assert!(!line.contains("scratch_dir"), "{line}");
+    }
+
+    /// A run's counts include the class, and only a `compile_error` verdict
+    /// puts a nonzero there. Absent-versus-zero is not in play: every count is
+    /// present always.
+    #[test]
+    fn run_finished_counts_compile_errors() {
+        let line = Event::RunFinished {
+            passed: 1,
+            failed: 0,
+            timeout: 0,
+            crash: 0,
+            compile_error: 2,
+            wall_ms: 5,
+            unimported_test_files: None,
+            test_candidates: CandidateSource::None,
+        }
+        .to_ndjson();
+        assert!(
+            line.contains("\"compile_error\":2,\"crash\":0,\"event\":\"run_finished\""),
+            "{line}"
+        );
+    }
+
     #[test]
     fn run_finished_states_the_candidate_source_either_way() {
         let declared = Event::RunFinished {
@@ -726,6 +808,7 @@ mod tests {
             failed: 0,
             timeout: 0,
             crash: 0,
+            compile_error: 0,
             wall_ms: 12,
             unimported_test_files: Some(vec![UnimportedFile {
                 path: "app/orphan.rue".to_owned(),
@@ -751,6 +834,7 @@ mod tests {
             failed: 0,
             timeout: 0,
             crash: 0,
+            compile_error: 0,
             wall_ms: 0,
             unimported_test_files: None,
             test_candidates: CandidateSource::None,

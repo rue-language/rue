@@ -239,15 +239,23 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
         return list(host, &compile_options, &options, diagnostics, &reporter);
     }
 
-    // Nothing is published before the image exists: a compile failure is
-    // diagnostics on stderr and exit 2, with an empty event stream.
-    let (image, inventory) = match host.test_image_in_compile_scope(&compile_options) {
-        Ok(output) => output,
+    // Nothing is published before the image exists: a compile failure outside
+    // every test closure is diagnostics on stderr and exit 2, with an empty
+    // event stream. A failure INSIDE one is not that failure — the image still
+    // exists, built from the tests that did analyze (ADR-0083 §3).
+    let image = match host.test_image_in_compile_scope(&compile_options) {
+        Ok(image) => image,
         Err(errors) => {
             diagnostics.print_errors(&crate::with_import_migration_helps(&errors));
             return TestExitCode::RunnerError;
         }
     };
+    let rue_compiler::unstable::TestImage {
+        output: image,
+        inventory,
+        compile_failures,
+        failure_diagnostics,
+    } = image;
     // Built here rather than above because the closure is only published once
     // the image is: nothing before this point could answer how many modules the
     // program has.
@@ -258,6 +266,18 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
         },
     );
     diagnostics.print_warnings(&image.warnings);
+    // stderr is the authoritative diagnostic stream and carries these exactly
+    // as a whole-run failure would have: once, in the run's own
+    // `--error-format`, before any event. The copies inside the events are the
+    // attribution (ADR-0083 §3). They are printed whatever the selection is,
+    // because the closure that produced them is the whole closure: a filter
+    // narrows the run set, never the analysis root set, and a filtered run that
+    // silently swallowed a broken test file would be the papercut the
+    // unimported-test-file warning exists to prevent.
+    if !failure_diagnostics.is_empty() {
+        diagnostics.print_errors(&crate::with_import_migration_helps(&failure_diagnostics));
+    }
+    let compile_errors = CompileErrorVerdicts::new(&compile_failures, diagnostics);
 
     let total = inventory.entries.len();
     let plan = selection::plan(&inventory.entries, &options.filters, options.shard, seed);
@@ -287,6 +307,7 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
             failed: 0,
             timeout: 0,
             crash: 0,
+            compile_error: 0,
             wall_ms: elapsed_ms(started),
             unimported_test_files: unimported,
             test_candidates: candidate_source(candidates.as_ref()),
@@ -311,6 +332,7 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
 
     let outcome = execute_plan(ExecutionRequest {
         plan: &plan,
+        compile_errors: &compile_errors,
         image: &image_path,
         run_root: &run_root,
         seed,
@@ -341,16 +363,119 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
         failed: outcome.failed,
         timeout: outcome.timeout,
         crash: outcome.crash,
+        compile_error: outcome.compile_error,
         wall_ms: elapsed_ms(started),
         unimported_test_files: unimported,
         test_candidates: candidate_source(candidates.as_ref()),
     });
 
-    if outcome.failed + outcome.timeout + outcome.crash > 0 {
+    // A `compile_error` test is a failed test, not a failed run: exit 1 with
+    // the other tests' verdicts, never the 2 that says nothing ran
+    // (ADR-0083 §3).
+    if outcome.failed + outcome.timeout + outcome.crash + outcome.compile_error > 0 {
         TestExitCode::Failures
     } else {
         TestExitCode::AllPassed
     }
+}
+
+/// The `compile_error` verdicts a run publishes, keyed by ordinal.
+///
+/// Built once, before the run, because the compiler decided them: a test whose
+/// closure failed to analyze is excluded from the image, so there is no process
+/// to observe and nothing about it can change while the run proceeds
+/// (ADR-0083 §3).
+struct CompileErrorVerdicts {
+    /// `ordinal -> (first diagnostic's message and site, the JSON copies)`.
+    by_ordinal: std::collections::BTreeMap<u32, CompileErrorVerdict>,
+}
+
+struct CompileErrorVerdict {
+    /// The diagnostics rendered for a person, as the failure record's payload.
+    payload: String,
+    /// The first diagnostic's message, which is the record's `message`.
+    message: String,
+    /// The first diagnostic's primary span, which is the record's `location`.
+    location: Option<Location>,
+    /// Every diagnostic as `--error-format json` would publish it.
+    diagnostics: Vec<serde_json::Value>,
+}
+
+impl CompileErrorVerdicts {
+    fn new(
+        failures: &[rue_compiler::unstable::TestCompileFailure],
+        diagnostics: &crate::DiagnosticOutput<'_>,
+    ) -> Self {
+        let batches = failures
+            .iter()
+            .map(|failure| &failure.errors)
+            .collect::<Vec<_>>();
+        let rendered = diagnostics.json_diagnostic_batches(&batches);
+        Self {
+            by_ordinal: failures
+                .iter()
+                .zip(rendered)
+                .map(|(failure, json)| {
+                    let first = json.first();
+                    (
+                        failure.entry.ordinal,
+                        CompileErrorVerdict {
+                            payload: diagnostic_payload(&json),
+                            message: first
+                                .and_then(|diagnostic| diagnostic.get("message"))
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned(),
+                            location: first.and_then(primary_location),
+                            diagnostics: json,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn get(&self, ordinal: u32) -> Option<&CompileErrorVerdict> {
+        self.by_ordinal.get(&ordinal)
+    }
+}
+
+/// The failure record's `payload` for a `compile_error`: one line per
+/// diagnostic, `<code>: <message>` where a diagnostic is coded.
+///
+/// A rendering rather than the diagnostics themselves, because the structured
+/// form travels in `diagnostics` and the authoritative form is already on
+/// stderr. This is the one-string summary the open payload field is for.
+fn diagnostic_payload(diagnostics: &[serde_json::Value]) -> String {
+    diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let message = diagnostic
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            match diagnostic.get("code").and_then(serde_json::Value::as_str) {
+                Some(code) if !code.is_empty() => format!("{code}: {message}"),
+                _ => message.to_owned(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A diagnostic's primary span as a failure record's location.
+///
+/// `spans[0]` is the primary one when there is any span at all
+/// (diagnostics.md), and the coordinates are already the 1-based line and
+/// Unicode-scalar column a failure record promises, so a report and a
+/// diagnostic can never disagree about where something is.
+fn primary_location(diagnostic: &serde_json::Value) -> Option<Location> {
+    let span = diagnostic.get("spans")?.as_array()?.first()?;
+    Some(Location {
+        file: span.get("file")?.as_str()?.to_owned(),
+        line: u32::try_from(span.get("line")?.as_u64()?).unwrap_or(0),
+        column: u32::try_from(span.get("column")?.as_u64()?).unwrap_or(0),
+    })
 }
 
 /// The `opt_level` field: the digit alone, so a consumer reads `"2"` rather
@@ -391,7 +516,9 @@ fn candidate_source(candidates: Option<&TestCandidateInventory>) -> CandidateSou
 ///
 /// Membership therefore comes from `selection::select`, the same computation
 /// `plan` runs, rather than from a second copy of the predicate here: a listing
-/// that could disagree with the run it previews is worse than no listing.
+/// that could disagree with the run it previews is worse than no listing. For
+/// the same reason it prints the closure's analysis diagnostics on stderr as
+/// the run path does, while still listing every declaration and exiting `0`.
 fn list(
     host: &mut FilesystemCompilerHost,
     compile_options: &CompileOptions,
@@ -399,13 +526,26 @@ fn list(
     diagnostics: &crate::DiagnosticOutput<'_>,
     reporter: &Reporter,
 ) -> TestExitCode {
-    let inventory = match host.test_inventory(compile_options) {
-        Ok(inventory) => inventory,
+    let listing = match host.test_inventory(compile_options) {
+        Ok(listing) => listing,
         Err(errors) => {
             diagnostics.print_errors(&crate::with_import_migration_helps(&errors));
             return TestExitCode::RunnerError;
         }
     };
+    let rue_compiler::unstable::TestListing {
+        inventory,
+        failure_diagnostics,
+    } = listing;
+    // A listing still lists every declaration and still succeeds, but it says
+    // what the run would say about the bodies that did not analyze: on stderr,
+    // in the run's own `--error-format`, through the same renderer. A listing
+    // that swallowed them would be the papercut the run path refuses to be —
+    // a reader inspecting a suite would see nothing wrong with tests the run
+    // will report as `compile_error`.
+    if !failure_diagnostics.is_empty() {
+        diagnostics.print_errors(&crate::with_import_migration_helps(&failure_diagnostics));
+    }
     let selected = selection::select(&inventory.entries, &options.filters, options.shard);
     if selected.is_empty() {
         eprintln!("{}", empty_selection_reason(inventory.entries.len()));
@@ -460,6 +600,10 @@ fn publish_failure(verb: &str, error: crate::output::PublishError) -> String {
 
 struct ExecutionRequest<'a> {
     plan: &'a [TestInventoryEntry],
+    /// The verdicts the compiler already decided, by ordinal. A plan entry
+    /// found here is reported without spawning anything: it has no body in the
+    /// image (ADR-0083 §3).
+    compile_errors: &'a CompileErrorVerdicts,
     image: &'a std::path::Path,
     run_root: &'a std::path::Path,
     seed: u64,
@@ -478,6 +622,7 @@ struct ExecutionOutcome {
     failed: usize,
     timeout: usize,
     crash: usize,
+    compile_error: usize,
     runner_error: Option<String>,
 }
 
@@ -493,6 +638,7 @@ fn execute_plan(request: ExecutionRequest<'_>) -> ExecutionOutcome {
     let failed = AtomicUsize::new(0);
     let timed_out = AtomicUsize::new(0);
     let crashed = AtomicUsize::new(0);
+    let uncompiled = AtomicUsize::new(0);
     let runner_error: Mutex<Option<String>> = Mutex::new(None);
 
     std::thread::scope(|scope| {
@@ -502,6 +648,7 @@ fn execute_plan(request: ExecutionRequest<'_>) -> ExecutionOutcome {
             let failed = &failed;
             let timed_out = &timed_out;
             let crashed = &crashed;
+            let uncompiled = &uncompiled;
             let runner_error = &runner_error;
             let request = &request;
             scope.spawn(move || {
@@ -520,6 +667,24 @@ fn execute_plan(request: ExecutionRequest<'_>) -> ExecutionOutcome {
                     request.reporter.emit(&Event::TestStarted {
                         id: entry.id.clone(),
                     });
+                    // Reported in the plan's own order, from the same worker
+                    // pool, so a `compile_error` lands where the shuffle put it
+                    // rather than in a block of its own before the run.
+                    if let Some(verdict) = request.compile_errors.get(entry.ordinal) {
+                        uncompiled.fetch_add(1, Ordering::Relaxed);
+                        request.reporter.emit(&compile_error_event(
+                            entry,
+                            verdict,
+                            &Repro {
+                                program: request.repro_program,
+                                root: request.repro_root,
+                                flags: request.repro_flags,
+                                env: request.repro_env,
+                            },
+                            request.seed,
+                        ));
+                        continue;
+                    }
                     let execution = exec::run_one(Dispatch {
                         image: request.image,
                         run_root: request.run_root,
@@ -545,6 +710,11 @@ fn execute_plan(request: ExecutionRequest<'_>) -> ExecutionOutcome {
                         Verdict::Fail(_) => failed.fetch_add(1, Ordering::Relaxed),
                         Verdict::Timeout => timed_out.fetch_add(1, Ordering::Relaxed),
                         Verdict::Crash(_) => crashed.fetch_add(1, Ordering::Relaxed),
+                        // Decided by the compiler and reported above, so no
+                        // process can classify as one.
+                        Verdict::CompileError => unreachable!(
+                            "a compile_error verdict never reaches a dispatched process"
+                        ),
                     };
                     let event = finish_event(
                         entry,
@@ -569,6 +739,7 @@ fn execute_plan(request: ExecutionRequest<'_>) -> ExecutionOutcome {
         failed: failed.into_inner(),
         timeout: timed_out.into_inner(),
         crash: crashed.into_inner(),
+        compile_error: uncompiled.into_inner(),
         runner_error: runner_error
             .into_inner()
             .unwrap_or_else(|error| error.into_inner()),
@@ -616,6 +787,9 @@ fn failure_record(
     let frame = execution.frames.failure.as_ref();
     let (kind, message) = match verdict {
         Verdict::Pass => unreachable!("a pass carries no failure record"),
+        Verdict::CompileError => {
+            unreachable!("a compile_error builds its own record from the diagnostics")
+        }
         Verdict::Timeout => (
             "timeout".to_owned(),
             format!(
@@ -655,7 +829,54 @@ fn failure_record(
             .filter(|payload| !payload.is_empty()),
         comparison: frame_comparison(frame),
         runner_note: execution.classification.runner_note.clone(),
+        diagnostics: None,
     }
+}
+
+/// The `test_finished` event of a test that was never run because its closure
+/// failed to analyze (ADR-0083 §3).
+///
+/// It carries the same shape every other verdict does — a duration, a
+/// capability summary, capture records, and the argv that reproduces it — so a
+/// consumer branches on `verdict` and nothing else. The duration is zero and
+/// the captures are empty because no process existed; there is no scratch
+/// directory for the same reason. The repro is still the run that would show
+/// the diagnostics again.
+fn compile_error_event(
+    entry: &TestInventoryEntry,
+    verdict: &CompileErrorVerdict,
+    repro: &Repro<'_>,
+    seed: u64,
+) -> Event {
+    Event::TestFinished(Box::new(TestFinished {
+        id: entry.id.clone(),
+        verdict: Verdict::CompileError,
+        duration_ms: 0,
+        failure: Some(FailureRecord {
+            kind: FailureKind::CompileError.to_string(),
+            message: verdict.message.clone(),
+            exit_code: None,
+            signal: None,
+            // The first diagnostic's own site, falling back to the test
+            // declaration's header the way every other failure does: a
+            // diagnostic with no location in the user's program (a panic, an
+            // output-publication failure) still has to name the test.
+            location: Some(verdict.location.clone().unwrap_or_else(|| Location {
+                file: entry.file.clone(),
+                line: entry.line,
+                column: entry.column,
+            })),
+            payload: (!verdict.payload.is_empty()).then(|| verdict.payload.clone()),
+            comparison: None,
+            runner_note: None,
+            diagnostics: Some(verdict.diagnostics.clone()),
+        }),
+        stdout: Capture::new(Vec::new(), 0, false),
+        stderr: Capture::new(Vec::new(), 0, false),
+        scratch_dir: None,
+        repro: repro.argv(&entry.id, seed),
+        repro_env: repro.env.to_vec(),
+    }))
 }
 
 /// The comparison a failure frame carried, or `None` when it carried none
@@ -700,6 +921,9 @@ fn failure_message(
         },
         FailureKind::UnhandledError | FailureKind::Reported(_) => {
             last_message_line(&execution.stderr)
+        }
+        FailureKind::CompileError => {
+            unreachable!("a compile_error message is the first diagnostic's, not a process's")
         }
     }
 }

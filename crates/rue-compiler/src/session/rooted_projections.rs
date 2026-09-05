@@ -128,11 +128,11 @@ impl CompilerSession {
         Ok(None)
     }
 
-    fn rooted_body_graph_with_cancellation(
+    fn rooted_body_graph_attempt(
         &mut self,
         options: &CompileOptions,
         cancellation: rue_query::CancellationToken,
-    ) -> Result<RootedBodyGraph, SemanticRequestControl> {
+    ) -> Result<RootedBodyGraphAttempt, SemanticRequestControl> {
         self.require_successful_import_diagnostics()
             .map_err(SemanticRequestControl::Compile)?;
         let _imports = self
@@ -187,9 +187,16 @@ impl CompilerSession {
         // c-export roots and never roots a test (ADR-0083 §1). The two sets are
         // disjoint, which is what makes a test body invisible to an executable
         // request rather than merely unreferenced by one.
+        //
+        // A test request additionally answers with the inventory of EVERY test
+        // declaration, whether or not this request analyzes it: ordinals are
+        // the inventory's own indices, and a request that excluded a
+        // `compile_error` test from its root set would otherwise renumber every
+        // later test (ADR-0083 §3).
+        let mut test_inventory = Vec::new();
         let (main, roots) = match options.root_selection {
             crate::RootSelection::Tests => {
-                let roots = projection
+                let declared = projection
                     .declarations
                     .iter()
                     .filter(|declaration| {
@@ -198,6 +205,12 @@ impl CompilerSession {
                     .map(|declaration| {
                         crate::FunctionInstanceKey::Definition(declaration.key.clone())
                     })
+                    .collect::<Vec<_>>();
+                test_inventory =
+                    crate::test_inventory::collect_test_inventory(program.modules(), &declared);
+                let roots = declared
+                    .into_iter()
+                    .filter(|root| !self.excluded_test_roots.contains(root))
                     .collect::<BTreeSet<_>>();
                 (None, roots)
             }
@@ -272,11 +285,17 @@ impl CompilerSession {
         drop(_body_closure_collection_span);
         let _body_graph_projection_span =
             tracing::info_span!("body_graph_projection", phase = "semantic_analysis").entered();
-        let mut errors = closure
-            .scheduling_errors
-            .iter()
-            .flat_map(|(_, errors)| errors.iter().cloned())
-            .collect::<Vec<_>>();
+        // Diagnostics are collected with the body each one belongs to, in the
+        // order they have always been reported. A whole-run failure drops the
+        // attribution and reports the sequence; the per-test test-image request
+        // keeps it, because "which tests reach this broken body" is the whole
+        // question a `compile_error` verdict answers (ADR-0083 §3).
+        let mut errors = RootedBodyGraphRejection::default();
+        for (instance, scheduling_errors) in closure.scheduling_errors.iter() {
+            for error in scheduling_errors.iter() {
+                errors.push_body(instance.clone(), error.clone());
+            }
+        }
         if let Some(fatal) = &closure.fatal {
             let fatal_errors = match fatal {
                 crate::body_query::BodyClosureFatal::DeclarationFailed {
@@ -298,7 +317,12 @@ impl CompilerSession {
                 )))
                 .into(),
             };
-            errors.extend(fatal_errors.iter().cloned());
+            // A closure fatal stops the reachability walk itself, so the
+            // closure it left behind is incomplete: bodies a later root would
+            // have reached were never scheduled, and attributing the stop to
+            // the roots walked so far would name an arbitrary subset. It stays
+            // a whole-run failure (ADR-0083 §3's "outside every test closure").
+            errors.extend_global(fatal_errors.iter().cloned());
         }
 
         let mut anonymous = BTreeMap::new();
@@ -306,7 +330,7 @@ impl CompilerSession {
             if let Err(identity) =
                 crate::durable_semantics::merge_anonymous_nominal(&mut anonymous, fact)
             {
-                errors.push(CompileError::without_span(ErrorKind::OutputPublication(
+                errors.push_global(CompileError::without_span(ErrorKind::OutputPublication(
                     format!("conflicting anonymous facts for {identity:?}"),
                 )));
             }
@@ -364,7 +388,10 @@ impl CompilerSession {
                     } else {
                         body_errors
                     };
-                    errors.extend(body_errors.iter().cloned());
+                    errors.extend_body(
+                        closure_body.key.instance.clone(),
+                        body_errors.iter().cloned(),
+                    );
                 }
             }
             if let crate::body_query::BodyTransaction::Success {
@@ -381,9 +408,11 @@ impl CompilerSession {
                     if let Err(identity) =
                         crate::durable_semantics::merge_anonymous_nominal(&mut anonymous, fact)
                     {
-                        errors.push(CompileError::without_span(ErrorKind::OutputPublication(
-                            format!("conflicting anonymous facts for {identity:?}"),
-                        )));
+                        errors.push_global(CompileError::without_span(
+                            ErrorKind::OutputPublication(format!(
+                                "conflicting anonymous facts for {identity:?}"
+                            )),
+                        ));
                     }
                 }
             }
@@ -394,9 +423,11 @@ impl CompilerSession {
                     if let Err(identity) =
                         crate::durable_semantics::merge_anonymous_nominal(&mut anonymous, fact)
                     {
-                        errors.push(CompileError::without_span(ErrorKind::OutputPublication(
-                            format!("conflicting anonymous facts for {identity:?}"),
-                        )));
+                        errors.push_global(CompileError::without_span(
+                            ErrorKind::OutputPublication(format!(
+                                "conflicting anonymous facts for {identity:?}"
+                            )),
+                        ));
                     }
                 }
             }
@@ -412,7 +443,7 @@ impl CompilerSession {
                 .iter()
                 .find(|method| !names.insert(method.name.clone()))
             {
-                errors.push(CompileError::without_span(
+                errors.push_global(CompileError::without_span(
                     ErrorKind::ComptimeEvaluationFailed {
                         reason: format!(
                             "duplicate method `{}` in an anonymous struct",
@@ -423,10 +454,13 @@ impl CompilerSession {
             }
         }
         if !errors.is_empty() {
-            return Err(SemanticRequestControl::Compile(errors.into()));
+            errors.bodies = Arc::clone(&closure.bodies);
+            errors.drop_glue_plans = Arc::clone(&closure.demanded_drop_glue_plans);
+            errors.test_inventory = test_inventory.into();
+            return Ok(RootedBodyGraphAttempt::Rejected(Box::new(errors)));
         }
 
-        Ok(RootedBodyGraph {
+        Ok(RootedBodyGraphAttempt::Graph(Box::new(RootedBodyGraph {
             revision,
             configuration,
             declarations: projection.declarations,
@@ -436,15 +470,35 @@ impl CompilerSession {
             c_export_roots: projection.c_export_roots,
             modules: program.modules().to_vec().into(),
             main,
-            test_inventory: crate::test_inventory::collect_test_inventory(
-                program.modules(),
-                &root_identities,
-            )
-            .into(),
+            // Every declared test, whether or not this request's root set
+            // analyzes it: ordinals are indices into this table (ADR-0083 §2),
+            // so an excluded test keeps its own and renumbers nothing.
+            test_inventory: test_inventory.into(),
+            excluded_tests: Arc::clone(&self.excluded_test_roots),
             roots: root_identities,
             closure: closure.clone(),
             work,
-        })
+        })))
+    }
+
+    /// The body graph for a request, or the diagnostics that rejected it.
+    ///
+    /// The one entry point every rooted projection reaches semantic analysis
+    /// through. Rejections keep the body each diagnostic belongs to so the
+    /// test-image request can attribute one to the tests that reach it; every
+    /// other caller flattens the rejection back into `CompileErrors` and is
+    /// unchanged by the distinction.
+    fn rooted_body_graph_with_cancellation(
+        &mut self,
+        options: &CompileOptions,
+        cancellation: rue_query::CancellationToken,
+    ) -> Result<RootedBodyGraph, SemanticRequestControl> {
+        match self.rooted_body_graph_attempt(options, cancellation)? {
+            RootedBodyGraphAttempt::Graph(graph) => Ok(*graph),
+            RootedBodyGraphAttempt::Rejected(rejection) => {
+                Err(SemanticRequestControl::Compile(rejection.into_errors()))
+            }
+        }
     }
 
     fn rooted_warning_references(
@@ -639,30 +693,47 @@ impl CompilerSession {
         }
     }
 
-    /// The request's ordered test inventory, analyzed but not lowered.
+    /// The request's ordered test inventory, analyzed but not lowered, with the
+    /// diagnostics of every body in the closure that failed to analyze.
     ///
     /// This stops at the body graph deliberately (ADR-0083 §2: `--list` does
     /// semantic analysis of the test closure and no codegen), so it is the one
     /// entry point that answers a listing without building a CFG.
+    ///
+    /// The diagnostics come back beside the inventory rather than instead of
+    /// it: a listing reports declarations, so a broken test is still listed,
+    /// but a listing that swallowed the analysis failure would tell a reader a
+    /// suite is fine when the run will report it broken.
     pub(crate) fn rooted_test_inventory(
         &mut self,
         options: &CompileOptions,
-    ) -> Result<Vec<crate::unstable::TestInventoryEntry>, CompileErrors> {
-        match self.rooted_body_graph_with_cancellation(options, rue_query::CancellationToken::new())
+    ) -> Result<RootedTestInventory, CompileErrors> {
+        // A listing reports declarations, so a test whose body does not analyze
+        // is still listed: its declaration parsed, and the inventory is built
+        // from the declaration projection rather than from the bodies
+        // (ADR-0083 §3). Only a rejection that reaches no inventory at all —
+        // one the request itself refused, before roots existed — stops it.
+        let (inventory, diagnostics) = match self
+            .rooted_body_graph_attempt(options, rue_query::CancellationToken::new())
+            .map_err(|control| semantic_control_errors("rooted test inventory", control))?
         {
-            Ok(graph) => Ok(graph
-                .test_inventory
-                .iter()
-                .map(|test| test.entry.clone())
-                .collect()),
-            Err(SemanticRequestControl::Compile(errors)) => Err(errors),
-            Err(SemanticRequestControl::Abort(abort)) => {
-                Err(pipeline_abort_errors("rooted test inventory", abort))
+            RootedBodyGraphAttempt::Graph(graph) => {
+                (Arc::clone(&graph.test_inventory), CompileErrors::default())
             }
-            Err(SemanticRequestControl::Parked(park)) => {
-                Err(unresolved_toolchain_park_errors(&park))
+            RootedBodyGraphAttempt::Rejected(rejection) => {
+                if rejection.global {
+                    return Err(rejection.into_errors());
+                }
+                (
+                    Arc::clone(&rejection.test_inventory),
+                    rejection.body_diagnostics(),
+                )
             }
-        }
+        };
+        Ok(RootedTestInventory {
+            entries: inventory.iter().map(|test| test.entry.clone()).collect(),
+            diagnostics,
+        })
     }
 
     pub(crate) fn rooted_pre_optimization_cfg(
@@ -746,13 +817,18 @@ impl CompilerSession {
         // A test image needs an entry point, and only a request that lowers one
         // synthesizes it: `rooted_test_inventory` stops at the body graph, so a
         // listing never builds a dispatcher it would not link (ADR-0083 §2,
-        // §3). The table is the inventory verbatim, so ordinal `n` here is the
-        // same `n` a listing published.
+        // §3).
+        //
+        // The table is the inventory verbatim, so ordinal `n` here is the same
+        // `n` a listing published — including for a test excluded from the
+        // image because its closure failed to analyze (ADR-0083 §3), which
+        // holds its ordinal open as `None` rather than renumbering the rest.
         let dispatches_tests = options.root_selection == crate::RootSelection::Tests;
-        let test_dispatcher_table: Arc<[crate::FunctionInstanceKey]> = graph
+        let excluded_tests = graph.excluded_tests.iter().collect::<BTreeSet<_>>();
+        let test_dispatcher_table: Arc<[Option<crate::FunctionInstanceKey>]> = graph
             .test_inventory
             .iter()
-            .map(|test| test.identity.clone())
+            .map(|test| (!excluded_tests.contains(&test.identity)).then(|| test.identity.clone()))
             .collect::<Vec<_>>()
             .into();
         // Whole-program CFG reachability at O2/O3 publishes only what the
@@ -2374,6 +2450,126 @@ impl CompilerSession {
                 },
             )
     }
+
+    /// Analyze a test request, tolerating closures that fail (ADR-0083 §3).
+    ///
+    /// Each test item is its own root, so a body that fails to analyze rejects
+    /// exactly the tests whose closures reach it. This walks the closure's own
+    /// call relation backwards from each failed body to find them. Anything
+    /// that belongs to no single body — a closure fatal, an anonymous-fact
+    /// conflict, a failed import — is outside every test closure and still
+    /// fails the whole run, and so is a failed body no test root reaches, which
+    /// would mean the attribution missed an edge rather than that the failure
+    /// belongs to nobody.
+    pub(crate) fn rooted_test_closure_analysis(
+        &mut self,
+        options: &CompileOptions,
+    ) -> Result<TestClosureAnalysis, CompileErrors> {
+        let attempt = self
+            .rooted_body_graph_attempt(options, rue_query::CancellationToken::new())
+            .map_err(|control| semantic_control_errors("rooted test closure analysis", control))?;
+        let rejection = match attempt {
+            RootedBodyGraphAttempt::Graph(graph) => {
+                return Ok(TestClosureAnalysis {
+                    inventory: Arc::clone(&graph.test_inventory),
+                    failed: Vec::new(),
+                    diagnostics: CompileErrors::default(),
+                });
+            }
+            RootedBodyGraphAttempt::Rejected(rejection) => rejection,
+        };
+        if rejection.global {
+            return Err(rejection.into_errors());
+        }
+        let per_body = rejection.per_body();
+        let edges = rejection.call_edges();
+        let mut callers: BTreeMap<&crate::FunctionInstanceKey, Vec<&crate::FunctionInstanceKey>> =
+            BTreeMap::new();
+        for (caller, callees) in &edges {
+            for callee in callees {
+                callers.entry(callee).or_default().push(caller);
+            }
+        }
+        let roots: BTreeMap<&crate::FunctionInstanceKey, &crate::test_inventory::RootedTest> =
+            rejection
+                .test_inventory
+                .iter()
+                .map(|test| (&test.identity, test))
+                .collect();
+        // One backward walk per failed body rather than a forward walk per
+        // test: the failures are few and the roots are not.
+        let mut failed_tests: BTreeMap<u32, Vec<CompileError>> = BTreeMap::new();
+        for (failed_body, errors) in &per_body {
+            let mut seen = BTreeSet::new();
+            let mut frontier = vec![failed_body];
+            let mut reaching = BTreeSet::new();
+            while let Some(instance) = frontier.pop() {
+                if !seen.insert(instance) {
+                    continue;
+                }
+                if let Some(test) = roots.get(instance) {
+                    reaching.insert(test.entry.ordinal);
+                }
+                if let Some(callers) = callers.get(instance) {
+                    frontier.extend(callers.iter().copied());
+                }
+            }
+            if reaching.is_empty() {
+                // A diagnostic inside no test's closure is one this walk failed
+                // to attribute, not one nobody owns: the closure was built from
+                // the test roots, so every body in it is reachable from one.
+                // Reporting the whole run is the honest answer.
+                return Err(rejection.into_errors());
+            }
+            for ordinal in reaching {
+                failed_tests
+                    .entry(ordinal)
+                    .or_default()
+                    .extend(errors.iter().cloned());
+            }
+        }
+        let by_ordinal: BTreeMap<u32, &crate::test_inventory::RootedTest> = rejection
+            .test_inventory
+            .iter()
+            .map(|test| (test.entry.ordinal, test))
+            .collect();
+        let failed = failed_tests
+            .into_iter()
+            .map(|(ordinal, errors)| FailedTestClosure {
+                test: (*by_ordinal
+                    .get(&ordinal)
+                    .expect("an attributed ordinal is an inventory ordinal"))
+                .clone(),
+                errors: errors.into(),
+            })
+            .collect();
+        Ok(TestClosureAnalysis {
+            inventory: Arc::clone(&rejection.test_inventory),
+            // The union, once each: a helper several tests reach fails each of
+            // them, and stderr must still show its diagnostic one time.
+            diagnostics: rejection.body_diagnostics(),
+            failed,
+        })
+    }
+
+    /// Run `request` with these test roots excluded from the analyzed root set.
+    ///
+    /// The exclusion is request state rather than a caller-supplied option
+    /// because no caller can know it: it is derived from a first analysis of
+    /// this very request. It reaches every memo key that depends on it — the
+    /// body closure is keyed by its roots, and the dispatcher's CFG by its
+    /// table — so nothing downstream can select an artifact built from the
+    /// fuller set.
+    pub(crate) fn with_excluded_test_roots<T>(
+        &mut self,
+        excluded: Arc<[crate::FunctionInstanceKey]>,
+        request: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let restored = std::mem::replace(&mut self.excluded_test_roots, excluded);
+        let outcome = request(self);
+        self.excluded_test_roots = restored;
+        outcome
+    }
 }
 
 #[cfg(test)]
@@ -3080,4 +3276,216 @@ fn semantic_diagnostic_input(
         crate::ResolvedProgramRevision::new(input.semantic.clone(), imports),
         input.opt_level,
     )
+}
+
+/// A body graph, or the diagnostics that rejected the request that asked for it.
+enum RootedBodyGraphAttempt {
+    Graph(Box<RootedBodyGraph>),
+    Rejected(Box<RootedBodyGraphRejection>),
+}
+
+/// Why a rooted semantic request failed, with each diagnostic's owning body.
+///
+/// Diagnostics are kept in publication order, exactly as the flattened
+/// `CompileErrors` a whole-run failure reports has always carried them, and
+/// each one remembers whether it belongs to one reached body or to the
+/// compilation as a whole. Only the test-image request reads the attribution
+/// (ADR-0083 §3): a body that failed to analyze excludes precisely the tests
+/// whose closures reach it, and nothing else.
+#[derive(Default)]
+pub(super) struct RootedBodyGraphRejection {
+    /// `(owning body, diagnostic)` in publication order; `None` for a
+    /// diagnostic no single body owns.
+    entries: Vec<(Option<crate::FunctionInstanceKey>, CompileError)>,
+    /// Whether any diagnostic belongs to the compilation rather than a body.
+    /// Such a request fails as a whole however its roots are arranged.
+    global: bool,
+    /// The analyzed closure's bodies, the call graph attribution walks.
+    bodies: Arc<[crate::body_query::BodyClosureBody]>,
+    /// The closure's own drop-glue plans, so the walk can follow the one edge
+    /// that reaches a body through no call: a value's destruction. The
+    /// reachability walk resolved these to schedule the destructors in the
+    /// first place, so reading them back is the same relation rather than a
+    /// second one.
+    drop_glue_plans: Arc<[(crate::TypeInstanceKey, crate::type_queries::DropGlueFacts)]>,
+    /// The request's full test inventory, so a `--list` that only wants the
+    /// declarations still gets them (ADR-0083 §3: a test whose body does not
+    /// analyze still parsed its declaration).
+    test_inventory: Arc<[crate::test_inventory::RootedTest]>,
+}
+
+impl RootedBodyGraphRejection {
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn push_global(&mut self, error: CompileError) {
+        self.global = true;
+        self.entries.push((None, error));
+    }
+
+    fn extend_global(&mut self, errors: impl IntoIterator<Item = CompileError>) {
+        for error in errors {
+            self.push_global(error);
+        }
+    }
+
+    fn push_body(&mut self, instance: crate::FunctionInstanceKey, error: CompileError) {
+        self.entries.push((Some(instance), error));
+    }
+
+    fn extend_body(
+        &mut self,
+        instance: crate::FunctionInstanceKey,
+        errors: impl IntoIterator<Item = CompileError>,
+    ) {
+        for error in errors {
+            self.push_body(instance.clone(), error);
+        }
+    }
+
+    /// The whole-run failure: every diagnostic, in publication order.
+    fn into_errors(self) -> CompileErrors {
+        self.entries
+            .into_iter()
+            .map(|(_, error)| error)
+            .collect::<Vec<_>>()
+            .into()
+    }
+
+    /// The diagnostics of each failed body, keyed by the body, in the same
+    /// publication order within each body.
+    fn per_body(&self) -> BTreeMap<crate::FunctionInstanceKey, Vec<CompileError>> {
+        let mut per_body: BTreeMap<_, Vec<CompileError>> = BTreeMap::new();
+        for (instance, error) in &self.entries {
+            if let Some(instance) = instance {
+                per_body
+                    .entry(instance.clone())
+                    .or_default()
+                    .push(error.clone());
+            }
+        }
+        per_body
+    }
+
+    /// Every body-owned diagnostic, grouped by its owning body.
+    ///
+    /// This is the sequence stderr publishes for a rejection whose failures are
+    /// all inside bodies, and the one computation both the run path and `--list`
+    /// read: a listing that could disagree with the run it previews about which
+    /// bodies are broken would be worse than no listing. A global diagnostic is
+    /// not here — such a rejection fails the request outright.
+    fn body_diagnostics(&self) -> CompileErrors {
+        self.per_body()
+            .into_values()
+            .flatten()
+            .collect::<Vec<_>>()
+            .into()
+    }
+
+    /// Which analyzed body reaches which other analyzed body.
+    ///
+    /// This is the closure's own scheduling relation, read back off what the
+    /// closure published rather than recomputed: the reachability walk
+    /// schedules a body for each `BodyReference::Callable` it finds, and it
+    /// schedules a source destructor for each `BodyReference::DropGlue` — the
+    /// one way a body is reached by no call. Destruction has to be an edge
+    /// here because a `drop fn` is ordinary analyzed source that can fail to
+    /// analyze, while the glue calling it is synthesized and cannot; without
+    /// it, a broken destructor would be attributable to no test and fail the
+    /// whole run. Error printers are synthesized in full, so they carry no
+    /// source diagnostic to attribute.
+    fn call_edges(&self) -> BTreeMap<crate::FunctionInstanceKey, Vec<crate::FunctionInstanceKey>> {
+        let plans = self
+            .drop_glue_plans
+            .iter()
+            .map(|(ty, facts)| (ty, facts))
+            .collect::<BTreeMap<_, _>>();
+        let mut edges: BTreeMap<_, Vec<_>> = BTreeMap::new();
+        for body in self.bodies.iter() {
+            let rue_query::QueryOutcome::Success(bundle) = body.bundle.outcome() else {
+                continue;
+            };
+            let references = match &bundle.transaction {
+                crate::body_query::BodyTransaction::Success { references, .. }
+                | crate::body_query::BodyTransaction::DeterministicFailure { references, .. } => {
+                    references
+                }
+                crate::body_query::BodyTransaction::Control(_) => continue,
+            };
+            let callees = edges.entry(body.key.instance.clone()).or_default();
+            // A destroyed aggregate's glue destroys its parts, so the walk
+            // follows `nested` to reach a destructor several layers down. The
+            // visited set is over the plan graph the closure already
+            // terminated on, so it cannot cycle further than that did.
+            let mut pending = Vec::new();
+            let mut visited = BTreeSet::new();
+            for reference in references.0.iter() {
+                match reference {
+                    crate::body_query::BodyReference::Callable(callable) => {
+                        callees.push(callable.clone());
+                    }
+                    crate::body_query::BodyReference::DropGlue(ty) => pending.push(ty),
+                    crate::body_query::BodyReference::Definition(_)
+                    | crate::body_query::BodyReference::Type(_) => {}
+                }
+            }
+            while let Some(ty) = pending.pop() {
+                if !visited.insert(ty) {
+                    continue;
+                }
+                let Some(facts) = plans.get(ty) else {
+                    continue;
+                };
+                if let Some(destructor) = &facts.destructor {
+                    callees.push(destructor.clone());
+                }
+                pending.extend(facts.nested.iter());
+            }
+        }
+        edges
+    }
+}
+
+/// One test excluded from a test image because its closure failed to analyze.
+pub(crate) struct FailedTestClosure {
+    pub(crate) test: crate::test_inventory::RootedTest,
+    pub(crate) errors: CompileErrors,
+}
+
+/// A test request's ordered inventory and the failures its bodies reported.
+///
+/// A listing publishes both: every declaration that parsed, and the diagnostics
+/// of the bodies that did not analyze (ADR-0083 §2).
+pub(crate) struct RootedTestInventory {
+    pub(crate) entries: Vec<crate::unstable::TestInventoryEntry>,
+    /// The same sequence the run path writes to stderr, empty when every body
+    /// in the closure analyzed.
+    pub(crate) diagnostics: CompileErrors,
+}
+
+/// What a test request's semantic analysis produced when some closures failed.
+pub(crate) struct TestClosureAnalysis {
+    /// Every declared test, in stable-ID order.
+    pub(crate) inventory: Arc<[crate::test_inventory::RootedTest]>,
+    /// The tests whose closures failed, in ordinal order.
+    pub(crate) failed: Vec<FailedTestClosure>,
+    /// Every diagnostic behind those failures, once each however many tests
+    /// reach it. This is what stderr publishes; the copies attached to each
+    /// failed test are the attribution convenience (ADR-0083 §3).
+    pub(crate) diagnostics: CompileErrors,
+}
+
+/// Render a semantic control answer on the uncancellable error surface.
+///
+/// The counterpart of [`pipeline_control_errors`] for the requests that stop
+/// at semantic analysis. `context` names the stage and reaches the reader only
+/// through an internal-error diagnostic; a park and a compile failure carry
+/// their own.
+fn semantic_control_errors(context: &str, control: SemanticRequestControl) -> CompileErrors {
+    match control {
+        SemanticRequestControl::Compile(errors) => errors,
+        SemanticRequestControl::Abort(abort) => pipeline_abort_errors(context, abort),
+        SemanticRequestControl::Parked(park) => unresolved_toolchain_park_errors(&park),
+    }
 }
