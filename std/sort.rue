@@ -14,43 +14,67 @@
 //     std.sort.quicksort(i64, inout v);
 //     let hit = std.sort.binary_search(i64, v, target);   // Option(u64)
 //
-// COPY-ELEMENT-ONLY. Every element access here is a by-copy read
-// (`ArrayBuf.get_or`), which the container gates to trivially-droppable element
-// types (E0711, RUE-651): reading a drop-glue element out by copy while its
-// slot stays live would alias its owned buffer (double-free). So these routines
-// are for `Copy` element types — integers and other trivially-droppable
-// scalars/aggregates. Sorting owned (drop-glue) elements needs a
-// borrow-returning element accessor (the RUE-651 follow-up); it is out of scope
-// here. The unused out-of-bounds defaults passed to `get_or` are integer `0`
-// literals, so the element type must additionally admit `0` as a value; for
-// `binary_search` the default is `target`, so it is generic over any `Copy` `T`.
+// COPY-`T` ONLY. Every comparison reads its two operands out of the buffer by
+// copy while the slots stay live, so a use of an element duplicates it rather
+// than consuming it — that is what a Copy type does (3.8:1). Ordering also
+// needs the built-in `<`, which restricts `T` further to an integer or
+// floating-point type; that half is not expressible as a gate, the same gap
+// `std.cmp` and `std.math` document.
+//
+// Rue has no intrinsic that gates on Copy, so each public entry point states
+// the half it can as its FIRST statement: `@require_trivially_droppable(T)`
+// (E0711) rejects a `T` with drop glue — an owning element such as `StrBuf`, or
+// a struct with a `drop fn` — and names that element type, instead of the
+// E0206/E0205 a comparison or a by-copy read would raise several frames deeper
+// inside this module (RUE-2049). A by-copy read of a drop-glue element while
+// its slot stays live would alias the element's owned buffer and double-free at
+// scope exit (RUE-651); sorting owned elements needs an ordering that reads
+// through `get_ref` borrows and is out of scope here.
+//
+// The gate covers the drop-glue half only. A move-only `T` with no drop glue is
+// exactly a struct not marked `@copy` (3.8:3, 3.8:19): it passes the gate,
+// because the language has no Copy gate (RUE-2028). Such a struct has no `<`
+// either, so the comparison still rejects it with E0206 and it is not sortable
+// in any case.
+//
+// Element reads go through `_at`, which reads via `ArrayBuf.get` and traps on
+// an out-of-bounds index, and exchanges go through `ArrayBuf.swap`, which moves
+// both slots rather than duplicating them. Neither needs an out-of-bounds
+// default value, so nothing here assumes `T` admits the literal `0` — the
+// integer-only restriction the earlier `get_or(i, 0)` reads carried.
 
 const arraybuf = @import("arraybuf.rue");
-const mem = @import("mem.rue");
 const option = @import("option.rue");
 
-// Exchange elements `i` and `j` (both assumed in bounds). Routes the exchange
-// through `std.mem.swap` on two typed locals, then writes them back.
-fn swap_at(comptime T: type, inout xs: arraybuf.ArrayBuf(T), i: u64, j: u64) {
-    let mut a = xs.get_or(i, 0);
-    let mut b = xs.get_or(j, 0);
-    mem.swap(T, inout a, inout b);
-    xs.set(i, a);
-    xs.set(j, b);
+// Element `i`, which every caller here has already proved in bounds. Reading
+// through `ArrayBuf.get` and trapping on `None` keeps the read generic over
+// every Copy `T`. The `get_or(i, 0)` reads this replaced needed an
+// out-of-bounds default, and the literal `0` narrowed the contract to element
+// types that admit it — integers, silently (RUE-2049). The by-copy gate itself
+// lives in `ArrayBuf.get`.
+fn _at(comptime T: type, borrow xs: arraybuf.ArrayBuf(T), i: u64) -> T {
+    let O = option.Option(T);
+    match xs.get(i) {
+        O.Some(v) => v,
+        O.None => @panic("index out of bounds"),
+    }
 }
 
 // Insertion sort: stable, O(n^2), good on small or nearly-sorted inputs.
 // Shifts each element left past larger predecessors.
 pub fn insertion_sort(comptime T: type, inout xs: arraybuf.ArrayBuf(T)) {
+    // COPY-`T` ONLY (module header): stated first so an owning element type is
+    // named here rather than deeper in, at a comparison or a by-copy read.
+    @require_trivially_droppable(T);
     let n = xs.len();
     let mut i: u64 = 1;
     while i < n {
         let mut j = i;
         while j > 0 {
-            let prev = xs.get_or(j - 1, 0);
-            let cur = xs.get_or(j, 0);
+            let prev = _at(T, borrow xs, j - 1);
+            let cur = _at(T, borrow xs, j);
             if cur < prev {
-                swap_at(T, inout xs, j - 1, j);
+                xs.swap(j - 1, j);
                 j -= 1;
             } else {
                 j = 0;
@@ -65,9 +89,9 @@ pub fn insertion_sort(comptime T: type, inout xs: arraybuf.ArrayBuf(T)) {
 // inputs away from the fixed-endpoint quadratic partition pattern while
 // retaining deterministic, comparison-only ordering.
 fn median_of_three(comptime T: type, borrow xs: arraybuf.ArrayBuf(T), a: u64, b: u64, c: u64) -> u64 {
-    let va = xs.get_or(a, 0);
-    let vb = xs.get_or(b, 0);
-    let vc = xs.get_or(c, 0);
+    let va = _at(T, borrow xs, a);
+    let vb = _at(T, borrow xs, b);
+    let vc = _at(T, borrow xs, c);
     if va < vb {
         if vb < vc {
             return b;
@@ -98,19 +122,19 @@ fn qsort_range(comptime T: type, inout xs: arraybuf.ArrayBuf(T), lo: u64, hi: u6
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
         let pivot_index = median_of_three(T, borrow xs, lo, mid, hi);
-        swap_at(T, inout xs, pivot_index, hi);
-        let pivot = xs.get_or(hi, 0);
+        xs.swap(pivot_index, hi);
+        let pivot = _at(T, borrow xs, hi);
         let mut store = lo;
         let mut j = lo;
         while j < hi {
-            let vj = xs.get_or(j, 0);
+            let vj = _at(T, borrow xs, j);
             if vj < pivot {
-                swap_at(T, inout xs, store, j);
+                xs.swap(store, j);
                 store += 1;
             }
             j += 1;
         }
-        swap_at(T, inout xs, store, hi);
+        xs.swap(store, hi);
 
         // For an inclusive range, these differences are the partition sizes:
         // `store - lo` and `hi - store` are safe because `lo <= store <= hi`.
@@ -138,6 +162,9 @@ fn qsort_range(comptime T: type, inout xs: arraybuf.ArrayBuf(T), lo: u64, hi: u6
 
 // Quicksort: average O(n log n), in place. Not stable.
 pub fn quicksort(comptime T: type, inout xs: arraybuf.ArrayBuf(T)) {
+    // COPY-`T` ONLY (module header): stated first so an owning element type is
+    // named here rather than deeper in, at a comparison or a by-copy read.
+    @require_trivially_droppable(T);
     let n = xs.len();
     if n > 1 {
         qsort_range(T, inout xs, 0, n - 1);
@@ -146,14 +173,17 @@ pub fn quicksort(comptime T: type, inout xs: arraybuf.ArrayBuf(T)) {
 
 // Whether `xs` is in non-decreasing order under `<`.
 pub fn is_sorted(comptime T: type, borrow xs: arraybuf.ArrayBuf(T)) -> bool {
+    // COPY-`T` ONLY (module header): stated first so an owning element type is
+    // named here rather than deeper in, at a comparison or a by-copy read.
+    @require_trivially_droppable(T);
     let n = xs.len();
     if n < 2 {
         return true;
     }
     let mut i: u64 = 1;
     while i < n {
-        let prev = xs.get_or(i - 1, 0);
-        let cur = xs.get_or(i, 0);
+        let prev = _at(T, borrow xs, i - 1);
+        let cur = _at(T, borrow xs, i);
         if cur < prev {
             return false;
         }
@@ -164,16 +194,18 @@ pub fn is_sorted(comptime T: type, borrow xs: arraybuf.ArrayBuf(T)) -> bool {
 
 // Binary search for `target` in a buffer that is already sorted ascending.
 // Returns `Some(i)` for some index `i` with `xs[i] == target` (equality is
-// tested as `!(a < b) && !(b < a)`), or `None` if absent. Generic over any
-// `Copy` `T`: the unused out-of-bounds default is `target` itself.
+// tested as `!(a < b) && !(b < a)`), or `None` if absent.
 pub fn binary_search(comptime T: type, borrow xs: arraybuf.ArrayBuf(T), target: T) -> option.Option(u64) {
+    // COPY-`T` ONLY (module header): stated first so an owning element type is
+    // named here rather than deeper in, at a comparison or a by-copy read.
+    @require_trivially_droppable(T);
     let O = option.Option(u64);
     let n = xs.len();
     let mut lo: u64 = 0;
     let mut hi = n;
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
-        let v = xs.get_or(mid, target);
+        let v = _at(T, borrow xs, mid);
         if v < target {
             lo = mid + 1;
         } else if target < v {

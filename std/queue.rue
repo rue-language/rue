@@ -1,8 +1,22 @@
 // std.collections — Queue(T): a FIFO queue over ArrayBuf.
 //
 // Implemented as a growing buffer with a front cursor (`enqueue` pushes at the
-// back, `dequeue` advances a head index). `dequeue`/`peek` read the front
-// element by copy, so they are for trivially-droppable (`Copy`) `T` (RUE-651).
+// back, `dequeue` advances a head index).
+//
+// `dequeue`/`peek` read the front element BY COPY, so `T` must be a Copy type
+// for those two: the copy would otherwise alias a still-live owned element and
+// double-free it at scope exit (RUE-651). Both state the half Rue can gate as
+// their FIRST statement — `@require_trivially_droppable(T)` (E0711), which
+// rejects a `T` with drop glue and names it at the call instead of reporting it
+// from `ArrayBuf.get` a frame deeper (RUE-2049). The gate covers the drop-glue
+// half only; a `@copy`-less struct has no drop glue, so it passes the gate and
+// both reads copy it bitwise with no diagnostic at all until the language has a
+// Copy gate (RUE-2028). Marking such a struct `@copy` is the fix.
+//
+// `new`, `enqueue`, `len`, `is_empty` and the borrowing `peek_ref` never
+// duplicate an element, so they are ungated and work for any `T` (RUE-646) — a
+// queue of owning values is legal as long as you read it with `peek_ref` and
+// drain it by moving elements out.
 //
 // NOTE (v1): consumed slots at the front are not reclaimed until the queue
 // empties — the head cursor only advances. A compacting/circular variant is a
@@ -40,8 +54,12 @@ pub fn Queue(comptime T: type) -> type {
             self.buf.push(x);
         }
 
-        // Remove and return the front element, or `None` when empty. COPY-`T`.
+        // Remove and return the front element, or `None` when empty. COPY-`T`
+        // ONLY: the head slot stays live (the cursor only advances), so the
+        // element leaves by copy rather than by move. The gate is stated first
+        // so an owning `T` is named here (RUE-2049).
         fn dequeue(inout self) -> option.Option(T) {
+            @require_trivially_droppable(T);
             let O = option.Option(T);
             if self.head >= self.buf.len() {
                 O.None
@@ -57,8 +75,10 @@ pub fn Queue(comptime T: type) -> type {
             }
         }
 
-        // The front element by copy, or `None`. COPY-`T` ONLY.
+        // The front element by copy, or `None`. COPY-`T` ONLY; use `peek_ref`
+        // to read an owning element in place.
         fn peek(borrow self) -> option.Option(T) {
+            @require_trivially_droppable(T);
             let O = option.Option(T);
             if self.head >= self.buf.len() {
                 O.None

@@ -3,9 +3,24 @@
 // (M4) needs function values / traits (RUE-643/RUE-246); this covers the common
 // string-keyed case now, alongside the integer-keyed `IntMap(V)`.
 //
-// `new(filler)` takes a throwaway `V` used to initialise empty value slots (Rue
-// has no generic zero-init); it is never read as a real value — the per-slot
-// state guards that.
+// COPY-`V` ONLY. The table duplicates values: `new(filler)` takes one throwaway
+// `V` and `_grow_to` pushes it into every slot of a fresh table (Rue has no
+// generic zero-init; it is never read as a real value — the per-slot state
+// guards that), and every read goes through the by-copy `ArrayBuf.get_or`.
+// Duplicating a value rather than consuming it is what a Copy type does
+// (3.8:1). Note this constrains the VALUE type only; keys are `StrBuf`, which
+// this module owns and pools itself (see STORAGE below).
+//
+// Rue has no intrinsic that gates on Copy, so `new` — the only constructor, so
+// the only way to reach any of the above — states the half it can as its FIRST
+// statement: `@require_trivially_droppable(V)` (E0711) rejects a `V` with drop
+// glue and names it, instead of the E0437 "cannot move out of inout parameter
+// `self`" that copying `self.filler` inside `_grow_to` used to raise several
+// frames deeper (RUE-2049). The gate covers the drop-glue half only: a
+// move-only `V` with no drop glue is exactly a struct not marked `@copy`
+// (3.8:3), and it passes the gate and then fails at the filler copy, because
+// the language has no Copy gate (RUE-2028). Marking such a struct `@copy` is
+// the fix.
 //
 //     const std = @import("std");
 //     let M = std.strmap.StrMap(u64);
@@ -81,7 +96,13 @@ pub fn StrMap(comptime V: type) -> type {
         cap: u64,
         filler: V,
 
+        // COPY-`V` ONLY: the gate is stated ahead of everything else so an
+        // owning value type is named at this call rather than reported from the
+        // filler copy inside `_grow_to` (RUE-2049). The REPRESENTATION
+        // duplicates values, so the constructor is the right place — there is
+        // no way to hold a non-Copy `V` in a `StrMap` at all.
         fn new(filler: V) -> Self {
+            @require_trivially_droppable(V);
             let ub = arraybuf.ArrayBuf(u64);
             let vb = arraybuf.ArrayBuf(V);
             let sb = arraybuf.ArrayBuf(u8);

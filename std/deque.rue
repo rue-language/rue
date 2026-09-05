@@ -1,9 +1,23 @@
 // std.collections — Deque(T): a growable double-ended queue over a ring buffer.
 //
-// Elements are read by copy (get_or), so `T` must be trivially-droppable
-// (`Copy`) — RUE-651. `new(filler)` takes a throwaway `T` used to initialise the
-// unused ring slots (Rue has no generic zero-init, same convention as IntMap);
-// it is never read as a live value (the `count` guards that).
+// COPY-`T` ONLY. The ring itself duplicates elements: `new(filler)` takes one
+// throwaway `T` and `_grow_to` pushes it into every unused slot (Rue has no
+// generic zero-init, the same convention IntMap and StrMap use), and every
+// read — `front`, `back`, `pop_front`, `pop_back` — goes through the by-copy
+// `ArrayBuf.get_or`. Duplicating a value rather than consuming it is what a
+// Copy type does (3.8:1); the filler is never read as a live element (`count`
+// guards that), but it is still copied per slot.
+//
+// Rue has no intrinsic that gates on Copy, so `new` — the only constructor, so
+// the only way to reach any of the above — states the half it can as its FIRST
+// statement: `@require_trivially_droppable(T)` (E0711) rejects a `T` with drop
+// glue and names it, instead of the E0437 "cannot move out of inout parameter
+// `self`" that copying `self.filler` inside `_grow_to` used to raise several
+// frames deeper (RUE-2049). The gate covers the drop-glue half only: a
+// move-only `T` with no drop glue is exactly a struct not marked `@copy`
+// (3.8:3), and it passes the gate and then fails at the filler copy, because
+// the language has no Copy gate (RUE-2028). Marking such a struct `@copy` is
+// the fix.
 //
 // Deque intentionally has no `front_ref`/`back_ref` yet (RUE-1017): growth
 // rebuilds the ring by copying from a filler-populated buffer. The current
@@ -30,7 +44,14 @@ pub fn Deque(comptime T: type) -> type {
         cap: u64,
         filler: T,
 
+        // COPY-`T` ONLY: the gate is stated ahead of everything else so an
+        // owning element type is named at this call rather than reported from
+        // the filler copy inside `_grow_to` (RUE-2049). Gating the constructor
+        // rather than the individual readers is right here because the
+        // REPRESENTATION duplicates elements — there is no way to hold a
+        // non-Copy `T` in a `Deque` at all.
         fn new(filler: T) -> Self {
+            @require_trivially_droppable(T);
             let b = arraybuf.ArrayBuf(T);
             let mut d = Self {
                 buf: b.new(),
