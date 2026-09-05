@@ -171,7 +171,9 @@ fn main() -> i32 {
 Notice that the call site `r.scale(2)` does not spell out `inout`. The mode is
 part of the method's declaration, and calling a mutating method on a binding
 that is not `let mut` is an error. Free functions, by contrast, require the
-caller to write the mode at the call; you will see why in chapter 8.
+caller to write the mode at the call, as chapter 8 shows. That asymmetry is
+simply how the language is today; whether method calls should carry the mode
+too is an open design question, tracked as RUE-2067.
 
 ## Associated functions
 
@@ -213,7 +215,11 @@ fn main() -> i32 {
 7 0
 ```
 
-Method calls chain the way you would expect: `Point.new(1, 2).manhattan()`.
+Chaining works for methods that take `self` by value and return a new
+`Self`. A `borrow self` or `inout self` method needs a place to borrow from,
+so it cannot be called directly on a call result: `Point.new(1, 2).manhattan()`
+is rejected. Bind the value with `let` first, as `main` does above, and call
+the method on the binding.
 
 ## Structs in functions
 

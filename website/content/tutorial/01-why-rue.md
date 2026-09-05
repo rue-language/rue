@@ -33,24 +33,30 @@ total(borrow scores);
 ```
 
 You already know that `sort` changes `scores` and `total` only reads it. The
-call site says so, and the compiler makes sure it is telling the truth. A
-function that wants to mutate its argument must declare the parameter `inout`,
-and every caller must write `inout` too. Compare a language where mutation is
-invisible at the call:
+call site says so, and the compiler makes sure it is telling the truth: a
+function that mutates its argument must declare the parameter `inout`, and
+every caller of a free function must write `inout` too.
 
-```python
-values.sort()      # does this change values? you have to know
-```
+Methods are the one exception today. A call like `scores.sort()` takes its
+receiver in whatever mode the method declared, without repeating it at the
+call, so the fact is one hop away in the signature rather than on the line. The
+compiler still insists that a mutating method is called on a `let mut`
+binding. Whether that gap should close is an open design question (RUE-2067),
+and the chapters that follow say which kind of call they mean.
 
 The same principle shows up all over the language:
 
 - **Failure is visible.** A function that can fail returns an `Option` or a
   `Result`. The `?` operator marks every place a function might return early.
-  There are no exceptions, so a call can never jump out of your function
-  without a mark on the line.
-- **Nothing converts silently.** An `i32` never becomes an `i64` on its own; you
-  write `@intCast`. An integer never becomes a string; you write `@to_string`.
-  Every conversion is a named operation you can see.
+  There are no exceptions, so a call can never return to your caller without
+  a mark on the line. (A bug can still stop the whole program on the spot;
+  that is a trap, described below, and it never resumes anywhere.)
+- **No implicit numeric conversions.** An `i32` never becomes an `i64` on its
+  own; you write `@intCast`. An integer never becomes a string; you write
+  `@to_string`. The one contextual rule is for string literals: `"text"` is a
+  `str` unless the context asks for a `StrBuf`, in which case it becomes one
+  without a copy. `println` is a built-in that accepts either string type, not
+  an overloaded function. Chapter 10 covers both.
 - **No overloading, no macros.** One name means one function. Code that looks
   like a call is a call. Nothing runs on your source text before the compiler
   reads it, so the names in a file are exactly the names you wrote.
@@ -137,18 +143,32 @@ ones.
 - **Tests are part of the language.** A `test "name" { ... }` block sits next
   to the code it tests, is checked by the same compiler, and runs with
   `rue test`. There is no test framework to choose.
-- **Programs are deterministic.** Two runs of the same program on the same input
-  produce the same output. The standard library never exposes an iteration
-  order that depends on hashing or memory addresses.
+- **Programs are meant to be deterministic.** Two runs of the same program on
+  the same input should produce the same output, and the standard library
+  should never expose an iteration order that depends on hashing or memory
+  addresses. This is a stated direction rather than a written guarantee yet;
+  see below.
 
 ## Where things stand
 
 Rue is a young language, and the honest status is that these principles are
-ahead of the implementation in places. Some of the points above are stated
-guarantees today; others are the direction the design is being checked against,
-recorded in the project's
+ahead of the implementation in places. Most of what this chapter describes is
+how the compiler behaves today: no prelude, no overloading, no macros, order
+independence, traps, `?`, second-class loans, and call-site modes on free
+functions. Three points deserve a marker:
+
+- **Call-site access modes** hold for free functions. Method calls take their
+  receiver in the declared mode without spelling it (RUE-2067).
+- **No implicit conversions** holds for numbers. A string literal takes the
+  string type its context asks for.
+- **Determinism** is the direction, not yet a written guarantee. Today the
+  random generator in `std.rand` takes an explicit seed, but neither the
+  specification nor the standard library documents iteration order or
+  promises reproducible output.
+
+The rest of the direction is recorded in the project's
 [design records](https://github.com/rue-language/rue/tree/trunk/docs/designs)
-and issue tracker. The tutorial says which is which whenever it matters, and the
+and issue tracker, and the
 [last chapter](@/tutorial/16-whats-next.md) lists what is missing.
 
 The compiler itself is a complete pipeline written in Rust, from lexer to

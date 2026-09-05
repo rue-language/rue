@@ -22,7 +22,7 @@ should not be used before the chapter that teaches it.
 | 7 | Enums and Matching | Variants, exhaustiveness, payloads, `Option`, `?` on `Option`. |
 | 8 | Ownership and Access Modes | Moves, `@copy`, `borrow`, `inout`, exclusivity, destructors, `@drop`. |
 | 9 | Arrays, Slices, and Buffers | `[T; N]`, `for`, bounds checks, `[T]` slices, `ArrayBuf`. |
-| 10 | Strings and Text | `str` vs `StrBuf`, concatenation, bytes vs `chars()`, `@read_line`, `@parse_i64`, `std.strings`. |
+| 10 | Strings and Text | `str` vs `StrBuf`, concatenation, byte literals, bytes vs `chars()`, `@read_line`, `@parse_i64`, `std.strings`. |
 | 11 | Errors and Traps | `Result`, `?` on `Result`, the trap list, choosing between them. |
 | 12 | Modules and the Standard Library | `@import`, `pub` and the directory visibility rule, `std` as a module, generics as type-returning functions. |
 | 13 | Tests | `test` declarations, `@assert`/`@assert_eq`, `?` in tests, `rue test`. |

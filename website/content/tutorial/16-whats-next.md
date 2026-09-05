@@ -34,8 +34,8 @@ looking for them.
   bits wide.
 - **Package management.** A program is one root file and its imports. There
   is no package registry or dependency resolution.
-- **Concurrency.** None. Rue programs are single-threaded, which is also why
-  its exclusivity rules need no runtime checks.
+- **Concurrency.** None. Rue programs are single-threaded. The exclusivity
+  rules are what would make a future concurrency story safe.
 - **Exceptions or `catch`.** Never, by design. Failures are values or traps.
 - **Implicit conversions, overloading, macros.** Never, by design.
 

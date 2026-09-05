@@ -70,17 +70,16 @@ struct Machine {
     fn apply(inout self, op: u8) -> StepResult {
         let right = self.pop()?;
         let left = self.pop()?;
-        let value = if op == 43 {
-            left + right
-        } else if op == 45 {
-            left - right
-        } else if op == 42 {
-            left * right
-        } else {
-            if right == 0 {
-                return StepResult.Err(EvalError.DivisionByZero);
-            }
-            left / right
+        let value = match op {
+            b'+' => left + right,
+            b'-' => left - right,
+            b'*' => left * right,
+            _ => {
+                if right == 0 {
+                    return StepResult.Err(EvalError.DivisionByZero);
+                }
+                left / right
+            },
         };
         self.push(value);
         StepResult.Ok(())
@@ -97,11 +96,11 @@ struct Machine {
 }
 
 fn is_digit(b: u8) -> bool {
-    b >= 48 && b <= 57
+    b >= b'0' && b <= b'9'
 }
 
 fn is_operator(b: u8) -> bool {
-    b == 43 || b == 45 || b == 42 || b == 47
+    b == b'+' || b == b'-' || b == b'*' || b == b'/'
 }
 
 fn eval_line(line: StrBuf) -> EvalResult {
@@ -110,7 +109,7 @@ fn eval_line(line: StrBuf) -> EvalResult {
     let mut in_number = false;
     for b in line {
         if is_digit(b) {
-            number = number * 10 + @intCast(b - 48);
+            number = number * 10 + @intCast(b - b'0');
             in_number = true;
         } else {
             if in_number {
@@ -120,7 +119,7 @@ fn eval_line(line: StrBuf) -> EvalResult {
             }
             if is_operator(b) {
                 machine.apply(b)?;
-            } else if b != 32 {
+            } else if b != b' ' {
                 return EvalResult.Err(EvalError.UnexpectedByte(b));
             }
         }
@@ -217,11 +216,11 @@ fn apply(inout self, op: u8) -> StepResult {
     ...
 ```
 
-Two pops, two possible early returns, each marked with `?`. The operator is a
-byte: `43` is `+`, `45` is `-`, `42` is `*`, and `47` is `/`. Only division
-has an extra failure mode. Notice that `apply` and `finish` both take
-`inout self`: they change the stack, and their callers must hold a `let mut`
-machine.
+Two pops, two possible early returns, each marked with `?`. The operator
+arrives as a byte, and a `match` on byte literals reads almost like the
+calculator's grammar. Only division has an extra failure mode, so it takes the
+`_` arm. Notice that `apply` and `finish` both take `inout self`: they change
+the stack, and their callers must hold a `let mut` machine.
 
 ## Reading the line
 
@@ -230,13 +229,13 @@ machine.
 ```rue skip
 for b in line {
     if is_digit(b) {
-        number = number * 10 + @intCast(b - 48);
+        number = number * 10 + @intCast(b - b'0');
         in_number = true;
     } else {
         ...
 ```
 
-A digit extends the number being read: `b - 48` converts the ASCII digit to
+A digit extends the number being read: `b - b'0'` converts the ASCII digit to
 its value as a `u8`, and `@intCast` widens it to the `i64` the arithmetic
 needs. Anything else ends the current number, if there was one, and is then
 either an operator to apply, a space to skip, or an unexpected byte to report.
