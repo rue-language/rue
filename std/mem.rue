@@ -35,8 +35,21 @@ pub fn swap(comptime T: type, inout a: T, inout b: T) {
 }
 
 // Store `v` into `dst` and return the value that was there before.
+//
+// Works for any `T`, linear values included. Reading the old value out with
+// `let old = dst;` would move out of the `inout` borrow and leave the caller's
+// binding uninitialized (E0437), so `replace` instead moves `v` into a local
+// and swaps that local with `dst`: `swap` exchanges the two storages bytewise
+// (see its comment), so both bindings stay initialized throughout, `dst` ends
+// up owning `v`'s resources, the local owns what `dst` held on entry, and each
+// is dropped exactly once.
+//
+// The local is load-bearing, not style: swapping the by-value parameter `v`
+// itself (`swap(T, inout v, inout dst); v`) returns the pre-call `v` at -O2
+// and above, because the optimizer forwards a parameter's incoming value across
+// the `inout` call that overwrote it (RUE-2042).
 pub fn replace(comptime T: type, inout dst: T, v: T) -> T {
-    let old = dst;
-    dst = v;
+    let mut old = v;
+    swap(T, inout old, inout dst);
     old
 }
