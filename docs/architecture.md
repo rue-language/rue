@@ -81,6 +81,21 @@ peephole optimization, scheduling, stack-frame construction, verification, and
 byte emission. Common code owns architecture-neutral concerns such as aggregate
 slots, by-reference arguments, and virtual-register bookkeeping.
 
+Which convention governs a call boundary is one value type,
+`rue_target::CallingConvention`, and every psABI rule the compiler needs from a
+C row is data on `CConventionSpec` beside it — roster sizes, where the hidden
+indirect-result pointer travels and whether it is echoed, stack alignment and
+shadow space, outgoing-argument packing, narrow-integer extension, and which
+aggregate rule applies. `rue_air::lower_c_signature` is the one function that
+reads that data against a type's facts and answers where every argument and the
+result of a `"C"` signature lives. All three C crossing sites consume its
+`LoweredSignature`: the `extern "C"` import planner (`foreign_call`), the
+`pub extern "C" fn` export thunk (`export_thunk`), and the stable query plane's
+`compiler.call-abi`. The backends contribute only physical leaves — mapping a
+roster index to a register name, and emitting the loads, stores, and calls.
+Calls between Rue functions use the separate native convention, whose classifier
+is `rue_air::NativeCallAbi`.
+
 The supported targets are:
 
 | Target | Code generation | Executable linking |

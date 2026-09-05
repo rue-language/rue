@@ -7224,7 +7224,8 @@ mod tests {
         // The same narrow `i8`/`i16`/`i32` tail Apple packs on AArch64: SysV has
         // no natural-size amendment, so each stacked argument keeps a whole
         // 8-byte slot whatever its C width, and the push-based sequence stands.
-        let mut args = vec![ForeignArg::AggregateRegisters {
+        use rue_air::{CAbiScalarKind, CAbiTypeFacts};
+        let mut args = vec![ForeignArg::Aggregate {
             value: CfgValue::from_raw(0),
             image: AggregateImage {
                 map: Vec::new(),
@@ -7237,23 +7238,25 @@ mod tests {
         }];
         args.extend((1..6).map(|index| ForeignArg::Scalar {
             value: CfgValue::from_raw(index),
-            natural_bytes: 8,
+            kind: CAbiScalarKind::RegisterWidth,
         }));
-        for (index, natural_bytes) in [(6, 1), (7, 2), (8, 4)] {
+        for (index, kind) in [
+            (6, CAbiScalarKind::I8),
+            (7, CAbiScalarKind::I16),
+            (8, CAbiScalarKind::I32),
+        ] {
             args.push(ForeignArg::Scalar {
                 value: CfgValue::from_raw(index),
-                natural_bytes,
+                kind,
             });
         }
-        let plan = ForeignCallPlan::new(
-            ForeignCallInputs {
-                symbol: "narrow_tail".into(),
-                convention: x86_64_target_c_convention(),
-                args,
-                ret: ForeignReturn::ZeroSized,
-            },
-            ARG_REGS.len(),
-        );
+        let plan = ForeignCallPlan::new(ForeignCallInputs::new(
+            "narrow_tail".into(),
+            x86_64_target_c_convention(),
+            args,
+            ForeignReturn::ZeroSized,
+            CAbiTypeFacts::ZeroSized,
+        ));
         let area = plan.stack_area_for_test(&[VReg::new(80), VReg::new(81), VReg::new(82)]);
         assert_eq!(area.bytes, 32);
         assert_eq!(

@@ -25,6 +25,7 @@ pub mod integer_semantics;
 mod intern_pool;
 mod intrinsic;
 pub mod layout;
+pub mod lowered_signature;
 mod module_registry;
 mod param_arena;
 mod path_norm;
@@ -43,9 +44,9 @@ mod type_properties;
 mod types;
 
 pub use call_abi::{
-    AggregateArgClass, AggregateReturnClass, ArgClass, ArgConvention, CAbiScalarKind,
-    NativeAbiTypeFacts, NativeCallAbi, ReturnClass, ScalarAbiExtension, TargetCCallAbi,
-    is_slot_identical_layout, native_return_register_budget,
+    ArgClass, ArgConvention, CAbiScalarKind, NativeAbiTypeFacts, NativeCallAbi, ReturnClass,
+    ScalarAbiExtension, TargetCCallAbi, c_abi_type_facts, is_slot_identical_layout,
+    native_return_register_budget,
 };
 pub use exact_decimal::canonical_decimal_literal;
 pub use exact_decimal::finite_float_literal_bits;
@@ -80,6 +81,10 @@ pub use intrinsic::{
     runtime_air_type,
 };
 pub use layout::{Layout, LayoutKind, PaddingRange, SLOT_BYTES};
+pub use lowered_signature::{
+    ArgLocation, CAbiTypeFacts, EightbyteClass, EightbyteClasses, LoweredArgument, LoweredReturn,
+    LoweredSignature, PointerLocation, lower_c_signature,
+};
 pub use module_registry::ModuleRegistry;
 pub use param_arena::{ParamArena, ParamRange, ParamRangeData};
 pub use path_norm::{mangle_symbol_component, normalize_module_path};
@@ -128,8 +133,8 @@ pub use sema::{
     SemanticNominalIdentity, SemanticParameterMode, SemanticProducedAnonymousMethodSignature,
     SemanticProducedAnonymousMethodType, SemanticProducedAnonymousNominal,
     SemanticProducedAnonymousNominalShape, SourceParamAbi, analyze_provider_anonymous_body,
-    analyze_provider_ordinary_body, analyze_provider_specialized_body, comptime_depth_over_limit,
-    next_comptime_depth,
+    analyze_provider_ordinary_body, analyze_provider_specialized_body, body_parameter_types,
+    comptime_depth_over_limit, next_comptime_depth,
 };
 pub use sema::{
     ComptimeDiagnosticSite, ComptimeIntegerOperation, ComptimeMatchPattern,

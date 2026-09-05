@@ -270,11 +270,8 @@ pub(crate) fn project_backend_structured_object_with_cancellation(
 /// Each exported function was already code-generated as an ordinary native body
 /// under its mangled `machine_name`; this adds one extra object per export whose
 /// single global symbol is the unmangled C name (the export's source identifier)
-/// and whose body receives arguments per the target-C convention, re-extends
-/// narrow scalars, and forwards to the native body. The signature was gated to
-/// register-resident scalars/pointers in semantic analysis
-/// (`ExportSignatureUnsupported`), so the entry block's parameters are exactly
-/// the argument-register scalars the thunk marshals.
+/// and whose body receives arguments per the target-C convention and adapts them
+/// to the native convention the body follows.
 #[cfg(test)]
 pub(crate) fn generate_export_thunk_objects(
     functions: &[crate::session::RootedCfgUnit],
@@ -294,31 +291,11 @@ pub(crate) fn generate_export_thunk_objects(
         else {
             continue;
         };
-        let cfg = &function.record.cfg;
-        // A scalar parameter is materialized as a `Param { index }` instruction
-        // carrying its type; parameter `index` arrives in the matching argument
-        // register. Default every slot to a register-width scalar (no extension)
-        // so an *unused* parameter — which the body never reads and therefore
-        // needs no re-extension — is harmless. Semantic analysis restricted the
-        // signature to register-resident scalars, so `num_params` slots map 1:1
-        // to argument registers.
-        let mut param_types: Vec<rue_air::Type> =
-            vec![rue_air::Type::I64; cfg.num_params() as usize];
-        for block in cfg.blocks() {
-            for &value in &block.insts {
-                let inst = cfg.get_inst(value);
-                if let rue_cfg::CfgInstData::Param { index } = inst.data {
-                    if let Some(slot) = param_types.get_mut(index as usize) {
-                        *slot = inst.ty;
-                    }
-                }
-            }
-        }
         objects.push(generate_export_thunk_object(
             options.target,
             exported_symbol,
             &function.record.codegen.defined_symbol,
-            &param_types,
+            &crate::session::export_signature(function),
         ));
     }
     objects
@@ -328,10 +305,10 @@ pub(crate) fn generate_export_thunk_object(
     target: Target,
     exported_symbol: &str,
     native_symbol: &str,
-    param_types: &[rue_air::Type],
+    signature: &rue_codegen::export_thunk::ExportSignature,
 ) -> Vec<u8> {
     let machine_code =
-        rue_codegen::export_thunk::generate_export_thunk(target, native_symbol, param_types);
+        rue_codegen::export_thunk::generate_export_thunk(target, native_symbol, signature);
     let mut obj_builder = ObjectBuilder::new(target, exported_symbol)
         .code(machine_code.code)
         .strings(machine_code.strings);

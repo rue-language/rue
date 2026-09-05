@@ -771,19 +771,10 @@ fn derive_source_param_abi(builder: &CfgBuilder<'_>) -> Vec<SourceParamAbi> {
     // already Direct, so this is inert there.
     let direct_slot_abi = builder.callable_kind.uses_direct_slot_abi();
 
-    // Slot -> source type. `param_drops` covers every Normal by-value parameter
-    // (including unused ones); `Param` instructions supplement any used
-    // parameter whose drop entry was cleared (destructor receivers).
-    let mut ty_at: AHashMap<u32, Type> = AHashMap::new();
-    for &(slot, ty) in air.param_drops() {
-        ty_at.entry(slot).or_insert(ty);
-    }
-    for i in 0..air.len() {
-        let inst = air.get(AirRef::from_raw(i as u32));
-        if let AirInstData::Param { index } = inst.data {
-            ty_at.entry(index).or_insert(inst.ty);
-        }
-    }
+    // Slot -> source type, from the one recovery the C-export thunk also reads,
+    // so a callee's parameter layout and the thunk that calls it cannot derive
+    // a parameter's type differently.
+    let ty_at: AHashMap<u32, Type> = rue_air::body_parameter_types(air);
 
     let mut descriptors = Vec::new();
     let mut slot = 0u32;

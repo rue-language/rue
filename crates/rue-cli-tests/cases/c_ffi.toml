@@ -741,38 +741,101 @@ stdout = ""
 runtime_error_contains = ["integer overflow"]
 exit_code = 101
 
-# --- P4 export diagnostics (compile-fail) -----------------------------------
+# A C caller invokes three exports across the crossings the target-C and native
+# conventions disagree about, and encodes what it observed into one integer:
+#
+#   605 -- rue_pair_swap({3,5}) = {6,5}: an 8-byte `@repr(c)` struct in one
+#          integer register each way. The native body takes and returns it
+#          indirectly (two narrow leaves cannot ride the native slot
+#          convention), so the thunk hands the C caller's own bytes to the body
+#          and the body's storage back to the caller.
+#   310 --.
+#   201 --' rue_triple_rotate({10,20,30}) = {30,10,20}: a 24-byte struct, byval
+#          on the stack under SysV and by reference under AAPCS64, returned
+#          through caller storage. The trailing 1 is the SysV `rax` echo of the
+#          hidden result pointer, checked by reading the struct back through the
+#          *returned* pointer; AAPCS64 has no echo and answers 1.
+#   285 -- rue_sum9(1..9) weighted: nine scalars, so the tail is stacked under
+#          both rows (three arguments on SysV, one on AAPCS64) in both the C
+#          caller and the native forward.
 
 [[case]]
-name = "export_aggregate_parameter_rejected"
-description = "An aggregate parameter in a `pub extern \"C\" fn` export is rejected: the P4 thunk marshals only register scalars (E1106)."
+name = "x86_64_linux_aggregate_exports_called_from_c"
+description = "A C caller passes and returns `@repr(c)` structs by value through Rue export thunks and spills a nine-scalar tail; the observed results encode to 605310201285 on x86-64 (SysV)."
 files = [{ path = "main.rue", source = """
 @repr(c)
 struct Pair { a: i32, b: i32 }
 
-pub extern "C" fn f(p: Pair) -> i32 {
-    p.a
+@repr(c)
+struct Triple { a: i64, b: i64, c: i64 }
+
+pub extern "C" fn rue_pair_swap(p: Pair) -> Pair {
+    Pair { a: p.b + 1, b: p.a + 2 }
 }
 
-fn main() -> i32 { 0 }
+pub extern "C" fn rue_triple_rotate(t: Triple) -> Triple {
+    Triple { a: t.c, b: t.a, c: t.b }
+}
+
+pub extern "C" fn rue_sum9(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64, i: i64) -> i64 {
+    a + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 + g * 7 + h * 8 + i * 9
+}
+
+extern "C" {
+    fn ffi_call_struct_exports() -> i64;
+}
+
+fn main() -> i32 {
+    @dbg(checked { ffi_call_struct_exports() });
+    0
+}
 """ }]
-args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
-compile_fail = true
-error_contains = ["E1106", "export `f`", "aggregate parameter"]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "x86-64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = "605310201285\n"
+exit_code = 0
 
 [[case]]
-name = "export_too_many_parameters_rejected"
-description = "A scalar parameter list wider than the shared argument-register budget is rejected by the P4 export thunk (E1106)."
+name = "aarch64_linux_aggregate_exports_called_from_c"
+description = "A C caller passes and returns `@repr(c)` structs by value through Rue export thunks and spills a nine-scalar tail; the observed results encode to 605310201285 on AArch64 (AAPCS64)."
 files = [{ path = "main.rue", source = """
-pub extern "C" fn f(a: i32, b: i32, c: i32, d: i32, e: i32, g: i32, h: i32) -> i32 {
-    a
+@repr(c)
+struct Pair { a: i32, b: i32 }
+
+@repr(c)
+struct Triple { a: i64, b: i64, c: i64 }
+
+pub extern "C" fn rue_pair_swap(p: Pair) -> Pair {
+    Pair { a: p.b + 1, b: p.a + 2 }
 }
 
-fn main() -> i32 { 0 }
+pub extern "C" fn rue_triple_rotate(t: Triple) -> Triple {
+    Triple { a: t.c, b: t.a, c: t.b }
+}
+
+pub extern "C" fn rue_sum9(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64, i: i64) -> i64 {
+    a + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 + g * 7 + h * 8 + i * 9
+}
+
+extern "C" {
+    fn ffi_call_struct_exports() -> i64;
+}
+
+fn main() -> i32 {
+    @dbg(checked { ffi_call_struct_exports() });
+    0
+}
 """ }]
-args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
-compile_fail = true
-error_contains = ["E1106", "exceed", "budget"]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "aarch64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = "605310201285\n"
+exit_code = 0
+
+# --- P4 export diagnostics (compile-fail) -----------------------------------
 
 [[case]]
 name = "export_named_main_rejected"

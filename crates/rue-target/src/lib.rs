@@ -9,7 +9,10 @@
 
 mod calling_convention;
 
-pub use calling_convention::{CallingConvention, StackedArgumentPacking};
+pub use calling_convention::{
+    AggregateClassificationRule, CConventionSpec, CRegisterClass, CallingConvention,
+    NarrowIntegerExtension, SretRegisterKind, StackedArgumentPacking,
+};
 
 use std::fmt;
 use std::str::FromStr;

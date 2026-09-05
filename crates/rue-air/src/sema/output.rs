@@ -278,6 +278,30 @@ pub struct SourceParamAbi {
     pub ty: Option<crate::Type>,
 }
 
+/// The source type of every by-value parameter of a body, keyed by the
+/// parameter's first ABI slot.
+///
+/// `param_drops` covers every `Normal` by-value parameter, including ones the
+/// body never reads; the body's own `Param` instructions supplement any
+/// parameter whose drop entry was cleared (a destructor receiver). Both the
+/// [`SourceParamAbi`] derivation in `rue_cfg` and the `pub extern "C" fn`
+/// export-thunk projection read this one recovery, so a parameter's type cannot
+/// be rediscovered two different ways — the export thunk in particular must see
+/// exactly the types the callee's own parameter layout was derived from.
+pub fn body_parameter_types(air: &crate::Air) -> ahash::AHashMap<u32, crate::Type> {
+    let mut types: ahash::AHashMap<u32, crate::Type> = ahash::AHashMap::new();
+    for &(slot, ty) in air.param_drops() {
+        types.entry(slot).or_insert(ty);
+    }
+    for index in 0..air.len() {
+        let inst = air.get(crate::AirRef::from_raw(index as u32));
+        if let crate::AirInstData::Param { index } = inst.data {
+            types.entry(index).or_insert(inst.ty);
+        }
+    }
+    types
+}
+
 impl SourceParamAbi {
     /// Whether this parameter is a by-value aggregate the classifier forced
     /// indirect: it reserves `slot_count` frame slots but arrives as one pointer

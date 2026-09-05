@@ -15,10 +15,12 @@
 //!
 //! Which convention governs a boundary is named by exactly one value type,
 //! [`rue_target::CallingConvention`], whose rows are the native Rue convention
-//! and the concrete platform psABIs. This module is the classifier that reads
-//! those rows: [`NativeAbiTypeFacts`] answers the native decision tree, and
-//! [`TargetCCallAbi`] answers the psABI thresholds and extensions for whichever
-//! C row a target's `"C"` alias resolves to.
+//! and the concrete platform psABIs. This module answers the *native* decision
+//! tree ([`NativeAbiTypeFacts`]) and the per-convention scalar facts a C
+//! crossing needs ([`TargetCCallAbi`], [`CAbiScalarKind`]). Where a value
+//! crosses a C boundary is answered once by
+//! [`lower_c_signature`](crate::lower_c_signature), which reads the convention
+//! description in `rue-target` against the facts [`c_abi_type_facts`] projects.
 //!
 //! ## Two planes, one policy kernel
 //!
@@ -28,7 +30,7 @@
 //! revision-stable type keys and canonical layout values and must not hold a
 //! live pool. Both project per-type facts and then consult the same pure
 //! kernel — [`NativeAbiTypeFacts`] for the native decision tree,
-//! [`TargetCCallAbi`] plus [`CAbiScalarKind`] for the target-C thresholds and
+//! [`CAbiTypeFacts`] plus [`CAbiScalarKind`] for the target-C placement and
 //! extensions, [`native_return_register_budget`] and
 //! [`rue_target::CallingConvention::c_for_target`] for the per-target numbers —
 //! so the classification policy itself has exactly one production home.
@@ -46,8 +48,11 @@
 //! implemented — never silently wrong. Slot-identical aggregates keep the
 //! historical register classification byte-for-byte.
 
+use crate::lowered_signature::CAbiTypeFacts;
 use crate::{FrozenTypeInternPool, Type, TypeKind};
-use rue_target::{Arch, CallingConvention, StackedArgumentPacking};
+use rue_target::{
+    Arch, CConventionSpec, CRegisterClass, CallingConvention, StackedArgumentPacking,
+};
 
 /// The native return-register budget for a target architecture: how many
 /// flattened eight-byte slots an aggregate return may occupy before it must
@@ -439,6 +444,35 @@ pub enum CAbiScalarKind {
 }
 
 impl CAbiScalarKind {
+    /// The live plane's projection of a type onto its width-and-signedness
+    /// class, or `None` when the type is not a target-C-passable scalar (an
+    /// aggregate, or a type `c_passable_by_value` rejects). The stable query
+    /// plane makes the same projection from its own type keys.
+    pub fn for_live_type(ty: Type) -> Option<Self> {
+        Some(match ty.kind() {
+            TypeKind::I8 => Self::I8,
+            TypeKind::I16 => Self::I16,
+            TypeKind::I32 => Self::I32,
+            TypeKind::U8 => Self::U8,
+            TypeKind::U16 => Self::U16,
+            TypeKind::U32 => Self::U32,
+            TypeKind::Bool => Self::Bool,
+            TypeKind::I64
+            | TypeKind::U64
+            | TypeKind::PtrConst(_)
+            | TypeKind::PtrMut(_)
+            | TypeKind::Error => Self::RegisterWidth,
+            _ => return None,
+        })
+    }
+
+    /// The register bank this scalar travels in. Every scalar the C boundary
+    /// currently admits is an integer or a pointer, so every one is
+    /// general-purpose; floats join this projection when they cross.
+    pub const fn register_class(self) -> CRegisterClass {
+        CRegisterClass::Gp
+    }
+
     /// The canonical 64-bit extension for this scalar at a target-C boundary.
     /// Both psABIs agree on the operation; signed narrows sign-extend from
     /// their declared width, unsigned narrows zero-extend, `_Bool`
@@ -502,87 +536,19 @@ impl ScalarAbiExtension {
     }
 }
 
-/// How a C-classifiable aggregate crosses a target-C boundary as an *argument*
-/// (ADR-0064 P3, RUE-1057).
-///
-/// The classification is computed from the aggregate's byte size (and alignment
-/// for the memory paths) by [`TargetCCallAbi::classify_aggregate_arg`]. In the
-/// integer-only core every eightbyte classifies INTEGER (a field type that would
-/// classify SSE cannot exist until RUE-714), so the two ≤16-byte psABIs coincide:
-/// the struct packs into one or two general-purpose integer registers **in C
-/// field order**. That C order is the register-packing audit's key finding — the
-/// native slot model decomposes one slot per leaf and *reverses* multi-slot
-/// values, which disagrees with C packing even for a two-field struct — so a
-/// target-C aggregate is marshaled through its physical memory image (ascending
-/// C order) rather than reusing the native decomposition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AggregateArgClass {
-    /// Packed into `eightbytes` (1 or 2) consecutive integer argument registers,
-    /// low eightbyte first, i.e. C field order. Covers SysV AMD64 INTEGER-class
-    /// ≤16-byte structs and AAPCS64 ≤16-byte composites.
-    IntegerRegisters {
-        /// Number of eightbyte integer registers (1 or 2).
-        eightbytes: u32,
-    },
-    /// SysV AMD64 MEMORY class (>16 bytes): the whole struct image is passed by
-    /// value in the outgoing stack argument area — `size` bytes at `align`
-    /// alignment — consuming no integer registers.
-    ByValueStack {
-        /// The struct's byte size.
-        size: u32,
-        /// The struct's alignment.
-        align: u32,
-    },
-    /// AAPCS64 composite >16 bytes (AAPCS64 §6.8.2 B.4/C.12): passed **by
-    /// reference to a caller-owned copy** — the caller copies the struct and
-    /// passes the copy's address in one integer register. This is *not* the SysV
-    /// byval-on-stack rule.
-    ByReferenceCopy {
-        /// The struct's byte size (the caller copy's size).
-        size: u32,
-        /// The struct's alignment (the caller copy's alignment).
-        align: u32,
-    },
-}
-
-/// How a C-classifiable aggregate crosses a target-C boundary as a *return value*
-/// (ADR-0064 P3, RUE-1057). Computed by
-/// [`TargetCCallAbi::classify_aggregate_return`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AggregateReturnClass {
-    /// Returned in `eightbytes` (1 or 2) result registers — `rax:rdx` on SysV,
-    /// `x0:x1` on AAPCS64 — low eightbyte first (C field order), ≤16 bytes.
-    IntegerRegisters {
-        /// Number of eightbyte result registers (1 or 2).
-        eightbytes: u32,
-    },
-    /// Returned indirectly through caller-provided storage (sret), >16 bytes.
-    /// SysV passes the hidden pointer in `rdi` and the callee **echoes it in
-    /// `rax`**; AAPCS64 passes it in the dedicated `x8` and does not echo (see
-    /// [`TargetCCallAbi::sret_pointer_echoed_in_result_register`] and
-    /// [`TargetCCallAbi::sret_pointer_in_dedicated_register`]).
-    Indirect {
-        /// The struct's byte size (caller storage size).
-        size: u32,
-        /// The struct's alignment.
-        align: u32,
-    },
-}
-
 /// The guaranteed target-C call-ABI classifier: the classifier for one C row of
 /// [`CallingConvention`] (ADR-0064).
 ///
-/// This is the single authority both backends' `extern "C"` call lowering and
-/// the oracle consult, so no backend makes a local target-C ABI decision. It is
-/// constructed from a convention, and a target reaches it through the one
-/// `"C"` alias table ([`Self::for_target`]) — so the two AArch64 targets, which
-/// share an architecture, get their own rows. The SSE/FP register class joins
-/// this authority once RUE-714 lands floats.
+/// This answers the per-convention *facts* a scalar crossing needs — the
+/// narrow-integer extension, the argument-register budget, the sret register and
+/// echo, the call-boundary alignment — each read from the convention's
+/// [`CConventionSpec`]. It is constructed from a convention, and a target
+/// reaches it through the one `"C"` alias table ([`Self::for_target`]), so the
+/// two AArch64 targets, which share an architecture, get their own rows.
 ///
-/// The rows agree on every scalar operation and on aggregate classification;
-/// they differ in the argument-register budget, the sret register and echo, and
-/// — the Apple arm64 amendment — how the outgoing argument area is packed
-/// ([`Self::stacked_argument_packing`]).
+/// *Where* a value crosses is not this type's answer: that is
+/// [`lower_c_signature`](crate::lower_c_signature), the one placement function
+/// every C crossing site consumes.
 ///
 /// ## What P2 fixes, and why scalars need only the return re-extension
 ///
@@ -676,15 +642,17 @@ impl TargetCCallAbi {
         self.convention.stacked_argument_packing()
     }
 
+    /// This convention's complete psABI description, the one table every
+    /// predicate below reads.
+    pub const fn spec(&self) -> CConventionSpec {
+        self.convention.c_spec()
+    }
+
     /// The number of general-purpose integer registers used for arguments
-    /// before the byval stack area (P3) begins: 6 on SysV (`rdi..r9`), 8 on
-    /// AAPCS64 (`x0..x7`). P2 stays within this budget.
+    /// before the outgoing stack area begins: 6 on SysV (`rdi..r9`), 8 on
+    /// AAPCS64 (`x0..x7`).
     pub const fn int_arg_register_budget(&self) -> u32 {
-        match self.convention {
-            CallingConvention::X86_64SysV => 6,
-            CallingConvention::Aarch64Aapcs | CallingConvention::Aarch64AapcsDarwin => 8,
-            CallingConvention::Rue => unreachable!(),
-        }
+        self.spec().gp_argument_registers
     }
 
     /// Whether the callee echoes the hidden sret pointer back in the primary
@@ -693,11 +661,7 @@ impl TargetCCallAbi {
     /// echoed. Reachable from P3: an aggregate return >16 bytes takes the sret
     /// path; scalars in P2 never do.
     pub const fn sret_pointer_echoed_in_result_register(&self) -> bool {
-        match self.convention {
-            CallingConvention::X86_64SysV => true,
-            CallingConvention::Aarch64Aapcs | CallingConvention::Aarch64AapcsDarwin => false,
-            CallingConvention::Rue => unreachable!(),
-        }
+        self.spec().sret_pointer_echoed_in_result_register
     }
 
     /// Whether the hidden sret pointer is passed in a **dedicated** indirect-
@@ -707,95 +671,13 @@ impl TargetCCallAbi {
     /// passes the sret pointer as the hidden first argument in `rdi`, consuming
     /// the first integer argument register. P3 aggregate returns exercise both.
     pub const fn sret_pointer_in_dedicated_register(&self) -> bool {
-        match self.convention {
-            CallingConvention::X86_64SysV => false,
-            CallingConvention::Aarch64Aapcs | CallingConvention::Aarch64AapcsDarwin => true,
-            CallingConvention::Rue => unreachable!(),
-        }
-    }
-
-    /// The maximum aggregate size, in bytes, that a target-C boundary passes or
-    /// returns in integer registers rather than in memory. Both psABIs use two
-    /// eightbytes (16 bytes): a larger INTEGER-class aggregate goes to memory
-    /// (SysV MEMORY class / AAPCS64 by-reference).
-    pub const fn max_aggregate_register_bytes(&self) -> u64 {
-        16
-    }
-
-    /// Number of eightbytes a `size`-byte aggregate occupies (ceil(size / 8)),
-    /// saturating at `u32::MAX` like every byte-count projection here; sema
-    /// rejects layouts anywhere near that bound before they reach a boundary.
-    const fn eightbytes(size: u64) -> u32 {
-        let eightbytes = size.div_ceil(8);
-        if eightbytes > u32::MAX as u64 {
-            u32::MAX
-        } else {
-            eightbytes as u32
-        }
-    }
-
-    /// Saturating byte-count projection for the u32 fields of the memory
-    /// classes.
-    const fn saturate_u32(value: u64) -> u32 {
-        if value > u32::MAX as u64 {
-            u32::MAX
-        } else {
-            value as u32
-        }
-    }
-
-    /// Classify how a C-classifiable aggregate of `size` bytes at `align`
-    /// alignment crosses as an *argument* under this psABI (ADR-0064 P3).
-    ///
-    /// Integer-only core: every eightbyte classifies INTEGER (SSE is unreachable
-    /// until RUE-714), so a ≤16-byte aggregate packs into one or two integer
-    /// registers in C field order on both psABIs. A larger aggregate diverges:
-    /// SysV MEMORY class is byval-on-stack, AAPCS64 passes a pointer to a
-    /// caller-owned copy. `size` is the aggregate's `@size_of`; `align` its
-    /// `@align_of` — the caller has already gated the type through
-    /// [`c_passable_by_value`](crate::c_passable_by_value), so `size >= 1`.
-    pub fn classify_aggregate_arg(&self, size: u64, align: u64) -> AggregateArgClass {
-        if size <= self.max_aggregate_register_bytes() {
-            return AggregateArgClass::IntegerRegisters {
-                eightbytes: Self::eightbytes(size),
-            };
-        }
-        let size = Self::saturate_u32(size);
-        let align = Self::saturate_u32(align);
-        match self.convention {
-            CallingConvention::X86_64SysV => AggregateArgClass::ByValueStack { size, align },
-            CallingConvention::Aarch64Aapcs | CallingConvention::Aarch64AapcsDarwin => {
-                AggregateArgClass::ByReferenceCopy { size, align }
-            }
-            CallingConvention::Rue => unreachable!(),
-        }
-    }
-
-    /// Classify how a C-classifiable aggregate of `size` bytes at `align`
-    /// alignment crosses as a *return value* under this psABI (ADR-0064 P3).
-    ///
-    /// ≤16 bytes returns in one or two result registers (`rax:rdx` / `x0:x1`) in
-    /// C field order; a larger aggregate returns indirectly through caller
-    /// storage (sret) on both psABIs, differing only in the sret-pointer register
-    /// and echo ([`Self::sret_pointer_in_dedicated_register`],
-    /// [`Self::sret_pointer_echoed_in_result_register`]).
-    pub fn classify_aggregate_return(&self, size: u64, align: u64) -> AggregateReturnClass {
-        if size <= self.max_aggregate_register_bytes() {
-            AggregateReturnClass::IntegerRegisters {
-                eightbytes: Self::eightbytes(size),
-            }
-        } else {
-            AggregateReturnClass::Indirect {
-                size: Self::saturate_u32(size),
-                align: Self::saturate_u32(align),
-            }
-        }
+        !self.spec().sret_pointer_in_argument_register()
     }
 
     /// The stack alignment required at a `call` instruction on this psABI: 16
     /// bytes on both SysV AMD64 and AAPCS64.
     pub const fn call_stack_alignment(&self) -> u32 {
-        16
+        self.spec().call_stack_alignment
     }
 
     /// The extension a scalar *return* value needs to become Rue's canonical
@@ -822,26 +704,52 @@ impl TargetCCallAbi {
     /// width-and-signedness class; the extension operation itself lives on
     /// [`CAbiScalarKind::extension`], shared with the stable query plane.
     fn canonical_extension(ty: Type) -> ScalarAbiExtension {
-        let kind = match ty.kind() {
-            TypeKind::I8 => CAbiScalarKind::I8,
-            TypeKind::I16 => CAbiScalarKind::I16,
-            TypeKind::I32 => CAbiScalarKind::I32,
-            TypeKind::U8 => CAbiScalarKind::U8,
-            TypeKind::U16 => CAbiScalarKind::U16,
-            TypeKind::U32 => CAbiScalarKind::U32,
-            TypeKind::Bool => CAbiScalarKind::Bool,
-            TypeKind::I64
-            | TypeKind::U64
-            | TypeKind::PtrConst(_)
-            | TypeKind::PtrMut(_)
-            | TypeKind::Error => CAbiScalarKind::RegisterWidth,
-            other => panic!(
-                "TargetCCallAbi scalar classification called on non-scalar type {other:?}; \
-                 aggregates (P3) and unsupported types are gated by c_passable_by_value \
-                 before lowering"
-            ),
+        CAbiScalarKind::for_live_type(ty)
+            .unwrap_or_else(|| {
+                panic!(
+                    "TargetCCallAbi scalar classification called on non-scalar type {:?}; \
+                     aggregates and unsupported types are gated by c_passable_by_value \
+                     before lowering",
+                    ty.kind()
+                )
+            })
+            .extension()
+    }
+}
+
+/// The live plane's projection of `ty` onto the target-C classification facts
+/// [`lower_c_signature`](crate::lower_c_signature) consumes.
+///
+/// This is the C-boundary twin of [`NativeCallAbi::facts`]: it walks the
+/// request-scoped [`FrozenTypeInternPool`], while the stable query plane makes
+/// the same projection from its revision-stable type keys and canonical layout
+/// values. Both then classify through the one kernel, so a call, a return, and
+/// an export cannot disagree about a placement.
+///
+/// `ty` must already have passed
+/// [`c_passable_by_value`](crate::c_passable_by_value); an unsupported type
+/// panics rather than being guessed at.
+pub fn c_abi_type_facts(type_pool: &FrozenTypeInternPool, ty: Type) -> CAbiTypeFacts {
+    if matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_)) {
+        let layout = type_pool.layout(ty);
+        return CAbiTypeFacts::Aggregate {
+            size: layout.size,
+            align: layout.alignment,
         };
-        kind.extension()
+    }
+    if type_pool.abi_slot_count(ty) == 0 {
+        return CAbiTypeFacts::ZeroSized;
+    }
+    let kind = CAbiScalarKind::for_live_type(ty).unwrap_or_else(|| {
+        panic!(
+            "target-C classification called on unsupported type {:?}; \
+             c_passable_by_value gates the boundary before lowering",
+            ty.kind()
+        )
+    });
+    CAbiTypeFacts::Scalar {
+        kind,
+        class: kind.register_class(),
     }
 }
 
@@ -947,69 +855,6 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_arg_classification_packs_by_size_in_c_order() {
-        let sysv = TargetCCallAbi::sysv_amd64();
-        let aapcs = TargetCCallAbi::aapcs64();
-        // A two-`i32` struct is 8 bytes: ONE eightbyte register on both psABIs.
-        // (Native would decompose it to two reversed slots — the packing the
-        // audit warns disagrees; the target-C classifier packs one eightbyte.)
-        assert_eq!(
-            sysv.classify_aggregate_arg(8, 4),
-            AggregateArgClass::IntegerRegisters { eightbytes: 1 }
-        );
-        assert_eq!(
-            aapcs.classify_aggregate_arg(8, 4),
-            AggregateArgClass::IntegerRegisters { eightbytes: 1 }
-        );
-        // A 16-byte struct packs into two eightbyte registers on both.
-        assert_eq!(
-            sysv.classify_aggregate_arg(16, 8),
-            AggregateArgClass::IntegerRegisters { eightbytes: 2 }
-        );
-        assert_eq!(
-            aapcs.classify_aggregate_arg(16, 8),
-            AggregateArgClass::IntegerRegisters { eightbytes: 2 }
-        );
-        // >16 bytes diverges: SysV byval-on-stack, AAPCS64 by-reference copy.
-        assert_eq!(
-            sysv.classify_aggregate_arg(24, 8),
-            AggregateArgClass::ByValueStack { size: 24, align: 8 }
-        );
-        assert_eq!(
-            aapcs.classify_aggregate_arg(24, 8),
-            AggregateArgClass::ByReferenceCopy { size: 24, align: 8 }
-        );
-        // A non-multiple-of-8 size rounds up to whole eightbytes.
-        assert_eq!(
-            sysv.classify_aggregate_arg(12, 4),
-            AggregateArgClass::IntegerRegisters { eightbytes: 2 }
-        );
-    }
-
-    #[test]
-    fn aggregate_return_classification_registers_then_sret() {
-        let sysv = TargetCCallAbi::sysv_amd64();
-        let aapcs = TargetCCallAbi::aapcs64();
-        assert_eq!(
-            sysv.classify_aggregate_return(8, 4),
-            AggregateReturnClass::IntegerRegisters { eightbytes: 1 }
-        );
-        assert_eq!(
-            sysv.classify_aggregate_return(16, 8),
-            AggregateReturnClass::IntegerRegisters { eightbytes: 2 }
-        );
-        // >16 bytes returns via sret on both psABIs.
-        assert_eq!(
-            sysv.classify_aggregate_return(24, 8),
-            AggregateReturnClass::Indirect { size: 24, align: 8 }
-        );
-        assert_eq!(
-            aapcs.classify_aggregate_return(24, 8),
-            AggregateReturnClass::Indirect { size: 24, align: 8 }
-        );
-    }
-
-    #[test]
     fn sret_pointer_register_and_echo_diverge_by_psabi() {
         let sysv = TargetCCallAbi::sysv_amd64();
         let aapcs = TargetCCallAbi::aapcs64();
@@ -1019,8 +864,6 @@ mod tests {
         // AAPCS64: dedicated x8, not echoed.
         assert!(aapcs.sret_pointer_in_dedicated_register());
         assert!(!aapcs.sret_pointer_echoed_in_result_register());
-        assert_eq!(sysv.max_aggregate_register_bytes(), 16);
-        assert_eq!(aapcs.max_aggregate_register_bytes(), 16);
     }
 
     #[test]
@@ -1063,14 +906,6 @@ mod tests {
             darwin.sret_pointer_echoed_in_result_register()
         );
         assert_eq!(aapcs.call_stack_alignment(), darwin.call_stack_alignment());
-        assert_eq!(
-            aapcs.classify_aggregate_arg(24, 8),
-            darwin.classify_aggregate_arg(24, 8)
-        );
-        assert_eq!(
-            aapcs.classify_aggregate_return(24, 8),
-            darwin.classify_aggregate_return(24, 8)
-        );
         // Apple's amendment: a stacked argument occupies its natural size at
         // its natural alignment rather than a whole 8-byte slot.
         assert_eq!(
@@ -1255,26 +1090,6 @@ mod tests {
             ScalarAbiExtension::Unsigned { from_bits: 8 }
         );
         assert!(K::RegisterWidth.extension().is_noop());
-    }
-
-    #[test]
-    fn oversized_aggregate_byte_counts_saturate() {
-        let sysv = TargetCCallAbi::sysv_amd64();
-        let huge = u64::from(u32::MAX) + 9;
-        assert_eq!(
-            sysv.classify_aggregate_arg(huge, 8),
-            AggregateArgClass::ByValueStack {
-                size: u32::MAX,
-                align: 8
-            }
-        );
-        assert_eq!(
-            sysv.classify_aggregate_return(huge, 8),
-            AggregateReturnClass::Indirect {
-                size: u32::MAX,
-                align: 8
-            }
-        );
     }
 
     #[test]

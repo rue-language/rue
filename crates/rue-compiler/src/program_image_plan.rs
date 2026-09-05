@@ -142,13 +142,15 @@ pub(crate) struct ProgramImageExportThunk {
 }
 
 /// Rooted C-export metadata projected from the exact optimized CFG terminal.
-/// It contains only the ABI facts needed to build the forwarding thunk.
+/// It contains only the ABI facts needed to build the forwarding thunk, already
+/// resolved to sizes, offsets, and widths, so the record outlives the type pool
+/// it was projected from and compares by ABI meaning rather than by pool handle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RootedExportThunk {
     pub(crate) function: crate::FunctionInstanceKey,
     pub(crate) exported_symbol: String,
     pub(crate) native_symbol: String,
-    pub(crate) param_types: Vec<rue_air::Type>,
+    pub(crate) signature: rue_codegen::export_thunk::ExportSignature,
 }
 
 /// Compiler-owned inputs to a fresh program link.  It deliberately excludes
@@ -305,7 +307,7 @@ impl ProgramImage {
                 options.target,
                 &export.exported_symbol,
                 &export.native_symbol,
-                &export.param_types,
+                &export.signature,
             ));
         }
         let plan = ProgramImagePlan::from_rooted_inputs_with_cancellation(
