@@ -10,8 +10,8 @@
 mod calling_convention;
 
 pub use calling_convention::{
-    AggregateClassificationRule, CConventionSpec, CRegisterClass, CallingConvention, ForeignAbi,
-    NarrowIntegerExtension, SretRegisterKind, StackedArgumentPacking,
+    AggregateClassificationRule, CConventionSpec, CRegisterClass, CallingConvention,
+    ConventionSpec, ForeignAbi, NarrowIntegerExtension, SretRegisterKind, StackedArgumentPacking,
 };
 
 use std::fmt;

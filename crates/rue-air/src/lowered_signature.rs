@@ -1,5 +1,5 @@
-//! The one target-C signature classifier and the lowered signature it produces
-//! (ADR-0064 P2/P3/P4).
+//! The one signature classifier and the lowered signature it produces
+//! (ADR-0064 P2/P3/P4, ADR-0084).
 //!
 //! [`lower_c_signature`] is the single function that answers *where every value
 //! of a `"C"` signature lives*: which register bank and roster index, which
@@ -9,6 +9,18 @@
 //! trampoline — which is ADR-0064's ratified acceptance criterion that the
 //! by-value classifier agree across all four sites. There is no second placement
 //! algorithm in the tree.
+//!
+//! ## Two entry points, one placement walk
+//!
+//! The native Rue convention is the compilation target's C convention plus a
+//! wider return bank (ADR-0084), so it places arguments by exactly these rules
+//! and differs only in its result. That is the shape of the two entry points:
+//! [`lower_c_signature`] takes a C row and classifies both halves of the
+//! signature, while [`lower_native_signature`] takes a
+//! [`ConventionSpec`] and an already-decided [`LoweredReturn`], because the
+//! native return bank is wider than any [`CConventionSpec`] describes. Both run
+//! the same walk over the same [`Placer`], so a native argument and a C
+//! argument of the same shape land in the same place by construction.
 //!
 //! ## Why this crate is the home
 //!
@@ -38,7 +50,7 @@
 
 use rue_target::{
     AggregateClassificationRule, CConventionSpec, CRegisterClass, CallingConvention,
-    SretRegisterKind, StackedArgumentPacking,
+    ConventionSpec, SretRegisterKind, StackedArgumentPacking,
 };
 
 use crate::call_abi::{ArgConvention, CAbiScalarKind, ScalarAbiExtension};
@@ -284,21 +296,28 @@ impl LoweredReturn {
 /// thunk (callee direction: read these places, then adapt to the native body).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoweredSignature {
-    convention: CallingConvention,
+    convention: ConventionSpec,
     arguments: Vec<LoweredArgument>,
     ret: LoweredReturn,
     stack_bytes: u32,
 }
 
 impl LoweredSignature {
-    /// The convention that produced this lowering. Always a C row.
+    /// The convention that produced this lowering.
     pub fn convention(&self) -> CallingConvention {
-        self.convention
+        self.convention.convention()
     }
 
-    /// The convention's psABI description.
+    /// The description this lowering placed by. For a C row it is that row's
+    /// own psABI entry; for the native convention it is the target's C entry
+    /// with the native amendments (`ConventionSpec::native`).
     pub fn spec(&self) -> CConventionSpec {
-        self.convention.c_spec()
+        self.convention.spec()
+    }
+
+    /// The convention and description this lowering placed by, as one value.
+    pub fn convention_spec(&self) -> ConventionSpec {
+        self.convention
     }
 
     /// Every argument's placement, in source order.
@@ -466,21 +485,51 @@ impl Placer {
 ///
 /// `parameters` are the source parameters in declaration order, each already
 /// reduced to the facts its plane projected and the mode it is passed under;
-/// `result` is the return type's facts. `convention` must be a C row —
-/// [`CallingConvention::Rue`] is the native convention and is classified by
-/// [`NativeCallAbi`](crate::NativeCallAbi).
+/// `result` is the return type's facts. `convention` must be a C row: the
+/// pairing [`ConventionSpec::c`] is what asserts it, because a C boundary is
+/// exactly a convention that describes itself.
 pub fn lower_c_signature(
     convention: CallingConvention,
     parameters: &[(CAbiTypeFacts, ArgConvention)],
     result: CAbiTypeFacts,
 ) -> LoweredSignature {
-    assert!(
-        convention.is_c(),
-        "lower_c_signature classifies a C boundary; the native Rue convention \
-         is the native classifier's authority"
-    );
-    let spec = convention.c_spec();
-    let ret = lower_return(&spec, result);
+    let pairing = ConventionSpec::c(convention);
+    let ret = lower_return(&pairing.spec(), result);
+    place_signature(pairing, parameters, ret)
+}
+
+/// Classify one whole *native* signature's arguments into placements, against
+/// an already-decided return.
+///
+/// Arguments are placed by exactly the rules `pairing` describes, which for
+/// [`ConventionSpec::native`] are the compilation target's own C rules
+/// (ADR-0084). The return is an input rather than a decision because the native
+/// return bank is wider than any C row's and no [`CConventionSpec`] describes
+/// it: the caller classifies the return and hands it in, and this function
+/// honors the one consequence a return has for argument placement — a native
+/// sret pointer is the hidden first ordinary argument, so it shifts every user
+/// argument one general-purpose register right.
+pub fn lower_native_signature(
+    pairing: ConventionSpec,
+    parameters: &[(CAbiTypeFacts, ArgConvention)],
+    result: LoweredReturn,
+) -> LoweredSignature {
+    place_signature(pairing, parameters, result)
+}
+
+/// Place every argument of a signature whose result crosses as `ret`, under
+/// `pairing`.
+///
+/// The one placement walk both entry points run: the sret shift, the argument
+/// classification in declaration order, and the outgoing argument area's final
+/// size. What differs between a C boundary and a native one is only where `ret`
+/// came from.
+fn place_signature(
+    pairing: ConventionSpec,
+    parameters: &[(CAbiTypeFacts, ArgConvention)],
+    ret: LoweredReturn,
+) -> LoweredSignature {
+    let spec = pairing.spec();
     let mut placer = Placer::new(spec);
     if ret.uses_sret() && spec.sret_pointer_in_argument_register() {
         // The hidden pointer is the hidden *first* argument, so it shifts every
@@ -500,7 +549,7 @@ pub fn lower_c_signature(
         .collect();
 
     LoweredSignature {
-        convention,
+        convention: pairing,
         arguments,
         ret,
         stack_bytes: saturate_u32(align_up(placer.stack, u64::from(spec.call_stack_alignment))),
@@ -633,6 +682,7 @@ fn lower_return(spec: &CConventionSpec, result: CAbiTypeFacts) -> LoweredReturn 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rue_target::Target;
 
     const SYSV: CallingConvention = CallingConvention::X86_64SysV;
     const AAPCS: CallingConvention = CallingConvention::Aarch64Aapcs;
@@ -1021,8 +1071,146 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "classifies a C boundary")]
-    fn the_native_convention_is_not_lowered_here() {
+    #[should_panic(expected = "a C pairing names a psABI row")]
+    fn the_native_convention_is_not_a_c_boundary() {
         let _ = lower_c_signature(CallingConvention::Rue, &[], CAbiTypeFacts::ZeroSized);
+    }
+
+    #[test]
+    fn a_void_native_signature_places_arguments_exactly_as_its_targets_c_row() {
+        // ADR-0084's argument rule, stated as an equality: with nothing forced
+        // by the return, every native placement is the target C placement.
+        let params = vec![
+            word(),
+            aggregate(16, 8),
+            aggregate(24, 8),
+            word(),
+            word(),
+            word(),
+            word(),
+            word(),
+            word(),
+            scalar(CAbiScalarKind::I8),
+        ];
+        for target in Target::all() {
+            let c = lower_c_signature(
+                target.c_calling_convention(),
+                &params,
+                CAbiTypeFacts::ZeroSized,
+            );
+            let native = lower_native_signature(
+                ConventionSpec::native(*target),
+                &params,
+                LoweredReturn::Void,
+            );
+            assert_eq!(
+                native.arguments(),
+                c.arguments(),
+                "{target:?}: the native convention places arguments by its C row"
+            );
+            assert_eq!(native.stack_bytes(), c.stack_bytes());
+            assert_eq!(native.convention(), CallingConvention::Rue);
+            assert_eq!(native.ret(), LoweredReturn::Void);
+            assert_eq!(
+                native.spec().gp_argument_registers,
+                c.spec().gp_argument_registers
+            );
+        }
+    }
+
+    #[test]
+    fn a_native_sret_shifts_user_arguments_on_every_target() {
+        // The native hidden indirect-result pointer is an ordinary first
+        // argument on both architectures, so it costs the first
+        // general-purpose argument register everywhere — unlike AAPCS64's
+        // dedicated `x8`, which leaves user arguments at roster index 0.
+        let sret = LoweredReturn::Sret {
+            register: SretRegisterKind::ArgumentRegister,
+            echoed: false,
+            size: 64,
+            align: 8,
+        };
+        for target in Target::all() {
+            let native =
+                lower_native_signature(ConventionSpec::native(*target), &[word(), word()], sret);
+            assert!(native.sret_in_argument_register());
+            assert_eq!(native.arguments()[0].location, registers(1, 1));
+            assert_eq!(native.arguments()[1].location, registers(2, 1));
+        }
+        // The same shape at the AAPCS64 C boundary keeps `x0` for the user's
+        // first argument, which is the difference the pairing carries.
+        let c = lower_c_signature(
+            CallingConvention::Aarch64Aapcs,
+            &[word(), word()],
+            CAbiTypeFacts::Aggregate { size: 64, align: 8 },
+        );
+        assert!(!c.sret_in_argument_register());
+        assert_eq!(c.arguments()[0].location, registers(0, 1));
+    }
+
+    #[test]
+    fn a_native_signature_fills_its_targets_roster_before_the_argument_area() {
+        // Nine words: SysV stacks the last three, AAPCS64 the last one, and the
+        // Apple row packs a narrow stacked scalar at its natural size just as
+        // it does at its C boundary.
+        let params = vec![word(); 9];
+        let native = |target: Target| {
+            lower_native_signature(ConventionSpec::native(target), &params, LoweredReturn::Void)
+        };
+        let sysv = native(Target::X86_64Linux);
+        assert_eq!(sysv.arguments()[5].location, registers(5, 1));
+        assert_eq!(
+            sysv.arguments()[6].location,
+            ArgLocation::Stack {
+                offset: 0,
+                size: 8,
+                align: 8
+            }
+        );
+        assert_eq!(sysv.stack_bytes(), 32);
+        let aapcs = native(Target::Aarch64Linux);
+        assert_eq!(aapcs.arguments()[7].location, registers(7, 1));
+        assert_eq!(
+            aapcs.arguments()[8].location,
+            ArgLocation::Stack {
+                offset: 0,
+                size: 8,
+                align: 8
+            }
+        );
+
+        let mut narrow = vec![word(); 8];
+        narrow.push(scalar(CAbiScalarKind::I8));
+        let darwin = lower_native_signature(
+            ConventionSpec::native(Target::Aarch64Macos),
+            &narrow,
+            LoweredReturn::Void,
+        );
+        assert_eq!(
+            darwin.arguments()[8].location,
+            ArgLocation::Stack {
+                offset: 0,
+                size: 1,
+                align: 1
+            }
+        );
+    }
+
+    #[test]
+    fn a_native_register_return_costs_no_argument_register() {
+        // Only an sret return shifts arguments; a return that fits the native
+        // bank leaves the whole roster to the user's arguments.
+        for target in Target::all() {
+            let native = lower_native_signature(
+                ConventionSpec::native(*target),
+                &[word()],
+                LoweredReturn::Registers {
+                    class: CRegisterClass::Gp,
+                    count: 6,
+                    extension: ScalarAbiExtension::None,
+                },
+            );
+            assert_eq!(native.arguments()[0].location, registers(0, 1));
+        }
     }
 }

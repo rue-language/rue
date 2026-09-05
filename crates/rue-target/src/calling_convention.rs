@@ -42,6 +42,14 @@
 //! reads it against a type's size, alignment, and scalar kind is
 //! `rue_air::lowered_signature`, which is where type facts first exist.
 //!
+//! ## The convention and its description travel together
+//!
+//! A placement is made by a convention *and* the description it places by, and
+//! for the native Rue convention those are not the same row: ADR-0084 defines
+//! the native convention as the compilation target's C row plus a wider return
+//! bank, so it borrows a description rather than owning one.
+//! [`ConventionSpec`] is that pair, and it is what the classifier takes.
+//!
 //! ## Apple's arm64 amendments
 //!
 //! `Aarch64Aapcs` and `Aarch64AapcsDarwin` are separate rows because Apple's
@@ -372,6 +380,88 @@ impl CallingConvention {
     }
 }
 
+/// A calling convention paired with the psABI description that governs its
+/// placements.
+///
+/// A placement needs both halves: which convention a boundary follows, and the
+/// register rosters, sret rule, stack packing and aggregate rule it places by.
+/// For a C row the second half is the first half's own
+/// [`c_spec`](CallingConvention::c_spec) entry. For the native Rue convention
+/// it is not, because the native convention is *the compilation target's C row*
+/// plus a wider return bank (ADR-0084) rather than a psABI of its own; there is
+/// no `CallingConvention::Rue` row of that table to look up. Pairing the two
+/// values is what lets one classifier place a signature under either
+/// convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConventionSpec {
+    convention: CallingConvention,
+    spec: CConventionSpec,
+}
+
+impl ConventionSpec {
+    /// The pairing for one platform C row: the row beside its own psABI
+    /// description.
+    ///
+    /// Panics on [`CallingConvention::Rue`], which is not a psABI row —
+    /// [`native`](Self::native) is how the native convention is paired.
+    pub const fn c(convention: CallingConvention) -> Self {
+        assert!(
+            convention.is_c(),
+            "a C pairing names a psABI row; the native Rue convention pairs \
+             through ConventionSpec::native"
+        );
+        Self {
+            convention,
+            spec: convention.c_spec(),
+        }
+    }
+
+    /// The pairing for the C boundary of `target`.
+    pub const fn c_for_target(target: Target) -> Self {
+        Self::c(CallingConvention::c_for_target(target))
+    }
+
+    /// The pairing for the native Rue convention on `target`: the target's own
+    /// C description, amended where the native convention differs from it.
+    ///
+    /// The native convention places arguments exactly as the target's C row
+    /// does, so every other field of the description is the C row's verbatim.
+    /// The two amendments are the sret rule: the hidden indirect-result
+    /// pointer is the hidden *first ordinary argument*, so it shifts every user
+    /// argument one general-purpose register right on every target, and it is
+    /// not echoed in the primary result register. AAPCS64's dedicated `x8` and
+    /// SysV's `rax` echo belong to the C rows; the native return bank is wider
+    /// than C's and is fed to the classifier rather than derived from this
+    /// description (RUE-2038 owns the native return classification that moves
+    /// AAPCS64 onto `x8`).
+    pub const fn native(target: Target) -> Self {
+        let spec = CallingConvention::c_for_target(target).c_spec();
+        Self {
+            convention: CallingConvention::Rue,
+            spec: CConventionSpec {
+                sret_register: SretRegisterKind::ArgumentRegister,
+                sret_pointer_echoed_in_result_register: false,
+                ..spec
+            },
+        }
+    }
+
+    /// The convention this pairing names.
+    pub const fn convention(self) -> CallingConvention {
+        self.convention
+    }
+
+    /// The psABI description this pairing places by.
+    pub const fn spec(self) -> CConventionSpec {
+        self.spec
+    }
+
+    /// Whether this pairing names the native Rue convention.
+    pub const fn is_native(self) -> bool {
+        self.convention.is_rue()
+    }
+}
+
 /// The calling convention an `extern` declaration names in source.
 ///
 /// A foreign declaration writes either the alias `"C"`, which denotes whichever
@@ -598,6 +688,70 @@ mod tests {
     #[should_panic(expected = "not a psABI row")]
     fn the_native_row_has_no_psabi_description() {
         let _ = CallingConvention::Rue.c_spec();
+    }
+
+    #[test]
+    fn a_c_pairing_is_its_row_beside_its_own_description() {
+        for target in Target::all() {
+            let convention = target.c_calling_convention();
+            let pairing = ConventionSpec::c(convention);
+            assert_eq!(pairing.convention(), convention);
+            assert_eq!(pairing.spec(), convention.c_spec());
+            assert!(!pairing.is_native());
+            assert_eq!(ConventionSpec::c_for_target(*target), pairing);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "a C pairing names a psABI row")]
+    fn the_native_convention_has_no_c_pairing() {
+        let _ = ConventionSpec::c(CallingConvention::Rue);
+    }
+
+    #[test]
+    fn the_native_pairing_amends_exactly_the_sret_rule_of_its_targets_c_row() {
+        for target in Target::all() {
+            let c = target.c_calling_convention().c_spec();
+            let native = ConventionSpec::native(*target);
+            assert_eq!(native.convention(), CallingConvention::Rue);
+            assert!(native.is_native());
+            let spec = native.spec();
+            // The hidden indirect-result pointer is the hidden first ordinary
+            // argument on every target, with no echo.
+            assert_eq!(spec.sret_register, SretRegisterKind::ArgumentRegister);
+            assert!(spec.sret_pointer_in_argument_register());
+            assert!(!spec.sret_pointer_echoed_in_result_register);
+            // Everything else is the target's own C description verbatim.
+            assert_eq!(
+                CConventionSpec {
+                    sret_register: c.sret_register,
+                    sret_pointer_echoed_in_result_register: c
+                        .sret_pointer_echoed_in_result_register,
+                    ..spec
+                },
+                c,
+                "{target:?}: the native convention places arguments by its \
+                 target's C row"
+            );
+        }
+    }
+
+    #[test]
+    fn the_native_pairing_differs_from_the_c_pairing_only_on_aarch64() {
+        // SysV already puts the hidden pointer in the first argument register
+        // and echoes it; the native convention keeps the placement and drops
+        // the echo. AAPCS64's dedicated `x8` is a C-row rule the native
+        // convention does not share.
+        let sysv = ConventionSpec::native(Target::X86_64Linux).spec();
+        assert_eq!(sysv.gp_argument_registers, 6);
+        assert!(sysv.sret_pointer_in_argument_register());
+        for target in [Target::Aarch64Linux, Target::Aarch64Macos] {
+            let c = ConventionSpec::c_for_target(target).spec();
+            let native = ConventionSpec::native(target).spec();
+            assert!(!c.sret_pointer_in_argument_register());
+            assert!(native.sret_pointer_in_argument_register());
+            assert_eq!(native.stacked_argument_packing, c.stacked_argument_packing);
+        }
     }
 
     #[test]

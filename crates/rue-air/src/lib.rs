@@ -83,7 +83,7 @@ pub use intrinsic::{
 pub use layout::{Layout, LayoutKind, PaddingRange, SLOT_BYTES};
 pub use lowered_signature::{
     ArgLocation, CAbiTypeFacts, EightbyteClass, EightbyteClasses, LoweredArgument, LoweredReturn,
-    LoweredSignature, PointerLocation, lower_c_signature,
+    LoweredSignature, PointerLocation, lower_c_signature, lower_native_signature,
 };
 pub use module_registry::ModuleRegistry;
 pub use param_arena::{ParamArena, ParamRange, ParamRangeData};
