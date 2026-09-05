@@ -949,12 +949,7 @@ impl CfgDomainProjection {
                     // native symbol come from the same facts, and this map is
                     // keyed by a recursive callable identity.
                     let abi = call_abis.get(callable);
-                    let foreign = abi.is_some_and(|facts| {
-                        matches!(
-                            facts.convention,
-                            crate::type_queries::CallAbiConvention::TargetC(_)
-                        )
-                    });
+                    let foreign = abi.is_some_and(|facts| facts.convention.is_c());
                     let machine = if foreign {
                         foreign_callable_symbol(callable).ok_or(CfgDomainFailure::Shape)?
                     } else if source == "main" {
@@ -977,12 +972,7 @@ impl CfgDomainProjection {
                         crate::semantic_identity::function_instance_from_specialization(identity)
                             .ok_or(CfgDomainFailure::Shape)?;
                     let abi = call_abis.get(&callable);
-                    let foreign = abi.is_some_and(|facts| {
-                        matches!(
-                            facts.convention,
-                            crate::type_queries::CallAbiConvention::TargetC(_)
-                        )
-                    });
+                    let foreign = abi.is_some_and(|facts| facts.convention.is_c());
                     let machine = if foreign {
                         foreign_callable_symbol(&callable).ok_or(CfgDomainFailure::Shape)?
                     } else if source == "main" {

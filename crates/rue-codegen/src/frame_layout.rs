@@ -131,6 +131,22 @@ pub fn checked_call_area_bytes(
     indirect_argument_bytes: u64,
 ) -> Result<u32, FrameBudgetExceeded> {
     let stack_bytes = u64::from(checked_aligned_cell_region_bytes(stack_slots)?);
+    checked_call_area_from_stack_bytes(stack_bytes, sret_storage_bytes, indirect_argument_bytes)
+}
+
+/// The same validation for a caller that has already sized its outgoing
+/// argument area in bytes rather than in whole cells.
+///
+/// A target-C argument area is not a whole number of cells under every psABI:
+/// Apple's arm64 amendment packs stacked scalars at their natural size, so the
+/// area's size is computed by the foreign-call planner and passed through here
+/// as bytes.
+#[inline]
+pub fn checked_call_area_from_stack_bytes(
+    stack_bytes: u64,
+    sret_storage_bytes: u64,
+    indirect_argument_bytes: u64,
+) -> Result<u32, FrameBudgetExceeded> {
     let total = sret_storage_bytes
         .checked_add(indirect_argument_bytes)
         .and_then(|bytes| bytes.checked_add(stack_bytes))

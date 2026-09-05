@@ -1886,9 +1886,10 @@ pub(super) fn evaluate_call_abi(
 ) -> Result<QueryOutput<crate::type_queries::CallAbiValue>, QueryAbort> {
     use crate::durable_semantics::DurableParameterMode;
     use crate::type_queries::{
-        CallAbiArgument, CallAbiArgumentClass as A, CallAbiConvention, CallAbiFacts,
-        CallAbiReturnClass as R, CallAbiValue,
+        CallAbiArgument, CallAbiArgumentClass as A, CallAbiFacts, CallAbiReturnClass as R,
+        CallAbiValue,
     };
+    use rue_target::CallingConvention;
     let signature = match query_callable_signature(
         context,
         semantic_nucleus,
@@ -1903,12 +1904,13 @@ pub(super) fn evaluate_call_abi(
                 .with_terminal_kind(QueryTerminalKind::Failure));
         }
     };
+    // `"C"` is an alias resolved by the whole target, not by its architecture:
+    // AArch64 Linux and AArch64 macOS share an architecture and follow different
+    // conventions. The stable plane consults the same table code generation does.
     let convention = if signature.target_c {
-        CallAbiConvention::TargetC(rue_air::TargetCAbiFlavor::for_arch(
-            key.configuration.target.arch(),
-        ))
+        CallingConvention::c_for_target(key.configuration.target)
     } else {
-        CallAbiConvention::Native
+        CallingConvention::Rue
     };
     // Every layout this ABI needs, in one batch: each by-value parameter in
     // signature order, then the result. A reference parameter is passed as a
@@ -1967,44 +1969,34 @@ pub(super) fn evaluate_call_abi(
                     .with_terminal_kind(QueryTerminalKind::Failure));
             }
         };
-        let class = match convention {
-            CallAbiConvention::Native => {
-                match stable_native_abi_facts(layout, ty)
-                    .classify_arg(rue_air::ArgConvention::ByValue)
-                {
-                    rue_air::ArgClass::Omitted => A::Omitted,
-                    rue_air::ArgClass::Direct { slot_count } => {
-                        A::NativeDirect { slots: slot_count }
-                    }
-                    rue_air::ArgClass::Indirect => A::NativeIndirect,
-                }
+        let class = if convention.is_rue() {
+            match stable_native_abi_facts(layout, ty).classify_arg(rue_air::ArgConvention::ByValue)
+            {
+                rue_air::ArgClass::Omitted => A::Omitted,
+                rue_air::ArgClass::Direct { slot_count } => A::NativeDirect { slots: slot_count },
+                rue_air::ArgClass::Indirect => A::NativeIndirect,
             }
-            CallAbiConvention::TargetC(flavor) => {
-                if layout.size == 0 {
-                    A::Omitted
-                } else if !stable_type_is_aggregate(ty) {
-                    A::CScalar {
-                        extension: c_scalar_extension(ty),
-                    }
-                } else {
-                    match rue_air::TargetCCallAbi::new(flavor)
-                        .classify_aggregate_arg(layout.size, layout.alignment)
-                    {
-                        rue_air::AggregateArgClass::IntegerRegisters { eightbytes } => {
-                            A::CIntegerRegisters { eightbytes }
-                        }
-                        rue_air::AggregateArgClass::ByValueStack { size, align } => {
-                            A::CByValueStack {
-                                size,
-                                alignment: align,
-                            }
-                        }
-                        rue_air::AggregateArgClass::ByReferenceCopy { size, align } => {
-                            A::CByReferenceCopy {
-                                size,
-                                alignment: align,
-                            }
-                        }
+        } else if layout.size == 0 {
+            A::Omitted
+        } else if !stable_type_is_aggregate(ty) {
+            A::CScalar {
+                extension: c_scalar_extension(ty),
+            }
+        } else {
+            match rue_air::TargetCCallAbi::new(convention)
+                .classify_aggregate_arg(layout.size, layout.alignment)
+            {
+                rue_air::AggregateArgClass::IntegerRegisters { eightbytes } => {
+                    A::CIntegerRegisters { eightbytes }
+                }
+                rue_air::AggregateArgClass::ByValueStack { size, align } => A::CByValueStack {
+                    size,
+                    alignment: align,
+                },
+                rue_air::AggregateArgClass::ByReferenceCopy { size, align } => {
+                    A::CByReferenceCopy {
+                        size,
+                        alignment: align,
                     }
                 }
             }
@@ -2022,43 +2014,37 @@ pub(super) fn evaluate_call_abi(
                 .with_terminal_kind(QueryTerminalKind::Failure));
         }
     };
-    let return_class = match convention {
-        CallAbiConvention::Native => {
-            let budget = rue_air::native_return_register_budget(key.configuration.target.arch());
-            match stable_native_abi_facts(return_layout, &signature.result).classify_return(budget)
-            {
-                rue_air::ReturnClass::ZeroSized => R::ZeroSized,
-                rue_air::ReturnClass::Scalar => R::Scalar {
-                    extension: rue_air::ScalarAbiExtension::None,
-                },
-                rue_air::ReturnClass::Registers { slot_count } => {
-                    R::NativeRegisters { slots: slot_count }
-                }
-                rue_air::ReturnClass::Indirect { slot_count } => {
-                    R::NativeIndirect { slots: slot_count }
-                }
+    let return_class = if convention.is_rue() {
+        let budget = rue_air::native_return_register_budget(key.configuration.target.arch());
+        match stable_native_abi_facts(return_layout, &signature.result).classify_return(budget) {
+            rue_air::ReturnClass::ZeroSized => R::ZeroSized,
+            rue_air::ReturnClass::Scalar => R::Scalar {
+                extension: rue_air::ScalarAbiExtension::None,
+            },
+            rue_air::ReturnClass::Registers { slot_count } => {
+                R::NativeRegisters { slots: slot_count }
+            }
+            rue_air::ReturnClass::Indirect { slot_count } => {
+                R::NativeIndirect { slots: slot_count }
             }
         }
-        CallAbiConvention::TargetC(flavor) => {
-            if return_layout.abi_slots == 0 {
-                R::ZeroSized
-            } else if !stable_type_is_aggregate(&signature.result) {
-                R::Scalar {
-                    extension: c_scalar_extension(&signature.result),
-                }
-            } else {
-                match rue_air::TargetCCallAbi::new(flavor)
-                    .classify_aggregate_return(return_layout.size, return_layout.alignment)
-                {
-                    rue_air::AggregateReturnClass::IntegerRegisters { eightbytes } => {
-                        R::CIntegerRegisters { eightbytes }
-                    }
-                    rue_air::AggregateReturnClass::Indirect { size, align } => R::CIndirect {
-                        size,
-                        alignment: align,
-                    },
-                }
+    } else if return_layout.abi_slots == 0 {
+        R::ZeroSized
+    } else if !stable_type_is_aggregate(&signature.result) {
+        R::Scalar {
+            extension: c_scalar_extension(&signature.result),
+        }
+    } else {
+        match rue_air::TargetCCallAbi::new(convention)
+            .classify_aggregate_return(return_layout.size, return_layout.alignment)
+        {
+            rue_air::AggregateReturnClass::IntegerRegisters { eightbytes } => {
+                R::CIntegerRegisters { eightbytes }
             }
+            rue_air::AggregateReturnClass::Indirect { size, align } => R::CIndirect {
+                size,
+                alignment: align,
+            },
         }
     };
     Ok(QueryOutput::success(CallAbiValue::Available(
@@ -2066,7 +2052,7 @@ pub(super) fn evaluate_call_abi(
             convention,
             return_class,
             arguments: arguments.into(),
-            native_symbol: matches!(convention, CallAbiConvention::Native).then(|| {
+            native_symbol: convention.is_rue().then(|| {
                 Arc::from(crate::StableSymbolEncoder::encode(
                     &crate::StableSymbolId::Callable(crate::StableCallableId::Function(
                         key.callable.clone(),

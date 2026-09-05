@@ -757,13 +757,9 @@ fn check_runtime_archive_work(
     }
 }
 
-fn runtime_target(target: Target) -> rue_runtime_abi::RuntimeTarget {
-    match target {
-        Target::X86_64Linux => rue_runtime_abi::RuntimeTarget::X86_64Linux,
-        Target::Aarch64Linux => rue_runtime_abi::RuntimeTarget::Aarch64Linux,
-        Target::Aarch64Macos => rue_runtime_abi::RuntimeTarget::Aarch64Macos,
-    }
-}
+// The compiler-target to runtime-manifest-target correspondence has one home;
+// linking names the same renaming the runtime-helper boundary resolves through.
+use rue_codegen::runtime_call_plan::runtime_target;
 
 fn parsed_object_target(
     object: &ObjectFile,

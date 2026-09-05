@@ -119,12 +119,6 @@ pub enum ReturnBehavior {
     Never,
 }
 
-/// Calling-convention family. Physical register assignment remains target-owned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CallingConvention {
-    TargetC,
-}
-
 /// Supported runtime targets, represented without depending on `rue-target`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeTarget {
@@ -385,7 +379,6 @@ const MUT_POINTER_RESULT: AbiResult = AbiResult::Scalar(AbiType::MutBytePointer)
 /// A `bool`-valued helper result: the C-ABI word carrying 0 or 1, the same
 /// representation `AbiType::BoolWordI64` gives a `bool` argument.
 const BOOL_WORD_RESULT: AbiResult = AbiResult::Scalar(AbiType::BoolWordI64);
-const TARGET_C: CallingConvention = CallingConvention::TargetC;
 const ALL_TARGETS: TargetSet = TargetSet::ALL;
 
 const READABLE: SafetyContract = SafetyContract::READABLE_BYTES;
@@ -462,7 +455,6 @@ macro_rules! runtime_helpers {
                     safety: $safety,
                     return_behavior: $returns,
                     availability: ALL_TARGETS,
-                    calling_convention: TARGET_C,
                 }
             ),+
         ];
@@ -492,6 +484,16 @@ macro_rules! runtime_helpers {
 }
 
 /// Complete logical signature and contract for one runtime helper.
+///
+/// There is no calling-convention field. Every compiler-callable helper crosses
+/// the platform C boundary, and that boundary's *concrete* convention — SysV
+/// AMD64, AAPCS64, or AAPCS64 with Apple's arm64 amendments — is a fact about
+/// the compilation target, not about the helper. This crate is the `no_std`,
+/// dependency-free manifest (ADR-0055), so it cannot name `rue_target::Target`
+/// and must not carry a second, target-free spelling of "which convention".
+/// The caller resolves the row through the one `"C"` alias table,
+/// `rue_target::CallingConvention::c_for_target`; `rue-codegen`'s
+/// `runtime_call_plan` is where that happens for helper calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RuntimeHelper {
     pub id: RuntimeHelperId,
@@ -501,7 +503,6 @@ pub struct RuntimeHelper {
     pub safety: SafetyContract,
     pub return_behavior: ReturnBehavior,
     pub availability: TargetSet,
-    pub calling_convention: CallingConvention,
 }
 
 /// Invoke a callback with the canonical Rust declaration and logical contract
@@ -1054,12 +1055,15 @@ macro_rules! for_each_runtime_helper {
 for_each_runtime_helper!(runtime_helpers);
 
 /// Logical function signature for separately classified non-helper exports.
+///
+/// Like [`RuntimeHelper`], a signature carries no convention field: see that
+/// type's documentation for why the boundary is named here and the concrete
+/// convention row is resolved by the caller from its target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AbiSignature {
     pub parameters: &'static [AbiParameter],
     pub result: AbiResult,
     pub return_behavior: ReturnBehavior,
-    pub calling_convention: CallingConvention,
 }
 
 /// Why a reserved runtime symbol is externally visible.
@@ -1221,13 +1225,11 @@ const VOID_FUNCTION: AbiSignature = AbiSignature {
     parameters: &[],
     result: VOID,
     return_behavior: RETURNS,
-    calling_convention: TARGET_C,
 };
 const NEVER_FUNCTION: AbiSignature = AbiSignature {
     parameters: &[],
     result: VOID,
     return_behavior: NEVER,
-    calling_convention: TARGET_C,
 };
 const COPY_FUNCTION: AbiSignature = AbiSignature {
     parameters: &[
@@ -1237,7 +1239,6 @@ const COPY_FUNCTION: AbiSignature = AbiSignature {
     ],
     result: MUT_POINTER_RESULT,
     return_behavior: RETURNS,
-    calling_convention: TARGET_C,
 };
 const MEMSET_FUNCTION: AbiSignature = AbiSignature {
     parameters: &[
@@ -1247,7 +1248,6 @@ const MEMSET_FUNCTION: AbiSignature = AbiSignature {
     ],
     result: MUT_POINTER_RESULT,
     return_behavior: RETURNS,
-    calling_convention: TARGET_C,
 };
 const COMPARE_FUNCTION: AbiSignature = AbiSignature {
     parameters: &[
@@ -1257,7 +1257,6 @@ const COMPARE_FUNCTION: AbiSignature = AbiSignature {
     ],
     result: AbiResult::Scalar(AbiType::I32),
     return_behavior: RETURNS,
-    calling_convention: TARGET_C,
 };
 
 macro_rules! define_reserved_exports {
@@ -2012,7 +2011,7 @@ mod tests {
     }
 
     #[test]
-    fn all_helpers_are_available_on_every_runtime_target_and_use_target_c() {
+    fn all_helpers_are_available_on_every_runtime_target() {
         for helper in RUNTIME_HELPERS {
             for target in [
                 RuntimeTarget::X86_64Linux,
@@ -2021,7 +2020,6 @@ mod tests {
             ] {
                 assert!(helper.availability.contains(target));
             }
-            assert_eq!(helper.calling_convention, CallingConvention::TargetC);
         }
     }
 

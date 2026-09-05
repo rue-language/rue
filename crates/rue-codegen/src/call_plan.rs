@@ -10,28 +10,27 @@ use rue_air::{ArgClass, ArgConvention, FrozenTypeInternPool, NativeCallAbi, Retu
 // stays visible to readers of the field; no direct import is needed.
 use rue_cfg::{Cfg, CfgArgMode, CfgCallArg, Type};
 use rue_runtime_abi::{ReservedExportClass, ReservedExportId};
+use rue_target::CallingConvention;
 
 use crate::types;
 use crate::vreg::VReg;
 
 use crate::frame_layout::checked_aligned_cell_region_bytes;
 
-/// The source ABI expected by a call target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CalleeAbi {
-    /// A Rue-compiled function, whose aggregate arguments use reversed ABI
-    /// slot order to preserve the ascending logical frame layout.
-    Rue,
-    /// A compiler-built C routine using natural C-compatible slot order.
-    Runtime,
-}
-
-impl CalleeAbi {
-    const fn for_target(target: &CallTarget) -> Self {
-        match target {
-            CallTarget::Rue(_) => Self::Rue,
-            CallTarget::MemoryBuiltin(_) => Self::Runtime,
-        }
+/// The convention a call target's callee follows.
+///
+/// A Rue-compiled function uses the native convention, whose aggregate
+/// arguments are in reversed ABI slot order so the callee reconstructs the
+/// ascending logical frame layout. A compiler-built C memory routine crosses
+/// the platform C boundary, in natural C slot order; which C row that is comes
+/// from the compilation target, so the caller supplies it.
+const fn callee_convention(
+    target: &CallTarget,
+    c_convention: CallingConvention,
+) -> CallingConvention {
+    match target {
+        CallTarget::Rue(_) => CallingConvention::Rue,
+        CallTarget::MemoryBuiltin(_) => c_convention,
     }
 }
 
@@ -333,7 +332,7 @@ impl ReturnPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallPlan {
     pub target: CallTarget,
-    pub callee_abi: CalleeAbi,
+    pub callee_convention: CallingConvention,
     pub hidden_sret: Option<HiddenSretPlan>,
     pub user_args: Vec<UserArgPlan>,
     /// Complete logical ABI slots, including the hidden sret pointer when
@@ -571,6 +570,12 @@ fn normalize_call_arg(
 /// Keeping these as one adapter prevents competing mutable callbacks from
 /// creating a second aggregate or by-ref discovery path.
 pub trait CallMaterializer {
+    /// The convention this backend's compilation target resolves `"C"` to.
+    /// Names the classifier that governs every C boundary the backend lowers —
+    /// a foreign call, a compiler-built memory routine, or a runtime helper. It
+    /// comes from the target rather than the architecture, so AArch64 Linux and
+    /// AArch64 macOS answer differently.
+    fn target_c_convention(&self) -> CallingConvention;
     fn materialize_scalar(&mut self, value: rue_cfg::CfgValue) -> VReg;
     fn materialize_aggregate(&mut self, value: rue_cfg::CfgValue) -> Vec<VReg>;
     fn materialize_by_ref(&mut self, plan: &crate::value_plan::ByRefAddressPlan) -> VReg;
@@ -633,7 +638,7 @@ impl CallPlan {
         materializer: &mut M,
         result: Option<VReg>,
     ) -> Self {
-        let callee_abi = CalleeAbi::for_target(&target);
+        let callee_convention = callee_convention(&target, materializer.target_c_convention());
         let mut hidden_sret = None;
         let mut abi_slots = Vec::new();
         let mut abi_classes = Vec::new();
@@ -718,10 +723,10 @@ impl CallPlan {
                             *slot_count as usize,
                             "aggregate materialization must produce every logical ABI slot"
                         );
-                        if callee_abi == CalleeAbi::Runtime {
-                            slots
-                        } else {
+                        if callee_convention.is_rue() {
                             slots.into_iter().rev().collect()
+                        } else {
+                            slots
                         }
                     } else {
                         vec![materializer.materialize_scalar(*value)]
@@ -738,7 +743,7 @@ impl CallPlan {
                             .map(AbiSlotClass::for_leaf)
                             .collect::<Vec<_>>()
                     };
-                    if *is_multislot_aggregate && callee_abi == CalleeAbi::Rue {
+                    if *is_multislot_aggregate && callee_convention.is_rue() {
                         classes.reverse();
                     }
                     assert_eq!(
@@ -778,7 +783,7 @@ impl CallPlan {
 
         Self {
             target,
-            callee_abi,
+            callee_convention,
             hidden_sret,
             user_args,
             abi_slots,
@@ -807,6 +812,7 @@ impl CallPlan {
         target: CallTarget,
         slots: &[VReg],
         arg_register_banks: impl Into<AbiRegisterBanks>,
+        c_convention: CallingConvention,
     ) -> Self {
         let abi_classes = vec![AbiSlotClass::Gp; slots.len()];
         let abi_locations =
@@ -816,7 +822,7 @@ impl CallPlan {
             .filter(|location| matches!(location, AbiSlotLocation::Stack(_)))
             .count();
         Self {
-            callee_abi: CalleeAbi::for_target(&target),
+            callee_convention: callee_convention(&target, c_convention),
             target,
             hidden_sret: None,
             user_args: vec![UserArgPlan {
@@ -869,6 +875,10 @@ mod tests {
     struct TestMaterializer;
 
     impl CallMaterializer for TestMaterializer {
+        fn target_c_convention(&self) -> CallingConvention {
+            CallingConvention::X86_64SysV
+        }
+
         fn materialize_scalar(&mut self, value: rue_cfg::CfgValue) -> VReg {
             VReg::new(100 + value.as_u32())
         }
@@ -966,7 +976,12 @@ mod tests {
     #[test]
     fn slot_call_plan_counts_aligned_stack_slots() {
         let slots: Vec<_> = (0..9).map(VReg::new).collect();
-        let plan = CallPlan::from_slot_values(CallTarget::rue("drop"), &slots, 6);
+        let plan = CallPlan::from_slot_values(
+            CallTarget::rue("drop"),
+            &slots,
+            6,
+            CallingConvention::X86_64SysV,
+        );
 
         assert_eq!(plan.abi_slots, slots);
         assert_eq!(plan.stack_slot_count, 3);
@@ -1002,7 +1017,7 @@ mod tests {
         let slots = vec![VReg::new(7)];
         let plan = CallPlan {
             target: CallTarget::rue("test"),
-            callee_abi: CalleeAbi::Rue,
+            callee_convention: CallingConvention::Rue,
             hidden_sret: None,
             user_args: vec![
                 UserArgPlan {
@@ -1166,7 +1181,7 @@ mod tests {
             8,
             &mut materializer,
         );
-        assert_eq!(generated_rue.callee_abi, CalleeAbi::Rue);
+        assert_eq!(generated_rue.callee_convention, CallingConvention::Rue);
         assert_eq!(generated_rue.abi_slots, vec![VReg::new(11), VReg::new(10)]);
     }
 
@@ -1174,7 +1189,16 @@ mod tests {
     fn memory_builtins_are_distinct_from_helpers_and_rue_symbols() {
         let target = CallTarget::memory_builtin(ReservedExportId::Memcpy);
         assert_eq!(target.symbol(), "memcpy");
-        assert_eq!(CalleeAbi::for_target(&target), CalleeAbi::Runtime);
+        // A memory builtin crosses the caller's `"C"` boundary, so it takes
+        // whichever row the compilation target resolves the alias to.
+        assert_eq!(
+            callee_convention(&target, CallingConvention::Aarch64AapcsDarwin),
+            CallingConvention::Aarch64AapcsDarwin
+        );
+        assert_eq!(
+            callee_convention(&CallTarget::rue("f"), CallingConvention::Aarch64AapcsDarwin),
+            CallingConvention::Rue
+        );
         assert!(matches!(
             target,
             CallTarget::MemoryBuiltin(id) if id.export_id() == ReservedExportId::Memcpy

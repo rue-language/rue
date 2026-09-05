@@ -140,7 +140,7 @@ impl QueryKey for CallAbiQueryKey {
 
 #[derive(Debug, Clone)]
 pub(crate) struct CallAbiFacts {
-    pub(crate) convention: CallAbiConvention,
+    pub(crate) convention: rue_target::CallingConvention,
     pub(crate) return_class: CallAbiReturnClass,
     pub(crate) arguments: Arc<[CallAbiArgument]>,
     /// The stable native machine symbol is derived once by the ABI terminal.
@@ -157,12 +157,6 @@ impl PartialEq for CallAbiFacts {
 }
 
 impl Eq for CallAbiFacts {}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CallAbiConvention {
-    Native,
-    TargetC(rue_air::TargetCAbiFlavor),
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CallAbiReturnClass {
@@ -589,7 +583,7 @@ mod tests {
 
     fn native_facts(symbol: &str) -> CallAbiFacts {
         CallAbiFacts {
-            convention: CallAbiConvention::Native,
+            convention: rue_target::CallingConvention::Rue,
             return_class: CallAbiReturnClass::ZeroSized,
             arguments: Arc::from([]),
             native_symbol: Some(Arc::from(symbol)),

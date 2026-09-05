@@ -1,8 +1,15 @@
 //! Target architecture and OS definitions for the Rue compiler.
 //!
 //! This crate provides the `Target` enum and related types that define
-//! compilation targets. It is a leaf crate with no dependencies, designed
-//! to be used by the CLI, compiler, codegen, and linker crates.
+//! compilation targets, including [`CallingConvention`] — the one value type
+//! for "which calling convention governs this boundary" — and the `"C"` alias
+//! table that resolves it from a target. It is a leaf crate with no
+//! dependencies, designed to be used by the CLI, compiler, codegen, and linker
+//! crates.
+
+mod calling_convention;
+
+pub use calling_convention::{CallingConvention, StackedArgumentPacking};
 
 use std::fmt;
 use std::str::FromStr;

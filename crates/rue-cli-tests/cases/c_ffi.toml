@@ -348,6 +348,38 @@ execute_if_native = true
 stdout = "true\ntrue\ntrue\n"
 exit_code = 0
 
+# The Apple arm64 row (`CallingConvention::Aarch64AapcsDarwin`) end to end: a
+# `pub extern "C"` export is compiled for aarch64-macos, so its C entry thunk is
+# generated from the Darwin convention, encoded, and linked into a Mach-O image.
+# Narrow parameters are what the Apple amendments govern, so the signatures name
+# them. No C toolchain and no archive are involved; the macOS CI host executes
+# the image and every other host structurally validates it.
+[[case]]
+name = "aarch64_macos_narrow_exports_build_under_the_apple_row"
+description = "`pub extern \"C\"` exports with narrow scalar parameters compile and link for aarch64-macos, exercising the Apple arm64 convention row's export thunks."
+files = [{ path = "main.rue", source = """
+pub extern "C" fn rue_id_i8(x: i8) -> i8 {
+    x
+}
+
+pub extern "C" fn rue_id_u16(x: u16) -> u16 {
+    x
+}
+
+pub extern "C" fn rue_id_bool(x: bool) -> bool {
+    x
+}
+
+fn main() -> i32 {
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--target", "aarch64-macos", "-o", "prog"]
+executable_target = "aarch64-macos"
+execute_if_native = true
+stdout = ""
+exit_code = 0
+
 [[case]]
 name = "repr_c_requires_preview"
 description = "The `@repr(c)` marker is inert without `--preview c_ffi` (it is meaningless without FFI)."

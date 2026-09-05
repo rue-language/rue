@@ -70,7 +70,6 @@ impl Backend for Aarch64CodegenBackend {
     const RETURN_REG_COUNT: u32 = cfg_lower::RET_REGS.len() as u32;
     const SAVED_REG_SCHEME: crate::frame_layout::SavedRegScheme =
         crate::frame_layout::SavedRegScheme::Aarch64;
-    const TARGET_C_FLAVOR: rue_air::TargetCAbiFlavor = rue_air::TargetCAbiFlavor::Aapcs64;
 
     fn lower(
         cfg: &ValidatedCfg,

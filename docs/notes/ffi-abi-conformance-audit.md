@@ -2,13 +2,27 @@
 
 Status: verified against the compiler and runtime source for RUE-738.
 
-Rue currently has two distinct calling conventions:
+One value type names every calling convention in the tree,
+`rue_target::CallingConvention`, and its members are concrete conventions:
 
-1. A private native convention for calls between Rue functions. It borrows
-   target register and stack rules but deliberately is not a C ABI.
-2. A typed `CallingConvention::TargetC` subset for calls from generated code to
-   the bundled runtime. The compiler and runtime share this contract through
-   `rue-runtime-abi`.
+| Member | Convention |
+| --- | --- |
+| `Rue` | the private native convention for calls between Rue functions |
+| `X86_64SysV` | System V AMD64 psABI |
+| `Aarch64Aapcs` | AAPCS64 as on Linux |
+| `Aarch64AapcsDarwin` | AAPCS64 with Apple's arm64 amendments |
+
+`"C"` is an alias, not a member. One table, `CallingConvention::c_for_target`,
+resolves it from the whole compilation target — `x86-64-linux` to `X86_64SysV`,
+`aarch64-linux` to `Aarch64Aapcs`, `aarch64-macos` to `Aarch64AapcsDarwin` —
+and every C boundary consults it: `extern "C"` imports and exports, the
+compiler-built memory routines, and the typed runtime-helper subset the compiler
+and runtime share through `rue-runtime-abi`. The alias is keyed by target rather
+than by architecture because the two AArch64 targets share an architecture and
+do not share a convention.
+
+The native `Rue` convention borrows target register and stack rules but
+deliberately is not a C ABI.
 
 Rue does not yet support general foreign imports or exports. In particular,
 the runtime's zero-argument process entry into Rue `main` is not evidence that
@@ -34,6 +48,7 @@ supported representation.
 | --- | --- | --- | --- |
 | Integer/pointer argument registers | `rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9` | `x0`-`x7` | Same target registers |
 | Stack arguments | 8-byte slots, first overflow slot nearest return address | 8-byte slots beginning at incoming `sp` | Not implemented; every current helper fits registers |
+| Stacked target-C arguments (`extern "C"`) | 8-byte slots | 8-byte slots on Linux; scalars at natural size and alignment, packed, on macOS | Not reached |
 | Scalar result | `rax` | `x0` | `rax` or `x0`/`w0` |
 | Multi-slot result | Up to six slots in `rax`, `rdx`, `rcx`, `r8`, `r9`, `r10` | Up to eight slots in `x0`-`x7` | No direct aggregate results |
 | Aggregate result storage | Hidden first ordinary slot (`rdi`) | Hidden first ordinary slot (`x0`) | Explicit first out-pointer parameter where required |
@@ -109,21 +124,45 @@ veneer scratch registers `x16`/`x17`. Vector registers are currently
 unused. The stack pointer remains 16-byte aligned, and generated code does not
 access memory below `sp`. Condition flags are caller-clobbered.
 
-Apple arm64 permits a 128-byte red zone, but Rue does not use it. Apple's ABI
-also requires callers to extend arguments narrower than 32 bits, gives stacked
-arguments their natural sizes, and places variadic arguments on the stack. The
-current target-C subset has no sub-32-bit parameters, stack parameters, or
-variadic calls, so these amendments are outside its present surface. Native Rue
+Apple arm64 permits a 128-byte red zone, but Rue does not use it. Apple's other
+amendments are answered by the `Aarch64AapcsDarwin` convention row rather than
+by an operating-system test inside a backend:
+
+- **Stacked scalars take their natural size and alignment.** The foreign-call
+  planner packs the outgoing argument area per
+  `CallingConvention::stacked_argument_packing`, so on macOS a stacked `i8`,
+  `i16`, `i32`, `i64` tail lies at offsets 0, 2, 4, 8 where AAPCS64 and SysV put
+  it at 0, 8, 16, 24, and the AArch64 lowerer commits each store at the C width
+  (`strb`/`strh`/`str w`/`str`). A stacked composite keeps whole eightbytes at
+  8-byte alignment under every row: it crosses through its eightbyte image, and a
+  byte-exact copy needs marshaling this path does not have. Apple's byte-exact
+  placement of a stacked composite whose size or alignment is not a multiple of
+  eight is therefore still open, and is listed below.
+- **The caller extends arguments narrower than 32 bits.** Rue's canonical
+  64-bit-extension invariant already produces a value satisfying it, so the
+  import side needs nothing Darwin-specific; a unit assertion pins that every C
+  row asks for the same extension. The export thunk re-extends narrow arguments
+  in place on every row, because the native body needs the canonical 64-bit
+  form, which is stronger than Apple's 32-bit guarantee.
+- **Variadic arguments go on the stack.** Out of scope: variadic `extern "C"`
+  declarations are rejected.
+
+The typed runtime-helper subset still has no sub-32-bit or stack parameters, so
+these amendments do not change it today; they govern the `extern "C"` import and
+export paths, which do reach stacked arguments and narrow scalars. Native Rue
 continues to use its uniform 8-byte slot model on macOS.
 
 ## Typed target-C runtime subset
 
 Every compiler-callable helper is identified by `RuntimeHelperId` and declares
-`CallingConvention::TargetC`, ordered physical parameter types, pointer modes,
-result behavior, and target availability in `rue-runtime-abi`. Shared runtime
-call planning validates the logical signature before either backend assigns
-registers. The runtime exports matching `extern "C"` wrappers generated from the
-same manifest.
+ordered physical parameter types, pointer modes, result behavior, and target
+availability in `rue-runtime-abi`. A manifest row carries no convention field:
+`rue-runtime-abi` is the `no_std`, dependency-free manifest crate (ADR-0055) and
+cannot name a `Target`, so it records only that a helper crosses the platform C
+boundary and the caller resolves the concrete row through the one `"C"` alias
+table. Shared runtime call planning validates the logical signature before
+either backend assigns registers. The runtime exports matching `extern "C"`
+wrappers generated from the same manifest.
 
 The current physical surface is intentionally smaller than either complete C
 ABI:
@@ -167,12 +206,19 @@ The probe covers:
 - a five-parameter parse helper with explicit aggregate-result storage; and
 - allocation and mutation through the `StrBuf` runtime boundary.
 
-Backend tests additionally enforce that the typed runtime manifest remains
-target-C and within each backend's implemented register-only subset. This is
-not a complete bidirectional C harness because no general foreign-call syntax or
-export mode exists yet. Those features should extend the matrix with separately
-compiled C caller and callee probes when they introduce their respective
-boundaries.
+`cli.c_ffi` covers the `extern "C"` import and export paths. Its executing
+cases pair a Rue program with a C archive on x86-64 Linux and AArch64 Linux;
+`aarch64_macos_narrow_exports_build_under_the_apple_row` compiles and links a
+narrow-parameter export for AArch64 macOS, so the Apple row's export thunks are
+generated, encoded, and placed in a Mach-O image on every host and executed on
+the macOS CI host. There is no macOS C-caller archive, so the Apple row's
+stacked-argument packing is proved by backend unit tests over the shared
+foreign-call planner rather than by execution.
+
+Backend tests additionally enforce that the typed runtime manifest stays within
+each backend's implemented register-only subset and that its boundary resolves
+to that backend's C convention row. The C-caller/C-callee matrix is still
+one-sided on macOS; a macOS C toolchain probe would close it.
 
 ## Finding
 
@@ -196,7 +242,9 @@ Before general FFI can claim conformance, its target-C path must independently
 cover at least:
 
 - C layout and classification for supported by-value aggregates;
-- target-C stack arguments, including Apple's packed stack-area amendment;
+- Apple's byte-exact placement of a stacked composite argument, which needs
+  byte-granular marshaling rather than the whole-eightbyte image stores the
+  current path emits;
 - direct and indirect C aggregate returns, including AAPCS64 `x8`;
 - floating-point/vector arguments and results if exposed;
 - variadic calls, or an explicit diagnostic rejecting them;

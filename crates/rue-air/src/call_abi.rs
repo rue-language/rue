@@ -13,10 +13,12 @@
 //! contract consult *one* place instead of each rediscovering
 //! `slot_count > budget`.
 //!
-//! [`CallAbi`] is the extensibility seam ADR-0052 requires. The preserved native
-//! Rue convention is the first and only implementation; the guaranteed target C
-//! ABI (RUE-742 / RUE-745, SysV / AAPCS) will add further variants to this
-//! authority rather than embedding a peer FFI calculator inside a backend.
+//! Which convention governs a boundary is named by exactly one value type,
+//! [`rue_target::CallingConvention`], whose rows are the native Rue convention
+//! and the concrete platform psABIs. This module is the classifier that reads
+//! those rows: [`NativeAbiTypeFacts`] answers the native decision tree, and
+//! [`TargetCCallAbi`] answers the psABI thresholds and extensions for whichever
+//! C row a target's `"C"` alias resolves to.
 //!
 //! ## Two planes, one policy kernel
 //!
@@ -28,8 +30,8 @@
 //! kernel — [`NativeAbiTypeFacts`] for the native decision tree,
 //! [`TargetCCallAbi`] plus [`CAbiScalarKind`] for the target-C thresholds and
 //! extensions, [`native_return_register_budget`] and
-//! [`TargetCAbiFlavor::for_arch`] for the per-target numbers — so the
-//! classification policy itself has exactly one production home.
+//! [`rue_target::CallingConvention::c_for_target`] for the per-target numbers —
+//! so the classification policy itself has exactly one production home.
 //!
 //! ## Memory-first transitional rule (ADR-0052 ratified ruling 9)
 //!
@@ -45,7 +47,7 @@
 //! historical register classification byte-for-byte.
 
 use crate::{FrozenTypeInternPool, Type, TypeKind};
-use rue_target::Arch;
+use rue_target::{Arch, CallingConvention, StackedArgumentPacking};
 
 /// The native return-register budget for a target architecture: how many
 /// flattened eight-byte slots an aggregate return may occupy before it must
@@ -155,27 +157,6 @@ impl NativeAbiTypeFacts {
     }
 }
 
-/// Which calling convention governs a boundary.
-///
-/// The seam ADR-0052 requires so the guaranteed target-C classifier extends this
-/// authority instead of adding a peer path. ADR-0064 P2 (RUE-1056) fills the
-/// second variant with [`TargetCCallAbi`] for scalars and pointers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CallAbi {
-    /// The preserved native Rue convention (RUE-106): a by-value aggregate is
-    /// returned one flattened ABI slot per return register, or via sret when it
-    /// does not fit; canonical `StrBuf` always returns via sret; a by-reference
-    /// `inout` / `borrow` argument is one pointer slot; a by-value argument
-    /// occupies one slot per leaf.
-    Native,
-    /// The guaranteed target-C convention (ADR-0064): SysV AMD64 or AAPCS64 per
-    /// the target flavor. In P2 it governs scalar and pointer crossings at an
-    /// `extern "C"` boundary — one integer register per scalar, with the psABI's
-    /// narrow-integer extension and the 1-byte `_Bool` 0/1 contract. See
-    /// [`TargetCCallAbi`].
-    TargetC(TargetCAbiFlavor),
-}
-
 /// How a by-value return value crosses the call boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReturnClass {
@@ -260,7 +241,7 @@ impl ArgClass {
     }
 }
 
-/// The native call-ABI classifier: the [`CallAbi::Native`] implementation.
+/// The native call-ABI classifier: the [`CallingConvention::Rue`] implementation.
 ///
 /// Consumes the canonical slot decomposition and the target's return-register
 /// budget. Argument register partitioning is a downstream concern of the
@@ -300,8 +281,8 @@ impl<'a> NativeCallAbi<'a> {
     }
 
     /// The convention this classifier implements.
-    pub const fn abi(&self) -> CallAbi {
-        CallAbi::Native
+    pub const fn abi(&self) -> CallingConvention {
+        CallingConvention::Rue
     }
 
     /// Project the kernel facts for `ty` from the live type pool. This is the
@@ -432,32 +413,6 @@ pub fn is_slot_identical_layout<P: crate::FfiTypePool + ?Sized>(type_pool: &P, t
 // The guaranteed target-C classifier (ADR-0064 P2, RUE-1056)
 // ============================================================================
 
-/// Which platform psABI a [`CallAbi::TargetC`] boundary follows. The flavor is
-/// selected from the compilation target's architecture: x86-64 uses SysV AMD64,
-/// AArch64 uses AAPCS64. The two agree on the scalar operations P2 needs (one
-/// integer register per scalar, narrow values extended to their canonical form),
-/// and differ only in the details documented on the flavor's methods — details
-/// P3/P4 will exercise (byval stack area, sret register + echo).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TargetCAbiFlavor {
-    /// System V AMD64 psABI (x86-64 Linux/BSD/macOS).
-    SysVAmd64,
-    /// The ARM 64-bit Procedure Call Standard (AArch64 Linux/macOS).
-    Aapcs64,
-}
-
-impl TargetCAbiFlavor {
-    /// The psABI flavor a target architecture's C boundary follows. The single
-    /// home of the architecture-to-flavor mapping, consulted by the export
-    /// thunk, the import call lowering, and the stable query plane.
-    pub const fn for_arch(arch: Arch) -> Self {
-        match arch {
-            Arch::X86_64 => Self::SysVAmd64,
-            Arch::Aarch64 => Self::Aapcs64,
-        }
-    }
-}
-
 /// Width-and-signedness class of a target-C-passable scalar: the one fact the
 /// extension policy needs. Each plane projects its own type representation
 /// onto this class, so the sign/zero/`_Bool` extension table itself
@@ -533,6 +488,18 @@ impl ScalarAbiExtension {
     pub const fn is_noop(self) -> bool {
         matches!(self, Self::None)
     }
+
+    /// The scalar's natural C width in bytes: the declared width a narrow value
+    /// is extended *from*, or the full 8-byte register for a register-width
+    /// value. This is the size a stacked argument occupies under a psABI that
+    /// packs the outgoing argument area at natural size
+    /// ([`StackedArgumentPacking::NaturalSize`]).
+    pub const fn natural_bytes(self) -> u32 {
+        match self {
+            Self::None => 8,
+            Self::Signed { from_bits } | Self::Unsigned { from_bits } => from_bits / 8,
+        }
+    }
 }
 
 /// How a C-classifiable aggregate crosses a target-C boundary as an *argument*
@@ -602,21 +569,28 @@ pub enum AggregateReturnClass {
     },
 }
 
-/// The guaranteed target-C call-ABI classifier: the [`CallAbi::TargetC`]
-/// implementation for scalars and pointers (ADR-0064 P2, RUE-1056).
+/// The guaranteed target-C call-ABI classifier: the classifier for one C row of
+/// [`CallingConvention`] (ADR-0064).
 ///
 /// This is the single authority both backends' `extern "C"` call lowering and
-/// the oracle consult, so no backend makes a local target-C ABI decision. In P2
-/// its scope is register-only scalar crossings; P3 extends the same authority
-/// with eightbyte aggregate classification and byval stack arguments, and P5
-/// with the SSE/FP register class once RUE-714 lands floats.
+/// the oracle consult, so no backend makes a local target-C ABI decision. It is
+/// constructed from a convention, and a target reaches it through the one
+/// `"C"` alias table ([`Self::for_target`]) — so the two AArch64 targets, which
+/// share an architecture, get their own rows. The SSE/FP register class joins
+/// this authority once RUE-714 lands floats.
+///
+/// The rows agree on every scalar operation and on aggregate classification;
+/// they differ in the argument-register budget, the sret register and echo, and
+/// — the Apple arm64 amendment — how the outgoing argument area is packed
+/// ([`Self::stacked_argument_packing`]).
 ///
 /// ## What P2 fixes, and why scalars need only the return re-extension
 ///
 /// Every supported scalar (`c_passable_by_value`: the full integer set, `bool`,
 /// pointers) occupies exactly one general-purpose integer register — the first
 /// six on SysV (`rdi, rsi, rdx, rcx, r8, r9`), the first eight on AAPCS64
-/// (`x0..x7`) — and P2 stays within that budget (no stack arguments). Rue's
+/// (`x0..x7`) — and spills to the outgoing argument area only once that budget
+/// is exhausted. Rue's
 /// internal scalar invariant already keeps a narrow value canonically extended
 /// in its 64-bit vreg (signed values sign-extended, unsigned/`bool`
 /// zero-extended), which is a *stronger* guarantee than either psABI asks of an
@@ -639,6 +613,10 @@ pub enum AggregateReturnClass {
 ///   bits, but bits 32..63 stay unspecified, so re-extending from the value's
 ///   *own* declared width is still correct (bits already agree up to 32). The
 ///   caller therefore applies the same [`ScalarAbiExtension`].
+/// - **Apple arm64.** The *caller* must extend an argument narrower than 32
+///   bits. Rue's canonical 64-bit form already satisfies that, so the import
+///   side needs no extra instruction, and the export thunk re-extends on every
+///   row because the native body needs the stronger 64-bit form regardless.
 ///
 /// ## `_Bool`
 ///
@@ -648,42 +626,64 @@ pub enum AggregateReturnClass {
 /// ([`ScalarAbiExtension::Unsigned`] `{ from_bits: 8 }`).
 #[derive(Debug, Clone, Copy)]
 pub struct TargetCCallAbi {
-    flavor: TargetCAbiFlavor,
+    convention: CallingConvention,
 }
 
 impl TargetCCallAbi {
-    /// Build the classifier for a given psABI flavor.
-    pub const fn new(flavor: TargetCAbiFlavor) -> Self {
-        Self { flavor }
+    /// Build the classifier for one platform C convention.
+    ///
+    /// `convention` must be a C row; [`CallingConvention::Rue`] is the native
+    /// convention and is classified by [`NativeCallAbi`] instead.
+    pub const fn new(convention: CallingConvention) -> Self {
+        assert!(
+            convention.is_c(),
+            "TargetCCallAbi classifies a C boundary; the native Rue convention \
+             is NativeCallAbi's authority"
+        );
+        Self { convention }
     }
 
-    /// The SysV AMD64 classifier (x86-64).
+    /// The classifier for the convention `target`'s `"C"` boundary follows.
+    pub const fn for_target(target: rue_target::Target) -> Self {
+        Self::new(CallingConvention::c_for_target(target))
+    }
+
+    /// The SysV AMD64 classifier (x86-64 Linux).
     pub const fn sysv_amd64() -> Self {
-        Self::new(TargetCAbiFlavor::SysVAmd64)
+        Self::new(CallingConvention::X86_64SysV)
     }
 
-    /// The AAPCS64 classifier (AArch64).
+    /// The AAPCS64 classifier (AArch64 Linux).
     pub const fn aapcs64() -> Self {
-        Self::new(TargetCAbiFlavor::Aapcs64)
+        Self::new(CallingConvention::Aarch64Aapcs)
+    }
+
+    /// The Apple arm64 classifier (AArch64 macOS): AAPCS64 with Apple's
+    /// amendments.
+    pub const fn aapcs64_darwin() -> Self {
+        Self::new(CallingConvention::Aarch64AapcsDarwin)
     }
 
     /// The convention this classifier implements.
-    pub const fn abi(&self) -> CallAbi {
-        CallAbi::TargetC(self.flavor)
+    pub const fn convention(&self) -> CallingConvention {
+        self.convention
     }
 
-    /// The psABI flavor this classifier follows.
-    pub const fn flavor(&self) -> TargetCAbiFlavor {
-        self.flavor
+    /// How this psABI lays a stacked (byval / register-overflow) argument out in
+    /// the outgoing argument area. Every C row answers; the packing rule is the
+    /// convention's, so no backend needs an operating-system test.
+    pub const fn stacked_argument_packing(&self) -> StackedArgumentPacking {
+        self.convention.stacked_argument_packing()
     }
 
     /// The number of general-purpose integer registers used for arguments
     /// before the byval stack area (P3) begins: 6 on SysV (`rdi..r9`), 8 on
     /// AAPCS64 (`x0..x7`). P2 stays within this budget.
     pub const fn int_arg_register_budget(&self) -> u32 {
-        match self.flavor {
-            TargetCAbiFlavor::SysVAmd64 => 6,
-            TargetCAbiFlavor::Aapcs64 => 8,
+        match self.convention {
+            CallingConvention::X86_64SysV => 6,
+            CallingConvention::Aarch64Aapcs | CallingConvention::Aarch64AapcsDarwin => 8,
+            CallingConvention::Rue => unreachable!(),
         }
     }
 
@@ -693,9 +693,10 @@ impl TargetCCallAbi {
     /// echoed. Reachable from P3: an aggregate return >16 bytes takes the sret
     /// path; scalars in P2 never do.
     pub const fn sret_pointer_echoed_in_result_register(&self) -> bool {
-        match self.flavor {
-            TargetCAbiFlavor::SysVAmd64 => true,
-            TargetCAbiFlavor::Aapcs64 => false,
+        match self.convention {
+            CallingConvention::X86_64SysV => true,
+            CallingConvention::Aarch64Aapcs | CallingConvention::Aarch64AapcsDarwin => false,
+            CallingConvention::Rue => unreachable!(),
         }
     }
 
@@ -706,9 +707,10 @@ impl TargetCCallAbi {
     /// passes the sret pointer as the hidden first argument in `rdi`, consuming
     /// the first integer argument register. P3 aggregate returns exercise both.
     pub const fn sret_pointer_in_dedicated_register(&self) -> bool {
-        match self.flavor {
-            TargetCAbiFlavor::SysVAmd64 => false,
-            TargetCAbiFlavor::Aapcs64 => true,
+        match self.convention {
+            CallingConvention::X86_64SysV => false,
+            CallingConvention::Aarch64Aapcs | CallingConvention::Aarch64AapcsDarwin => true,
+            CallingConvention::Rue => unreachable!(),
         }
     }
 
@@ -760,9 +762,12 @@ impl TargetCCallAbi {
         }
         let size = Self::saturate_u32(size);
         let align = Self::saturate_u32(align);
-        match self.flavor {
-            TargetCAbiFlavor::SysVAmd64 => AggregateArgClass::ByValueStack { size, align },
-            TargetCAbiFlavor::Aapcs64 => AggregateArgClass::ByReferenceCopy { size, align },
+        match self.convention {
+            CallingConvention::X86_64SysV => AggregateArgClass::ByValueStack { size, align },
+            CallingConvention::Aarch64Aapcs | CallingConvention::Aarch64AapcsDarwin => {
+                AggregateArgClass::ByReferenceCopy { size, align }
+            }
+            CallingConvention::Rue => unreachable!(),
         }
     }
 
@@ -927,8 +932,8 @@ mod tests {
         // 16-byte call alignment on both.
         assert_eq!(sysv.call_stack_alignment(), 16);
         assert_eq!(aapcs.call_stack_alignment(), 16);
-        assert_eq!(sysv.abi(), CallAbi::TargetC(TargetCAbiFlavor::SysVAmd64));
-        assert_eq!(aapcs.abi(), CallAbi::TargetC(TargetCAbiFlavor::Aapcs64));
+        assert_eq!(sysv.convention(), CallingConvention::X86_64SysV);
+        assert_eq!(aapcs.convention(), CallingConvention::Aarch64Aapcs);
     }
 
     #[test]
@@ -1019,17 +1024,99 @@ mod tests {
     }
 
     #[test]
-    fn per_arch_budget_and_flavor_have_one_home() {
+    fn per_arch_native_budget_has_one_home() {
         assert_eq!(native_return_register_budget(Arch::X86_64), 6);
         assert_eq!(native_return_register_budget(Arch::Aarch64), 8);
+    }
+
+    #[test]
+    fn the_classifier_follows_the_target_c_alias_not_the_architecture() {
+        use rue_target::Target;
         assert_eq!(
-            TargetCAbiFlavor::for_arch(Arch::X86_64),
-            TargetCAbiFlavor::SysVAmd64
+            TargetCCallAbi::for_target(Target::X86_64Linux).convention(),
+            CallingConvention::X86_64SysV
         );
         assert_eq!(
-            TargetCAbiFlavor::for_arch(Arch::Aarch64),
-            TargetCAbiFlavor::Aapcs64
+            TargetCCallAbi::for_target(Target::Aarch64Linux).convention(),
+            CallingConvention::Aarch64Aapcs
         );
+        assert_eq!(
+            TargetCCallAbi::for_target(Target::Aarch64Macos).convention(),
+            CallingConvention::Aarch64AapcsDarwin
+        );
+    }
+
+    #[test]
+    fn the_two_aapcs_rows_agree_except_on_stacked_argument_packing() {
+        let aapcs = TargetCCallAbi::aapcs64();
+        let darwin = TargetCCallAbi::aapcs64_darwin();
+        assert_eq!(
+            aapcs.int_arg_register_budget(),
+            darwin.int_arg_register_budget()
+        );
+        assert_eq!(
+            aapcs.sret_pointer_in_dedicated_register(),
+            darwin.sret_pointer_in_dedicated_register()
+        );
+        assert_eq!(
+            aapcs.sret_pointer_echoed_in_result_register(),
+            darwin.sret_pointer_echoed_in_result_register()
+        );
+        assert_eq!(aapcs.call_stack_alignment(), darwin.call_stack_alignment());
+        assert_eq!(
+            aapcs.classify_aggregate_arg(24, 8),
+            darwin.classify_aggregate_arg(24, 8)
+        );
+        assert_eq!(
+            aapcs.classify_aggregate_return(24, 8),
+            darwin.classify_aggregate_return(24, 8)
+        );
+        // Apple's amendment: a stacked argument occupies its natural size at
+        // its natural alignment rather than a whole 8-byte slot.
+        assert_eq!(
+            aapcs.stacked_argument_packing(),
+            StackedArgumentPacking::EightByteSlots
+        );
+        assert_eq!(
+            darwin.stacked_argument_packing(),
+            StackedArgumentPacking::NaturalSize
+        );
+        assert_eq!(
+            TargetCCallAbi::sysv_amd64().stacked_argument_packing(),
+            StackedArgumentPacking::EightByteSlots,
+            "x86-64 is unaffected by the Apple amendment"
+        );
+    }
+
+    #[test]
+    fn every_c_row_agrees_on_the_caller_side_narrow_extension() {
+        // Apple requires the caller to extend an argument narrower than 32 bits;
+        // Rue's canonical 64-bit-extension invariant already produces that, and
+        // every C row asks for the same operation, so the import side needs no
+        // Darwin-specific work.
+        for convention in [
+            CallingConvention::X86_64SysV,
+            CallingConvention::Aarch64Aapcs,
+            CallingConvention::Aarch64AapcsDarwin,
+        ] {
+            let abi = TargetCCallAbi::new(convention);
+            assert_eq!(
+                abi.scalar_arg_extension(Type::I8),
+                ScalarAbiExtension::Signed { from_bits: 8 },
+                "{convention} must sign-extend a narrow signed argument"
+            );
+            assert_eq!(
+                abi.scalar_arg_extension(Type::U16),
+                ScalarAbiExtension::Unsigned { from_bits: 16 },
+                "{convention} must zero-extend a narrow unsigned argument"
+            );
+            assert_eq!(
+                abi.scalar_arg_extension(Type::BOOL),
+                ScalarAbiExtension::Unsigned { from_bits: 8 },
+                "{convention} must materialize the 1-byte `_Bool` 0/1 contract"
+            );
+            assert!(abi.scalar_arg_extension(Type::I64).is_noop());
+        }
     }
 
     #[test]
