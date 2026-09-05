@@ -1,101 +1,133 @@
 # Tutorial process
 
-The tutorial is a guided path into the current Rue implementation. It should
-teach what a user can run today, name rough edges honestly, and avoid becoming
-a second language specification.
+The tutorial (`website/content/tutorial/`) is a guided path into the current
+Rue implementation. It teaches what a user can run today, names rough edges
+honestly, and does not try to be a second language specification.
 
-## Target chapter outline
+## Chapter outline
 
-Use this outline as the sequencing target for the tutorial refresh. Individual
-chapter PRs may split or merge files while the content is in motion, but they
-should preserve this learning order.
+The tutorial is organized so that each concept arrives when a program needs
+it, and it ends with one real program built across two chapters. Keep this
+learning order when editing; a chapter may be split or merged, but a concept
+should not be used before the chapter that teaches it.
 
-| Order | Chapter | Purpose | Related work |
-| --- | --- | --- | --- |
-| 1 | Install/build/run | Get a working compiler and explain the repo wrapper commands. | RUE-393 |
-| 2 | Hello world and executables | Introduce `main`, exit status, compile/run loop, and first output. | RUE-393, RUE-394 |
-| 3 | Values, types, mutability, and output | Establish integer/bool basics, type inference, `let mut`, and user-facing output. | RUE-394 |
-| 4 | Functions and expression-oriented control flow | Teach calls, returns, blocks, `if`, `while`, and `match` as expressions where applicable. | RUE-394 |
-| 5 | Structs, enums, and pattern matching | Introduce aggregate data and sum types before ownership details. | RUE-396 |
-| 6 | Ownership and access modes | Teach moves, `@copy`, `borrow`, `inout`, destructors, and explicit `@drop`. | RUE-396 |
-| 7 | Arrays and bounds safety | Cover fixed arrays, index types, mutation, iteration, constant bounds diagnostics, and runtime bounds checks. | RUE-397 |
-| 8 | Modules and std imports | Teach file imports, module-qualified access, `@import("std")`, and the no-prelude stance. | RUE-395 |
-| 9 | Strings, printing, parsing, and `Option` | Move from debugging output to string-oriented I/O, parsing, and optional results. | RUE-397, RUE-398 |
-| 10 | Growable collections / `ArrayBuf` | Introduce the growable collection rung once the implementation is ready enough to dogfood. | RUE-397 |
-| 11 | Real final project | Replace synthetic algorithm demos with a small dogfood program such as streaming stats. | RUE-398 |
+| Order | Chapter | Teaches |
+| --- | --- | --- |
+| 1 | Why Rue | The design principles: locality of reasoning, ownership without lifetimes, errors as values and bugs as traps, explicit over clever. Says which are guarantees today. |
+| 2 | Getting Started | Build from source, `scripts/rue exec`, direct compiler use with `RUE_STD_PATH`, `rue test`. |
+| 3 | Hello, World | `main`, exit status, `println`/`print`, comments, `@dbg` as an aside. |
+| 4 | Values and Types | Integers, `@intCast`, overflow traps, booleans, inference, `let mut`, floats, the `str`/`StrBuf` output idiom and why `std` is imported. |
+| 5 | Functions and Control Flow | `fn`, expression bodies, `return`, unit, `if`, `while`, `loop`, `for`, `match`, blocks. |
+| 6 | Structs and Methods | Struct literals, field access, methods with `borrow self`/`inout self`, `Self`, associated functions. |
+| 7 | Enums and Matching | Variants, exhaustiveness, payloads, `Option`, `?` on `Option`. |
+| 8 | Ownership and Access Modes | Moves, `@copy`, `borrow`, `inout`, exclusivity, destructors, `@drop`. |
+| 9 | Arrays, Slices, and Buffers | `[T; N]`, `for`, bounds checks, `[T]` slices, `ArrayBuf`. |
+| 10 | Strings and Text | `str` vs `StrBuf`, concatenation, bytes vs `chars()`, `@read_line`, `@parse_i64`, `std.strings`. |
+| 11 | Errors and Traps | `Result`, `?` on `Result`, the trap list, choosing between them. |
+| 12 | Modules and the Standard Library | `@import`, `pub` and the directory visibility rule, `std` as a module, generics as type-returning functions. |
+| 13 | Tests | `test` declarations, `@assert`/`@assert_eq`, `?` in tests, `rue test`. |
+| 14 | Project: A Calculator | A reverse-Polish calculator in one file, walked through. |
+| 15 | Project: Modules and Tests | The calculator split into a module, with tests in both files. |
+| 16 | What's Next | What Rue does not have yet, rough edges, where to go. |
+
+When the language grows, the usual move is to extend the chapter that owns
+the concept, then update this table. A new feature big enough to need its own
+chapter goes after chapter 13 and before the project, and the project should
+use it if it can.
 
 ## Editorial rules
 
 Every chapter should:
 
 1. Start with a runnable complete program that demonstrates the chapter's main
-   point.
+   point, and show its output.
 2. Keep examples self-contained unless the prose explicitly says they are
    fragments.
 3. Add one positive example per new concept and, where it materially helps,
-   one expected-error example.
-4. Prefer stable, user-facing APIs over compiler-internal or debugging-only
-   tools. Use `print`/`println` for user-facing output from the first chapter
-   that produces any output; example output should flow through `println`.
-   `@dbg` may be introduced once as a brief debugging aid, but it is not the
-   tutorial's output mechanism.
-5. Say when a feature is preview, incomplete, or dogfood-motivated. Do not
+   one expected-error example with the diagnostic the reader will see.
+4. Use `print`/`println` for user-facing output. `@dbg` is introduced once as
+   a debugging aid and is not the tutorial's output mechanism.
+5. Say when a feature is preview, incomplete, or a current limitation (for
+   example, slices of narrow element types, `for` over `ArrayBuf`). Do not
    silently teach unstable syntax as if it were settled.
 6. Avoid duplicating the specification. Link to the spec for exact normative
    rules after the tutorial has taught the concept operationally.
-7. Keep comments truthful under the current compiler. If a diagnostic is
-   compile-time today, do not describe it as runtime behavior.
+7. Keep prose truthful under the current compiler. If a diagnostic is
+   compile-time today, do not describe it as runtime behavior, and do not
+   describe a rule the compiler does not enforce as if it did.
+8. Introduce `RUE_STD_PATH` wherever a direct compiler invocation is shown.
+   `scripts/rue exec` sets it; a bare `"$RUE" file.rue` does not, and a reader
+   who follows chapter 2's direct-invocation instructions must not fail in
+   chapter 4.
+
+The "Why Rue" chapter states design principles. Some are normative today (the
+access model, trapping arithmetic, no prelude); others are recorded as
+principles under discussion in Linear and the ADRs. Keep the chapter's "Where
+things stand" section honest about which is which, and do not present an
+undecided direction as a feature.
 
 ## Snippet verification
 
-Snippet verification is tracked by RUE-399. Once that infrastructure is present,
-tutorial code fences use explicit metadata for automated checks:
+Every ```` ```rue ```` fence in the tutorial carries a marker in its info
+string, and `scripts/check-tutorial-snippets.py` (Buck target
+`//:tutorial-snippet-tests`, in the repository quality gates) verifies it:
 
-- ` ```rue check` must compile successfully.
-- ` ```rue compile-fail Edddd` must fail compilation with the named diagnostic.
-- ` ```rue skip` is an intentional prose-only or context-dependent fragment.
-- Plain ` ```rue` remains prose-only until a chapter refresh opts it in.
+- ```` ```rue run ```` compiles the program, runs it with empty stdin, requires
+  exit status 0, and compares its stdout with the next ```` ```text ```` fence.
+  Shell fences (```` ```bash ````) between the program and its output are
+  skipped, since they only show the reader how to run it. Use
+  `stdin="line\n..."` to feed input and `exit=N` when a nonzero status is the
+  point (a trap exits 101).
+- ```` ```rue check ```` compiles only. Use it for programs whose interesting
+  behavior is under `rue test` rather than `main`.
+- ```` ```rue compile-fail Edddd ```` must fail with the named diagnostic
+  code(s). The prose should show the diagnostic text the reader will see.
+- ```` ```rue file=dir/name.rue ```` is written next to the chapter's later
+  snippets instead of being compiled itself, so a multi-file example can show
+  each file once. Files accumulate within one chapter and reset between
+  chapters.
+- ```` ```rue skip ```` is not verified. Use it for fragments, and let the
+  prose say that the code is a fragment.
 
-After RUE-399 lands, run:
+An unmarked ```` ```rue ```` fence is an error. Prefer `run` over `check`
+wherever the program prints something, so that "prints:" claims are tested.
+
+Run the checker and its own tests with:
 
 ```bash
 scripts/check-tutorial-snippets.py
-./buck2 test //:tutorial-snippet-tests
+python3 scripts/test-tutorial-snippets.py
+./buck2 test //:tutorial-snippet-tests //:tutorial-snippet-tool-tests
 ```
 
-New or rewritten chapter-level complete programs should be marked `check`.
-Intentionally-invalid snippets should be marked `compile-fail Edddd` when they
-are self-contained, using the diagnostic code the prose intends to demonstrate,
-or `skip` when they depend on context from adjacent prose.
+The checker only exercises the compiler. The shell commands the tutorial tells
+readers to type (chapters 2, 3, 13) are not verified automatically; when
+changing them, run them from a fresh shell.
 
 ## Dogfood and preview stance
 
-The tutorial should aim at the minimum dogfoodable language, but it must not
-pretend future library ergonomics already exist.
+The tutorial aims at the minimum dogfoodable language, but it must not pretend
+future library ergonomics already exist.
 
 - Stable behavior can be taught without caveats.
 - Preview behavior can appear when it is needed for the dogfood story, but the
   prose must name the preview/in-progress status and the likely migration path.
-- Standard-library examples should use the current ADR-0042 model:
-  `@import("std")`, namespace-qualified access, and no prelude initially.
-- Collection and string examples should follow ADR-0043 terminology:
-  fixed arrays, second-class slices, and growable `ArrayBuf` / `StrBuf`-style
-  library types. Avoid reviving `String`-as-special-type language in
-  new tutorial prose.
+- Standard-library examples use the ADR-0042 model: `@import("std")`,
+  namespace-qualified access, module-level `const` aliases, and no prelude.
+- Collection and string examples follow ADR-0043 terminology: fixed arrays,
+  second-class slices, and growable `ArrayBuf` / `StrBuf` library types.
 
-## Child issue sequencing
+## Known limitations the tutorial works around
 
-Use this logical order for the RUE-329 child work unless a prerequisite lands
-earlier:
+Recorded here so the next author does not rediscover them. Remove an entry
+when the limitation is lifted and update the chapter that mentions it.
 
-1. RUE-400: establish and maintain this outline/style guide.
-2. RUE-399: snippet verification infrastructure.
-3. RUE-393: current build/run workflow.
-4. RUE-394: output model and early chapter cleanup.
-5. RUE-396: ownership/access-mode progression.
-6. RUE-395: modules and `std` import chapter.
-7. RUE-397: arrays, `Option`, and collection path.
-8. RUE-398: final dogfood program.
-
-When a child issue materially changes the outline, update this file in the same
-PR so the next chapter author is not reconstructing intent from Linear history.
+- `[T]` slice parameters accept only 64-bit element types (E0908); the slice
+  examples use `i64`.
+- `for` over a `borrow` `StrBuf` parameter is rejected (E0429); the examples
+  iterate a clone or take the string by value.
+- A qualified enum path cannot appear inside another variant's payload
+  pattern (`R.Err(E.A(x))` does not parse); the examples use a nested `match`.
+- `?` inside a function returning `Result(T, StrBuf)` hits an internal
+  compiler error; the examples use enum error types.
+- `for` does not iterate `ArrayBuf`; the examples index over `len()`.

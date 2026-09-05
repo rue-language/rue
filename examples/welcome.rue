@@ -1,7 +1,7 @@
 // welcome.rue — the canonical "did my setup work?" smoke test.
 //
-// Rue has no string printing yet (@dbg prints integers and booleans), so this
-// greets you with a small, recognizable sequence — 1, 2, 3, then 42 — and,
+// It greets you with a small, recognizable sequence — 1, 2, 3, then 42 —
+// printed with @dbg so that it needs no standard-library import, and,
 // crucially, returns 0. Because `scripts/rue exec` propagates the program's
 // exit code, a health-check program must exit 0 so `set -e`, `&&` chains, CI
 // steps, and automated agents see success rather than a phantom failure
