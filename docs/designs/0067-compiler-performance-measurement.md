@@ -843,8 +843,11 @@ refused by validation.
 - ADR-0019 (performance dashboard) and ADR-0031 (robust performance testing)
   — superseded; their system was removed by the benchmarking reset.
 - ADR-0018 (tracing infrastructure) — the inclusive spans retained here.
-- `crates/rue/src/timing.rs` — root active-interval union, inclusive span
-  semantics, schema versioning.
+- `crates/rue/src/timing.rs` — root active-interval union and inclusive span
+  semantics.
+- `crates/rue-perf-schema/src/benchmark.rs` — the `--benchmark-json` envelope
+  the compiler publishes and the runner reads, and the one constant its schema
+  version is written down in.
 - GitHub hosted-runner documentation and `actions/runner-images` — source of
   runner image version identity.
 - [Boundary evidence and the size of performance-data-v1](../notes/performance-boundary-evidence-size.md)

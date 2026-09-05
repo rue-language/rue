@@ -10,7 +10,7 @@ use rue_perf_schema::{
     Band, BuildBoundaryPolicy, CompilerCriticalPathEvidence, DurationDistribution,
     SCALING_REPORT_SCHEMA_VERSION, ScalingIdentity, ScalingManifest, ScalingObservation,
     ScalingRegime, ScalingReport, Summary, WorkerSetting, WorkloadShape, canonical_json,
-    content_address,
+    content_address, utc_timestamp,
 };
 
 use crate::measure::{SampleRequest, measure_fresh_compile};
@@ -45,7 +45,7 @@ pub fn run() -> Result<(), String> {
         }
     };
 
-    let started_at = crate::utc_timestamp();
+    let started_at = utc_timestamp();
     let mut target: Option<String> = None;
     let mut observations = Vec::with_capacity(manifest.workloads.len() * manifest.workers.len());
     for workload in &manifest.workloads {
@@ -191,7 +191,7 @@ pub fn run() -> Result<(), String> {
             manifest_revision: manifest.revision,
             commit: options.commit,
             started_at,
-            finished_at: crate::utc_timestamp(),
+            finished_at: utc_timestamp(),
             target: target.unwrap_or_else(|| manifest.target.clone()),
             environment: crate::environment::fingerprint(),
         },

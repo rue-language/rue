@@ -22,7 +22,7 @@ use rue_perf_schema::{
     OutcomeKind, PhaseWork, QuerySchedulingMeasurements, RetainedGauges, RetentionSequence,
     RetentionStep, RetentionStepOutcome, SourceShape, StructuralWork, TransformationIdentity,
     ValidationWork as ReportValidationWork, WorkerMode, canonical_json, derive_edit_report,
-    is_commit, render_edit_report_markdown, validate_edit_report,
+    is_commit, render_edit_report_markdown, utc_timestamp, validate_edit_report,
 };
 use serde::Deserialize;
 
@@ -395,7 +395,7 @@ pub(crate) fn run() -> Result<ReportStatus, String> {
         },
         ..CompileOptions::default()
     };
-    let started_at = crate::utc_timestamp();
+    let started_at = utc_timestamp();
 
     let mut rows = Vec::new();
     for workload in &manifest.workloads {
@@ -574,7 +574,7 @@ pub(crate) fn run() -> Result<ReportStatus, String> {
             fixture_revision: manifest.fixture_revision,
             commit: options.commit,
             started_at,
-            finished_at: crate::utc_timestamp(),
+            finished_at: utc_timestamp(),
             target: manifest.target.clone(),
             environment: crate::environment::fingerprint(),
         },
