@@ -36,7 +36,7 @@ use crate::vreg::VReg;
 /// its C object layout under the compact-layout default. Every by-value
 /// aggregate crossing (register-packed, byval-stack, by-reference, and every
 /// aggregate return) is marshaled through this image, so C field order is
-/// honored by construction and the native reversed-slot packing is never used.
+/// honored by construction and no value is repacked on the way out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AggregateImage {
     /// Internal-slot → physical-byte map (the compact/C image). Writing an

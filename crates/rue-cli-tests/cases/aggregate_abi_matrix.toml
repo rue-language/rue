@@ -716,3 +716,409 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "204\n"
+
+# =============================================================================
+# ARGPLACE — the placements ADR-0084's phase 1 gave native arguments
+# =============================================================================
+#
+# Each case fixes one shape the switch to the target C row's argument placement
+# changes most, and observes every field on the callee side, so a value that
+# arrives in the wrong register, the wrong half of an eightbyte, or the wrong
+# stack byte fails immediately. They run on both backends; the aarch64 rows
+# execute only on a native aarch64 CI host.
+
+# Four `u8` fields are four bytes: one eightbyte, so the whole struct now
+# arrives in ONE register and the callee reads its leaves back out of the
+# image. Under the retired slot model this took four registers.
+[[case]]
+name = "argplace_four_u8_fields_share_one_register"
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Quad { a: u8, b: u8, c: u8, d: u8 }
+fn read(q: Quad) -> i32 {
+    let a: i32 = @intCast(q.a);
+    let b: i32 = @intCast(q.b);
+    let c: i32 = @intCast(q.c);
+    let d: i32 = @intCast(q.d);
+    @dbg(a);
+    @dbg(b);
+    @dbg(c);
+    @dbg(d);
+    0
+}
+fn main() -> i32 {
+    read(Quad { a: 1, b: 2, c: 3, d: 250 })
+}
+""" }]
+stdout = "1\n2\n3\n250\n"
+
+# `{i32, i32}` is one eightbyte too. The first call leaves it in the LAST
+# argument register of both rows (five scalars ahead of it on SysV, seven on
+# AAPCS64 — the SysV call therefore also proves a later argument still takes a
+# register the packed struct did not need); the second pushes it past both
+# rosters, to the first stack position.
+[[case]]
+name = "argplace_i32_pair_at_the_last_register_and_on_the_stack"
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Pair { x: i32, y: i32 }
+fn last_register(p0: i64, p1: i64, p2: i64, p3: i64, p4: i64, p: Pair) -> i32 {
+    let n: i32 = @intCast(p0 + p1 + p2 + p3 + p4);
+    @dbg(n);
+    @dbg(p.x);
+    @dbg(p.y);
+    0
+}
+fn stacked(
+    p0: i64,
+    p1: i64,
+    p2: i64,
+    p3: i64,
+    p4: i64,
+    p5: i64,
+    p6: i64,
+    p7: i64,
+    p: Pair,
+) -> i32 {
+    let n: i32 = @intCast(p0 + p1 + p2 + p3 + p4 + p5 + p6 + p7);
+    @dbg(n);
+    @dbg(p.x);
+    @dbg(p.y);
+    0
+}
+fn main() -> i32 {
+    let a = last_register(1, 2, 3, 4, 5, Pair { x: 11, y: 22 });
+    let b = stacked(1, 2, 3, 4, 5, 6, 7, 8, Pair { x: 33, y: 44 });
+    a + b
+}
+""" }]
+stdout = "15\n11\n22\n36\n33\n44\n"
+
+# `{f64, i64}` classifies SSE then INTEGER on SysV, so its two eightbytes take
+# registers of DIFFERENT banks; AAPCS64 passes the same composite in two
+# consecutive integer registers, which is why the float leaf crosses as the
+# image's bits there. Both ends must agree either way.
+[[case]]
+name = "argplace_float_and_integer_split_across_banks"
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Split { v: f64, n: i64 }
+fn read(s: Split, tail: i64) -> i32 {
+    let v: i32 = @float_to_int(s.v * 2.0);
+    let n: i32 = @intCast(s.n);
+    let t: i32 = @intCast(tail);
+    @dbg(v);
+    @dbg(n);
+    @dbg(t);
+    0
+}
+fn main() -> i32 {
+    read(Split { v: 3.5, n: 9 }, 4)
+}
+""" }]
+stdout = "7\n9\n4\n"
+
+# 24 bytes is past every row's register-passed aggregate: SysV MEMORY class
+# byval in the outgoing argument area, an AAPCS64 caller-owned copy behind one
+# pointer. The trailing scalar proves SysV still hands a later argument the
+# register the stacked aggregate consumed none of.
+[[case]]
+name = "argplace_twenty_four_byte_struct_crosses_through_memory"
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Wide { a: i64, b: i64, c: i64 }
+fn read(w: Wide, tail: i64) -> i32 {
+    let a: i32 = @intCast(w.a);
+    let b: i32 = @intCast(w.b);
+    let c: i32 = @intCast(w.c);
+    let t: i32 = @intCast(tail);
+    @dbg(a);
+    @dbg(b);
+    @dbg(c);
+    @dbg(t);
+    0
+}
+fn main() -> i32 {
+    read(Wide { a: 10, b: 20, c: 30 }, 40)
+}
+""" }]
+stdout = "10\n20\n30\n40\n"
+
+# Nine arguments with a narrow tail: the roster runs out and the tail lands in
+# the outgoing argument area, where every row but Apple's packs it in whole
+# eightbytes. The callee re-extends each one into Rue's canonical form, so a
+# negative `i8` must still read as -7 and not as 249.
+[[case]]
+name = "argplace_nine_arguments_with_a_narrow_tail"
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn nine(
+    a: i64,
+    b: i64,
+    c: i64,
+    d: i64,
+    e: i64,
+    f: i64,
+    g: i8,
+    h: u16,
+    i: i32,
+) -> i32 {
+    let s: i32 = @intCast(a + b + c + d + e + f);
+    let gg: i32 = @intCast(g);
+    let hh: i32 = @intCast(h);
+    @dbg(s);
+    @dbg(gg);
+    @dbg(hh);
+    @dbg(i);
+    0
+}
+fn main() -> i32 {
+    nine(1, 2, 3, 4, 5, 6, -7, 65535, -9)
+}
+""" }]
+stdout = "21\n-7\n65535\n-9\n"
+
+# A payload enum argument: the tag and the active variant's fields are read
+# back out of the image the convention placed, at every roster position the
+# call reaches.
+[[case]]
+name = "argplace_enum_argument_in_registers_and_on_the_stack"
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Shape { Circle(i32), Rect(i32, i32), Empty }
+fn area(s: Shape) -> i32 {
+    match s {
+        Shape.Circle(r) => r * r,
+        Shape.Rect(w, h) => w * h,
+        Shape.Empty => 0,
+    }
+}
+fn stacked(
+    p0: i64,
+    p1: i64,
+    p2: i64,
+    p3: i64,
+    p4: i64,
+    p5: i64,
+    p6: i64,
+    p7: i64,
+    s: Shape,
+) -> i32 {
+    let n: i32 = @intCast(p0 + p1 + p2 + p3 + p4 + p5 + p6 + p7);
+    @dbg(n);
+    area(s)
+}
+fn main() -> i32 {
+    @dbg(area(Shape.Circle(5)));
+    @dbg(area(Shape.Rect(3, 4)));
+    @dbg(area(Shape.Empty));
+    @dbg(stacked(1, 2, 3, 4, 5, 6, 7, 8, Shape.Rect(6, 7)));
+    0
+}
+""" }]
+stdout = "25\n12\n0\n36\n42\n"
+
+# The same six placements on the AArch64 row, where the convention's answers
+# differ: a composite travels in consecutive INTEGER registers whatever its
+# members are, a composite over sixteen bytes crosses by reference, and rule
+# C.11's roster exhaustion stacks every later argument. These compile and link
+# for aarch64-linux; a native aarch64 CI host also executes them.
+[[case]]
+name = "argplace_aarch64_four_u8_fields_share_one_register"
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+files = [{ path = "main.rue", source = """
+struct Quad { a: u8, b: u8, c: u8, d: u8 }
+fn read(q: Quad) -> i32 {
+    let a: i32 = @intCast(q.a);
+    let b: i32 = @intCast(q.b);
+    let c: i32 = @intCast(q.c);
+    let d: i32 = @intCast(q.d);
+    @dbg(a);
+    @dbg(b);
+    @dbg(c);
+    @dbg(d);
+    0
+}
+fn main() -> i32 {
+    read(Quad { a: 1, b: 2, c: 3, d: 250 })
+}
+""" }]
+stdout = "1\n2\n3\n250\n"
+
+# `{i32, i32}` is one eightbyte too. The first call leaves it in the LAST
+# argument register of both rows (five scalars ahead of it on SysV, seven on
+# AAPCS64 — the SysV call therefore also proves a later argument still takes a
+# register the packed struct did not need); the second pushes it past both
+# rosters, to the first stack position.
+[[case]]
+name = "argplace_aarch64_i32_pair_at_the_last_register_and_on_the_stack"
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+files = [{ path = "main.rue", source = """
+struct Pair { x: i32, y: i32 }
+fn last_register(p0: i64, p1: i64, p2: i64, p3: i64, p4: i64, p: Pair) -> i32 {
+    let n: i32 = @intCast(p0 + p1 + p2 + p3 + p4);
+    @dbg(n);
+    @dbg(p.x);
+    @dbg(p.y);
+    0
+}
+fn stacked(
+    p0: i64,
+    p1: i64,
+    p2: i64,
+    p3: i64,
+    p4: i64,
+    p5: i64,
+    p6: i64,
+    p7: i64,
+    p: Pair,
+) -> i32 {
+    let n: i32 = @intCast(p0 + p1 + p2 + p3 + p4 + p5 + p6 + p7);
+    @dbg(n);
+    @dbg(p.x);
+    @dbg(p.y);
+    0
+}
+fn main() -> i32 {
+    let a = last_register(1, 2, 3, 4, 5, Pair { x: 11, y: 22 });
+    let b = stacked(1, 2, 3, 4, 5, 6, 7, 8, Pair { x: 33, y: 44 });
+    a + b
+}
+""" }]
+stdout = "15\n11\n22\n36\n33\n44\n"
+
+# `{f64, i64}` classifies SSE then INTEGER on SysV, so its two eightbytes take
+# registers of DIFFERENT banks; AAPCS64 passes the same composite in two
+# consecutive integer registers, which is why the float leaf crosses as the
+# image's bits there. Both ends must agree either way.
+[[case]]
+name = "argplace_aarch64_float_and_integer_split_across_banks"
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+files = [{ path = "main.rue", source = """
+struct Split { v: f64, n: i64 }
+fn read(s: Split, tail: i64) -> i32 {
+    let v: i32 = @float_to_int(s.v * 2.0);
+    let n: i32 = @intCast(s.n);
+    let t: i32 = @intCast(tail);
+    @dbg(v);
+    @dbg(n);
+    @dbg(t);
+    0
+}
+fn main() -> i32 {
+    read(Split { v: 3.5, n: 9 }, 4)
+}
+""" }]
+stdout = "7\n9\n4\n"
+
+# 24 bytes is past every row's register-passed aggregate: SysV MEMORY class
+# byval in the outgoing argument area, an AAPCS64 caller-owned copy behind one
+# pointer. The trailing scalar proves SysV still hands a later argument the
+# register the stacked aggregate consumed none of.
+[[case]]
+name = "argplace_aarch64_twenty_four_byte_struct_crosses_through_memory"
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+files = [{ path = "main.rue", source = """
+struct Wide { a: i64, b: i64, c: i64 }
+fn read(w: Wide, tail: i64) -> i32 {
+    let a: i32 = @intCast(w.a);
+    let b: i32 = @intCast(w.b);
+    let c: i32 = @intCast(w.c);
+    let t: i32 = @intCast(tail);
+    @dbg(a);
+    @dbg(b);
+    @dbg(c);
+    @dbg(t);
+    0
+}
+fn main() -> i32 {
+    read(Wide { a: 10, b: 20, c: 30 }, 40)
+}
+""" }]
+stdout = "10\n20\n30\n40\n"
+
+# Nine arguments with a narrow tail: the roster runs out and the tail lands in
+# the outgoing argument area, where every row but Apple's packs it in whole
+# eightbytes. The callee re-extends each one into Rue's canonical form, so a
+# negative `i8` must still read as -7 and not as 249.
+[[case]]
+name = "argplace_aarch64_nine_arguments_with_a_narrow_tail"
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+files = [{ path = "main.rue", source = """
+fn nine(
+    a: i64,
+    b: i64,
+    c: i64,
+    d: i64,
+    e: i64,
+    f: i64,
+    g: i8,
+    h: u16,
+    i: i32,
+) -> i32 {
+    let s: i32 = @intCast(a + b + c + d + e + f);
+    let gg: i32 = @intCast(g);
+    let hh: i32 = @intCast(h);
+    @dbg(s);
+    @dbg(gg);
+    @dbg(hh);
+    @dbg(i);
+    0
+}
+fn main() -> i32 {
+    nine(1, 2, 3, 4, 5, 6, -7, 65535, -9)
+}
+""" }]
+stdout = "21\n-7\n65535\n-9\n"
+
+# A payload enum argument: the tag and the active variant's fields are read
+# back out of the image the convention placed, at every roster position the
+# call reaches.
+[[case]]
+name = "argplace_aarch64_enum_argument_in_registers_and_on_the_stack"
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+files = [{ path = "main.rue", source = """
+enum Shape { Circle(i32), Rect(i32, i32), Empty }
+fn area(s: Shape) -> i32 {
+    match s {
+        Shape.Circle(r) => r * r,
+        Shape.Rect(w, h) => w * h,
+        Shape.Empty => 0,
+    }
+}
+fn stacked(
+    p0: i64,
+    p1: i64,
+    p2: i64,
+    p3: i64,
+    p4: i64,
+    p5: i64,
+    p6: i64,
+    p7: i64,
+    s: Shape,
+) -> i32 {
+    let n: i32 = @intCast(p0 + p1 + p2 + p3 + p4 + p5 + p6 + p7);
+    @dbg(n);
+    area(s)
+}
+fn main() -> i32 {
+    @dbg(area(Shape.Circle(5)));
+    @dbg(area(Shape.Rect(3, 4)));
+    @dbg(area(Shape.Empty));
+    @dbg(stacked(1, 2, 3, 4, 5, 6, 7, 8, Shape.Rect(6, 7)));
+    0
+}
+""" }]
+stdout = "25\n12\n0\n36\n42\n"

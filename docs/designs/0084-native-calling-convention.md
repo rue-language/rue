@@ -340,7 +340,7 @@ matrices (`crates/rue-cli-tests/cases/aggregate_abi_matrix.toml`,
 (`//crates/rue-oracle-diff:oracle-diff-test`). The oracle's call-contract model
 moves in the same change as the convention it models, never in a follow-up.
 
-- [ ] **Phase 1: Native argument classification adopts the C row's placement** —
+- [x] **Phase 1: Native argument classification adopts the C row's placement** —
   RUE-2037. By-value aggregates pack into eightbytes in ascending memory order
   (SysV) or follow the AAPCS64 composite rules; the reversal retires at both
   ends, along with the drop-glue and value-plan reversals that mirror it; narrow

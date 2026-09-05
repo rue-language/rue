@@ -1023,8 +1023,7 @@ fn lower_argument(placer: &mut Placer, facts: CAbiTypeFacts) -> ArgLocation {
                     pieces: RegisterPieces::one(class, index),
                 };
             }
-            let natural = u64::from(kind.extension().natural_bytes());
-            ArgLocation::stacked(placer.area.claim_scalar(natural))
+            ArgLocation::stacked(placer.area.claim_scalar(u64::from(kind.natural_bytes())))
         }
         CAbiTypeFacts::Aggregate {
             size,

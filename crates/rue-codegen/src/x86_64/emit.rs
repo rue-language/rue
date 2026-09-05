@@ -594,6 +594,7 @@ impl<'a> Emitter<'a> {
                 .map(|slot| crate::codegen_pipeline::ParamHoming {
                     start_slot: slot,
                     class: crate::call_plan::AbiSlotClass::Gp,
+                    narrow_stack_load: None,
                     location: if (slot + abi_shift) < 6 {
                         crate::call_plan::AbiSlotLocation::GpReg((slot + abi_shift) as usize)
                     } else {
@@ -732,13 +733,36 @@ impl<'a> Emitter<'a> {
                     end_inst!(self, "mov float [rbp{}], {}", offset, FP_ARG_REGS[index]);
                 }
                 (_, crate::call_plan::AbiSlotLocation::Stack { offset: area, .. }) => {
-                    // Stack-passed arg: copy from above the frame into the param area
+                    // Stack-passed value: copy the eightbyte from above the
+                    // frame into the param area. A value the convention packed
+                    // narrower than an eightbyte is re-extended on the way in,
+                    // so the frame slot holds Rue's canonical 64-bit form.
                     let src_offset =
                         crate::frame_layout::checked_incoming_stack_arg_byte_offset(16, area)
                             .expect("incoming stack argument offset must fit displacement");
                     self.begin_inst();
-                    self.emit_mov_rm(Reg::Rax, Reg::Rbp, src_offset);
-                    end_inst!(self, "mov rax, [rbp+{}]", src_offset);
+                    match homing.narrow_stack_load {
+                        Some(narrow) => {
+                            self.emit_narrow_load_rm(
+                                Reg::Rax,
+                                Reg::Rbp,
+                                src_offset,
+                                narrow.width,
+                                narrow.signed,
+                            );
+                            end_inst!(
+                                self,
+                                "mov{} rax, {} ptr [rbp+{}]",
+                                if narrow.signed { "sx" } else { "zx" },
+                                narrow.width,
+                                src_offset
+                            );
+                        }
+                        None => {
+                            self.emit_mov_rm(Reg::Rax, Reg::Rbp, src_offset);
+                            end_inst!(self, "mov rax, [rbp+{}]", src_offset);
+                        }
+                    }
                     self.begin_inst();
                     self.emit_mov_mr(Reg::Rbp, offset, Reg::Rax);
                     end_inst!(self, "mov [rbp{}], rax", offset);
@@ -3628,11 +3652,44 @@ mod tests {
             .with_param_homing(vec![crate::codegen_pipeline::ParamHoming {
                 start_slot: 0,
                 class: crate::call_plan::AbiSlotClass::Gp,
+                narrow_stack_load: None,
                 location: crate::call_plan::AbiSlotLocation::stack_slot(0),
             }])
             .emit_all()
             .expect("stack argument homing must emit");
         assert!(emitted.to_asm().contains("mov rax, [rbp+16]"));
+    }
+
+    /// Apple's amendment packs a stacked scalar at its natural size, so a value
+    /// narrower than an eightbyte is re-extended on the way into the frame slot
+    /// — Rue's canonical 64-bit form is stronger than what any C row promises.
+    /// SysV packs whole eightbytes and never reaches this, but the prologue is
+    /// one path and the encoding is pinned on both backends.
+    #[test]
+    fn a_narrow_stacked_argument_is_re_extended_into_its_frame_slot() {
+        for (width, signed, mnemonic) in [
+            (1u8, true, "movsx rax, 1 ptr [rbp+16]"),
+            (2u8, false, "movzx rax, 2 ptr [rbp+16]"),
+            (4u8, true, "movsx rax, 4 ptr [rbp+16]"),
+        ] {
+            let mut mir = X86Mir::new();
+            mir.push(X86Inst::Ret);
+            let emitted = Emitter::new(&mir, 0, 0, 1, &[], &[])
+                .with_param_homing(vec![crate::codegen_pipeline::ParamHoming {
+                    start_slot: 0,
+                    class: crate::call_plan::AbiSlotClass::Gp,
+                    narrow_stack_load: Some(crate::types::NarrowScalar { width, signed }),
+                    location: crate::call_plan::AbiSlotLocation::Stack {
+                        offset: 0,
+                        size: u32::from(width),
+                        align: u32::from(width),
+                    },
+                }])
+                .emit_all()
+                .expect("a narrow stacked argument must home");
+            let asm = emitted.to_asm();
+            assert!(asm.contains(mnemonic), "{width}/{signed}: {asm}");
+        }
     }
 
     #[test]

@@ -89,6 +89,15 @@ pub(crate) struct CanonicalLayout {
     /// Whether the compact memory image is byte-for-byte identical to the
     /// flattened eight-byte slot representation used by the native call ABI.
     pub(crate) slot_identical: bool,
+    /// Every scalar leaf of the type's memory image, at its own byte offset and
+    /// width, in ascending order — the facts a calling convention classifies an
+    /// aggregate's eightbytes and its homogeneous-float rule by.
+    ///
+    /// Empty for a type larger than
+    /// [`rue_air::MAX_LEAF_CLASSIFIED_BYTES`], because no supported row's answer
+    /// for one that large depends on its leaves; the projection reports such a
+    /// type all-integer rather than carrying a leaf per array element.
+    pub(crate) leaves: Arc<[rue_air::CAbiLeaf]>,
     pub(crate) kind: CanonicalLayoutKind,
 }
 
@@ -186,27 +195,26 @@ pub(crate) struct CallAbiArgument {
     pub(crate) class: CallAbiArgumentClass,
 }
 
+/// Where one argument of a classified signature travels.
+///
+/// The native convention places arguments by the compilation target's own C
+/// rules (ADR-0084), so both rows are described by the same classes; only the
+/// return still spells the two conventions apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CallAbiArgumentClass {
+    /// Zero-sized: no register, no stack byte, no pointer.
     Omitted,
-    NativeDirect {
-        slots: u32,
-    },
-    NativeIndirect,
-    CScalar {
+    /// One scalar in one register, carrying `extension`.
+    ScalarRegister {
         extension: rue_air::ScalarAbiExtension,
     },
-    CIntegerRegisters {
-        eightbytes: u32,
-    },
-    CByValueStack {
-        size: u32,
-        alignment: u32,
-    },
-    CByReferenceCopy {
-        size: u32,
-        alignment: u32,
-    },
+    /// An aggregate packed into `eightbytes` registers.
+    Registers { eightbytes: u32 },
+    /// An aggregate by value in the outgoing argument area.
+    ByValueStack { size: u32, alignment: u32 },
+    /// An aggregate through a pointer to a caller-owned copy.
+    ByReferenceCopy { size: u32, alignment: u32 },
+    /// A `borrow` / `inout` parameter: one pointer, whatever it points at.
     Reference,
 }
 

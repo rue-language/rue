@@ -12,10 +12,12 @@
 //!   consumes, through the very same projections the import lowering
 //!   ([`crate::foreign_call::ForeignCallInputs`]) and the export thunk
 //!   ([`crate::export_thunk::ExportSignature`]) build;
-//! * the native Rue convention reads [`rue_air::NativeCallAbi`] through
-//!   [`return_plan`] for the classification and [`assign_abi_slots`] /
-//!   [`crate::call_plan::return_slot_regs`] for the physical slot plan, over the
-//!   same class vector the callee's parameter storage plan builds.
+//! * the native Rue convention reads [`rue_air::lower_native_signature`] for
+//!   its arguments — the same placement the callee's parameter storage plan and
+//!   every caller of that signature read (ADR-0084) — and
+//!   [`rue_air::NativeCallAbi`] through [`return_plan`] and
+//!   [`crate::call_plan::return_slot_regs`] for the result, which keeps its own
+//!   wider bank until RUE-2038.
 //!
 //! Physical register *names* stay in the two backends: this module asks
 //! [`TargetRegisters`] for the name of a roster index and never restates a
@@ -47,9 +49,10 @@ use rue_cfg::{CfgInstData, CfgValue, ValidatedCfg};
 use rue_target::{Arch, CRegisterClass, CallingConvention, SretRegisterKind, Target};
 
 use crate::call_plan::{
-    AbiRegisterBanks, AbiSlotClass, AbiSlotLocation, ReturnPlan, ReturnSlotReg, assign_abi_slots,
-    return_plan, return_slot_regs,
+    AbiRegisterBanks, AbiSlotClass, AbiSlotLocation, ReturnPlan, ReturnSlotReg, return_plan,
+    return_slot_regs,
 };
+use crate::native_abi::{NativeArg, native_by_value_arg};
 
 // ============================================================================
 // Register naming
@@ -136,17 +139,6 @@ impl TargetRegisters {
         match self.arch {
             Arch::X86_64 => crate::x86_64::DEDICATED_SRET_REGISTER_NAME,
             Arch::Aarch64 => crate::aarch64::DEDICATED_SRET_REGISTER_NAME,
-        }
-    }
-
-    fn argument_banks(self) -> AbiRegisterBanks {
-        AbiRegisterBanks {
-            gp: self
-                .roster(RegisterRole::Argument, CRegisterClass::Gp)
-                .len(),
-            fp: self
-                .roster(RegisterRole::Argument, CRegisterClass::Fp)
-                .len(),
         }
     }
 
@@ -270,43 +262,27 @@ impl From<LoweredReturn> for CPlacement {
     }
 }
 
-/// One flattened native ABI slot's physical position, and which logical slot of
-/// its value rides there.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NativeSlot {
-    /// The value's own logical slot index. The native convention reverses a
-    /// multi-slot by-value aggregate, so this descends across such a
-    /// parameter's positions.
-    pub logical: u32,
-    /// The position the shared slot assignment gave it.
-    pub location: AbiSlotLocation,
-}
-
 /// Where one value of the native Rue convention travels.
+///
+/// The native convention places every argument exactly where the compilation
+/// target's C row places it (ADR-0084), so an argument's placement *is* a
+/// [`CPlacement`]. The result still classifies natively — the wider return bank
+/// and the hidden-first-argument sret — so it keeps its own arms until phase 2
+/// retires them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativePlacement {
     /// No slot at all (a zero-sized result).
     None,
-    /// The value's flattened slots, in ABI order.
-    Slots {
-        slots: Vec<NativeSlot>,
-        /// Whether the slots cross in reverse logical order, which the native
-        /// convention does for every multi-slot by-value aggregate.
-        reversed: bool,
-    },
-    /// One pointer slot standing for caller storage: a `borrow` / `inout`
-    /// parameter, or a by-value aggregate the compact layout forces indirect.
-    Pointer {
-        location: AbiSlotLocation,
-        /// How many of the callee's parameter slots the pointed-at value
-        /// occupies, for the by-value indirect case where the classifier
-        /// collapsed a wider value onto one incoming register. `None` for a
-        /// by-reference parameter, whose single slot holds only the pointer and
-        /// says nothing about the pointee.
-        pointee_slots: Option<u32>,
+    /// One argument, placed by the target's own C rules.
+    Argument(CPlacement),
+    /// One already-flattened value of the cleanup convention: each leaf is a
+    /// register-width argument of its own, in ascending order.
+    PerLeaf {
+        /// One placement per leaf.
+        leaves: Vec<CPlacement>,
     },
     /// The result is written to caller storage whose address is the hidden
-    /// first ABI slot.
+    /// first argument register.
     Sret {
         location: AbiSlotLocation,
         slot_count: u32,
@@ -437,8 +413,6 @@ fn parameter_descriptors(cfg: &ValidatedCfg) -> Vec<SourceParamAbi> {
         .map(|slot| SourceParamAbi {
             start_slot: slot,
             slot_count: 1,
-            crossing_regs: 1,
-            crossing_classes: vec![rue_air::NativeArgClass::Gp],
             ty: None,
         })
         .collect()
@@ -463,11 +437,11 @@ fn parameter_mode(cfg: &ValidatedCfg, descriptor: &SourceParamAbi) -> AbiParamet
 
 /// Project one function's native ABI from its CFG.
 ///
-/// The parameter grouping is the CFG's own [`SourceParamAbi`] descriptors — the
-/// classification semantic analysis recorded — and the physical positions come
-/// from [`assign_abi_slots`] over the same class vector
-/// `crate::param_storage::ParamStoragePlan` builds, so the report and the
-/// prologue read one assignment rather than two.
+/// The parameter grouping is the CFG's own [`SourceParamAbi`] descriptors, and
+/// the placements come from the one signature lowering the prologue and every
+/// caller consume ([`rue_air::lower_native_signature`]), so the report prints
+/// the placement that will actually be emitted rather than a second opinion
+/// about it.
 fn native_side(
     cfg: &ValidatedCfg,
     air: &ValidatedAir,
@@ -483,57 +457,84 @@ fn native_side(
         native_return_register_budget(target.arch()),
     );
 
-    let descriptors = parameter_descriptors(cfg);
-    let mut classes = Vec::new();
-    if plan.uses_sret() {
-        classes.push(AbiSlotClass::Gp);
-    }
-    for descriptor in &descriptors {
-        classes.extend(
-            descriptor
-                .crossing_classes
-                .iter()
-                .copied()
-                .map(AbiSlotClass::from),
-        );
-    }
-    let locations = assign_abi_slots(
-        rue_target::ConventionSpec::native(target),
-        classes.iter().copied(),
-        registers.argument_banks(),
-    );
-
     // Two recoveries, because a body records the two parameter kinds
     // differently: a by-value parameter through its drop entry or `Param`
     // instruction, a by-reference one only through the pointee type on the
     // places that read it.
     let value_types = rue_air::body_parameter_types(air);
     let pointee_types = rue_air::by_reference_parameter_pointee_types(air);
-    let mut cursor = usize::from(plan.uses_sret());
-    let mut parameters = Vec::with_capacity(descriptors.len());
-    for (index, descriptor) in descriptors.iter().enumerate() {
-        let crossing = descriptor.crossing_regs as usize;
-        let positions = &locations[cursor..cursor + crossing];
-        cursor += crossing;
-        let mode = parameter_mode(cfg, descriptor);
-        let ty = descriptor.ty.or_else(|| {
-            let recovered = if mode == AbiParameterMode::ByValue {
-                &value_types
-            } else {
-                &pointee_types
-            };
-            recovered.get(&descriptor.start_slot).copied()
-        });
-        parameters.push(AbiParameter {
-            index: index as u32,
-            ty: type_text(type_pool, ty),
-            mode,
-            placement: AbiPlacement::Native(native_parameter_placement(
-                descriptor, mode, ty, type_pool, positions,
-            )),
-            extension: ScalarAbiExtension::None,
-        });
+
+    let descriptors = parameter_descriptors(cfg);
+    let modes: Vec<AbiParameterMode> = descriptors
+        .iter()
+        .map(|descriptor| parameter_mode(cfg, descriptor))
+        .collect();
+    let types: Vec<Option<Type>> = descriptors
+        .iter()
+        .zip(&modes)
+        .map(|(descriptor, mode)| {
+            descriptor.ty.or_else(|| {
+                let recovered = if *mode == AbiParameterMode::ByValue {
+                    &value_types
+                } else {
+                    &pointee_types
+                };
+                recovered.get(&descriptor.start_slot).copied()
+            })
+        })
+        .collect();
+    let mut parameters_facts = Vec::new();
+    let mut spans = Vec::with_capacity(descriptors.len());
+    for (descriptor, mode) in descriptors.iter().zip(&modes) {
+        let convention = if *mode == AbiParameterMode::ByValue {
+            rue_air::ArgConvention::ByValue
+        } else {
+            rue_air::ArgConvention::ByReference
+        };
+        let native = match (convention, descriptor.ty) {
+            (rue_air::ArgConvention::ByValue, Some(ty)) => native_by_value_arg(type_pool, ty),
+            (rue_air::ArgConvention::ByValue, None) => NativeArg::PerLeaf {
+                count: descriptor.slot_count.max(1),
+            },
+            _ => NativeArg::Scalar {
+                kind: rue_air::CAbiScalarKind::RegisterWidth,
+                class: AbiSlotClass::Gp,
+            },
+        };
+        let start = parameters_facts.len();
+        parameters_facts.extend(native.facts().into_iter().map(|facts| (facts, convention)));
+        spans.push(start..parameters_facts.len());
     }
+    let pairing = rue_target::ConventionSpec::native(target);
+    let signature = rue_air::lower_native_signature(
+        pairing,
+        &parameters_facts,
+        native_incoming_return(pairing, plan),
+    );
+
+    let parameters = modes
+        .iter()
+        .zip(&types)
+        .zip(spans)
+        .enumerate()
+        .map(|(index, ((mode, ty), span))| {
+            let mut leaves = signature.arguments()[span]
+                .iter()
+                .map(|argument| CPlacement::from(argument.location))
+                .collect::<Vec<_>>();
+            AbiParameter {
+                index: index as u32,
+                ty: type_text(type_pool, *ty),
+                mode: *mode,
+                placement: AbiPlacement::Native(if leaves.len() == 1 {
+                    NativePlacement::Argument(leaves.remove(0))
+                } else {
+                    NativePlacement::PerLeaf { leaves }
+                }),
+                extension: ScalarAbiExtension::None,
+            }
+        })
+        .collect();
 
     AbiSide {
         convention: CallingConvention::Rue,
@@ -546,54 +547,26 @@ fn native_side(
                 type_pool,
                 return_type,
                 registers,
-                locations.first().copied(),
             )),
             extension: ScalarAbiExtension::None,
         },
-        stack_bytes: None,
+        stack_bytes: Some(signature.stack_bytes()),
     }
 }
 
-fn native_parameter_placement(
-    descriptor: &SourceParamAbi,
-    mode: AbiParameterMode,
-    ty: Option<Type>,
-    type_pool: &FrozenTypeInternPool,
-    positions: &[AbiSlotLocation],
-) -> NativePlacement {
-    // One incoming pointer standing for a wider value: a by-reference
-    // parameter, or a by-value aggregate the compact layout forced indirect
-    // (`crossing_regs < slot_count`).
-    if mode != AbiParameterMode::ByValue || descriptor.is_by_value_indirect() {
-        return match positions.first() {
-            Some(&location) => NativePlacement::Pointer {
-                location,
-                pointee_slots: descriptor
-                    .is_by_value_indirect()
-                    .then_some(descriptor.slot_count),
-            },
-            None => NativePlacement::None,
-        };
+/// The already-decided return the native argument placement is computed
+/// against: only the hidden indirect-result pointer affects where arguments go.
+fn native_incoming_return(pairing: rue_target::ConventionSpec, plan: ReturnPlan) -> LoweredReturn {
+    if !plan.uses_sret() {
+        return LoweredReturn::Void;
     }
-    // The native convention reverses a multi-slot by-value aggregate's slots so
-    // the callee reconstructs the ascending frame layout (`CallPlan` reverses
-    // the materialized slots before assigning them), so ABI position `k` of
-    // such a parameter carries logical slot `count - 1 - k`.
-    let reversed = positions.len() > 1
-        && ty.is_some_and(|ty| crate::types::is_multislot_aggregate(type_pool, ty));
-    let slots = positions
-        .iter()
-        .enumerate()
-        .map(|(position, &location)| NativeSlot {
-            logical: if reversed {
-                positions.len() as u32 - 1 - position as u32
-            } else {
-                position as u32
-            },
-            location,
-        })
-        .collect();
-    NativePlacement::Slots { slots, reversed }
+    let spec = pairing.spec();
+    LoweredReturn::Sret {
+        register: spec.sret_register,
+        echoed: spec.sret_pointer_echoed_in_result_register,
+        size: rue_air::SLOT_BYTES as u32,
+        align: rue_air::SLOT_BYTES as u32,
+    }
 }
 
 fn native_return_placement(
@@ -601,7 +574,6 @@ fn native_return_placement(
     type_pool: &FrozenTypeInternPool,
     ty: Type,
     registers: TargetRegisters,
-    hidden_slot: Option<AbiSlotLocation>,
 ) -> NativePlacement {
     match plan {
         ReturnPlan::ZeroSized => NativePlacement::None,
@@ -621,9 +593,9 @@ fn native_return_placement(
             slot_count,
             storage_bytes,
         } => NativePlacement::Sret {
-            // The hidden pointer is ABI slot 0 by construction, so the first
-            // assigned location is its own.
-            location: hidden_slot.unwrap_or(AbiSlotLocation::GpReg(0)),
+            // The hidden pointer is the hidden first ordinary argument, so it
+            // takes the first general-purpose argument register.
+            location: AbiSlotLocation::GpReg(0),
             slot_count,
             storage_bytes,
         },
@@ -913,12 +885,17 @@ fn slots(count: u32) -> String {
     counted(count, "slot")
 }
 
+/// `1 <noun>` / `N <noun>s`, with the one irregular plural the report needs:
+/// `leaf` becomes `leaves`.
 fn counted(count: u32, noun: &str) -> String {
     if count == 1 {
-        format!("1 {noun}")
-    } else {
-        format!("{count} {noun}s")
+        return format!("1 {noun}");
     }
+    let plural = match noun.strip_suffix('f') {
+        Some(stem) => format!("{stem}ves"),
+        None => format!("{noun}s"),
+    };
+    format!("{count} {plural}")
 }
 
 /// The one-line rendering of a placement, plus any continuation lines it needs.
@@ -998,52 +975,18 @@ fn native_placement_text(
 ) -> (String, Vec<String>) {
     match placement {
         NativePlacement::None => ("no value".to_owned(), Vec::new()),
-        NativePlacement::Slots {
-            slots: value_slots,
-            reversed,
-        } => match value_slots.as_slice() {
-            [] => ("omitted (no ABI slot)".to_owned(), Vec::new()),
-            [only] => (native_slot_text(registers, only.location), Vec::new()),
-            many => (
-                // Whether a multi-slot value crosses reversed is the native
-                // convention's least guessable rule, so it is stated either
-                // way rather than implied by its absence.
-                format!(
-                    "{}, {}",
-                    slots(many.len() as u32),
-                    if *reversed {
-                        "reversed"
-                    } else {
-                        "in logical order"
-                    }
-                ),
-                many.iter()
-                    .map(|slot| {
-                        format!(
-                            "slot {}: {}",
-                            slot.logical,
-                            native_slot_text(registers, slot.location)
-                        )
-                    })
-                    .collect(),
-            ),
-        },
-        NativePlacement::Pointer {
-            location,
-            pointee_slots,
-        } => (
-            match pointee_slots {
-                Some(count) => format!(
-                    "indirect: pointer in {} to {}",
-                    native_slot_text(registers, *location),
-                    slots(*count)
-                ),
-                None => format!(
-                    "indirect: pointer in {}",
-                    native_slot_text(registers, *location)
-                ),
-            },
-            Vec::new(),
+        NativePlacement::Argument(placement) => {
+            (c_placement_text(registers, *placement), Vec::new())
+        }
+        NativePlacement::PerLeaf { leaves } => (
+            format!("{}, one per leaf", counted(leaves.len() as u32, "leaf")),
+            leaves
+                .iter()
+                .enumerate()
+                .map(|(index, placement)| {
+                    format!("leaf {index}: {}", c_placement_text(registers, *placement))
+                })
+                .collect(),
         ),
         NativePlacement::Sret {
             location,
@@ -1262,36 +1205,29 @@ mod tests {
     }
 
     #[test]
-    fn a_reversed_multislot_parameter_names_the_logical_slot_each_register_carries() {
+    fn a_native_argument_reads_like_a_c_one() {
+        // The native convention places an argument exactly where the target's C
+        // row places it (ADR-0084), so its block prints the same placement text.
         let registers = TargetRegisters::new(Target::X86_64Linux);
         let (line, continuation) = native_placement_text(
             registers,
-            &NativePlacement::Slots {
-                slots: vec![
-                    NativeSlot {
-                        logical: 2,
-                        location: AbiSlotLocation::GpReg(0),
-                    },
-                    NativeSlot {
-                        logical: 1,
-                        location: AbiSlotLocation::GpReg(1),
-                    },
-                    NativeSlot {
-                        logical: 0,
-                        location: AbiSlotLocation::stack_slot(0),
-                    },
-                ],
-                reversed: true,
-            },
+            &NativePlacement::Argument(CPlacement::Registers {
+                class: CRegisterClass::Gp,
+                first: 0,
+                count: 2,
+            }),
         );
-        assert_eq!(line, "3 slots, reversed");
-        assert_eq!(
-            continuation,
-            [
-                "slot 2: gp register 0 (rdi)",
-                "slot 1: gp register 1 (rsi)",
-                "slot 0: stack +0 (8 bytes, align 8)",
-            ]
+        assert_eq!(line, "gp registers 0-1 (rdi, rsi)");
+        assert!(continuation.is_empty());
+
+        let (line, _) = native_placement_text(
+            registers,
+            &NativePlacement::Argument(CPlacement::Stack {
+                offset: 8,
+                size: 24,
+                align: 8,
+            }),
         );
+        assert_eq!(line, "stack +8 (24 bytes, align 8)");
     }
 }

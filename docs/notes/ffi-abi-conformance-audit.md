@@ -81,12 +81,13 @@ supported representation.
 | Property | Native Rue: x86-64 Linux | Native Rue: AArch64 Linux/macOS | Current target-C runtime subset |
 | --- | --- | --- | --- |
 | Integer/pointer argument registers | `rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9` | `x0`-`x7` | Same target registers |
-| Stack arguments | 8-byte slots, first overflow slot nearest return address | 8-byte slots beginning at incoming `sp` | Not implemented; every current helper fits registers |
-| Stacked target-C arguments (`extern "C"`) | 8-byte slots | 8-byte slots on Linux; scalars at natural size and alignment, packed, on macOS | Not reached |
+| Floating-point argument registers | `xmm0`-`xmm7` | `v0`-`v7` | Not reached; the C boundary rejects floats |
+| Argument placement | SysV eightbyte classification | AAPCS64 composite rules, with Apple's amendments on the Darwin row | The same rows |
+| Stack arguments | The row's own argument-area packing | The row's own argument-area packing | Not implemented; every current helper fits registers |
 | Scalar result | `rax` | `x0` | `rax` or `x0`/`w0` |
 | Multi-slot result | Up to six slots in `rax`, `rdx`, `rcx`, `r8`, `r9`, `r10` | Up to eight slots in `x0`-`x7` | No direct aggregate results |
 | Aggregate result storage | Hidden first ordinary slot (`rdi`) | Hidden first ordinary slot (`x0`) | Explicit first out-pointer parameter where required |
-| Aggregate argument order | Logical slots reversed within each value | Logical slots reversed within each value | Natural order; current parameters are scalars and pointers |
+| Aggregate argument order | Ascending memory order, eightbyte by eightbyte | Ascending memory order, eightbyte by eightbyte | The same order |
 | Call-site stack alignment | 16 bytes | 16 bytes | 16 bytes |
 | Red zone use | None | None | None |
 
@@ -97,50 +98,69 @@ indirect-result conventions — through the one lowered signature.
 
 ## Native Rue convention
 
-The convention this section and the matrix above describe is the one
-[ADR-0084](../designs/0084-native-calling-convention.md) replaces: the native
-convention becomes the compilation target's C convention plus a return bank
-wider than C's, so the slot flattening, the reversal, and the
-hidden-first-ordinary-argument sret below all retire. The description here stays
-accurate until that migration's return phase (RUE-2038) lands, and is rewritten
-with it.
+The native `Rue` convention is **the compilation target's C convention with a
+return-register bank wider than C's** ([ADR-0084](../designs/0084-native-calling-convention.md)).
+Its *arguments* are placed by exactly the rules that target's C row places them
+by, computed by `rue_air::lower_native_signature` — the same walk over the same
+placement state `lower_c_signature` runs, differing only in that the return is
+handed in rather than decided. Its *returns* keep the wider bank and the
+hidden-first-ordinary-argument sret described below; the return phase (RUE-2038)
+retires those, and the return rows here are rewritten with it.
 
-The canonical native call planner flattens a source value into logical 8-byte
-slots. Scalars occupy one slot, each aggregate leaf occupies one slot, zero-size
-value parameters occupy none, and `borrow`/`inout` parameters occupy one pointer
-slot. This is a compiler representation, not the target C layout algorithm.
+### Arguments
 
-This logical 8-byte slot flattening is the *call-ABI value decomposition*, which
-ADR-0052 deliberately separates from the *physical memory layout* of a type. The
-call convention is preserved unchanged while memory layout migrates to the
-compact representation (previewed by the `aggregate_layout` feature; the
-canonical native classifier is RUE-976), so the slot counts above stay valid
-even after `@size_of`, field offsets, and stack frames adopt natural byte
-widths. Physical layout alone never certifies that a value can be passed by
-value through this convention.
+Every Rue type is classified by its compact physical layout (ADR-0052) — not
+only `@repr(c)` types, which is a guarantee about layout rather than a
+precondition for classification:
 
-For a multi-slot value, the call planner reverses that value's slots before
-assigning argument locations. The callee reconstructs logical field order. This
-means that even an aggregate small enough to remain in registers is not passed
-like the corresponding C struct. C ABIs instead classify and place aggregates
-according to target layout, padding, and register classes.
+- **x86-64 SysV**: eightbyte classification with the INTEGER and SSE classes. An
+  aggregate of at most sixteen bytes travels in registers of its eightbytes'
+  classified banks; a larger one, or one with a misaligned field, is MEMORY class
+  and travels by value in the outgoing argument area consuming no register.
+- **AAPCS64**: the composite rules, including a homogeneous floating-point
+  aggregate in consecutive floating-point registers, rule C.11's roster
+  exhaustion, and a by-reference caller-owned copy for a composite over sixteen
+  bytes.
+- **Apple arm64**: AAPCS64 with Apple's amendments — a stacked scalar packed at
+  its natural size and alignment, which the callee re-extends into Rue's
+  canonical form on the way in.
+- Narrow integers, `bool`, and pointers take one register each; past the register
+  budget the row's own stack packing applies.
+- **Zero-sized values are omitted** — no register, no stack byte, no pointer —
+  and **`borrow`/`inout` is one pointer**, whatever it points at.
+- Every scalar is held **64-bit-extended** in registers and in the callee's frame
+  slots, which is stronger than any C row requires.
 
-On x86-64, the first six slots use `rdi`, `rsi`, `rdx`, `rcx`, `r8`, and `r9`.
-Remaining slots are pushed in reverse call order so the first overflow slot is
-at `[rbp+16]` in a conventional callee frame, followed by successive 8-byte
-slots. On AArch64, the first eight slots use `x0`-`x7`; overflow slots begin at
-the incoming `sp` and increase by 8 bytes. Both backends maintain 16-byte stack
-alignment at calls.
+A value is held as one canonically extended vreg per scalar leaf. When each leaf
+starts its own eightbyte — `{i64, i64}`, `StrBuf`, a one-field struct, a scalar —
+the leaves *are* the eightbytes and cross as themselves. Otherwise the leaves are
+written into the value's compact memory image and its eightbytes cross, which is
+what packs `{u8, u8, u8, u8}` into one register; the callee lays that image back
+down in its frame and reads the leaves out of it. `NativeImage::direct_leaves`
+is the one predicate that chooses between the two, consulted from both ends.
 
-Native direct aggregate results use logical order, not the argument reversal.
-x86-64 extends the result register set to six slots (`rax`, `rdx`, `rcx`, `r8`,
-`r9`, `r10`), although System V AMD64 supplies at most two integer eightbytes.
-AArch64 extends direct results through `x0`-`x7`, although AAPCS64 integer-like
-composite results are limited to `x0` and `x1` before indirect return is needed.
+### The cleanup convention
+
+Destructors and drop glue are invoked with an aggregate's leaves already
+flattened: the caller has materialized them and the callee walks them as leaves
+rather than reconstructing a value, so each leaf crosses as its own
+register-width argument. That is `NativeArg::PerLeaf`, an explicit arm of the
+same classifier both ends read (`CallPlan::from_slot_values` at the caller,
+`ParamStoragePlan` at the callee), and it is transitional: RUE-2039 collapses the
+remaining convention branches.
+
+### Returns (phase 2 territory)
+
+Native direct aggregate results use logical order. x86-64 extends the result
+register set to six slots (`rax`, `rdx`, `rcx`, `r8`, `r9`, `r10`), although
+System V AMD64 supplies at most two integer eightbytes. AArch64 extends direct
+results through `x0`-`x7`, although AAPCS64 integer-like composite results are
+limited to `x0` and `x1` before indirect return is needed.
 
 `StrBuf` and sufficiently large structs and arrays use native indirect return.
 The caller allocates a 16-byte-aligned buffer and supplies its address as a
-hidden first native slot, shifting user arguments. This differs on both targets:
+hidden first native argument, shifting user arguments. This differs on both
+targets:
 
 - System V AMD64 uses `rdi` for the hidden address and requires the callee to
   return that address in `rax`; native Rue does not promise the `rax` echo.
@@ -208,18 +228,23 @@ That object's body reads the export's `LoweredSignature` in the callee direction
 — the C caller has already put every argument where the lowering says it goes —
 and adapts each value to what the native body expects.
 
-The adaptation is small because the compact memory image of a `@repr(c)`
-aggregate *is* its C object layout, and the native convention's indirect
-transports already move that exact image through memory:
+The adaptation is small because both conventions place arguments by the same
+rules — the native row *is* the target's C row with a wider return bank — and
+because the compact memory image of a `@repr(c)` aggregate is its C object
+layout. The native side is placed by `rue_air::lower_native_signature` against
+the very facts the C side was placed by, so an export naming the target's own
+row moves each argument from where C left it to where the native body expects
+it and that is usually the same place:
 
-- A by-value aggregate the native classifier rules indirect is handed to the body
-  as a pointer to the C caller's own bytes, wherever they are: the saved incoming
+- A value the native convention passes by reference is handed to the body as a
+  pointer to the C caller's own bytes, wherever they are: the saved incoming
   argument registers, the caller's outgoing argument area, or the caller-owned
   copy an AAPCS64 by-reference argument points at. Nothing is repacked.
-- A direct native crossing is marshaled leaf by leaf through the compact image
-  map — each leaf loaded at its physical width through its canonical extension —
-  and a multi-slot value's slots are reversed, which is the native convention's
-  rule.
+- A value whose leaves are its eightbytes is marshaled leaf by leaf through the
+  compact image map, each leaf loaded at its physical width through its canonical
+  extension, in ascending memory order.
+- A value whose leaves pack together crosses as the image's eightbytes, loaded
+  whole.
 - When both directions are indirect, the C caller's indirect-result storage *is*
   the native body's sret storage, so the result is never copied; SysV's `rax`
   echo is then a reload of the saved pointer. When the native body returns in
@@ -288,12 +313,11 @@ It is evidence rather than commentary because it consumes what code generation
 consumes and nothing else: a C boundary's placements come from
 `rue_air::lower_c_signature` through the same `ForeignCallInputs` /
 `ExportSignature` projections the import lowering and the export thunk build,
-and the native side's come from `NativeCallAbi` plus the shared
-`assign_abi_slots` / `ReturnPlan` slot plan. Register *names* are asked of the
+and the native side's come from `rue_air::lower_native_signature` plus the
+`ReturnPlan` the return phase still owns. Register *names* are asked of the
 backend that owns the roster. A `pub extern "C" fn` export prints both halves of
-its crossing, so the work its entry thunk performs — the native convention's
-reversed aggregate slots against C's ascending eightbytes — is visible side by
-side.
+its crossing, so what its entry thunk has left to do — a re-extension per narrow
+scalar, and the return adaptation — is visible side by side.
 
 One thing the stage cannot show is an FFI-predicate failure beside the function
 that caused it: the predicates reject an `extern` or export *signature* while

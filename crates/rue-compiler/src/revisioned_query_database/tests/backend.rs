@@ -582,7 +582,11 @@ fn the_c_by_value_classifier_agrees_across_sites_shapes_and_planes() {
              struct TwentyFour { a: i64, b: i64, c: i64 }\n\
              struct Padded { a: u8, b: u32, c: u16 }\n\
              struct Nested { p: Padded, q: Eight }\n\
-             struct Arrayed { xs: [i32; 5] }",
+             struct Arrayed { xs: [i32; 5] }\n\
+             struct MixedFloat { a: f64, b: i64 }\n\
+             struct FloatPair { a: f32, b: f32 }\n\
+             struct FloatQuad { a: f64, b: f64, c: f64, d: f64 }\n\
+             enum Tagged { Small(u8), Wide(i64, i64) }",
         )],
         1,
     );
@@ -634,6 +638,34 @@ fn the_c_by_value_classifier_agrees_across_sites_shapes_and_planes() {
     );
     let nested = register("Nested", vec![("p", padded), ("q", eight)]);
     let arrayed = register("Arrayed", vec![("xs", ints5)]);
+    // The native convention is the first consumer to reach the SSE eightbyte
+    // class and AAPCS64's homogeneous-float rule, and the first to classify an
+    // enum, so the shape set carries all three.
+    let mixed_float = register("MixedFloat", vec![("a", Type::F64), ("b", Type::I64)]);
+    let float_pair = register("FloatPair", vec![("a", Type::F32), ("b", Type::F32)]);
+    let float_quad = register(
+        "FloatQuad",
+        vec![
+            ("a", Type::F64),
+            ("b", Type::F64),
+            ("c", Type::F64),
+            ("d", Type::F64),
+        ],
+    );
+    let tagged = Type::new_enum(
+        pool.register_enum(
+            interner.get_or_intern("Tagged"),
+            rue_air::EnumDef {
+                name: "Tagged".into(),
+                variants: Arc::from(["Small".into(), "Wide".into()]),
+                variant_payloads: vec![vec![Type::U8], vec![Type::I64, Type::I64]],
+                is_pub: false,
+                is_non_exhaustive: false,
+                file_id: rue_span::FileId::DEFAULT,
+            },
+        )
+        .0,
+    );
     let pointee = Type::new_ptr_const(pool.intern_ptr_const_from_type(Type::I32));
     let mut_pointee = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::I32));
     let pool = pool.freeze();
@@ -751,6 +783,89 @@ fn the_c_by_value_classifier_agrees_across_sites_shapes_and_planes() {
         "the shape set must reach every placement class: registers={seen_registers} \
          stack={seen_stack} indirect={seen_indirect} sret={seen_sret}"
     );
+
+    // The native row: the same agreement over the shapes the C boundary cannot
+    // carry. The native convention places arguments by exactly the target's own
+    // C rules (ADR-0084), so the two planes must project one set of facts for a
+    // float-carrying struct and an enum as well, and place them identically.
+    let native_shapes: Vec<(&str, crate::TypeInstanceKey, Type)> = shapes
+        .iter()
+        .cloned()
+        .chain([
+            ("MixedFloat", named("MixedFloat"), mixed_float),
+            ("FloatPair", named("FloatPair"), float_pair),
+            ("FloatQuad", named("FloatQuad"), float_quad),
+            (
+                "Tagged",
+                named_type_instance(&module, "Tagged", crate::StableDefinitionKind::Enum),
+                tagged,
+            ),
+        ])
+        .collect();
+    let mut seen_fp_registers = false;
+    for target in crate::Target::all().iter().copied() {
+        let pairing = rue_target::ConventionSpec::native(target);
+        for (name, stable_key, live_ty) in &native_shapes {
+            let attempt =
+                request_layout_for_target(&database, revision, stable_key.clone(), target);
+            let terminal = attempt.terminal().unwrap();
+            let rue_query::QueryOutcome::Success(crate::type_queries::LayoutValue::Available(
+                canonical,
+            )) = terminal.outcome()
+            else {
+                panic!("layout query failed for {name}: {terminal:?}");
+            };
+            let stable_facts =
+                super::super::semantic::stable_c_abi_type_facts(canonical, stable_key);
+            let live_facts =
+                rue_codegen::native_abi::native_arg(&pool, *live_ty, ArgConvention::ByValue)
+                    .facts()[0];
+            // A discriminant-only enum is the one projection the two planes
+            // spell differently — the live plane calls its single tag a scalar
+            // — and no such shape is in this set, so the facts must agree.
+            assert_eq!(
+                stable_facts, live_facts,
+                "{target:?}/{name}: the two planes must project one set of native facts"
+            );
+
+            let mut parameters = vec![(live_facts, ArgConvention::ByValue)];
+            parameters.extend(std::iter::repeat_n(
+                (
+                    CAbiTypeFacts::Scalar {
+                        kind: rue_air::CAbiScalarKind::RegisterWidth,
+                        class: rue_target::CRegisterClass::Gp,
+                    },
+                    ArgConvention::ByValue,
+                ),
+                9,
+            ));
+            let call =
+                rue_air::lower_native_signature(pairing, &parameters, rue_air::LoweredReturn::Void);
+            let mut stable_parameters = parameters.clone();
+            stable_parameters[0] = (stable_facts, ArgConvention::ByValue);
+            assert_eq!(
+                call,
+                rue_air::lower_native_signature(
+                    pairing,
+                    &stable_parameters,
+                    rue_air::LoweredReturn::Void
+                ),
+                "{target:?}/{name}: the stable plane must place every native value identically"
+            );
+            for argument in call.arguments() {
+                if let rue_air::ArgLocation::Registers { pieces } = argument.location {
+                    seen_fp_registers |= pieces
+                        .as_slice()
+                        .iter()
+                        .any(|piece| piece.class == rue_target::CRegisterClass::Fp);
+                }
+            }
+        }
+    }
+    assert!(
+        seen_fp_registers,
+        "the native shape set must reach the floating-point roster"
+    );
 }
 
 #[test]
@@ -809,7 +924,7 @@ fn call_abi_classifies_native_target_c_named_destructor_and_drop_glue_on_both_ta
         );
         assert!(matches!(
             foreign.arguments[0].class,
-            A::CScalar {
+            A::ScalarRegister {
                 extension: rue_air::ScalarAbiExtension::Unsigned { from_bits: 32 }
             }
         ));
@@ -828,7 +943,7 @@ fn call_abi_classifies_native_target_c_named_destructor_and_drop_glue_on_both_ta
         assert_eq!(destructor.arguments.len(), 1);
         assert!(matches!(
             destructor.arguments[0].class,
-            A::NativeDirect { slots: 1 }
+            A::Registers { eightbytes: 1 }
         ));
 
         let glue = request_call_abi(
@@ -841,7 +956,7 @@ fn call_abi_classifies_native_target_c_named_destructor_and_drop_glue_on_both_ta
         assert_eq!(glue.return_class, R::ZeroSized);
         assert!(matches!(
             glue.arguments[0].class,
-            A::NativeDirect { slots: 1 }
+            A::Registers { eightbytes: 1 }
         ));
     }
 }
@@ -888,11 +1003,18 @@ fn call_abi_batches_layouts_across_mixed_modes_and_duplicate_parameter_types() {
         assert_eq!(mixed.arguments[1].class, mixed.arguments[3].class);
         assert_eq!(mixed.arguments[1].value_slots, 7);
         assert_eq!(mixed.arguments[3].value_slots, 7);
+        // 56 bytes: SysV stacks it byval, AAPCS64 takes a caller-owned copy.
         assert!(matches!(
             mixed.arguments[1].class,
-            A::NativeDirect { slots: 7 } | A::NativeIndirect
+            A::ByValueStack {
+                size: 56,
+                alignment: 8
+            } | A::ByReferenceCopy {
+                size: 56,
+                alignment: 8
+            }
         ));
-        assert_eq!(mixed.arguments[4].class, A::NativeDirect { slots: 1 });
+        assert!(matches!(mixed.arguments[4].class, A::ScalarRegister { .. }));
         // The result layout is the last entry of the same batch.
         assert_eq!(
             mixed.return_class,
@@ -909,13 +1031,13 @@ fn call_abi_batches_layouts_across_mixed_modes_and_duplicate_parameter_types() {
         assert_eq!(scalars.arguments[0].class, scalars.arguments[1].class);
         assert_eq!(
             scalars.arguments[0].class,
-            A::CScalar {
+            A::ScalarRegister {
                 extension: rue_air::ScalarAbiExtension::Unsigned { from_bits: 32 }
             }
         );
         assert_eq!(
             scalars.arguments[2].class,
-            A::CScalar {
+            A::ScalarRegister {
                 extension: rue_air::ScalarAbiExtension::None
             }
         );
@@ -967,7 +1089,7 @@ fn call_abi_resolves_value_specialized_array_layout_on_both_targets() {
             named
                 .arguments
                 .iter()
-                .all(|argument| matches!(argument.class, A::NativeDirect { slots: 1 }))
+                .all(|argument| matches!(argument.class, A::ScalarRegister { .. }))
         );
 
         let facts = request_call_abi(&database, revision, callable.clone(), target);
@@ -981,14 +1103,19 @@ fn call_abi_resolves_value_specialized_array_layout_on_both_targets() {
             }
         );
         assert_eq!(facts.arguments.len(), 2);
-        assert!(matches!(
-            facts.arguments[0].class,
-            A::NativeDirect { slots: 1 }
-        ));
+        assert!(matches!(facts.arguments[0].class, A::ScalarRegister { .. }));
         assert_eq!(facts.arguments[0].value_slots, 1);
+        // `[u64; 7]` is 56 bytes: SysV stacks it byval, AAPCS64 takes a
+        // caller-owned copy.
         assert!(matches!(
             facts.arguments[1].class,
-            A::NativeDirect { slots: 7 }
+            A::ByValueStack {
+                size: 56,
+                alignment: 8
+            } | A::ByReferenceCopy {
+                size: 56,
+                alignment: 8
+            }
         ));
         assert_eq!(facts.arguments[1].value_slots, 7);
     }
@@ -1044,17 +1171,23 @@ fn call_abi_derives_anonymous_destructor_signature_from_its_exact_producer() {
         assert_eq!(facts.arguments.len(), 1);
         assert!(matches!(
             facts.arguments[0].class,
-            A::NativeDirect { slots: 1 }
+            A::Registers { eightbytes: 1 }
         ));
     }
 }
 
-/// One stable argument classification against the live classifier's answer
-/// for the same type under the same convention.
+/// One stable argument classification against the placement the live plane
+/// gives the same value under the same convention.
+///
+/// Both planes place through `rue_air::lower_native_signature`; this checks that
+/// the stable plane's own projection of the argument's facts reached the same
+/// answer, and that a by-reference parameter is still described as one pointer
+/// whatever the placement says about it.
 fn assert_native_arg_parity(
     stable: &crate::type_queries::CallAbiArgument,
-    live_class: rue_air::ArgClass,
+    live_location: rue_air::ArgLocation,
     live_width: u32,
+    by_reference: bool,
     context: &str,
 ) {
     use crate::type_queries::CallAbiArgumentClass as A;
@@ -1062,17 +1195,105 @@ fn assert_native_arg_parity(
         stable.value_slots, live_width,
         "value-slot width parity for {context}"
     );
-    match (stable.class, live_class) {
-        (A::Omitted, rue_air::ArgClass::Omitted) => {}
-        (A::NativeDirect { slots }, rue_air::ArgClass::Direct { slot_count }) => {
-            assert_eq!(slots, slot_count, "direct slot parity for {context}");
+    if by_reference {
+        assert!(
+            matches!(stable.class, A::Reference),
+            "a by-reference parameter is one pointer for {context}"
+        );
+        return;
+    }
+    match (stable.class, live_location) {
+        (A::Omitted, rue_air::ArgLocation::Omitted) => {}
+        // A scalar and a one-eightbyte aggregate reach the same register; the
+        // two classes differ only in whether the plane calls the value an
+        // aggregate, which is a projection difference and not a placement one.
+        (A::ScalarRegister { .. }, rue_air::ArgLocation::Registers { pieces }) => {
+            assert_eq!(
+                pieces.len(),
+                1,
+                "a scalar occupies one register for {context}"
+            );
         }
-        (A::NativeIndirect, rue_air::ArgClass::Indirect) => {}
-        (A::Reference, rue_air::ArgClass::Indirect) => {}
+        (A::ScalarRegister { .. }, rue_air::ArgLocation::Stack { .. }) => {}
+        (A::Registers { eightbytes }, rue_air::ArgLocation::Registers { pieces }) => {
+            assert_eq!(
+                eightbytes,
+                pieces.len(),
+                "register-count parity for {context}"
+            );
+        }
+        (
+            A::ByValueStack { size, alignment },
+            rue_air::ArgLocation::Stack {
+                size: live_size,
+                align,
+                ..
+            },
+        ) => {
+            assert_eq!(
+                (size, alignment),
+                (live_size, align),
+                "stacked footprint parity for {context}"
+            );
+        }
+        (
+            A::ByReferenceCopy { size, alignment },
+            rue_air::ArgLocation::Indirect {
+                size: live_size,
+                align,
+                ..
+            },
+        ) => {
+            assert_eq!(
+                (size, alignment),
+                (live_size, align),
+                "by-reference copy parity for {context}"
+            );
+        }
         (stable, live) => {
-            panic!("argument classification parity mismatch for {context}: {stable:?} != {live:?}")
+            panic!("argument placement parity mismatch for {context}: {stable:?} != {live:?}")
         }
     }
+}
+
+/// The placements the live plane gives one native signature's arguments.
+fn live_native_placements(
+    pool: &rue_air::FrozenTypeInternPool,
+    target: crate::Target,
+    parameters: &[(rue_air::ArgConvention, rue_air::Type)],
+    result: rue_air::Type,
+    budget: u32,
+) -> Vec<rue_air::ArgLocation> {
+    let pairing = rue_target::ConventionSpec::native(target);
+    let spec = pairing.spec();
+    let facts = parameters
+        .iter()
+        .map(|(convention, ty)| {
+            (
+                rue_codegen::native_abi::native_arg(pool, *ty, *convention).facts()[0],
+                *convention,
+            )
+        })
+        .collect::<Vec<_>>();
+    let ret = match rue_air::NativeCallAbi::new(pool, budget).classify_return(result) {
+        rue_air::ReturnClass::ZeroSized => rue_air::LoweredReturn::Void,
+        rue_air::ReturnClass::Indirect { slot_count } => rue_air::LoweredReturn::Sret {
+            register: spec.sret_register,
+            echoed: spec.sret_pointer_echoed_in_result_register,
+            size: slot_count.saturating_mul(rue_air::SLOT_BYTES as u32),
+            align: rue_air::SLOT_BYTES as u32,
+        },
+        other => rue_air::LoweredReturn::Registers {
+            class: rue_target::CRegisterClass::Gp,
+            count: other.slot_count().max(1),
+            extension: rue_air::ScalarAbiExtension::None,
+        },
+    };
+    rue_air::lower_native_signature(pairing, &facts, ret)
+        .arguments()
+        .iter()
+        .map(|argument| argument.location)
+        .collect()
 }
 
 /// One stable return classification against the live classifier's answer.
@@ -1268,11 +1489,15 @@ fn call_abi_native_classification_matches_the_live_classifier_on_both_targets() 
                 "{name} is a native callable"
             );
             assert_eq!(facts.arguments.len(), params.len(), "arity of {name}");
-            for (argument, (convention, ty)) in facts.arguments.iter().zip(params) {
+            let placements = live_native_placements(&pool, target, params, *result, budget);
+            for ((argument, (convention, ty)), location) in
+                facts.arguments.iter().zip(params).zip(&placements)
+            {
                 assert_native_arg_parity(
                     argument,
-                    live.classify_arg(*ty, *convention),
+                    *location,
                     live.arg_slot_width(*ty, *convention),
+                    *convention == ArgConvention::ByReference,
                     &format!("{name} on {target:?}"),
                 );
             }
@@ -1284,10 +1509,9 @@ fn call_abi_native_classification_matches_the_live_classifier_on_both_targets() 
         }
 
         // The discriminant-only enum is the one deliberate projection
-        // divergence between the planes: the live classifier reports its
-        // single tag slot as `Scalar`, while the stable projection keeps
-        // reporting the aggregate as one register slot. The physical
-        // crossing is identical (one register); this pin keeps the
+        // divergence between the planes: the live plane reports its single tag
+        // as a scalar, while the stable projection reports the aggregate. Both
+        // place it in one general-purpose register, and the pin keeps the
         // divergence visible instead of letting it drift silently.
         let flag_facts = request_call_abi(
             &database,
@@ -1307,16 +1531,16 @@ fn call_abi_native_classification_matches_the_live_classifier_on_both_targets() 
         );
         assert_native_arg_parity(
             &flag_facts.arguments[0],
-            live.classify_arg(flag, ArgConvention::ByValue),
+            live_native_placements(&pool, target, &[(by_value, flag)], flag, budget)[0],
             live.arg_slot_width(flag, ArgConvention::ByValue),
+            false,
             &format!("flag argument on {target:?}"),
         );
 
         // Pin the classification outcomes themselves, not only the
-        // cross-plane agreement: zero-sized values vanish, a slot-identical
-        // aggregate stays direct, a multi-slot narrow-leaf aggregate is
-        // forced indirect by the compact memory-first rule, and a
-        // single-slot narrow aggregate stays direct (RUE-1035).
+        // cross-plane agreement: zero-sized values vanish, a 16-byte aggregate
+        // takes two registers, an 8-byte one takes one whatever its fields'
+        // widths are, and a `borrow`/`inout` parameter is one pointer.
         use crate::type_queries::{CallAbiArgumentClass as A, CallAbiReturnClass as R};
         let request = |name: &str| {
             request_call_abi(
@@ -1332,25 +1556,32 @@ fn call_abi_native_classification_matches_the_live_classifier_on_both_targets() 
         let wide_facts = request("wide");
         assert!(matches!(
             wide_facts.arguments[0].class,
-            A::NativeDirect { slots: 2 }
+            A::Registers { eightbytes: 2 }
         ));
         assert_eq!(wide_facts.return_class, R::NativeRegisters { slots: 2 });
+        // `{u32, u32}` is eight bytes: one register, its two leaves packed into
+        // the one eightbyte. Its return still classifies natively.
         let narrow_facts = request("narrow");
-        assert!(matches!(narrow_facts.arguments[0].class, A::NativeIndirect));
+        assert!(matches!(
+            narrow_facts.arguments[0].class,
+            A::Registers { eightbytes: 1 }
+        ));
         assert_eq!(narrow_facts.return_class, R::NativeIndirect { slots: 2 });
         let one_narrow_facts = request("one_narrow");
         assert!(matches!(
             one_narrow_facts.arguments[0].class,
-            A::NativeDirect { slots: 1 }
+            A::Registers { eightbytes: 1 }
         ));
         assert_eq!(
             one_narrow_facts.return_class,
             R::NativeRegisters { slots: 1 }
         );
+        // `{{u32, u32}, u64}` is sixteen bytes: two registers on SysV, and two
+        // consecutive integer registers under the AAPCS64 composite rule.
         let nested_narrow_facts = request("nested_narrow");
         assert!(matches!(
             nested_narrow_facts.arguments[0].class,
-            A::NativeIndirect
+            A::Registers { eightbytes: 2 }
         ));
         let refs_facts = request("refs");
         assert!(matches!(refs_facts.arguments[0].class, A::Reference));
@@ -1454,7 +1685,7 @@ fn call_abi_target_c_classification_matches_the_live_classifier_on_both_targets(
         use crate::type_queries::{CallAbiArgumentClass as A, CallAbiReturnClass as R};
         assert_eq!(facts.arguments.len(), live_params.len(), "arity of {name}");
         for (argument, live_ty) in facts.arguments.iter().zip(live_params) {
-            let A::CScalar { extension } = argument.class else {
+            let A::ScalarRegister { extension } = argument.class else {
                 panic!("{name} argument is a target-C scalar: {:?}", argument.class);
             };
             assert_eq!(
@@ -1490,11 +1721,11 @@ fn call_abi_target_c_classification_matches_the_live_classifier_on_both_targets(
             live_facts,
         );
         match (facts.arguments[0].class, lowered.arguments()[0].location) {
-            (A::CIntegerRegisters { eightbytes }, rue_air::ArgLocation::Registers { pieces }) => {
+            (A::Registers { eightbytes }, rue_air::ArgLocation::Registers { pieces }) => {
                 assert_eq!(eightbytes, pieces.len(), "eightbyte parity for {name}")
             }
             (
-                A::CByValueStack { size, alignment },
+                A::ByValueStack { size, alignment },
                 rue_air::ArgLocation::Stack {
                     size: live_size,
                     align: live_align,
@@ -1506,7 +1737,7 @@ fn call_abi_target_c_classification_matches_the_live_classifier_on_both_targets(
                 "byval parity for {name}"
             ),
             (
-                A::CByReferenceCopy { size, alignment },
+                A::ByReferenceCopy { size, alignment },
                 rue_air::ArgLocation::Indirect {
                     size: live_size,
                     align: live_align,
@@ -1653,15 +1884,12 @@ fn call_abi_strbuf_return_uses_sret_on_both_planes() {
     ] {
         let live = NativeCallAbi::new(&pool, budget);
         // The canonical StrBuf always returns through sret even though its
-        // three slots fit the return-register budget, and its slot-identical
-        // layout keeps by-value arguments direct.
+        // three slots fit the return-register budget. Its 24 bytes are past
+        // every row's register-passed aggregate, so a by-value argument is SysV
+        // MEMORY class or an AAPCS64 caller-owned copy.
         assert_eq!(
             live.classify_return(strbuf),
             rue_air::ReturnClass::Indirect { slot_count: 3 }
-        );
-        assert_eq!(
-            live.classify_arg(strbuf, ArgConvention::ByValue),
-            rue_air::ArgClass::Direct { slot_count: 3 }
         );
         let facts = request_call_abi(
             &database,
@@ -1676,8 +1904,15 @@ fn call_abi_strbuf_return_uses_sret_on_both_planes() {
         );
         assert_native_arg_parity(
             &facts.arguments[0],
-            live.classify_arg(strbuf, ArgConvention::ByValue),
+            live_native_placements(
+                &pool,
+                target,
+                &[(ArgConvention::ByValue, strbuf)],
+                strbuf,
+                budget,
+            )[0],
             live.arg_slot_width(strbuf, ArgConvention::ByValue),
+            false,
             &format!("StrBuf echo argument on {target:?}"),
         );
     }

@@ -1122,11 +1122,12 @@ fn drop_plan<A: ValueLowerAdapter>(
             });
         }
         TypeKind::Enum(enum_id) => {
-            // Enum drop glue receives the complete flattened enum as one Rue
-            // by-value argument. Match ordinary call lowering's aggregate ABI:
-            // the callee's flat parameter slots contain the logical enum slots
-            // in reverse order. The synthesized glue maps the discriminant and
-            // active payload fields back out of that reversed area (RUE-998).
+            // Enum drop glue receives the enum's leaves already flattened, one
+            // register-width value each, under the cleanup convention
+            // (`CallPlan::from_slot_values`). A frame-resident aggregate ascends
+            // in address with its logical slots while frame slot numbers descend
+            // (ADR-0040), so handing the leaves over in reverse is what lands
+            // them in the glue's own parameter area in logical order (RUE-998).
             slots.reverse();
             actions.push(DropAction {
                 symbol: adapter.resolve_named_symbol(
@@ -1804,7 +1805,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                         inputs.compact_return_image.clone(),
                         inputs.compact_return_dispatch.clone(),
                         &inputs.args,
-                        adapter.call_arg_register_banks(),
+                        &inputs.natives,
                         adapter,
                         Some(result_vreg),
                     );
@@ -2445,51 +2446,26 @@ pub(crate) fn by_ref_param_slots(ctx: &CfgLowerContext<'_>) -> Vec<u32> {
         .collect()
 }
 
-/// Return each by-value indirect compact aggregate parameter's base frame slot
-/// and compact memory image (ADR-0052 phase 5.8, RUE-1005), for the entry-time
-/// unmarshalling both backends perform before the block walk.
+/// Return each by-value aggregate parameter whose leaves are not its eightbytes,
+/// as its base frame slot, whether its image is reached through a homed pointer,
+/// and the image itself — the entry-time unmarshalling both backends perform
+/// before the block walk (ADR-0084).
 ///
-/// The CFG's grouped descriptors flag which parameters cross as one pointer over
-/// a multi-slot span ([`rue_air::SourceParamAbi::is_by_value_indirect`]). The
-/// parameter's type — needed only to build its compact image — is recovered from
-/// its `Param` instruction; a parameter never read has no such instruction and
-/// needs no unmarshalling (nothing observes its frame slots), so it is skipped.
-/// Empty with the gate off, for functions with no such parameter, and for a
-/// directly constructed CFG with no grouped layout.
-pub(crate) fn indirect_value_params(
+/// The parameter storage plan owns the decision, because it is the same
+/// placement the prologue homed the argument by. Empty for a function with no
+/// such parameter and for a directly constructed CFG with no grouped layout.
+pub(crate) fn param_image_unmarshals(
     ctx: &CfgLowerContext<'_>,
-) -> Vec<(u32, Vec<crate::types::PhysicalEnumSlot>)> {
-    ctx.cfg
-        .source_param_abi()
+) -> Vec<(u32, u32, bool, crate::native_abi::NativeImage)> {
+    ctx.param_unmarshals()
         .iter()
-        .filter(|param| param.is_by_value_indirect())
-        .filter_map(|param| {
-            let ty = param.ty?;
-            let map = crate::types::aggregate_physical_slot_map(ctx.type_pool, ty)?;
-            Some((ctx.param_frame_slot(param.start_slot), map))
-        })
-        .collect()
-}
-
-/// Callee-side by-value indirect aggregate parameters whose compact image is
-/// HETEROGENEOUS (no single variant-independent map, RUE-1037): the frame base
-/// slot and the tag-dispatched image to unmarshal from the homed pointer. The
-/// complement of [`indirect_value_params`] (which handles the single-map case),
-/// so between them every by-value indirect aggregate parameter is unmarshalled.
-pub(crate) fn indirect_value_params_dispatch(
-    ctx: &CfgLowerContext<'_>,
-) -> Vec<(u32, crate::types::DispatchImage)> {
-    ctx.cfg
-        .source_param_abi()
-        .iter()
-        .filter(|param| param.is_by_value_indirect())
-        .filter_map(|param| {
-            let ty = param.ty?;
-            if crate::types::aggregate_physical_slot_map(ctx.type_pool, ty).is_some() {
-                return None;
-            }
-            let image = crate::types::aggregate_dispatch_image(ctx.type_pool, ty)?;
-            Some((ctx.param_frame_slot(param.start_slot), image))
+        .map(|unmarshal| {
+            (
+                ctx.param_frame_slot(unmarshal.param_slot),
+                unmarshal.image_slot_offset,
+                unmarshal.source == crate::param_storage::ImageSource::Pointer,
+                unmarshal.image.clone(),
+            )
         })
         .collect()
 }

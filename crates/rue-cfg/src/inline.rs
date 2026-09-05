@@ -2472,8 +2472,6 @@ mod tests {
             cfg.set_source_param_abi(vec![SourceParamAbi {
                 start_slot: 0,
                 slot_count: 2,
-                crossing_regs: 2,
-                crossing_classes: vec![rue_air::NativeArgClass::Gp; 2],
                 ty: None,
             }]);
             let entry = cfg.new_block();
@@ -3201,8 +3199,6 @@ mod tests {
             cfg.set_source_param_abi(vec![SourceParamAbi {
                 start_slot: 0,
                 slot_count: 2,
-                crossing_regs: 2,
-                crossing_classes: vec![rue_air::NativeArgClass::Gp; 2],
                 ty: None,
             }]);
             let entry = cfg.new_block();

@@ -14,7 +14,7 @@ description = "Per-function convention and per-value placement for native functi
 
 [[case]]
 name = "native_multislot_aggregate_argument_and_sret_return"
-description = "A 7-slot by-value aggregate crosses the native convention reversed, spilling past the six SysV argument registers; the same aggregate returns through sret, whose hidden pointer takes argument register 0."
+description = "A 56-byte by-value aggregate is SysV MEMORY class natively as well, so it crosses byval in the outgoing argument area consuming no register; the same aggregate returns through sret, whose hidden pointer takes argument register 0."
 target = "x86-64-linux"
 source = """
 struct Wide {
@@ -41,19 +41,14 @@ fn main() -> i32 {
 expected_abi = """
 function __rue_fn_test_2erue__through
   convention rue, symbol __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s7_7468726f756768t0_
-  parameter 0: Wide$test_2erue, by value, 7 slots, reversed
-    slot 6: gp register 1 (rsi)
-    slot 5: gp register 2 (rdx)
-    slot 4: gp register 3 (rcx)
-    slot 3: gp register 4 (r8)
-    slot 2: gp register 5 (r9)
-    slot 1: stack +0 (8 bytes, align 8)
-    slot 0: stack +8 (8 bytes, align 8)
+  parameter 0: Wide$test_2erue, by value, stack +0 (56 bytes, align 8)
   return: Wide$test_2erue, sret: pointer in gp register 0 (rdi) to 7 slots (64 bytes of caller storage)
+  outgoing argument area: 64 bytes
 
 function main
   convention rue, symbol main
   return: i32, gp return register 0 (rax)
+  outgoing argument area: 0 bytes
 """
 
 # The same `extern "C"` signature on all three rows. Eight register-width
@@ -104,6 +99,7 @@ expected_abi = """
 function main
   convention rue, symbol main
   return: i32, gp return register 0 (rax)
+  outgoing argument area: 0 bytes
 
 import wide
   convention x86-64-sysv, symbol wide
@@ -161,6 +157,7 @@ expected_abi = """
 function main
   convention rue, symbol main
   return: i32, gp return register 0 (x0)
+  outgoing argument area: 0 bytes
 
 import wide
   convention aarch64-aapcs, symbol wide
@@ -218,6 +215,7 @@ expected_abi = """
 function main
   convention rue, symbol main
   return: i32, gp return register 0 (x0)
+  outgoing argument area: 0 bytes
 
 import wide
   convention aarch64-aapcs-darwin, symbol wide
@@ -237,9 +235,10 @@ import wide
 
 # An export owns both halves of one crossing, so its block prints both: the C
 # entry a foreign caller writes (two eightbytes in, two result registers out)
-# and the native body the thunk forwards to, whose by-value aggregate crosses
-# reversed. Reading the two sides together is what shows the thunk has real work
-# to do even for a signature this small.
+# and the native body the thunk forwards to. Both sides place the argument
+# identically — the native convention is this target's own C row — so what is
+# left for the thunk is the return, which the wider native bank still spells
+# differently.
 [[case]]
 name = "export_two_field_struct_in_and_out"
 description = "A `pub extern \\\"C\\\" fn` export prints its C side and the native side it forwards to."
@@ -270,16 +269,16 @@ export swap
     outgoing argument area: 0 bytes
   native side
     convention rue, symbol __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s4_73776170t0_
-    parameter 0: Pair$test_2erue, by value, 2 slots, reversed
-      slot 1: gp register 0 (rdi)
-      slot 0: gp register 1 (rsi)
+    parameter 0: Pair$test_2erue, by value, gp registers 0-1 (rdi, rsi)
     return: Pair$test_2erue, 2 slots
       slot 0: gp return register 0 (rax)
       slot 1: gp return register 1 (rdx)
+    outgoing argument area: 0 bytes
 
 function main
   convention rue, symbol main
   return: i32, gp return register 0 (rax)
+  outgoing argument area: 0 bytes
 """
 
 # `borrow` and `inout` are one caller pointer each whatever they point at, so
@@ -314,28 +313,31 @@ fn main() -> i32 {
 expected_abi = """
 function __rue_fn_test_2erue__bump
   convention rue, symbol __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s4_62756d70t0_
-  parameter 0: Counter$test_2erue, inout, indirect: pointer in gp register 0 (rdi)
+  parameter 0: Counter$test_2erue, inout, gp register 0 (rdi)
   parameter 1: i64, by value, gp register 1 (rsi)
   return: unit, no value
+  outgoing argument area: 0 bytes
 
 function __rue_fn_test_2erue__total
   convention rue, symbol __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s5_746f74616ct0_
-  parameter 0: Counter$test_2erue, borrow, indirect: pointer in gp register 0 (rdi)
+  parameter 0: Counter$test_2erue, borrow, gp register 0 (rdi)
   return: i64, gp return register 0 (rax)
+  outgoing argument area: 0 bytes
 
 function main
   convention rue, symbol main
   return: i32, gp return register 0 (rax)
+  outgoing argument area: 0 bytes
 """
 
-# A by-value aggregate the compact layout cannot express slot-identically (an
-# `[i32; 8]` field) is forced indirect by the memory-first rule: one incoming
-# pointer for a value that still occupies nine callee parameter slots. That
-# collapse is the one case where the pointee's slot count *is* an ABI fact, so
-# the line states it — and the same type returns through sret.
+# A by-value aggregate whose leaves pack together (an `[i32; 8]` field) is
+# classified by its compact image like any other value: 40 bytes is past SysV's
+# sixteen, so it is MEMORY class and crosses byval in the outgoing argument area
+# — and the same type returns through sret, whose hidden pointer is the first
+# argument register even though no user argument takes one.
 [[case]]
 name = "native_compact_indirect_argument_states_its_pointee_slots"
-description = "A by-value aggregate forced indirect by the compact memory-first rule crosses as one pointer to nine slots."
+description = "A 40-byte by-value aggregate crosses natively where SysV puts it: byval in the outgoing argument area, past the hidden sret pointer."
 target = "x86-64-linux"
 source = """
 struct Block {
@@ -356,10 +358,12 @@ fn main() -> i32 {
 expected_abi = """
 function __rue_fn_test_2erue__through
   convention rue, symbol __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s7_7468726f756768t0_
-  parameter 0: Block$test_2erue, by value, indirect: pointer in gp register 1 (rsi) to 9 slots
+  parameter 0: Block$test_2erue, by value, stack +0 (40 bytes, align 8)
   return: Block$test_2erue, sret: pointer in gp register 0 (rdi) to 9 slots (80 bytes of caller storage)
+  outgoing argument area: 48 bytes
 
 function main
   convention rue, symbol main
   return: i32, gp return register 0 (rax)
+  outgoing argument area: 0 bytes
 """

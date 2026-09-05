@@ -5,33 +5,38 @@
 //! those passes run — and the distinction between spill-placement slots and
 //! emitted-frame locals — is common to every machine-code emission entry point.
 
-use rue_air::{ArgClass, ArgConvention, FrozenTypeInternPool, NativeCallAbi, ReturnClass};
+use rue_air::{ArgConvention, FrozenTypeInternPool, NativeCallAbi, ReturnClass};
 use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue, ValidatedCfg};
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use tracing::info_span;
 
 use crate::frame_layout::{FrameLayout, FramePointer, SavedRegScheme};
 
-/// How the callee prologue homes one source parameter's incoming argument
-/// registers into its frame parameter slots (ADR-0052 phase 5.8, RUE-1005).
+/// How the callee prologue moves one eightbyte of an incoming argument into
+/// the frame parameter area.
 ///
-/// The historical prologue assumed one incoming register per parameter slot. A
-/// by-value indirect compact aggregate breaks that: it arrives as one pointer
-/// register (`reg_count == 1`) yet reserves `slot_count` frame slots, so
-/// subsequent parameters' incoming registers shift. Each entry homes `reg_count`
-/// consecutive incoming registers starting at ABI argument index `abi_start`
-/// (sret shift included, RUE-1170) into frame parameter slots
-/// `[start_slot, start_slot + reg_count)`; the parameter's remaining reserved
-/// slots (for an indirect aggregate) are filled lazily by the body from the
-/// homed pointer. `start_slot` is the parameter's position within the
-/// *compacted* frame parameter area: register-only parameters (RUE-1170) get
-/// no entry at all and reserve no slots, so homed parameters pack together
-/// while their `abi_start` still names the original incoming register.
+/// A source parameter arrives as the placement the native convention gave it —
+/// one register per eightbyte, a run of eightbytes in the incoming argument
+/// area, or one pointer — and the prologue copies each of those eightbytes into
+/// a frame parameter slot. When the parameter's leaves *are* its eightbytes the
+/// copy is the whole homing; otherwise the body's entry unmarshal reads the
+/// leaves back out of the image the copies just laid down
+/// (`ParamStoragePlan::unmarshals`).
+///
+/// `start_slot` is the eightbyte's position within the *compacted* frame
+/// parameter area: register-only parameters (RUE-1170) get no entry at all and
+/// reserve no slots, so homed parameters pack together while the placement
+/// still names the original incoming register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ParamHoming {
     pub(crate) start_slot: u32,
     pub(crate) class: crate::call_plan::AbiSlotClass,
     pub(crate) location: crate::call_plan::AbiSlotLocation,
+    /// The narrow load a stacked value narrower than an eightbyte needs, so the
+    /// frame slot holds Rue's canonical 64-bit form. `None` for a whole
+    /// eightbyte, which is every stacked value under a row that packs the
+    /// argument area in 8-byte slots.
+    pub(crate) narrow_stack_load: Option<crate::types::NarrowScalar>,
 }
 
 /// Decide whether the final frame needs a frame pointer and a slot region, or
@@ -102,14 +107,14 @@ pub(crate) fn checked_slot_sum(parts: impl IntoIterator<Item = u32>) -> Option<u
 pub(crate) fn validate_pre_lowering_budget(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
-    arg_reg_count: u32,
+    native_convention: rue_target::ConventionSpec,
     return_reg_count: u32,
     scheme: SavedRegScheme,
 ) -> CompileResult<bool> {
     validate_pre_lowering_budget_for_target(
         cfg,
         type_pool,
-        arg_reg_count,
+        native_convention,
         return_reg_count,
         scheme,
         &|_| None,
@@ -119,7 +124,7 @@ pub(crate) fn validate_pre_lowering_budget(
 pub(crate) fn validate_pre_lowering_budget_for_target(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
-    arg_reg_count: u32,
+    native_convention: rue_target::ConventionSpec,
     return_reg_count: u32,
     scheme: SavedRegScheme,
     foreign_symbol_convention: &dyn Fn(lasso::Spur) -> Option<rue_target::CallingConvention>,
@@ -131,7 +136,6 @@ pub(crate) fn validate_pre_lowering_budget_for_target(
         .ok_or_else(|| frame_budget_error(cfg, None))?;
     FrameLayout::try_new(scheme, 0, base_slots).map_err(|_| frame_budget_error(cfg, None))?;
 
-    let argument_abi = NativeCallAbi::for_arguments(type_pool);
     for raw in 0..cfg.value_count() {
         let value = CfgValue::from_raw(raw as u32);
         let inst = cfg.get_inst(value);
@@ -146,39 +150,33 @@ pub(crate) fn validate_pre_lowering_budget_for_target(
             .map_err(|_| frame_budget_error(cfg, Some(value)))?;
             continue;
         }
-        let return_class = NativeCallAbi::new(type_pool, return_reg_count).classify_return(inst.ty);
-        let (mut abi_slots, sret_bytes) = match return_class {
-            ReturnClass::Indirect { slot_count } => {
-                let bytes =
+        let sret_bytes =
+            match NativeCallAbi::new(type_pool, return_reg_count).classify_return(inst.ty) {
+                ReturnClass::Indirect { slot_count } => u64::from(
                     crate::frame_layout::checked_aligned_cell_region_bytes(u64::from(slot_count))
-                        .map_err(|_| frame_budget_error(cfg, Some(value)))?;
-                (1_u32, u64::from(bytes))
-            }
-            _ => (0_u32, 0),
-        };
-        let mut indirect_bytes = 0_u64;
-        for arg in call_args {
-            let ty = cfg.get_inst(arg.value).ty;
-            let convention = match arg.mode {
-                CfgArgMode::Normal => ArgConvention::ByValue,
-                CfgArgMode::Inout | CfgArgMode::Borrow => ArgConvention::ByReference,
+                        .map_err(|_| frame_budget_error(cfg, Some(value)))?,
+                ),
+                _ => 0,
             };
-            let class = argument_abi.classify_arg(ty, convention);
-            abi_slots = abi_slots
-                .checked_add(class.crossing_slots())
-                .ok_or_else(|| frame_budget_error(cfg, Some(value)))?;
-            if arg.mode == CfgArgMode::Normal && class == ArgClass::Indirect {
-                let bytes =
-                    crate::frame_layout::checked_aligned_region_bytes(type_pool.layout(ty).size)
-                        .map_err(|_| frame_budget_error(cfg, Some(value)))?;
-                indirect_bytes = indirect_bytes
-                    .checked_add(u64::from(bytes))
-                    .ok_or_else(|| frame_budget_error(cfg, Some(value)))?;
-            }
-        }
-        let stack_slots = u64::from(abi_slots.saturating_sub(arg_reg_count));
-        crate::frame_layout::checked_call_area_bytes(stack_slots, sret_bytes, indirect_bytes)
-            .map_err(|_| frame_budget_error(cfg, Some(value)))?;
+        let arguments = call_args
+            .iter()
+            .map(|arg| {
+                (
+                    cfg.get_inst(arg.value).ty,
+                    match arg.mode {
+                        CfgArgMode::Normal => ArgConvention::ByValue,
+                        CfgArgMode::Inout | CfgArgMode::Borrow => ArgConvention::ByReference,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        crate::native_abi::native_call_area_bytes(
+            type_pool,
+            native_convention,
+            sret_bytes,
+            &arguments,
+        )
+        .map_err(|_| frame_budget_error(cfg, Some(value)))?;
     }
     Ok(has_sret)
 }
@@ -206,7 +204,7 @@ pub(crate) fn prepare_mir_with_backend<B: crate::backend::Backend>(
     let has_sret = validate_pre_lowering_budget_for_target(
         cfg,
         type_pool,
-        B::ARG_REG_COUNT,
+        rue_target::ConventionSpec::native(target),
         B::RETURN_REG_COUNT,
         B::SAVED_REG_SCHEME,
         &|name| symbols.foreign_convention(&symbols.resolve(interner.resolve(&name))),
@@ -346,6 +344,15 @@ pub(crate) fn generate_with_backend<B: crate::backend::Backend>(
 
 #[cfg(test)]
 mod tests {
+    /// The native pairing of each supported target, which is what decides where
+    /// a call's arguments land and therefore how much outgoing area it needs.
+    const X86_64_NATIVE: rue_target::ConventionSpec =
+        rue_target::ConventionSpec::native(rue_target::Target::X86_64Linux);
+    const AARCH64_NATIVE: rue_target::ConventionSpec =
+        rue_target::ConventionSpec::native(rue_target::Target::Aarch64Linux);
+    const AARCH64_DARWIN_NATIVE: rue_target::ConventionSpec =
+        rue_target::ConventionSpec::native(rue_target::Target::Aarch64Macos);
+
     use std::cell::RefCell;
 
     use lasso::Spur;
@@ -551,17 +558,37 @@ mod tests {
         let cfg = Cfg::new(Type::UNIT, max_slots, 0, "boundary".into(), vec![]);
 
         assert!(
-            validate_pre_lowering_budget(&cfg, &type_pool, 6, 6, SavedRegScheme::X86_64,).is_ok()
+            validate_pre_lowering_budget(
+                &cfg,
+                &type_pool,
+                X86_64_NATIVE,
+                6,
+                SavedRegScheme::X86_64,
+            )
+            .is_ok()
         );
         assert!(
-            validate_pre_lowering_budget(&cfg, &type_pool, 8, 8, SavedRegScheme::Aarch64,).is_err(),
+            validate_pre_lowering_budget(
+                &cfg,
+                &type_pool,
+                AARCH64_NATIVE,
+                8,
+                SavedRegScheme::Aarch64,
+            )
+            .is_err(),
             "AArch64's mandatory FP/LR save must count against the same budget"
         );
 
         let over_boundary = Cfg::new(Type::UNIT, max_slots + 1, 0, "over_boundary".into(), vec![]);
         assert!(
-            validate_pre_lowering_budget(&over_boundary, &type_pool, 6, 6, SavedRegScheme::X86_64,)
-                .is_err(),
+            validate_pre_lowering_budget(
+                &over_boundary,
+                &type_pool,
+                X86_64_NATIVE,
+                6,
+                SavedRegScheme::X86_64,
+            )
+            .is_err(),
             "an oversized production CFG must be rejected before backend lowering"
         );
 
@@ -570,7 +597,7 @@ mod tests {
             validate_pre_lowering_budget(
                 &param_boundary,
                 &type_pool,
-                6,
+                X86_64_NATIVE,
                 6,
                 SavedRegScheme::X86_64,
             )
@@ -606,21 +633,21 @@ mod tests {
         cfg.append_call(entry, None, Spur::default(), args, huge, Span::default())
             .unwrap();
 
-        for (arg_regs, ret_regs, scheme, convention) in [
+        for (native, ret_regs, scheme, convention) in [
             (
-                6,
+                X86_64_NATIVE,
                 6,
                 SavedRegScheme::X86_64,
                 rue_target::CallingConvention::X86_64SysV,
             ),
             (
-                8,
+                AARCH64_NATIVE,
                 8,
                 SavedRegScheme::Aarch64,
                 rue_target::CallingConvention::Aarch64Aapcs,
             ),
             (
-                8,
+                AARCH64_DARWIN_NATIVE,
                 8,
                 SavedRegScheme::Aarch64,
                 rue_target::CallingConvention::Aarch64AapcsDarwin,
@@ -629,7 +656,7 @@ mod tests {
             let error = super::validate_pre_lowering_budget_for_target(
                 &cfg,
                 &type_pool,
-                arg_regs,
+                native,
                 ret_regs,
                 scheme,
                 &|_| Some(convention),
@@ -643,8 +670,14 @@ mod tests {
 
         // Keep the native planner's cumulative indirect+sret guard covered as
         // well; the target-C cases above exercise the distinct foreign shapes.
-        let error = validate_pre_lowering_budget(&cfg, &type_pool, 6, 6, SavedRegScheme::X86_64)
-            .unwrap_err();
+        let error = validate_pre_lowering_budget(
+            &cfg,
+            &type_pool,
+            X86_64_NATIVE,
+            6,
+            SavedRegScheme::X86_64,
+        )
+        .unwrap_err();
         assert!(matches!(
             error.kind,
             rue_error::ErrorKind::FunctionFrameTooLarge { .. }
@@ -688,21 +721,21 @@ mod tests {
         // aggregate argument's 16-byte image scratch is live alongside it
         // during lowering. Both target-C lowerers must reject that peak before
         // their stack adjustments are emitted.
-        for (arg_regs, ret_regs, scheme, convention) in [
+        for (native, ret_regs, scheme, convention) in [
             (
-                6,
+                X86_64_NATIVE,
                 6,
                 SavedRegScheme::X86_64,
                 rue_target::CallingConvention::X86_64SysV,
             ),
             (
-                8,
+                AARCH64_NATIVE,
                 8,
                 SavedRegScheme::Aarch64,
                 rue_target::CallingConvention::Aarch64Aapcs,
             ),
             (
-                8,
+                AARCH64_DARWIN_NATIVE,
                 8,
                 SavedRegScheme::Aarch64,
                 rue_target::CallingConvention::Aarch64AapcsDarwin,
@@ -712,7 +745,7 @@ mod tests {
                 super::validate_pre_lowering_budget_for_target(
                     &cfg,
                     &type_pool,
-                    arg_regs,
+                    native,
                     ret_regs,
                     scheme,
                     &|_| Some(convention),
