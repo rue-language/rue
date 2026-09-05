@@ -97,9 +97,15 @@ budget. Two record kinds exist in this version, and `failure` has two shapes:
 
 The `complete` record is written by the dispatcher's epilogue alone, after the
 selected test body returns normally. `failure` records are written by assertion
-sugar and by the test-body `?` failure arm before aborting; `kind` is an open
-field, so a user assertion library's own kind is published verbatim rather than
-flattened (ADR-0083 §5.1).
+sugar, by the test-body `?` failure arm, and by the runtime trap helpers before
+aborting; `kind` is an open field, so a user assertion library's own kind is
+published verbatim rather than flattened (ADR-0083 §5.1).
+
+A trap's record uses the bare assertion's shape and the `trap:<class>` kind the
+taxonomy below already names, and its `message` is the pinned stderr line
+without the newline. The two routes to one trap therefore agree: a runner
+reading the channel and a runner reading stderr publish the same kind and the
+same text, and the record adds only the site (RUE-2019).
 
 A `failure` record carries **at most one of** `payload` and the pair
 `left`/`right`, and a bare `@assert` carries neither: its record ends at the
@@ -240,7 +246,7 @@ consumers already handle instead of adding one.
 | `message` | string | The pinned runtime message, the frame's message, or the runner's description. |
 | `exit_code` | integer | The process's exit status. **Absent** when it did not exit normally. |
 | `signal` | integer | The signal that killed it. **Absent** otherwise. |
-| `location` | object | `{"file","line","column"}` — the test declaration's header, unless a failure frame carried its own site. |
+| `location` | object | `{"file","line","column"}` — the failure frame's own site, or the test declaration's header when no frame named one. |
 | `payload` | string | The channel's open payload. **Absent** when empty, and a bare `@assert` writes none. |
 | `left` | string | A comparison assertion's left operand, rendered. **Absent** on every other failure. |
 | `right` | string | Its right operand, rendered. Present exactly when `left` is. |
@@ -250,10 +256,29 @@ consumers already handle instead of adding one.
 `line` and `column` are both 1-based, and `column` counts Unicode scalars rather
 than bytes — the same coordinate the compiler's own diagnostics print for the
 same position, so a report and a diagnostic never disagree about where something
-is. An `unhandled_error` record is the one that routinely carries a site of its
-own: the failure arm of a test body's `?` stages the position of the `?`
-operator's operand, so `location` names the failing expression rather than the
-`test` line the runner would otherwise fall back to (spec 6.7:14).
+is.
+
+Which failures carry a site of their own, and which still fall back to the
+`test` declaration's header:
+
+| Failure | `location` |
+|---------|------------|
+| `assert`, `assert_eq`, `assert_ne` | The intrinsic's own site (RUE-1953, ADR-0083 Phase 2.5). |
+| `unhandled_error` | The position of the `?` operator's operand, so the location names the failing expression (spec 6.7:14). |
+| `trap:panic` | The `@panic` intrinsic's own site, both spellings alike (RUE-2019). |
+| Every other `trap:<class>` | The `test` declaration's header. |
+
+The remaining traps are the checks the compiler emits below AIR — the
+fixed-array bounds check in the place lowering, and the division-by-zero,
+overflow, and `@intCast` range checks the CFG and codegen insert. None of them
+is an AIR call carrying a span, and the two ways to give them one both cost the
+*passing* path: staging a site beside the check runs on every access, and
+staging it inside the failing arm costs a branch on the negated condition and
+the arm's register pressure in every function that indexes. Until the trap edge
+can carry a site the passing path does not pay for, those failures name the
+header, and their `kind` is still exact — `__rue_bounds_check` writes its
+`trap:bounds_check` record whether or not a site was staged, so the class comes
+from the channel rather than from matching a stderr line.
 
 `timeout` and `crash` verdicts also carry a failure record, with kind `timeout`
 and `signal` respectively.
@@ -401,7 +426,7 @@ of stderr, and the frames read from the failure channel.
 | `fail` | `assert` | A `failure` frame from a failed `@assert`, carrying the intrinsic's own site and its message. Falls back to the last stderr line being exactly `assertion failed` — which is what a comptime-decidable `@assert_eq` still reports as, and what an older image writes. |
 | `fail` | `assert_eq` | A `failure` frame from a failed `@assert_eq`, carrying `left` and `right`. |
 | `fail` | `assert_ne` | The same, from a failed `@assert_ne`. |
-| `fail` | `trap:<class>` | The last stderr line is another pinned runtime message. |
+| `fail` | `trap:<class>` | A `failure` frame with that kind — `@panic` and the bounds check write one — or the last stderr line being another pinned runtime message. |
 | `fail` | `unhandled_error` | A `failure` frame with that kind — the test-body `?` failure arm. |
 | `fail` | *(verbatim)* | A `failure` frame with a kind the runner does not know (ADR-0083 §5.1). |
 | `fail` | `exit` | Any other nonzero exit. |
@@ -414,7 +439,10 @@ of stderr, and the frames read from the failure channel.
 messages they match are the ones `crates/rue-runtime/src/error.rs` and `entry.rs`
 write before `exit(101)`; `crates/rue-cli-tests/cases/rue_test.toml` runs real
 programs down those paths, so a reworded runtime message fails a case rather than
-silently reclassifying a trap as a bare `exit`.
+silently reclassifying a trap as a bare `exit`. A frame naming one of those
+classes reaches the same kind the stderr match produces, so one trap has one
+spelling however the runner learned of it; a `trap:` name outside the list is
+some other producer's and is published verbatim like any unknown kind.
 
 Precedence, in order:
 

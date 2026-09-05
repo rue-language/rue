@@ -42,6 +42,18 @@ const ASSERT_MESSAGE: &str = "assertion failed";
 /// `__rue_panic`'s prefix, ahead of the user's message text.
 const PANIC_PREFIX: &str = "panic: ";
 
+/// The `trap:` namespace a runtime trap's own failure frame reports under.
+const TRAP_PREFIX: &str = "trap:";
+
+/// The trap class this name identifies, or `None` when the taxonomy has no such
+/// class — a producer other than the runtime, whose kind is published verbatim.
+fn trap_class(name: &str) -> Option<&'static str> {
+    TRAP_MESSAGES
+        .iter()
+        .map(|(_, class)| *class)
+        .find(|class| *class == name)
+}
+
 /// The runtime's abort status. Every trap, `@panic`, and failed `@assert`
 /// exits with it (ADR-0083 Context: the failure model is abort-only).
 const RUNTIME_ERROR_EXIT_CODE: i32 = rue_test_runner::RUNTIME_ERROR_EXIT_CODE;
@@ -90,7 +102,14 @@ impl FailureKind {
             "assert" => Self::Assert,
             "assert_eq" => Self::AssertEq,
             "assert_ne" => Self::AssertNe,
-            other => Self::Reported(other.to_owned()),
+            other => match other.strip_prefix(TRAP_PREFIX).and_then(trap_class) {
+                // A trap that reported its own site (RUE-2019) names the same
+                // `trap:<class>` the stderr classification below produces, so
+                // the two routes to one trap reach one variant rather than
+                // publishing the same spelling from two.
+                Some(class) => Self::Trap(class),
+                None => Self::Reported(other.to_owned()),
+            },
         }
     }
 }
@@ -564,6 +583,26 @@ mod tests {
         assert_eq!(
             observe(Ok(101), "panic: unhandled error\n", &frames).verdict,
             Verdict::Fail(FailureKind::UnhandledError)
+        );
+    }
+
+    /// A trap that reported its own site names its class in the frame, and that
+    /// reaches the same variant the stderr classification produces — so one
+    /// trap has one spelling however the runner learned of it (RUE-2019).
+    #[test]
+    fn a_reported_trap_class_normalizes_to_the_taxonomy_variant() {
+        assert_eq!(
+            FailureKind::reported("trap:panic"),
+            FailureKind::Trap("panic")
+        );
+        assert_eq!(
+            FailureKind::reported("trap:bounds_check"),
+            FailureKind::Trap("bounds_check")
+        );
+        // Only the classes the taxonomy names; anything else stays verbatim.
+        assert_eq!(
+            FailureKind::reported("trap:nonesuch"),
+            FailureKind::Reported("trap:nonesuch".to_owned())
         );
     }
 

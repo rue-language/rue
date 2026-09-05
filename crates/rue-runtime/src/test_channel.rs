@@ -87,6 +87,24 @@ const ASSERT_EQ_MESSAGE: [u8; 31] = *b"assertion failed: left == right";
 const ASSERT_NE_MESSAGE: [u8; 31] = *b"assertion failed: left != right";
 const ASSERT_MESSAGE: [u8; 16] = *b"assertion failed";
 
+/// The kinds the runtime traps report under (RUE-2019).
+///
+/// These are the `trap:<class>` spellings the runner already publishes for a
+/// trap it classified from stderr, so a trap that reports its own site changes
+/// the record's `location` and nothing else: the same kind, and the same
+/// message, reach the event stream either way.
+const TRAP_PANIC_KIND: [u8; 10] = *b"trap:panic";
+const TRAP_BOUNDS_CHECK_KIND: [u8; 17] = *b"trap:bounds_check";
+
+/// The pinned stderr text each trap frame reports as its message, without the
+/// trailing newline stderr carries.
+///
+/// A trap's record message is the line the runner would otherwise have read off
+/// stderr, so the two agree byte for byte and the record adds only the site.
+const PANIC_PREFIX: [u8; 7] = *b"panic: ";
+const PANIC_MESSAGE: [u8; 5] = *b"panic";
+const BOUNDS_CHECK_MESSAGE: [u8; 26] = *b"error: index out of bounds";
+
 /// The pinned malformed-selector diagnostic (ADR-0083 §3).
 const USAGE_MESSAGE: [u8; 50] = *b"rue-test: expected one 16-hex-digit test selector\n";
 
@@ -198,11 +216,18 @@ fn complete_frame(emit: &mut dyn FnMut(&[u8])) {
     writer.raw(&COMPLETE_FRAME);
 }
 
-/// Write every field both failure shapes share, through the open location
-/// object: the two differ only in what follows the column.
+/// Write every field the failure shapes share, through the open location
+/// object: they differ only in what follows the column.
+///
+/// The message arrives as two runs rather than one so a trap can report the
+/// whole of its pinned stderr line — `panic: ` and the programmer's own bytes —
+/// with no staging buffer and no bound on the message's length. Every producer
+/// whose message is one piece passes an empty prefix, which costs no write.
+#[allow(clippy::too_many_arguments)]
 fn failure_head(
     writer: &mut FrameWriter<'_>,
     kind: &[u8],
+    message_prefix: &[u8],
     message: &[u8],
     file: &[u8],
     line: u32,
@@ -211,6 +236,7 @@ fn failure_head(
     writer.raw(&FAILURE_HEAD);
     writer.escaped(kind);
     writer.raw(&MESSAGE_FIELD);
+    writer.escaped(message_prefix);
     writer.escaped(message);
     writer.raw(&LOCATION_FIELD);
     writer.escaped(file);
@@ -235,7 +261,7 @@ fn failure_frame(
     payload: &[u8],
 ) {
     let mut writer = FrameWriter::new(emit);
-    failure_head(&mut writer, kind, message, file, line, column);
+    failure_head(&mut writer, kind, &[], message, file, line, column);
     writer.raw(&PAYLOAD_FIELD);
     writer.escaped(payload);
     writer.raw(&FRAME_TAIL);
@@ -266,6 +292,7 @@ fn comparison_frame(
     failure_head(
         &mut writer,
         kind,
+        &[],
         comparison_message(kind),
         file,
         line,
@@ -302,8 +329,98 @@ fn comparison_message(kind: &[u8]) -> &'static [u8] {
 /// `payload` would claim otherwise.
 fn assert_frame(emit: &mut dyn FnMut(&[u8]), message: &[u8], file: &[u8], line: u32, column: u32) {
     let mut writer = FrameWriter::new(emit);
-    failure_head(&mut writer, &ASSERT_KIND, message, file, line, column);
+    failure_head(&mut writer, &ASSERT_KIND, &[], message, file, line, column);
     writer.raw(&LOCATION_TAIL);
+}
+
+/// Write one runtime-trap failure frame (RUE-2019).
+///
+/// The shape is the bare assertion's: a trap has no operands to report and
+/// nothing structured for the open `payload`, so the record ends at the
+/// location object. The message arrives as two runs rather than one so
+/// `@panic(msg)` can report the whole pinned stderr line — the `panic: `
+/// prefix and the programmer's own bytes — with no staging buffer and no bound
+/// on the message's length.
+fn trap_frame(
+    emit: &mut dyn FnMut(&[u8]),
+    kind: &[u8],
+    message_prefix: &[u8],
+    message: &[u8],
+    file: &[u8],
+    line: u32,
+    column: u32,
+) {
+    let mut writer = FrameWriter::new(emit);
+    failure_head(
+        &mut writer,
+        kind,
+        message_prefix,
+        message,
+        file,
+        line,
+        column,
+    );
+    writer.raw(&LOCATION_TAIL);
+}
+
+/// The site [`__rue_test_failure_site`] most recently staged.
+///
+/// An unstaged site is the null-with-zero-length form the ABI permits, which
+/// reads back as the empty file at 0:0 — the shape every reporting helper
+/// already writes when its caller could not name a location, and the one the
+/// runner answers by falling back to the test declaration's header.
+fn staged_site() -> (&'static [u8], u32, u32) {
+    let position = SITE_POSITION.load(Ordering::Relaxed);
+    // SAFETY: a staged site's bytes stay readable across the pair, and an
+    // unstaged one is the null-with-zero-length form `view` accepts.
+    let file = unsafe {
+        view(
+            SITE_FILE.load(Ordering::Relaxed) as *const u8,
+            SITE_FILE_LEN.load(Ordering::Relaxed),
+        )
+    };
+    (file, (position >> 32) as u32, position as u32)
+}
+
+/// Report one runtime trap on the §5.1 channel, ahead of its pinned stderr
+/// line and its abort (RUE-2019).
+///
+/// The kind is the `trap:<class>` spelling the runner already publishes for a
+/// trap it classified from stderr, and the message is that same pinned stderr
+/// line without its newline, so a trap that reports here changes the record's
+/// `location` and nothing else.
+///
+/// The frame is written whether or not a site was staged, exactly as the
+/// assertion helpers write theirs: a trap reached without one — an allocation
+/// failure, or a check the compiler emits below AIR — still reports, with the
+/// empty location the runner answers from the test's header.
+fn report_trap(kind: &[u8], message_prefix: &[u8], message: &[u8]) {
+    let (file, line, column) = staged_site();
+    trap_frame(
+        &mut emit_to_channel,
+        kind,
+        message_prefix,
+        message,
+        file,
+        line,
+        column,
+    );
+}
+
+/// Report a `@panic(msg)` as a `trap:panic` failure (RUE-2019).
+pub(crate) fn report_panic(message: &[u8]) {
+    report_trap(&TRAP_PANIC_KIND, &PANIC_PREFIX, message);
+}
+
+/// Report a `@panic()` as a `trap:panic` failure, under the message-less
+/// form's own pinned stderr line.
+pub(crate) fn report_panic_no_message() {
+    report_trap(&TRAP_PANIC_KIND, &PANIC_MESSAGE, &[]);
+}
+
+/// Report a failed bounds check as a `trap:bounds_check` failure.
+pub(crate) fn report_bounds_check() {
+    report_trap(&TRAP_BOUNDS_CHECK_KIND, &BOUNDS_CHECK_MESSAGE, &[]);
 }
 
 /// Best-effort write of already-framed bytes to the inherited channel.
@@ -422,26 +539,17 @@ crate::define_runtime_implementation! {
                 view(payload_ptr, payload_len),
             )
         };
-        let position = SITE_POSITION.load(Ordering::Relaxed);
-        // SAFETY: a staged site's bytes stay readable across the pair, and an
-        // unstaged one is the null-with-zero-length form `view` accepts.
-        let file = unsafe {
-            view(
-                SITE_FILE.load(Ordering::Relaxed) as *const u8,
-                SITE_FILE_LEN.load(Ordering::Relaxed),
-            )
-        };
+        let (file, line, column) = staged_site();
         failure_frame(
             &mut emit_to_channel,
             kind,
             message,
             file,
-            (position >> 32) as u32,
-            position as u32,
+            line,
+            column,
             payload,
         );
-        // SAFETY: `message` is a live borrow of the caller's bytes.
-        unsafe { crate::error::__rue_panic(message.as_ptr(), message.len() as u64) }
+        crate::error::panic_stderr(message)
     }
 }
 
@@ -490,27 +598,17 @@ crate::define_runtime_implementation! {
                 view(right_ptr, right_len),
             )
         };
-        let position = SITE_POSITION.load(Ordering::Relaxed);
-        // SAFETY: a staged site's bytes stay readable across the pair, and an
-        // unstaged one is the null-with-zero-length form `view` accepts.
-        let file = unsafe {
-            view(
-                SITE_FILE.load(Ordering::Relaxed) as *const u8,
-                SITE_FILE_LEN.load(Ordering::Relaxed),
-            )
-        };
+        let (file, line, column) = staged_site();
         comparison_frame(
             &mut emit_to_channel,
             kind,
             file,
-            (position >> 32) as u32,
-            position as u32,
+            line,
+            column,
             left,
             right,
         );
-        let message = comparison_message(kind);
-        // SAFETY: `message` is a `'static` run of this module's own bytes.
-        unsafe { crate::error::__rue_panic(message.as_ptr(), message.len() as u64) }
+        crate::error::panic_stderr(comparison_message(kind))
     }
 }
 
@@ -557,15 +655,7 @@ crate::define_runtime_implementation! {
     ) -> ! {
         // SAFETY: the caller guarantees the pair describes readable bytes.
         let message = unsafe { view(message_ptr, message_len) };
-        let position = SITE_POSITION.load(Ordering::Relaxed);
-        // SAFETY: a staged site's bytes stay readable across the pair, and an
-        // unstaged one is the null-with-zero-length form `view` accepts.
-        let file = unsafe {
-            view(
-                SITE_FILE.load(Ordering::Relaxed) as *const u8,
-                SITE_FILE_LEN.load(Ordering::Relaxed),
-            )
-        };
+        let (file, line, column) = staged_site();
         let framed = if with_message == 0 {
             &ASSERT_MESSAGE[..]
         } else {
@@ -575,14 +665,13 @@ crate::define_runtime_implementation! {
             &mut emit_to_channel,
             framed,
             file,
-            (position >> 32) as u32,
-            position as u32,
+            line,
+            column,
         );
         if with_message == 0 {
             crate::error::__rue_assert_failed()
         } else {
-            // SAFETY: `message` is a live borrow of the caller's bytes.
-            unsafe { crate::error::__rue_panic(message.as_ptr(), message.len() as u64) }
+            crate::error::panic_stderr(message)
         }
     }
 }
@@ -868,6 +957,82 @@ mod tests {
             )
         };
         assert_eq!(staged, file);
+    }
+
+    /// A trap's frame is the bare assertion's shape — no `payload`, no operands
+    /// — under the `trap:<class>` kind the runner already publishes, carrying
+    /// the pinned stderr line as its message (RUE-2019).
+    #[test]
+    fn a_trap_frame_carries_its_class_and_pinned_message() {
+        let bytes = frame_bytes(|emit| {
+            trap_frame(
+                emit,
+                &TRAP_PANIC_KIND,
+                &PANIC_PREFIX,
+                b"boom",
+                b"app/parser_tests.rue",
+                21,
+                5,
+            )
+        });
+        assert_eq!(
+            std::str::from_utf8(&bytes).unwrap(),
+            "{\"record\":\"failure\",\"schema\":\"1.0\",\"kind\":\"trap:panic\",\
+             \"message\":\"panic: boom\",\
+             \"location\":{\"file\":\"app/parser_tests.rue\",\"line\":21,\"column\":5}}\n"
+        );
+    }
+
+    /// The two-run message is one JSON string, and each run is escaped: a
+    /// programmer's own text reaches the record intact however it is spelled.
+    #[test]
+    fn a_trap_message_escapes_both_of_its_runs() {
+        let bytes = frame_bytes(|emit| {
+            trap_frame(emit, &TRAP_PANIC_KIND, b"a\"b", b"c\nd", b"a.rue", 1, 1)
+        });
+        assert!(
+            std::str::from_utf8(&bytes)
+                .unwrap()
+                .contains("\"message\":\"a\\\"bc\\u000ad\""),
+            "{}",
+            std::str::from_utf8(&bytes).unwrap()
+        );
+    }
+
+    /// A trap reached with no staged site — an allocation failure, or a check
+    /// the compiler emits below AIR — still reports. The empty location is what
+    /// the runner answers from the test declaration's header, so the record is
+    /// never worse than the stderr classification it replaces.
+    #[test]
+    fn an_unstaged_trap_frame_names_no_file() {
+        let bytes = frame_bytes(|emit| {
+            trap_frame(
+                emit,
+                &TRAP_BOUNDS_CHECK_KIND,
+                &BOUNDS_CHECK_MESSAGE,
+                b"",
+                b"",
+                0,
+                0,
+            )
+        });
+        assert_eq!(
+            std::str::from_utf8(&bytes).unwrap(),
+            "{\"record\":\"failure\",\"schema\":\"1.0\",\"kind\":\"trap:bounds_check\",\
+             \"message\":\"error: index out of bounds\",\
+             \"location\":{\"file\":\"\",\"line\":0,\"column\":0}}\n"
+        );
+    }
+
+    /// Each pinned trap message is the stderr line `error.rs` writes, without
+    /// its newline: the record and stderr must not be able to drift apart.
+    #[test]
+    fn pinned_trap_messages_match_the_stderr_lines() {
+        assert_eq!(&PANIC_PREFIX[..], b"panic: ");
+        assert_eq!(&PANIC_MESSAGE[..], b"panic");
+        assert_eq!(&BOUNDS_CHECK_MESSAGE[..], b"error: index out of bounds");
+        assert_eq!(&TRAP_PANIC_KIND[..], b"trap:panic");
+        assert_eq!(&TRAP_BOUNDS_CHECK_KIND[..], b"trap:bounds_check");
     }
 
     #[test]

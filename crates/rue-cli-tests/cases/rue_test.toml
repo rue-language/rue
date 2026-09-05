@@ -261,7 +261,12 @@ runtime_error_contains = ["panic: "]
 
 [[case]]
 name = "a_panicking_test_is_kind_trap_panic"
-description = "`@panic(msg)` writes the pinned `panic: <msg>` prefix and exits 101."
+description = """
+`@panic(msg)` writes the pinned `panic: <msg>` prefix and exits 101, and since
+RUE-2019 it reports that on the §5.1 channel with its own site. The kind and the
+message are what the stderr classification already produced; `location` is what
+the record adds, and it names the `@panic` rather than the `test` header.
+"""
 files = [
     { path = "main.rue", source = """
 const tests = @import("tests.rue");
@@ -272,13 +277,123 @@ fn main() -> i32 {
 """ },
     { path = "tests.rue", source = """
 test "gives up" {
+    let attempts: i32 = 3;
     @panic("boom");
 }
 """ },
 ]
 args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 1
-compile_stdout_contains = ['"kind":"trap:panic"', '"message":"panic: boom"']
+compile_stdout_contains = [
+    '"failure":{"exit_code":101,"kind":"trap:panic","location":{"column":5,"file":"tests.rue","line":3}',
+    '"message":"panic: boom"}',
+    '"stderr":{"bytes_total":12,"data":"panic: boom\n","encoding":"utf8"}',
+    '"verdict":"fail"',
+]
+
+[[case]]
+name = "a_message_less_panic_names_its_own_line"
+description = """
+`@panic()` has its own pinned stderr line — the bare `panic` — and reports the
+same `trap:panic` kind under that message with its own site (RUE-2019). Stating
+the form rather than inferring it keeps the record and stderr identical.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "gives up without a word" {
+    let attempts: i32 = 3;
+    let limit: i32 = 1;
+    @panic();
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"failure":{"exit_code":101,"kind":"trap:panic","location":{"column":5,"file":"tests.rue","line":4}',
+    '"message":"panic"}',
+    '"stderr":{"bytes_total":6,"data":"panic\n","encoding":"utf8"}',
+]
+
+[[case]]
+name = "a_panic_reached_through_a_call_names_the_panics_own_file"
+description = """
+The site is the `@panic`'s, not the caller's and not the test declaration's, so
+a panic inside a helper in another module names that module's line. Falling back
+to the header would have named `tests.rue` and the `test` line for a failure
+that happened somewhere else entirely.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "helper.rue", source = """
+pub fn open(port: i32) -> i32 {
+    if port == 0 {
+        @panic("port must be assigned");
+    }
+    port
+}
+""" },
+    { path = "tests.rue", source = """
+const helper = @import("helper.rue");
+
+test "opens the port" {
+    @assert(helper.open(0) == 1);
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"kind":"trap:panic","location":{"column":9,"file":"helper.rue","line":3}',
+    '"message":"panic: port must be assigned"}',
+]
+
+[[case]]
+name = "an_out_of_bounds_index_takes_its_class_from_the_channel"
+description = """
+`__rue_bounds_check` writes its own `trap:bounds_check` record, so the class is
+the runtime's own statement rather than a match against a stderr line. The
+fixed-array check the compiler emits below AIR stages no site, so `location` is
+still the `test` declaration's header — the gap RUE-2019 documents rather than
+closes, because both ways to stage a site there cost the passing path.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "reads past the end" {
+    let values: [i32; 3] = [1, 2, 3];
+    let mut index: u64 = 0;
+    index = index + 5;
+    @assert(values[index] == 0);
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"kind":"trap:bounds_check","location":{"column":1,"file":"tests.rue","line":1}',
+    '"message":"error: index out of bounds"}',
+    '"stderr":{"bytes_total":27,"data":"error: index out of bounds\n","encoding":"utf8"}',
+]
 
 [[case]]
 name = "a_trapping_test_is_classified_by_its_runtime_message"

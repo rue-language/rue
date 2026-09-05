@@ -304,6 +304,22 @@ whether the request is a test one: an ordinary process simply has no descriptor
 3, so the frame write fails with `EBADF` as designed and the pinned stderr
 message plus exit 101 is the whole report.
 
+`@panic(msg)` and `@panic()` compile to `__rue_test_failure_site` followed by
+the panic helper, under the same adjacency rule and the same build-independent
+rule (RUE-2019). The panic helpers are not channel exports and their signatures
+are unchanged; what changed is that `__rue_panic` and `__rue_panic_no_msg` now
+write a `trap:panic` record carrying the staged site *before* their pinned
+stderr line, and `__rue_bounds_check` writes a `trap:bounds_check` record the
+same way. Each record's message is that helper's own stderr line without the
+newline, so nothing a consumer already read changes. The site is staged by the
+`@panic` lowering alone: an allocation failure, and the fixed-array bounds
+check codegen emits from a place projection, reach these helpers with nothing
+staged and report the empty location the runner answers from the test
+declaration's header. Because the panic helpers now report, the three terminal
+channel helpers take the stderr half of the panic path directly rather than
+calling `__rue_panic` — a second `trap:panic` frame after their own would be
+noise on a channel whose first frame is the verdict.
+
 The completion and failure records go to a dedicated inherited descriptor,
 number 3, one JSON object per line. Writes are best-effort: a test image run by
 hand has no such descriptor, so `EBADF` is expected rather than exceptional.
