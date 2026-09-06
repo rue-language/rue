@@ -490,6 +490,12 @@ pub(in crate::revisioned_query_database) fn schedule_body_instance<V>(
 /// its first application. The scheduler records the root at depth zero and
 /// increments for every specialization edge, so the first specialization is
 /// scheduler-depth one but comptime-depth zero.
+///
+/// The conversion exists so the scheduler measures the quantity 4.14:18 bounds
+/// rather than a second budget of its own: past this point the frontier is
+/// counted in comptime call depth, checked against
+/// [`rue_air::comptime_depth_over_limit`], and reported with
+/// [`rue_air::comptime_depth_exceeded_diagnostic`] (RUE-1975).
 #[inline]
 pub(in crate::revisioned_query_database) fn comptime_specialization_depth(
     scheduler_depth: usize,

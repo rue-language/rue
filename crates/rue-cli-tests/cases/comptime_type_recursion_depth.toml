@@ -45,11 +45,17 @@ fn main() -> i32 {
 }
 """ }]
 
+# RUE-1975: `Bad()` takes no arguments, so its reduction demands the one query
+# key it is already reducing. That is self-dependence, not an overrun: the
+# depth budget is never consulted and no larger budget would admit the program.
+# The diagnostic used to borrow the depth sentence anyway and send the reader
+# looking for a runaway argument that does not exist.
 [[case]]
-name = "no_arg_type_recursion_is_e1200"
-description = "`fn Bad() -> type { Bad() }` → clean E1200 (was SIGABRT 134)."
+name = "no_arg_type_recursion_is_a_cycle_not_a_depth_overrun"
+description = "`fn Bad() -> type { Bad() }` → clean E1200 naming the self-dependence (was SIGABRT 134, then the depth sentence)."
 compile_fail = true
-error_contains = ["E1200", "exceeded the maximum nesting depth"]
+error_contains = ["E1200", "depends on its own result"]
+compile_stderr_not_contains = ["exceeded the maximum nesting depth"]
 files = [{ path = "main.rue", source = """
 fn Bad() -> type { Bad() }
 fn main() -> i32 { Bad(); 0 }

@@ -1692,10 +1692,9 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeRejections
     fn depth_exceeded(
         &self,
         name: &Self::Name,
-        depth: usize,
         _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Self::Failure {
-        durable_host_failure(DurableComptimeFailure::maximum_depth(name.as_str(), depth))
+        durable_host_failure(DurableComptimeFailure::maximum_depth(name.as_str()))
     }
 
     fn literal_out_of_range(

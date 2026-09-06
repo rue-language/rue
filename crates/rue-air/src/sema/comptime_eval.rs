@@ -2941,20 +2941,12 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeRejections for OrdinaryBodyEngine<
     fn depth_exceeded(
         &self,
         name: &Spur,
-        depth: usize,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Self::Failure {
         CompileError::new(
-            ErrorKind::ComptimeEvaluationFailed {
-                reason: format!(
-                    "specialization of '{}' exceeded the maximum nesting depth ({}); \
-                     is a comptime-recursive function missing a compile-time-known \
-                     base case, or a generic function recursively instantiating \
-                     itself with new types?",
-                    self.body_interner().resolve(name),
-                    depth
-                ),
-            },
+            crate::specialize::comptime_depth_exceeded_diagnostic(
+                self.body_interner().resolve(name),
+            ),
             site.span(),
         )
     }

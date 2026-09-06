@@ -169,3 +169,68 @@ fn main() -> i32 { 0 }
 """ }]
 compile_fail = true
 compile_stderr_contains = ["E1200", "must be a type"]
+
+# RUE-1975: three different counters can be the first to notice one overrun --
+# the engine's frame stack, the query boundary that re-enters a child comptime
+# call, and the body scheduler's specialization frontier. Which one trips
+# depends on the position a program is written in, so each of them used to
+# carry its own copy of the sentence and the copies could drift apart. These
+# cases pin the whole sentence, not a prefix, on each reachable path: the
+# reported text must not tell the reader which mechanism noticed.
+[[case]]
+name = "depth_sentence_is_whole_and_identical_on_the_scheduler_path"
+description = "An ordinary body call overruns on the scheduler's specialization frontier and prints the shared sentence in full."
+files = [{ path = "main.rue", source = """
+fn deep(comptime n: i64) -> i64 { if n <= 0 { 0 } else { 1 + deep(n - 1) } }
+fn main() -> i32 { let x: i64 = deep(65); @dbg(x); 0 }
+""" }]
+compile_fail = true
+error_contains = [
+    "E1200",
+    "specialization of 'deep' exceeded the maximum nesting depth (64); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
+]
+
+[[case]]
+name = "depth_sentence_is_whole_and_identical_on_the_durable_const_path"
+description = "A declaration-time const overruns inside the durable engine and prints the same sentence, naming the same function and the same limit."
+files = [{ path = "main.rue", source = """
+fn deep(comptime n: i64) -> i64 { comptime { if n == 0 { 0 } else { deep(n - 1) + 1 } } }
+const X: i64 = deep(65);
+fn main() -> i32 { @dbg(X); 0 }
+""" }]
+compile_fail = true
+error_contains = [
+    "E1200",
+    "specialization of 'deep' exceeded the maximum nesting depth (64); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
+]
+
+[[case]]
+name = "depth_sentence_is_whole_and_identical_on_the_block_path"
+description = "A `comptime {}` block overruns on the same durable engine and prints the same sentence."
+files = [{ path = "main.rue", source = """
+fn deep(comptime n: i64) -> i64 { if n <= 0 { 0 } else { 1 + deep(n - 1) } }
+fn main() -> i32 { let x: i64 = comptime { deep(65) }; @dbg(x); 0 }
+""" }]
+compile_fail = true
+error_contains = [
+    "E1200",
+    "specialization of 'deep' exceeded the maximum nesting depth (64); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
+]
+
+# The companion to the three depth cases: a call that depends on its own result
+# is a different failure and must read as one. No depth budget would admit it,
+# so borrowing the depth sentence here sends the reader looking for a runaway
+# argument that this program does not have.
+[[case]]
+name = "a_self_dependent_call_is_not_reported_as_a_depth_overrun"
+description = "A comptime call whose reduction requires that same call reports the cycle (4.14:18a), never the depth sentence."
+files = [{ path = "main.rue", source = """
+fn same(comptime n: u64) -> u64 { comptime { same(n) } }
+fn main() -> i32 { @dbg(same(0)); 0 }
+""" }]
+compile_fail = true
+error_contains = [
+    "E1200",
+    "specialization of 'same' depends on its own result: reducing this call with these compile-time arguments requires that same call, so the recursion has no base case to start from",
+]
+compile_stderr_not_contains = ["exceeded the maximum nesting depth"]

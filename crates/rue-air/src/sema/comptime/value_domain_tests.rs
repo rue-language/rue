@@ -2146,7 +2146,6 @@ impl ComptimeRejections for FakeHost {
     fn depth_exceeded(
         &self,
         _name: &Self::Name,
-        _depth: usize,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Self::Failure {
         DIAGNOSTIC_SITES.with(|sites| {

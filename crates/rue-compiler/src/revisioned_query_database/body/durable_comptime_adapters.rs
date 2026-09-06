@@ -1011,7 +1011,15 @@ impl Drop for TestSemanticComptimeArrayLengthOverrideGuard {
 /// Query-stack ticket for a durable comptime call.
 ///
 /// The query boundary owns this ticket so cancellation and unwinding restore
-/// the caller's depth; the limit and diagnostic authority remain in AIR.
+/// the caller's depth; the limit and the diagnostic remain AIR's (RUE-1975).
+///
+/// This is not a second copy of the engine's frame bound. A `ComptimeCall`
+/// query runs its own engine, whose frame stack starts empty, so nesting that
+/// crosses the query boundary — a type-syntax comptime call reduced while
+/// another comptime call is already being reduced — is invisible to every
+/// engine involved. Without this ticket that nesting would recurse on the host
+/// stack with nothing counting it. One limit, one sentence, two places it can
+/// be observed.
 pub(in crate::revisioned_query_database) struct SemanticComptimeCallDepthGuard(usize);
 
 impl SemanticComptimeCallDepthGuard {
@@ -1024,12 +1032,7 @@ impl SemanticComptimeCallDepthGuard {
             // frame, so the first active query is propagated call depth one.
             let propagated_depth = rue_air::next_comptime_depth(current);
             if rue_air::comptime_depth_over_limit(propagated_depth) {
-                return Err(
-                    crate::durable_comptime::DurableComptimeFailure::maximum_depth(
-                        name,
-                        rue_air::MAX_COMPTIME_CALL_DEPTH,
-                    ),
-                );
+                return Err(crate::durable_comptime::DurableComptimeFailure::maximum_depth(name));
             }
             depth.set(current + 1);
             Ok(Self(current))

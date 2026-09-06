@@ -136,7 +136,8 @@ pub use sema::{
     SemanticProducedAnonymousNominal, SemanticProducedAnonymousNominalShape, SourceParamAbi,
     analyze_provider_anonymous_body, analyze_provider_ordinary_body,
     analyze_provider_specialized_body, body_parameter_types, by_reference_parameter_pointee_types,
-    comptime_depth_over_limit, next_comptime_depth, occupying_body_parameter_types,
+    comptime_call_cycle_reason, comptime_depth_exceeded_reason, comptime_depth_over_limit,
+    next_comptime_depth, occupying_body_parameter_types,
 };
 pub use sema::{
     COMPTIME_MATCH_NO_SELECTED_ARM, ComptimeDiagnosticSite, ComptimeIntegerOperation,
@@ -145,6 +146,8 @@ pub use sema::{
     comptime_arithmetic_overflow_reason, comptime_scalar_pattern_decision,
     comptime_untyped_integer_result, decode_comptime_match_pattern,
 };
+// The two comptime-recursion diagnostics: one limit, one wording each, chosen
+// where a concrete diagnostic kind may be named (RUE-1975).
 pub use semantic_body::{
     SEMANTIC_BODY_INST_KINDS, SemanticAnonymousBodyExport, SemanticBody, SemanticBodyAnchor,
     SemanticBodyCallArg, SemanticBodyCandidate, SemanticBodyCandidateInstallWork,
@@ -188,6 +191,7 @@ pub use semantic_type_resolution::{
     SemanticVisibilityDomainCache, resolve_semantic_module_path, resolve_semantic_module_path_from,
     resolve_structured_semantic_type_syntax, resolve_structured_semantic_type_syntax_with,
 };
+pub use specialize::{comptime_call_cycle_diagnostic, comptime_depth_exceeded_diagnostic};
 pub use types::{
     ArrayLen, ArrayTypeId, EnumDef, EnumId, LangItem, ModuleDef, ModuleId, PtrConstTypeId,
     PtrMutTypeId, StructDef, StructField, StructId, TextViewKind, Type, TypeKind, array_type_name,

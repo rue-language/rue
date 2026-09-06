@@ -43,9 +43,40 @@ use crate::sema::{
 };
 
 // The canonical budget is owned by the comptime frame engine and re-exported
-// here for callers that already import the sema surface.
+// here for callers that already import the sema surface. The compiler query
+// scheduler consumes it while tracking the causal depth of its specialization
+// worklist.
 pub use crate::sema::MAX_COMPTIME_CALL_DEPTH;
 use crate::types::{StructId, Type};
+
+/// The diagnostic for a comptime call that ran past
+/// [`MAX_COMPTIME_CALL_DEPTH`] (spec 4.14:18).
+///
+/// The engine's frame stack, the query boundary that re-enters a child
+/// comptime-call query, and the body scheduler's specialization frontier each
+/// bound a different quantity against this one limit, and which of them trips
+/// first depends only on the position a program is written in. They therefore
+/// report it with one constructor, so the same program cannot be described two
+/// ways (RUE-1975). The host-generic evaluator owns the wording; the kind is
+/// chosen here, where naming a concrete diagnostic type is allowed.
+pub fn comptime_depth_exceeded_diagnostic(name: &str) -> ErrorKind {
+    ErrorKind::ComptimeEvaluationFailed {
+        reason: crate::sema::comptime_depth_exceeded_reason(name),
+    }
+}
+
+/// The diagnostic for a comptime call whose reduction requires that same call
+/// (spec 4.14:18a).
+///
+/// This is what the query graph reports as a cycle. It is not a depth overrun
+/// and must not borrow that wording: no larger budget would admit the program,
+/// so naming a nesting depth would send the reader looking for a runaway
+/// argument that is not there (RUE-1975).
+pub fn comptime_call_cycle_diagnostic(name: &str) -> ErrorKind {
+    ErrorKind::ComptimeEvaluationFailed {
+        reason: crate::sema::comptime_call_cycle_reason(name),
+    }
+}
 
 /// A key for a specialized function:
 /// (base_function_name, type_arguments, value_arguments).
@@ -68,9 +99,6 @@ struct SpecializationInfo {
     call_site_span: Span,
 }
 
-/// Canonical maximum nesting depth for a comptime call. The compiler query
-/// scheduler re-exports this value while tracking the causal depth of its
-/// specialization worklist.
 fn collect_specializations(
     air: &Air,
     interner: &ThreadedRodeo,

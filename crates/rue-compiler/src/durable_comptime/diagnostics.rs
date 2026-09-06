@@ -281,9 +281,12 @@ impl DurableComptimeFailure {
         }
     }
 
-    pub(crate) fn maximum_depth(name: &str, maximum: usize) -> Self {
-        Self::comptime_failure(format!(
-            "specialization of '{name}' exceeded the maximum nesting depth ({maximum}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?"
+    /// The depth-overrun terminal, worded by the one AIR authority so the
+    /// durable engine and the query boundary that re-enters it cannot describe
+    /// the same overrun differently (RUE-1975).
+    pub(crate) fn maximum_depth(name: &str) -> Self {
+        Self::failure(SemanticNucleusFailure::Diagnostic(
+            rue_air::comptime_depth_exceeded_diagnostic(name),
         ))
     }
 
@@ -770,14 +773,8 @@ mod terminal_adapter_tests {
     fn named_diagnostic_constructors_preserve_exact_legacy_text() {
         let cases = [
             (
-                DurableComptimeFailure::maximum_depth(
-                    "count",
-                    rue_air::specialize::MAX_COMPTIME_CALL_DEPTH,
-                ),
-                format!(
-                    "specialization of 'count' exceeded the maximum nesting depth ({}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
-                    rue_air::specialize::MAX_COMPTIME_CALL_DEPTH,
-                ),
+                DurableComptimeFailure::maximum_depth("count"),
+                rue_air::comptime_depth_exceeded_reason("count"),
             ),
             (
                 DurableComptimeFailure::arithmetic_overflow(

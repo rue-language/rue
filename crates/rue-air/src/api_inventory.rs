@@ -3266,6 +3266,69 @@ fn comptime_depth_has_one_canonical_authority() {
     );
 }
 
+/// The depth sentence and the cycle sentence each exist once in this crate,
+/// and the host contract cannot spell a limit of its own (RUE-1975).
+///
+/// Six copies of the depth sentence used to be spread across two crates, and
+/// two of them sat on a query-cycle arm, so the same program was described as
+/// depth exhaustion or as a cycle depending on which counter reached it first.
+/// The wording is now a constructor; a host that formats its own sentence, or
+/// a `depth_exceeded` hook that takes a limit it could disagree about, is the
+/// shape that regression takes.
+#[test]
+fn comptime_depth_and_cycle_wording_have_one_spelling_each() {
+    let comptime = crate::sema::COMPTIME_PRODUCTION_SOURCE;
+    let ordinary = include_str!("sema/comptime_eval.rs");
+    assert_eq!(
+        comptime
+            .matches("exceeded the maximum nesting depth")
+            .count(),
+        1,
+        "the depth sentence must be spelled once, in its constructor"
+    );
+    assert_eq!(
+        comptime.matches("depends on its own result").count(),
+        1,
+        "the cycle sentence must be spelled once, in its constructor"
+    );
+    assert!(
+        comptime.contains("pub fn comptime_depth_exceeded_reason")
+            && comptime.contains("pub fn comptime_call_cycle_reason"),
+        "both wordings must be published as constructors"
+    );
+    // The host-generic evaluator may not name a concrete diagnostic kind, so
+    // the pairing of each wording with its `ErrorKind` lives one layer out.
+    let specialize = include_str!("specialize.rs");
+    assert!(
+        specialize.contains("pub fn comptime_depth_exceeded_diagnostic")
+            && specialize.contains("pub fn comptime_call_cycle_diagnostic")
+            && specialize.contains("crate::sema::comptime_depth_exceeded_reason(name)")
+            && specialize.contains("crate::sema::comptime_call_cycle_reason(name)"),
+        "each diagnostic must pair its kind with the shared wording"
+    );
+    assert_eq!(
+        specialize
+            .matches("exceeded the maximum nesting depth")
+            .count(),
+        0,
+        "the diagnostic layer must not restate the depth sentence"
+    );
+    assert!(
+        !ordinary.contains("exceeded the maximum nesting depth")
+            && ordinary.contains("comptime_depth_exceeded_diagnostic"),
+        "the ordinary host must consume the constructor, not restate it"
+    );
+    let hook = comptime
+        .split("fn depth_exceeded(")
+        .nth(1)
+        .and_then(|source| source.split(") -> Self::Failure").next())
+        .expect("depth hook signature");
+    assert!(
+        !hook.contains("depth: usize"),
+        "a host cannot be handed a limit it could report instead of the enforced one"
+    );
+}
+
 #[test]
 fn type_syntax_dependency_admission_indexes_only_the_large_case() {
     let typeck = include_str!("sema/typeck.rs");

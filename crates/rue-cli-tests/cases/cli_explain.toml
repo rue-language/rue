@@ -897,3 +897,22 @@ files = [{ path = "main.rue", source = "fn main() {}\n" }]
 args = ["explain", "E0201", "main.rue"]
 compile_fail = true
 error_contains = ["requires exactly one error code", "Usage: rue explain <E####>"]
+
+# RUE-1975: E1200 covers two recursion failures that read alike and are not
+# alike -- a specialization that ran past the nesting depth, and a call that
+# needs its own result. The explanation has to keep them apart, so it cites
+# both rules.
+[[case]]
+name = "comptime_code_explains_both_recursion_failures"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E1200"]
+compile_only = true
+compile_stdout_contains = [
+  "E1200: Comptime evaluation failed",
+  "Recurse with no compile-time-known base case:",
+  "Require a comptime call's own result:",
+  "docs/spec/src/04-expressions/14-comptime.md (spec rule 4.14:18)",
+  "docs/spec/src/04-expressions/14-comptime.md (spec rule 4.14:18a)",
+]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]

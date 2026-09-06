@@ -382,12 +382,7 @@ $runtime
                                     instance.as_ref().clone(),
                                     crate::CompileErrors::from(
                                         crate::CompileError::without_span(
-                                            rue_error::ErrorKind::ComptimeEvaluationFailed {
-                                                reason: format!(
-                                                    "specialization of '{name}' exceeded the maximum nesting depth ({}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
-                                                    rue_air::MAX_COMPTIME_CALL_DEPTH
-                                                ),
-                                            },
+                                            rue_air::comptime_depth_exceeded_diagnostic(&name),
                                         ),
                                     ),
                                 );
@@ -427,12 +422,7 @@ $runtime
                                 instance.as_ref().clone(),
                                 crate::CompileErrors::from(
                                     crate::CompileError::without_span(
-                                        rue_error::ErrorKind::ComptimeEvaluationFailed {
-                                            reason: format!(
-                                                "specialization of '{name}' exceeded the maximum nesting depth ({}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
-                                                rue_air::MAX_COMPTIME_CALL_DEPTH
-                                            ),
-                                        },
+                                        rue_air::comptime_depth_exceeded_diagnostic(name),
                                     ),
                                 ),
                             );

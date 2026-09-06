@@ -2235,7 +2235,18 @@ define_error_codes! {
     // ========================================================================
     // Comptime errors (E1200-E1299)
     // ========================================================================
-    COMPTIME_EVALUATION_FAILED = 1200;
+    COMPTIME_EVALUATION_FAILED = 1200 => {
+        explanation: "Compile-time evaluation could not produce a value for a position that requires one. The `reason` names the specific failure: an operation whose result is not compile-time known, an arithmetic fact that would trap at runtime, and -- the two recursion cases -- a specialization that ran past the maximum nesting depth, or a comptime call whose reduction requires that same call. The two recursion cases are distinct. A depth overrun means each round produced a new specialization and the chain never reached a base case, so a smaller argument or a reachable base case fixes it. Self-dependence means the call needs its own result with the same compile-time arguments, which no depth budget would satisfy.",
+        likely_cause: "A comptime-recursive function is missing a compile-time-known base case, a generic function reinstantiates itself with a new type every round, or a comptime call is written so that reducing it demands its own result. Give the recursion a base case the compiler can see, or break the self-dependence.",
+        examples: [
+            ErrorCodeExample { title: "Recurse with no compile-time-known base case", source: "fn runaway(comptime n: i32) -> i32 {\n    runaway(n + 1)\n}\nfn main() -> i32 { runaway(0) }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Require a comptime call's own result", source: "fn Bad() -> type { Bad() }\nfn main() -> i32 {\n    Bad();\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+        ],
+        references: [
+            ErrorCodeReference { title: "Specialization has a maximum nesting depth", path: "docs/spec/src/04-expressions/14-comptime.md", rule: Some("4.14:18") },
+            ErrorCodeReference { title: "A comptime call may not depend on its own result", path: "docs/spec/src/04-expressions/14-comptime.md", rule: Some("4.14:18a") },
+        ],
+    };
     COMPTIME_ARG_NOT_CONST = 1201;
 
     // ========================================================================
