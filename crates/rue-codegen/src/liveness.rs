@@ -552,6 +552,8 @@ where
                 ranges: IndexMap::new(),
                 clobbers_at: Vec::new(),
                 non_returning_at: Vec::new(),
+                diverging_at: Vec::new(),
+                diverging_uses: Vec::new(),
                 vreg_classes,
             },
             collect_debug.then(|| LivenessDebugInfo {
@@ -636,20 +638,123 @@ where
         }
     });
 
-    // Step 6: Collect clobbers and the never-returning call sites (RUE-1224)
+    // Step 6: Collect clobbers and the never-returning call sites (RUE-1224),
+    // then extend the second of those to whole diverging regions (RUE-2065).
     let clobbers_at: Vec<&'static [R]> = instructions.iter().map(&get_clobbers).collect();
     let non_returning_at: Vec<bool> = instructions.iter().map(&get_non_returning).collect();
+    let diverging_at = compute_divergence(&successors, &non_returning_at);
+    let diverging_uses = collect_diverging_uses(vreg_count, &inst_uses, &diverging_at);
 
     (
         LivenessInfo {
             ranges,
             clobbers_at,
             non_returning_at,
+            diverging_at,
+            diverging_uses,
             vreg_classes,
         },
         debug,
         loop_info,
     )
+}
+
+/// Mark every instruction control can only leave by aborting the process.
+///
+/// A call the runtime ABI manifest declares `ReturnBehavior::Never` diverges by
+/// definition: it aborts, and reports no successors. Any other instruction
+/// diverges when it has successors and all of them diverge, so the whole region
+/// between the branch into a `@panic` arm and the trap call at its end is
+/// marked, not just the trap call itself.
+///
+/// The marked set is closed under successors — an instruction reachable from a
+/// diverging one cannot reach a return either — which is what makes the
+/// allocator's two divergence rules sound; see [`crate::regalloc::ClobberIndex`]
+/// and [`crate::regalloc::DivergenceIndex`] (RUE-2065).
+///
+/// This is a least fixed point, so anything unproven stays unmarked: an
+/// instruction with no successors that is not such a call (`ret`, `ud2`, `brk`)
+/// is not marked, and neither is a cycle with no exit. Every MIR control
+/// transfer is direct, so the successor table this reads is exact.
+fn compute_divergence(successors: &[SuccessorList], non_returning: &[bool]) -> Vec<bool> {
+    let num_insts = successors.len();
+    let mut diverging = vec![false; num_insts];
+    let mut worklist: Vec<usize> = non_returning
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, &never)| never.then_some(idx))
+        .collect();
+    if worklist.is_empty() {
+        return diverging;
+    }
+    for &idx in &worklist {
+        diverging[idx] = true;
+    }
+
+    // Walking to predecessors needs the reverse of the successor table. Build
+    // it in compressed form — one bound array and one flat edge array — so a
+    // function with many instructions does not pay a `Vec` per instruction.
+    let mut pred_bounds = vec![0_u32; num_insts + 1];
+    for succs in successors {
+        for &succ in succs {
+            pred_bounds[succ + 1] += 1;
+        }
+    }
+    for idx in 0..num_insts {
+        pred_bounds[idx + 1] += pred_bounds[idx];
+    }
+    let mut fill = pred_bounds.clone();
+    let mut preds = vec![0_u32; pred_bounds[num_insts] as usize];
+    for (from, succs) in successors.iter().enumerate() {
+        for &succ in succs {
+            preds[fill[succ] as usize] = from as u32;
+            fill[succ] += 1;
+        }
+    }
+
+    // An instruction joins the set once its last unmarked successor joins it,
+    // so each edge is retired at most once and the walk is linear. Duplicate
+    // successor entries appear once in each table and cancel out.
+    let mut unmarked: Vec<u32> = successors.iter().map(|succs| succs.len() as u32).collect();
+    while let Some(idx) = worklist.pop() {
+        for &pred in &preds[pred_bounds[idx] as usize..pred_bounds[idx + 1] as usize] {
+            let pred = pred as usize;
+            if diverging[pred] {
+                continue;
+            }
+            unmarked[pred] -= 1;
+            if unmarked[pred] == 0 {
+                diverging[pred] = true;
+                worklist.push(pred);
+            }
+        }
+    }
+    diverging
+}
+
+/// Which virtual registers a diverging instruction reads.
+///
+/// Every use of a vreg absent from this set is at an instruction control can
+/// still return from. Divergence is closed under successors, so no diverging
+/// instruction can then lie on a path from one of that vreg's definitions to
+/// one of its uses: reaching one would make the use diverging too (RUE-2065).
+fn collect_diverging_uses(
+    vreg_count: u32,
+    inst_uses: &[VRegList],
+    diverging: &[bool],
+) -> Vec<bool> {
+    let mut diverging_uses = vec![false; vreg_count as usize];
+    for (idx, uses) in inst_uses.iter().enumerate() {
+        if !diverging[idx] {
+            continue;
+        }
+        for &vreg in uses.iter() {
+            if let Some(slot) = diverging_uses.get_mut(vreg.index() as usize) {
+                *slot = true;
+            }
+        }
+    }
+    diverging_uses
 }
 
 /// Compute detailed liveness debug information.
@@ -1362,12 +1467,29 @@ mod tests {
     // Simple test instruction type
     #[derive(Debug, Clone)]
     enum TestInst {
-        Def { dst: u32 },
-        Use { src: u32 },
-        Move { dst: u32, src: u32 },
-        Label { id: LabelId },
-        Branch { label: LabelId },
+        Def {
+            dst: u32,
+        },
+        Use {
+            src: u32,
+        },
+        Move {
+            dst: u32,
+            src: u32,
+        },
+        Label {
+            id: LabelId,
+        },
+        Branch {
+            label: LabelId,
+        },
         Ret,
+        /// A call to a helper the runtime ABI manifest declares
+        /// `ReturnBehavior::Never`: it aborts, so it has no successors.
+        Trap,
+        /// A `brk`/`ud2`-shaped instruction: no successors either, but nothing
+        /// declares it never-returning.
+        Brk,
     }
 
     fn test_get_label(inst: &TestInst) -> Option<LabelId> {
@@ -1394,7 +1516,7 @@ mod tests {
                 }
                 succs
             }
-            TestInst::Ret => SuccessorList::new(),
+            TestInst::Ret | TestInst::Trap | TestInst::Brk => SuccessorList::new(),
             _ => {
                 let mut successors = SuccessorList::new();
                 if idx + 1 < num_insts {
@@ -1423,6 +1545,200 @@ mod tests {
 
     fn test_get_clobbers(_inst: &TestInst) -> &'static [u32] {
         &[]
+    }
+
+    fn test_get_non_returning(inst: &TestInst) -> bool {
+        matches!(inst, TestInst::Trap)
+    }
+
+    #[test]
+    fn divergence_covers_a_whole_guard_arm_and_stops_at_the_join() {
+        // The shape a `@panic`-guarded accessor lowers to: the receiver is
+        // defined before the guard, the arm stages a failure site and aborts,
+        // and the continuation reads the receiver after the join. Everything
+        // from the branch into the arm to the trap is reachable only on the
+        // path that aborts; the guard branch and the continuation are not.
+        let cont = LabelId::new(0);
+        let instructions = vec![
+            TestInst::Def { dst: 0 },
+            TestInst::Branch { label: cont },
+            TestInst::Def { dst: 1 },
+            TestInst::Use { src: 1 },
+            TestInst::Trap,
+            TestInst::Label { id: cont },
+            TestInst::Use { src: 0 },
+            TestInst::Ret,
+        ];
+        let num_insts = instructions.len();
+
+        let info: LivenessInfo<u32> = analyze(
+            &instructions,
+            2,
+            VRegClasses::all_gp(2),
+            test_get_label,
+            |idx, inst, label_to_idx| test_get_successors(idx, inst, label_to_idx, num_insts),
+            test_get_uses,
+            test_get_defs,
+            test_get_clobbers,
+            test_get_non_returning,
+        );
+
+        assert_eq!(
+            info.diverging_at,
+            vec![false, false, true, true, true, false, false, false]
+        );
+        assert!(
+            !info.has_diverging_use(VReg::new(0)),
+            "the receiver is read only after the join"
+        );
+        assert!(
+            info.has_diverging_use(VReg::new(1)),
+            "the arm's staged operand is read on the aborting path"
+        );
+    }
+
+    #[test]
+    fn a_loop_with_no_exit_is_not_proven_diverging() {
+        // The analysis is a least fixed point, so a cycle that reaches no trap
+        // stays unmarked rather than marking itself.
+        let head = LabelId::new(0);
+        let instructions = vec![
+            TestInst::Label { id: head },
+            TestInst::Def { dst: 0 },
+            TestInst::Branch { label: head },
+        ];
+        let num_insts = instructions.len();
+
+        let info: LivenessInfo<u32> = analyze(
+            &instructions,
+            1,
+            VRegClasses::all_gp(1),
+            test_get_label,
+            |idx, inst, label_to_idx| test_get_successors(idx, inst, label_to_idx, num_insts),
+            test_get_uses,
+            test_get_defs,
+            test_get_clobbers,
+            test_get_non_returning,
+        );
+
+        assert!(info.diverging_at.iter().all(|&diverges| !diverges));
+    }
+
+    #[test]
+    fn a_loop_whose_only_exit_is_a_trap_stays_unmarked() {
+        // The loop's one way out is the trap at 3, so control really can only
+        // leave the body by aborting — but proving that needs the greatest
+        // fixed point, and this is the least one: instruction 2 waits on its
+        // back edge, which waits on 2. Failing to mark costs the arm's
+        // registers a prologue save and nothing else, so the unprovable case
+        // stays out.
+        let head = LabelId::new(0);
+        let instructions = vec![
+            TestInst::Label { id: head },
+            TestInst::Def { dst: 0 },
+            TestInst::Branch { label: head },
+            TestInst::Trap,
+        ];
+        let num_insts = instructions.len();
+
+        let info: LivenessInfo<u32> = analyze(
+            &instructions,
+            1,
+            VRegClasses::all_gp(1),
+            test_get_label,
+            |idx, inst, label_to_idx| test_get_successors(idx, inst, label_to_idx, num_insts),
+            test_get_uses,
+            test_get_defs,
+            test_get_clobbers,
+            test_get_non_returning,
+        );
+
+        assert_eq!(info.diverging_at, vec![false, false, false, true]);
+    }
+
+    #[test]
+    fn a_zero_successor_instruction_diverges_only_when_it_never_returns() {
+        // `ret`, `brk`, and `ud2` all report no successors, and "no successors"
+        // is not the seed — the seed is the manifest's `ReturnBehavior::Never`.
+        // Only the arm that ends in such a call is marked.
+        let tail = LabelId::new(0);
+        let shape = |arm: TestInst| {
+            vec![
+                TestInst::Def { dst: 0 },
+                TestInst::Branch { label: tail },
+                arm,
+                TestInst::Label { id: tail },
+                TestInst::Use { src: 0 },
+                TestInst::Ret,
+            ]
+        };
+        let analyze_shape = |instructions: Vec<TestInst>| -> Vec<bool> {
+            let num_insts = instructions.len();
+            let info: LivenessInfo<u32> = analyze(
+                &instructions,
+                1,
+                VRegClasses::all_gp(1),
+                test_get_label,
+                |idx, inst, label_to_idx| test_get_successors(idx, inst, label_to_idx, num_insts),
+                test_get_uses,
+                test_get_defs,
+                test_get_clobbers,
+                test_get_non_returning,
+            );
+            info.diverging_at
+        };
+
+        assert_eq!(
+            analyze_shape(shape(TestInst::Brk)),
+            vec![false; 6],
+            "a `brk` that nothing declares never-returning is not a divergence seed"
+        );
+        assert_eq!(
+            analyze_shape(shape(TestInst::Trap)),
+            vec![false, false, true, false, false, false],
+            "the trap call is, and the `ret` at the end of the other path is not"
+        );
+    }
+
+    #[test]
+    fn only_the_diverging_arm_of_a_join_is_marked() {
+        // One arm returns a value it computes, the other aborts. Divergence
+        // stops at the branch, which can still reach the returning arm, and the
+        // guarded value read only by the returning arm keeps its clobber
+        // protection.
+        let arm = LabelId::new(0);
+        let instructions = vec![
+            TestInst::Def { dst: 0 },
+            TestInst::Branch { label: arm },
+            TestInst::Def { dst: 1 },
+            TestInst::Use { src: 0 },
+            TestInst::Ret,
+            TestInst::Label { id: arm },
+            TestInst::Def { dst: 2 },
+            TestInst::Use { src: 2 },
+            TestInst::Trap,
+        ];
+        let num_insts = instructions.len();
+
+        let info: LivenessInfo<u32> = analyze(
+            &instructions,
+            3,
+            VRegClasses::all_gp(3),
+            test_get_label,
+            |idx, inst, label_to_idx| test_get_successors(idx, inst, label_to_idx, num_insts),
+            test_get_uses,
+            test_get_defs,
+            test_get_clobbers,
+            test_get_non_returning,
+        );
+
+        assert_eq!(
+            info.diverging_at,
+            vec![false, false, false, false, false, true, true, true, true]
+        );
+        assert!(!info.has_diverging_use(VReg::new(0)));
+        assert!(!info.has_diverging_use(VReg::new(1)));
+        assert!(info.has_diverging_use(VReg::new(2)));
     }
 
     fn reset_dataflow_call_count() {

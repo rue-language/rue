@@ -464,6 +464,24 @@ pub struct LivenessInfo<Reg: Copy + Eq + std::hash::Hash + 'static> {
     /// no value is live after it; see [`ClobberIndex::build`] for why the
     /// distinction matters to allocation (RUE-1224).
     pub non_returning_at: Vec<bool>,
+    /// For each instruction index, whether control can only leave that
+    /// instruction by aborting the process.
+    ///
+    /// The never-returning calls above seed this, and it spreads back over
+    /// every instruction all of whose successors already carry it — the whole
+    /// `@panic` or trap arm, not just the call that ends it. Allocation reads
+    /// it twice: a clobber inside such a region cannot destroy a value with no
+    /// use in one, and a callee-saved register only such a region occupies
+    /// needs no prologue save, because the function never returns to restore it
+    /// (RUE-2065).
+    pub diverging_at: Vec<bool>,
+    /// For each virtual register, whether any diverging instruction reads it.
+    ///
+    /// Every use of a register absent from this set is at an instruction
+    /// control can still return from, so no diverging instruction sits on a
+    /// path from one of its definitions to one of its uses; see
+    /// [`ClobberIndex::is_clobbered_during`].
+    pub diverging_uses: Vec<bool>,
     /// The register class of each virtual register.
     ///
     /// Liveness carries the MIR's class table forward so that allocation and
@@ -480,6 +498,8 @@ impl<Reg: Copy + Eq + std::hash::Hash + 'static> LivenessInfo<Reg> {
             ranges: IndexMap::new(),
             clobbers_at: Vec::new(),
             non_returning_at: Vec::new(),
+            diverging_at: Vec::new(),
+            diverging_uses: Vec::new(),
             vreg_classes: VRegClasses::new(),
         }
     }
@@ -493,6 +513,8 @@ impl<Reg: Copy + Eq + std::hash::Hash + 'static> LivenessInfo<Reg> {
             ranges,
             clobbers_at: Vec::new(),
             non_returning_at: Vec::new(),
+            diverging_at: Vec::new(),
+            diverging_uses: Vec::new(),
             vreg_classes: VRegClasses::all_gp(vreg_count),
         }
     }
@@ -544,6 +566,75 @@ impl<Reg: Copy + Eq + std::hash::Hash + 'static> LivenessInfo<Reg> {
             .copied()
             .unwrap_or(false)
     }
+
+    /// Whether control can only leave the instruction at `inst_idx` by
+    /// aborting the process.
+    ///
+    /// Liveness built without this information answers `false` everywhere,
+    /// which turns both divergence rules off and keeps the pre-RUE-2065
+    /// behavior for hand-constructed test liveness.
+    pub fn diverges_at(&self, inst_idx: usize) -> bool {
+        self.diverging_at.get(inst_idx).copied().unwrap_or(false)
+    }
+
+    /// Whether any diverging instruction reads `vreg`.
+    ///
+    /// The conservative answer is `true`, and it is what liveness built without
+    /// this information gives: a value that may be read on an aborting path
+    /// must survive everything that path does to its register.
+    pub fn has_diverging_use(&self, vreg: VReg) -> bool {
+        self.diverging_uses
+            .get(vreg.index() as usize)
+            .copied()
+            .unwrap_or(true)
+    }
+
+    /// Fold every per-vreg fact of `absorbed` into `representative`, which
+    /// becomes the one vreg the coalesced pair is allocated as.
+    ///
+    /// **Invariant: every per-vreg fact this struct holds must be merged
+    /// here.** Coalescing rewrites each reference to `absorbed` as
+    /// `representative`, so afterwards the representative answers for the whole
+    /// merged value and `absorbed` is never asked again. A fact left behind is
+    /// then silently read off half a value — which is how a diverging use
+    /// recorded against a move's destination went missing, relaxed the clobber
+    /// rule for the merged interval, and handed an arm's live value a register
+    /// the arm's staging call destroys (RUE-2065).
+    ///
+    /// The facts, and what merging each one means:
+    ///
+    /// - `ranges`: the hull of both halves, since the merged value is live
+    ///   wherever either half was.
+    /// - `diverging_uses`: read at a diverging instruction if either half was.
+    /// - `vreg_classes`: identical already — [`coalesce`] refuses a
+    ///   class-crossing pair, which the assertion below restates. It is
+    ///   always-on rather than a `debug_assert!` because merging across classes
+    ///   would let one physical register stand for two values that cannot share
+    ///   one, changing emitted code; `docs/process/ci.md` gives code generation
+    ///   no debug-assert allowance.
+    pub fn merge_into(&mut self, absorbed: VReg, representative: VReg) {
+        assert_eq!(
+            self.class_of(absorbed),
+            self.class_of(representative),
+            "coalescing must refuse a class-crossing pair before merging it",
+        );
+
+        let merged = match (
+            self.range(absorbed).copied(),
+            self.range(representative).copied(),
+        ) {
+            (Some(a), Some(r)) => Some(LiveRange::new(a.start.min(r.start), a.end.max(r.end))),
+            (only, None) | (None, only) => only,
+        };
+        self.ranges[representative] = merged;
+        self.ranges[absorbed] = None;
+
+        if self.has_diverging_use(absorbed) {
+            if let Some(slot) = self.diverging_uses.get_mut(representative.index() as usize) {
+                *slot = true;
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -566,13 +657,26 @@ impl<Reg: Copy + Eq + std::hash::Hash + 'static> LivenessInfo<Reg> {
 /// instructions) once per function; each query is O(tracked) lookup plus two
 /// array reads.
 ///
-/// A never-returning call contributes no clobber event (RUE-1224). See
-/// [`ClobberIndex::build`].
+/// A never-returning call contributes no clobber event, and a diverging
+/// instruction contributes none to the second of the two counts every tracked
+/// register carries. See [`ClobberIndex::build`] (RUE-1224, RUE-2065).
 pub struct ClobberIndex<Reg> {
-    /// One entry per tracked register: the register, and prefix counts where
-    /// `counts[i]` is the number of instructions before `i` that clobber it.
-    /// The count slice has `instruction_count + 1` entries.
-    tracked: Vec<(Reg, Vec<u32>)>,
+    tracked: Vec<TrackedClobbers<Reg>>,
+}
+
+/// One tracked register's prefix counts.
+///
+/// `counts[i]` is the number of instructions before `i` that clobber the
+/// register, so a range is clobber-free exactly when the counts at its two
+/// endpoints agree. Each slice has `instruction_count + 1` entries.
+struct TrackedClobbers<Reg> {
+    reg: Reg,
+    /// Every clobber the index counts.
+    all: Vec<u32>,
+    /// The same, restricted to instructions that do not diverge. Empty when no
+    /// diverging instruction in this function clobbers anything, in which case
+    /// it would be a copy of `all` and queries read `all` instead.
+    returning_only: Vec<u32>,
 }
 
 impl<Reg: Copy + Eq> ClobberIndex<Reg> {
@@ -596,24 +700,63 @@ impl<Reg: Copy + Eq> ClobberIndex<Reg> {
     /// fire, a register holding a user value may hold anything by the time the
     /// handler runs. Nothing observes that: Rue emits no DWARF and the traps
     /// print a fixed message and exit without a backtrace (RUE-1146's audit).
+    ///
+    /// The same reasoning reaches past the trap call to every instruction in
+    /// its region. A `@panic` arm stages a failure site with an ordinary
+    /// *returning* call before aborting, and that call's clobber sits textually
+    /// inside the live range of every value the guarded function holds across
+    /// the guard — the receiver and index of a bounds-checked accessor, say.
+    /// Control reaches that clobber only on the path that aborts, so it cannot
+    /// destroy a value whose uses all lie off that path. The second count each
+    /// tracked register carries omits those clobbers, and
+    /// [`Self::is_clobbered_during`] reads it for exactly the intervals that
+    /// qualify (RUE-2065).
     pub fn build(liveness: &LivenessInfo<Reg>, tracked: &[Reg]) -> Self
     where
         Reg: std::hash::Hash,
     {
         let num_insts = liveness.clobbers_at.len();
+        // A diverging instruction that is itself a never-returning call is
+        // already uncounted, so the relaxed counts differ from the strict ones
+        // only where a returning instruction inside a diverging region clobbers
+        // something. Most functions have no such instruction and pay nothing.
+        let has_diverging_clobber = (0..num_insts).any(|idx| {
+            liveness.diverges_at(idx)
+                && !liveness.is_non_returning(idx)
+                && !liveness.clobbers_at(idx).is_empty()
+        });
         let tracked = tracked
             .iter()
             .map(|&reg| {
-                let mut counts = Vec::with_capacity(num_insts + 1);
+                let mut all = Vec::with_capacity(num_insts + 1);
+                let mut returning_only = if has_diverging_clobber {
+                    Vec::with_capacity(num_insts + 1)
+                } else {
+                    Vec::new()
+                };
                 let mut running = 0_u32;
-                counts.push(running);
+                let mut running_returning = 0_u32;
+                all.push(running);
+                if has_diverging_clobber {
+                    returning_only.push(running_returning);
+                }
                 for idx in 0..num_insts {
                     if !liveness.is_non_returning(idx) && liveness.clobbers_at(idx).contains(&reg) {
                         running += 1;
+                        if !liveness.diverges_at(idx) {
+                            running_returning += 1;
+                        }
                     }
-                    counts.push(running);
+                    all.push(running);
+                    if has_diverging_clobber {
+                        returning_only.push(running_returning);
+                    }
                 }
-                (reg, counts)
+                TrackedClobbers {
+                    reg,
+                    all,
+                    returning_only,
+                }
             })
             .collect();
         Self { tracked }
@@ -621,17 +764,88 @@ impl<Reg: Copy + Eq> ClobberIndex<Reg> {
 
     /// Whether any instruction in `range` (endpoints included) clobbers `reg`.
     ///
+    /// `ignore_diverging` asks the question of the instructions control can
+    /// reach without aborting. Pass it only for an interval with no use at a
+    /// diverging instruction, which is what makes the omitted clobbers
+    /// unreachable from any definition of that interval; see
+    /// [`LivenessInfo::has_diverging_use`].
+    ///
     /// A register the index was not built for answers `true`: the index proves
     /// the *absence* of clobbers only for the registers it tracks, and the safe
     /// answer for anything else is that the register may be destroyed.
-    pub fn is_clobbered_during(&self, reg: Reg, range: &LiveRange) -> bool {
-        let Some((_, counts)) = self.tracked.iter().find(|(tracked, _)| *tracked == reg) else {
+    pub fn is_clobbered_during(&self, reg: Reg, range: &LiveRange, ignore_diverging: bool) -> bool {
+        let Some(entry) = self.tracked.iter().find(|entry| entry.reg == reg) else {
             return true;
+        };
+        let counts = if ignore_diverging && !entry.returning_only.is_empty() {
+            &entry.returning_only
+        } else {
+            &entry.all
         };
         let last = counts.len() - 1;
         let start = range.start.min(last);
         let end = range.end.saturating_add(1).min(last);
         counts[end] > counts[start]
+    }
+}
+
+// ============================================================================
+// Divergence Index
+// ============================================================================
+
+/// Constant-time "does every instruction in this live range diverge?".
+///
+/// An interval that lives entirely inside a region control can only leave by
+/// aborting never has to be restored: the function does not return from that
+/// region, so a callee-saved register it occupies needs no prologue save and no
+/// epilogue reload. Every entry to the function pays for that save and every
+/// exit for the reload, so charging the passing path for a register only the
+/// `@panic` arm touches is exactly the cost `docs/process/test-events.md` says
+/// a guarded accessor must not pay (RUE-2065).
+///
+/// The shape mirrors [`ClobberIndex`]: a prefix count of the instructions that
+/// do *not* diverge, so a range is wholly diverging exactly when the counts at
+/// its two endpoints agree.
+pub struct DivergenceIndex {
+    /// `returning_before[i]` is the number of instructions before `i` that do
+    /// not diverge, with `instruction_count + 1` entries. Empty when no
+    /// instruction in the function diverges, which answers every query `false`.
+    returning_before: Vec<u32>,
+}
+
+impl DivergenceIndex {
+    /// Build an index over `liveness`'s divergence marks.
+    pub fn build<Reg: Copy + Eq + std::hash::Hash + 'static>(liveness: &LivenessInfo<Reg>) -> Self {
+        let num_insts = liveness.instruction_count();
+        if !liveness.diverging_at.iter().any(|&diverges| diverges) {
+            return Self {
+                returning_before: Vec::new(),
+            };
+        }
+        let mut returning_before = Vec::with_capacity(num_insts + 1);
+        let mut running = 0_u32;
+        returning_before.push(running);
+        for idx in 0..num_insts {
+            if !liveness.diverges_at(idx) {
+                running += 1;
+            }
+            returning_before.push(running);
+        }
+        Self { returning_before }
+    }
+
+    /// Whether every instruction in `range` (endpoints included) diverges.
+    ///
+    /// An empty range table answers `false`, so liveness built without
+    /// divergence information leaves the save set exactly as it was.
+    pub fn range_diverges(&self, range: &LiveRange) -> bool {
+        if self.returning_before.is_empty() {
+            return false;
+        }
+        let last = self.returning_before.len() - 1;
+        let start = range.start.min(last);
+        let end = range.end.saturating_add(1).min(last);
+        self.returning_before[end] == self.returning_before[start]
     }
 }
 
@@ -927,6 +1141,13 @@ impl CoalesceResult {
 /// that has to survive. Backends do not offer such a pair as a candidate
 /// today, and none can arise while every vreg is [`RegClass::Gp`], so this is
 /// a guard rather than a filter (RUE-1067).
+///
+/// # Merged facts
+///
+/// A merged pair is allocated as one vreg, so the representative has to answer
+/// every question for both halves. [`LivenessInfo::merge_into`] is the single
+/// place that folding happens, and it carries the invariant: every per-vreg
+/// fact liveness holds is merged there.
 pub fn coalesce<Reg: Copy + Eq + std::hash::Hash>(
     candidates: &[CoalesceCandidate],
     liveness: &mut LivenessInfo<Reg>,
@@ -997,19 +1218,15 @@ pub fn coalesce<Reg: Copy + Eq + std::hash::Hash>(
         let can_coalesce = src_range.end <= move_point && dst_range.start >= move_point;
 
         if can_coalesce {
-            // Merge the ranges: the combined range spans both
-            let merged_range = LiveRange::new(
-                src_range.start.min(dst_range.start),
-                src_range.end.max(dst_range.end),
-            );
-
             // Use src as the representative (arbitrary choice, but keeps the original value)
             parent[dst.index() as usize] = src.index();
             result.coalesce_map[dst.index() as usize] = src.index();
 
-            // Update liveness: assign merged range to src, remove dst
-            liveness.ranges[src] = Some(merged_range);
-            liveness.ranges[dst] = None;
+            // Fold dst into src: the representative inherits the hull of both
+            // ranges and every other per-vreg fact of the pair. Going through
+            // `merge_into` is what keeps a later fact from being forgotten here
+            // (RUE-2065).
+            liveness.merge_into(dst, src);
 
             // Mark the move for elimination
             result.mark_eliminated(candidate.inst_idx);
@@ -2023,12 +2240,17 @@ pub fn linear_scan_with_debug<Reg: Copy + Eq + std::hash::Hash>(
 /// occupying a sunk register denies it to a later call-crossing interval that
 /// then reaches for a fresh one. Ruling that out is [`accept_reuse_pass`]'s
 /// job, not this function's.
+///
+/// `off_diverging_paths` says this interval has no use control reaches without
+/// aborting, which is what lets the clobber question skip the diverging regions
+/// inside the range; see [`ClobberIndex::is_clobbered_during`].
 fn pick_free_register<Reg: Copy + Eq + std::hash::Hash>(
     save: SaveClasses<'_, Reg>,
     clobbers: &ClobberIndex<Reg>,
     active: &[(VReg, Reg, usize)],
     sunk: &[Reg],
     range: &LiveRange,
+    off_diverging_paths: bool,
 ) -> Option<Reg> {
     // A class can never have more active intervals than physical registers.
     // Query that small canonical list directly instead of rebuilding a hash
@@ -2044,10 +2266,9 @@ fn pick_free_register<Reg: Copy + Eq + std::hash::Hash>(
         .copied()
         .find(|&reg| sunk.contains(&reg) && !is_used(reg))
         .or_else(|| {
-            save.caller_saved
-                .iter()
-                .copied()
-                .find(|&reg| !is_used(reg) && !clobbers.is_clobbered_during(reg, range))
+            save.caller_saved.iter().copied().find(|&reg| {
+                !is_used(reg) && !clobbers.is_clobbered_during(reg, range, off_diverging_paths)
+            })
         })
         .or_else(|| save.callee_saved.iter().copied().find(|&reg| !is_used(reg)))
 }
@@ -2063,13 +2284,16 @@ fn pick_free_register<Reg: Copy + Eq + std::hash::Hash>(
 ///
 /// `save` is the class `reg` belongs to, which is also the arriving interval's:
 /// eviction only ever considers registers held by intervals of the same class.
+/// `off_diverging_paths` likewise describes the arriving interval, whose
+/// clobber question this is.
 fn register_survives_range<Reg: Copy + Eq + std::hash::Hash>(
     save: SaveClasses<'_, Reg>,
     clobbers: &ClobberIndex<Reg>,
     reg: Reg,
     range: &LiveRange,
+    off_diverging_paths: bool,
 ) -> bool {
-    save.is_callee_saved(reg) || !clobbers.is_clobbered_during(reg, range)
+    save.is_callee_saved(reg) || !clobbers.is_clobbered_during(reg, range, off_diverging_paths)
 }
 
 /// How many vregs an allocation keeps in a physical register.
@@ -2200,6 +2424,7 @@ fn active_by_class<Reg: Copy>(
 struct ScanInputs<Reg> {
     vregs_by_start: Vec<(VReg, LiveRange)>,
     clobbers: ClobberIndex<Reg>,
+    divergence: DivergenceIndex,
 }
 
 impl<Reg: Copy + Eq + std::hash::Hash> ScanInputs<Reg> {
@@ -2215,9 +2440,11 @@ impl<Reg: Copy + Eq + std::hash::Hash> ScanInputs<Reg> {
 
         let caller_saved = file.caller_saved_flattened();
         let clobbers = ClobberIndex::build(liveness, &caller_saved);
+        let divergence = DivergenceIndex::build(liveness);
         Self {
             vregs_by_start,
             clobbers,
+            divergence,
         }
     }
 }
@@ -2325,6 +2552,7 @@ fn scan_intervals<Reg: Copy + Eq + std::hash::Hash>(
     // class; the callee-saved registers survive every clobber by definition
     // (RUE-1146).
     let clobbers = &inputs.clobbers;
+    let divergence = &inputs.divergence;
 
     // Track which registers are currently in use and when they become free,
     // separately per register class.
@@ -2339,16 +2567,28 @@ fn scan_intervals<Reg: Copy + Eq + std::hash::Hash>(
         // Expire old intervals - remove registers whose vregs are no longer live
         active.retain(|&(_, _, end)| end >= range.start);
 
+        // Two divergence facts about this interval (RUE-2065): whether its uses
+        // all lie on paths that return, which frees it from the clobbers of the
+        // regions that abort, and whether it lives wholly inside such a region,
+        // which frees any callee-saved register it takes from the prologue.
+        let off_diverging_paths = !liveness.has_diverging_use(vreg);
+        let confined_to_divergence = divergence.range_diverges(&range);
+
         // Try to find a free register of this vreg's own class: a sunk compact
         // one, else caller-saved, else a fresh callee-saved one.
-        let allocated_reg = pick_free_register(save, clobbers, active, sunk, &range);
+        let allocated_reg =
+            pick_free_register(save, clobbers, active, sunk, &range, off_diverging_paths);
 
         if let Some(reg) = allocated_reg {
             // Assign this register
             allocation[vreg] = Some(Allocation::Register(reg));
             active.push((vreg, reg, range.end));
-            // Track callee-saved register usage: only these oblige the prologue
-            if save.is_callee_saved(reg) && !used_callee_saved.contains(&reg) {
+            // Track callee-saved register usage: only these oblige the prologue,
+            // and only for an interval the function can still return from.
+            if save.is_callee_saved(reg)
+                && !confined_to_divergence
+                && !used_callee_saved.contains(&reg)
+            {
                 used_callee_saved.push(reg);
             }
         } else {
@@ -2369,7 +2609,8 @@ fn scan_intervals<Reg: Copy + Eq + std::hash::Hash>(
                 // Evicting only helps if the freed register can actually hold
                 // the arriving interval; a caller-saved register clobbered
                 // during that interval cannot.
-                if !register_survives_range(save, clobbers, active_reg, &range) {
+                if !register_survives_range(save, clobbers, active_reg, &range, off_diverging_paths)
+                {
                     continue;
                 }
                 let active_loop_depth = loop_info.max_depth_in_range(range.start, end);
@@ -2591,6 +2832,7 @@ fn scan_intervals_with_remat<Reg: Copy + Eq + std::hash::Hash>(
     // class; the callee-saved registers survive every clobber by definition
     // (RUE-1146).
     let clobbers = &inputs.clobbers;
+    let divergence = &inputs.divergence;
 
     // Track which registers are currently in use and when they become free,
     // separately per register class.
@@ -2605,16 +2847,28 @@ fn scan_intervals_with_remat<Reg: Copy + Eq + std::hash::Hash>(
         // Expire old intervals - remove registers whose vregs are no longer live
         active.retain(|&(_, _, end)| end >= range.start);
 
+        // Two divergence facts about this interval (RUE-2065): whether its uses
+        // all lie on paths that return, which frees it from the clobbers of the
+        // regions that abort, and whether it lives wholly inside such a region,
+        // which frees any callee-saved register it takes from the prologue.
+        let off_diverging_paths = !liveness.has_diverging_use(vreg);
+        let confined_to_divergence = divergence.range_diverges(&range);
+
         // Try to find a free register of this vreg's own class: a sunk compact
         // one, else caller-saved, else a fresh callee-saved one.
-        let allocated_reg = pick_free_register(save, clobbers, active, sunk, &range);
+        let allocated_reg =
+            pick_free_register(save, clobbers, active, sunk, &range, off_diverging_paths);
 
         if let Some(reg) = allocated_reg {
             // Assign this register
             allocation[vreg] = Some(Allocation::Register(reg));
             active.push((vreg, reg, range.end));
-            // Track callee-saved register usage: only these oblige the prologue
-            if save.is_callee_saved(reg) && !used_callee_saved.contains(&reg) {
+            // Track callee-saved register usage: only these oblige the prologue,
+            // and only for an interval the function can still return from.
+            if save.is_callee_saved(reg)
+                && !confined_to_divergence
+                && !used_callee_saved.contains(&reg)
+            {
                 used_callee_saved.push(reg);
             }
         } else {
@@ -2643,7 +2897,8 @@ fn scan_intervals_with_remat<Reg: Copy + Eq + std::hash::Hash>(
                 // Evicting only helps if the freed register can actually hold
                 // the arriving interval; a caller-saved register clobbered
                 // during that interval cannot.
-                if !register_survives_range(save, clobbers, active_reg, &range) {
+                if !register_survives_range(save, clobbers, active_reg, &range, off_diverging_paths)
+                {
                     continue;
                 }
                 let active_is_remat = can_remat(active_vreg).is_some();
@@ -2950,6 +3205,22 @@ mod tests {
         }
     }
 
+    /// Mark `indices` as instructions control can only leave by aborting, and
+    /// `readers` as the vregs some such instruction reads.
+    ///
+    /// Liveness derives both from the successor table; stating them directly
+    /// here keeps the allocator's rules testable without a backend MIR.
+    fn mark_diverging(info: &mut LivenessInfo<TestReg>, indices: &[usize], readers: &[u32]) {
+        info.diverging_at = vec![false; info.clobbers_at.len()];
+        for &idx in indices {
+            info.diverging_at[idx] = true;
+        }
+        info.diverging_uses = vec![false; info.ranges.len()];
+        for &vreg in readers {
+            info.diverging_uses[vreg as usize] = true;
+        }
+    }
+
     /// Liveness whose vregs carry the given classes, one per vreg index.
     ///
     /// Nothing in the compiler produces this yet — both backends mint only
@@ -2988,8 +3259,8 @@ mod tests {
         mark_non_returning(&mut liveness, &[2]);
         let index = ClobberIndex::build(&liveness, &[TestReg(0)]);
 
-        assert!(!index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 4)));
-        assert!(!index.is_clobbered_during(TestReg(0), &LiveRange::new(2, 2)));
+        assert!(!index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 4), false));
+        assert!(!index.is_clobbered_during(TestReg(0), &LiveRange::new(2, 2), false));
     }
 
     #[test]
@@ -3000,10 +3271,10 @@ mod tests {
         mark_non_returning(&mut liveness, &[3]);
         let index = ClobberIndex::build(&liveness, &[TestReg(0)]);
 
-        assert!(index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 4)));
-        assert!(index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 1)));
+        assert!(index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 4), false));
+        assert!(index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 1), false));
         assert!(
-            !index.is_clobbered_during(TestReg(0), &LiveRange::new(2, 4)),
+            !index.is_clobbered_during(TestReg(0), &LiveRange::new(2, 4), false),
             "a range that clears the returning call is clobber-free despite the trap"
         );
     }
@@ -3043,6 +3314,188 @@ mod tests {
             used_callee_saved.is_empty(),
             "no interval needed a callee-saved register, so the prologue saves nothing"
         );
+    }
+
+    // ========================================
+    // Divergence (RUE-2065)
+    // ========================================
+
+    #[test]
+    fn clobber_index_ignores_a_returning_call_inside_a_diverging_region() {
+        // A `@panic` arm: the guarded function's value is defined at 0 and used
+        // at 4, and the arm between them stages a failure site with an ordinary
+        // returning call at 1 before aborting at 3. Instructions 1..=3 are
+        // reachable only on the path that aborts, so the staging call's clobber
+        // cannot destroy a value with no use in the arm.
+        let mut liveness = make_liveness_with_clobbers(vec![(0, 0, 4)], REG0_AT_1_AND_3);
+        mark_non_returning(&mut liveness, &[3]);
+        mark_diverging(&mut liveness, &[1, 2, 3], &[]);
+        let index = ClobberIndex::build(&liveness, &[TestReg(0)]);
+
+        assert!(
+            index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 4), false),
+            "the strict question still counts the returning call"
+        );
+        assert!(!index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 4), true));
+    }
+
+    #[test]
+    fn clobber_index_keeps_a_diverging_clobber_for_a_value_the_arm_reads() {
+        // The same shape, except the value is the staged message the arm itself
+        // reads after the staging call returns. That use is on the aborting
+        // path, so the clobber is real and no relaxation applies to it.
+        let mut liveness = make_liveness_with_clobbers(vec![(0, 0, 4)], REG0_AT_1_AND_3);
+        mark_non_returning(&mut liveness, &[3]);
+        mark_diverging(&mut liveness, &[1, 2, 3], &[0]);
+        let index = ClobberIndex::build(&liveness, &[TestReg(0)]);
+
+        assert!(liveness.has_diverging_use(VReg::new(0)));
+        assert!(index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 4), false));
+    }
+
+    #[test]
+    fn divergence_index_answers_containment_and_defaults_to_false() {
+        let mut liveness = make_liveness_with_clobbers(vec![(0, 0, 4)], REG0_AT_1_AND_3);
+        mark_non_returning(&mut liveness, &[3]);
+        mark_diverging(&mut liveness, &[1, 2, 3], &[]);
+        let index = DivergenceIndex::build(&liveness);
+
+        assert!(index.range_diverges(&LiveRange::new(1, 3)));
+        assert!(index.range_diverges(&LiveRange::new(2, 2)));
+        assert!(!index.range_diverges(&LiveRange::new(0, 3)));
+        assert!(!index.range_diverges(&LiveRange::new(3, 4)));
+
+        // Liveness that carries no divergence marks answers `false` everywhere,
+        // which leaves the save set exactly as it was before RUE-2065.
+        let plain = make_liveness_with_clobbers(vec![(0, 0, 4)], REG0_AT_1_AND_3);
+        assert!(!DivergenceIndex::build(&plain).range_diverges(&LiveRange::new(1, 3)));
+    }
+
+    #[test]
+    fn an_interval_confined_to_a_diverging_region_costs_no_prologue_save() {
+        // Two intervals compete for one caller-saved register across a clobber
+        // at 2: the first spans the whole function, the second lives only
+        // inside the diverging arm at 2..=4. Both end up in registers, but only
+        // the one the function can return from obliges the prologue.
+        let mut liveness = make_liveness_with_clobbers(vec![(0, 0, 4), (1, 2, 4)], REG9_AT_2);
+        mark_non_returning(&mut liveness, &[4]);
+        mark_diverging(&mut liveness, &[2, 3, 4], &[1]);
+        let file = RegisterFile::gp_only(SaveClasses {
+            caller_saved: &[TestReg(9)],
+            callee_saved: &[TestReg(0), TestReg(1)],
+            compact_callee_saved: &[],
+        });
+
+        let (allocation, num_spills, used_callee_saved, _) = linear_scan_impl(
+            2,
+            &liveness,
+            file,
+            0,
+            false,
+            &CostModel::default(),
+            &LoopInfo::no_loops(liveness.instruction_count()),
+        );
+
+        assert_eq!(num_spills, 0);
+        assert!(matches!(
+            allocation[VReg::new(1)],
+            Some(Allocation::Register(_))
+        ));
+        assert!(
+            used_callee_saved.is_empty(),
+            "the arm's callee-saved register is clobbered only on a path that \
+             never returns, so the prologue does not save it"
+        );
+    }
+
+    #[test]
+    fn coalescing_carries_a_diverging_use_to_the_representative() {
+        // The shape an `if`/`else` join lowers to when a `@panic` arm reads the
+        // joined value: the arm's copy `mov v1, v0` at 1 is a coalesce
+        // candidate, the arm stages a failure site with a returning call at 2
+        // that clobbers a caller-saved register, and the arm reads the merged
+        // value at 3 before aborting at 4. Liveness recorded that read against
+        // v1, so unless coalescing folds the fact into the representative the
+        // clobber rule reads "no diverging use" off v0 and hands it the very
+        // register the staging call destroys.
+        let mut liveness = make_liveness_with_clobbers(vec![(0, 0, 1), (1, 1, 4)], REG9_AT_2);
+        mark_non_returning(&mut liveness, &[4]);
+        mark_diverging(&mut liveness, &[2, 3, 4], &[1]);
+
+        let candidates = vec![CoalesceCandidate {
+            inst_idx: 1,
+            dst: VReg::new(1),
+            src: VReg::new(0),
+        }];
+        let result = coalesce(&candidates, &mut liveness);
+
+        assert_eq!(result.representative(VReg::new(1)), VReg::new(0));
+        assert_eq!(liveness.range(VReg::new(0)), Some(&LiveRange::new(0, 4)));
+        assert!(liveness.range(VReg::new(1)).is_none());
+        assert!(
+            liveness.has_diverging_use(VReg::new(0)),
+            "the merged interval is read on the aborting path because its \
+             absorbed half was"
+        );
+
+        let file = RegisterFile::gp_only(SaveClasses {
+            caller_saved: &[TestReg(9)],
+            callee_saved: &[TestReg(0)],
+            compact_callee_saved: &[],
+        });
+        let (allocation, num_spills, used_callee_saved, _) = linear_scan_impl(
+            2,
+            &liveness,
+            file,
+            0,
+            false,
+            &CostModel::default(),
+            &LoopInfo::no_loops(liveness.instruction_count()),
+        );
+
+        assert_eq!(num_spills, 0);
+        assert_eq!(
+            allocation[VReg::new(0)],
+            Some(Allocation::Register(TestReg(0))),
+            "the arm reads the merged value across the staging call, so the \
+             clobbered caller-saved register is not a legal home for it"
+        );
+        assert_eq!(used_callee_saved, vec![TestReg(0)]);
+    }
+
+    #[test]
+    fn a_callee_saved_register_shared_with_a_returning_interval_is_still_saved() {
+        // The same register serves a diverging interval and a returning one.
+        // The prologue must still save it: the returning interval's use is
+        // reached, and skipping the save would corrupt the caller's register.
+        let mut liveness = make_liveness_with_clobbers(vec![(0, 0, 1), (1, 3, 4)], REG9_AT_2);
+        mark_non_returning(&mut liveness, &[4]);
+        mark_diverging(&mut liveness, &[3, 4], &[1]);
+        let file = RegisterFile::gp_only(SaveClasses {
+            caller_saved: &[],
+            callee_saved: &[TestReg(0)],
+            compact_callee_saved: &[],
+        });
+
+        let (allocation, _, used_callee_saved, _) = linear_scan_impl(
+            2,
+            &liveness,
+            file,
+            0,
+            false,
+            &CostModel::default(),
+            &LoopInfo::no_loops(liveness.instruction_count()),
+        );
+
+        assert_eq!(
+            allocation[VReg::new(0)],
+            Some(Allocation::Register(TestReg(0)))
+        );
+        assert_eq!(
+            allocation[VReg::new(1)],
+            Some(Allocation::Register(TestReg(0)))
+        );
+        assert_eq!(used_callee_saved, vec![TestReg(0)]);
     }
 
     // ========================================
@@ -3193,12 +3646,12 @@ mod tests {
         let liveness = make_liveness_with_clobbers(vec![(0, 0, 4)], REG0_AT_2);
         let index = ClobberIndex::build(&liveness, &[TestReg(0)]);
 
-        assert!(index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 4)));
-        assert!(index.is_clobbered_during(TestReg(0), &LiveRange::new(2, 2)));
-        assert!(!index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 1)));
-        assert!(!index.is_clobbered_during(TestReg(0), &LiveRange::new(3, 4)));
+        assert!(index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 4), false));
+        assert!(index.is_clobbered_during(TestReg(0), &LiveRange::new(2, 2), false));
+        assert!(!index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 1), false));
+        assert!(!index.is_clobbered_during(TestReg(0), &LiveRange::new(3, 4), false));
         // An untracked register cannot be proven clobber-free.
-        assert!(index.is_clobbered_during(TestReg(1), &LiveRange::new(0, 1)));
+        assert!(index.is_clobbered_during(TestReg(1), &LiveRange::new(0, 1), false));
     }
 
     #[test]
@@ -3206,8 +3659,8 @@ mod tests {
         let liveness = make_liveness_with_clobbers(vec![(0, 0, 1)], REG0_AT_1);
         let index = ClobberIndex::build(&liveness, &[TestReg(0)]);
 
-        assert!(index.is_clobbered_during(TestReg(0), &LiveRange::new(0, usize::MAX)));
-        assert!(!index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 0)));
+        assert!(index.is_clobbered_during(TestReg(0), &LiveRange::new(0, usize::MAX), false));
+        assert!(!index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 0), false));
     }
 
     #[test]

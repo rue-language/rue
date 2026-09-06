@@ -325,14 +325,32 @@ analysis emits as a `BoundsCheck` intrinsic, the `s[i]` check
 `__rue_str_byte_at` performs inside the runtime, and the division-by-zero,
 overflow, and `@intCast` range checks the CFG and codegen insert. The slice
 check is an AIR intrinsic and does carry a span, so what stops it is cost rather
-than reach, and both ways to spend it fall on the *passing* path: staging a site
-beside the check runs on every access, and staging it inside the failing arm
-costs a branch on the negated condition and the arm's register pressure in every
-function that indexes. Until the trap edge can carry a site the passing path
-does not pay for, those failures name the header, and their `kind` is still
-exact — `__rue_bounds_check` writes its `trap:bounds_check` record whether or
-not a site was staged, so the class comes from the channel rather than from
-matching a stderr line.
+than reach: staging a site beside the check would run on every access, and
+staging it inside a failing arm would turn a trap edge into a branch on the
+negated condition and a cold arm in every function that indexes. Until the trap
+edge can carry a site the passing path does not pay for, those failures name the
+header, and their `kind` is still exact — `__rue_bounds_check` writes its
+`trap:bounds_check` record whether or not a site was staged, so the class comes
+from the channel rather than from matching a stderr line.
+
+The policy those traps and the `@panic` arm share is that **the passing path
+pays nothing for a staged site**. Staging beside a check would break it outright
+— the staging call would run on every access — so a site is only ever staged
+inside the arm that is about to fail. What the arm costs the passing path is
+then a register-allocation question, and RUE-2065 settled it: allocation reads
+divergence, meaning the regions control can only leave by aborting. A clobber
+inside such a region cannot destroy a value with no use in one, so the receiver
+and index a guarded accessor holds across its guard can stay in caller-saved
+registers; and a callee-saved register only such a region occupies never enters
+the prologue, because the function does not return to restore it. What the arm
+*reads* still costs: a value the arm itself uses does cross the staging call,
+and takes a callee-saved register like any value that crosses a call. A `@panic`
+arm reads only the site operands it stages itself, so the guard adds a branch on
+the negated condition and a cold arm, and no prologue save the arm is
+responsible for — subject to ordinary register pressure, which on x86-64 leaves
+`open` one save because `r11` is its only allocatable caller-saved register.
+`crates/rue-cli-tests/cases/panic_guard_prologue.toml` pins that on both
+backends.
 
 `timeout` and `crash` verdicts also carry a failure record, with kind `timeout`
 and `signal` respectively.

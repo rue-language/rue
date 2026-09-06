@@ -1,0 +1,197 @@
+# A `@panic` guard costs the passing path no prologue (RUE-2065).
+#
+# `@panic` stages its failure site with `__rue_test_failure_site` and then calls
+# the panic helper, so the arm holds the site's four operands and the message
+# across an ordinary *returning* call. Read as textual intervals, those values —
+# and every value the guarded function keeps live across the guard — cross a
+# call, which is the one thing that makes a callee-saved register the only legal
+# home. The prologue then saves a register the arm alone touches, and every
+# entry pays a store and every exit a load on the path that never panics: the
+# cost `docs/process/test-events.md` says a guarded accessor must not pay.
+#
+# Allocation now reads two divergence facts. A clobber inside a region control
+# can only leave by aborting cannot destroy a value with no use in that region,
+# and a callee-saved register only such a region occupies needs no prologue
+# save, because the function never returns to restore it. These cases pin the
+# result on both backends: the guarded accessors save no callee-saved register
+# beyond what their non-panicking shape needs, and no register the panic arm
+# alone uses reaches the prologue.
+
+[section]
+id = "cli.panic_guard_prologue"
+name = "Panic-guard prologues"
+description = "A `@panic` guard's cold arm leaves the passing path's prologue alone on both backends (RUE-2065)."
+
+[[case]]
+name = "panic_guarded_accessor_keeps_a_minimal_aarch64_prologue"
+description = "Both `@panic` spellings guard a returning accessor; the AArch64 prologue is the frame record alone and the arm's operands live in unsaved callee-saved registers."
+files = [{ path = "main.rue", source = """
+fn open(port: u16) -> u16 {
+    if port == 0 {
+        @panic("no port");
+    }
+    port
+}
+
+fn open_quiet(port: u16) -> u16 {
+    if port == 0 {
+        @panic();
+    }
+    port
+}
+
+fn main() -> i32 {
+    if open(7) == 7 && open_quiet(9) == 9 { 0 } else { 1 }
+}
+""" }]
+args = ["--emit", "asm", "--target", "aarch64-linux", "-O2", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "=== Assembly (aarch64-linux) ===",
+    """; prologue
+   0:   stp x29, x30, [sp, #-16]!
+   4:   mov x29, sp
+   8:   mov x13, x0""",
+    "bl __rue_panic_no_msg",
+    "bl __rue_panic",
+]
+# Every callee-saved save form the emitter can produce. The arm still occupies
+# x19-x21, and that is the point: the registers it uses never reach a prologue.
+compile_stdout_not_contains = [
+    "stp x19",
+    "stp x21",
+    "stp x23",
+    "stp x25",
+    "stp x27",
+    "str x19, [sp",
+    "str x21, [sp",
+    "str x23, [sp",
+    "str x25, [sp",
+    "str x27, [sp",
+]
+
+[[case]]
+name = "panic_guarded_accessor_keeps_a_minimal_x86_64_prologue"
+description = "The same program on x86-64 saves only the one callee-saved register its single allocatable caller-saved register cannot cover; none of the arm's operands reaches the prologue."
+files = [{ path = "main.rue", source = """
+fn open(port: u16) -> u16 {
+    if port == 0 {
+        @panic("no port");
+    }
+    port
+}
+
+fn open_quiet(port: u16) -> u16 {
+    if port == 0 {
+        @panic();
+    }
+    port
+}
+
+fn main() -> i32 {
+    if open(7) == 7 && open_quiet(9) == 9 { 0 } else { 1 }
+}
+""" }]
+args = ["--emit", "asm", "--target", "x86-64-linux", "-O2", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "=== Assembly (x86-64-linux) ===",
+    """; prologue
+   0:   push rbp
+   1:   mov rbp, rsp
+   4:   push rbx
+   5:   sub rsp, 8
+   c:   mov rbx, rdi""",
+    "call __rue_panic_no_msg",
+    "call __rue_panic",
+]
+# `r11` is x86-64's only allocatable caller-saved register, so `rbx` still
+# carries the parameter across the guard. The arm's own operands take
+# `r12`-`r15`, and none of those saves reaches a prologue.
+compile_stdout_not_contains = ["push r12", "push r13", "push r14", "push r15"]
+
+[[case]]
+name = "panic_guarded_accessors_still_panic_at_runtime"
+description = "The unsaved callee-saved registers in the arm do not change what a guard does when it fires: the guarded call aborts with the pinned stderr line and exit 101."
+files = [{ path = "main.rue", source = """
+fn open(port: u16) -> u16 {
+    if port == 0 {
+        @panic("no port");
+    }
+    port
+}
+
+fn main() -> i32 {
+    let good: i32 = @intCast(open(7));
+    @dbg(good);
+    let bad: i32 = @intCast(open(0));
+    @dbg(bad);
+    0
+}
+""" }]
+stdout = "7\n"
+runtime_error_contains = ["panic: no port"]
+exit_code = 101
+
+[[case]]
+name = "a_guarded_accessor_in_a_loop_returns_the_right_values"
+description = "The passing path through a `@panic` guard is exercised many times in one frame, so a register the arm clobbered without saving would show up as a wrong sum."
+files = [{ path = "main.rue", source = """
+fn checked_double(n: i64, limit: i64) -> i64 {
+    if n >= limit {
+        @panic("out of range");
+    }
+    n + n
+}
+
+fn main() -> i32 {
+    let mut total: i64 = 0;
+    let mut i: i64 = 0;
+    // `total` and `i` are both live across every guard, and the guard's arm
+    // takes callee-saved registers the prologue no longer saves.
+    while i < 1000 {
+        total = total + checked_double(i, 1000);
+        i = i + 1;
+    }
+    let shown: i32 = @intCast(total);
+    @dbg(shown);
+    0
+}
+""" }]
+stdout = "999000\n"
+exit_code = 0
+
+[[case]]
+name = "a_panic_arm_reads_a_coalesced_join_value_intact"
+description = "A value the arm itself reads after the arm's staging call keeps its clobber protection through coalescing: `k` is an `if`/`else` join, so the pair of moves that produce it is coalesced away, and the arm must still read 42 rather than the register the staging call left behind."
+files = [{ path = "main.rue", source = """
+fn f(q: i64) -> i64 {
+    // Hoisted so the guard's condition is live across the join below: that
+    // pressure is what puts the merged value in a caller-saved register, and
+    // the shape stops reproducing without it.
+    let zero: bool = q == 0;
+    // An `if`/`else` join lowers to two moves into one value, which
+    // coalescing folds into whichever half is the representative. The
+    // divergence facts have to be folded with it: the arm below reads `k`
+    // after a returning call, so `k` may not live in a register that call
+    // clobbers, and coalescing must not lose that by recording the read
+    // against the half it discards.
+    let k: i64 = if q > 5 { 41 } else { 42 };
+    if zero {
+        @dbg(77);
+        @dbg(k);
+        @panic("guard");
+    }
+    k
+}
+
+fn main() -> i32 {
+    @dbg(f(9));
+    @dbg(f(0));
+    0
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+stdout = "41\n77\n42\n"
+runtime_error_contains = ["panic: guard"]
+exit_code = 101

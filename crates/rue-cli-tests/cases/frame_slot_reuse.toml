@@ -16,6 +16,13 @@
 #   size that reuse (or the deliberate absence of reuse) produces on BOTH
 #   backends. Without these a future change could quietly stop sharing, or
 #   start sharing something it must not, with the behavior cases still green.
+#
+# The sizes below are the locals area alone. `main` ends in `__rue_exit`, so
+# every instruction in it is one control can only leave by aborting, and
+# RUE-2065 keeps a register only such a region occupies out of the prologue —
+# a function that never returns restores nothing. What each case pins is the
+# cell plan: the count, the order, and which locals share, all of which this
+# change leaves untouched.
 
 [section]
 id = "cli.frame_slot_reuse"
@@ -129,7 +136,7 @@ fn main() -> i32 {
 args = ["--emit", "stackframe", "--target", "aarch64-linux", "main.rue"]
 compile_only = true
 # Without reuse the nine slots produced a 96-byte AArch64 frame.
-compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 64 bytes"]
+compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 48 bytes"]
 
 # --- Overlapping lifetimes NEVER share --------------------------------------
 
@@ -175,7 +182,7 @@ fn main() -> i32 {
 """ }]
 args = ["--emit", "stackframe", "--target", "x86-64-linux", "main.rue"]
 compile_only = true
-compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 80 bytes"]
+compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 64 bytes"]
 
 [[case]]
 name = "overlapping_lifetimes_never_share_frame_aarch64"
@@ -196,7 +203,7 @@ fn main() -> i32 {
 """ }]
 args = ["--emit", "stackframe", "--target", "aarch64-linux", "main.rue"]
 compile_only = true
-compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 96 bytes"]
+compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 80 bytes"]
 
 # --- Multi-slot aggregates move as units ------------------------------------
 
@@ -258,7 +265,7 @@ fn main() -> i32 {
 """ }]
 args = ["--emit", "stackframe", "--target", "x86-64-linux", "main.rue"]
 compile_only = true
-compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 64 bytes"]
+compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 32 bytes"]
 
 [[case]]
 name = "multi_slot_aggregates_share_as_whole_runs_frame_aarch64"
@@ -286,7 +293,7 @@ fn main() -> i32 {
 """ }]
 args = ["--emit", "stackframe", "--target", "aarch64-linux", "main.rue"]
 compile_only = true
-compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 64 bytes"]
+compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 48 bytes"]
 
 # --- A borrow keeps a slot alive past its last direct use -------------------
 
@@ -345,7 +352,7 @@ fn main() -> i32 {
 """ }]
 args = ["--emit", "stackframe", "--target", "x86-64-linux", "main.rue"]
 compile_only = true
-compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 64 bytes"]
+compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 48 bytes"]
 
 [[case]]
 name = "borrow_extended_lifetime_keeps_its_slot_frame_aarch64"
@@ -371,7 +378,7 @@ fn main() -> i32 {
 """ }]
 args = ["--emit", "stackframe", "--target", "aarch64-linux", "main.rue"]
 compile_only = true
-compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 80 bytes"]
+compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 64 bytes"]
 
 # --- Match arms: per-arm bindings share, and the value stays right ----------
 

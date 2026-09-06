@@ -347,10 +347,13 @@ staged and reports the empty location the runner answers from the test
 declaration's header: an allocation failure, the fixed-array bounds check
 codegen emits from a place projection, the slice bounds check semantic analysis
 emits as a `BoundsCheck` intrinsic, and the `s[i]` check `__rue_str_byte_at`
-performs inside the runtime. Because the panic helpers now report, the three
-terminal channel helpers take the stderr half of the panic path directly rather
-than calling `__rue_panic` — a second `trap:panic` frame after their own would
-be noise on a channel whose first frame is the verdict.
+performs inside the runtime. Staging inside the arm costs the passing path no
+prologue: codegen treats the arm as a diverging region, so neither the staging
+call's clobbers nor the registers the arm occupies reach the guarded function's
+prologue (RUE-2065; `docs/process/test-events.md`). Because the panic helpers
+now report, the three terminal channel helpers take the stderr half of the panic
+path directly rather than calling `__rue_panic` — a second `trap:panic` frame
+after their own would be noise on a channel whose first frame is the verdict.
 
 The record writer holds every helper above to two rules the caller does not have
 to know about. A `message` reaches the channel bounded to 4096 bytes, cut to
