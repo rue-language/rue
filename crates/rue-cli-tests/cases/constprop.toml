@@ -134,7 +134,7 @@ fn bump(inout v: i32) {
     v = v + 1;
 }
 fn main() -> i32 {
-    let a: i32 = 41;
+    let mut a: i32 = 41;
     bump(inout a);
     a
 }

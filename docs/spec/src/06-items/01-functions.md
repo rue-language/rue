@@ -69,6 +69,17 @@ At the call site, an argument passed to an `inout` parameter **MUST** be marked 
 
 An argument to an `inout` parameter **MUST** be an lvalue (a variable, field access, or array index expression).
 
+{{ rule(id="6.1:43", cat="legality-rule") }}
+
+An `inout` argument writes to the caller's place, so that place **MUST** be
+mutable. A place rooted at a local binding **MUST** be rooted at a `let mut`
+binding; a projection of one (`s.field`, `a[i]`) is mutable exactly when its
+root binding is. An immutable local binding — a `let` binding, or a `for` or
+`match` pattern binding — is rejected with the diagnostic an assignment to that
+place would produce (E0203, 5.2:3). A place rooted at an `inout` parameter is
+mutable (6.1:14); one rooted at a `borrow` parameter is rejected under 6.1:24.
+The requirement is the same one an `inout self` receiver carries (6.4:26).
+
 {{ rule(id="6.1:18", cat="dynamic-semantics") }}
 
 When a function is called with an `inout` argument:

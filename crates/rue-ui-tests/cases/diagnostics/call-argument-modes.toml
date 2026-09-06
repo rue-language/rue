@@ -73,3 +73,59 @@ error_contains = [
     "[E0427]",
     "borrow argument must be a variable, field, or array element",
 ]
+
+[[case]]
+name = "inout_argument_requires_a_mutable_binding"
+description = "An `inout` argument writes to the caller's place, so an immutable `let` binding is rejected with the same E0203 an assignment to it would give, plus an inout-specific help (RUE-2054, spec 6.1:43)."
+source = """
+fn bump(inout x: i32) { x = x + 1; }
+
+fn main() -> i32 {
+    let v = 1;
+    bump(inout v);
+    v
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E0203]",
+    "cannot assign to immutable variable 'v'",
+    "variable declared as immutable here",
+    "an `inout` argument writes to the caller's place; make the binding mutable: `let mut v = ...`",
+]
+
+[[case]]
+name = "inout_argument_of_a_for_pattern_binding_is_rejected"
+description = "A `for` pattern binding is immutable like a `let`, so it is rejected on the same rule (RUE-2054, spec 6.1:43)."
+source = """
+fn bump(inout x: i32) { x = x + 1; }
+
+fn main() -> i32 {
+    let a = [1, 2, 3];
+    for x in a {
+        bump(inout x);
+    }
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E0203]",
+    "cannot assign to immutable variable 'x'",
+    "an `inout` argument writes to the caller's place; make the binding mutable: `let mut x = ...`",
+]
+
+[[case]]
+name = "inout_argument_of_a_by_value_parameter_is_accepted"
+description = "A by-value parameter names the callee's own copy of the argument, which it may pass `inout`; the post-call read observes the write (spec 6.1:18, RUE-2042)."
+source = """
+fn bump(inout x: i32) { x = x + 1; }
+
+fn takes(n: i32) -> i32 {
+    bump(inout n);
+    n
+}
+
+fn main() -> i32 { takes(41) }
+"""
+exit_code = 42

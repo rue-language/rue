@@ -573,6 +573,75 @@ exit_code = 0
 # =============================================================================
 
 [[case]]
+name = "inout_arg_requires_mut_binding"
+spec = ["6.1:43"]
+description = "An inout argument writes to the caller's place, so an immutable `let` binding is rejected"
+source = """
+fn bump(inout x: i32) {
+    x = x + 1;
+}
+fn main() -> i32 {
+    let v = 1;
+    bump(inout v);
+    v
+}
+"""
+compile_fail = true
+error_contains = "E0203"
+
+[[case]]
+name = "inout_arg_mut_binding_accepted"
+spec = ["6.1:43"]
+description = "A `let mut` binding satisfies the inout argument's mutability requirement"
+source = """
+fn bump(inout x: i32) {
+    x = x + 1;
+}
+fn main() -> i32 {
+    let mut v = 41;
+    bump(inout v);
+    v
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_arg_field_of_immutable_binding_rejected"
+spec = ["6.1:43"]
+description = "A projection is mutable only when its root binding is, so a field of a `let` binding is rejected"
+source = """
+struct S { a: i32 }
+fn bump(inout x: i32) {
+    x = x + 1;
+}
+fn main() -> i32 {
+    let s = S { a: 1 };
+    bump(inout s.a);
+    s.a
+}
+"""
+compile_fail = true
+error_contains = "E0203"
+
+[[case]]
+name = "inout_self_receiver_shares_mut_binding_rule"
+spec = ["6.1:43", "6.4:26"]
+description = "An `inout self` receiver carries the same requirement and reports the same diagnostic"
+source = """
+struct C {
+    v: i32,
+    fn bump(inout self) { self.v = self.v + 1; }
+}
+fn main() -> i32 {
+    let c = C { v: 1 };
+    c.bump();
+    c.v
+}
+"""
+compile_fail = true
+error_contains = "E0203"
+
+[[case]]
 name = "inout_requires_lvalue"
 spec = ["6.1:17"]
 description = "Inout argument must be an lvalue (not a literal)"

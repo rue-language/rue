@@ -197,8 +197,9 @@ error: [E0432]: argument to borrow parameter must use 'borrow' keyword
 ## `inout`: lend for writing
 
 An `inout` parameter gives the function write access to the caller's value.
-The caller declares the binding `let mut`, and again the keyword appears on
-both sides:
+The caller must declare the binding `let mut` — an `inout` argument writes to
+the caller's place, so an immutable binding is rejected — and again the keyword
+appears on both sides:
 
 ```rue run
 const std = @import("std");
