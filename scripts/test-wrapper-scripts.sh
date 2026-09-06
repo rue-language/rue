@@ -825,7 +825,20 @@ make_rue_unit_sandbox() {
   cp "$SRC_ROOT/scripts/rue" "$sb/scripts/rue"; chmod +x "$sb/scripts/rue"
   # crates/rue is the package whose own name needs no prefix; keeping it in the
   # sandbox pins that the exact spelling wins over crates/rue-rue (RUE-2040).
-  printf '# stub\n' >"$sb/crates/rue/BUCK"
+  # It also declares a second rue_crate target, rue-driver, spelled the way
+  # crates/rue/BUCK really does (RUE-2045): the wrapper resolves a *package*
+  # name, not a target name, so this is a package with no package of its own.
+  cat >"$sb/crates/rue/BUCK" <<'EOF'
+rue_binary(
+    name = "rue",
+    crate_root = "src/main.rs",
+)
+
+rue_crate(
+    name = "rue-driver",
+    crate_root = "src/lib.rs",
+)
+EOF
   printf '# stub\n' >"$sb/crates/rue-parser/BUCK"
   printf '# stub\n' >"$sb/crates/rue-compiler/BUCK"
   cat >"$sb/buck2" <<'EOF'
@@ -886,6 +899,17 @@ test_rue_unit_maps_crate_and_forwards_args() {
       FAKE_LIST_OUT='rue_driver::tests::case: test' \
       ./scripts/rue unit rue:rue-driver-test ) >/dev/null 2>&1 || rc=$?
   check "scripts/rue unit: crate:target form reaches a second target in that package" \
+    "$([ "$rc" -eq 0 ] && grep -Fxq 'run //crates/rue:rue-driver-test --' "$sb/buck.log" && echo 0 || echo 1)"
+
+  # RUE-2045: the bare crate name a Rust developer actually knows — no package
+  # of its own, no explicit :target — resolves by scanning every BUCK file's
+  # rue_crate/rue_binary bodies for that exact name, not just by guessing a
+  # package. `crate-driver` (no `crates/rue-driver`) must not shadow this.
+  : >"$sb/buck.log"; rc=0
+  ( cd "$sb" && BUCK_LOG="$sb/buck.log" \
+      FAKE_LIST_OUT='rue_driver::tests::case: test' \
+      ./scripts/rue unit rue-driver ) >/dev/null 2>&1 || rc=$?
+  check "scripts/rue unit: a target with no package of its own resolves by name" \
     "$([ "$rc" -eq 0 ] && grep -Fxq 'run //crates/rue:rue-driver-test --' "$sb/buck.log" && echo 0 || echo 1)"
   rm -rf "$sb"
 }
