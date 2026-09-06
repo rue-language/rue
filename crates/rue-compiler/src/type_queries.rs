@@ -4,7 +4,6 @@
 //! handles and pool indexes are materialization details and never cross this
 //! boundary.
 
-use rue_air::Node;
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -529,52 +528,6 @@ impl RetainedCharge for DropGlueValue {
             Self::Available(facts) => facts.retained_charge(),
             Self::Failure(failure) => failure.retained_charge(),
         }
-    }
-}
-
-pub(crate) fn type_instance(ty: &crate::durable_semantics::DurableType) -> crate::TypeInstanceKey {
-    use crate::durable_semantics::DurableType as T;
-    match ty {
-        T::I8 => crate::TypeInstanceKey::I8,
-        T::I16 => crate::TypeInstanceKey::I16,
-        T::I32 => crate::TypeInstanceKey::I32,
-        T::I64 => crate::TypeInstanceKey::I64,
-        T::U8 => crate::TypeInstanceKey::U8,
-        T::U16 => crate::TypeInstanceKey::U16,
-        T::U32 => crate::TypeInstanceKey::U32,
-        T::U64 => crate::TypeInstanceKey::U64,
-        T::Bool => crate::TypeInstanceKey::Bool,
-        T::Unit => crate::TypeInstanceKey::Unit,
-        T::Never => crate::TypeInstanceKey::Never,
-        T::ComptimeType => crate::TypeInstanceKey::ComptimeType,
-        T::F32 => crate::TypeInstanceKey::F32,
-        T::F64 => crate::TypeInstanceKey::F64,
-        T::ComptimeFloat => crate::TypeInstanceKey::ComptimeFloat,
-        T::BuiltinNominal { kind, name } => crate::TypeInstanceKey::BuiltinNominal {
-            kind: match kind {
-                rue_air::SemanticImportNominalKind::Struct => rue_air::AnonymousNominalKind::Struct,
-                rue_air::SemanticImportNominalKind::Enum => rue_air::AnonymousNominalKind::Enum,
-            },
-            name: name.clone(),
-        },
-        T::Nominal(definition) => {
-            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(definition.clone()))
-        }
-        T::AnonymousNominal(identity) => crate::TypeInstanceKey::Nominal(
-            crate::NominalInstanceKey::Anonymous(Node::new(identity.clone())),
-        ),
-        T::Array { element, len } => crate::TypeInstanceKey::Array {
-            element: Node::new(type_instance(element)),
-            len: *len,
-        },
-        T::Slice { element, name } => crate::TypeInstanceKey::Slice {
-            element: Node::new(type_instance(element)),
-            name: name.clone(),
-        },
-        T::PtrConst(element) => crate::TypeInstanceKey::PtrConst(Node::new(type_instance(element))),
-        T::PtrMut(element) => crate::TypeInstanceKey::PtrMut(Node::new(type_instance(element))),
-        T::Module(module) => crate::TypeInstanceKey::Module(module.clone()),
-        T::GenericParameter(index) => crate::TypeInstanceKey::GenericParameter(*index),
     }
 }
 

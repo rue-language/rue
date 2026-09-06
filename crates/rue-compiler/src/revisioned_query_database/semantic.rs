@@ -693,7 +693,7 @@ pub(super) fn evaluate_type_shape(
                             fields: fields
                                 .iter()
                                 .map(|(name, ty)| {
-                                    (name.clone(), crate::type_queries::type_instance(ty))
+                                    (name.clone(), crate::semantic_identity::type_instance_from_semantic(ty))
                                 })
                                 .collect::<Vec<_>>()
                                 .into(),
@@ -706,7 +706,7 @@ pub(super) fn evaluate_type_shape(
                                         name.clone(),
                                         fields
                                             .iter()
-                                            .map(crate::type_queries::type_instance)
+                                            .map(crate::semantic_identity::type_instance_from_semantic)
                                             .collect::<Vec<_>>()
                                             .into(),
                                     )
@@ -743,7 +743,12 @@ pub(super) fn evaluate_type_shape(
                 S::Struct { fields, .. } => TypeShape::Struct {
                     fields: fields
                         .iter()
-                        .map(|(name, ty)| (name.clone(), crate::type_queries::type_instance(ty)))
+                        .map(|(name, ty)| {
+                            (
+                                name.clone(),
+                                crate::semantic_identity::type_instance_from_semantic(ty),
+                            )
+                        })
                         .collect::<Vec<_>>()
                         .into(),
                 },
@@ -755,7 +760,7 @@ pub(super) fn evaluate_type_shape(
                                 name.clone(),
                                 fields
                                     .iter()
-                                    .map(crate::type_queries::type_instance)
+                                    .map(crate::semantic_identity::type_instance_from_semantic)
                                     .collect::<Vec<_>>()
                                     .into(),
                             )
@@ -1509,7 +1514,7 @@ pub(super) fn anonymous_method_type(
     match ty {
         crate::durable_semantics::DurableAnonymousMethodType::SelfType => owner.clone(),
         crate::durable_semantics::DurableAnonymousMethodType::Concrete(ty) => {
-            crate::type_queries::type_instance(ty)
+            crate::semantic_identity::type_instance_from_semantic(ty)
         }
     }
 }
@@ -1585,7 +1590,7 @@ pub(super) fn exact_specialized_callable_types(
         if parameter.ty == crate::durable_semantics::DurableType::ComptimeType {
             let Some(argument) = type_arguments
                 .next()
-                .and_then(durable_type_from_instance_key)
+                .map(crate::semantic_identity::semantic_type_from_instance)
             else {
                 return Ok(Err(TypeQueryFailure::Invalid(Arc::from(
                     "specialized callable has an invalid comptime type argument stream",
@@ -1886,12 +1891,15 @@ pub(super) fn query_callable_signature(
                     .filter(|parameter| durable_parameter_is_runtime(parameter))
                     .zip(runtime_types)
                     .map(|(parameter, ty)| {
-                        (parameter.mode, crate::type_queries::type_instance(&ty))
+                        (
+                            parameter.mode,
+                            crate::semantic_identity::type_instance_from_semantic(&ty),
+                        )
                     }),
             );
             Ok(Ok(StableCallableSignature {
                 parameters: runtime_parameters,
-                result: crate::type_queries::type_instance(&result),
+                result: crate::semantic_identity::type_instance_from_semantic(&result),
                 // A C export's source body uses Rue's native ABI. The separate
                 // entry thunk is the C boundary, and carries the declaration's
                 // convention on its own.

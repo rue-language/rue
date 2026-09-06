@@ -6,65 +6,13 @@
 
 use super::super::*;
 
-fn body_type_instance(
-    ty: &rue_air::SemanticImportType<crate::StableDefinitionKey, crate::ModuleId>,
-) -> crate::TypeInstanceKey {
-    use rue_air::SemanticImportType as T;
-    match ty {
-        T::I8 => crate::TypeInstanceKey::I8,
-        T::I16 => crate::TypeInstanceKey::I16,
-        T::I32 => crate::TypeInstanceKey::I32,
-        T::I64 => crate::TypeInstanceKey::I64,
-        T::U8 => crate::TypeInstanceKey::U8,
-        T::U16 => crate::TypeInstanceKey::U16,
-        T::U32 => crate::TypeInstanceKey::U32,
-        T::U64 => crate::TypeInstanceKey::U64,
-        T::Bool => crate::TypeInstanceKey::Bool,
-        T::Unit => crate::TypeInstanceKey::Unit,
-        T::Never => crate::TypeInstanceKey::Never,
-        T::ComptimeType => crate::TypeInstanceKey::ComptimeType,
-        T::F32 => crate::TypeInstanceKey::F32,
-        T::F64 => crate::TypeInstanceKey::F64,
-        T::ComptimeFloat => crate::TypeInstanceKey::ComptimeFloat,
-        T::BuiltinNominal { name, kind } => crate::TypeInstanceKey::BuiltinNominal {
-            kind: match kind {
-                rue_air::SemanticImportNominalKind::Struct => rue_air::AnonymousNominalKind::Struct,
-                rue_air::SemanticImportNominalKind::Enum => rue_air::AnonymousNominalKind::Enum,
-            },
-            name: name.clone(),
-        },
-        T::Nominal(definition) => {
-            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(definition.clone()))
-        }
-        T::AnonymousNominal(identity) => crate::TypeInstanceKey::Nominal(
-            crate::NominalInstanceKey::Anonymous(Node::new(identity.clone())),
-        ),
-        T::Array { element, len } => crate::TypeInstanceKey::Array {
-            element: Node::new(body_type_instance(element)),
-            len: *len,
-        },
-        T::Slice { element, name } => crate::TypeInstanceKey::Slice {
-            element: Node::new(body_type_instance(element)),
-            name: name.clone(),
-        },
-        T::PtrConst(element) => {
-            crate::TypeInstanceKey::PtrConst(Node::new(body_type_instance(element)))
-        }
-        T::PtrMut(element) => {
-            crate::TypeInstanceKey::PtrMut(Node::new(body_type_instance(element)))
-        }
-        T::Module(module) => crate::TypeInstanceKey::Module(module.clone()),
-        T::GenericParameter(index) => crate::TypeInstanceKey::GenericParameter(*index),
-    }
-}
-
 fn collect_body_type_reference(
     ty: &rue_air::SemanticImportType<crate::StableDefinitionKey, crate::ModuleId>,
     references: &mut BTreeSet<crate::body_query::BodyReference>,
 ) {
-    references.insert(crate::body_query::BodyReference::Type(body_type_instance(
-        ty,
-    )));
+    references.insert(crate::body_query::BodyReference::Type(
+        crate::semantic_identity::type_instance_from_semantic(ty),
+    ));
     use rue_air::SemanticImportType as T;
     match ty {
         T::Array { element, .. }
@@ -88,7 +36,7 @@ pub(in crate::revisioned_query_database) fn collect_published_body_references(
          references: &mut BTreeSet<crate::body_query::BodyReference>| {
             if let Some(value) = body.instructions.get(value as usize) {
                 references.insert(crate::body_query::BodyReference::DropGlue(
-                    body_type_instance(&value.ty),
+                    crate::semantic_identity::type_instance_from_semantic(&value.ty),
                 ));
             }
         };
@@ -153,7 +101,7 @@ pub(in crate::revisioned_query_database) fn collect_published_body_references(
     for (_, ty) in body.param_drops.iter() {
         collect_body_type_reference(ty, references);
         references.insert(crate::body_query::BodyReference::DropGlue(
-            body_type_instance(ty),
+            crate::semantic_identity::type_instance_from_semantic(ty),
         ));
     }
 }
@@ -701,7 +649,7 @@ impl SemanticNucleusTypeProvider<'_> {
         let terminal = match self.context.query_registered(
             type_facts,
             crate::type_queries::TypeQueryKey {
-                ty: crate::type_queries::type_instance(ty),
+                ty: crate::semantic_identity::type_instance_from_semantic(ty),
                 configuration: self.configuration.clone(),
             },
         ) {

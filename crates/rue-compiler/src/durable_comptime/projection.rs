@@ -144,63 +144,6 @@ fn durable_parameter_mode(
     }
 }
 
-/// Convert the canonical type-instance representation into the durable type
-/// domain used by call binding. This is kept beside the binding policy so
-/// diagnostics and substitution never acquire a second local conversion.
-pub(crate) fn durable_type_from_instance_key(
-    value: &crate::TypeInstanceKey,
-) -> Option<DurableType> {
-    use crate::TypeInstanceKey as T;
-    use crate::durable_semantics::DurableType as D;
-    Some(match value {
-        T::I8 => D::I8,
-        T::I16 => D::I16,
-        T::I32 => D::I32,
-        T::I64 => D::I64,
-        T::U8 => D::U8,
-        T::U16 => D::U16,
-        T::U32 => D::U32,
-        T::U64 => D::U64,
-        T::Bool => D::Bool,
-        T::Unit => D::Unit,
-        T::Never => D::Never,
-        T::ComptimeType => D::ComptimeType,
-        T::F32 => D::F32,
-        T::F64 => D::F64,
-        T::ComptimeFloat => D::ComptimeFloat,
-        T::BuiltinNominal { kind, name } => D::BuiltinNominal {
-            name: name.clone(),
-            kind: match kind {
-                crate::AnonymousNominalKind::Struct => rue_air::SemanticImportNominalKind::Struct,
-                crate::AnonymousNominalKind::Enum => rue_air::SemanticImportNominalKind::Enum,
-            },
-        },
-        T::Nominal(crate::NominalInstanceKey::Builtin { kind, name }) => D::BuiltinNominal {
-            name: name.clone(),
-            kind: match kind {
-                crate::AnonymousNominalKind::Struct => rue_air::SemanticImportNominalKind::Struct,
-                crate::AnonymousNominalKind::Enum => rue_air::SemanticImportNominalKind::Enum,
-            },
-        },
-        T::Nominal(crate::NominalInstanceKey::Named(key)) => D::Nominal(key.clone()),
-        T::Nominal(crate::NominalInstanceKey::Anonymous(key)) => {
-            D::AnonymousNominal((**key).clone())
-        }
-        T::Array { element, len } => D::Array {
-            element: Arc::new(durable_type_from_instance_key(element)?),
-            len: *len,
-        },
-        T::Slice { element, name } => D::Slice {
-            element: Arc::new(durable_type_from_instance_key(element)?),
-            name: name.clone(),
-        },
-        T::PtrConst(value) => D::PtrConst(Arc::new(durable_type_from_instance_key(value)?)),
-        T::PtrMut(value) => D::PtrMut(Arc::new(durable_type_from_instance_key(value)?)),
-        T::Module(value) => D::Module(value.clone()),
-        T::GenericParameter(index) => D::GenericParameter(*index),
-    })
-}
-
 fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
     use crate::durable_semantics::DurableType as T;
 
@@ -236,7 +179,7 @@ fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
                         applied
                             .types
                             .iter()
-                            .filter_map(durable_type_from_instance_key)
+                            .map(crate::semantic_identity::semantic_type_from_instance)
                             .map(|ty| durable_type_diagnostic_name(&ty))
                             .collect::<Vec<_>>()
                     })
@@ -249,9 +192,10 @@ fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
                             crate::CanonicalArgumentValue::Integer(value) => value.to_string(),
                             crate::CanonicalArgumentValue::Bool(value) => value.to_string(),
                             crate::CanonicalArgumentValue::Type(value) => {
-                                durable_type_from_instance_key(value.as_ref()).map_or_else(
-                                    || "type".to_owned(),
-                                    |ty| durable_type_diagnostic_name(&ty),
+                                durable_type_diagnostic_name(
+                                    &crate::semantic_identity::semantic_type_from_instance(
+                                        value.as_ref(),
+                                    ),
                                 )
                             }
                             crate::CanonicalArgumentValue::Function(_) => "function".to_owned(),
@@ -315,8 +259,9 @@ pub(crate) fn durable_type_diagnostic_name_with_parameters(
         parameters,
         identity.producer_arguments(),
         |argument| {
-            durable_type_from_instance_key(argument)
-                .map(|argument| durable_type_diagnostic_name(&argument))
+            Some(durable_type_diagnostic_name(
+                &crate::semantic_identity::semantic_type_from_instance(argument),
+            ))
         },
     )
     .unwrap_or_else(|| durable_type_diagnostic_name(ty))

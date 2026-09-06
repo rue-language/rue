@@ -39,115 +39,6 @@ use std::sync::Arc;
 type IssuedTypeInstanceKey =
     rue_air::TypeInstanceKey<rue_air::SemanticDefinitionToken, rue_air::SemanticModuleToken>;
 
-pub(crate) fn semantic_type_from_instance(
-    ty: &crate::TypeInstanceKey,
-) -> rue_air::SemanticImportType<crate::StableDefinitionKey, crate::ModuleId> {
-    use crate::TypeInstanceKey as T;
-    use rue_air::SemanticImportType as S;
-    match ty {
-        T::I8 => S::I8,
-        T::I16 => S::I16,
-        T::I32 => S::I32,
-        T::I64 => S::I64,
-        T::U8 => S::U8,
-        T::U16 => S::U16,
-        T::U32 => S::U32,
-        T::U64 => S::U64,
-        T::Bool => S::Bool,
-        T::Unit => S::Unit,
-        T::Never => S::Never,
-        T::ComptimeType => S::ComptimeType,
-        T::F32 => S::F32,
-        T::F64 => S::F64,
-        T::ComptimeFloat => S::ComptimeFloat,
-        T::BuiltinNominal { kind, name } => S::BuiltinNominal {
-            kind: match kind {
-                crate::AnonymousNominalKind::Struct => rue_air::SemanticImportNominalKind::Struct,
-                crate::AnonymousNominalKind::Enum => rue_air::SemanticImportNominalKind::Enum,
-            },
-            name: name.clone(),
-        },
-        T::Nominal(crate::NominalInstanceKey::Named(key)) => S::Nominal(key.clone()),
-        T::Nominal(crate::NominalInstanceKey::Anonymous(key)) => {
-            S::AnonymousNominal((**key).clone())
-        }
-        T::Nominal(crate::NominalInstanceKey::Builtin { kind, name }) => S::BuiltinNominal {
-            kind: match kind {
-                crate::AnonymousNominalKind::Struct => rue_air::SemanticImportNominalKind::Struct,
-                crate::AnonymousNominalKind::Enum => rue_air::SemanticImportNominalKind::Enum,
-            },
-            name: name.clone(),
-        },
-        T::Array { element, len } => S::Array {
-            element: Arc::new(semantic_type_from_instance(element)),
-            len: *len,
-        },
-        T::Slice { element, name } => S::Slice {
-            element: Arc::new(semantic_type_from_instance(element)),
-            name: name.clone(),
-        },
-        T::PtrConst(element) => S::PtrConst(Arc::new(semantic_type_from_instance(element))),
-        T::PtrMut(element) => S::PtrMut(Arc::new(semantic_type_from_instance(element))),
-        T::Module(module) => S::Module(module.clone()),
-        T::GenericParameter(index) => S::GenericParameter(*index),
-    }
-}
-
-/// Relocate one durable semantic type into the type-instance vocabulary.
-///
-/// The inverse of [`semantic_type_from_instance`], kept beside it so the two
-/// directions of the same correspondence cannot drift apart. Declaration facts
-/// spell a field's type as a `SemanticImportType`, while layouts, drop plans,
-/// and printer plans key on `TypeInstanceKey`.
-pub(crate) fn type_instance_from_semantic(
-    ty: &rue_air::SemanticImportType<crate::StableDefinitionKey, crate::ModuleId>,
-) -> crate::TypeInstanceKey {
-    use crate::TypeInstanceKey as T;
-    use rue_air::SemanticImportType as S;
-    match ty {
-        S::I8 => T::I8,
-        S::I16 => T::I16,
-        S::I32 => T::I32,
-        S::I64 => T::I64,
-        S::U8 => T::U8,
-        S::U16 => T::U16,
-        S::U32 => T::U32,
-        S::U64 => T::U64,
-        S::F32 => T::F32,
-        S::F64 => T::F64,
-        S::ComptimeFloat => T::ComptimeFloat,
-        S::Bool => T::Bool,
-        S::Unit => T::Unit,
-        S::Never => T::Never,
-        S::ComptimeType => T::ComptimeType,
-        S::BuiltinNominal { kind, name } => T::BuiltinNominal {
-            kind: match kind {
-                rue_air::SemanticImportNominalKind::Struct => crate::AnonymousNominalKind::Struct,
-                rue_air::SemanticImportNominalKind::Enum => crate::AnonymousNominalKind::Enum,
-            },
-            name: name.clone(),
-        },
-        S::Nominal(key) => T::Nominal(crate::NominalInstanceKey::Named(key.clone())),
-        S::AnonymousNominal(key) => T::Nominal(crate::NominalInstanceKey::Anonymous(
-            rue_air::Node::new(key.clone()),
-        )),
-        S::Array { element, len } => T::Array {
-            element: rue_air::Node::new(type_instance_from_semantic(element)),
-            len: *len,
-        },
-        S::Slice { element, name } => T::Slice {
-            element: rue_air::Node::new(type_instance_from_semantic(element)),
-            name: name.clone(),
-        },
-        S::PtrConst(element) => {
-            T::PtrConst(rue_air::Node::new(type_instance_from_semantic(element)))
-        }
-        S::PtrMut(element) => T::PtrMut(rue_air::Node::new(type_instance_from_semantic(element))),
-        S::Module(module) => T::Module(module.clone()),
-        S::GenericParameter(index) => T::GenericParameter(*index),
-    }
-}
-
 /// Build the canonical AIR-shaped body for one exact drop-glue fact. Layout
 /// slots are supplied by registered Layout dependencies observed by the CFG
 /// evaluator, so this path never needs a caller-owned frozen pool.
@@ -182,7 +73,7 @@ pub(crate) fn synthesize_canonical_drop_glue(
             for field in fields.iter() {
                 let width = slots(&field.ty)?;
                 if field.drop {
-                    let ty = semantic_type_from_instance(&field.ty);
+                    let ty = crate::semantic_identity::semantic_type_from_instance(&field.ty);
                     let param = add(SemanticBodyInstData::Param { index: current }, ty.clone());
                     statements.push(add(SemanticBodyInstData::Drop { value: param }, ty));
                 }
@@ -197,7 +88,7 @@ pub(crate) fn synthesize_canonical_drop_glue(
             let width = slots(element)?;
             if *drop_element {
                 for index in 0..*len {
-                    let ty = semantic_type_from_instance(element);
+                    let ty = crate::semantic_identity::semantic_type_from_instance(element);
                     let param = add(
                         SemanticBodyInstData::Param {
                             index: u32::try_from(index)
@@ -239,7 +130,7 @@ pub(crate) fn synthesize_canonical_drop_glue(
                 for field in variant.fields.iter() {
                     let width = slots(&field.ty)?;
                     if field.drop {
-                        let ty = semantic_type_from_instance(&field.ty);
+                        let ty = crate::semantic_identity::semantic_type_from_instance(&field.ty);
                         let param = add(
                             SemanticBodyInstData::Param {
                                 index: num_param_slots

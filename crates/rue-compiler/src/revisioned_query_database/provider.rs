@@ -1935,8 +1935,7 @@ pub(super) fn project_provider_produced_anonymous_nominals(
         rue_air::SemanticModuleToken,
     >| {
         let ty = ty.try_map_identities(&definition, &module)?;
-        durable_type_from_instance_key(&ty)
-            .ok_or(rue_air::SemanticStableResolutionFailure::WrongKind)
+        Ok(crate::semantic_identity::semantic_type_from_instance(&ty))
     };
     let map_value = |value: &rue_air::CanonicalArgumentValue<
         rue_air::SemanticDefinitionToken,

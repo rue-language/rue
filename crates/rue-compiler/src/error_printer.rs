@@ -53,7 +53,7 @@ use rue_air::{
     SemanticBodyMatchArm, SemanticBodyPattern, SemanticBodyPlace, SemanticBodyProjection,
 };
 
-use crate::drop_glue::semantic_type_from_instance;
+use crate::semantic_identity::semantic_type_from_instance;
 
 type Ty = rue_air::SemanticImportType<crate::StableDefinitionKey, crate::ModuleId>;
 type Body = rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>;
@@ -218,7 +218,7 @@ pub(crate) fn plan_error_printer(
                 fields: payloads
                     .iter()
                     .map(|ty| {
-                        let ty = crate::drop_glue::type_instance_from_semantic(ty);
+                        let ty = crate::semantic_identity::type_instance_from_semantic(ty);
                         PrinterField {
                             name: Arc::from(""),
                             render: leaf_render(&ty, types),
@@ -246,7 +246,7 @@ pub(crate) fn plan_error_printer(
         let fields = fields
             .into_iter()
             .map(|(name, ty)| {
-                let ty = crate::drop_glue::type_instance_from_semantic(&ty);
+                let ty = crate::semantic_identity::type_instance_from_semantic(&ty);
                 PrinterField {
                     name,
                     render: leaf_render(&ty, types),
@@ -356,7 +356,8 @@ fn byte_pointer_projections(
     let inner_index = unique_field(fields, |field| {
         matches!(field, Ty::Nominal(_) | Ty::AnonymousNominal(_))
     })?;
-    let inner_ty = crate::drop_glue::type_instance_from_semantic(&fields[inner_index as usize].1);
+    let inner_ty =
+        crate::semantic_identity::type_instance_from_semantic(&fields[inner_index as usize].1);
     // Guard against a self-referential shape rather than recursing forever.
     if inner_ty == *ty {
         return None;

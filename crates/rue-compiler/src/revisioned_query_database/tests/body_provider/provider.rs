@@ -329,7 +329,7 @@ fn durable_copy_and_drop_facts_match_the_air_composite_policy() {
             &database.type_facts,
             revision,
             crate::type_queries::TypeQueryKey {
-                ty: crate::drop_glue::type_instance_from_semantic(ty),
+                ty: crate::semantic_identity::type_instance_from_semantic(ty),
                 configuration: semantic_configuration(),
             },
             CancellationToken::new(),

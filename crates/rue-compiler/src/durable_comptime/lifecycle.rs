@@ -36,7 +36,6 @@ pub(crate) struct DurableComptimeCallContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DurableComptimeProducerIssuanceError {
     ProgramMismatch,
-    InvalidTypeArgument,
     InvalidValueArgument,
 }
 
@@ -59,8 +58,7 @@ pub(crate) fn canonical_specialized_function_instance(
     let types = type_arguments
         .iter()
         .map(|(_, value)| crate::semantic_identity::type_instance_from_semantic(value))
-        .collect::<Option<Vec<_>>>()
-        .ok_or(DurableComptimeProducerIssuanceError::InvalidTypeArgument)?
+        .collect::<Vec<_>>()
         .into();
     let values = value_arguments
         .iter()

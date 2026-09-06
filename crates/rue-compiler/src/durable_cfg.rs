@@ -179,72 +179,15 @@ fn canonical_type_from_live_cached(
             aggregates,
             stable_by_live,
         )?)),
-        K::Struct(_) | K::Enum(_) => canonical_type_from_instance(
+        K::Struct(_) | K::Enum(_) => crate::semantic_identity::semantic_type_from_instance(
             aggregates
                 .aggregate_type(ty)
                 .ok_or(CfgDomainFailure::Missing)?,
-        )?,
+        ),
         K::Module(_) | K::Error => return Err(CfgDomainFailure::Unsupported),
     };
     stable_by_live.insert(ty, stable.clone());
     Ok(stable)
-}
-
-fn canonical_type_from_instance(
-    value: &crate::TypeInstanceKey,
-) -> Result<CanonicalType, CfgDomainFailure> {
-    use crate::TypeInstanceKey as T;
-    Ok(match value {
-        T::I8 => CanonicalType::I8,
-        T::I16 => CanonicalType::I16,
-        T::I32 => CanonicalType::I32,
-        T::I64 => CanonicalType::I64,
-        T::U8 => CanonicalType::U8,
-        T::U16 => CanonicalType::U16,
-        T::U32 => CanonicalType::U32,
-        T::U64 => CanonicalType::U64,
-        T::Bool => CanonicalType::Bool,
-        T::Unit => CanonicalType::Unit,
-        T::Never => CanonicalType::Never,
-        T::ComptimeType => CanonicalType::ComptimeType,
-        T::F32 => CanonicalType::F32,
-        T::F64 => CanonicalType::F64,
-        T::ComptimeFloat => CanonicalType::ComptimeFloat,
-        T::BuiltinNominal { kind, name }
-        | T::Nominal(crate::NominalInstanceKey::Builtin { kind, name }) => {
-            CanonicalType::BuiltinNominal {
-                kind: match kind {
-                    crate::AnonymousNominalKind::Struct => {
-                        rue_air::SemanticImportNominalKind::Struct
-                    }
-                    crate::AnonymousNominalKind::Enum => rue_air::SemanticImportNominalKind::Enum,
-                },
-                name: name.clone(),
-            }
-        }
-        T::Nominal(crate::NominalInstanceKey::Named(definition)) => {
-            CanonicalType::Nominal(definition.clone())
-        }
-        T::Nominal(crate::NominalInstanceKey::Anonymous(identity)) => {
-            CanonicalType::AnonymousNominal((**identity).clone())
-        }
-        T::Array { element, len } => CanonicalType::Array {
-            element: Arc::new(canonical_type_from_instance(element)?),
-            len: *len,
-        },
-        T::Slice { element, name } => CanonicalType::Slice {
-            element: Arc::new(canonical_type_from_instance(element)?),
-            name: name.clone(),
-        },
-        T::PtrConst(element) => {
-            CanonicalType::PtrConst(Arc::new(canonical_type_from_instance(element)?))
-        }
-        T::PtrMut(element) => {
-            CanonicalType::PtrMut(Arc::new(canonical_type_from_instance(element)?))
-        }
-        T::Module(module) => CanonicalType::Module(module.clone()),
-        T::GenericParameter(index) => CanonicalType::GenericParameter(*index),
-    })
 }
 
 fn record_cfg_type(
@@ -311,55 +254,6 @@ fn live_primitive(ty: &CanonicalType) -> Option<Type> {
 fn foreign_callable_symbol(callable: &crate::FunctionInstanceKey) -> Option<String> {
     crate::semantic_identity::function_base_definition(callable)
         .map(|definition| definition.name().to_owned())
-}
-
-fn canonical_type_instance(ty: &CanonicalType) -> Option<crate::TypeInstanceKey> {
-    Some(match ty {
-        CanonicalType::I8 => crate::TypeInstanceKey::I8,
-        CanonicalType::I16 => crate::TypeInstanceKey::I16,
-        CanonicalType::I32 => crate::TypeInstanceKey::I32,
-        CanonicalType::I64 => crate::TypeInstanceKey::I64,
-        CanonicalType::U8 => crate::TypeInstanceKey::U8,
-        CanonicalType::U16 => crate::TypeInstanceKey::U16,
-        CanonicalType::U32 => crate::TypeInstanceKey::U32,
-        CanonicalType::U64 => crate::TypeInstanceKey::U64,
-        CanonicalType::Bool => crate::TypeInstanceKey::Bool,
-        CanonicalType::Unit => crate::TypeInstanceKey::Unit,
-        CanonicalType::Never => crate::TypeInstanceKey::Never,
-        CanonicalType::ComptimeType => crate::TypeInstanceKey::ComptimeType,
-        CanonicalType::F32 => crate::TypeInstanceKey::F32,
-        CanonicalType::F64 => crate::TypeInstanceKey::F64,
-        CanonicalType::ComptimeFloat => crate::TypeInstanceKey::ComptimeFloat,
-        CanonicalType::BuiltinNominal { kind, name } => crate::TypeInstanceKey::BuiltinNominal {
-            kind: match kind {
-                rue_air::SemanticImportNominalKind::Struct => crate::AnonymousNominalKind::Struct,
-                rue_air::SemanticImportNominalKind::Enum => crate::AnonymousNominalKind::Enum,
-            },
-            name: name.clone(),
-        },
-        CanonicalType::Nominal(definition) => {
-            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(definition.clone()))
-        }
-        CanonicalType::AnonymousNominal(identity) => crate::TypeInstanceKey::Nominal(
-            crate::NominalInstanceKey::Anonymous(Node::new(identity.clone())),
-        ),
-        CanonicalType::Array { element, len } => crate::TypeInstanceKey::Array {
-            element: Node::new(canonical_type_instance(element)?),
-            len: *len,
-        },
-        CanonicalType::PtrConst(element) => {
-            crate::TypeInstanceKey::PtrConst(Node::new(canonical_type_instance(element)?))
-        }
-        CanonicalType::PtrMut(element) => {
-            crate::TypeInstanceKey::PtrMut(Node::new(canonical_type_instance(element)?))
-        }
-        CanonicalType::Slice { element, name } => crate::TypeInstanceKey::Slice {
-            element: Node::new(canonical_type_instance(element)?),
-            name: name.clone(),
-        },
-        CanonicalType::Module(module) => crate::TypeInstanceKey::Module(module.clone()),
-        CanonicalType::GenericParameter(index) => crate::TypeInstanceKey::GenericParameter(*index),
-    })
 }
 
 fn deduplicate_type_mappings(
@@ -1011,9 +905,7 @@ impl CfgDomainProjection {
         // from aggregate metadata after AIR symbol collection. Project those
         // exact aliases from the same local type pool and stable type domain.
         for (current, stable) in &self.types {
-            let Some(owner) = canonical_type_instance(stable) else {
-                continue;
-            };
+            let owner = crate::semantic_identity::type_instance_from_semantic(stable);
             let drop_glue_source = match current.kind() {
                 TypeKind::Struct(id) => {
                     if let (Some(source), CanonicalType::AnonymousNominal(identity)) =
