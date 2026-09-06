@@ -165,17 +165,6 @@ pub enum SemanticProviderError<E, F> {
     Failure(F),
 }
 
-impl SemanticTypeFactKind {
-    pub fn diagnostic_name(self) -> &'static str {
-        match self {
-            Self::Struct => "struct",
-            Self::Enum => "enum",
-            Self::Constant => "constant",
-            Self::Function => "function",
-        }
-    }
-}
-
 pub trait SemanticModulePathProvider<S, M, A> {
     type Abort;
     type Failure;
@@ -614,8 +603,22 @@ pub enum SemanticTypeSyntaxFailure<A, N> {
         module_site: A,
         member: Arc<str>,
     },
+    /// A named item reached by type syntax was private from the referencing
+    /// file: the ordinary uniform privacy violation, reported as E0706 like
+    /// the same item named in any other position (spec 10.3:7, 10.4:18).
     PrivateItem {
         kind: SemanticTypeFactKind,
+        name: Arc<str>,
+        site: A,
+        defining_file: Arc<str>,
+    },
+    /// A private comptime type constructor was *applied* in a type position.
+    /// This is privacy's one carve-out (10.4:16): the visibility of the
+    /// applied constructor is checked at the application site and reported as
+    /// E0460, naming the constructor and its defining file. It is kept apart
+    /// from [`Self::PrivateItem`] so the carve-out cannot silently widen back
+    /// over ordinary named lookup.
+    PrivateTypeConstructor {
         name: Arc<str>,
         site: A,
         defining_file: Arc<str>,
@@ -924,8 +927,7 @@ where
             .defining_domain
             .is_visible_from(&accessing, head.is_public)
         {
-            return Err(E::Semantic(F::PrivateItem {
-                kind: SemanticTypeFactKind::Function,
+            return Err(E::Semantic(F::PrivateTypeConstructor {
                 name: Arc::from(name),
                 site: head.site,
                 defining_file: head.defining_file,
@@ -3937,10 +3939,9 @@ mod tests {
                 )
                 | (
                     FailureCase::PrivateConstructor,
-                    SemanticResolutionError::Semantic(SemanticTypeSyntaxFailure::PrivateItem {
-                        site,
-                        ..
-                    }),
+                    SemanticResolutionError::Semantic(
+                        SemanticTypeSyntaxFailure::PrivateTypeConstructor { site, .. },
+                    ),
                 ) => assert_eq!(Some(site), expected_site),
                 _ => panic!("unexpected failure shape for table case"),
             }

@@ -2577,8 +2577,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if let Some(const_info) = const_info {
             // Apply the uniform privacy rule even though ordinary unqualified
             // lookup resolves in the reference file (spec 10.3:1, 10.3:7).
-            self.check_unqualified_visibility(
-                "constant",
+            self.check_item_visibility(
+                crate::PrivateItemKind::Const,
                 &name_str,
                 const_info.span.file_id,
                 const_info.is_pub,
@@ -2636,7 +2636,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // The name IS a known type, but a private one from another
             // directory (RUE-183): report the privacy error rather than
             // falling through to a misleading "undefined variable".
-            Err(e) if matches!(e.kind, ErrorKind::PrivateUnqualifiedAccess(_)) => {
+            Err(e) if matches!(e.kind, ErrorKind::PrivateMemberAccess { .. }) => {
                 return Err(e);
             }
             // Any other resolution failure: not a type name, keep falling

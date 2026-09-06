@@ -802,12 +802,10 @@ fn module_path_compile_error(
         // struct literal, or used as an associated-function receiver (spec
         // 10.3:7, 10.4:18). E0460 stays reserved for its one carve-out,
         // applying a private comptime type constructor in type position
-        // (10.4:16), which arrives through `PrivateItem`, not here (RUE-1964).
+        // (10.4:16), which arrives through `PrivateTypeConstructor`, not here
+        // (RUE-1964, RUE-1973).
         crate::SemanticModulePathFailure::PrivateMember { member, .. } => CompileError::new(
-            ErrorKind::PrivateMemberAccess {
-                item_kind: "const".to_string(),
-                name: member.to_string(),
-            },
+            crate::private_member_access(crate::PrivateItemKind::Const, &member),
             span,
         ),
     }
@@ -833,24 +831,30 @@ pub(super) fn module_path_resolution_compile_error(
     }
 }
 
-fn private_qualified_item_error(
-    item_kind: &str,
-    member: &str,
+/// E0460: privacy's one carve-out, applying a private comptime type
+/// constructor in a type position (spec 10.3:7, 10.4:16).
+///
+/// Every other private access — including a private *named* type reached by
+/// the same type syntax — is the uniform E0706 built by
+/// [`crate::private_member_access`]. Keeping this constructor to the
+/// application form is what makes E0460's `--explain` text true.
+fn private_type_constructor_error(
+    constructor: &str,
     defining_file: &str,
     span: Span,
 ) -> CompileError {
     CompileError::new(
         ErrorKind::PrivateUnqualifiedAccess(Box::new(
             rue_error::PrivateUnqualifiedAccessData {
-                item_kind: item_kind.to_string(),
-                name: member.to_string(),
+                item_kind: crate::PrivateItemKind::Function.spelling().to_string(),
+                name: constructor.to_string(),
                 defining_file: defining_file.to_string(),
             },
         )),
         span,
     )
     .with_help(format!(
-        "`{member}` is not marked `pub`; private items are only visible within their defining directory"
+        "`{constructor}` is not marked `pub`; private items are only visible within their defining directory"
     ))
 }
 
@@ -891,12 +895,15 @@ pub(super) fn semantic_type_syntax_compile_error(
             },
             span,
         ),
-        E::Semantic(F::PrivateItem {
-            kind,
+        E::Semantic(F::PrivateItem { kind, name, .. }) => CompileError::new(
+            crate::private_member_access(crate::PrivateItemKind::from(kind), &name),
+            span,
+        ),
+        E::Semantic(F::PrivateTypeConstructor {
             name,
             defining_file,
             ..
-        }) => private_qualified_item_error(kind.diagnostic_name(), &name, &defining_file, span),
+        }) => private_type_constructor_error(&name, &defining_file, span),
         E::Semantic(F::AmbiguousItem { name, .. }) => CompileError::new(
             ErrorKind::InternalError(format!(
                 "type resolution produced an ambiguous item for '{}'",

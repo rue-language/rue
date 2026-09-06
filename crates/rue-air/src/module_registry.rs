@@ -8,6 +8,22 @@ use std::sync::{PoisonError, RwLock};
 
 use crate::types::{ModuleDef, ModuleId};
 
+/// How a module is named in a diagnostic that talks about it.
+///
+/// One rendering for every emitter: the import path the source wrote, so
+/// `module 'sub/lib.rue' has no member 'x'` says which file was consulted.
+/// Rendering only the file stem loses exactly the part that distinguishes
+/// same-named files in different directories, which is the case the reader
+/// most needs to see.
+///
+/// The argument is the import path rather than a [`ModuleDef`] because the
+/// three emitters hold a module in three shapes — a registry definition, an
+/// aggregate module fact, and a durable module identity — and the import path
+/// is what they share. Pass [`ModuleDef::import_path`]; do not re-render it.
+pub fn module_display_name(import_path: &str) -> &str {
+    import_path
+}
+
 /// Thread-safe registry for modules.
 ///
 /// The registry allows concurrent lookups after canonical construction.

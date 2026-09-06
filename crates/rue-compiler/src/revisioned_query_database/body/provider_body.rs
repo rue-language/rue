@@ -914,19 +914,19 @@ impl SemanticNucleusTypeProvider<'_> {
                 "ambiguous declaration `{name}` in module {module}"
             ));
         }
-        let defining = rue_air::SemanticVisibilityDomain::from_file_path(Some(module.as_str()));
-        let accessing = rue_air::SemanticVisibilityDomain::from_file_path(Some(
-            accessing_source.module().as_str(),
-        ));
+        // Privacy is one decision with one diagnostic (RUE-1973): AIR owns
+        // both, including the short-circuit that answers a public item or a
+        // self-reference without deriving a visibility domain at all.
         let is_public = entry.visibility == Some(rue_parser::ast::Visibility::Public);
-        if !defining.is_visible_from(&accessing, is_public) {
+        if let Err(diagnostic) = rue_air::check_source_path_visibility(
+            kind.private_item_kind(),
+            name,
+            accessing_source.module().as_str(),
+            module.as_str(),
+            is_public,
+        ) {
             return Self::provider_domain_failure(
-                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                    rue_error::ErrorKind::PrivateMemberAccess {
-                        item_kind: format!("{kind:?}").to_lowercase(),
-                        name: name.to_owned(),
-                    },
-                ),
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(diagnostic),
             );
         }
         let categories: &[crate::declaration_candidate::DeclarationCandidateCategory] = match kind {
@@ -2308,8 +2308,19 @@ pub(in crate::revisioned_query_database) fn semantic_type_query_failure(
                         ),
                     )
                 }
-                F::PrivateItem {
-                    kind,
+                // A private *named* item reached by type syntax is the uniform
+                // module-member privacy violation E0706 (spec 10.3:7,
+                // 10.4:18), the same code and words every other position
+                // reports for it.
+                F::PrivateItem { kind, name, .. } => ResolveSemanticSignatureError::failure(
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                        rue_air::private_member_access(rue_air::PrivateItemKind::from(kind), &name),
+                    ),
+                ),
+                // Privacy's one carve-out: applying a private comptime type
+                // constructor in a type position is E0460 (10.4:16), which
+                // names the constructor and its defining file.
+                F::PrivateTypeConstructor {
                     name,
                     defining_file,
                     ..
@@ -2317,7 +2328,7 @@ pub(in crate::revisioned_query_database) fn semantic_type_query_failure(
                     crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
                         ErrorKind::PrivateUnqualifiedAccess(Box::new(
                             rue_error::PrivateUnqualifiedAccessData {
-                                item_kind: kind.diagnostic_name().to_owned(),
+                                item_kind: rue_air::PrivateItemKind::Function.spelling().to_owned(),
                                 name: name.to_string(),
                                 defining_file: defining_file.to_string(),
                             },

@@ -3861,7 +3861,7 @@ where
     fn type_syntax_module_display_name(&self, module: ModuleId) -> Arc<str> {
         self.calls
             .module_def(module)
-            .map(|definition| Arc::from(definition.import_path.as_str()))
+            .map(|definition| Arc::from(crate::module_display_name(&definition.import_path)))
             .unwrap_or_else(|| Arc::from("<unknown module>"))
     }
 

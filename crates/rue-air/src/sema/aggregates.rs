@@ -92,12 +92,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let payload_types = def.variant_payload(variant_index as usize).to_vec();
 
         // Visibility check, mirroring the bare-path `EnumVariant` handler
-        // (E0460, privacy is uniform across item kinds). A comptime-bound enum
+        // (E0706, privacy is uniform across item kinds). A comptime-bound enum
         // (`let O = Option(i32); O::Some(..)`) is exempt: the type value
         // arrived through a binding, not by naming the enum (privacy_exempt).
         if !privacy_exempt {
-            self.check_unqualified_visibility(
-                "enum",
+            self.check_item_visibility(
+                crate::PrivateItemKind::Enum,
                 self.body_interner().resolve(&type_name),
                 def.file_id,
                 def.is_pub,
@@ -1031,15 +1031,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let nominal = member
                 .as_struct()
                 .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?;
-            // Module-qualified visibility is E0706 (RUE-525), uniform with
-            // enum members and associated-function calls through a module;
-            // E0460 is the diagnostic for unqualified naming forms.
+            // Visibility is E0706 (RUE-525), uniform with enum members and
+            // associated-function calls through a module — and with every
+            // other position that can name this struct (RUE-1973).
             let def = self.body_type_pool().struct_def(nominal.id);
             self.check_module_qualified_visibility(
                 nominal.alias,
                 module_file,
                 (def.file_id, def.is_pub),
-                "struct",
+                crate::PrivateItemKind::Struct,
                 &type_name_str,
                 span,
             )?;
@@ -1069,8 +1069,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 },
                 StructLiteralHead::Named(struct_id) => {
                     let def = self.body_type_pool().struct_def(struct_id);
-                    self.check_unqualified_visibility(
-                        "struct",
+                    self.check_item_visibility(
+                        crate::PrivateItemKind::Struct,
                         &type_name_str,
                         def.file_id,
                         def.is_pub,
@@ -1279,24 +1279,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         alias: Option<&super::ConstInfo>,
         module_file: rue_span::FileId,
         declared: (rue_span::FileId, bool),
-        item_kind: &'static str,
+        item_kind: crate::PrivateItemKind,
         name: &str,
         span: Span,
     ) -> CompileResult<()> {
         let (file, is_pub, item_kind) = match alias {
-            Some(binding) => (module_file, binding.is_pub, "const"),
+            Some(binding) => (module_file, binding.is_pub, crate::PrivateItemKind::Const),
             None => (declared.0, declared.1, item_kind),
         };
-        if self.is_accessible(span.file_id, file, is_pub) {
-            return Ok(());
-        }
-        Err(CompileError::new(
-            ErrorKind::PrivateMemberAccess {
-                item_kind: item_kind.to_string(),
-                name: name.to_string(),
-            },
-            span,
-        ))
+        self.check_item_visibility(item_kind, name, file, is_pub, span)
     }
 
     /// Analyze module type member access: `module.StructName` or `module.EnumName`.
@@ -1339,15 +1330,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let struct_def = self.body_type_pool().struct_def(struct_id);
 
             // Check visibility: pub structs are visible to all, private only to same directory
-            if !self.is_accessible(span.file_id, struct_def.file_id, struct_def.is_pub) {
-                return Err(CompileError::new(
-                    ErrorKind::PrivateMemberAccess {
-                        item_kind: "struct".to_string(),
-                        name: member_name_str,
-                    },
-                    span,
-                ));
-            }
+            self.check_item_visibility(
+                crate::PrivateItemKind::Struct,
+                &member_name_str,
+                struct_def.file_id,
+                struct_def.is_pub,
+                span,
+            )?;
 
             // Return a TypeConst instruction with the struct type
             let struct_type = Type::new_struct(struct_id);
@@ -1365,15 +1354,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let enum_def = self.body_type_pool().enum_def(enum_id);
 
             // Check visibility: pub enums are visible to all, private only to same directory
-            if !self.is_accessible(span.file_id, enum_def.file_id, enum_def.is_pub) {
-                return Err(CompileError::new(
-                    ErrorKind::PrivateMemberAccess {
-                        item_kind: "enum".to_string(),
-                        name: member_name_str,
-                    },
-                    span,
-                ));
-            }
+            self.check_item_visibility(
+                crate::PrivateItemKind::Enum,
+                &member_name_str,
+                enum_def.file_id,
+                enum_def.is_pub,
+                span,
+            )?;
 
             // Return a TypeConst instruction with the enum type
             let enum_type = Type::new_enum(enum_id);
@@ -1393,15 +1380,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // tagged module-binding variant keyed by the facade's FileId (RUE-113);
         // value consts are found by defining file and member name.
         if let ModuleTypeMember::Const(const_info) = member {
-            if !self.is_accessible(span.file_id, module_fact.file, const_info.is_pub) {
-                return Err(CompileError::new(
-                    ErrorKind::PrivateMemberAccess {
-                        item_kind: "const".to_string(),
-                        name: member_name_str,
-                    },
-                    span,
-                ));
-            }
+            self.check_item_visibility(
+                crate::PrivateItemKind::Const,
+                &member_name_str,
+                module_fact.file,
+                const_info.is_pub,
+                span,
+            )?;
 
             self.record_body_named_dependency(if const_info.ty.is_module() {
                 super::NamedConstDependencyTargetEvent::ModuleBinding {
@@ -1459,11 +1444,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Member not found in the module
         Err(CompileError::new(
             ErrorKind::UnknownModuleMember {
-                module_name: std::path::Path::new(module_fact.import_path())
-                    .file_stem()
-                    .and_then(std::ffi::OsStr::to_str)
-                    .unwrap_or_else(|| module_fact.import_path())
-                    .to_string(),
+                module_name: crate::module_display_name(module_fact.import_path()).to_string(),
                 member_name: member_name_str,
             },
             span,
@@ -1695,7 +1676,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 nominal.alias,
                 module_file,
                 (enum_def.file_id, enum_def.is_pub),
-                "enum",
+                crate::PrivateItemKind::Enum,
                 self.body_interner().resolve(&type_name),
                 span,
             )?;
@@ -1707,8 +1688,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 },
                 span,
             )?;
-            // Visibility was checked above (E0706), so skip the internal
-            // unqualified (E0460) check.
+            // Visibility was checked above, so skip the construction
+            // helper's own check.
             return self
                 .analyze_enum_variant_construction(
                     air,
@@ -1735,7 +1716,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 nominal.alias,
                 module_file,
                 (struct_def.file_id, struct_def.is_pub),
-                "struct",
+                crate::PrivateItemKind::Struct,
                 self.body_interner().resolve(&type_name),
                 span,
             )?;
@@ -1796,7 +1777,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             nominal.alias,
             module_file,
             (enum_def.file_id, enum_def.is_pub),
-            "enum",
+            crate::PrivateItemKind::Enum,
             &type_name_str,
             span,
         )?;
@@ -1844,8 +1825,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // ordinary field access (which would report the opaque "field access on
         // non-struct type 'type'"). RUE-488.
         if !via_comptime {
-            self.check_unqualified_visibility(
-                "enum",
+            self.check_item_visibility(
+                crate::PrivateItemKind::Enum,
                 self.body_interner().resolve(&type_name),
                 self.body_type_pool().enum_def(enum_id).file_id,
                 self.body_type_pool().enum_def(enum_id).is_pub,
@@ -2181,17 +2162,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             ),
                             inst.span,
                         )?;
-                    // Privacy (E0460, RUE-185): constructing a variant names
-                    // the enum unqualified, so a private enum from another
-                    // directory is not constructible here — privacy is
-                    // uniform across item kinds (spec 10.3:1, 10.3:7). The
-                    // module-qualified branch above does its own check
-                    // (E0706, `resolve_enum_through_module`). A comptime-bound
-                    // enum is exempt (the type arrived through a binding).
+                    // Privacy (E0706, RUE-185): constructing a variant
+                    // names the enum, so a private enum from another directory
+                    // is not constructible here — privacy is uniform across
+                    // item kinds (spec 10.3:1, 10.3:7). The module-qualified
+                    // branch above does its own check
+                    // (`resolve_enum_through_module`). A comptime-bound enum
+                    // is exempt (the type arrived through a binding).
                     if !via_comptime {
                         let def = self.body_type_pool().enum_def(enum_id);
-                        self.check_unqualified_visibility(
-                            "enum",
+                        self.check_item_visibility(
+                            crate::PrivateItemKind::Enum,
                             self.body_interner().resolve(&*type_name),
                             def.file_id,
                             def.is_pub,

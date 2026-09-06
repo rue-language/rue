@@ -1,0 +1,277 @@
+[section]
+id = "diagnostics.private_member_access"
+name = "Private item reached through a module"
+description = """
+One decision, one code, one vocabulary (RUE-1973). Reaching a private item
+through a module binding is E0706 in every position that can name it, and the
+item kind is spelled with the keyword the source would have written. E0460
+keeps exactly one form: applying a private comptime type constructor in a type
+position. These cases pin the diagnostic surface; the language rule itself is
+covered by the modules spec suite.
+"""
+
+# ---------------------------------------------------------------------------
+# The six positions that can name a private item defined by another module.
+# Each asserts the SAME code and the SAME wording for the SAME declaration.
+
+[[case]]
+name = "private_struct_in_let_annotation"
+description = "A private struct named in a `let` type annotation. This position used to report E0460, the type-constructor carve-out, for a plain named type."
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    let s: lib.Secret = lib.open();
+    s.n
+}
+"""
+aux_files = { "sub/lib.rue" = """
+struct Secret {
+    n: i32,
+    fn make() -> Secret { Secret { n: 5 } }
+}
+pub fn open() -> i32 { Secret.make().n }
+""" }
+compile_fail = true
+expected_error_code = "E0706"
+error_contains = ["struct `Secret` is private"]
+
+[[case]]
+name = "private_struct_in_fn_signature"
+description = "The same struct in a parameter type. The signature is resolved by the query graph, which used to build the diagnostic from its own copy of the domain math."
+source = """
+const lib = @import("sub/lib.rue");
+
+fn take(s: lib.Secret) -> i32 { s.n }
+
+fn main() -> i32 { 0 }
+"""
+aux_files = { "sub/lib.rue" = """
+struct Secret {
+    n: i32,
+    fn make() -> Secret { Secret { n: 5 } }
+}
+pub fn open() -> i32 { Secret.make().n }
+""" }
+compile_fail = true
+expected_error_code = "E0706"
+error_contains = ["struct `Secret` is private"]
+
+[[case]]
+name = "private_struct_in_qualified_struct_literal"
+description = "The same struct as the head of a module-qualified struct literal."
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    let s = lib.Secret { n: 3 };
+    s.n
+}
+"""
+aux_files = { "sub/lib.rue" = """
+struct Secret {
+    n: i32,
+    fn make() -> Secret { Secret { n: 5 } }
+}
+pub fn open() -> i32 { Secret.make().n }
+""" }
+compile_fail = true
+expected_error_code = "E0706"
+error_contains = ["struct `Secret` is private"]
+
+[[case]]
+name = "private_struct_as_associated_fn_receiver"
+description = "The same struct as the receiver of a module-qualified associated-function call: an associated function's visibility follows its enclosing type."
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    let s = lib.Secret.make();
+    s.n
+}
+"""
+aux_files = { "sub/lib.rue" = """
+struct Secret {
+    n: i32,
+    fn make() -> Secret { Secret { n: 5 } }
+}
+pub fn open() -> i32 { Secret.make().n }
+""" }
+compile_fail = true
+expected_error_code = "E0706"
+error_contains = ["struct `Secret` is private"]
+
+[[case]]
+name = "private_enum_in_match_pattern_head"
+description = "A private enum named in a match-pattern head."
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    let n = lib.open();
+    match n {
+        0 => 0,
+        _ => {
+            let h = lib.Hidden.A;
+            1
+        }
+    }
+}
+"""
+aux_files = { "sub/lib.rue" = """
+enum Hidden { A, B, }
+pub fn open() -> i32 { match Hidden.A { Hidden.A => 0, Hidden.B => 1, } }
+""" }
+compile_fail = true
+expected_error_code = "E0706"
+error_contains = ["enum `Hidden` is private"]
+
+[[case]]
+name = "private_const_read_as_a_value"
+description = "A private constant read as a value. `const`, not \"constant\": one spelling per item kind across every emitter."
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    lib.LIMIT
+}
+"""
+aux_files = { "sub/lib.rue" = """
+const LIMIT: i32 = 17;
+pub fn open() -> i32 { LIMIT }
+""" }
+compile_fail = true
+expected_error_code = "E0706"
+error_contains = ["const `LIMIT` is private"]
+
+# ---------------------------------------------------------------------------
+# The vocabulary: the remaining item kind, and the negative that pins the
+# spelling rather than merely the code.
+
+[[case]]
+name = "private_function_call_names_the_function_kind"
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    lib.helper()
+}
+"""
+aux_files = { "sub/lib.rue" = """
+fn helper() -> i32 { 3 }
+pub fn open() -> i32 { helper() }
+""" }
+compile_fail = true
+expected_error_code = "E0706"
+error_contains = ["function `helper` is private"]
+
+[[case]]
+name = "a_private_const_is_never_spelled_constant"
+description = "The two vocabularies used to disagree: the type-annotation path said \"constant\" while every other path said \"const\"."
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    let e: lib.inner.E = lib.make();
+    0
+}
+"""
+aux_files = { "sub/lib.rue" = """
+const inner = @import("deep/inner.rue");
+pub fn make() -> inner.E { inner.E.A }
+""", "sub/deep/inner.rue" = """
+pub enum E { A, B, }
+""" }
+compile_fail = true
+expected_error_code = "E0706"
+error_contains = ["const `inner` is private"]
+
+# ---------------------------------------------------------------------------
+# E0460 keeps exactly what its `--explain` text claims.
+
+[[case]]
+name = "applying_a_private_type_constructor_stays_e0460"
+description = "Privacy's one carve-out: a private comptime type constructor applied in a type position, reported against the constructor and its defining file."
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    let value: lib.Wrap(i32) = lib.make();
+    value.item
+}
+"""
+aux_files = { "sub/lib.rue" = """
+fn Wrap(comptime T: type) -> type { struct { item: T } }
+pub fn make() -> Wrap(i32) {
+    let W = Wrap(i32);
+    W { item: 42 }
+}
+""" }
+compile_fail = true
+expected_error_code = "E0460"
+error_contains = ["function `Wrap` is private (defined in `sub/lib.rue`)"]
+
+# ---------------------------------------------------------------------------
+# Controls: the same spellings compile once the items are exported.
+
+[[case]]
+name = "exported_items_compile_in_every_position"
+source = """
+const lib = @import("sub/lib.rue");
+
+fn take(s: lib.Secret) -> i32 { s.n }
+
+fn main() -> i32 {
+    let s: lib.Secret = lib.Secret.make();
+    let t = lib.Secret { n: 1 };
+    let h = lib.Hidden.A;
+    let seen = match h {
+        lib.Hidden.A => 0,
+        lib.Hidden.B => 1,
+    };
+    take(s) + t.n + lib.helper() + lib.LIMIT + seen
+}
+"""
+aux_files = { "sub/lib.rue" = """
+pub struct Secret {
+    n: i32,
+    fn make() -> Secret { Secret { n: 5 } }
+}
+pub enum Hidden { A, B, }
+pub const LIMIT: i32 = 17;
+pub fn helper() -> i32 { 3 }
+""" }
+exit_code = 26
+
+# ---------------------------------------------------------------------------
+# One rendering of a module's name: the import path, not the file stem.
+
+[[case]]
+name = "unknown_member_names_the_module_by_import_path"
+description = "Both E0707 emitters — the call path and the type-syntax path — render the module the same way, so a same-named file in another directory is distinguishable."
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    lib.nope()
+}
+"""
+aux_files = { "sub/lib.rue" = "pub fn real() -> i32 { 1 }\n" }
+compile_fail = true
+expected_error_code = "E0707"
+error_contains = ["module `sub/lib.rue` has no member `nope`"]
+
+[[case]]
+name = "unknown_type_member_names_the_module_by_import_path"
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    let x: lib.Nope = 0;
+    0
+}
+"""
+aux_files = { "sub/lib.rue" = "pub fn real() -> i32 { 1 }\n" }
+compile_fail = true
+expected_error_code = "E0707"
+error_contains = ["module `sub/lib.rue` has no member `Nope`"]

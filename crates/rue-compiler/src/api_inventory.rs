@@ -9467,3 +9467,32 @@ fn durable_drop_glue_policy_has_one_kernel_projection_and_one_query_consumer() {
         assert!(!source.contains("struct_method_names:"), "{name}");
     }
 }
+
+/// RUE-1973: the query database consumes AIR's privacy decision rather than
+/// keeping its own.
+///
+/// `candidate` used to derive both visibility domains from source paths and
+/// build E0706 with a `Debug`-derived item kind, so a name looked up through
+/// the query graph could disagree with the same name looked up by the body
+/// engine — and it skipped the short-circuit that answers a public item or a
+/// self-reference without touching a domain at all.
+#[test]
+fn private_access_decisions_come_from_the_shared_authority() {
+    for (module, source) in REVISIONED_DATABASE_PHASES
+        .iter()
+        .chain(REVISIONED_DATABASE_REGISTRATION_MODULES)
+    {
+        assert!(
+            !source.contains("ErrorKind::PrivateMemberAccess {"),
+            "E0706 must be built by rue_air::private_member_access: {module}"
+        );
+        assert!(
+            !source.contains("format!(\"{kind:?}\").to_lowercase()"),
+            "a privacy item kind must come from rue_air::PrivateItemKind: {module}"
+        );
+    }
+    let provider_body = include_str!("revisioned_query_database/body/provider_body.rs");
+    assert!(provider_body.contains("rue_air::check_source_path_visibility("));
+    assert!(provider_body.contains("rue_air::private_member_access("));
+    assert!(!provider_body.contains("defining.is_visible_from(&accessing"));
+}

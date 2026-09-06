@@ -2487,7 +2487,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// RUE-6). Returns `(enum_id, privacy_handled)`: `privacy_handled` is true
     /// when visibility has already been enforced (module path) or does not apply
     /// (a comptime-bound type arrived through a binding, not by naming the
-    /// enum), so a caller runs the unqualified E0460 check only when it is
+    /// enum), so a caller runs the E0706 visibility check only when it is
     /// false. `None` means the unqualified name is not an enum — the caller
     /// supplies the not-found diagnostic it wants (a user error at the legality
     /// check, an internal error during lowering).
@@ -2567,16 +2567,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ErrorKind::UnknownEnumType(self.body_interner().resolve(&*type_name).to_string()),
                 pattern_span,
             )?;
-        // Privacy (E0460, RUE-185): a match pattern names the enum
-        // unqualified, so a private enum from another directory cannot be
-        // matched on — privacy is uniform across item kinds (spec 10.3:1,
-        // 10.3:7). Skipped when the name arrived through a module (E0706
-        // already enforced) or a comptime binding (exempt); both are reported
-        // as `privacy_handled`.
+        // Privacy (E0706, RUE-185): a match pattern names the enum, so a
+        // private enum from another directory cannot be matched on — privacy
+        // is uniform across item kinds and positions (spec 10.3:1, 10.3:7).
+        // Skipped when the name arrived through a module (already enforced on
+        // the way in) or a comptime binding (exempt); both are reported as
+        // `privacy_handled`.
         if !privacy_handled {
             let def = self.body_type_pool().enum_def(enum_id);
-            self.check_unqualified_visibility(
-                "enum",
+            self.check_item_visibility(
+                crate::PrivateItemKind::Enum,
                 self.body_interner().resolve(&*type_name),
                 def.file_id,
                 def.is_pub,

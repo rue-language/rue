@@ -56,7 +56,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             nominal.alias,
             module_file,
             (enum_def.file_id, enum_def.is_pub),
-            "enum",
+            crate::PrivateItemKind::Enum,
             &type_name_str,
             span,
         )?;
