@@ -2274,13 +2274,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
     /// Stage the source location the next failure record will carry.
     ///
-    /// Every producer of an ADR-0083 §5.1 report reaches this: a test body's
-    /// `?` failure arm, the assertion family, and — since RUE-2019 — `@panic`
-    /// and the slice bounds check, whose records the runtime writes from inside
-    /// the trap helper. The staged site is consumed by whatever aborts next, so
-    /// this call must be the last thing before that terminal call: anything
-    /// evaluated in between could abort on a path that stages nothing and would
-    /// then adopt this site.
+    /// Every producer of an ADR-0083 §5.1 report that names a site reaches
+    /// this: a test body's `?` failure arm, the assertion family, and — since
+    /// RUE-2019 — `@panic`, whose record the runtime writes from inside the
+    /// panic helper. The bounds checks are not among them. Each is a bare
+    /// condition with no call beside it — the slice check is a `BoundsCheck`
+    /// intrinsic, the fixed-array check is lowered below AIR, and `s[i]`'s is
+    /// inside the runtime helper itself — and staging a site for any of them
+    /// costs the passing path, so `__rue_bounds_check` states its class and
+    /// leaves the location empty.
+    ///
+    /// The staged site is consumed by whatever aborts next, so this call must
+    /// be the last thing before that terminal call: anything evaluated in
+    /// between could abort on a path that stages nothing and would then adopt
+    /// this site.
     ///
     /// A site the host cannot resolve is staged as the empty file at 0:0 rather
     /// than reported as a compile error: the ABI accepts an absent location,

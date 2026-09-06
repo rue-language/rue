@@ -208,11 +208,14 @@ crate::define_runtime_implementation! {
     /// 3. Exits with code 101
     ///
     /// The record carries whatever site
-    /// [`crate::test_channel::__rue_test_failure_site`] staged (RUE-2019). A
-    /// slice index stages its own before it traps; the fixed-array check the
-    /// compiler emits below AIR stages none, so its record names no file and
-    /// the runner answers from the test declaration's header, exactly as it
-    /// did when the class was read off stderr.
+    /// [`crate::test_channel::__rue_test_failure_site`] staged (RUE-2019). No
+    /// route here stages one: the fixed-array check the compiler emits below
+    /// AIR, the slice check semantic analysis emits as a `BoundsCheck`
+    /// intrinsic, and the `s[i]` check inside
+    /// [`crate::string::__rue_str_byte_at`] all reach this helper with nothing
+    /// staged, so the record names no file and the runner answers from the test
+    /// declaration's header. What the record adds over the stderr line is the
+    /// class, stated by the runtime rather than matched out of prose.
     ///
     /// # ABI
     ///

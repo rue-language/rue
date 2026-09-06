@@ -286,8 +286,10 @@ diagnostic and terminate the process with the runtime-error status.
 
 Seven helpers implement the ADR-0083 §3 and §5.1 channel. Three are dispatcher
 plumbing no source spelling selects; the reporting helpers are what a test
-body's `?` and the assertion family lower to, in an ordinary executable as well
-as in a test image.
+body's `?`, the assertion family, and `@panic` lower to, in an ordinary
+executable as well as in a test image. `@panic` reaches only
+`__rue_test_failure_site` of them: its record is written by the panic helper it
+aborts through, not by a channel export (RUE-2019).
 
 - `__rue_test_normalize_process` narrows the captured argument count to one, so
   a test observes the pinned inventory rather than the selector it was
@@ -340,13 +342,26 @@ write a `trap:panic` record carrying the staged site *before* their pinned
 stderr line, and `__rue_bounds_check` writes a `trap:bounds_check` record the
 same way. Each record's message is that helper's own stderr line without the
 newline, so nothing a consumer already read changes. The site is staged by the
-`@panic` lowering alone: an allocation failure, and the fixed-array bounds
-check codegen emits from a place projection, reach these helpers with nothing
-staged and report the empty location the runner answers from the test
-declaration's header. Because the panic helpers now report, the three terminal
-channel helpers take the stderr half of the panic path directly rather than
-calling `__rue_panic` — a second `trap:panic` frame after their own would be
-noise on a channel whose first frame is the verdict.
+`@panic` lowering alone. Everything else reaches these helpers with nothing
+staged and reports the empty location the runner answers from the test
+declaration's header: an allocation failure, the fixed-array bounds check
+codegen emits from a place projection, the slice bounds check semantic analysis
+emits as a `BoundsCheck` intrinsic, and the `s[i]` check `__rue_str_byte_at`
+performs inside the runtime. Because the panic helpers now report, the three
+terminal channel helpers take the stderr half of the panic path directly rather
+than calling `__rue_panic` — a second `trap:panic` frame after their own would
+be noise on a channel whose first frame is the verdict.
+
+The record writer holds every helper above to two rules the caller does not have
+to know about. A `message` reaches the channel bounded to 4096 bytes, cut to
+that bound with ` …[truncated]` appended, because the channel's retention budget
+is the runner's and a record that exhausts it costs the test its class and its
+exit status; the same message still reaches stderr whole, within stderr's own
+retention budget. And a byte that is not part of a well-formed UTF-8 sequence is
+escaped as `\u00xx` rather than written raw, because a Rue string is an
+arbitrary byte sequence and a record has to stay JSON text (RUE-2064).
+[test-events.md](process/test-events.md) states both as the consumer-facing
+contract.
 
 The completion and failure records go to a dedicated inherited descriptor,
 number 3, one JSON object per line. Writes are best-effort: a test image run by
