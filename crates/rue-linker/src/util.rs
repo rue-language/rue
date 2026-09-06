@@ -54,7 +54,9 @@ pub(crate) fn pad_to_with_cancellation(
     fill: &[u8],
     cancellation: &mut impl FnMut() -> bool,
 ) -> Result<(), LinkError> {
-    debug_assert!(!fill.is_empty(), "a fill pattern needs at least one byte");
+    // Always-on: the linker crate keeps no debug-only barriers between a
+    // malformed request and its output, and one check per padding call is free.
+    assert!(!fill.is_empty(), "a fill pattern needs at least one byte");
     while output.len() < new_len {
         check_cancellation(cancellation)?;
         let chunk_end = new_len.min(output.len().saturating_add(CANCELLATION_CHUNK));
