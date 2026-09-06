@@ -182,6 +182,11 @@ pub(crate) struct ProgramImagePlan {
     pub(crate) export_entries: Vec<ProgramImageExportEntry>,
     pub(crate) target: Target,
     pub(crate) object_format: ProgramObjectFormat,
+    /// The symbol the linked image enters at, as
+    /// [`crate::linking::entry_point_symbol`] spells it for this target. The
+    /// link asks that same function rather than re-deriving the rule, so a
+    /// plan's recorded entry point is by construction the one the link uses,
+    /// and a change of entry point shows up as a link-context delta.
     pub(crate) entry_point: &'static str,
     pub(crate) runtime_abi_version: u32,
     pub(crate) runtime_abi_symbol: &'static str,
@@ -668,11 +673,11 @@ impl ProgramImagePlan {
         cancellation: &rue_query::CancellationToken,
     ) -> CancellableImageResult<Self> {
         check_cancellation(cancellation)?;
-        let entry_point = if options.target.is_macho() {
-            "__main"
-        } else {
-            "_start"
-        };
+        // One derivation of the runtime entry symbol, shared with the link
+        // that consumes it: `linking::entry_point_symbol` owns the target ->
+        // spelling rule, so the plan and the linker cannot disagree about which
+        // symbol the image enters at (RUE-1984).
+        let entry_point = crate::linking::entry_point_symbol(options.target);
         let mut required_runtime_symbols = BTreeSet::new();
         required_runtime_symbols.insert(entry_point.to_owned());
         required_runtime_symbols.insert(rue_runtime_abi::RUNTIME_ABI_VERSION_SYMBOL.to_owned());
