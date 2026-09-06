@@ -399,7 +399,7 @@ impl<'a> Supervisor<'a> {
         if reap_group {
             reap_process_group(pgid);
         }
-        if let Some(observer) = observer.as_deref_mut() {
+        if let Some(observer) = observer {
             observer.reaped(pgid);
         }
 
