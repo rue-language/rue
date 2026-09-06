@@ -1254,7 +1254,7 @@ pub fn sneaky() -> i32 {
 """ },
 ]
 compile_fail = true
-error_contains = ["E0707", "module `utils` has no member `sneaky`"]
+error_contains = ["E0707", "module `utils.rue` has no member `sneaky`"]
 
 [[case]]
 name = "module_member_call_same_file_control"
@@ -2516,8 +2516,11 @@ pub fn f() -> i32 { 42 }
 compile_fail = true
 error_contains = ["E0706", "const `c` is private"]
 
-# An unknown member at the SECOND level names the inner module (`math`),
-# not the outer one (`std`) — the chain resolved member-by-member.
+# An unknown member at the SECOND level names the inner module
+# (`std/math.rue`), not the outer one (`std`) — the chain resolved
+# member-by-member. The module is named by its import path, the one rendering
+# every E0707 emitter shares (RUE-1973), so a same-named file in another
+# directory is distinguishable.
 [[case]]
 name = "nested_member_unknown_names_inner_module"
 files = [
@@ -2538,7 +2541,7 @@ pub fn abs(x: i32) -> i32 {
 """ },
 ]
 compile_fail = true
-error_contains = ["E0707", "module `math` has no member `nosuch`"]
+error_contains = ["E0707", "module `std/math.rue` has no member `nosuch`"]
 
 # ---------------------------------------------------------------------------
 # RUE-239: top-level duplicate-name detection spans ALL item kinds

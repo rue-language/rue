@@ -1044,8 +1044,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Visibility: a non-`pub` member accessed through a module object is not
         // usable from another directory (spec 10.3:7).
         let member_name = self.body_interner().resolve(&method).to_string();
-        self.check_unqualified_visibility(
-            "function",
+        self.check_item_visibility(
+            crate::PrivateItemKind::Function,
             &member_name,
             fn_info.file_id,
             fn_info.is_pub,
@@ -2605,9 +2605,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeValueAlgebra for OrdinaryBodyEngin
             file: defining_file.index(),
             name: name_text.clone(),
         });
-        OrdinaryBodyEngine::check_unqualified_visibility(
+        OrdinaryBodyEngine::check_item_visibility(
             self,
-            "constant",
+            crate::PrivateItemKind::Const,
             &name_text,
             defining_file,
             info.is_pub,

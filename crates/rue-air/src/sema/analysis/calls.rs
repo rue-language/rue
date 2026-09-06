@@ -13,14 +13,7 @@ use crate::sema::context::DivergenceKind;
 use crate::sema::info::FunctionCallInfo;
 use ahash::AHashMap;
 
-fn module_display_name(path: &str) -> &str {
-    std::path::Path::new(path)
-        .file_stem()
-        .and_then(std::ffi::OsStr::to_str)
-        .unwrap_or(path)
-}
-
-/// Validate membership and visibility for a module-member function call.
+/// Validate membership for a module-member function call.
 ///
 /// Membership (spec 4.13:90, RUE-140): a module contains only declarations
 /// from the imported file. The callee is resolved by the receiver module's
@@ -28,12 +21,15 @@ fn module_display_name(path: &str) -> &str {
 /// Comparing by canonical FileId rather than raw path strings makes equivalent
 /// import spellings — `helper.rue` vs
 /// `./helper.rue` — resolve members identically (spec 10.2:4, RUE-240).
+///
+/// Visibility is a separate question with its own owner: the caller applies
+/// [`OrdinaryBodyEngine::check_item_visibility`] once membership holds, so a
+/// private member reports the same E0706 here as in every other position.
 fn check_module_member_access(
     module_name: &str,
     module_file_id: Option<FileId>,
     member_file_id: FileId,
     fn_name_str: &str,
-    accessible: bool,
     via_reexport: bool,
     span: Span,
 ) -> CompileResult<()> {
@@ -44,19 +40,8 @@ fn check_module_member_access(
     if !via_reexport && module_file_id != Some(member_file_id) {
         return Err(CompileError::new(
             ErrorKind::UnknownModuleMember {
-                module_name: module_display_name(module_name).to_string(),
+                module_name: module_name.to_string(),
                 member_name: fn_name_str.to_string(),
-            },
-            span,
-        ));
-    }
-
-    // Check visibility: private functions are only accessible from the same directory
-    if !accessible {
-        return Err(CompileError::new(
-            ErrorKind::PrivateMemberAccess {
-                item_kind: "function".to_string(),
-                name: fn_name_str.to_string(),
             },
             span,
         ));
@@ -300,8 +285,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             && let Some(callee) = const_info.value.as_function()
         {
             let alias_name = self.body_interner().resolve(&name).to_string();
-            self.check_unqualified_visibility(
-                "constant",
+            self.check_item_visibility(
+                crate::PrivateItemKind::Const,
                 &alias_name,
                 const_info.span.file_id,
                 const_info.is_pub,
@@ -376,18 +361,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         args_range: &rue_rir::RirCallArgsRange,
         span: Span,
         ctx: &mut AnalysisContext,
-        check_unqualified_visibility: bool,
+        check_visibility: bool,
     ) -> CompileResult<AnalysisResult> {
         let source_name = self.call_facts().call_source_function_name(name);
         let fn_name_str = self.body_interner().resolve(&source_name).to_string();
 
-        // Visibility (E0460, RUE-37/RUE-180): an unqualified call must not
-        // reach a private function defined in another directory — privacy is
-        // uniform in every multi-file compilation (spec 10.3:7). The lookup
-        // has already selected a declaration using the reference file.
-        if check_unqualified_visibility {
-            self.check_unqualified_visibility(
-                "function",
+        // Visibility (E0706, RUE-37/RUE-180): a call must not reach a
+        // private function defined in another directory — privacy is uniform
+        // in every multi-file compilation (spec 10.3:7). The lookup has
+        // already selected a declaration using the reference file.
+        if check_visibility {
+            self.check_item_visibility(
+                crate::PrivateItemKind::Function,
                 &fn_name_str,
                 fn_info.file_id,
                 fn_info.is_pub,
@@ -1384,15 +1369,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     _ => None,
                 });
             if let Some((fkey, is_pub)) = reexport {
-                if !self.is_accessible(span.file_id, mfile, is_pub) {
-                    return Err(CompileError::new(
-                        ErrorKind::PrivateMemberAccess {
-                            item_kind: "const".to_string(),
-                            name: fn_name_str.clone(),
-                        },
-                        span,
-                    ));
-                }
+                self.check_item_visibility(
+                    crate::PrivateItemKind::Const,
+                    &fn_name_str,
+                    mfile,
+                    is_pub,
+                    span,
+                )?;
                 #[cfg(test)]
                 self.record_body_named_dependency(NamedConstDependencyTargetEvent::ValueConst {
                     file: mfile.index(),
@@ -1406,7 +1389,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let function_key = function_key.ok_or_else(|| {
             CompileError::new(
                 ErrorKind::UnknownModuleMember {
-                    module_name: module_display_name(&module_def.import_path).to_string(),
+                    module_name: crate::module_display_name(&module_def.import_path).to_string(),
                     member_name: fn_name_str.clone(),
                 },
                 span,
@@ -1417,7 +1400,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .call_function_info(function_key)
             .ok_or_compile_error(
                 ErrorKind::UnknownModuleMember {
-                    module_name: module_display_name(&module_def.import_path).to_string(),
+                    module_name: crate::module_display_name(&module_def.import_path).to_string(),
                     member_name: fn_name_str.clone(),
                 },
                 span,
@@ -1429,18 +1412,26 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let param_data = self.body_param_data(fn_info.params);
         let param_types = param_data.types().to_vec();
         let param_modes = param_data.modes().to_vec();
-        // A re-export was already visibility-checked against its facade const.
-        let accessible =
-            via_reexport || self.is_accessible(span.file_id, fn_info.file_id, fn_info.is_pub);
         check_module_member_access(
-            &module_def.import_path,
+            crate::module_display_name(&module_def.import_path),
             module_file_id,
             fn_info.file_id,
             &fn_name_str,
-            accessible,
             via_reexport,
             span,
         )?;
+        // A re-export was already visibility-checked against its facade const;
+        // otherwise the callee's own `pub` and defining file govern, through
+        // the one privacy decision every position shares.
+        if !via_reexport {
+            self.check_item_visibility(
+                crate::PrivateItemKind::Function,
+                &fn_name_str,
+                fn_info.file_id,
+                fn_info.is_pub,
+                span,
+            )?;
+        }
 
         // Functions with comptime parameters need specialization: a plain
         // Call to the base name would reference a body that is never
@@ -1581,7 +1572,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.clone()), span)?
         };
 
-        // Privacy (E0460, RUE-330): naming a private struct to call one of its
+        // Privacy (E0706, RUE-330): naming a private struct to call one of its
         // associated functions (`Secret::make()`) across a directory boundary is
         // rejected, matching struct-literal / type-annotation references. Privacy
         // is uniform across item kinds (spec 10.3:1, 10.3:7). Builtin structs
@@ -1589,8 +1580,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // this is a no-op for them.
         if !privacy_exempt {
             let struct_def = self.body_type_pool().struct_def(struct_id);
-            self.check_unqualified_visibility(
-                "struct",
+            self.check_item_visibility(
+                crate::PrivateItemKind::Struct,
                 &type_name_str,
                 struct_def.file_id,
                 struct_def.is_pub,

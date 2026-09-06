@@ -35,6 +35,24 @@ pub enum DefinitionKind {
     Test,
 }
 
+impl DefinitionKind {
+    /// How a privacy diagnostic names a definition of this kind.
+    ///
+    /// The mapping is a projection onto AIR's one privacy vocabulary rather
+    /// than a second spelling table: a `Debug` rendering of this enum would
+    /// invent "destructor" and "test" wordings that no other emitter uses, and
+    /// neither names a member a reference can reach — both are callables
+    /// governed by the same rule as a function.
+    pub(crate) fn private_item_kind(self) -> rue_air::PrivateItemKind {
+        match self {
+            Self::Function | Self::Destructor | Self::Test => rue_air::PrivateItemKind::Function,
+            Self::Struct => rue_air::PrivateItemKind::Struct,
+            Self::Enum => rue_air::PrivateItemKind::Enum,
+            Self::Const => rue_air::PrivateItemKind::Const,
+        }
+    }
+}
+
 /// The name-resolution namespace containing a parsed definition candidate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DefinitionNamespace {

@@ -559,6 +559,113 @@ struct Secret {
 compile_fail = true
 error_contains = ["E0706", "struct `Secret` is private"]
 
+# =============================================================================
+# A private item reached through a module in a TYPE position (RUE-1973).
+#
+# 10.4:18 makes privacy uniform across positions, and it names the type
+# annotation explicitly. Before the fix the annotation and signature spellings
+# reported E0460 — the code 10.4:18 reserves for applying a private comptime
+# type constructor — with a second item-kind vocabulary, so the same private
+# struct read as `struct 'Secret' is private` in one position and
+# `constant 'Secret' is private` in another.
+
+[[case]]
+name = "qualified_private_struct_type_annotation_rejected"
+spec = ["10.4:18", "10.3:7"]
+description = "A private struct named in a module-qualified type annotation is E0706, the same code and wording the struct literal and associated-function spellings report (RUE-1973)"
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    let s: lib.Secret = lib.open();
+    s.n
+}
+"""
+aux_files = { "sub/lib.rue" = """
+struct Secret { n: i32, }
+pub fn open() -> i32 { let s = Secret { n: 1 }; s.n }
+""" }
+compile_fail = true
+error_contains = ["E0706", "struct `Secret` is private"]
+
+[[case]]
+name = "qualified_private_struct_signature_rejected"
+spec = ["10.4:18", "10.3:7"]
+description = "The same private struct named in a function signature is the same E0706; a declaration's type is resolved before any body, and privacy does not depend on which resolver ran (RUE-1973)"
+source = """
+const lib = @import("sub/lib.rue");
+
+fn take(s: lib.Secret) -> i32 { s.n }
+
+fn main() -> i32 { 0 }
+"""
+aux_files = { "sub/lib.rue" = """
+struct Secret { n: i32, }
+pub fn open() -> i32 { let s = Secret { n: 1 }; s.n }
+""" }
+compile_fail = true
+error_contains = ["E0706", "struct `Secret` is private"]
+
+[[case]]
+name = "qualified_private_enum_type_annotation_rejected"
+spec = ["10.4:18", "10.3:7"]
+description = "A private enum named in a module-qualified type annotation is E0706 naming the enum (RUE-1973)"
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    let h: lib.Hidden = lib.first();
+    0
+}
+"""
+aux_files = { "sub/lib.rue" = """
+enum Hidden { A, B, }
+pub fn first() -> i32 { match Hidden.A { Hidden.A => 0, Hidden.B => 1, } }
+""" }
+compile_fail = true
+error_contains = ["E0706", "enum `Hidden` is private"]
+
+[[case]]
+name = "private_type_constructor_application_is_the_one_carve_out"
+spec = ["10.4:16", "10.3:7"]
+description = "Applying a private comptime type constructor in a type position is the one privacy violation with its own code, E0460, naming the constructor and its defining file (10.3:7)"
+source = """
+const lib = @import("sub/lib.rue");
+
+fn main() -> i32 {
+    let value: lib.Wrap(i32) = lib.make();
+    value.item
+}
+"""
+aux_files = { "sub/lib.rue" = """
+fn Wrap(comptime T: type) -> type { struct { item: T } }
+pub fn make() -> Wrap(i32) {
+    let W = Wrap(i32);
+    W { item: 42 }
+}
+""" }
+compile_fail = true
+error_contains = ["E0460", "function `Wrap` is private"]
+
+[[case]]
+name = "pub_qualified_type_positions_allowed"
+spec = ["10.4:18", "10.4:17"]
+description = "The positive twin: once the items are pub, the annotation and signature spellings compile and run"
+source = """
+const lib = @import("sub/lib.rue");
+
+fn take(s: lib.Secret) -> i32 { s.n }
+
+fn main() -> i32 {
+    let s: lib.Secret = lib.Secret { n: 21 };
+    take(s) + 21
+}
+"""
+aux_files = { "sub/lib.rue" = """
+pub struct Secret { n: i32, }
+""" }
+exit_code = 42
+
 [[case]]
 name = "cross_dir_pub_assoc_fn_allowed"
 spec = ["10.4:19", "10.4:17"]

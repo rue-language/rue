@@ -1620,9 +1620,19 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             is_pub,
         )
     }
-    pub(crate) fn check_unqualified_visibility(
+    /// The one "a private item was reached" decision and report (E0706).
+    ///
+    /// Privacy is uniform across item kinds and across the positions that can
+    /// name an item (spec 10.3:7, 10.4:18), so every position funnels through
+    /// this: the memoized [`Self::is_accessible`] predicate decides, and
+    /// [`rue_air::private_member_access`](crate::private_member_access) writes
+    /// the diagnostic in the one item-kind vocabulary. Callers differ only in
+    /// which declaration's `pub` and defining file govern the access — a
+    /// declaration's own for a plain reference, the binding's when the name
+    /// arrived through a `const` alias (RUE-1956).
+    pub(crate) fn check_item_visibility(
         &self,
-        item_kind: &str,
+        item_kind: crate::PrivateItemKind,
         name: &str,
         defining_file_id: FileId,
         is_pub: bool,
@@ -1631,24 +1641,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         if self.is_accessible(span.file_id, defining_file_id, is_pub) {
             return Ok(());
         }
-        let defining_file = self
-            .aggregate_facts()
-            .aggregate_file_path(defining_file_id)
-            .unwrap_or("<unknown>")
-            .to_string();
         Err(CompileError::new(
-            ErrorKind::PrivateUnqualifiedAccess(Box::new(
-                rue_error::PrivateUnqualifiedAccessData {
-                    item_kind: item_kind.to_string(),
-                    name: name.to_string(),
-                    defining_file,
-                },
-            )),
+            crate::private_member_access(item_kind, name),
             span,
-        )
-        .with_help(format!(
-            "`{name}` is not marked `pub`; private items are only visible within their defining directory"
-        )))
+        ))
     }
     pub(crate) fn call_facts(&self) -> &H {
         self.storage

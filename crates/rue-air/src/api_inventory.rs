@@ -1493,6 +1493,204 @@ fn literal_materialization_has_one_owner_beside_the_integer_kernel() {
     }
 }
 
+/// Every production and test source in this crate, paired with its module
+/// path — the same set Buck's `src/**/*.rs` glob compiles, asserted against
+/// the generated manifest by
+/// [`comptime_instdata_evaluation_has_one_production_authority`]. Structural
+/// guards scan this so a new module cannot escape one by being new.
+const AIR_CRATE_SOURCES: &[(&str, &str)] = &[
+    ("api_inventory", include_str!("api_inventory.rs")),
+    ("builtin_universe", include_str!("builtin_universe.rs")),
+    ("call_abi", include_str!("call_abi.rs")),
+    (
+        "declaration_validation",
+        include_str!("declaration_validation.rs"),
+    ),
+    ("drop_glue", include_str!("drop_glue.rs")),
+    ("drop_glue_names", include_str!("drop_glue_names.rs")),
+    ("exact_decimal", include_str!("exact_decimal.rs")),
+    ("ffi_predicates", include_str!("ffi_predicates.rs")),
+    (
+        "inference/constraint",
+        include_str!("inference/constraint.rs"),
+    ),
+    ("inference/generate", include_str!("inference/generate.rs")),
+    ("inference/mod", include_str!("inference/mod.rs")),
+    ("inference/types", include_str!("inference/types.rs")),
+    ("inference/unify", include_str!("inference/unify.rs")),
+    ("inst", include_str!("inst.rs")),
+    (
+        "inst/payload_support",
+        include_str!("inst/payload_support.rs"),
+    ),
+    ("integer_semantics", include_str!("integer_semantics.rs")),
+    ("intern_pool", include_str!("intern_pool.rs")),
+    ("intrinsic", include_str!("intrinsic.rs")),
+    ("layout", include_str!("layout.rs")),
+    ("lib", include_str!("lib.rs")),
+    ("live_symbols", include_str!("live_symbols.rs")),
+    ("lowered_signature", include_str!("lowered_signature.rs")),
+    ("module_registry", include_str!("module_registry.rs")),
+    ("param_arena", include_str!("param_arena.rs")),
+    ("path_norm", include_str!("path_norm.rs")),
+    ("private_access", include_str!("private_access.rs")),
+    ("runtime_call", include_str!("runtime_call.rs")),
+    ("scope", include_str!("scope.rs")),
+    (
+        "sema/aggregate_resolution",
+        include_str!("sema/aggregate_resolution.rs"),
+    ),
+    ("sema/aggregates", include_str!("sema/aggregates.rs")),
+    ("sema/analysis", include_str!("sema/analysis.rs")),
+    (
+        "sema/analysis/builtin_ops",
+        include_str!("sema/analysis/builtin_ops.rs"),
+    ),
+    (
+        "sema/analysis/calls",
+        include_str!("sema/analysis/calls.rs"),
+    ),
+    (
+        "sema/analysis/instructions",
+        include_str!("sema/analysis/instructions.rs"),
+    ),
+    (
+        "sema/analysis/intrinsics",
+        include_str!("sema/analysis/intrinsics.rs"),
+    ),
+    (
+        "sema/analysis/ownership",
+        include_str!("sema/analysis/ownership.rs"),
+    ),
+    (
+        "sema/analysis/pointers",
+        include_str!("sema/analysis/pointers.rs"),
+    ),
+    (
+        "sema/analysis/type_inference",
+        include_str!("sema/analysis/type_inference.rs"),
+    ),
+    ("sema/analyze_ops", include_str!("sema/analyze_ops.rs")),
+    ("sema/anon_structs", include_str!("sema/anon_structs.rs")),
+    (
+        "sema/binding_manifest",
+        include_str!("sema/binding_manifest.rs"),
+    ),
+    ("sema/body_endpoint", include_str!("sema/body_endpoint.rs")),
+    ("sema/body_identity", include_str!("sema/body_identity.rs")),
+    (
+        "sema/call_resolution",
+        include_str!("sema/call_resolution.rs"),
+    ),
+    ("sema/comptime", include_str!("sema/comptime.rs")),
+    (
+        "sema/comptime/frames",
+        include_str!("sema/comptime/frames.rs"),
+    ),
+    (
+        "sema/comptime/intrinsics",
+        include_str!("sema/comptime/intrinsics.rs"),
+    ),
+    (
+        "sema/comptime/model",
+        include_str!("sema/comptime/model.rs"),
+    ),
+    (
+        "sema/comptime/registry",
+        include_str!("sema/comptime/registry.rs"),
+    ),
+    (
+        "sema/comptime/sites",
+        include_str!("sema/comptime/sites.rs"),
+    ),
+    (
+        "sema/comptime/structured_type",
+        include_str!("sema/comptime/structured_type.rs"),
+    ),
+    (
+        "sema/comptime/value_domain_tests",
+        include_str!("sema/comptime/value_domain_tests.rs"),
+    ),
+    (
+        "sema/comptime/value_policy",
+        include_str!("sema/comptime/value_policy.rs"),
+    ),
+    ("sema/comptime_eval", include_str!("sema/comptime_eval.rs")),
+    (
+        "sema/consistency_tests",
+        include_str!("sema/consistency_tests.rs"),
+    ),
+    ("sema/context", include_str!("sema/context.rs")),
+    ("sema/control_flow", include_str!("sema/control_flow.rs")),
+    (
+        "sema/declaration_index",
+        include_str!("sema/declaration_index.rs"),
+    ),
+    ("sema/declarations", include_str!("sema/declarations.rs")),
+    ("sema/fact_mode", include_str!("sema/fact_mode.rs")),
+    ("sema/inference_ctx", include_str!("sema/inference_ctx.rs")),
+    ("sema/info", include_str!("sema/info.rs")),
+    ("sema/known_symbols", include_str!("sema/known_symbols.rs")),
+    ("sema/mod", include_str!("sema/mod.rs")),
+    (
+        "sema/ordinary_engine",
+        include_str!("sema/ordinary_engine.rs"),
+    ),
+    ("sema/output", include_str!("sema/output.rs")),
+    (
+        "sema/ownership_state",
+        include_str!("sema/ownership_state.rs"),
+    ),
+    ("sema/provider", include_str!("sema/provider.rs")),
+    (
+        "sema/provider_accessor_tests",
+        include_str!("sema/provider_accessor_tests.rs"),
+    ),
+    (
+        "sema/provider_body_host",
+        include_str!("sema/provider_body_host.rs"),
+    ),
+    (
+        "sema/provider_fixture",
+        include_str!("sema/provider_fixture.rs"),
+    ),
+    (
+        "sema/provider_fixture_tests",
+        include_str!("sema/provider_fixture_tests.rs"),
+    ),
+    (
+        "sema/provider_module_registry",
+        include_str!("sema/provider_module_registry.rs"),
+    ),
+    (
+        "sema/provider_semantics_tests",
+        include_str!("sema/provider_semantics_tests.rs"),
+    ),
+    (
+        "sema/provider_strings_ownership_tests",
+        include_str!("sema/provider_strings_ownership_tests.rs"),
+    ),
+    (
+        "sema/semantic_body_export",
+        include_str!("sema/semantic_body_export.rs"),
+    ),
+    ("sema/tests", include_str!("sema/tests.rs")),
+    ("sema/typeck", include_str!("sema/typeck.rs")),
+    ("sema/visibility", include_str!("sema/visibility.rs")),
+    ("semantic_body", include_str!("semantic_body.rs")),
+    ("semantic_identity", include_str!("semantic_identity.rs")),
+    ("semantic_import", include_str!("semantic_import.rs")),
+    (
+        "semantic_type_resolution",
+        include_str!("semantic_type_resolution.rs"),
+    ),
+    ("specialize", include_str!("specialize.rs")),
+    ("stable_digest", include_str!("stable_digest.rs")),
+    ("type_encoding", include_str!("type_encoding.rs")),
+    ("type_properties", include_str!("type_properties.rs")),
+    ("types", include_str!("types.rs")),
+];
+
 #[test]
 fn comptime_instdata_evaluation_has_one_production_authority() {
     let inference = include_str!("inference/generate.rs");
@@ -1534,197 +1732,7 @@ fn comptime_instdata_evaluation_has_one_production_authority() {
     // modules); a future helper must not evade the guard by renaming
     // itself. The AST visitor below tracks nested modules and lexical scopes,
     // so nested matches/closures cannot hide a peer evaluator.
-    let production = [
-        ("api_inventory", include_str!("api_inventory.rs")),
-        ("builtin_universe", include_str!("builtin_universe.rs")),
-        ("call_abi", include_str!("call_abi.rs")),
-        (
-            "declaration_validation",
-            include_str!("declaration_validation.rs"),
-        ),
-        ("drop_glue", include_str!("drop_glue.rs")),
-        ("drop_glue_names", include_str!("drop_glue_names.rs")),
-        ("exact_decimal", include_str!("exact_decimal.rs")),
-        ("ffi_predicates", include_str!("ffi_predicates.rs")),
-        (
-            "inference/constraint",
-            include_str!("inference/constraint.rs"),
-        ),
-        ("inference/generate", include_str!("inference/generate.rs")),
-        ("inference/mod", include_str!("inference/mod.rs")),
-        ("inference/types", include_str!("inference/types.rs")),
-        ("inference/unify", include_str!("inference/unify.rs")),
-        ("inst", include_str!("inst.rs")),
-        (
-            "inst/payload_support",
-            include_str!("inst/payload_support.rs"),
-        ),
-        ("integer_semantics", include_str!("integer_semantics.rs")),
-        ("intern_pool", include_str!("intern_pool.rs")),
-        ("intrinsic", include_str!("intrinsic.rs")),
-        ("layout", include_str!("layout.rs")),
-        ("lib", include_str!("lib.rs")),
-        ("live_symbols", include_str!("live_symbols.rs")),
-        ("lowered_signature", include_str!("lowered_signature.rs")),
-        ("module_registry", include_str!("module_registry.rs")),
-        ("param_arena", include_str!("param_arena.rs")),
-        ("path_norm", include_str!("path_norm.rs")),
-        ("runtime_call", include_str!("runtime_call.rs")),
-        ("scope", include_str!("scope.rs")),
-        (
-            "sema/aggregate_resolution",
-            include_str!("sema/aggregate_resolution.rs"),
-        ),
-        ("sema/aggregates", include_str!("sema/aggregates.rs")),
-        ("sema/analysis", include_str!("sema/analysis.rs")),
-        (
-            "sema/analysis/builtin_ops",
-            include_str!("sema/analysis/builtin_ops.rs"),
-        ),
-        (
-            "sema/analysis/calls",
-            include_str!("sema/analysis/calls.rs"),
-        ),
-        (
-            "sema/analysis/instructions",
-            include_str!("sema/analysis/instructions.rs"),
-        ),
-        (
-            "sema/analysis/intrinsics",
-            include_str!("sema/analysis/intrinsics.rs"),
-        ),
-        (
-            "sema/analysis/ownership",
-            include_str!("sema/analysis/ownership.rs"),
-        ),
-        (
-            "sema/analysis/pointers",
-            include_str!("sema/analysis/pointers.rs"),
-        ),
-        (
-            "sema/analysis/type_inference",
-            include_str!("sema/analysis/type_inference.rs"),
-        ),
-        ("sema/analyze_ops", include_str!("sema/analyze_ops.rs")),
-        ("sema/anon_structs", include_str!("sema/anon_structs.rs")),
-        (
-            "sema/binding_manifest",
-            include_str!("sema/binding_manifest.rs"),
-        ),
-        ("sema/body_endpoint", include_str!("sema/body_endpoint.rs")),
-        ("sema/body_identity", include_str!("sema/body_identity.rs")),
-        (
-            "sema/call_resolution",
-            include_str!("sema/call_resolution.rs"),
-        ),
-        ("sema/comptime", include_str!("sema/comptime.rs")),
-        (
-            "sema/comptime/frames",
-            include_str!("sema/comptime/frames.rs"),
-        ),
-        (
-            "sema/comptime/intrinsics",
-            include_str!("sema/comptime/intrinsics.rs"),
-        ),
-        (
-            "sema/comptime/model",
-            include_str!("sema/comptime/model.rs"),
-        ),
-        (
-            "sema/comptime/registry",
-            include_str!("sema/comptime/registry.rs"),
-        ),
-        (
-            "sema/comptime/sites",
-            include_str!("sema/comptime/sites.rs"),
-        ),
-        (
-            "sema/comptime/structured_type",
-            include_str!("sema/comptime/structured_type.rs"),
-        ),
-        (
-            "sema/comptime/value_domain_tests",
-            include_str!("sema/comptime/value_domain_tests.rs"),
-        ),
-        (
-            "sema/comptime/value_policy",
-            include_str!("sema/comptime/value_policy.rs"),
-        ),
-        ("sema/comptime_eval", include_str!("sema/comptime_eval.rs")),
-        (
-            "sema/consistency_tests",
-            include_str!("sema/consistency_tests.rs"),
-        ),
-        ("sema/context", include_str!("sema/context.rs")),
-        ("sema/control_flow", include_str!("sema/control_flow.rs")),
-        (
-            "sema/declaration_index",
-            include_str!("sema/declaration_index.rs"),
-        ),
-        ("sema/declarations", include_str!("sema/declarations.rs")),
-        ("sema/fact_mode", include_str!("sema/fact_mode.rs")),
-        ("sema/inference_ctx", include_str!("sema/inference_ctx.rs")),
-        ("sema/info", include_str!("sema/info.rs")),
-        ("sema/known_symbols", include_str!("sema/known_symbols.rs")),
-        ("sema/mod", include_str!("sema/mod.rs")),
-        (
-            "sema/ordinary_engine",
-            include_str!("sema/ordinary_engine.rs"),
-        ),
-        ("sema/output", include_str!("sema/output.rs")),
-        (
-            "sema/ownership_state",
-            include_str!("sema/ownership_state.rs"),
-        ),
-        ("sema/provider", include_str!("sema/provider.rs")),
-        (
-            "sema/provider_accessor_tests",
-            include_str!("sema/provider_accessor_tests.rs"),
-        ),
-        (
-            "sema/provider_body_host",
-            include_str!("sema/provider_body_host.rs"),
-        ),
-        (
-            "sema/provider_fixture",
-            include_str!("sema/provider_fixture.rs"),
-        ),
-        (
-            "sema/provider_fixture_tests",
-            include_str!("sema/provider_fixture_tests.rs"),
-        ),
-        (
-            "sema/provider_module_registry",
-            include_str!("sema/provider_module_registry.rs"),
-        ),
-        (
-            "sema/provider_semantics_tests",
-            include_str!("sema/provider_semantics_tests.rs"),
-        ),
-        (
-            "sema/provider_strings_ownership_tests",
-            include_str!("sema/provider_strings_ownership_tests.rs"),
-        ),
-        (
-            "sema/semantic_body_export",
-            include_str!("sema/semantic_body_export.rs"),
-        ),
-        ("sema/tests", include_str!("sema/tests.rs")),
-        ("sema/typeck", include_str!("sema/typeck.rs")),
-        ("sema/visibility", include_str!("sema/visibility.rs")),
-        ("semantic_body", include_str!("semantic_body.rs")),
-        ("semantic_identity", include_str!("semantic_identity.rs")),
-        ("semantic_import", include_str!("semantic_import.rs")),
-        (
-            "semantic_type_resolution",
-            include_str!("semantic_type_resolution.rs"),
-        ),
-        ("specialize", include_str!("specialize.rs")),
-        ("stable_digest", include_str!("stable_digest.rs")),
-        ("type_encoding", include_str!("type_encoding.rs")),
-        ("type_properties", include_str!("type_properties.rs")),
-        ("types", include_str!("types.rs")),
-    ];
+    let production = AIR_CRATE_SOURCES;
     // Keep the guard's source set tied to the same canonical Buck glob used by
     // the crate. The mapped manifest is generated from that glob, so adding a
     // production module necessarily enters this exact predicate.
@@ -1752,7 +1760,7 @@ fn comptime_instdata_evaluation_has_one_production_authority() {
     // Buck inventory by semantic shape so a renamed `str` definition cannot
     // evade the guard, while generated `Str(N)` and slice fat pointers remain
     // legitimate consumers of the same shape.
-    for (module, source) in &production {
+    for (module, source) in production {
         if *module != "builtin_universe" {
             assert!(
                 !has_core_str_definition(module, source),
@@ -2847,7 +2855,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
     for removed in [
         "fn anonymous_struct_id(",
         "fn has_method(",
-        "fn check_unqualified_visibility(",
+        "fn check_item_visibility(",
         "fn set_anon_struct_type_subst(",
     ] {
         assert!(
@@ -3133,7 +3141,7 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         .find("NamedConstDependencyTargetEvent::ValueConst")
         .expect("ordinary value-constant dependency observation");
     let visibility_check = ordinary_named_value
-        .find("OrdinaryBodyEngine::check_unqualified_visibility")
+        .find("OrdinaryBodyEngine::check_item_visibility")
         .expect("ordinary value-constant visibility check");
     let value_classification = ordinary_named_value
         .find("let value = match info.value")
@@ -4423,5 +4431,104 @@ fn drop_glue_semantics_have_one_air_policy_owner() {
         assert!(!source.contains("== ANON_DROP_METHOD"), "{name}");
         assert!(!source.contains("== drop_marker"), "{name}");
         assert!(!source.contains("== \"__drop\""), "{name}");
+    }
+}
+
+/// The modules of [`AIR_CRATE_SOURCES`] that build `ErrorKind::<variant>` as a
+/// struct expression, found by walking each source's AST so a reformatting,
+/// an import alias, or a nested module cannot hide a construction site.
+fn error_kind_construction_sites(variant: &str) -> Vec<&'static str> {
+    struct Sites<'a> {
+        variant: &'a str,
+        found: bool,
+    }
+
+    impl<'ast> Visit<'ast> for Sites<'_> {
+        fn visit_expr_struct(&mut self, expression: &'ast ExprStruct) {
+            self.found |= expression
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == self.variant);
+            visit::visit_expr_struct(self, expression);
+        }
+    }
+
+    AIR_CRATE_SOURCES
+        .iter()
+        .filter(|(_, source)| {
+            let Ok(file) = syn::parse_file(source) else {
+                return false;
+            };
+            let mut sites = Sites {
+                variant,
+                found: false,
+            };
+            sites.visit_file(&file);
+            sites.found
+        })
+        .map(|(module, _)| *module)
+        .collect()
+}
+
+/// RUE-1973: "a private item was reached through a module" is one decision
+/// reported one way.
+///
+/// Eleven inline sites used to build E0706 themselves, in two item-kind
+/// vocabularies, while the same violation in a type annotation reported E0460.
+/// The payload now has a single constructor, so a new emitter inherits the
+/// wording instead of inventing one; the E0460 payload has a single
+/// constructor too, holding that code to the type-constructor carve-out its
+/// `--explain` text describes (spec 10.3:7, 10.4:16, 10.4:18).
+#[test]
+fn private_access_has_one_decision_and_one_diagnostic() {
+    assert_eq!(
+        error_kind_construction_sites("PrivateMemberAccess"),
+        ["private_access"],
+        "E0706 must be built only by private_access::private_member_access"
+    );
+    assert_eq!(
+        error_kind_construction_sites("PrivateUnqualifiedAccessData"),
+        ["sema/typeck"],
+        "E0460 must be built only by typeck::private_type_constructor_error"
+    );
+
+    // The vocabulary is a closed table in the same module, so `item_kind`
+    // cannot be spelled ad hoc at a call site.
+    let canonical = include_str!("private_access.rs");
+    for spelling in crate::PrivateItemKind::ALL.map(crate::PrivateItemKind::spelling) {
+        assert!(
+            canonical.contains(&format!("=> \"{spelling}\"")),
+            "item-kind spelling `{spelling}` must come from the one table"
+        );
+    }
+
+    // The predicate has one definition, and the path-shaped entry point
+    // short-circuits before deriving a domain rather than repeating the math.
+    let resolution = include_str!("semantic_type_resolution.rs");
+    assert_eq!(
+        resolution.matches("pub fn is_visible_from(").count(),
+        1,
+        "the visibility predicate has one definition"
+    );
+    assert!(canonical.contains("if is_public || accessing_path == defining_path"));
+}
+
+/// One rendering of a module's name in the diagnostics that talk about it
+/// (RUE-1973). The call path used to print the file stem (`module 'lib'`)
+/// while the type-syntax path printed the import path
+/// (`module 'sub/lib.rue'`), so one missing member read as two modules.
+#[test]
+fn module_diagnostics_have_one_display_name() {
+    let registry = include_str!("module_registry.rs");
+    assert!(registry.contains("pub fn module_display_name(import_path: &str) -> &str"));
+    for (module, source) in AIR_CRATE_SOURCES {
+        if *module == "module_registry" {
+            continue;
+        }
+        assert!(
+            !source.contains(concat!(".file_", "stem()")),
+            "a module name must not be re-rendered from a path stem: {module}"
+        );
     }
 }

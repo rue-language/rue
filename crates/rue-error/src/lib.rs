@@ -1261,7 +1261,7 @@ define_error_codes! {
     };
     // 458-459 are reserved by in-flight work.
     PRIVATE_UNQUALIFIED_ACCESS = 460 => {
-        explanation: "A comptime type constructor reached through a module binding was applied in a type annotation from outside its defining directory, but the constructor is private. Type-position application performs the same visibility check as other cross-module access; the historical metadata name `PRIVATE_UNQUALIFIED_ACCESS` does not make unqualified lookup or ordinary private member access part of E0460.",
+        explanation: "A comptime type constructor reached through a module binding was applied in a type annotation from outside its defining directory, but the constructor is private. Applying a constructor is the one privacy violation with its own code: it is checked at the application site and names the constructor and its defining file. Every other private access — naming a private `fn`, `const`, `struct`, or `enum` through a module, in any position, and reaching one through a private module binding on the way — is E0706. The metadata name `PRIVATE_UNQUALIFIED_ACCESS` is historical and describes nothing E0460 reports.",
         likely_cause: "A type annotation names a module-qualified function returning `type`, such as `lib.Secret(i32)`, but that function lacks `pub` and the referencing file is in another directory. Mark the constructor `pub` when it is part of the module's interface, or keep the use within the constructor's defining directory.",
         examples: [
             ErrorCodeExample { title: "Apply a private type constructor across directories", source: "// --- main.rue\nconst lib = @import(\"sub/lib.rue\");\nfn main() -> i32 {\n    let value: lib.Secret(i32) = lib.make();\n    value.item\n}\n// --- sub/lib.rue\nfn Secret(comptime T: type) -> type { struct { item: T } }\npub fn make() -> Secret(i32) {\n    let S = Secret(i32);\n    S { item: 42 }\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
@@ -1810,7 +1810,7 @@ define_error_codes! {
         references: [ErrorCodeReference { title: "Standard-library resolution", path: "docs/spec/src/10-modules/02-import-resolution.md", rule: Some("10.2:6") }],
     };
     PRIVATE_MEMBER_ACCESS = 706 => {
-        explanation: "A module-qualified access crossed a directory boundary to a private member. The top-level item, or the enclosing type for an enum variant or associated function, was not declared `pub`. Rue privacy is directory-based: private members remain usable by files in their defining directory but are hidden from importers in other directories.",
+        explanation: "An access crossed a directory boundary to a private item. The top-level item, or the enclosing type for an enum variant or associated function, was not declared `pub`. Rue privacy is directory-based: private items remain usable by files in their defining directory but are hidden from importers in other directories. One code covers every position that can name the item — a value, a type annotation, a function signature, a struct literal, a match-pattern head, an associated-function receiver — and every kind of item, named with the keyword the source would have written: `function`, `struct`, `enum`, `const`. A module binding is a `const`, so crossing a private one on the way to a public item behind it reports this same code against the binding.",
         likely_cause: "A function, constant, type, enum, or module re-export needed by an external importer is missing `pub`; an associated function or variant belongs to a private enclosing type; or the caller was moved outside the defining directory.",
         examples: [
             ErrorCodeExample { title: "Access a private function across directories", source: "// --- main.rue\nconst lib = @import(\"sub/lib.rue\");\nfn main() -> i32 { lib.secret() }\n// --- sub/lib.rue\nfn secret() -> i32 { 42 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
@@ -3067,7 +3067,9 @@ fn format_array_length_mismatch(expected: u64, found: u64) -> String {
 /// exceed it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrivateUnqualifiedAccessData {
-    /// The kind of item ("function", "struct", "enum", "constant").
+    /// The kind of item, in the one privacy vocabulary
+    /// (`rue_air::PrivateItemKind`). E0460 reports only the type-constructor
+    /// carve-out, so in practice this is always "function".
     pub item_kind: String,
     /// The item's name as written at the reference site.
     pub name: String,

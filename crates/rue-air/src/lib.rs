@@ -30,6 +30,7 @@ pub mod lowered_signature;
 mod module_registry;
 mod param_arena;
 mod path_norm;
+mod private_access;
 mod runtime_call;
 mod scope;
 mod sema;
@@ -87,9 +88,12 @@ pub use lowered_signature::{
     MAX_LEAF_CLASSIFIED_BYTES, PointerLocation, RegisterPiece, RegisterPieces, StackedPlacement,
     lower_c_signature, lower_native_return, lower_native_signature,
 };
-pub use module_registry::ModuleRegistry;
+pub use module_registry::{ModuleRegistry, module_display_name};
 pub use param_arena::{ParamArena, ParamRange, ParamRangeData};
 pub use path_norm::{mangle_symbol_component, normalize_module_path};
+pub use private_access::{
+    PrivateItemKind, check_source_path_visibility, private_member_access, source_path_is_accessible,
+};
 pub use runtime_call::{
     OptionVariant, RuntimeAirArgument, RuntimeAirType, RuntimeCallActivation, RuntimeCallKind,
     RuntimeOperandOrigin,
