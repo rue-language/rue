@@ -885,14 +885,16 @@ define_error_codes! {
         ],
         references: [ErrorCodeReference { title: "Copy struct field requirement", path: "docs/spec/src/03-types/08-move-semantics.md", rule: Some("3.8:18") }],
     };
-    /// Retained compatibility metadata for compilers that reserved built-in
-    /// nominal spellings. Current Rue reserves no type names (spec 6.0:3), so
-    /// production compilation does not emit this code.
+    /// A user struct or enum took a type-name spelling the compiler injects.
+    /// `str` is the one reserved spelling (spec 6.0:3).
     RESERVED_TYPE_NAME = 404 => {
-        explanation: "This code is retained for compatibility with older Rue compilers that rejected a user-defined type whose name was reserved for a built-in nominal. Current Rue reserves no type-name spellings and does not emit E0404.",
-        likely_cause: "If E0404 appears in stored output or from an older compiler, that compiler was enforcing a historical built-in type-name reservation. With a current compiler, user-defined type names participate in ordinary lexical and module lookup.",
-        examples: [ErrorCodeExample { title: "Built-in spellings are ordinary type names", source: "struct StrBuf { value: i32 }\nfn main() -> i32 {\n    StrBuf { value: 42 }.value\n}", outcome: ErrorCodeExampleOutcome::Compiles }],
-        references: [ErrorCodeReference { title: "Ordinary type-name lookup", path: "docs/spec/src/06-items/_index.md", rule: Some("6.0:3") }],
+        explanation: "A user-defined struct or enum has a name reserved for a compiler-provided type. Rue reserves exactly one type-name spelling: `str`, the built-in view over borrowed UTF-8 bytes. It is injected into every module's scope rather than declared in source, so a user declaration cannot take its name. Every other type name — `StrBuf` among them, an ordinary declaration in `std` — participates in ordinary lexical and module lookup and may be reused freely.",
+        likely_cause: "A struct or enum was named `str`. Rename it; a name such as `Str`, `StrView`, or a domain name distinct from the built-in view is available.",
+        examples: [
+            ErrorCodeExample { title: "Define a type named str", source: "struct str { value: i32 }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Other built-in spellings are ordinary type names", source: "struct StrBuf { value: i32 }\nfn main() -> i32 {\n    StrBuf { value: 42 }.value\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "Reserved type names", path: "docs/spec/src/06-items/_index.md", rule: Some("6.0:3") }],
     };
     DUPLICATE_TYPE_DEFINITION = 405 => {
         explanation: "A module defines more than one struct or enum with the same type name.",

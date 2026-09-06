@@ -111,6 +111,15 @@ pub trait RuntimeAirTypePool {
     fn ptr_mut_def(&self, id: crate::PtrMutTypeId) -> Type;
 }
 
+/// Whether a pool text-view classification is one of the two-word string
+/// views: `str` or `Str(N)`. A `[T]` slice is a view too, but it is not text.
+fn is_text_view(kind: Option<crate::TextViewKind>) -> bool {
+    matches!(
+        kind,
+        Some(crate::TextViewKind::Str | crate::TextViewKind::StrFixed(_))
+    )
+}
+
 /// Convert an AIR value type to the compact type vocabulary used by the
 /// runtime-call manifest.  This is shared by durable import and CFG so the
 /// manifest remains the sole authority for runtime intrinsic call shapes.
@@ -139,11 +148,10 @@ fn runtime_air_type_in_pool(pool: &TypeInternPool, ty: Type) -> Option<RuntimeAi
     if ty.is_unsigned() {
         return Some(RuntimeAirType::UnsignedInteger);
     }
-    if let TypeKind::Struct(struct_id) = ty.kind() {
-        let name: &str = &pool.struct_def(struct_id).name;
-        if pool.is_strbuf(struct_id) || crate::is_string_view_struct_name(name) {
-            return Some(RuntimeAirType::Text);
-        }
+    if let TypeKind::Struct(struct_id) = ty.kind()
+        && (pool.is_strbuf(struct_id) || is_text_view(pool.text_view_kind(struct_id)))
+    {
+        return Some(RuntimeAirType::Text);
     }
     if let Some(ptr) = ty.as_ptr_const()
         && pool.ptr_const_def(ptr) == Type::U8
@@ -261,11 +269,10 @@ impl RuntimeAirTypePool for FrozenTypeInternPool {
         if ty.is_unsigned() {
             return Some(RuntimeAirType::UnsignedInteger);
         }
-        if let TypeKind::Struct(struct_id) = ty.kind() {
-            let name: &str = &self.struct_def(struct_id).name;
-            if self.is_strbuf(struct_id) || crate::is_string_view_struct_name(name) {
-                return Some(RuntimeAirType::Text);
-            }
+        if let TypeKind::Struct(struct_id) = ty.kind()
+            && (self.is_strbuf(struct_id) || is_text_view(self.text_view_kind(struct_id)))
+        {
+            return Some(RuntimeAirType::Text);
         }
         if let Some(ptr) = ty.as_ptr_const()
             && self.ptr_const_def(ptr) == Type::U8

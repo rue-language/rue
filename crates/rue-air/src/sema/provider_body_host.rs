@@ -4004,18 +4004,16 @@ where
     }
 
     fn type_syntax_make_fixed_str(&mut self, capacity: u64, span: Span) -> CompileResult<Type> {
+        let spelling = crate::types::fixed_string_name(capacity);
         let id = self
             .endpoint
             .register_generated_fixed_string(capacity)
             .ok_or_else(|| {
-                CompileError::new(
-                    rue_error::ErrorKind::UnknownType(format!("Str({capacity})")),
-                    span,
-                )
+                CompileError::new(rue_error::ErrorKind::UnknownType(spelling.clone()), span)
             })?;
         let name = self
             .interner
-            .get(format!("Str({capacity})"))
+            .get(&spelling)
             .expect("generated Str name must be admitted before publication");
         self.generated_structs.insert(name, id);
         Ok(Type::new_struct(id))
@@ -4232,7 +4230,7 @@ where
                 self.friendly_durable_anonymous_display(identity)?
             }
             T::Array { element, len } => {
-                format!("[{}; {len}]", self.friendly_durable_type_display(element)?)
+                crate::types::array_type_name(&self.friendly_durable_type_display(element)?, *len)
             }
             T::Slice { element, name } => {
                 let _ = element;
@@ -4326,7 +4324,7 @@ where
                 .type_pool
                 .try_array_def(id)
                 .map(|(element, length)| {
-                    format!("[{}; {}]", self.friendly_type_display(element), length)
+                    crate::types::array_type_name(&self.friendly_type_display(element), length)
                 })
                 .unwrap_or_else(|| ty.safe_name_with_pool(Some(&self.type_pool))),
             Some(TypeKind::PtrConst(id)) => format!(

@@ -36,6 +36,17 @@ pub fn reserved_function_name(name: &str) -> Option<ErrorKind> {
     })
 }
 
+/// Reject a struct or enum declaration whose name is reserved for a
+/// compiler-provided nominal (spec 6.0:3, E0404).
+///
+/// The reserved set has one owner, [`crate::types::is_reserved_type_name`],
+/// beside the rest of the built-in type-name spellings.
+pub fn reserved_type_name(name: &str) -> Option<ErrorKind> {
+    crate::types::is_reserved_type_name(name).then(|| ErrorKind::ReservedTypeName {
+        type_name: name.to_owned(),
+    })
+}
+
 pub fn duplicate_constant(name: &str) -> ErrorKind {
     ErrorKind::DuplicateConstant {
         name: name.to_owned(),

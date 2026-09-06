@@ -360,7 +360,7 @@ pub(crate) fn endpoint_display(pool: &rue_air::TypeInternPool, ty: rue_air::Type
         TypeKind::Enum(id) => pool.enum_def(id).name.to_string(),
         TypeKind::Array(id) => {
             let (element, len) = pool.array_def(id);
-            format!("[{}; {}]", endpoint_display(pool, element), len)
+            rue_air::array_type_name(&endpoint_display(pool, element), len)
         }
         TypeKind::PtrConst(id) => {
             format!(

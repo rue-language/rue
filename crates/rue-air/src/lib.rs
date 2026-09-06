@@ -187,8 +187,9 @@ pub use semantic_type_resolution::{
 };
 pub use types::{
     ArrayLen, ArrayTypeId, EnumDef, EnumId, LangItem, ModuleDef, ModuleId, PtrConstTypeId,
-    PtrMutTypeId, StructDef, StructField, StructId, Type, TypeKind, fixed_string_capacity,
-    is_slice_struct_name, is_string_view_struct_name,
+    PtrMutTypeId, StructDef, StructField, StructId, TextViewKind, Type, TypeKind, array_type_name,
+    fixed_string_capacity, fixed_string_name, is_slice_struct_name, is_string_view_struct_name,
+    slice_struct_name, text_view_name_kind,
 };
 
 /// Sentinel value used to encode parameter slots in AIR instructions.

@@ -34,7 +34,7 @@ fn str_view() -> FixtureType {
 /// boundary.
 fn fixed_str(capacity: u32) -> FixtureType {
     SemanticImportType::BuiltinNominal {
-        name: Arc::from(format!("Str({capacity})")),
+        name: Arc::from(crate::types::fixed_string_name(capacity.into())),
         kind: SemanticImportNominalKind::Struct,
     }
 }

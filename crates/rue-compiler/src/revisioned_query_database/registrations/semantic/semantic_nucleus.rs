@@ -235,6 +235,27 @@ $runtime
                                                 ))
                                                 .with_terminal_kind(QueryTerminalKind::Failure));
                                             }
+                                            // A user nominal may not take a
+                                            // type-name spelling the compiler
+                                            // injects (spec 6.0:3). The check
+                                            // rides beside the reserved
+                                            // function names so both refusals
+                                            // are raised at declaration
+                                            // registration, before any
+                                            // reference resolves against the
+                                            // shadowed builtin (RUE-1989).
+                                            if matches!(
+                                                query.declaration.category,
+                                                crate::declaration_candidate::DeclarationCandidateCategory::Struct
+                                                    | crate::declaration_candidate::DeclarationCandidateCategory::Enum
+                                            ) && let Some(kind) = rue_air::declaration_validation::reserved_type_name(
+                                                &query.declaration.name,
+                                            ) {
+                                                return Ok(QueryOutput::success(Value::Failure(
+                                                    Failure::Diagnostic(kind),
+                                                ))
+                                                .with_terminal_kind(QueryTerminalKind::Failure));
+                                            }
                                             let mut substitutions = BTreeMap::new();
                                             if let Some(owner) = &query.declaration.owner {
                                                 let owner_candidate = crate::declaration_candidate::DeclarationCandidateKey {

@@ -845,7 +845,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             InferType::Var(id) => id.to_string(),
             InferType::IntLiteral => "{integer}".to_string(),
             InferType::Array { element, length } => {
-                format!("[{}; {length}]", self.format_infer_type_name(element))
+                crate::types::array_type_name(&self.format_infer_type_name(element), *length)
             }
         }
     }
@@ -1745,13 +1745,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         let crate::types::TypeKind::Struct(struct_id) = ty.kind() else {
             return None;
         };
+        self.body_type_pool().text_view_kind(struct_id)?;
         let def = self.body_type_pool().struct_def(struct_id);
-        if crate::types::is_slice_struct_name(&def.name)
-            || crate::types::is_string_view_struct_name(&def.name)
-        {
-            if let crate::types::TypeKind::PtrConst(ptr_id) = def.fields[0].ty.kind() {
-                return Some(self.body_type_pool().ptr_const_def(ptr_id));
-            }
+        if let crate::types::TypeKind::PtrConst(ptr_id) = def.fields[0].ty.kind() {
+            return Some(self.body_type_pool().ptr_const_def(ptr_id));
         }
         None
     }

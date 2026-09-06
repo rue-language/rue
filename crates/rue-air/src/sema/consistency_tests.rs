@@ -496,6 +496,7 @@ mod tests {
 
         let typeck_impls = impl_items(TYPECK_SOURCE);
         let classification_methods = [
+            "text_view_kind",
             "is_str_struct",
             "is_str_fixed_struct",
             "str_fixed_capacity",
@@ -1713,12 +1714,21 @@ mod tests {
                 include_str!("semantic_body_export.rs"),
             ),
             ("typeck.rs", TYPECK_SOURCE),
+            ("body_endpoint.rs", include_str!("body_endpoint.rs")),
+            (
+                "provider_body_host.rs",
+                include_str!("provider_body_host.rs"),
+            ),
         ];
         for (name, source) in consumers {
+            // Decoding and rendering are one policy: a consumer that spells
+            // `Str(N)` by hand drifts from the decoder just as surely as one
+            // that parses it by hand (RUE-1989).
             for peer in [
                 ".strip_prefix(\"Str(\")",
                 ".starts_with(\"Str(\")",
                 ".starts_with('[')",
+                "format!(\"Str(",
             ] {
                 assert!(
                     !source.contains(peer),
@@ -1730,6 +1740,11 @@ mod tests {
             "pub fn fixed_string_capacity(",
             "pub fn is_slice_struct_name(",
             "pub fn is_string_view_struct_name(",
+            "pub fn fixed_string_name(",
+            "pub fn slice_struct_name(",
+            "pub fn array_type_name(",
+            "pub fn text_view_name_kind(",
+            "pub fn is_reserved_type_name(",
         ] {
             assert_eq!(
                 TYPES_SOURCE.matches(helper).count(),

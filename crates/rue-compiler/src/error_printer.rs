@@ -295,7 +295,7 @@ fn leaf_render(ty: &crate::TypeInstanceKey, types: &impl ErrorPrinterTypes) -> L
 fn byte_view(ty: &crate::TypeInstanceKey, types: &impl ErrorPrinterTypes) -> Option<ByteView> {
     if let crate::TypeInstanceKey::BuiltinNominal { kind, name } = ty
         && *kind == rue_air::AnonymousNominalKind::Struct
-        && (name.as_ref() == "str" || rue_air::fixed_string_capacity(name).is_some())
+        && rue_air::is_string_view_struct_name(name)
     {
         let nominal = crate::NominalInstanceKey::Builtin {
             kind: rue_air::AnonymousNominalKind::Struct,

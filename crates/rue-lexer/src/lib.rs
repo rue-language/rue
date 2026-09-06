@@ -151,6 +151,25 @@ pub fn is_keyword(word: &str) -> bool {
     KEYWORDS.contains(&word)
 }
 
+/// Every floating-point type name a program may write, ordered by spelling.
+///
+/// These are deliberately absent from [`KEYWORDS`]: `f32` and `f64` are
+/// ordinary identifiers naming builtin types (spec 3.12:2), so they do not
+/// steal value-position names, and the token table classifies them as
+/// `Ident`. `comptime_float` is absent for a different reason — it is the
+/// inferred type of a float literal and no program may name it (spec 3.12:3),
+/// exactly as `comptime_int` is unnameable.
+///
+/// This is the one list; the parser positions that must recognize a float type
+/// name lexically read it rather than repeating the spellings, and rue-air's
+/// `Type::from_primitive_name` is tested against it (RUE-1989).
+pub const FLOAT_TYPE_NAMES: &[&str] = &["f32", "f64"];
+
+/// Whether `word` is one of the [`FLOAT_TYPE_NAMES`].
+pub fn is_float_type_name(word: &str) -> bool {
+    FLOAT_TYPE_NAMES.contains(&word)
+}
+
 /// Token kinds in the Rue language.
 ///
 /// This enum is `Copy` since all variants contain only small, copyable data:
@@ -611,6 +630,29 @@ impl std::fmt::Display for TokenKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn float_type_names_are_sorted_unique_identifiers() {
+        let mut sorted = FLOAT_TYPE_NAMES.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted, FLOAT_TYPE_NAMES.to_vec());
+
+        for spelling in FLOAT_TYPE_NAMES {
+            assert!(
+                !is_keyword(spelling),
+                "{spelling} names a builtin type without reserving the identifier"
+            );
+            assert!(is_float_type_name(spelling));
+            let (tokens, _) = Lexer::new(spelling)
+                .tokenize()
+                .unwrap_or_else(|error| panic!("float type {spelling} failed to lex: {error}"));
+            assert!(matches!(tokens[0].kind, TokenKind::Ident(_)));
+        }
+
+        // Unnameable comptime-only types are not float type names (spec 3.12:3).
+        assert!(!is_float_type_name("comptime_float"));
+    }
 
     #[test]
     fn keywords_are_sorted_and_unique() {

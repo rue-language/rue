@@ -2487,7 +2487,9 @@ impl TypeInternPoolInner {
                 .unwrap_or_else(|| format!("<enum#{}>", id.0)),
             Some(TypeKind::Array(id)) => self
                 .try_array_def(id)
-                .map(|(element, len)| format!("[{}; {}]", self.safe_type_name(element), len))
+                .map(|(element, len)| {
+                    crate::types::array_type_name(&self.safe_type_name(element), len)
+                })
                 .unwrap_or_else(|| format!("<array#{}>", id.0)),
             Some(TypeKind::PtrConst(id)) => match self.try_entry(id.pool_index() as usize) {
                 Some(TypeData::PtrConst { pointee }) => {
@@ -3527,6 +3529,17 @@ impl TypeInternPool {
         Arc::make_mut(&mut inner.lang_item_structs).insert(lang_item, struct_id);
     }
 
+    /// Which compiler-generated text view a nominal is, if any (RUE-1989).
+    ///
+    /// The one pool-level answer to "is this `str`, `Str(N)`, or `[T]`?". It
+    /// checks the builtin bit as well as the canonical spelling, so a
+    /// source-defined nominal cannot counterfeit a view, and every phase that
+    /// routes text and slice values asks here rather than comparing the struct
+    /// name itself.
+    pub fn text_view_kind(&self, struct_id: StructId) -> Option<crate::types::TextViewKind> {
+        crate::types::text_view_struct_kind(self.try_struct_def(struct_id)?.as_ref())
+    }
+
     /// Whether a nominal is the canonical trusted standard-library StrBuf.
     pub fn is_strbuf(&self, struct_id: StructId) -> bool {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
@@ -4059,6 +4072,11 @@ impl FrozenTypeInternPool {
 
     pub fn try_struct_def(&self, id: StructId) -> Option<&StructDefEntry> {
         self.inner.try_struct_def(id)
+    }
+
+    /// Backend-facing counterpart to [`TypeInternPool::text_view_kind`].
+    pub fn text_view_kind(&self, struct_id: StructId) -> Option<crate::types::TextViewKind> {
+        crate::types::text_view_struct_kind(self.try_struct_def(struct_id)?)
     }
 
     /// Borrow a completed nominal enum definition without locking or cloning.

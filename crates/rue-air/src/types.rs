@@ -30,9 +30,10 @@ pub fn fixed_string_capacity(name: &str) -> Option<u64> {
 /// source-defined struct must not counterfeit `Str(N)`. Keep the builtin bit
 /// check beside the canonical spelling parser so semantic consumers agree.
 pub(crate) fn fixed_string_struct_capacity(def: &StructDef) -> Option<u64> {
-    def.is_builtin
-        .then(|| fixed_string_capacity(&def.name))
-        .flatten()
+    match text_view_struct_kind(def) {
+        Some(TextViewKind::StrFixed(capacity)) => Some(capacity),
+        _ => None,
+    }
 }
 
 /// Whether `name` is the canonical spelling of a synthetic slice struct.
@@ -40,9 +41,103 @@ pub fn is_slice_struct_name(name: &str) -> bool {
     name.starts_with('[') && name.ends_with(']') && !name.contains(';')
 }
 
+/// The canonical name of the core `str` view.
+pub(crate) const CORE_STR_NAME: &str = "str";
+
 /// Whether `name` is a two-word string-view nominal (`str` or `Str(N)`).
 pub fn is_string_view_struct_name(name: &str) -> bool {
-    name == "str" || fixed_string_capacity(name).is_some()
+    matches!(
+        text_view_name_kind(name),
+        Some(TextViewKind::Str | TextViewKind::StrFixed(_))
+    )
+}
+
+/// Which compiler-generated two-word view a nominal is.
+///
+/// `str`, `Str(N)`, and `[T]` share one `{ptr, len}` representation and one
+/// family of spelling rules, so the phases that route them — literal
+/// materialization, `.len()`, indexing, by-value passing, second-class
+/// checks — classify through this one enum rather than comparing struct names
+/// themselves (RUE-1989).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TextViewKind {
+    /// The core `str` view over borrowed UTF-8 bytes.
+    Str,
+    /// A fixed-capacity string `Str(N)` carrying its capacity.
+    StrFixed(u64),
+    /// A slice view `[T]`.
+    Slice,
+}
+
+/// Whether `name` is a type-name spelling reserved for a compiler-provided
+/// nominal, so a user declaration may not take it (spec 6.0:3).
+///
+/// The core `str` view is the one such spelling: it is injected into the type
+/// pool as a builtin nominal rather than declared in source, so a user
+/// `struct str` or `enum str` would have to share a name with a nominal that
+/// already exists in every module's scope. `Str(N)` and `[T]` are generated
+/// spellings too, but no declaration syntax can write them, and `StrBuf` is an
+/// ordinary source declaration in `std` that a user type may freely shadow.
+#[must_use]
+pub fn is_reserved_type_name(name: &str) -> bool {
+    name == CORE_STR_NAME
+}
+
+/// Classify a canonical generated view spelling, ignoring provenance.
+///
+/// Callers that hold a struct definition must use [`text_view_struct_kind`]
+/// instead: the spelling alone does not prove the nominal is compiler-made.
+pub fn text_view_name_kind(name: &str) -> Option<TextViewKind> {
+    if name == CORE_STR_NAME {
+        Some(TextViewKind::Str)
+    } else if let Some(capacity) = fixed_string_capacity(name) {
+        Some(TextViewKind::StrFixed(capacity))
+    } else if is_slice_struct_name(name) {
+        Some(TextViewKind::Slice)
+    } else {
+        None
+    }
+}
+
+/// Classify a struct definition as a compiler-generated text view.
+///
+/// The builtin bit is part of the classification: a source-defined nominal
+/// must not counterfeit a view, whatever it is spelled.
+pub(crate) fn text_view_struct_kind(def: &StructDef) -> Option<TextViewKind> {
+    def.is_builtin
+        .then(|| text_view_name_kind(&def.name))
+        .flatten()
+}
+
+/// Render the canonical synthetic name of the fixed-capacity string `Str(N)`.
+///
+/// The exact inverse of [`fixed_string_capacity`]: a phase that mints, names,
+/// or reports a fixed string spells it here rather than formatting `Str(N)`
+/// itself, so the decoder and every producer cannot drift (RUE-1989).
+#[must_use]
+pub fn fixed_string_name(capacity: u64) -> String {
+    format!("Str({capacity})")
+}
+
+/// Render the canonical synthetic name of the slice view over `element`.
+///
+/// The inverse of [`is_slice_struct_name`]. The slice nominal's name IS its
+/// source spelling, so a producer that has only the element spelling builds the
+/// name here rather than bracketing it by hand.
+#[must_use]
+pub fn slice_struct_name(element: &str) -> String {
+    format!("[{element}]")
+}
+
+/// Render the canonical spelling of the array type `[T; N]`.
+///
+/// Array types are structural rather than nominal, so this is a presentation
+/// spelling rather than an identity: diagnostics, type-name displays, and
+/// durable projections all render an array through this one renderer so the
+/// separator and bracket placement cannot drift between them.
+#[must_use]
+pub fn array_type_name(element: &str, len: u64) -> String {
+    format!("[{element}; {len}]")
 }
 
 /// A unique identifier for a struct definition.
@@ -1141,6 +1236,26 @@ mod tests {
         assert!(!is_string_view_struct_name("Str(042)"));
     }
 
+    #[test]
+    fn synthetic_name_renderers_invert_their_decoders() {
+        for capacity in [0, 1, 42, u64::MAX] {
+            let name = fixed_string_name(capacity);
+            assert_eq!(fixed_string_capacity(&name), Some(capacity), "{name}");
+            assert!(is_string_view_struct_name(&name), "{name}");
+        }
+
+        // The slice classifier reads the outer brackets and the absence of an
+        // array separator, so it round-trips a slice of any element spelling
+        // that is not itself an array.
+        for element in ["u8", "i32", "[u8]", "ptr const u8"] {
+            let name = slice_struct_name(element);
+            assert!(is_slice_struct_name(&name), "{name}");
+        }
+
+        assert_eq!(array_type_name("u8", 4), "[u8; 4]");
+        assert!(!is_slice_struct_name(&array_type_name("u8", 4)));
+    }
+
     // ========== Type ID tests ==========
 
     #[test]
@@ -1369,6 +1484,30 @@ mod tests {
         assert_eq!(Type::from_primitive_name("type"), Some(Type::COMPTIME_TYPE));
         assert_eq!(Type::from_primitive_name("f32"), Some(Type::F32));
         assert_eq!(Type::from_primitive_name("f64"), Some(Type::F64));
+    }
+
+    /// The float spellings the lexer publishes and the ones the type table
+    /// resolves are the same set (RUE-1989).
+    ///
+    /// `rue-lexer::FLOAT_TYPE_NAMES` is the one list, read by the parser
+    /// positions that must recognize a float type name lexically. rue-air does
+    /// not depend on the lexer at build time, so the agreement is asserted
+    /// here rather than shared through a call.
+    #[test]
+    fn the_lexer_float_type_names_are_exactly_the_resolvable_float_primitives() {
+        for spelling in rue_lexer::FLOAT_TYPE_NAMES {
+            let resolved = Type::from_primitive_name(spelling).expect("a float type name resolves");
+            assert!(resolved.is_float(), "{spelling} resolved to {resolved:?}");
+        }
+
+        let resolvable_floats = [
+            "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "usize", "isize", "bool", "()",
+            "!", "type", "f32", "f64",
+        ]
+        .into_iter()
+        .filter(|name| Type::from_primitive_name(name).is_some_and(|resolved| resolved.is_float()))
+        .collect::<Vec<_>>();
+        assert_eq!(resolvable_floats, rue_lexer::FLOAT_TYPE_NAMES);
     }
 
     #[test]
