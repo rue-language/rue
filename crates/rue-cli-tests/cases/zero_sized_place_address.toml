@@ -181,3 +181,96 @@ compile_stdout_contains = ["=== Assembly (aarch64-linux) ===", "main:"]
 # #<n>`; the bracketed `[fp, #...]` of an ordinary slot load or store does not
 # match this substring.
 compile_stdout_not_contains = [", fp, #"]
+
+# --- Writing through the address, not just forming it (RUE-2086) ------------
+# The address is only half the story: `@ptr_write` through a `ptr mut ()` must
+# move no bytes. Codegen decided that from the *materialized* value operand's
+# slot count, and the optimizer could make that operand a real one-slot value.
+# A zero-sized local reserves no frame slots, so its slot index is the index the
+# next local receives; `let e: () = ()` and `let pm: ptr mut ()` share `$1`.
+# Value forwarding (`-O2`) then handed `pm`'s pointer to `e`'s `()`-typed load
+# and the write stored eight bytes through the zero-sized sentinel address —
+# `-O0`/`-O1` printed 42, `-O2` faulted. Two independent guards now close it:
+# forwarding never crosses a type change, and the write consults the pointer's
+# declared pointee. `differential_opt` is what pins the levels against each
+# other.
+#
+# Every case below reaches the bug through a zero-sized *address*, so each is
+# also closed by the `@ptr_write` guard alone, and the differential oracle
+# classifies `@raw` of a zero-sized place as an unmodeled gap before executing
+# anything. `cli.zero_sized_slot_sharing` carries the other direction — a `()`
+# forwarded into a sized consumer — which pins the forwarder's type guard on its
+# own and is oracle-gated.
+[[case]]
+name = "trailing_zero_sized_field_write_moves_no_bytes"
+description = "RUE-2086 repro: writing `()` through `@raw_mut(tail.unit)` leaves the sized sibling alone at every optimization level."
+files = [{ path = "main.rue", source = """
+struct Tail { value: i64, unit: () }
+fn main() -> i32 {
+    let mut tail = Tail { value: 42, unit: () };
+    let e: () = ();
+    let pm: ptr mut () = checked { @raw_mut(tail.unit) };
+    checked { @ptr_write(pm, e) };
+    @dbg(tail.value);
+    0
+}
+""" }]
+stdout = "42\n"
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "all_zst_root_write_moves_no_bytes"
+description = "The all-ZST-root variant of the same write: the whole local is zero-sized, so it shares its slot index with everything that follows."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut u: () = ();
+    let value: i64 = 42;
+    let e: () = ();
+    let pm: ptr mut () = checked { @raw_mut(u) };
+    checked { @ptr_write(pm, e) };
+    @dbg(value);
+    0
+}
+""" }]
+stdout = "42\n"
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "zero_sized_read_through_shared_slot_stays_correct"
+description = "The read-only counterpart: `@ptr_read` of a `ptr const ()` whose local shares a slot with a sized one produces `()` and disturbs nothing."
+files = [{ path = "main.rue", source = """
+struct Tail { value: i64, unit: () }
+fn main() -> i32 {
+    let tail = Tail { value: 42, unit: () };
+    let pc: ptr const () = checked { @raw(tail.unit) };
+    let read: () = checked { @ptr_read(pc) };
+    let _kept: () = read;
+    @dbg(tail.value);
+    0
+}
+""" }]
+stdout = "42\n"
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "sized_write_through_shared_slot_still_stores"
+description = "The over-tightening guard: a sized pointee sharing its slot arrangement with a zero-sized local still performs its store."
+files = [{ path = "main.rue", source = """
+struct Tail { value: i64, unit: () }
+fn main() -> i32 {
+    let mut tail = Tail { value: 42, unit: () };
+    let e: () = ();
+    let unit_ptr: ptr mut () = checked { @raw_mut(tail.unit) };
+    let value_ptr: ptr mut i64 = checked { @raw_mut(tail.value) };
+    checked { @ptr_write(unit_ptr, e) };
+    checked { @ptr_write(value_ptr, 7) };
+    @dbg(tail.value);
+    0
+}
+""" }]
+stdout = "7\n"
+exit_code = 0
+differential_opt = true

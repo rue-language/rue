@@ -66,6 +66,26 @@
 //! A `Load` that is itself a by-ref call argument is never forwarded under
 //! either rule: the by-ref lowering requires that argument to remain a place.
 //!
+//! ## Slot identity is not value identity: the well-typedness guard
+//!
+//! A slot index does not identify a single typed storage location. A
+//! zero-sized local reserves *no* frame slots, so its slot index is the same
+//! index the next local receives, and the two unrelated locals then share one
+//! `$n` in every slot-keyed table here (RUE-2086). Forwarding the value most
+//! recently stored to `$n` into a `Load $n` that belongs to the *other* local
+//! substitutes a value of the wrong type, and downstream consumers that read
+//! an operand's type or materialized slot count off the CFG then plan the
+//! wrong machine code — `@ptr_write` through a `ptr mut ()` emitted a real
+//! eight-byte store because a `ptr mut` value had been forwarded into its
+//! `()`-typed value operand.
+//!
+//! Neither rule forwards across a type change: a substitution is recorded only
+//! when the stored value's type equals the `Load`'s own result type. That keeps
+//! the pass's output well-typed by construction — the same invariant sema
+//! established and every later consumer assumes — and it costs nothing on a
+//! slot that really does hold one type, which is every slot a non-zero-sized
+//! local owns.
+//!
 //! ## Applying substitutions and cleanup
 //!
 //! Both rules record `subst[load] = value`; all substitutions apply in one
@@ -103,6 +123,10 @@ pub struct Stats {
     /// Dominator trees computed by this pass. The tree is built only when at
     /// least one distinct cross-block Rule 1 pair needs proof.
     pub dominator_computations: u64,
+    /// Loads a rule had a candidate value for but declined to forward because
+    /// the stored value's type differs from the load's (RUE-2086 — a slot
+    /// shared between a zero-sized local and the local that reuses its index).
+    pub loads_declined_type_mismatch: u64,
 }
 
 /// Run value forwarding. Call at `-O2`/`-O3` after simplification and before
@@ -198,12 +222,20 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
                     if cfg.is_ownership_boundary_value(value) {
                         continue;
                     }
+                    let load_ty = cfg.get_inst(value).ty;
                     if let Some(SlotWrites::One {
                         value: write_value,
                         block: write_block,
                     }) = slot_class.get(slot as usize).copied()
                     {
-                        // Rule 1: global single-write forwarding.
+                        // Rule 1: global single-write forwarding. The one
+                        // write may belong to a different local that shares
+                        // this slot index with a zero-sized one (RUE-2086);
+                        // a type change is how that shows up.
+                        if cfg.get_inst(write_value).ty != load_ty {
+                            stats.loads_declined_type_mismatch += 1;
+                            continue;
+                        }
                         subst[value.as_u32() as usize] = Some(write_value);
                         stats.loads_forwarded_single_write += 1;
                         if write_block != block_id {
@@ -212,6 +244,15 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
                     } else if !cfg.is_address_taken(slot) {
                         // Rule 2: block-local forwarding for multi-write slots.
                         if let Some(&Some(stored)) = last_store.get(slot as usize) {
+                            // A zero-sized local shares its slot index with the
+                            // local that reuses it, so the tracked store may
+                            // belong to a different location entirely
+                            // (RUE-2086). Only a same-typed value is this
+                            // load's.
+                            if cfg.get_inst(stored).ty != load_ty {
+                                stats.loads_declined_type_mismatch += 1;
+                                continue;
+                            }
                             subst[value.as_u32() as usize] = Some(stored);
                             stats.loads_forwarded_block_local += 1;
                         }
@@ -899,6 +940,134 @@ mod tests {
         assert!(matches!(
             cfg.get_block(live).terminator,
             Terminator::Return { value: Some(v) } if v == init
+        ));
+    }
+
+    /// RUE-2086: a zero-sized local reserves no frame slots, so its slot index
+    /// is the one the next local receives and the two share `$0`. The
+    /// block-local table then holds the *pointer* the second local stored when
+    /// the first local's `()`-typed load is reached, and forwarding it made
+    /// `@ptr_write` store eight bytes through a zero-sized sentinel address.
+    #[test]
+    fn test_block_local_declines_forward_across_a_type_change() {
+        // `let e: () = (); let pm: ptr mut () = @raw_mut(..); @ptr_write(pm, e)`
+        // — both locals are slot 0, so the `()` load must not see the pointer.
+        let mut cfg = make_cfg(1);
+        let unit = push(&mut cfg, CfgInstData::Const(0), Type::UNIT);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: unit,
+            },
+            Type::UNIT,
+        );
+        let pointer = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I64);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: pointer,
+            },
+            Type::UNIT,
+        );
+        let pointer_load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I64);
+        let unit_load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::UNIT);
+        let sum = push(
+            &mut cfg,
+            CfgInstData::Add(pointer_load, unit_load),
+            Type::I64,
+        );
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(sum) });
+
+        let stats = run(&mut cfg).unwrap();
+        // The same-typed load still forwards; the `()` load does not.
+        assert_eq!(stats.loads_forwarded_block_local, 1);
+        assert_eq!(stats.loads_declined_type_mismatch, 1);
+        assert!(
+            matches!(cfg.get_inst(sum).data, CfgInstData::Add(x, y) if x == pointer && y == unit_load)
+        );
+        assert!(matches!(
+            cfg.get_inst(unit_load).data,
+            CfgInstData::Load { slot: 0 }
+        ));
+    }
+
+    /// The same guard on Rule 1: one whole-slot write is still not this load's
+    /// write when a zero-sized local shares the slot index (RUE-2086).
+    #[test]
+    fn test_single_write_declines_forward_across_a_type_change() {
+        let mut cfg = make_cfg(1);
+        let init = push(&mut cfg, CfgInstData::Const(7), Type::I64);
+        push(&mut cfg, CfgInstData::Alloc { slot: 0, init }, Type::UNIT);
+        let unit_load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::UNIT);
+        cfg.set_terminator(
+            cfg.entry,
+            Terminator::Return {
+                value: Some(unit_load),
+            },
+        );
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.loads_forwarded_single_write, 0);
+        assert_eq!(stats.loads_declined_type_mismatch, 1);
+        assert!(matches!(
+            cfg.get_block(cfg.entry).terminator,
+            Terminator::Return { value: Some(v) } if v == unit_load
+        ));
+    }
+    /// The other direction of the same aliasing, which no CLI case can cover:
+    /// the `()` is stored *last* and a sized load of the shared slot follows.
+    ///
+    /// Reaching this from source needs the zero-sized local to be re-assigned
+    /// after the sized one is initialized (`let mut e: () = (); let y: i64 = 5;
+    /// e = ();`), because slot indices only ever advance, so the zero-sized
+    /// local's `Alloc` always comes first. That shape is miscompiled the other
+    /// way round — the `()` reaches a sized consumer and makes its materialized
+    /// slot count zero, so a store or an argument disappears rather than
+    /// appearing. It is pinned here rather than in `rue-cli-tests` because the
+    /// differential oracle mismodels the source shape itself: its own local
+    /// store is keyed by slot index too, so the re-assigned `()` overwrites the
+    /// sized neighbour and it reports the wrong answer for a correctly compiled
+    /// program.
+    #[test]
+    fn test_block_local_declines_forwarding_a_zero_sized_store_to_a_sized_load() {
+        let mut cfg = make_cfg(1);
+        let sized = push(&mut cfg, CfgInstData::Const(5), Type::I64);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: sized,
+            },
+            Type::UNIT,
+        );
+        // The zero-sized local's re-assignment lands on the same slot.
+        let unit = push(&mut cfg, CfgInstData::Const(0), Type::UNIT);
+        push(
+            &mut cfg,
+            CfgInstData::Store {
+                slot: 0,
+                value: unit,
+            },
+            Type::UNIT,
+        );
+        let sized_load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I64);
+        cfg.set_terminator(
+            cfg.entry,
+            Terminator::Return {
+                value: Some(sized_load),
+            },
+        );
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.loads_forwarded_block_local, 0);
+        assert_eq!(stats.loads_declined_type_mismatch, 1);
+        // The sized read stays a load; forwarding the `()` would have made the
+        // consumer see a value with no ABI slots.
+        assert!(matches!(
+            cfg.get_block(cfg.entry).terminator,
+            Terminator::Return { value: Some(v) } if v == sized_load
         ));
     }
 }

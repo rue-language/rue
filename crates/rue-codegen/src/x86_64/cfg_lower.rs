@@ -3112,7 +3112,16 @@ impl<'a> CfgLower<'a> {
             | rue_air::IntrinsicOperation::PtrWriteUnaligned => {
                 let ptr = plan.args[0].primary;
                 let value = &plan.args[1];
-                if let Some(map) = &plan.physical_slots {
+                if plan.zero_sized_pointee_write || value.slot_count == 0 {
+                    // Nothing to store. The declared pointee's width is the
+                    // authority: a `ptr mut ()` write moves no bytes however
+                    // the value operand materialized, which is what keeps a
+                    // differently typed value forwarded into that operand from
+                    // becoming a store through the zero-sized sentinel address
+                    // (RUE-2086). The materialized slot count still answers for
+                    // a diverging operand, so the two only ever agree to store
+                    // nothing.
+                } else if let Some(map) = &plan.physical_slots {
                     // A compact enum value: truncate each internal slot to its
                     // physical width at its compact byte offset (RUE-1000). The
                     // pointee's padding is zeroed first (ADR-0052 ruling 5).
@@ -3138,8 +3147,6 @@ impl<'a> CfgLower<'a> {
                         value.slots.clone()
                     };
                     crate::agg_slots::store_dispatch_image(self, &vals, ptr, image);
-                } else if value.slot_count == 0 {
-                    // Zero-sized values have no bytes to write.
                 } else if !value.slots.is_empty() {
                     let leaf_types =
                         crate::types::aggregate_leaf_types(self.ctx.type_pool, plan.args[1].ty);
@@ -7724,6 +7731,92 @@ mod tests {
                 .iter()
                 .any(|inst| matches!(inst, X86Inst::MovRI32 { imm: 0, .. })),
             "a scalar zero constant is read as a value and must be materialized: {:?}",
+            mir.instructions()
+        );
+    }
+
+    /// RUE-2086 guard: `@ptr_write` through a `ptr mut ()` moves no bytes,
+    /// decided by the pointer's declared pointee rather than by whatever the
+    /// value operand materialized into.
+    ///
+    /// A zero-sized local reserves no frame slots, so its slot index is the
+    /// index the next local receives and the two unrelated locals share one
+    /// `$n`. Value forwarding once handed the pointer stored in that shared
+    /// slot to the `()`-typed load of the other local, and this arm — reading
+    /// the materialized operand's slot count — emitted a real eight-byte store
+    /// through the zero-sized sentinel address. The ill-typed operand is
+    /// reproduced verbatim here so the arm is pinned independently of the
+    /// optimizer that produced it.
+    #[test]
+    fn zero_sized_pointee_write_emits_no_store() {
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let unit_ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::UNIT));
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            0,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        let address = fixture.konst(1, unit_ptr_ty);
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrWrite,
+            "ptr_write",
+            &[address, address],
+            Type::UNIT,
+        );
+        let zero = fixture.konst(0, Type::I32);
+        fixture.ret(Some(zero));
+        let mir = fixture.lower_with_plan();
+        assert!(
+            !mir.instructions().iter().any(|inst| matches!(
+                inst,
+                X86Inst::MovMRIndexed { .. }
+                    | X86Inst::NarrowStoreIndexed { .. }
+                    | X86Inst::FloatStore { .. }
+            )),
+            "a zero-sized pointee write must store nothing: {:?}",
+            mir.instructions()
+        );
+    }
+
+    /// The companion to the guard above: a sized pointee still stores. The
+    /// declared-pointee test must not silence an ordinary `@ptr_write`.
+    #[test]
+    fn sized_pointee_write_still_stores() {
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let i64_ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::I64));
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            0,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        let address = fixture.konst(8, i64_ptr_ty);
+        let payload = fixture.konst(42, Type::I64);
+        fixture.intrinsic(
+            rue_air::IntrinsicOperation::PtrWrite,
+            "ptr_write",
+            &[address, payload],
+            Type::UNIT,
+        );
+        let zero = fixture.konst(0, Type::I32);
+        fixture.ret(Some(zero));
+        let mir = fixture.lower_with_plan();
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::MovMRIndexed { .. })),
+            "a sized pointee write must still store: {:?}",
             mir.instructions()
         );
     }
