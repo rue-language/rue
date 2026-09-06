@@ -4384,13 +4384,6 @@ impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
         }
     }
 
-    fn foreign_zero_result(&mut self, primary: VReg) {
-        self.mir.push(Aarch64Inst::MovImm {
-            dst: Operand::Virtual(primary),
-            imm: 0,
-        });
-    }
-
     fn foreign_scalar_result(
         &mut self,
         primary: VReg,

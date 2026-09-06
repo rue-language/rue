@@ -250,7 +250,6 @@ fn foreign_call_and_mir_state_have_one_shared_authority() {
         "foreign_issue_call",
         "foreign_cleanup_stack",
         "foreign_cleanup_byref",
-        "foreign_zero_result",
         "foreign_scalar_result",
         "foreign_register_result",
         "foreign_sret_result",
