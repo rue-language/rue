@@ -36,8 +36,8 @@ use rue_driver::{
 };
 
 use rue_compiler::{
-    CompileErrors, CompileOptions, CompileWarning, FileId, ImportDiscoveryStatus, LinkerMode,
-    OptLevel, PreviewFeature, PreviewFeatures, configure_thread_pool,
+    CompileErrors, CompileOptions, CompileWarning, FileId, LinkerMode, OptLevel, PreviewFeature,
+    PreviewFeatures, configure_thread_pool,
 };
 #[cfg(test)]
 use rue_compiler::{CompilerSession, SourceMetadata, SourceSnapshot};
@@ -1183,6 +1183,13 @@ fn validate_watch_modes(options: &Options) -> Result<(), &'static str> {
 /// probe is presentation-only: it runs after discovery has closed, feeds no
 /// observation ledger, and creates no dependency edge, so it can never affect
 /// resolution, closure, or reuse.
+///
+/// `DiagnosticOutput` is its only caller, so the help reaches the reader
+/// whatever produced the diagnostic and whichever renderer presents it — a
+/// batch compile, an `--emit`, a watch cycle, a `rue test` image, and the JSON
+/// copies a `compile_error` event carries. Applying it per entry point instead
+/// is what let `--emit` and `--watch` publish the same `ModuleNotFound`
+/// without it (RUE-1969).
 fn with_import_migration_helps(errors: &CompileErrors) -> CompileErrors {
     let mut enriched = CompileErrors::new();
     for error in errors.iter() {
@@ -1273,6 +1280,7 @@ impl<'a> DiagnosticOutput<'a> {
         batches
             .iter()
             .map(|errors| {
+                let errors = with_import_migration_helps(errors);
                 self.in_source_order(errors.as_slice())
                     .into_iter()
                     .map(|error| {
@@ -1356,6 +1364,7 @@ impl<'a> DiagnosticOutput<'a> {
     }
 
     fn render_errors(&self, errors: &CompileErrors) -> String {
+        let errors = with_import_migration_helps(errors);
         let errors = CompileErrors::from(
             self.in_source_order(errors.as_slice())
                 .into_iter()
@@ -2642,17 +2651,13 @@ fn main() {
         return;
     }
 
-    if compiler_host.discovery_status() != ImportDiscoveryStatus::ClosedValid {
-        diagnostics.print_errors(&with_import_migration_helps(
-            compiler_host.discovery_revision().diagnostics(),
-        ));
-        // Compile mode's rejected-program status is `1` and stays that way.
-        // For `rue test` a program that will not compile is the same outcome as
-        // a link failure or a runner error — the run could not be performed —
-        // and ADR-0083 §2 gives that one code, so an agent branching on the
-        // exit status never has to also parse stderr to tell them apart.
-        std::process::exit(driver_failure_exit_code(&options.mode));
-    }
+    // An import graph that did not close valid never reaches the compiler:
+    // every compile-scope entry point of the host refuses it and publishes
+    // discovery's own diagnostics instead. Compile mode reports that as its
+    // ordinary rejected-program status `1`; `rue test` reports it as a runner
+    // error, because ADR-0083 §2 gives a program that will not compile the same
+    // status as a link failure — the run could not be performed — so an agent
+    // branching on the exit status never has to also parse stderr.
 
     // `rue test` owns the rest of this process: it links the test image, runs
     // one process per selected test, and publishes the event stream on stdout
@@ -2681,38 +2686,29 @@ fn main() {
         std::process::exit(exit.code());
     }
 
-    // Closed discovery fixes the complete source identity set. Validate the
-    // destination before semantic/codegen/link work, then retain that set for
-    // mandatory revalidation immediately before atomic publication.
-    let publication_destination = match output::preflight_destination(
-        Path::new(&options.output_path),
-        source_snapshot.files().map(|source| source.path),
-    ) {
-        Ok(destination) => destination,
-        Err(output::PublishError::WouldClobberSource) => {
-            eprintln!(
-                "Error: output path '{}' is also an input source file; refusing to overwrite it",
-                options.output_path
-            );
-            std::process::exit(1);
-        }
-        Err(error) => {
-            diagnostics.print_error(&error.into_compile_error());
-            std::process::exit(1);
-        }
-    };
-
-    // Normal compilation - uses multi-file compilation for all source files
+    // One shared cycle drives the destination preflight, the compile, the
+    // publication, and the success line; `watch::run` drives the same one per
+    // revision (RUE-1969).
     #[cfg(rue_benchmark_allocations)]
     if options.benchmark_json {
         allocation::resume();
     }
-    let compile_result = {
+    let report = {
         let _compile = compile_span.enter();
-        compile::execute(compile::CompileRequest {
+        compile::drive_cycle(compile::CycleRequest {
             host: &mut compiler_host,
-            options: compile_options,
-            destination: publication_destination,
+            options: &compile_options,
+            diagnostics: &diagnostics,
+            source_path: &options.source_path,
+            output_path: &options.output_path,
+            observation: compile::CycleObservation::OneShot,
+            // `--benchmark-json` owns stdout, so the human success line would
+            // corrupt the envelope a consumer is parsing.
+            announcement: if options.benchmark_json {
+                compile::Announcement::Silent
+            } else {
+                compile::Announcement::Completed
+            },
         })
     };
     drop(compile_span);
@@ -2720,86 +2716,46 @@ fn main() {
     if options.benchmark_json {
         allocation::finish();
     }
-    match compile_result {
-        Ok(output) => {
-            // Publication runs after the compiler's timing root closes, so it
-            // is measured as a driver phase: it breaks down process-minus-root
-            // overhead without becoming a second timing root (RUE-786).
-            let publication = {
-                let _span = tracing::info_span!("output_write", driver_phase = true).entered();
-                output.publish()
-            };
-            // Warnings live outside the publication result so failures cannot
-            // discard them; present them before inspecting and reporting the
-            // publication outcome.
-            diagnostics.print_warnings(&publication.warnings);
-            let output = match publication.result {
-                Ok(output) => output,
-                Err(output::PublishError::WouldClobberSource) => {
-                    eprintln!(
-                        "Error: output path '{}' is also an input source file; refusing to overwrite it",
-                        options.output_path
-                    );
-                    std::process::exit(1);
-                }
-                Err(error) => {
-                    diagnostics.print_error(&error.into_compile_error());
-                    std::process::exit(1);
-                }
-            };
+    let compile::CycleReport::Published(output) = report else {
+        // Every diagnostic is already on the diagnostic stream. A one-shot
+        // cycle is never canceled and never superseded, so the only remaining
+        // outcome is a rejected program or a refused publication.
+        std::process::exit(1);
+    };
 
-            // Don't print normal compilation message when using --benchmark-json
-            // as it would interfere with JSON parsing
-            if !options.benchmark_json {
-                let linker_str = match &options.linker {
-                    LinkerMode::Internal => "internal".to_string(),
-                    LinkerMode::System(cmd) => cmd.clone(),
-                };
-                println!(
-                    "Compiled {} -> {} (target: {}, linker: {})",
-                    options.source_path, options.output_path, options.target, linker_str
+    // Publication may perform target-specific finalization (notably ad-hoc
+    // Mach-O signing) after the linker produced its byte buffer. Benchmark
+    // evidence must describe the artifact users can actually execute, so both
+    // compiler and runner hash the published file rather than the
+    // pre-publication linker buffer.
+    let benchmark_emitted_output = if options.benchmark_json {
+        match std::fs::read(&options.output_path) {
+            Ok(bytes) => Some(EmittedOutput::of(&bytes)),
+            Err(error) => {
+                eprintln!(
+                    "Error: could not verify published benchmark output '{}': {error}",
+                    options.output_path
                 );
+                std::process::exit(1);
             }
-
-            // Publication may perform target-specific finalization (notably
-            // ad-hoc Mach-O signing) after the linker produced its byte
-            // buffer. Benchmark evidence must describe the artifact users can
-            // actually execute, so both compiler and runner hash the published
-            // file rather than the pre-publication linker buffer.
-            let benchmark_emitted_output = if options.benchmark_json {
-                match std::fs::read(&options.output_path) {
-                    Ok(bytes) => Some(EmittedOutput::of(&bytes)),
-                    Err(error) => {
-                        eprintln!(
-                            "Error: could not verify published benchmark output '{}': {error}",
-                            options.output_path
-                        );
-                        std::process::exit(1);
-                    }
-                }
-            } else {
-                None
-            };
-
-            let report = match (timing_data.as_ref(), benchmark_emitted_output) {
-                (Some(timing), Some(emitted_output)) => Some(benchmark_report(
-                    timing,
-                    &options,
-                    resolved_workers,
-                    &source_snapshot,
-                    output.unstable_metrics(),
-                    emitted_output,
-                )),
-                _ => None,
-            };
-            print_timing_output(&timing_data, options.time_passes, report.as_ref());
-            exit_successful_native_compile();
         }
-        Err(errors) => {
-            diagnostics.print_errors(&with_import_migration_helps(&errors));
-            std::process::exit(1);
-        }
-    }
+    } else {
+        None
+    };
+
+    let report = match (timing_data.as_ref(), benchmark_emitted_output) {
+        (Some(timing), Some(emitted_output)) => Some(benchmark_report(
+            timing,
+            &options,
+            resolved_workers,
+            &source_snapshot,
+            output.unstable_metrics(),
+            emitted_output,
+        )),
+        _ => None,
+    };
+    print_timing_output(&timing_data, options.time_passes, report.as_ref());
+    exit_successful_native_compile();
 }
 
 #[cfg(test)]
@@ -3272,42 +3228,49 @@ mod tests {
         .unwrap();
         let options = CompileOptions::default();
 
+        // The watch loop's own cycle, minus the monitor: nothing supersedes it,
+        // so every outcome is the cycle's own.
         let compile_cycle = |host: &mut FilesystemCompilerHost| {
-            let publication = output::preflight_destination(
-                &destination,
-                host.source_snapshot().files().map(|source| source.path),
+            let snapshot = host.source_snapshot().clone();
+            let source_infos = snapshot
+                .files()
+                .map(|source| (source.file_id, SourceInfo::new(source.source, source.path)))
+                .collect();
+            let diagnostics = DiagnosticOutput::new(ErrorFormat::Text, source_infos);
+            let inputs = host.watch_inputs();
+            let settled = || false;
+            matches!(
+                compile::drive_cycle(compile::CycleRequest {
+                    host,
+                    options: &options,
+                    diagnostics: &diagnostics,
+                    source_path: "main.rue",
+                    output_path: destination.to_str().unwrap(),
+                    observation: compile::CycleObservation::Watch {
+                        inputs,
+                        cancellation: rue_compiler::unstable::CompilationCancellation::new(),
+                        superseded: &settled,
+                    },
+                    announcement: compile::Announcement::Silent,
+                }),
+                compile::CycleReport::Published(_)
             )
-            .unwrap();
-            let watch_inputs = host.watch_inputs();
-            compile::execute_cancellable(compile::CancellableCompileRequest {
-                host,
-                options: options.clone(),
-                destination: publication,
-                cancellation: rue_compiler::unstable::CompilationCancellation::new(),
-                watch_inputs,
-            })
         };
 
-        let compile::CompileCycleOutcome::Linked(linked) = compile_cycle(&mut host) else {
-            panic!("initial watch cycle must compile")
-        };
-        (*linked).publish().result.unwrap();
+        assert!(compile_cycle(&mut host), "initial watch cycle must publish");
         let first = fs::read(&destination).unwrap();
 
         fs::write(&main, "fn main() -> i32 { missing }\n").unwrap();
         host.reobserve().unwrap();
-        assert!(matches!(
-            compile_cycle(&mut host),
-            compile::CompileCycleOutcome::Errors(_)
-        ));
+        assert!(
+            !compile_cycle(&mut host),
+            "a rejected program must not publish"
+        );
         assert_eq!(fs::read(&destination).unwrap(), first);
 
         fs::write(&main, "fn main() -> i32 { 2 }\n").unwrap();
         host.reobserve().unwrap();
-        let compile::CompileCycleOutcome::Linked(linked) = compile_cycle(&mut host) else {
-            panic!("fixed watch cycle must compile")
-        };
-        (*linked).publish().result.unwrap();
+        assert!(compile_cycle(&mut host), "fixed watch cycle must publish");
         assert_ne!(fs::read(&destination).unwrap(), first);
     }
 

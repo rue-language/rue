@@ -1298,6 +1298,14 @@ struct WatchScenario {
     #[serde(default)]
     acquire_delay_ms: Option<u64>,
     edits: Vec<WatchEdit>,
+    /// Substrings the watch process's stderr must contain. The milestone
+    /// protocol says which boundary a cycle reached; this pins what the cycle
+    /// told the user when it got there.
+    #[serde(default)]
+    stderr_contains: Vec<String>,
+    /// The exit status the published program has at each publication the
+    /// scenario waits for. An `initial_failure` scenario publishes only once,
+    /// so it declares one; every other kind declares two.
     expected_exit_codes: Vec<i32>,
 }
 
@@ -1310,6 +1318,10 @@ enum WatchScenarioKind {
     SymlinkRetarget,
     SupersedeReobserve,
     SupersedeAcquire,
+    /// The FIRST cycle fails, so the watcher publishes nothing before the
+    /// edit repairs the program. Every other kind opens with a publication,
+    /// which is exactly what a first-cycle failure cannot produce.
+    InitialFailure,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2853,9 +2865,19 @@ fn run_watch_case(
     rue_binary: &Path,
     real_std: &Path,
 ) -> TestResult {
-    if scenario.expected_exit_codes.len() != 2 || scenario.edits.len() < 1 {
+    let expected_publications = if scenario.kind == WatchScenarioKind::InitialFailure {
+        1
+    } else {
+        2
+    };
+    if scenario.expected_exit_codes.len() != expected_publications || scenario.edits.is_empty() {
+        return Err(TestFailure::assertion(format!(
+            "watch scenario requires {expected_publications} expected exit(s) and at least one edit"
+        )));
+    }
+    if scenario.kind == WatchScenarioKind::InitialFailure && scenario.edits.len() != 1 {
         return Err(TestFailure::assertion(
-            "watch scenario requires two expected exits and at least one edit",
+            "initial-failure watch scenario requires exactly one repairing edit",
         ));
     }
     if scenario.kind == WatchScenarioKind::Cancel && scenario.edits.len() != 2 {
@@ -3008,13 +3030,25 @@ fn run_watch_case(
     let deadline = Instant::now() + contract.runtime_timeout().min(Duration::from_secs(30));
     let result = (|| -> Result<(), String> {
         wait_for_watch_event(&mut child, &protocol, "ready", 1, deadline)?;
-        wait_for_watch_event(&mut child, &protocol, "published", 1, deadline)?;
         let program = dir.join(output_name);
-        assert_watch_program(contract, &program, scenario.expected_exit_codes[0])
-            .map_err(|error| error.to_string())?;
+        if scenario.kind == WatchScenarioKind::InitialFailure {
+            // The very first cycle is the one that fails, so there is no
+            // opening publication to wait for and nothing on disk to run.
+            wait_for_watch_event(&mut child, &protocol, "compile-error", 1, deadline)?;
+            if program.exists() {
+                return Err("a failed first watch cycle must publish nothing".to_string());
+            }
+        } else {
+            wait_for_watch_event(&mut child, &protocol, "published", 1, deadline)?;
+            assert_watch_program(contract, &program, scenario.expected_exit_codes[0])
+                .map_err(|error| error.to_string())?;
+        }
 
         write_watch_edit(dir, &scenario.edits[0])?;
         match scenario.kind {
+            WatchScenarioKind::InitialFailure => {
+                wait_for_watch_event(&mut child, &protocol, "published", 1, deadline)?;
+            }
             WatchScenarioKind::Edit => {
                 wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
             }
@@ -3138,8 +3172,8 @@ fn run_watch_case(
                 assert_fresh_cycle_after_supersession(&events, superseded)?;
             }
         }
-        assert_watch_program(contract, &program, scenario.expected_exit_codes[1])
-            .map_err(|error| error.to_string())?;
+        let final_exit = scenario.expected_exit_codes[expected_publications - 1];
+        assert_watch_program(contract, &program, final_exit).map_err(|error| error.to_string())?;
         if matches!(
             scenario.kind,
             WatchScenarioKind::Cancel
@@ -3157,10 +3191,15 @@ fn run_watch_case(
 
     let (status, stdout_bytes, stderr_bytes) = finish_watch_child(child, stdout, stderr, true);
     let result = result.and_then(|()| {
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
+        for expected in &scenario.stderr_contains {
+            if !stderr.contains(expected.as_str()) {
+                return Err(format!("watch stderr did not contain {expected:?}"));
+            }
+        }
         if scenario.error_format.as_deref() == Some("json") {
-            let diagnostics =
-                validate_json_diagnostic_stream(&String::from_utf8_lossy(&stderr_bytes))
-                    .map_err(|error| format!("watch JSON stderr validation failed: {error}"))?;
+            let diagnostics = validate_json_diagnostic_stream(&stderr)
+                .map_err(|error| format!("watch JSON stderr validation failed: {error}"))?;
             if diagnostics.is_empty() {
                 return Err("watch JSON stderr contained no diagnostics".to_string());
             }

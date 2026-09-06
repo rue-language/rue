@@ -81,3 +81,20 @@ fn main() -> i32 { h.value() }
 args = ["main.rue", "-o", "helper.rue"]
 compile_fail = true
 error_contains = ["also an input source file"]
+
+[[case]]
+# RUE-1969: the refusal had three spellings — two bare `Error:` lines in the
+# batch driver and two more in the watch loop, none of them a diagnostic, so
+# under `--error-format json` the batch one was a raw line in a stream every
+# other line of which is a JSON array. There is now one message, carried by
+# the publication error itself and rendered like every other publication
+# failure, so it names the output path and is framed for the chosen format.
+name = "output_alias_refusal_is_one_coded_diagnostic"
+files = [{ path = "a.rue", source = "fn main() -> i32 { 1 }\n" }]
+args = ["--error-format", "json", "a.rue", "-o", "a.rue"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E1403 -"]
+error_contains = [
+  "output path 'a.rue' is also an input source file; refusing to overwrite it",
+]
