@@ -33,9 +33,7 @@ use std::sync::{Arc, LazyLock, PoisonError, RwLock};
 use lasso::Spur;
 use rue_span::FileId;
 
-use crate::builtin_universe::BuiltinUniverse;
 use crate::layout::{Layout, LayoutKind, PaddingRange};
-use crate::path_norm::{mangle_symbol_component, normalize_module_path};
 use crate::type_encoding;
 use crate::types::{
     ArrayTypeId, EnumDef, EnumId, LangItem, PtrConstTypeId, PtrMutTypeId, StructDef, StructField,
@@ -2427,7 +2425,7 @@ impl TypeInternPoolInner {
     fn file_symbol_component(&self, file_id: FileId) -> String {
         self.symbol_paths
             .get(&file_id)
-            .map(|path| mangle_symbol_component(&normalize_module_path(path)))
+            .map(|path| crate::live_symbols::module_symbol_component(path))
             // Standalone TypeInternPool is a phase-local test/embedding API.
             // Supported semantic construction installs complete logical paths
             // before nominal symbols can be requested.
@@ -2439,11 +2437,12 @@ impl TypeInternPoolInner {
             TypeData::DeclaredStruct(data) | TypeData::Struct(data) => data,
             other => panic!("Expected struct at pool index {}, got {:?}", id.0, other),
         };
-        // Every named user nominal is unconditionally file-qualified (ADR-0066,
-        // RUE-1089): producer-nominal identity means two same-named types in
-        // different files are distinct, so their symbols must never depend on
-        // whether a collision happened to be observed. Builtins keep their bare
-        // source names because they pair with runtime-provided definitions.
+        // `live_symbols::named_nominal_symbol` owns the qualification rule
+        // (ADR-0066, RUE-1089); this decides only which pool entries are exempt.
+        // Builtins keep their bare source names because they pair with
+        // runtime-provided definitions, and language-item builtins (`str`,
+        // `StrBuf`, `Str(N)`) do the same — the lang-item marker survives
+        // durable import even when `is_builtin` is not carried.
         // Generated anonymous structs already carry a globally-unique synthetic
         // name (`__anon_struct_<digest>`) that distinguishes every producer, and
         // their destructor/member symbols are spelled from that bare name;
@@ -2453,20 +2452,12 @@ impl TypeInternPoolInner {
         // and `_start` are reserved, RUE-125), and a prefix test hands such a
         // declaration the bare symbol of a generated type it collides with
         // (RUE-1050, RUE-1193).
-        // Language-item builtins (`str`, `StrBuf`, `Str(N)`) also keep their bare
-        // names: they pair with runtime-provided definitions, and the lang-item
-        // marker survives durable import even when `is_builtin` is not carried.
-        if data.def.is_builtin
+        let keeps_bare_symbol = data.def.is_builtin
             || self.struct_lang_items.contains_key(&id)
-            || self.is_anonymous_struct(id)
-        {
-            return data.def.name.to_string();
-        }
-        format!(
-            "{}${}",
-            data.def.name,
+            || self.is_anonymous_struct(id);
+        crate::live_symbols::named_nominal_symbol(&data.def.name, keeps_bare_symbol, || {
             self.file_symbol_component(data.def.file_id)
-        )
+        })
     }
 
     fn enum_symbol_name(&self, id: EnumId) -> String {
@@ -2477,14 +2468,11 @@ impl TypeInternPoolInner {
         // See `struct_symbol_name`: unconditional qualification, with the
         // reserved built-in enums and the registry-marked generated anonymous
         // enums (`__anon_enum_<digest>`) keeping their bare names.
-        if BuiltinUniverse::builtin_enum_name(&data.def.name) || self.is_anonymous_enum(id) {
-            return data.def.name.to_string();
-        }
-        format!(
-            "{}${}",
-            data.def.name,
+        let keeps_bare_symbol = crate::live_symbols::enum_keeps_bare_symbol(&data.def.name)
+            || self.is_anonymous_enum(id);
+        crate::live_symbols::named_nominal_symbol(&data.def.name, keeps_bare_symbol, || {
             self.file_symbol_component(data.def.file_id)
-        )
+        })
     }
 
     fn safe_type_name(&self, ty: Type) -> String {
@@ -3635,15 +3623,15 @@ impl TypeInternPool {
     /// (`P.__drop`), and drop glue (`__rue_drop_P`) — RUE-571.
     ///
     /// Same-named nominal types across files are legal (RUE-558), but these
-    /// symbols are program-wide identities. Every named user nominal is
-    /// unconditionally qualified with the defining file
-    /// (`P$left_2fmodel_2erue`) (ADR-0066, RUE-1089). `$` cannot appear in a
-    /// source identifier, so a qualified name can never collide with a real
-    /// type. Builtins remain bare so their symbols pair with runtime-provided
-    /// definitions.
+    /// symbols are program-wide identities, so the spelling comes from
+    /// [`crate::live_symbols::named_nominal_symbol`] — the one owner of live
+    /// nominal spelling, shared with the durable identities `rue-compiler`
+    /// names rooted callables from. This entry point supplies the pool's own
+    /// exemption facts; builtins remain bare so their symbols pair with
+    /// runtime-provided definitions.
     ///
-    /// Every layer that names a function after a type — sema (definition and
-    /// call sites), the drop-glue generator in `rue-compiler`, and both
+    /// Every layer that names a function after a *pool* type — sema (definition
+    /// and call sites), the drop-glue generator in `rue-compiler`, and both
     /// codegen backends — must derive the name through this ONE helper so
     /// definitions and calls meet at link time.
     pub fn struct_symbol_name(&self, struct_id: StructId) -> String {
@@ -3652,9 +3640,9 @@ impl TypeInternPool {
     }
 
     /// The symbol-name component for an enum's drop glue (`__rue_drop_E`),
-    /// unconditionally file-qualified for named user enums (ADR-0066,
-    /// RUE-1089), while builtins remain bare. See
-    /// [`Self::struct_symbol_name`] — same rule, same reason.
+    /// unconditionally file-qualified for named user enums, while the reserved
+    /// built-in enums remain bare. See [`Self::struct_symbol_name`] — same
+    /// owner, same reason.
     pub fn enum_symbol_name(&self, enum_id: EnumId) -> String {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         inner.enum_symbol_name(enum_id)

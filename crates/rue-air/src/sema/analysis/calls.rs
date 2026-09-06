@@ -1310,11 +1310,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut temp_scope = receiver_temp_scope;
         temp_scope.extend(args_result.temp_scope);
 
-        // Generate the method call symbol: `Type.method`, file-qualified when
-        // the type name spans files (RUE-571) — must match the definition
-        // side, which builds its name through the same helper.
-        let call_name = self.method_symbol(struct_id, &method_name_str, true);
-        let call_name_sym = self.intern_body_symbol(&call_name)?;
+        // The method call symbol `Type.method`, module-qualified when the type
+        // name spans files (RUE-571). The host renders and interns it, so the
+        // call meets the definition it names.
+        let call_name_sym = self.method_symbol_handle(struct_id, &method_name_str, true)?;
 
         let call = self.emit_call_result(
             air,
@@ -1660,13 +1659,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ctx,
         )?;
 
-        // Generate the associated-function call symbol: `Type::function`.
-        // Uses the internal struct name (e.g. "__anon_struct_0") for anonymous
-        // structs — not the user-visible type variable name — and the
-        // file-qualified name when the type name spans files (RUE-571),
-        // matching the definition side.
-        let call_name = self.method_symbol(struct_id, &function_name_str, false);
-        let call_name_sym = self.intern_body_symbol(&call_name)?;
+        // The associated-function call symbol `Type::function`. The owner
+        // component is the internal struct name (`__anon_struct_<digest>`) for
+        // anonymous structs — not the user-visible type variable name — and the
+        // module-qualified name when the type name spans files (RUE-571); the
+        // host renders both, so the call meets the definition it names.
+        let call_name_sym = self.method_symbol_handle(struct_id, &function_name_str, false)?;
 
         let result = self.emit_call_result(
             air,

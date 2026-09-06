@@ -111,8 +111,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         ctx.referenced_methods.insert((struct_id, method));
         self.record_body_method_dependency((struct_id, method))?;
-        let call_name =
-            self.intern_body_symbol(&self.method_symbol(struct_id, "concat_borrowed", false))?;
+        let call_name = self.method_symbol_handle(struct_id, "concat_borrowed", false)?;
         let arg_mode = AirArgMode::Borrow;
 
         let (lhs_arg, mut temp_scope) =

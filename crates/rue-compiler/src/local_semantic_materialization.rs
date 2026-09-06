@@ -776,7 +776,9 @@ pub(crate) fn fallback_callable_symbol(identity: &FunctionInstanceKey) -> Arc<st
         crate::StableCallableId::Function(identity.clone()),
     ));
     if callable_kind_for_identity(identity) == rue_air::AnalyzedCallableKind::Destructor {
-        Arc::from(format!("{encoded}.__drop"))
+        Arc::from(rue_air::live_symbols::member_callable_name(
+            &encoded, "__drop", true,
+        ))
     } else {
         Arc::from(encoded)
     }
@@ -798,22 +800,24 @@ fn live_callable_symbol(identity: &FunctionInstanceKey) -> Option<String> {
     match identity {
         FunctionInstanceKey::Definition(definition) => match definition.kind() {
             StableDefinitionKind::Function => {
-                let module = rue_air::mangle_symbol_component(&rue_air::normalize_module_path(
+                let module = rue_air::live_symbols::module_symbol_component(
                     definition.module().logical_path(),
-                ));
+                );
                 Some(format!("__rue_fn_{module}__{}", definition.name()))
             }
             StableDefinitionKind::Destructor
             | StableDefinitionKind::Method
             | StableDefinitionKind::AssociatedFunction => {
-                let owner = named_type_live_symbol(definition.owner()?);
-                let (separator, member) = match definition.kind() {
-                    StableDefinitionKind::Destructor => (".", "__drop"),
-                    StableDefinitionKind::Method => (".", definition.name()),
-                    StableDefinitionKind::AssociatedFunction => ("::", definition.name()),
+                let owner = crate::semantic_identity::named_type_source_symbol(definition.owner()?);
+                let (has_self, member) = match definition.kind() {
+                    StableDefinitionKind::Destructor => (true, "__drop"),
+                    StableDefinitionKind::Method => (true, definition.name()),
+                    StableDefinitionKind::AssociatedFunction => (false, definition.name()),
                     _ => unreachable!(),
                 };
-                Some(format!("{owner}{separator}{member}"))
+                Some(rue_air::live_symbols::member_callable_name(
+                    &owner, member, has_self,
+                ))
             }
             // A test declaration's linker symbol is
             // `__rue_test_{module}__{digest}` (ADR-0083 §1): the same mangled
@@ -826,15 +830,27 @@ fn live_callable_symbol(identity: &FunctionInstanceKey) -> Option<String> {
             // identity, not the digest, stays the semantic authority; this only
             // decides how the symbol is spelled.
             StableDefinitionKind::Test => {
-                let module = rue_air::mangle_symbol_component(&rue_air::normalize_module_path(
+                let module = rue_air::live_symbols::module_symbol_component(
                     definition.module().logical_path(),
-                ));
+                );
                 let digest =
                     rue_air::stable_digest::stable_test_name_digest_component(definition.name());
                 Some(format!("__rue_test_{module}__{digest}"))
             }
             _ => None,
         },
+        // A specialization's rooted symbol appends one `.`-separated segment per
+        // canonical argument, spelled from the argument's CONTENT.
+        //
+        // `specialize::mangle_specialized_name` spells the same shape inside
+        // one body analysis, but from live pool handles (`struct3`), and this
+        // side has no pool: a rooted callable is named from durable identities
+        // alone, and a handle's numeric value is scheduling-dependent once one
+        // interner and one pool are shared across a revision's bodies
+        // (ADR-0076). The two spellings never have to meet — a call site's live
+        // name reaches its callee through the stable identity `durable_cfg`
+        // records beside it, not by matching the callee's own name — so each
+        // vocabulary keeps the spelling its inputs can support.
         FunctionInstanceKey::Specialization { base, arguments } => {
             let mut symbol = live_callable_symbol(base)?;
             for ty in arguments.types.iter() {
@@ -850,9 +866,9 @@ fn live_callable_symbol(identity: &FunctionInstanceKey) -> Option<String> {
         FunctionInstanceKey::AnonymousMember { .. } => {
             crate::semantic_identity::anonymous_member_source_symbol(identity)
         }
-        FunctionInstanceKey::DropGlue(owner) => {
-            Some(format!("__rue_drop_{}", drop_glue_type_name(owner)?))
-        }
+        FunctionInstanceKey::DropGlue(owner) => Some(rue_air::drop_glue_names::drop_glue_symbol(
+            &drop_glue_type_name(owner)?,
+        )),
         // A structural printer's linker symbol is
         // `__rue_error_printer__{digest}` (ADR-0083 §1): the 32-hex fixed-seed
         // FNV-1a digest of the stable symbol encoding of this exact identity.
@@ -881,71 +897,62 @@ fn live_callable_symbol(identity: &FunctionInstanceKey) -> Option<String> {
     }
 }
 
-fn named_type_live_symbol(owner: &crate::bound_definitions::StableNamedTypeKey) -> String {
-    let bare = match owner.kind() {
-        StableDefinitionKind::Struct => {
-            owner.module().is_trusted_standard_library()
-                && rue_air::LangItem::from_standard_library_nominal(
-                    owner.module().logical_path(),
-                    owner.name(),
-                )
-                .is_some()
-        }
-        StableDefinitionKind::Enum => rue_builtins::is_reserved_enum_name(owner.name()),
-        _ => false,
-    };
-    if bare {
-        owner.name().to_owned()
-    } else {
-        format!(
-            "{}${}",
-            owner.name(),
-            rue_air::mangle_symbol_component(&rue_air::normalize_module_path(
-                owner.module().logical_path()
-            ))
-        )
-    }
+/// The drop-glue type fragment for one durable type instance.
+///
+/// The fragment grammar belongs to `rue_air::drop_glue_names`, which sema and
+/// both codegen backends spell glue through; this side only relocates the
+/// instance into the semantic vocabulary and answers the leaves a durable
+/// identity spells for itself. A type with no fragment — a slice, a module, or
+/// a generic parameter, none of which ever own glue — has no live glue symbol,
+/// and its callable falls back to the stable encoding.
+fn drop_glue_type_name(ty: &crate::TypeInstanceKey) -> Option<String> {
+    rue_air::drop_glue_names::drop_glue_type_fragment(&DurableDropGlueType(
+        &crate::semantic_identity::semantic_type_from_instance(ty),
+    ))
 }
 
-fn drop_glue_type_name(ty: &crate::TypeInstanceKey) -> Option<String> {
-    use crate::{NominalInstanceKey, TypeInstanceKey};
-    Some(match ty {
-        TypeInstanceKey::I8 => "i8".to_owned(),
-        TypeInstanceKey::I16 => "i16".to_owned(),
-        TypeInstanceKey::I32 => "i32".to_owned(),
-        TypeInstanceKey::I64 => "i64".to_owned(),
-        TypeInstanceKey::U8 => "u8".to_owned(),
-        TypeInstanceKey::U16 => "u16".to_owned(),
-        TypeInstanceKey::U32 => "u32".to_owned(),
-        TypeInstanceKey::U64 => "u64".to_owned(),
-        TypeInstanceKey::Bool => "bool".to_owned(),
-        TypeInstanceKey::Unit => "unit".to_owned(),
-        TypeInstanceKey::Never => "never".to_owned(),
-        TypeInstanceKey::ComptimeType => "comptime_type".to_owned(),
-        TypeInstanceKey::F32 => "f32".to_owned(),
-        TypeInstanceKey::F64 => "f64".to_owned(),
-        TypeInstanceKey::ComptimeFloat => "comptime_float".to_owned(),
-        TypeInstanceKey::BuiltinNominal { name, .. }
-        | TypeInstanceKey::Nominal(NominalInstanceKey::Builtin { name, .. }) => name.to_string(),
-        TypeInstanceKey::Nominal(NominalInstanceKey::Named(definition)) => {
-            crate::semantic_identity::named_nominal_source_symbol(definition)?
-        }
-        TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(identity)) => {
-            crate::semantic_identity::anonymous_nominal_source_symbol(identity)
-        }
-        TypeInstanceKey::Array { element, len } => {
-            format!("array_{}_{len}", drop_glue_type_name(element)?)
-        }
-        TypeInstanceKey::PtrConst(pointee) => {
-            format!("ptr_const_{}", drop_glue_type_name(pointee)?)
-        }
-        TypeInstanceKey::PtrMut(pointee) => {
-            format!("ptr_mut_{}", drop_glue_type_name(pointee)?)
-        }
-        TypeInstanceKey::Slice { .. }
-        | TypeInstanceKey::Module(_)
-        | TypeInstanceKey::GenericParameter(_) => return None,
-    })
+/// One durable semantic type, the vocabulary a rooted callable is named from.
+struct DurableDropGlueType<'a>(
+    &'a rue_air::SemanticImportType<StableDefinitionKey, crate::ModuleId>,
+);
+
+impl rue_air::drop_glue_names::DropGlueTypeShapeSource for DurableDropGlueType<'_> {
+    fn drop_glue_shape(&self) -> Option<rue_air::drop_glue_names::DropGlueTypeShape<Self>> {
+        use rue_air::SemanticImportType as T;
+        use rue_air::drop_glue_names::DropGlueTypeShape as Shape;
+        let leaf = |name: &str| Some(Shape::Leaf(name.to_owned()));
+        Some(match self.0 {
+            T::I8 => return leaf("i8"),
+            T::I16 => return leaf("i16"),
+            T::I32 => return leaf("i32"),
+            T::I64 => return leaf("i64"),
+            T::U8 => return leaf("u8"),
+            T::U16 => return leaf("u16"),
+            T::U32 => return leaf("u32"),
+            T::U64 => return leaf("u64"),
+            T::Bool => return leaf("bool"),
+            T::Unit => return leaf("unit"),
+            T::Never => return leaf("never"),
+            T::ComptimeType => return leaf("comptime_type"),
+            T::F32 => return leaf("f32"),
+            T::F64 => return leaf("f64"),
+            T::ComptimeFloat => return leaf("comptime_float"),
+            T::BuiltinNominal { name, .. } => Shape::Leaf(name.to_string()),
+            T::Nominal(definition) => Shape::Leaf(
+                crate::semantic_identity::named_nominal_source_symbol(definition)?,
+            ),
+            T::AnonymousNominal(identity) => Shape::Leaf(
+                crate::semantic_identity::anonymous_nominal_source_symbol(identity),
+            ),
+            T::Array { element, len } => Shape::Array {
+                element: DurableDropGlueType(element),
+                len: *len,
+            },
+            T::PtrConst(pointee) => Shape::PtrConst(DurableDropGlueType(pointee)),
+            T::PtrMut(pointee) => Shape::PtrMut(DurableDropGlueType(pointee)),
+            T::Slice { .. } | T::Module(_) | T::GenericParameter(_) => return None,
+        })
+    }
 }
 
 fn mangle_canonical_type(ty: &crate::TypeInstanceKey) -> String {
@@ -2011,6 +2018,377 @@ pub(crate) fn select_drop_glue_materialization_facts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One durable nominal fixture and the live pool nominal it names.
+    struct NominalFixture {
+        key: crate::NominalInstanceKey,
+        nominal: rue_air::SemanticLocalNominal<StableDefinitionKey, ModuleId>,
+    }
+
+    fn named_nominal_fixture(
+        module: &ModuleId,
+        kind: StableDefinitionKind,
+        name: &str,
+        lang_item: Option<rue_air::LangItem>,
+    ) -> NominalFixture {
+        let definition = StableDefinitionKey::for_test(
+            module.clone(),
+            rue_air::StableDefinitionNamespace::Type,
+            kind,
+            Arc::<str>::from(name),
+            None,
+        );
+        NominalFixture {
+            key: crate::NominalInstanceKey::Named(definition),
+            nominal: rue_air::SemanticLocalNominal {
+                key: crate::NominalInstanceKey::Named(StableDefinitionKey::for_test(
+                    module.clone(),
+                    rue_air::StableDefinitionNamespace::Type,
+                    kind,
+                    Arc::<str>::from(name),
+                    None,
+                )),
+                module_path: Arc::from(module.logical_path()),
+                name: Arc::from(name),
+                kind: match kind {
+                    StableDefinitionKind::Enum => rue_air::SemanticImportNominalKind::Enum,
+                    _ => rue_air::SemanticImportNominalKind::Struct,
+                },
+                is_public: true,
+                lang_item,
+                shape: match kind {
+                    StableDefinitionKind::Enum => rue_air::SemanticLocalNominalShape::Enum {
+                        variants: Arc::from([]),
+                        is_non_exhaustive: false,
+                    },
+                    _ => rue_air::SemanticLocalNominalShape::Struct {
+                        fields: Arc::from([]),
+                        is_copy: false,
+                        is_linear: false,
+                        declared_linear: false,
+                        destructor: None,
+                    },
+                },
+            },
+        }
+    }
+
+    /// Live symbol spelling has one owner per family, so the same type spells
+    /// the same fragment whichever vocabulary reaches it: `rue-air`'s live type
+    /// pool during sema and codegen, and this crate's durable adapter when the
+    /// rooted projection names a callable.
+    ///
+    /// The two sides join for real — `durable_cfg` keys a body's symbol
+    /// mappings on both, and drop glue defined under one spelling is called
+    /// under the other — so a fixture that disagrees here is a link-time miss
+    /// or a `CfgDomainFailure::Shape`, not a cosmetic difference.
+    #[test]
+    fn every_durable_type_spells_the_live_pool_drop_glue_fragment() {
+        let user = ModuleId::from_validated_canonical("pkg/main.rue");
+        let strbuf_module = ModuleId::from_trusted_validated_canonical("\0rue-std/strbuf.rue");
+
+        let record = named_nominal_fixture(&user, StableDefinitionKind::Struct, "Record", None);
+        // A canonical standard-library nominal: exempt through the lang-item
+        // registry on both sides, never through a name table.
+        let strbuf = named_nominal_fixture(
+            &strbuf_module,
+            StableDefinitionKind::Struct,
+            "StrBuf",
+            Some(rue_air::LangItem::StrBuf),
+        );
+        let choice = named_nominal_fixture(&user, StableDefinitionKind::Enum, "Choice", None);
+        // A user enum that happens to carry a reserved built-in enum name is
+        // the exemption both sides have to agree about.
+        let arch = named_nominal_fixture(&user, StableDefinitionKind::Enum, "Arch", None);
+
+        let anonymous_key = crate::AnonymousNominalKey {
+            kind: crate::AnonymousNominalKind::Struct,
+            producer: crate::semantic_identity::StableProducerId::Definition(
+                StableDefinitionKey::for_test(
+                    user.clone(),
+                    rue_air::StableDefinitionNamespace::Value,
+                    StableDefinitionKind::Function,
+                    Arc::<str>::from("Wrap"),
+                    None,
+                ),
+            ),
+            anchor: crate::semantic_identity::StructuralAnchor::new(vec![
+                crate::semantic_identity::StructuralPathSegment::AnonymousType(0),
+            ]),
+        };
+        let anonymous = NominalFixture {
+            key: crate::NominalInstanceKey::Anonymous(Node::new(anonymous_key.clone())),
+            nominal: rue_air::SemanticLocalNominal {
+                key: crate::NominalInstanceKey::Anonymous(Node::new(anonymous_key.clone())),
+                module_path: Arc::from(user.logical_path()),
+                name: Arc::from(crate::semantic_identity::anonymous_nominal_source_symbol(
+                    &anonymous_key,
+                )),
+                kind: rue_air::SemanticImportNominalKind::Struct,
+                is_public: false,
+                lang_item: None,
+                shape: rue_air::SemanticLocalNominalShape::Struct {
+                    fields: Arc::from([]),
+                    is_copy: false,
+                    is_linear: false,
+                    declared_linear: false,
+                    destructor: None,
+                },
+            },
+        };
+        let builtin = NominalFixture {
+            key: crate::NominalInstanceKey::Builtin {
+                kind: crate::AnonymousNominalKind::Struct,
+                name: Arc::from("String"),
+            },
+            nominal: rue_air::SemanticLocalNominal {
+                key: crate::NominalInstanceKey::Builtin {
+                    kind: crate::AnonymousNominalKind::Struct,
+                    name: Arc::from("String"),
+                },
+                module_path: Arc::from("<builtin>"),
+                name: Arc::from("String"),
+                kind: rue_air::SemanticImportNominalKind::Struct,
+                is_public: true,
+                lang_item: None,
+                shape: rue_air::SemanticLocalNominalShape::Struct {
+                    fields: Arc::from([]),
+                    is_copy: false,
+                    is_linear: false,
+                    declared_linear: false,
+                    destructor: None,
+                },
+            },
+        };
+
+        let fixtures = [&record, &strbuf, &choice, &arch, &anonymous, &builtin];
+        let epoch = rue_air::SemanticImportEpoch::new_local_in_space(
+            fixtures
+                .iter()
+                .map(|fixture| fixture.nominal.clone())
+                .collect(),
+            Vec::new(),
+            vec![user.clone(), strbuf_module.clone()],
+            rue_rir::SharedSymbolSpace::private(),
+        )
+        .expect("the fixture nominals form a valid body-local epoch");
+
+        // Recover each fixture's live type, then build the composite shapes
+        // from it with the pool's own interning so both vocabularies describe
+        // the same types.
+        let pool = epoch.type_pool();
+        let live = |fixture: &NominalFixture| -> rue_air::Type {
+            let name = fixture.nominal.name.as_ref();
+            match fixture.nominal.kind {
+                rue_air::SemanticImportNominalKind::Struct => pool
+                    .all_struct_ids()
+                    .into_iter()
+                    .find(|id| &*pool.struct_def(*id).name == name)
+                    .map(rue_air::Type::new_struct),
+                rue_air::SemanticImportNominalKind::Enum => pool
+                    .all_enum_ids()
+                    .into_iter()
+                    .find(|id| &*pool.enum_def(*id).name == name)
+                    .map(rue_air::Type::new_enum),
+            }
+            .unwrap_or_else(|| panic!("epoch registered no live nominal for {name}"))
+        };
+
+        let mut cases: Vec<(crate::TypeInstanceKey, rue_air::Type)> = vec![
+            (crate::TypeInstanceKey::I8, rue_air::Type::I8),
+            (crate::TypeInstanceKey::I16, rue_air::Type::I16),
+            (crate::TypeInstanceKey::I32, rue_air::Type::I32),
+            (crate::TypeInstanceKey::I64, rue_air::Type::I64),
+            (crate::TypeInstanceKey::U8, rue_air::Type::U8),
+            (crate::TypeInstanceKey::U16, rue_air::Type::U16),
+            (crate::TypeInstanceKey::U32, rue_air::Type::U32),
+            (crate::TypeInstanceKey::U64, rue_air::Type::U64),
+            (crate::TypeInstanceKey::Bool, rue_air::Type::BOOL),
+            (crate::TypeInstanceKey::Unit, rue_air::Type::UNIT),
+            (crate::TypeInstanceKey::Never, rue_air::Type::NEVER),
+            (
+                crate::TypeInstanceKey::ComptimeType,
+                rue_air::Type::COMPTIME_TYPE,
+            ),
+            (crate::TypeInstanceKey::F32, rue_air::Type::F32),
+            (crate::TypeInstanceKey::F64, rue_air::Type::F64),
+            (
+                crate::TypeInstanceKey::ComptimeFloat,
+                rue_air::Type::COMPTIME_FLOAT,
+            ),
+        ];
+        for fixture in fixtures {
+            let ty = live(fixture);
+            let key = crate::TypeInstanceKey::Nominal(fixture.key.clone());
+            cases.push((key.clone(), ty));
+            // Arrays and pointers exercise the recursion and every separator
+            // the fragment grammar spells.
+            let array = pool.intern_array_from_type(ty, 3);
+            cases.push((
+                crate::TypeInstanceKey::Array {
+                    element: Node::new(key.clone()),
+                    len: 3,
+                },
+                rue_air::Type::new_array(array),
+            ));
+            cases.push((
+                crate::TypeInstanceKey::Array {
+                    element: Node::new(crate::TypeInstanceKey::Array {
+                        element: Node::new(key.clone()),
+                        len: 3,
+                    }),
+                    len: 2,
+                },
+                rue_air::Type::new_array(
+                    pool.intern_array_from_type(rue_air::Type::new_array(array), 2),
+                ),
+            ));
+            cases.push((
+                crate::TypeInstanceKey::PtrConst(Node::new(key.clone())),
+                rue_air::Type::new_ptr_const(pool.intern_ptr_const_from_type(ty)),
+            ));
+            cases.push((
+                crate::TypeInstanceKey::PtrMut(Node::new(key)),
+                rue_air::Type::new_ptr_mut(pool.intern_ptr_mut_from_type(ty)),
+            ));
+        }
+
+        let frozen = pool.clone().freeze();
+        for (key, ty) in &cases {
+            let durable = drop_glue_type_name(key)
+                .unwrap_or_else(|| panic!("no durable drop-glue fragment for {key:?}"));
+            assert_eq!(
+                durable,
+                rue_air::drop_glue_names::type_name(*ty, &frozen),
+                "durable and live spellings disagree for {key:?}"
+            );
+            assert_eq!(
+                rooted_callable_symbol(&FunctionInstanceKey::DropGlue(Node::new(key.clone())))
+                    .as_ref(),
+                rue_air::drop_glue_names::drop_glue_symbol(&durable),
+                "the rooted drop-glue symbol is not the live one for {key:?}"
+            );
+        }
+
+        // The named nominals carry the qualification decision itself.
+        assert_eq!(
+            drop_glue_type_name(&crate::TypeInstanceKey::Nominal(record.key.clone())).as_deref(),
+            Some("Record$pkg_2fmain_2erue")
+        );
+        assert_eq!(
+            drop_glue_type_name(&crate::TypeInstanceKey::Nominal(strbuf.key.clone())).as_deref(),
+            Some("StrBuf")
+        );
+        assert_eq!(
+            drop_glue_type_name(&crate::TypeInstanceKey::Nominal(choice.key.clone())).as_deref(),
+            Some("Choice$pkg_2fmain_2erue")
+        );
+        assert_eq!(
+            drop_glue_type_name(&crate::TypeInstanceKey::Nominal(arch.key.clone())).as_deref(),
+            Some("Arch")
+        );
+
+        // A type that never owns glue has no live glue symbol in either
+        // vocabulary: the live pool has no such type at all, and the durable
+        // side answers `None` rather than inventing a spelling.
+        for unspellable in [
+            crate::TypeInstanceKey::Module(user.clone()),
+            crate::TypeInstanceKey::GenericParameter(0),
+            crate::TypeInstanceKey::Slice {
+                element: Node::new(crate::TypeInstanceKey::U8),
+                name: Arc::from("Slice"),
+            },
+        ] {
+            assert_eq!(drop_glue_type_name(&unspellable), None);
+        }
+    }
+
+    /// A member callable is spelled by the one renderer whichever side names
+    /// it, including the separator that carries the receiver.
+    #[test]
+    fn member_callables_spell_through_one_renderer() {
+        let module = ModuleId::from_validated_canonical("pkg/main.rue");
+        let owner = ("Record", StableDefinitionKind::Struct);
+        let member = |kind, name: &str| {
+            StableDefinitionKey::for_test(
+                module.clone(),
+                rue_air::StableDefinitionNamespace::Value,
+                kind,
+                Arc::<str>::from(name),
+                Some((owner.1, Arc::<str>::from(owner.0))),
+            )
+        };
+        let owner_symbol = "Record$pkg_2fmain_2erue";
+        for (kind, name, expected) in [
+            (
+                StableDefinitionKind::Method,
+                "get",
+                rue_air::live_symbols::member_callable_name(owner_symbol, "get", true),
+            ),
+            (
+                StableDefinitionKind::AssociatedFunction,
+                "make",
+                rue_air::live_symbols::member_callable_name(owner_symbol, "make", false),
+            ),
+            (
+                StableDefinitionKind::Destructor,
+                "__drop",
+                rue_air::live_symbols::member_callable_name(owner_symbol, "__drop", true),
+            ),
+        ] {
+            assert_eq!(
+                live_callable_symbol(&FunctionInstanceKey::Definition(member(kind, name)))
+                    .as_deref(),
+                Some(expected.as_str())
+            );
+        }
+
+        // An anonymous nominal's members take the same separators: the
+        // receiver decides, not which vocabulary reached the member.
+        let anonymous = crate::AnonymousNominalKey {
+            kind: crate::AnonymousNominalKind::Struct,
+            producer: crate::semantic_identity::StableProducerId::Definition(
+                StableDefinitionKey::for_test(
+                    module.clone(),
+                    rue_air::StableDefinitionNamespace::Value,
+                    StableDefinitionKind::Function,
+                    Arc::<str>::from("Wrap"),
+                    None,
+                ),
+            ),
+            anchor: crate::semantic_identity::StructuralAnchor::new(vec![
+                crate::semantic_identity::StructuralPathSegment::AnonymousType(0),
+            ]),
+        };
+        let anonymous_owner = crate::semantic_identity::anonymous_nominal_source_symbol(&anonymous);
+        for (kind, name, has_self) in [
+            (crate::AnonymousMemberKind::Method, "get", true),
+            (
+                crate::AnonymousMemberKind::AssociatedFunction,
+                "make",
+                false,
+            ),
+            (crate::AnonymousMemberKind::Destructor, "__drop", true),
+        ] {
+            let identity = FunctionInstanceKey::AnonymousMember {
+                owner: Node::new(crate::TypeInstanceKey::Nominal(
+                    crate::NominalInstanceKey::Anonymous(Node::new(anonymous.clone())),
+                )),
+                member: crate::AnonymousMemberKey {
+                    kind,
+                    name: Arc::from(name),
+                },
+            };
+            assert_eq!(
+                live_callable_symbol(&identity),
+                Some(rue_air::live_symbols::member_callable_name(
+                    &anonymous_owner,
+                    name,
+                    has_self
+                ))
+            );
+        }
+    }
 
     fn facts_with_modules(modules: Vec<ModuleId>) -> LocalMaterializationFacts {
         LocalMaterializationFacts {

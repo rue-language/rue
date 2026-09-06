@@ -1403,7 +1403,12 @@ where
                 // rather than marking the whole pool stale.
                 let destructor = has_destructor.then(|| {
                     Arc::<str>::from(
-                        format!("{}.__drop", self.type_pool.struct_symbol_name(id)).as_str(),
+                        crate::live_symbols::member_callable_name(
+                            &self.type_pool.struct_symbol_name(id),
+                            "__drop",
+                            true,
+                        )
+                        .as_str(),
                     )
                 });
                 self.type_pool.complete_declared_struct(
@@ -1565,7 +1570,12 @@ where
                 // completion eligible for incremental containment facts.
                 let destructor = has_destructor.then(|| {
                     Arc::<str>::from(
-                        format!("{}.__drop", self.type_pool.struct_symbol_name(id)).as_str(),
+                        crate::live_symbols::member_callable_name(
+                            &self.type_pool.struct_symbol_name(id),
+                            "__drop",
+                            true,
+                        )
+                        .as_str(),
                     )
                 });
                 self.type_pool.complete_declared_struct(
@@ -2053,7 +2063,7 @@ where
         });
         let destructor = has_destructor.then(|| {
             self.space.keyed_name(digest, ANON_DESTRUCTOR_SPELLING, || {
-                format!("{name}.__drop")
+                crate::live_symbols::member_callable_name(&name, "__drop", true)
             })
         });
 

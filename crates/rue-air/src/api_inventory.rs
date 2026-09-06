@@ -1460,6 +1460,7 @@ fn comptime_instdata_evaluation_has_one_production_authority() {
         ("intrinsic", include_str!("intrinsic.rs")),
         ("layout", include_str!("layout.rs")),
         ("lib", include_str!("lib.rs")),
+        ("live_symbols", include_str!("live_symbols.rs")),
         ("lowered_signature", include_str!("lowered_signature.rs")),
         ("module_registry", include_str!("module_registry.rs")),
         ("param_arena", include_str!("param_arena.rs")),
@@ -3723,6 +3724,82 @@ fn retired_source_owned_sema_plane_cannot_return() {
     assert!(
         provider_host.contains("OrdinaryBodyEngine::new"),
         "the provider host must construct the shared body engine"
+    );
+}
+
+/// Live symbol spelling has one owner per family. A second nominal
+/// qualification, member separator, or drop-glue fragment grammar does not
+/// fail to compile: it spells a definition one way and its call the other, and
+/// the miss surfaces at link time or as a `CfgDomainFailure::Shape`.
+#[test]
+fn live_symbol_spelling_has_one_owner_per_family() {
+    let live = include_str!("live_symbols.rs");
+    for owner in [
+        "pub fn module_symbol_component(",
+        "pub fn named_nominal_symbol(",
+        "pub fn enum_keeps_bare_symbol(",
+        "pub fn member_callable_name(",
+    ] {
+        assert_eq!(
+            live.matches(owner).count(),
+            1,
+            "live_symbols must own exactly one {owner}"
+        );
+    }
+
+    // The retired second owners cannot come back under their old names.
+    let pool = include_str!("intern_pool.rs");
+    let provider = include_str!("sema/provider_body_host.rs");
+    assert!(
+        !pool.contains("\"{}${}\""),
+        "the type pool must not spell a qualified nominal of its own"
+    );
+    assert!(
+        !provider.contains("fn member_callable_name_for_owner("),
+        "member callable rendering must live in live_symbols"
+    );
+
+    // Both nominal exemptions are registry membership reached through one
+    // predicate each, and the pool asks for a module component only when the
+    // nominal is qualified.
+    assert_eq!(
+        pool.matches("live_symbols::named_nominal_symbol(").count(),
+        2
+    );
+    assert!(pool.contains("live_symbols::enum_keeps_bare_symbol(&data.def.name)"));
+    assert!(pool.contains("live_symbols::module_symbol_component(path)"));
+
+    // The drop-glue fragment grammar is spelled once and driven from both type
+    // vocabularies through the shared shape.
+    let names = include_str!("drop_glue_names.rs");
+    assert_eq!(names.matches("pub fn drop_glue_type_fragment<").count(), 1);
+    assert_eq!(
+        names.matches("pub trait DropGlueTypeShapeSource").count(),
+        1
+    );
+    for fragment in ["array_{}_{len}", "ptr_const_{}", "ptr_mut_{}"] {
+        assert_eq!(
+            names.matches(fragment).count(),
+            1,
+            "the drop-glue grammar must spell {fragment} exactly once"
+        );
+    }
+
+    // The engine names member callables through the host, so the definition
+    // side and the call side share the renderer and its memo.
+    let engine = include_str!("sema/ordinary_engine.rs");
+    assert!(engine.contains("fn body_member_callable_name("));
+    assert!(engine.contains("fn try_member_callable_symbol("));
+    assert!(
+        !engine.contains("format!(\"{type_name}"),
+        "the engine must not render a member callable name of its own"
+    );
+    assert_eq!(
+        provider
+            .matches("fn try_member_callable_symbol_for_issued_owner(")
+            .count(),
+        1,
+        "member callable handles must have one memo policy"
     );
 }
 
