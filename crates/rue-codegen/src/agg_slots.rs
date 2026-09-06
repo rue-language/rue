@@ -33,7 +33,9 @@ use crate::vreg::VReg;
 /// Implementations are thin: `emit_load_slot` is a single frame-relative load
 /// instruction (`mov dst, [rbp+offset]` / `ldr dst, [fp, #offset]`); the rest
 /// expose existing lowerer state.
-pub(crate) trait SlotBackend: BoundsCheckBackend {
+pub(crate) trait SlotBackend:
+    BoundsCheckBackend + crate::value_plan::ValueLowerAdapter
+{
     /// The shared lowering context (CFG, type pool, slot counts).
     fn ctx(&self) -> &CfgLowerContext<'_>;
 
@@ -145,8 +147,10 @@ pub(crate) trait SlotBackend: BoundsCheckBackend {
     /// and AAPCS64 does not (ADR-0084).
     fn emit_sret_pointer_echo(&mut self);
 
-    /// Allocate a fresh label for a tag-dispatch marshalling edge (RUE-1037).
-    fn alloc_marshal_label(&mut self) -> crate::vreg::LabelId;
+    /// Allocate a fresh label for a branch this module emits inside a block:
+    /// a tag-dispatch marshalling edge (RUE-1037) or an array fill's loop
+    /// (RUE-2069).
+    fn alloc_lowering_label(&mut self) -> crate::vreg::LabelId;
 
     /// Compare the discriminant in `tag` against `discriminant` and branch to
     /// `label` when they are NOT equal (RUE-1037): the fall-through path runs the
@@ -162,8 +166,20 @@ pub(crate) trait SlotBackend: BoundsCheckBackend {
     /// variant's arm for the dispatch's merge point.
     fn emit_marshal_jump(&mut self, label: crate::vreg::LabelId);
 
-    /// Bind `label` at the current position (RUE-1037).
-    fn emit_marshal_label(&mut self, label: crate::vreg::LabelId);
+    /// Bind `label` at the current position (RUE-1037, RUE-2069).
+    fn emit_lowering_label(&mut self, label: crate::vreg::LabelId);
+
+    /// A fresh vreg holding an array fill's remaining-element count
+    /// (RUE-2069).
+    fn emit_fill_counter(&mut self, count: u64) -> VReg;
+
+    /// Advance an array fill's cursor or counter by `delta`, in place
+    /// (RUE-2069).
+    fn emit_fill_advance(&mut self, dst: VReg, delta: i64);
+
+    /// Branch back to `label` while an array fill's counter is not zero
+    /// (RUE-2069).
+    fn emit_fill_branch_if_nonzero(&mut self, counter: VReg, label: crate::vreg::LabelId);
 }
 
 /// Zero the padding byte `ranges` of a compact memory image reached through
@@ -347,7 +363,29 @@ pub(crate) fn get_or_compute_field_vregs<B: SlotBackend>(
         return None;
     }
     b.get_vreg(value);
-    b.slot_cache().get(&value).cloned()
+    if let Some(vregs) = b.slot_cache().get(&value).cloned() {
+        return Some(vregs);
+    }
+    expand_array_repeat(b, value)
+}
+
+/// The elementwise slot vector of a deferred array repeat (RUE-2069).
+///
+/// A repeat large enough to fill has no slot vector of its own: the store
+/// that consumes it writes the region from one element. Every other consumer
+/// — a by-value argument, an aggregate field, a return — needs one vreg per
+/// slot, which is the element's own slots repeated, since each element is a
+/// copy of the same evaluated value. The expansion is cached like any other
+/// producer's, so it happens at most once per value.
+fn expand_array_repeat<B: SlotBackend>(b: &mut B, value: CfgValue) -> Option<Vec<VReg>> {
+    let fill = b.array_repeat_fills().get(&value).cloned()?;
+    let total = usize::try_from(fill.total_slots()).ok()?;
+    let mut slots = Vec::with_capacity(total);
+    for _ in 0..fill.count {
+        slots.extend_from_slice(&fill.element_slots);
+    }
+    b.slot_cache().insert(value, slots.clone());
+    Some(slots)
 }
 
 /// Materialize and return the complete representation of a multi-slot
@@ -424,6 +462,63 @@ pub(crate) fn preallocate_block_param_slots<B: SlotBackend>(
         );
     }
     b.slot_cache().insert(param_value, slot_vregs);
+}
+
+/// Write `fill.count` copies of one already-evaluated element into the frame
+/// region beginning at `base_slot` (RUE-2069).
+///
+/// The region is the same one [`store_slots`] writes and follows the same
+/// ADR-0040 direction rule: logical slot 0 sits at the region's LOWEST
+/// address, which is its highest-numbered frame slot. Taking that address once
+/// and walking upward is what makes the whole sequence independent of the
+/// element count.
+pub(crate) fn fill_frame_region<B: SlotBackend>(
+    b: &mut B,
+    fill: &crate::value_plan::ArrayRepeatFill,
+    base_slot: u32,
+) {
+    let total_slots =
+        u32::try_from(fill.total_slots()).expect("a filled region fits the frame's slot numbering");
+    let low_slot = base_slot + total_slots.saturating_sub(1);
+    let base = b.alloc_vreg();
+    b.emit_slot_addr(base, low_slot);
+    fill_through_ptr(b, fill, base);
+}
+
+/// [`fill_frame_region`] through a pointer to the region's low end: element
+/// `e`'s slot `j` lands at `ptr + (e*element_slots + j)*8`, the ascending
+/// layout every aggregate has behind a pointer (ADR-0040).
+pub(crate) fn fill_through_ptr<B: SlotBackend>(
+    b: &mut B,
+    fill: &crate::value_plan::ArrayRepeatFill,
+    ptr: VReg,
+) {
+    assert!(
+        !fill.element_slots.is_empty(),
+        "an array fill writes at least one slot per element"
+    );
+    assert_eq!(
+        fill.element_slots.len(),
+        fill.element_leaf_types.len(),
+        "an array fill types every element slot"
+    );
+    if fill.count == 0 {
+        return;
+    }
+    let element_bytes = i64::try_from(fill.element_slots.len() as u64 * SLOT_BYTES)
+        .expect("an element's byte width fits the frame");
+
+    // The cursor is this loop's own: `ptr` may be a by-reference parameter's
+    // pointer, which the rest of the function still reads.
+    let cursor = b.alloc_vreg();
+    b.emit_reg_move(cursor, ptr);
+    let remaining = b.emit_fill_counter(u64::from(fill.count));
+    let top = b.alloc_lowering_label();
+    b.emit_lowering_label(top);
+    store_slots_through_ptr_typed(b, &fill.element_slots, cursor, 0, &fill.element_leaf_types);
+    b.emit_fill_advance(cursor, element_bytes);
+    b.emit_fill_advance(remaining, -1);
+    b.emit_fill_branch_if_nonzero(remaining, top);
 }
 
 /// Store a whole aggregate value's `vals` (one vreg per logical slot, slot 0
@@ -612,15 +707,15 @@ fn store_image_segs<B: SlotBackend>(
                 let tag = vals[region.tag_slot as usize];
                 // The discriminant is a common leaf across every variant.
                 b.emit_narrow_store_through_ptr(tag, ptr, region.tag_offset, region.tag_access);
-                let end = b.alloc_marshal_label();
+                let end = b.alloc_lowering_label();
                 for arm in &region.arms {
-                    let next = b.alloc_marshal_label();
+                    let next = b.alloc_lowering_label();
                     b.emit_marshal_branch_if_tag_ne(tag, arm.discriminant, next);
                     store_image_segs(b, vals, ptr, &arm.segs, true);
                     b.emit_marshal_jump(end);
-                    b.emit_marshal_label(next);
+                    b.emit_lowering_label(next);
                 }
-                b.emit_marshal_label(end);
+                b.emit_lowering_label(end);
             }
         }
     }
@@ -723,15 +818,15 @@ fn load_image_segs<B: SlotBackend>(
                         b.emit_set_zero(result[slot as usize]);
                     }
                 }
-                let end = b.alloc_marshal_label();
+                let end = b.alloc_lowering_label();
                 for arm in &region.arms {
-                    let next = b.alloc_marshal_label();
+                    let next = b.alloc_lowering_label();
                     b.emit_marshal_branch_if_tag_ne(tag, arm.discriminant, next);
                     load_image_segs(b, ptr, result, float_widths, &arm.segs, true);
                     b.emit_marshal_jump(end);
-                    b.emit_marshal_label(next);
+                    b.emit_lowering_label(next);
                 }
-                b.emit_marshal_label(end);
+                b.emit_lowering_label(end);
             }
         }
     }

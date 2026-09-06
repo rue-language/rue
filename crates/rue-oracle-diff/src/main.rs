@@ -1363,6 +1363,7 @@ fn unsupported_corpus_field(case: &Case) -> Option<IneligibleReason> {
         json_diagnostic_order: _,
         symbols_contain: _,
         no_symbol_table: _,
+        max_executable_bytes: _,
         // The CLI suite re-runs the case at every `-O` level; the differential
         // already executes each eligible case at O1, O2, and O3 against the
         // same pinned stdout and exit code, so this asks for nothing extra.
@@ -2185,6 +2186,7 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         let mut case = base.clone();
         case.differential_opt = true;
         case.no_symbol_table = true;
+        case.max_executable_bytes = Some(1 << 20);
         case.json_diagnostics = true;
         case.compile_stderr_not_contains = vec!["DEBUG:".to_string()];
         assert_eq!(unsupported_corpus_field(&case), None);

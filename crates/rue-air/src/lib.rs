@@ -67,7 +67,7 @@ pub use inst::{
     AirEnumPayload, AirInst, AirInstData, AirIntrinsicArgs, AirMatchArms, AirParamMode, AirPattern,
     AirPayloadError, AirPayloadStorageStats, AirPlace, AirPlaceBase, AirPlaceRef, AirProjection,
     AirRef, AirSourceOrder, AirStructFields, AirTypeArgs, AirValidationContext, AirValidationError,
-    AirValidationErrorKind, MAX_AIR_INSTRUCTIONS_PER_BODY, ValidatedAir,
+    AirValidationErrorKind, ArrayInitShape, MAX_AIR_INSTRUCTIONS_PER_BODY, ValidatedAir,
 };
 pub use integer_semantics::IntegerType;
 pub use intern_pool::{

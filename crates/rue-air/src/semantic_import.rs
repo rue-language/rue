@@ -1109,9 +1109,21 @@ where
                     air.add_struct_init(struct_id(struct_key)?, &fields, source_order, ty, span)?;
                     continue;
                 }
-                SemanticBodyInstData::ArrayInit { elements } => {
+                SemanticBodyInstData::ArrayInit { elements, shape } => {
                     let elements = refs(elements, current)?;
-                    air.add_array_init(&elements, ty, span)?;
+                    match shape {
+                        crate::ArrayInitShape::Elementwise => {
+                            air.add_array_init(&elements, ty, span)?;
+                        }
+                        // The repeat form names exactly one element (RUE-2069);
+                        // any other payload is a malformed imported body.
+                        crate::ArrayInitShape::Repeat => {
+                            let [value] = elements[..] else {
+                                return Err(F::InvalidInstructionReference);
+                            };
+                            air.add_array_repeat(value, ty, span)?;
+                        }
+                    }
                     continue;
                 }
                 SemanticBodyInstData::PlaceRead { place } => {

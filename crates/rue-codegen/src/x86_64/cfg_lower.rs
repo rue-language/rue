@@ -190,6 +190,9 @@ pub struct CfgLower<'a> {
     fn_name: &'a str,
     /// Maps StructInit CFG values to their field vregs
     struct_slot_vregs: AHashMap<CfgValue, Vec<VReg>>,
+    /// Array repeats deferred to a fill, keyed by their `ArrayInit` value
+    /// (RUE-2069). See `value_plan::ValueLowerAdapter::array_repeat_fills`.
+    array_repeat_fills: AHashMap<CfgValue, crate::value_plan::ArrayRepeatFill>,
     /// Maps by-reference parameter indices to their pointer vregs.
     /// For by-ref params, the slot contains a pointer to the caller's memory.
     /// This map stores the vreg holding that pointer so Store can use it.
@@ -395,6 +398,7 @@ impl<'a> CfgLower<'a> {
             next_label: 0,
             fn_name: cfg.fn_name(),
             struct_slot_vregs: AHashMap::with_capacity(estimated_struct_inits),
+            array_repeat_fills: AHashMap::new(),
             by_ref_param_ptrs: AHashMap::with_capacity(estimated_by_ref_params),
             param_reg_vregs: AHashMap::new(),
         }
@@ -2106,6 +2110,31 @@ impl<'a> CfgLower<'a> {
                     float_width,
                     &leaf_types,
                 );
+                return ValueResult::SideEffect;
+            }
+            // A deferred repeat emits no element stores of its own: the value
+            // is one evaluated element plus a count until the store that
+            // consumes it fills the region (RUE-2069). Its primary is the
+            // same never-read placeholder an `ArrayInit` produces, kept
+            // defined so register allocation sees an ordinary value.
+            ResidualValuePlan::ArrayRepeat => {
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(dst),
+                    imm: 0,
+                });
+                dst
+            }
+            ResidualValuePlan::ArrayFill { destination, fill } => {
+                match destination {
+                    crate::value_plan::StoreDestination::FrameSlot(slot) => {
+                        crate::agg_slots::fill_frame_region(self, &fill, slot);
+                    }
+                    crate::value_plan::StoreDestination::ByRefParam(param_slot) => {
+                        let ptr = self.ensure_by_ref_param_ptr(param_slot);
+                        crate::agg_slots::fill_through_ptr(self, &fill, ptr);
+                    }
+                }
                 return ValueResult::SideEffect;
             }
             ResidualValuePlan::StructInit { fields, .. }
@@ -4075,6 +4104,11 @@ impl crate::value_plan::ValueLowerAdapter for CfgLower<'_> {
             self.struct_slot_vregs.insert(value, result.slots);
         }
     }
+    fn array_repeat_fills(
+        &mut self,
+    ) -> &mut AHashMap<CfgValue, crate::value_plan::ArrayRepeatFill> {
+        &mut self.array_repeat_fills
+    }
 }
 
 /// Return the immediate form usable for a full-width enum-tag comparison.
@@ -4666,7 +4700,7 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
             width,
         });
     }
-    fn alloc_marshal_label(&mut self) -> LabelId {
+    fn alloc_lowering_label(&mut self) -> LabelId {
         self.new_label()
     }
     fn emit_marshal_branch_if_tag_ne(&mut self, tag: VReg, discriminant: u64, label: LabelId) {
@@ -4676,8 +4710,29 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
     fn emit_marshal_jump(&mut self, label: LabelId) {
         self.mir.push(X86Inst::Jmp { label });
     }
-    fn emit_marshal_label(&mut self, label: LabelId) {
+    fn emit_lowering_label(&mut self, label: LabelId) {
         self.mir.push(X86Inst::Label { id: label });
+    }
+    fn emit_fill_counter(&mut self, count: u64) -> VReg {
+        let dst = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRI64 {
+            dst: Operand::Virtual(dst),
+            imm: i64::try_from(count).expect("an array fill's count fits a signed immediate"),
+        });
+        dst
+    }
+    fn emit_fill_advance(&mut self, dst: VReg, delta: i64) {
+        self.mir.push(X86Inst::AddRI {
+            dst: Operand::Virtual(dst),
+            imm: i32::try_from(delta).expect("an array fill's step fits a 32-bit immediate"),
+        });
+    }
+    fn emit_fill_branch_if_nonzero(&mut self, counter: VReg, label: LabelId) {
+        self.mir.push(X86Inst::Cmp64RI {
+            src: Operand::Virtual(counter),
+            imm: 0,
+        });
+        self.mir.push(X86Inst::Jnz { label });
     }
 }
 
@@ -5359,6 +5414,12 @@ mod tests {
                 .unwrap()
         }
 
+        fn array_repeat(&mut self, value: CfgValue, ty: Type) -> CfgValue {
+            self.cfg
+                .append_array_repeat(self.current, value, ty, span())
+                .unwrap()
+        }
+
         fn enum_variant(
             &mut self,
             enum_id: EnumId,
@@ -5496,6 +5557,123 @@ mod tests {
     /// (`abi_slot_count(element) * SLOT_BYTES`) because the frame stores every
     /// element slot-shaped (RUE-975), so element addressing is physically correct
     /// even when the compact element size diverges from the slot stride.
+    /// RUE-2069: an array repeat is lowered as a fill whose instruction count
+    /// does not depend on how many elements it writes, while a repeat below
+    /// the threshold keeps the unrolled store-per-slot form it always had.
+    #[test]
+    fn array_repeat_fill_cost_is_independent_of_the_element_count() {
+        fn lower_repeat(count: u64) -> X86Mir {
+            let interner = ThreadedRodeo::new();
+            let pool = TypeInternPool::new();
+            let array_ty = Type::new_array(pool.intern_array_from_type(Type::I32, count));
+            let pool = pool.freeze();
+            let mut fixture = FixtureCfg::new(
+                Type::I32,
+                count as u32,
+                "main",
+                ParamSlotModes::new(vec![], vec![]),
+                vec![],
+                &pool,
+                &interner,
+            );
+            fixture.live(0, array_ty);
+            let seven = fixture.konst(7, Type::I32);
+            let array = fixture.array_repeat(seven, array_ty);
+            fixture.alloc(0, array);
+            fixture.dead(0, array_ty);
+            let zero = fixture.konst(0, Type::I32);
+            fixture.ret(Some(zero));
+            fixture.lower().expect("an array repeat must lower")
+        }
+
+        // Two counts three orders of magnitude apart produce the same
+        // machine code: the fill is a loop over a region, not a store per
+        // element.
+        let small_fill = lower_repeat(1_024);
+        let large_fill = lower_repeat(1_000_000);
+        assert_eq!(small_fill.inst_count(), large_fill.inst_count());
+        // Only the region's base offset and the loop's trip count differ.
+        let opcodes = |mir: &X86Mir| -> Vec<String> {
+            mir.instructions()
+                .iter()
+                .map(|inst| {
+                    inst.to_string()
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .collect()
+        };
+        assert_eq!(opcodes(&small_fill), opcodes(&large_fill));
+
+        // Below the threshold the elementwise form stays: one store per slot,
+        // so the count is visible in the instruction total.
+        let unrolled_four = lower_repeat(4);
+        let unrolled_eight = lower_repeat(8);
+        assert_eq!(
+            unrolled_eight.inst_count() - unrolled_four.inst_count(),
+            4,
+            "an unrolled repeat emits one store per element"
+        );
+        assert!(
+            unrolled_four.inst_count() < large_fill.inst_count(),
+            "the fill's fixed cost is what the threshold trades against"
+        );
+    }
+
+    /// A repeat of a repeat is one fill over the whole region, not the inner
+    /// repeat unrolled into the outer loop's body: growing the inner count
+    /// leaves the emitted code unchanged (RUE-2069).
+    #[test]
+    fn a_nested_array_repeat_is_one_fill() {
+        fn lower_nested(inner_count: u64, outer_count: u64) -> X86Mir {
+            let interner = ThreadedRodeo::new();
+            let pool = TypeInternPool::new();
+            let inner_ty = Type::new_array(pool.intern_array_from_type(Type::I32, inner_count));
+            let outer_ty = Type::new_array(pool.intern_array_from_type(inner_ty, outer_count));
+            let pool = pool.freeze();
+            let mut fixture = FixtureCfg::new(
+                Type::I32,
+                (inner_count * outer_count) as u32,
+                "main",
+                ParamSlotModes::new(vec![], vec![]),
+                vec![],
+                &pool,
+                &interner,
+            );
+            fixture.live(0, outer_ty);
+            let seven = fixture.konst(7, Type::I32);
+            let inner = fixture.array_repeat(seven, inner_ty);
+            let outer = fixture.array_repeat(inner, outer_ty);
+            fixture.alloc(0, outer);
+            fixture.dead(0, outer_ty);
+            let zero = fixture.konst(0, Type::I32);
+            fixture.ret(Some(zero));
+            fixture.lower().expect("a nested array repeat must lower")
+        }
+
+        let opcodes = |mir: &X86Mir| -> Vec<String> {
+            mir.instructions()
+                .iter()
+                .map(|inst| {
+                    inst.to_string()
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .collect()
+        };
+        // The inner repeat is itself over the fill threshold, so without
+        // flattening it would contribute one store per inner element to the
+        // outer loop's body.
+        let small_inner = lower_nested(64, 4);
+        let large_inner = lower_nested(1_024, 4);
+        assert_eq!(small_inner.inst_count(), large_inner.inst_count());
+        assert_eq!(opcodes(&small_inner), opcodes(&large_inner));
+    }
+
     #[test]
     fn aggregate_layout_allows_frame_array_slot_stride_indexing() {
         // `let a: [i32; 3] = [1, 2, 3]; let i: u64 = 1; a[i]`

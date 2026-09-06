@@ -442,12 +442,13 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
                     .collect::<Result<Vec<_>, _>>()?
                     .into(),
             },
-            AirInstData::ArrayInit { elements } => SemanticBodyInstData::ArrayInit {
+            AirInstData::ArrayInit { elements, shape } => SemanticBodyInstData::ArrayInit {
                 elements: body
                     .get_array_elements(elements)
                     .map(|v| r(v, current))
                     .collect::<Result<Vec<_>, _>>()?
                     .into(),
+                shape: *shape,
             },
             AirInstData::PlaceRead { place: value } => SemanticBodyInstData::PlaceRead {
                 place: place(*value)?,
@@ -516,9 +517,17 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
         .iter()
         .map(|(slot, ty)| Ok((*slot, host.export_body_type(*ty)?)))
         .collect::<Result<Vec<_>, F>>()?;
-    let borrow_slots = (0..analyzed.num_locals)
-        .filter(|slot| body.is_borrow_slot(*slot))
+    // Read the recorded set rather than asking about each slot of the frame:
+    // one array local can own a hundred million slots (RUE-2069). Sorted so
+    // the exported body stays canonical whatever order the binders were
+    // recorded in.
+    let mut borrow_slots = body
+        .borrow_slots()
+        .iter()
+        .copied()
+        .filter(|slot| *slot < analyzed.num_locals)
         .collect::<Vec<_>>();
+    borrow_slots.sort_unstable();
     // The recorded references were captured when method resolution selected
     // each winner. Order the payload by content-canonical render so equal
     // recorded sets serialize identically regardless of session-local ids.

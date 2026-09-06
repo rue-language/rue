@@ -329,7 +329,7 @@ impl Cfg {
             CfgInstData::StructInit { fields, .. } => {
                 out.extend_from_slice(self.struct_fields(fields))
             }
-            CfgInstData::ArrayInit { elements } => {
+            CfgInstData::ArrayInit { elements, .. } => {
                 out.extend_from_slice(self.array_elements(elements))
             }
             CfgInstData::EnumVariant { payload, .. } => {
@@ -1508,7 +1508,7 @@ impl<'a> Verifier<'a> {
                             .checked_struct_fields(fields)
                             .map_err(|error| self.payload_error(location, error))?;
                     }
-                    CfgInstData::ArrayInit { elements } => {
+                    CfgInstData::ArrayInit { elements, .. } => {
                         self.cfg
                             .checked_array_elements(elements)
                             .map_err(|error| self.payload_error(location, error))?;
@@ -2179,7 +2179,7 @@ impl<'a> Verifier<'a> {
                     f(operand, "struct field");
                 }
             }
-            CfgInstData::ArrayInit { elements } => {
+            CfgInstData::ArrayInit { elements, .. } => {
                 for &operand in self.cfg.array_elements(elements) {
                     f(operand, "array element");
                 }
@@ -4795,6 +4795,7 @@ mod tests {
             CfgInst {
                 data: CfgInstData::ArrayInit {
                     elements: crate::payload::CfgArrayElements::malformed(u32::MAX, 2),
+                    shape: rue_air::ArrayInitShape::Elementwise,
                 },
                 ty: Type::I32,
                 span: Span::new(0, 0),

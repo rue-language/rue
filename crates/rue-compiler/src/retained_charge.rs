@@ -823,7 +823,7 @@ impl<K: RetainedCharge, M: RetainedCharge> RetainedCharge for rue_air::SemanticB
                 .retained_charge()
                 .saturating_add(fields.retained_charge())
                 .saturating_add(source_order.retained_charge()),
-            Self::ArrayInit { elements } => elements.retained_charge(),
+            Self::ArrayInit { elements, .. } => elements.retained_charge(),
             Self::EnumVariant {
                 enum_key, payload, ..
             } => enum_key

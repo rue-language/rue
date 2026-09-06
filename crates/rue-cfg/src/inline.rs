@@ -1368,7 +1368,7 @@ fn translate_data(
                 fields: dst.push_struct_fields(fields)?,
             }
         }
-        ArrayInit { elements } => {
+        ArrayInit { elements, shape } => {
             let elements: Vec<CfgValue> = callee
                 .array_elements(elements)
                 .iter()
@@ -1376,6 +1376,7 @@ fn translate_data(
                 .collect();
             ArrayInit {
                 elements: dst.push_array_elements(elements)?,
+                shape: *shape,
             }
         }
         EnumVariant {

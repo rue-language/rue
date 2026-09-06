@@ -2062,7 +2062,7 @@ impl Air {
                         }
                     }
                 }
-                AirInstData::ArrayInit { elements } => {
+                AirInstData::ArrayInit { elements, shape } => {
                     validate_type(inst.ty).map_err(|reason| {
                         fail(Some(index), format!("invalid array identity: {reason}"))
                     })?;
@@ -2070,6 +2070,12 @@ impl Air {
                         return Err(fail(
                             Some(index),
                             "array initialization result is not an array type".into(),
+                        ));
+                    }
+                    if matches!(shape, ArrayInitShape::Repeat) && elements.len() != 1 {
+                        return Err(fail(
+                            Some(index),
+                            "array repeat carries exactly one element reference".into(),
                         ));
                     }
                     for &raw in self
@@ -2550,11 +2556,32 @@ impl Air {
         ty: Type,
         span: Span,
     ) -> Result<AirRef, AirBuildError> {
+        self.add_array_init_shaped(elements, ArrayInitShape::Elementwise, ty, span)
+    }
+
+    /// Build the repeat form of an array construction: one element reference
+    /// standing for every element of `ty` (RUE-2069).
+    pub(crate) fn add_array_repeat(
+        &mut self,
+        value: AirRef,
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.add_array_init_shaped(&[value], ArrayInitShape::Repeat, ty, span)
+    }
+
+    fn add_array_init_shaped(
+        &mut self,
+        elements: &[AirRef],
+        shape: ArrayInitShape,
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
         self.preflight_refs("array elements", elements.iter().copied())?;
         self.reserve_instruction("array elements")?;
         let elements = self.add_array_elements(elements)?;
         Ok(self.push_inst(AirInst {
-            data: AirInstData::ArrayInit { elements },
+            data: AirInstData::ArrayInit { elements, shape },
             ty,
             span,
         }))
@@ -2613,6 +2640,16 @@ impl Air {
     #[inline]
     pub fn is_borrow_slot(&self, slot: u32) -> bool {
         self.borrow_slots.contains(&slot)
+    }
+
+    /// Every recorded borrow slot, in the order they were recorded (see
+    /// `borrow_slots`). Consumers that need the whole set read it here rather
+    /// than asking [`Self::is_borrow_slot`] about each slot of the frame: a
+    /// single array local can own a hundred million slots, while this list
+    /// holds one entry per borrowing binder (RUE-2069).
+    #[inline]
+    pub(crate) fn borrow_slots(&self) -> &[u32] {
+        &self.borrow_slots
     }
 
     /// Add an instruction and return its reference.
@@ -3453,6 +3490,22 @@ pub struct AirInst {
     pub span: Span,
 }
 
+/// How an array-construction payload describes the array's elements.
+///
+/// A repeat literal (`[value; count]`) names one value and a count, and that
+/// count is the array type's own length. Keeping the shape symbolic through
+/// AIR, the CFG and code generation is what lets a large repeat cost the same
+/// as a small one: an elementwise payload is proportional to the array's
+/// length in every representation that carries it (RUE-2069).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ArrayInitShape {
+    /// One payload entry per element, in index order.
+    Elementwise,
+    /// One payload entry repeated for every element of the array. The element
+    /// count is the length of the instruction's array type.
+    Repeat,
+}
+
 /// AIR instruction data - fully typed operations.
 #[derive(Debug)]
 pub enum AirInstData {
@@ -3678,11 +3731,14 @@ pub enum AirInstData {
     },
 
     // Array operations
-    /// Create a new array with initialized elements.
+    /// Create a new array value.
     /// The array type is stored in `AirInst.ty` as `Type::new_array(...)`.
     ArrayInit {
-        /// Start index into extra array for element refs
+        /// Start index into extra array for element refs. A
+        /// [`ArrayInitShape::Repeat`] payload holds exactly one ref.
         elements: AirArrayElements,
+        /// How the payload describes the array's elements.
+        shape: ArrayInitShape,
     },
 
     // Place operations
@@ -4024,7 +4080,10 @@ impl Air {
                     }
                     writeln!(f, "]")?;
                 }
-                AirInstData::ArrayInit { elements } => {
+                AirInstData::ArrayInit {
+                    elements,
+                    shape: ArrayInitShape::Elementwise,
+                } => {
                     write!(f, "array_init [")?;
                     for (i, elem) in self.get_array_elements(elements).enumerate() {
                         if i > 0 {
@@ -4033,6 +4092,18 @@ impl Air {
                         write!(f, "{}", elem)?;
                     }
                     writeln!(f, "]")?;
+                }
+                AirInstData::ArrayInit {
+                    elements,
+                    shape: ArrayInitShape::Repeat,
+                } => {
+                    // The repeat count is the array type's length, which this
+                    // printer has no type pool to resolve.
+                    let value = self
+                        .get_array_elements(elements)
+                        .next()
+                        .expect("an array repeat carries its repeated value");
+                    writeln!(f, "array_repeat [{}]", value)?;
                 }
                 AirInstData::PlaceRead { place } => {
                     write!(f, "place_read ")?;

@@ -1217,6 +1217,21 @@ fn main() -> i32 {
 exit_code = 12
 
 [[case]]
+name = "array_repeat_evaluates_value_once_for_a_filled_count"
+spec = ["7.1:39"]
+description = "A count large enough that code generation fills the region with a loop rather than one store per element still evaluates the value exactly once: one line of output, not one per element (RUE-2069)"
+source = """
+fn produce() -> i32 { @dbg(42); 7 }
+fn main() -> i32 {
+    let a: [i32; 100] = [produce(); 100];
+    a[0] + a[99]
+}
+"""
+expected_stdout = """42
+"""
+exit_code = 14
+
+[[case]]
 name = "array_repeat_zero_count_evaluates_value_side_effect"
 spec = ["7.1:39"]
 description = "The repeat value expression is evaluated exactly once even when the count is 0 (RUE-531: it was dropped entirely)"

@@ -6,12 +6,9 @@
 //! Struct, enum, array, and pointer definitions are resolved through the
 //! canonical `FrozenTypeInternPool` (ADR-0024).
 
-use ahash::AHashMap;
 use lasso::ThreadedRodeo;
 use rue_air::{ArrayTypeId, EnumId, FrozenTypeInternPool, StructId, TypeKind};
-use rue_cfg::{Cfg, CfgInstData, CfgValue, Type, ValidatedCfg};
-
-use crate::vreg::VReg;
+use rue_cfg::{Cfg, CfgInstData, CfgValue, Type};
 
 /// Extract the ArrayTypeId from a Type::Array.
 /// Returns None if the type is not an array type.
@@ -167,9 +164,19 @@ fn push_leaf_types(type_pool: &FrozenTypeInternPool, ty: Type, out: &mut Vec<Typ
             }
         }
         TypeKind::Array(array_id) => {
+            // Walk the element once and repeat its leaves: an array of a
+            // zero-slot element contributes nothing however long it is, so
+            // this is where a `[(); 100000000]` local stops costing a hundred
+            // million walks of the same type (RUE-2069).
             let (element_type, length) = type_pool.array_def(array_id);
+            let mut element_leaves = Vec::new();
+            push_leaf_types(type_pool, element_type, &mut element_leaves);
+            if element_leaves.is_empty() {
+                return;
+            }
+            out.reserve((element_leaves.len() as u64 * length) as usize);
             for _ in 0..length {
-                push_leaf_types(type_pool, element_type, out);
+                out.extend_from_slice(&element_leaves);
             }
         }
         TypeKind::Enum(enum_id) => {
@@ -192,6 +199,34 @@ fn push_leaf_types(type_pool: &FrozenTypeInternPool, ty: Type, out: &mut Vec<Typ
             out.extend(std::iter::repeat_n(Type::I64, payload_slots));
         }
         _ => out.push(ty),
+    }
+}
+
+/// The leaf type behind logical slot 0 of `ty` — the first entry
+/// [`aggregate_leaf_types`] would produce — without materializing the whole
+/// leaf vector. `None` when the type has no slots.
+///
+/// Every value plan needs this one leaf to give the primary vreg its register
+/// class, and building the full vector for it made planning proportional to
+/// the value's slot count: one local of a hundred million elements cost a
+/// hundred-million-entry vector per value plan that mentioned it (RUE-2069).
+pub fn primary_leaf_type(type_pool: &FrozenTypeInternPool, ty: Type) -> Option<Type> {
+    match ty.kind() {
+        TypeKind::Unit | TypeKind::Never => None,
+        TypeKind::Struct(struct_id) => type_pool
+            .struct_def(struct_id)
+            .fields
+            .iter()
+            .find_map(|field| primary_leaf_type(type_pool, field.ty)),
+        TypeKind::Array(array_id) => {
+            let (element_type, length) = type_pool.array_def(array_id);
+            (length > 0)
+                .then(|| primary_leaf_type(type_pool, element_type))
+                .flatten()
+        }
+        // Slot 0 of an enum is its discriminant, whatever the payload holds.
+        TypeKind::Enum(_) => Some(Type::I32),
+        _ => Some(ty),
     }
 }
 
@@ -1224,131 +1259,11 @@ pub(crate) fn ensure_compact_layout_codegen_supported(
     Ok(())
 }
 
-/// Recursively collect all scalar vregs from an array value.
-///
-/// For nested arrays, this flattens them to a list of scalar vregs.
-/// This is used during code generation to handle array arguments that need
-/// to be passed in registers or stored to memory slot by slot.
-///
-/// # Arguments
-/// * `cfg` - The control flow graph containing the instructions
-/// * `struct_slot_vregs` - Cache mapping CFG values to their slot vregs
-/// * `value` - The CFG value to collect vregs from
-/// * `get_vreg` - Closure to get/allocate a vreg for a given CFG value
-pub fn collect_array_scalar_vregs(
-    cfg: &ValidatedCfg,
-    struct_slot_vregs: &AHashMap<CfgValue, Vec<VReg>>,
-    value: CfgValue,
-    get_vreg: &mut impl FnMut(CfgValue) -> VReg,
-) -> Vec<VReg> {
-    let inst = cfg.get_inst(value);
-    match &inst.data {
-        CfgInstData::ArrayInit { .. } => {
-            let elements = cfg.get_array_elements(&inst.data);
-            let mut result = Vec::new();
-            // Collect elements in logical order (element 0 first), matching
-            // The slot cache is uniform ascending order and
-            // the ascending physical layout is produced at store time (ADR-0040
-            // / RUE-311).
-            for elem in elements.iter() {
-                let elem_inst = cfg.get_inst(*elem);
-                if elem_inst.ty.is_array() {
-                    // Recursively collect from nested array
-                    result.extend(collect_array_scalar_vregs(
-                        cfg,
-                        struct_slot_vregs,
-                        *elem,
-                        get_vreg,
-                    ));
-                } else if elem_inst.ty.is_struct() {
-                    // Recursively collect from struct element (includes builtin String)
-                    result.extend(collect_struct_scalar_vregs(
-                        cfg,
-                        struct_slot_vregs,
-                        *elem,
-                        get_vreg,
-                    ));
-                } else {
-                    // Scalar element - get its vreg
-                    result.push(get_vreg(*elem));
-                }
-            }
-            result
-        }
-        _ => {
-            // For non-ArrayInit sources, try struct_slot_vregs cache
-            if let Some(vregs) = struct_slot_vregs.get(&value).cloned() {
-                vregs
-            } else {
-                vec![get_vreg(value)]
-            }
-        }
-    }
-}
-
 // The drop-glue array symbol name comes from the single authority in
 // `rue_air::drop_glue_names`, shared with compiler glue synthesis and the other
 // backend, so the external ABI cannot drift (RUE-796). Re-exported for the
 // existing `crate::types::array_drop_glue_name` call sites.
 pub use rue_air::drop_glue_names::array_drop_glue_name;
-
-/// Recursively collect all scalar vregs from a struct value.
-///
-/// This flattens any array fields to their scalar elements.
-/// This is used during code generation to handle struct arguments that need
-/// to be passed in registers or stored to memory slot by slot.
-///
-/// # Arguments
-/// * `cfg` - The control flow graph containing the instructions
-/// * `struct_slot_vregs` - Cache mapping CFG values to their slot vregs
-/// * `value` - The CFG value to collect vregs from
-/// * `get_vreg` - Closure to get/allocate a vreg for a given CFG value
-pub fn collect_struct_scalar_vregs(
-    cfg: &ValidatedCfg,
-    struct_slot_vregs: &AHashMap<CfgValue, Vec<VReg>>,
-    value: CfgValue,
-    get_vreg: &mut impl FnMut(CfgValue) -> VReg,
-) -> Vec<VReg> {
-    let inst = cfg.get_inst(value);
-    match &inst.data {
-        CfgInstData::StructInit { .. } => {
-            let fields = cfg.get_struct_fields(&inst.data);
-            let mut result = Vec::new();
-            for field in fields {
-                let field_inst = cfg.get_inst(*field);
-                if field_inst.ty.is_array() {
-                    // Recursively collect from array field
-                    result.extend(collect_array_scalar_vregs(
-                        cfg,
-                        struct_slot_vregs,
-                        *field,
-                        get_vreg,
-                    ));
-                } else if field_inst.ty.is_struct() {
-                    // Recursively collect from nested struct field (includes builtin String)
-                    result.extend(collect_struct_scalar_vregs(
-                        cfg,
-                        struct_slot_vregs,
-                        *field,
-                        get_vreg,
-                    ));
-                } else {
-                    // Scalar field - get its vreg
-                    result.push(get_vreg(*field));
-                }
-            }
-            result
-        }
-        _ => {
-            // For non-StructInit sources, try struct_slot_vregs cache
-            if let Some(vregs) = struct_slot_vregs.get(&value).cloned() {
-                vregs
-            } else {
-                vec![get_vreg(value)]
-            }
-        }
-    }
-}
 
 #[cfg(test)]
 mod layout_authority_tests {
@@ -1444,6 +1359,73 @@ mod layout_authority_tests {
                 }
                 assert!(type_slot_count(pool, ty) >= field_offsets.len() as u32);
             }
+        }
+    }
+
+    /// The slot-0 leaf shortcut answers exactly what the full leaf vector's
+    /// first entry does, for every shape in the fixture pool. Value planning
+    /// reads the register class of the primary vreg from it, and a whole leaf
+    /// vector is proportional to the value's slot count (RUE-2069).
+    #[test]
+    fn primary_leaf_type_matches_the_full_leaf_vector() {
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let (pair_id, _) = pool.register_struct(
+            interner.get_or_intern("Pair"),
+            StructDef {
+                name: "Pair".into(),
+                fields: vec![
+                    StructField {
+                        name: "a".to_string(),
+                        ty: Type::F64,
+                    },
+                    StructField {
+                        name: "b".to_string(),
+                        ty: Type::I32,
+                    },
+                ],
+                is_copy: true,
+                is_linear: false,
+                declared_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        let pairs_id = pool.intern_array_from_type(Type::new_struct(pair_id), 4);
+        pool.register_struct(
+            interner.get_or_intern("Wrapper"),
+            StructDef {
+                name: "Wrapper".into(),
+                fields: vec![
+                    StructField {
+                        name: "unit".to_string(),
+                        ty: Type::UNIT,
+                    },
+                    StructField {
+                        name: "pairs".to_string(),
+                        ty: Type::new_array(pairs_id),
+                    },
+                ],
+                is_copy: true,
+                is_linear: false,
+                declared_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        pool.intern_array_from_type(Type::UNIT, 3);
+        let pool = &pool.freeze();
+
+        for ty in pool.all_types() {
+            assert_eq!(
+                super::primary_leaf_type(pool, ty),
+                super::aggregate_leaf_types(pool, ty).first().copied(),
+                "slot-0 leaf disagrees for {ty:?}"
+            );
         }
     }
 }

@@ -1996,10 +1996,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// 2. requires the element type to be `Copy` — a repeat materializes
     ///    `count` copies of one value, which is only sound for Copy elements
     ///    (matching Rust's `[v; N]: Copy`);
-    /// 3. evaluates `value` exactly once and desugars to an `ArrayInit` whose
-    ///    `count` elements all reference that single evaluated value, so the
-    ///    existing per-element store lowering fills every slot on both
-    ///    backends with no codegen changes.
+    /// 3. evaluates `value` exactly once (spec 7.1:39) and builds the repeat
+    ///    form of `ArrayInit`: one element reference plus the array type's
+    ///    length, which the CFG carries unchanged and both backends lower to
+    ///    a fill (RUE-2069).
     fn analyze_array_repeat(
         &mut self,
         air: &mut Air,
@@ -2073,17 +2073,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // cannot hold — either on their own (it is one slot looser) or once
         // earlier locals have spent part of the budget. Such a repeat is
         // rejected by the binding's or temporary's `reserve_frame_slots`, but
-        // only after this expansion has already built one element reference
-        // per element: `[0; 268435455]` cost about 8 s and 2 GB to produce a
-        // diagnostic that depends on nothing but the layout (RUE-2059). Ask
-        // the frame budget first so rejecting an unrepresentable repeat is
-        // O(1); accepted repeats are unaffected, since a region that fits here
-        // still fits when the owning storage reserves it.
+        // only after the whole initializer has been analyzed, and the answer
+        // depends on nothing but the layout (RUE-2059). Ask the frame budget
+        // here so an unrepresentable repeat is diagnosed at the literal
+        // itself; accepted repeats are unaffected, since a region that fits
+        // here still fits when the owning storage reserves it.
         self.require_frame_slots_fit(ctx.next_slot, array_slots, span)?;
 
-        // Desugar to ArrayInit: `length` elements, each the single value.
-        let elem_refs = vec![value_result.air_ref; length as usize];
-        let air_ref = air.add_array_init(&elem_refs, array_type, span)?;
+        // Keep the repeat symbolic: one element reference plus the array
+        // type's own length. Expanding it here made every later
+        // representation — the AIR body, the CFG, and one machine store per
+        // element — proportional to the count, so a valid `[0; 100000000]`
+        // could not be compiled at all (RUE-2069).
+        let air_ref = air.add_array_repeat(value_result.air_ref, array_type, span)?;
 
         // The value expression is evaluated exactly once even when the length
         // is 0 (spec 7.1:39). With no element referencing it the evaluation

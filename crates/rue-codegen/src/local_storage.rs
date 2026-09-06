@@ -164,11 +164,23 @@ struct SharingViolation {
     second: usize,
 }
 
+/// CFG local slot -> emitted frame local slot.
+///
+/// The identity numbering is held as a rule rather than a table: it is the
+/// common case, it is what every slot outside a table already falls back to,
+/// and one array local can own a hundred million slots, which is a
+/// hundred-million-entry table to say "each slot keeps its own number"
+/// (RUE-2069).
+#[derive(Debug, Clone)]
+enum LocalSlotMap {
+    Identity,
+    Shared(Vec<u32>),
+}
+
 /// The per-function local frame-slot assignment.
 #[derive(Debug, Clone)]
 pub(crate) struct LocalSlotPlan {
-    /// CFG local slot -> emitted frame local slot.
-    map: Vec<u32>,
+    map: LocalSlotMap,
     /// Frame local slots the assignment occupies.
     frame_local_slots: u32,
 }
@@ -179,7 +191,7 @@ impl LocalSlotPlan {
     /// a sharing decision, and the baseline the planned path shrinks from.
     pub(crate) fn identity(num_locals: u32) -> Self {
         Self {
-            map: (0..num_locals).collect(),
+            map: LocalSlotMap::Identity,
             frame_local_slots: num_locals,
         }
     }
@@ -205,7 +217,10 @@ impl LocalSlotPlan {
     /// number, exactly as the pre-RUE-768 identity layout gave it, and the
     /// canonical ZST place address it yields (RUE-605) still names zero bytes.
     pub(crate) fn frame_slot(&self, slot: u32) -> u32 {
-        self.map.get(slot as usize).copied().unwrap_or(slot)
+        match &self.map {
+            LocalSlotMap::Identity => slot,
+            LocalSlotMap::Shared(map) => map.get(slot as usize).copied().unwrap_or(slot),
+        }
     }
 
     /// Frame local slots the plan occupies (also the base of the emitted
@@ -217,7 +232,10 @@ impl LocalSlotPlan {
     /// Whether any two entities were merged onto shared cells.
     #[cfg(test)]
     pub(crate) fn shares_any_slot(&self) -> bool {
-        self.frame_local_slots < self.map.len() as u32
+        match &self.map {
+            LocalSlotMap::Identity => false,
+            LocalSlotMap::Shared(map) => self.frame_local_slots < map.len() as u32,
+        }
     }
 
     /// The CFG local slots assigned to each emitted frame local cell, indexed
@@ -229,8 +247,14 @@ impl LocalSlotPlan {
     /// cell, and a report that cannot say so cannot be used to review the
     /// decision or pin it against regression.
     pub(crate) fn cfg_slots_by_frame_slot(&self) -> Vec<Vec<u32>> {
+        let map = match &self.map {
+            LocalSlotMap::Identity => {
+                return (0..self.frame_local_slots).map(|slot| vec![slot]).collect();
+            }
+            LocalSlotMap::Shared(map) => map,
+        };
         let mut owners = vec![Vec::new(); self.frame_local_slots as usize];
-        for (cfg_slot, &frame_slot) in self.map.iter().enumerate() {
+        for (cfg_slot, &frame_slot) in map.iter().enumerate() {
             // A ZST local can sit one past the local area and is not mapped;
             // it owns no cell, so it names none here either.
             if let Some(cell) = owners.get_mut(frame_slot as usize) {
@@ -302,7 +326,7 @@ impl LocalSlotPlan {
             return None;
         }
         Some(Self {
-            map,
+            map: LocalSlotMap::Shared(map),
             frame_local_slots,
         })
     }
@@ -756,7 +780,7 @@ mod tests {
         // Owners come back in CFG order within a cell, which is what makes the
         // rendered name stable across runs.
         let merged = LocalSlotPlan {
-            map: vec![0, 1, 0],
+            map: LocalSlotMap::Shared(vec![0, 1, 0]),
             frame_local_slots: 2,
         };
         assert_eq!(merged.cfg_slots_by_frame_slot(), vec![vec![0, 2], vec![1]]);
@@ -766,7 +790,7 @@ mod tests {
         // to a cell. It must not be attributed to a cell it does not occupy,
         // and must not index out of bounds.
         let with_zst = LocalSlotPlan {
-            map: vec![0, 1],
+            map: LocalSlotMap::Shared(vec![0, 1]),
             frame_local_slots: 1,
         };
         assert_eq!(with_zst.cfg_slots_by_frame_slot(), vec![vec![0]]);

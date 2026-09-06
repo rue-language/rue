@@ -708,20 +708,26 @@ mod tests {
             "the non-consuming frame probe asks the reserving path, not a second budget rule"
         );
 
-        // RUE-2059: an array-repeat literal expands one element reference per
-        // element, so the frame budget must be asked before that expansion,
-        // not after. Rejecting `[0; 268435455]` otherwise costs seconds and
-        // gigabytes for a diagnostic decided entirely by the layout.
+        // RUE-2059: a repeat's rejection is decided entirely by its layout, so
+        // the frame budget is asked before the rest of the literal is built,
+        // not after. RUE-2069: what follows is the symbolic repeat form — one
+        // element reference and the array type's length — and never a payload
+        // with one entry per element, so a huge accepted repeat costs no more
+        // than a small one.
         let repeat = method_item(AGGREGATES_SOURCE, "analyze_array_repeat");
         let probe_at = repeat
             .find("self.require_frame_slots_fit(")
             .expect("the repeat path asks the frame budget");
-        let expand_at = repeat
-            .find("vec![value_result.air_ref;")
-            .expect("the repeat path expands one element reference per element");
+        let build_at = repeat
+            .find("air.add_array_repeat(value_result.air_ref,")
+            .expect("the repeat path builds the symbolic repeat form");
         assert!(
-            probe_at < expand_at,
-            "the frame-budget check must precede the per-element payload expansion"
+            probe_at < build_at,
+            "the frame-budget check must precede the array construction"
+        );
+        assert!(
+            !repeat.contains("vec![value_result.air_ref;"),
+            "the repeat path must not expand one element reference per element"
         );
 
         let checked = method_item(engine_owner, "checked_abi_slot_count");

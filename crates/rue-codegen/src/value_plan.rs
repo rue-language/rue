@@ -10,6 +10,7 @@
 //! materialization requires updating the exhaustive match below, so an
 //! architecture cannot quietly invent a different scalar/aggregate policy.
 
+use ahash::AHashMap;
 use lasso::Spur;
 use rue_air::IntrinsicOperation;
 use rue_air::{EnumId, IntegerType, StructId, TypeKind};
@@ -140,6 +141,19 @@ pub enum ResidualValuePlan {
     ArrayInit {
         elements: Vec<(MaterializedValue, ValueShape)>,
     },
+    /// An array repeat whose region is filled rather than materialized
+    /// (RUE-2069). The repeated value has already been evaluated into
+    /// [`ArrayRepeatFill::element_slots`]; this instruction itself produces
+    /// only the placeholder primary every `ArrayInit` produces, and the fill
+    /// is emitted where the array is stored.
+    ArrayRepeat,
+    /// Fill a storage region with `count` copies of one already-materialized
+    /// element (RUE-2069). This replaces the `Alloc` or `Store` that would
+    /// otherwise write one slot per element.
+    ArrayFill {
+        destination: StoreDestination,
+        fill: ArrayRepeatFill,
+    },
     EnumVariant {
         enum_id: EnumId,
         variant_index: u32,
@@ -214,6 +228,44 @@ pub enum StoreDestination {
     FrameSlot(u32),
     ByRefParam(u32),
 }
+
+/// An array repeat `[value; count]` held as one evaluated element plus a
+/// count, ready to be written into a storage region as a fill (RUE-2069).
+///
+/// The elementwise representation of a repeat is one vreg and one machine
+/// store per element, so a large repeat could not be compiled at all: a
+/// hundred-million-element zeroed local needed 13 GB and seven bytes of
+/// machine code per element. The repeated value is Copy by construction
+/// (E0905), which is what lets every element share one materialization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArrayRepeatFill {
+    /// One vreg per slot of the repeated element, in ascending logical order.
+    /// Never empty: a zero-slot element writes nothing and is not deferred.
+    pub element_slots: Vec<VReg>,
+    /// The leaf type behind each element slot, so a float slot is stored at
+    /// its own width from its own register class.
+    pub element_leaf_types: Vec<Type>,
+    /// How many copies of the element the array holds.
+    pub count: u32,
+}
+
+impl ArrayRepeatFill {
+    /// Total slots the filled region spans.
+    pub fn total_slots(&self) -> u64 {
+        self.element_slots.len() as u64 * u64::from(self.count)
+    }
+}
+
+/// Smallest region, in slots, that a repeat fills with a counted loop instead
+/// of one store per slot (RUE-2069).
+///
+/// Below this the unrolled stores are both smaller and faster than the loop's
+/// fixed cost — a region pointer, a counter, a compare and a branch, plus the
+/// per-iteration pointer bump — so a repeat that small keeps exactly the code
+/// it had before the fill existed. Above it the unrolled form grows without
+/// bound (seven bytes of machine code per element on x86-64) while the loop
+/// stays the same handful of instructions whatever the count.
+pub const REPEAT_FILL_MIN_SLOTS: u64 = 32;
 
 /// One already-decided cleanup call: a destructor or a drop-glue body handed
 /// its owner as ONE by-value argument of the owner's type.
@@ -618,6 +670,18 @@ pub trait ValueLowerAdapter:
     fn emit_checked_arithmetic(&mut self, plan: ArithmeticPlan) -> ValueResult;
     fn emit_trap(&mut self, plan: TrapPlan) -> ValueResult;
     fn cache_value(&mut self, value: CfgValue, result: MaterializedValue);
+    /// The lowerer's deferred array-repeat fills, keyed by the `ArrayInit`
+    /// value that produced them (RUE-2069).
+    ///
+    /// A deferred repeat has no slot vector: it caches only its placeholder
+    /// primary, and its region is written by whichever `Alloc` or `Store`
+    /// consumes it. An entry stays after a fill, because the same repeat can
+    /// initialize more than one local and because any other consumer — a
+    /// by-value argument, a return, a projected write — still needs the
+    /// elementwise expansion
+    /// [`agg_slots::require_aggregate_slots`](crate::agg_slots::require_aggregate_slots)
+    /// builds from it.
+    fn array_repeat_fills(&mut self) -> &mut AHashMap<CfgValue, ArrayRepeatFill>;
 }
 
 /// The representation required by a value consumer.
@@ -708,6 +772,9 @@ pub fn float_width(ty: Type) -> Option<FloatWidth> {
 /// a plan that reaches a value through its primary vreg does so only when that
 /// vreg is the whole value, and every other slot takes its own class from
 /// `leaf_types` through the typed slot walk.
+///
+/// [`crate::types::primary_leaf_type`] answers the same question from the type
+/// alone, for callers that have no leaf vector in hand.
 pub fn primary_slot_float_width(leaf_types: &[Type]) -> Option<FloatWidth> {
     leaf_types.first().copied().and_then(float_width)
 }
@@ -861,6 +928,8 @@ pub enum ValueKind {
     Intrinsic,
     StructInit,
     ArrayInit,
+    ArrayRepeat,
+    ArrayFill,
     EnumVariant,
     EnumPayloadGet,
     IntegerCast,
@@ -948,10 +1017,8 @@ impl ValuePlan {
             } else {
                 MaterializationRequirement::Primary
             },
-            primary_float_width: primary_slot_float_width(&crate::types::aggregate_leaf_types(
-                ctx.type_pool,
-                ty,
-            )),
+            primary_float_width: crate::types::primary_leaf_type(ctx.type_pool, ty)
+                .and_then(float_width),
             integer_width: value_width,
             source_integer_width: match &inst.data {
                 CfgInstData::IntCast { from_ty, .. } => integer_width(*from_ty),
@@ -1310,6 +1377,11 @@ enum ResidualInput {
         struct_id: StructId,
     },
     ArrayInit,
+    /// An array repeat large enough to fill rather than expand (RUE-2069).
+    ArrayRepeat {
+        element: CfgValue,
+        count: u32,
+    },
     EnumVariant {
         enum_id: EnumId,
         variant_index: u32,
@@ -1348,6 +1420,41 @@ fn result_narrowing(ctx: &CfgLowerContext<'_>, value: CfgValue) -> IntegerExtens
     narrowing_extension(integer_width(ty).unwrap_or_else(|| {
         panic!("narrowed operation on non-integer type: {ty:?}");
     }))
+}
+
+/// The logical elements of an array construction, one per element of the
+/// array type. A repeat that is materialized elementwise — below
+/// [`REPEAT_FILL_MIN_SLOTS`], or consumed somewhere a fill cannot serve —
+/// expands here, which is exactly the representation the elementwise shape
+/// carries (RUE-2069).
+fn array_init_elements(ctx: &CfgLowerContext<'_>, value: CfgValue) -> Vec<CfgValue> {
+    let inst = ctx.cfg.get_inst(value);
+    match ctx.cfg.array_init_repeat(&inst.data) {
+        // A zero-slot element stores nothing whatever the count, and the
+        // entries a store skips are exactly the ones this list exists to
+        // name. One entry still materializes the repeated value, which spec
+        // 7.1:39 requires evaluated exactly once, so the emitted code is the
+        // same and the list does not grow with the count. A zero-LENGTH array
+        // is a different case and keeps its empty list below: its element
+        // does have slots, and a representation carrying one would not match
+        // the array's own slot count.
+        Some(element) if ctx.type_slot_count(ctx.cfg.get_inst(element).ty) == 0 => {
+            vec![element]
+        }
+        Some(element) => vec![element; ctx.array_length(inst.ty) as usize],
+        None => ctx.cfg.get_array_elements(&inst.data).to_vec(),
+    }
+}
+
+/// The element count of an array repeat whose region is worth filling with a
+/// counted loop instead of one store per slot (RUE-2069).
+fn deferred_repeat_count(ctx: &CfgLowerContext<'_>, value: CfgValue) -> Option<u32> {
+    let inst = ctx.cfg.get_inst(value);
+    let element = ctx.cfg.array_init_repeat(&inst.data)?;
+    let element_slots = u64::from(ctx.type_slot_count(ctx.cfg.get_inst(element).ty));
+    let count = u32::try_from(ctx.array_length(inst.ty)).ok()?;
+    let total = element_slots.checked_mul(u64::from(count))?;
+    (element_slots > 0 && total >= REPEAT_FILL_MIN_SLOTS).then_some(count)
 }
 
 fn residual_plan<A: ValueLowerAdapter>(
@@ -1414,6 +1521,15 @@ fn residual_plan<A: ValueLowerAdapter>(
         // slot numbering assumes every parameter is homed, while the emitted
         // frame compacts register-only parameters away (RUE-1170).
         ResidualInput::Alloc { slot, init } => {
+            // A deferred repeat writes its region here rather than handing
+            // over one vreg per slot; asking for its leaf types first would
+            // already be proportional to the array's length (RUE-2069).
+            if let Some(fill) = adapter.array_repeat_fills().get(&init).cloned() {
+                return ResidualValuePlan::ArrayFill {
+                    destination: StoreDestination::FrameSlot(ctx.frame_slot(slot)),
+                    fill,
+                };
+            }
             let leaf_types =
                 crate::types::aggregate_leaf_types(ctx.type_pool, ctx.cfg.get_inst(init).ty);
             ResidualValuePlan::Alloc {
@@ -1434,6 +1550,12 @@ fn residual_plan<A: ValueLowerAdapter>(
             }
         }
         ResidualInput::Store { slot, value } => {
+            if let Some(fill) = adapter.array_repeat_fills().get(&value).cloned() {
+                return ResidualValuePlan::ArrayFill {
+                    destination: store_destination(ctx, slot),
+                    fill,
+                };
+            }
             let leaf_types =
                 crate::types::aggregate_leaf_types(ctx.type_pool, ctx.cfg.get_inst(value).ty);
             ResidualValuePlan::Store {
@@ -1471,11 +1593,8 @@ fn residual_plan<A: ValueLowerAdapter>(
                 .collect(),
         },
         ResidualInput::ArrayInit => ResidualValuePlan::ArrayInit {
-            elements: ctx
-                .cfg
-                .get_array_elements(&ctx.cfg.get_inst(value).data)
-                .iter()
-                .copied()
+            elements: array_init_elements(ctx, value)
+                .into_iter()
                 .map(|element| {
                     (
                         operand(ctx, adapter, element),
@@ -1484,6 +1603,60 @@ fn residual_plan<A: ValueLowerAdapter>(
                 })
                 .collect(),
         },
+        // Evaluate the repeated value once and hand it to whichever store
+        // consumes the array; this instruction leaves only the placeholder
+        // primary an `ArrayInit` produces (RUE-2069).
+        ResidualInput::ArrayRepeat { element, count } => {
+            // A repeat whose element is itself a filled repeat is one fill.
+            // The inner element tiles the inner array, so it tiles the outer
+            // region too and the two counts multiply. Falling through instead
+            // would expand the inner repeat into the outer loop's body — one
+            // store per inner element — so `[[0; 100000]; 100]` emitted a
+            // hundred thousand stores for a region one loop fills.
+            if let Some(inner) = adapter.array_repeat_fills().get(&element).cloned()
+                && let Some(count) = inner.count.checked_mul(count)
+            {
+                assert_eq!(
+                    inner.element_slots.len() as u64 * u64::from(count),
+                    u64::from(ctx.type_slot_count(ctx.cfg.get_inst(value).ty)),
+                    "a nested array repeat's elements tile its array's slots"
+                );
+                adapter
+                    .array_repeat_fills()
+                    .insert(value, ArrayRepeatFill { count, ..inner });
+                return ResidualValuePlan::ArrayRepeat;
+            }
+            let element_leaf_types =
+                crate::types::aggregate_leaf_types(ctx.type_pool, ctx.cfg.get_inst(element).ty);
+            let materialized = operand(ctx, adapter, element);
+            let element_slots = if materialized.slots.is_empty() {
+                vec![materialized.primary]
+            } else {
+                materialized.slots
+            };
+            assert_eq!(
+                element_slots.len(),
+                element_leaf_types.len(),
+                "a repeated element's slot vector covers its leaves"
+            );
+            // The region a fill writes is the array's own, so the element's
+            // slots must tile it exactly: a mismatch would write past the
+            // array or leave its tail untouched.
+            assert_eq!(
+                element_slots.len() as u64 * u64::from(count),
+                u64::from(ctx.type_slot_count(ctx.cfg.get_inst(value).ty)),
+                "an array repeat's elements tile its array's slots"
+            );
+            adapter.array_repeat_fills().insert(
+                value,
+                ArrayRepeatFill {
+                    element_slots,
+                    element_leaf_types,
+                    count,
+                },
+            );
+            ResidualValuePlan::ArrayRepeat
+        }
         ResidualInput::EnumVariant {
             enum_id,
             variant_index,
@@ -1630,6 +1803,8 @@ fn residual_kind(plan: &ResidualValuePlan) -> ValueKind {
         ResidualValuePlan::ParamStore { .. } => ValueKind::ParameterStore,
         ResidualValuePlan::StructInit { .. } => ValueKind::StructInit,
         ResidualValuePlan::ArrayInit { .. } => ValueKind::ArrayInit,
+        ResidualValuePlan::ArrayRepeat => ValueKind::ArrayRepeat,
+        ResidualValuePlan::ArrayFill { .. } => ValueKind::ArrayFill,
         ResidualValuePlan::EnumVariant { .. } => ValueKind::EnumVariant,
         ResidualValuePlan::EnumPayloadGet { .. } => ValueKind::EnumPayloadGet,
         ResidualValuePlan::IntCast { .. } => ValueKind::IntegerCast,
@@ -2115,9 +2290,16 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                 struct_id: *struct_id
             })
         }
-        CfgInstData::ArrayInit { .. } => {
-            lower_residual!(ResidualInput::ArrayInit)
-        }
+        CfgInstData::ArrayInit { .. } => match deferred_repeat_count(ctx, value) {
+            Some(count) => {
+                let element = ctx
+                    .cfg
+                    .array_init_repeat(&inst.data)
+                    .expect("a deferred repeat carries its repeated value");
+                lower_residual!(ResidualInput::ArrayRepeat { element, count })
+            }
+            None => lower_residual!(ResidualInput::ArrayInit),
+        },
         CfgInstData::EnumVariant {
             enum_id,
             variant_index,

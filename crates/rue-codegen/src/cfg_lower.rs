@@ -209,10 +209,11 @@ fn format_cfg_inst_data_impl(
                 .collect();
             format!("struct_init #{struct_id:?} {{{}}}", fields.join(", "))
         }
-        CfgInstData::ArrayInit { .. } => {
+        CfgInstData::ArrayInit { shape, .. } => match shape {
             // Note: Can't show elements without Cfg access
-            "array_init [...]".to_string()
-        }
+            rue_air::ArrayInitShape::Elementwise => "array_init [...]".to_string(),
+            rue_air::ArrayInitShape::Repeat => "array_repeat [...]".to_string(),
+        },
         CfgInstData::EnumVariant {
             enum_id,
             variant_index,
