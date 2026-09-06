@@ -657,10 +657,18 @@ expected_warning_count = 1
 
 [[case]]
 name = "allow_unused_variable_multiple_args"
+description = """
+A multi-name @allow is honored where every name it lists is honored: on the
+function both bindings and reachability are suppressed. On a let, only
+unused_variable is honored, so listing unreachable_code there is an error
+(spec 2.5:40, RUE-1971) — covered in diagnostics/directives.toml.
+"""
 source = """
+@allow(unused_variable, unreachable_code)
 fn main() -> i32 {
-    @allow(unused_variable, unreachable_code)
     let x = 42;
+    return 0;
+    let y = 1;
     0
 }
 """

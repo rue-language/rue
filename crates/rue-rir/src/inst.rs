@@ -6,10 +6,11 @@
 use std::fmt;
 use std::marker::PhantomData;
 
-use lasso::{Key, Spur};
+use lasso::{Key, Spur, ThreadedRodeo};
 use rue_span::{FileId, Span};
 
 use crate::type_syntax::{RirTypeSyntaxArena, RirTypeSyntaxBuilder, RirTypeSyntaxRef};
+use rue_parser::{DirectiveName, WarningName};
 
 mod payload;
 mod printer;

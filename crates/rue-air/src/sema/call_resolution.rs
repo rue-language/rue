@@ -19,7 +19,7 @@ use std::cell::RefCell;
 use std::hash::Hash;
 
 use lasso::Spur;
-use rue_rir::{InstData, InstRef};
+use rue_rir::{InstData, InstRef, WarningName};
 use rue_span::FileId;
 
 use super::body_identity::{
@@ -402,9 +402,9 @@ where
                 .is_some_and(|symbol| self.rir.rir_interner().resolve(symbol) == "type"),
             is_extern: *is_extern,
             is_c_export: *is_c_export,
-            allow_unused_function: self.has_allow(dirs.iter(), "unused_function"),
-            allow_unused_variable: self.has_allow(dirs.iter(), "unused_variable"),
-            allow_unreachable_code: self.has_allow(dirs.iter(), "unreachable_code"),
+            allow_unused_function: self.has_allow(dirs.iter(), WarningName::UnusedFunction),
+            allow_unused_variable: self.has_allow(dirs.iter(), WarningName::UnusedVariable),
+            allow_unreachable_code: self.has_allow(dirs.iter(), WarningName::UnreachableCode),
             file_id: inst.span.file_id,
         })
     }
@@ -435,14 +435,9 @@ where
     /// interner (the driver holds no analyzer state).
     fn has_allow<'r>(
         &self,
-        mut directives: impl Iterator<Item = rue_rir::RirDirectiveView<'r>>,
-        warning_name: &str,
+        directives: impl Iterator<Item = rue_rir::RirDirectiveView<'r>>,
+        warning: WarningName,
     ) -> bool {
-        let allow_sym = self.rir.rir_interner().get("allow");
-        let warning_sym = self.rir.rir_interner().get(warning_name);
-        directives.any(|directive| {
-            Some(directive.name) == allow_sym
-                && directive.args.iter().any(|arg| Some(*arg) == warning_sym)
-        })
+        rue_rir::directives_allow(self.rir.rir_interner(), directives, warning)
     }
 }

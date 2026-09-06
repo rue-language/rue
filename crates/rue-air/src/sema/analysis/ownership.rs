@@ -12,6 +12,7 @@ use super::*;
 use crate::inst::AirPlaceRef;
 use crate::scope::ScopedContext;
 use ahash::AHashMap;
+use rue_rir::WarningName;
 
 /// The position into which a value is being placed when the ADR-0043 two-types
 /// string model (RUE-386) requires a *first-class* `str`: a bare `str`
@@ -2123,7 +2124,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Check if @allow(unused_variable) directive is present
         let directives = self.body_rir_ref().directives(directives);
-        let allow_unused = self.has_allow_directive(directives.iter(), "unused_variable");
+        let allow_unused = self.has_allow_directive(directives.iter(), WarningName::UnusedVariable);
 
         // Allocate slots
         let num_slots = self.require_layout_slots(var_type, span)?;
@@ -5386,21 +5387,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     pub(crate) fn has_allow_directive<'r>(
         &self,
         directives: impl Iterator<Item = rue_rir::RirDirectiveView<'r>>,
-        warning_name: &str,
+        warning: WarningName,
     ) -> bool {
-        let allow_sym = self.body_interner().get("allow");
-        let warning_sym = self.body_interner().get(warning_name);
-
-        for directive in directives {
-            if Some(directive.name) == allow_sym {
-                for arg in &directive.args {
-                    if Some(*arg) == warning_sym {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
+        rue_rir::directives_allow(self.body_interner(), directives, warning)
     }
 
     /// Check for unused local variables in the current scope (before popping it).

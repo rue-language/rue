@@ -11,7 +11,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 use ahash::AHashMap;
-use rue_parser::ast::{ArrayLength, DirectiveArg, ParamMode, TypeExpr};
+use rue_parser::ast::{ArrayLength, ParamMode, TypeExpr};
 
 /// Dense index of one structured type-syntax node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -807,8 +807,7 @@ impl<S: Clone + Eq + Hash> RirTypeSyntaxBuilder<S> {
                                 .map_err(|_| RirTypeSyntaxBuildError::TooMuchPayload)?,
                         );
                         for argument in &directive.args {
-                            let DirectiveArg::Ident(argument) = argument;
-                            let argument = self.symbol(resolve(argument.name))?;
+                            let argument = self.symbol(resolve(argument.ident.name))?;
                             method_words.push(argument.as_u32());
                         }
                     }

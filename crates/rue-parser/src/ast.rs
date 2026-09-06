@@ -26,6 +26,7 @@
 
 use std::fmt;
 
+use crate::directives::{DirectiveArgValue, DirectiveName, ReprArg, WarningName};
 use lasso::{Key, Spur};
 use rue_span::{FileId, Span};
 use smallvec::SmallVec;
@@ -62,17 +63,66 @@ impl Ast {
 pub struct Directive {
     /// The directive name (without the @)
     pub name: Ident,
+    /// `name` classified against the directive vocabulary
+    /// ([`crate::directives`]), or `None` for a name the language does not
+    /// define. The parser classifies once so no consumer re-spells a directive
+    /// name; post-parse validation reports the `None` case.
+    pub kind: Option<DirectiveName>,
     /// Arguments to the directive
     pub args: Vec<DirectiveArg>,
     /// Span covering the entire directive
     pub span: Span,
 }
 
-/// An argument to a directive.
+impl Directive {
+    /// True when this is `@allow(<warning>)`.
+    pub fn allows(&self, warning: WarningName) -> bool {
+        self.kind == Some(DirectiveName::Allow)
+            && self
+                .args
+                .iter()
+                .any(|arg| arg.value == DirectiveArgValue::Warning(warning))
+    }
+
+    /// The representation this `@repr(<argument>)` guarantees, when the
+    /// directive is a well-formed `@repr`.
+    pub fn repr_arg(&self) -> Option<ReprArg> {
+        if self.kind != Some(DirectiveName::Repr) {
+            return None;
+        }
+        self.args.iter().find_map(|arg| match arg.value {
+            DirectiveArgValue::Repr(repr) => Some(repr),
+            DirectiveArgValue::Warning(_) | DirectiveArgValue::Unrecognized => None,
+        })
+    }
+}
+
+/// An argument to a directive: the source identifier and its classification
+/// against the owning directive's argument vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DirectiveArg {
-    /// An identifier argument (e.g., `unused_variable` in `@allow(unused_variable)`)
-    Ident(Ident),
+pub struct DirectiveArg {
+    /// The identifier as written (e.g., `unused_variable` in
+    /// `@allow(unused_variable)`)
+    pub ident: Ident,
+    /// What the identifier denotes for the owning directive.
+    pub value: DirectiveArgValue,
+}
+
+/// The first directive in `directives` with the given name.
+pub fn find_directive(directives: &[Directive], name: DirectiveName) -> Option<&Directive> {
+    directives
+        .iter()
+        .find(|directive| directive.kind == Some(name))
+}
+
+/// True when `directives` carries the given directive.
+pub fn has_directive(directives: &[Directive], name: DirectiveName) -> bool {
+    find_directive(directives, name).is_some()
+}
+
+/// True when `directives` carries `@allow(<warning>)`.
+pub fn directives_allow(directives: &[Directive], warning: WarningName) -> bool {
+    directives.iter().any(|directive| directive.allows(warning))
 }
 
 /// A top-level item in a source file.
@@ -1584,9 +1634,7 @@ fn rebind_directives(directives: &mut Directives, file_id: FileId) {
     for directive in directives {
         rebind_ident(&mut directive.name, file_id);
         for argument in &mut directive.args {
-            match argument {
-                DirectiveArg::Ident(ident) => rebind_ident(ident, file_id),
-            }
+            rebind_ident(&mut argument.ident, file_id);
         }
         rebind_span(&mut directive.span, file_id);
     }

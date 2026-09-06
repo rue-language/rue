@@ -46,8 +46,9 @@ pub use inst::{
     RirPatternView, RirPayloadBuildError, RirPayloadError, RirPayloadStorageStats, RirPrinter,
     RirSpanField, RirSpanRemapError, RirSpanSlot, RirSpanTraversalError, RirStructFieldsRange,
     RirStructMethodsRange, RirStructuralAnchor, RirStructuralPathSegment, RirValidationContext,
-    ValidatedRir,
+    ValidatedRir, directives_allow,
 };
+pub use rue_parser::{DirectiveName, ReprArg, WarningName};
 pub use symbol::{SharedSymbolSpace, SymbolHandle, SymbolSpaceGenerations};
 pub use type_syntax::{
     RirTypeSyntaxAppendError, RirTypeSyntaxArena, RirTypeSyntaxBuildError, RirTypeSyntaxBuilder,

@@ -8,15 +8,25 @@ impl Parser {
         while self.at(TokenKind::At) {
             let start = self.bump().span.start;
             let name = self.ident()?;
+            // Classify against the directive vocabulary once, here, so every
+            // later consumer reads a typed value instead of re-spelling the
+            // name (`crate::directives`). An unknown name stays `None` and is
+            // reported by post-parse validation.
+            let kind = DirectiveName::from_source(self.interner.resolve(&name.name));
             let mut args = Vec::new();
             if self.eat(TokenKind::LParen) {
                 args = self.comma_separated(TokenKind::RParen, |parser| {
-                    parser.ident().map(DirectiveArg::Ident)
+                    let ident = parser.ident()?;
+                    let value = kind.map_or(DirectiveArgValue::Unrecognized, |kind| {
+                        kind.classify_arg(parser.interner.resolve(&ident.name))
+                    });
+                    Ok(DirectiveArg { ident, value })
                 })?;
                 self.expect(TokenKind::RParen)?;
             }
             out.push(Directive {
                 name,
+                kind,
                 args,
                 span: self.span_from(start),
             });

@@ -3,6 +3,7 @@
 //! Cohesive grammar domains live in the sibling modules under `parser/`.
 
 use crate::ast::*;
+use crate::directives::{DirectiveArgValue, DirectiveName};
 use crate::parser_policy::{condition, diagnostics, nesting, recovery};
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileErrors, ErrorKind, MultiErrorResult};
@@ -48,9 +49,6 @@ struct PrimitiveTypeSpurs {
     underscore: Spur,
     drop_kw: Spur,
     drop_marker: Spur,
-    allow_directive: Spur,
-    copy_directive: Spur,
-    repr_directive: Spur,
 }
 
 impl PrimitiveTypeSpurs {
@@ -84,9 +82,6 @@ impl PrimitiveTypeSpurs {
             test_kw: intern("test")?,
             drop_kw: intern("drop")?,
             drop_marker: intern("__drop")?,
-            allow_directive: intern("allow")?,
-            copy_directive: intern("copy")?,
-            repr_directive: intern("repr")?,
             underscore: intern("_")?,
         })
     }
@@ -110,9 +105,6 @@ impl PrimitiveTypeSpurs {
             test_kw: symbol,
             drop_kw: symbol,
             drop_marker: symbol,
-            allow_directive: symbol,
-            copy_directive: symbol,
-            repr_directive: symbol,
             underscore: symbol,
         }
     }
@@ -705,7 +697,14 @@ mod tests {
         }
         assert_eq!(
             modules(include_str!("lib.rs")),
-            ["ast", "intrinsics", "parser", "parser_policy", "validate"]
+            [
+                "ast",
+                "directives",
+                "intrinsics",
+                "parser",
+                "parser_policy",
+                "validate"
+            ]
         );
         assert_eq!(
             modules(include_str!("parser.rs")),
@@ -824,16 +823,23 @@ mod tests {
 
     #[test]
     fn multiple_directives_before_let_parse_as_one_statement() {
+        // Each directive keeps its own argument list, and a run of directives
+        // attaches to the one construct that follows. The warning names are
+        // chosen for the site that honors them (spec 2.5:40); the grammar fact
+        // under test is the grouping, not the vocabulary.
         let (ast, _) = parse_source(
-            "fn main() -> i32 { \
-             @allow(unused_variable, unreachable_code) \
-             @allow(unused_function) \
+            "@allow(unused_variable, unreachable_code) \
+             fn main() -> i32 { \
+             @allow(unused_variable) \
+             @allow(unused_variable) \
              let x = 1; x }",
         )
         .unwrap();
         let Item::Function(function) = &ast.items[0] else {
             panic!("expected function");
         };
+        assert_eq!(function.directives.len(), 1);
+        assert_eq!(function.directives[0].args.len(), 2);
         let Expr::Block(body) = &function.body else {
             panic!("expected block body");
         };
@@ -841,7 +847,7 @@ mod tests {
             panic!("expected directed let statement");
         };
         assert_eq!(statement.directives().len(), 2);
-        assert_eq!(statement.directives()[0].args.len(), 2);
+        assert_eq!(statement.directives()[0].args.len(), 1);
         assert_eq!(statement.directives()[1].args.len(), 1);
     }
 

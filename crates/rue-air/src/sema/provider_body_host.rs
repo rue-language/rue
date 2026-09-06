@@ -15,7 +15,7 @@ use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeatures};
 use rue_rir::{
     InstData, InstRef, Rir, RirParam, RirParamMode, RirTypeSyntaxBuilder, RirTypeSyntaxRef,
-    SymbolHandle,
+    SymbolHandle, WarningName,
 };
 use rue_span::{FileId, Span};
 use rue_target::Target;
@@ -5947,23 +5947,15 @@ where
                 };
                 let (return_type, body, directives) = (*return_type, *body, directives.clone());
                 let body_span = host.rir.rir().get(body).span;
-                let allow = |warning_name: &str| {
-                    let allow_symbol = host.rir.rir_interner().get("allow");
-                    let warning_symbol = host.rir.rir_interner().get(warning_name);
-                    host.rir
-                        .rir()
-                        .directives(&directives)
-                        .iter()
-                        .any(|directive| {
-                            Some(directive.name) == allow_symbol
-                                && directive
-                                    .args
-                                    .iter()
-                                    .any(|arg| Some(*arg) == warning_symbol)
-                        })
+                let allow = |warning| {
+                    rue_rir::directives_allow(
+                        host.rir.rir_interner(),
+                        host.rir.rir().directives(&directives).iter(),
+                        warning,
+                    )
                 };
-                let allow_unused_variable = allow("unused_variable");
-                let allow_unreachable_code = allow("unreachable_code");
+                let allow_unused_variable = allow(WarningName::UnusedVariable);
+                let allow_unreachable_code = allow(WarningName::UnreachableCode);
                 let return_type = host.resolve_body_type(return_type, declaration_span)?;
                 host.endpoint
                     .finalize_containment_metadata()

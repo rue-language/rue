@@ -23,8 +23,8 @@ use rue_parser::ast::{ConstDecl, DropFn, ExternBlock, ExternFn, TestDecl};
 use rue_parser::intrinsics::{OFFSET_OF_INTRINSIC, TYPE_INTRINSICS};
 use rue_parser::{
     ArgMode, ArrayLength, AssignStatement, AssignTarget, BinaryOp, CallArg, CompoundOp, Directive,
-    DirectiveArg, EnumDecl, Expr, Function, IntrinsicArg, Item, LetPattern, Method, ParamMode,
-    Pattern, Statement, StructDecl, TypeExpr, UnaryOp, ast::Visibility,
+    EnumDecl, Expr, Function, IntrinsicArg, Item, LetPattern, Method, ParamMode, Pattern,
+    Statement, StructDecl, TypeExpr, UnaryOp, ast::Visibility,
 };
 
 use crate::inst::{
@@ -774,9 +774,10 @@ impl<'a> AstGen<'a> {
         self.rir
             .add_enum_decl(
                 enum_decl.visibility == Visibility::Public,
-                enum_decl.directives.iter().any(|directive| {
-                    self.interner.resolve(&directive.name.name) == "non_exhaustive"
-                }),
+                rue_parser::ast::has_directive(
+                    &enum_decl.directives,
+                    rue_parser::DirectiveName::NonExhaustive,
+                ),
                 name,
                 &variants,
                 &payload_types,
@@ -912,9 +913,7 @@ impl<'a> AstGen<'a> {
                 args: d
                     .args
                     .iter()
-                    .map(|arg| match arg {
-                        DirectiveArg::Ident(ident) => self.symbol(ident.name),
-                    })
+                    .map(|arg| self.symbol(arg.ident.name))
                     .collect(),
                 span: d.span,
             })
