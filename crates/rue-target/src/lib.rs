@@ -36,31 +36,13 @@ impl Target {
     /// that case explicitly instead of silently compiling for some other
     /// platform.
     pub fn host() -> Option<Self> {
-        if cfg!(all(target_arch = "x86_64", target_os = "linux")) {
-            Some(Target::X86_64Linux)
-        } else if cfg!(all(target_arch = "aarch64", target_os = "linux")) {
-            Some(Target::Aarch64Linux)
-        } else if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
-            Some(Target::Aarch64Macos)
-        } else {
-            None
-        }
+        HostPlatform::current().and_then(HostPlatform::compiler_target)
     }
 
     /// Returns a best-effort name for the host this compiler binary was built
     /// for, including unsupported hosts. Used in diagnostics.
     pub fn host_description() -> &'static str {
-        if cfg!(all(target_arch = "x86_64", target_os = "linux")) {
-            "x86-64-linux"
-        } else if cfg!(all(target_arch = "aarch64", target_os = "linux")) {
-            "aarch64-linux"
-        } else if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
-            "aarch64-macos"
-        } else if cfg!(all(target_arch = "x86_64", target_os = "macos")) {
-            "x86-64-macos"
-        } else {
-            "unsupported host"
-        }
+        HostPlatform::current().map_or(UNSUPPORTED_HOST_DESCRIPTION, HostPlatform::name)
     }
 
     /// Returns the architecture component of this target.
@@ -187,6 +169,123 @@ impl Target {
 }
 
 impl fmt::Display for Target {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// What `host_description` reports for a host no [`HostPlatform`] names.
+const UNSUPPORTED_HOST_DESCRIPTION: &str = "unsupported host";
+
+/// A host Rue's tooling recognizes, and the compilation target (if any) that
+/// host can build for natively.
+///
+/// The two halves are deliberately separate. A host can be *known* to the
+/// harnesses — nameable in a case's `only_on` / `known_bug_on` list, resolvable
+/// to a shard-weight bucket — without Rue having a compiler target for it;
+/// Intel macOS is exactly that host. Keeping the pair in one value is what
+/// stops a harness from classifying a host as supported that the compiler
+/// itself rejects, and makes adding a platform a single edit here rather than a
+/// `cfg!` ladder re-derived in every consumer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HostPlatform {
+    name: &'static str,
+    compiler_target: Option<Target>,
+}
+
+impl HostPlatform {
+    /// x86-64 Linux.
+    pub const X86_64_LINUX: Self = Self {
+        name: "x86-64-linux",
+        compiler_target: Some(Target::X86_64Linux),
+    };
+    /// AArch64 Linux.
+    pub const AARCH64_LINUX: Self = Self {
+        name: "aarch64-linux",
+        compiler_target: Some(Target::Aarch64Linux),
+    };
+    /// Apple Silicon macOS.
+    pub const AARCH64_MACOS: Self = Self {
+        name: "aarch64-macos",
+        compiler_target: Some(Target::Aarch64Macos),
+    };
+    /// Intel macOS. Rue's harnesses run there, but the compiler has no
+    /// x86-64 macOS target, so this host carries no [`Target`].
+    pub const X86_64_MACOS: Self = Self {
+        name: "x86-64-macos",
+        compiler_target: None,
+    };
+
+    /// Every host platform Rue's tooling recognizes.
+    pub const ALL: &'static [Self] = &[
+        Self::X86_64_LINUX,
+        Self::AARCH64_LINUX,
+        Self::AARCH64_MACOS,
+        Self::X86_64_MACOS,
+    ];
+
+    /// The names of [`HostPlatform::ALL`], in the same order.
+    ///
+    /// Consumers that validate authored platform names (a case file's
+    /// `only_on` list) need the names as a `const` slice, which cannot be
+    /// derived from `ALL` in a constant expression; a unit test holds the two
+    /// in agreement.
+    pub const ALL_NAMES: &'static [&'static str] = &[
+        Self::X86_64_LINUX.name(),
+        Self::AARCH64_LINUX.name(),
+        Self::AARCH64_MACOS.name(),
+        Self::X86_64_MACOS.name(),
+    ];
+
+    /// The host this binary was built for, or `None` when it is a platform Rue
+    /// does not recognize at all.
+    ///
+    /// This is the one `cfg!` ladder over host architecture and OS in the
+    /// repository; everything else that needs a host name or a native target
+    /// goes through it.
+    pub fn current() -> Option<Self> {
+        if cfg!(all(target_arch = "x86_64", target_os = "linux")) {
+            Some(Self::X86_64_LINUX)
+        } else if cfg!(all(target_arch = "aarch64", target_os = "linux")) {
+            Some(Self::AARCH64_LINUX)
+        } else if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
+            Some(Self::AARCH64_MACOS)
+        } else if cfg!(all(target_arch = "x86_64", target_os = "macos")) {
+            Some(Self::X86_64_MACOS)
+        } else {
+            None
+        }
+    }
+
+    /// Look a host platform up by its canonical Rue name.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|platform| platform.name() == name)
+    }
+
+    /// The canonical Rue spelling of this host, e.g. `x86-64-linux`.
+    pub const fn name(self) -> &'static str {
+        self.name
+    }
+
+    /// The compilation target this host builds for natively, or `None` when
+    /// Rue has no target for it.
+    pub const fn compiler_target(self) -> Option<Target> {
+        self.compiler_target
+    }
+
+    /// The architecture component of this host's name (`x86-64-linux` ->
+    /// `x86-64`).
+    pub fn architecture(self) -> &'static str {
+        self.name
+            .rsplit_once('-')
+            .map_or(self.name, |(arch, _os)| arch)
+    }
+}
+
+impl fmt::Display for HostPlatform {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
     }
@@ -447,6 +546,61 @@ mod tests {
                 "Round-trip failed for {}: displayed as '{}', parsed back as {:?}",
                 target, displayed, parsed
             );
+        }
+    }
+
+    #[test]
+    fn host_platform_names_match_the_platform_table() {
+        let derived: Vec<&str> = HostPlatform::ALL
+            .iter()
+            .copied()
+            .map(HostPlatform::name)
+            .collect();
+        assert_eq!(derived, HostPlatform::ALL_NAMES);
+    }
+
+    #[test]
+    fn host_platform_names_are_unique_and_lookupable() {
+        for platform in HostPlatform::ALL {
+            assert_eq!(HostPlatform::from_name(platform.name()), Some(*platform));
+        }
+        assert_eq!(HostPlatform::from_name("x86_64-linux"), None);
+    }
+
+    #[test]
+    fn every_compilation_target_is_some_host_platform_native_target() {
+        for target in Target::all() {
+            assert!(
+                HostPlatform::ALL
+                    .iter()
+                    .any(|platform| platform.compiler_target() == Some(*target)),
+                "no host platform builds {target} natively"
+            );
+            assert!(
+                HostPlatform::from_name(target.name())
+                    .is_some_and(|platform| platform.compiler_target() == Some(*target)),
+                "{target} must name the host platform that builds it"
+            );
+        }
+    }
+
+    #[test]
+    fn host_platform_architecture_drops_the_os_component() {
+        assert_eq!(HostPlatform::X86_64_LINUX.architecture(), "x86-64");
+        assert_eq!(HostPlatform::AARCH64_MACOS.architecture(), "aarch64");
+    }
+
+    #[test]
+    fn host_target_and_description_agree_with_the_current_host_platform() {
+        match HostPlatform::current() {
+            Some(platform) => {
+                assert_eq!(Target::host_description(), platform.name());
+                assert_eq!(Target::host(), platform.compiler_target());
+            }
+            None => {
+                assert_eq!(Target::host_description(), UNSUPPORTED_HOST_DESCRIPTION);
+                assert_eq!(Target::host(), None);
+            }
         }
     }
 }

@@ -12,26 +12,30 @@ set -eu
 : "${RUE_CLI_HARNESS:?RUE_CLI_HARNESS must point to the CLI harness}"
 : "${RUE_BINARY:?RUE_BINARY must point to the Rue compiler}"
 
-host_target() {
-    case "$(uname -s):$(uname -m)" in
-        Linux:x86_64) printf '%s\n' 'x86-64-linux' ;;
-        Linux:aarch64|Linux:arm64) printf '%s\n' 'aarch64-linux' ;;
-        Darwin:x86_64) printf '%s\n' 'x86-64-macos' ;;
-        Darwin:arm64|Darwin:aarch64) printf '%s\n' 'aarch64-macos' ;;
-        *)
-            echo "unsupported host for duplicate-harness regression: $(uname -s) $(uname -m)" >&2
-            exit 1
-            ;;
-    esac
-}
-
-host="$(host_target)"
-case "$host" in
-    x86-64-linux) foreign='aarch64-linux' ;;
-    aarch64-linux) foreign='x86-64-linux' ;;
-    x86-64-macos) foreign='aarch64-linux' ;;
-    aarch64-macos) foreign='x86-64-linux' ;;
-esac
+# The host platform and the platform vocabulary come from the harness under
+# test, which reads them from rue-target's one host table; a `uname` ladder here
+# would be a second answer that can disagree with the harness this gate drives
+# (RUE-1987). RUE_HOST_TARGET / RUE_KNOWN_TARGETS override it for a caller that
+# already knows.
+host="${RUE_HOST_TARGET:-$("$RUE_CLI_HARNESS" --print-host-target)}"
+known_targets="${RUE_KNOWN_TARGETS:-$("$RUE_CLI_HARNESS" --print-known-targets)}"
+if [ -z "$host" ] || [ -z "$known_targets" ]; then
+    echo "could not resolve the host platform for the duplicate-harness" \
+        "regression from $RUE_CLI_HARNESS; set RUE_HOST_TARGET and" \
+        "RUE_KNOWN_TARGETS to override" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$known_targets" | grep -F -x -q -e "$host"; then
+    echo "harness host '$host' is not one of its own known targets" >&2
+    exit 1
+fi
+# Any valid platform other than this host, so the duplicate is filtered out
+# here and validation must still reject it.
+foreign="$(printf '%s\n' "$known_targets" | grep -F -v -x -e "$host" | head -n 1)"
+if [ -z "$foreign" ]; then
+    echo "the harness knows only one platform; cannot build a foreign scope" >&2
+    exit 1
+fi
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/rue-duplicate-harness.XXXXXX")"
 trap 'rm -rf "$work_dir"' EXIT HUP INT TERM

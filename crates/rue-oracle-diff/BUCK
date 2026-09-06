@@ -23,8 +23,11 @@ rue_binary(
     deps = [
         "//crates/rue-oracle:rue-oracle",
         "//crates/rue-compiler:rue-compiler",
-        # rue-test-runner parses + template-expands the rue-spec corpus exactly
-        # as the spec suite does, so the `spec` mode's templating can't drift.
+        # rue-test-runner owns both corpus schemas this harness reads: it
+        # parses + template-expands the rue-spec corpus exactly as the spec
+        # suite does, and `cli_corpus` is the one CLI case schema the
+        # rue-cli-tests harness also deserializes (RUE-1987), so neither the
+        # spec templating nor the CLI field set can drift between them.
         "//crates/rue-test-runner:rue-test-runner",
         "//crates/rue-error:rue-error",
         # The harness classifies a refused query-runtime worker thread as a host

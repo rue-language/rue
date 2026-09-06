@@ -1,3 +1,4 @@
+use rue_target::HostPlatform;
 use rue_test_runner::ShardSelector;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -232,14 +233,30 @@ pub fn shard_loads_report(
     })
 }
 
-fn host_platform() -> &'static str {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64") => "macos",
-        ("linux", "aarch64") => "linux-arm64",
-        ("linux", "x86_64") => "linux-x64",
-        _ => "other",
+/// The weights-file bucket for a host platform.
+///
+/// `shard-weights.json` and `scripts/generate-cli-shard-weights.py` key their
+/// overlays by CI-runner vocabulary (`linux-x64`), not by Rue target names
+/// (`x86-64-linux`), so this is a translation of the canonical host — not a
+/// second detection of it. A host Rue does not name, or one the weights file
+/// does not model, falls back to `other`, which carries no overlay and leaves
+/// every case on the common baseline.
+fn weights_platform(host: HostPlatform) -> &'static str {
+    match host {
+        HostPlatform::AARCH64_MACOS => "macos",
+        HostPlatform::AARCH64_LINUX => "linux-arm64",
+        HostPlatform::X86_64_LINUX => "linux-x64",
+        _ => UNMODELED_PLATFORM,
     }
 }
+
+/// The weights bucket for the host this harness is running on.
+fn host_platform() -> &'static str {
+    HostPlatform::current().map_or(UNMODELED_PLATFORM, weights_platform)
+}
+
+/// The bucket for a host `shard-weights.json` carries no overlay for.
+const UNMODELED_PLATFORM: &str = "other";
 
 #[cfg(test)]
 mod tests {
@@ -249,6 +266,26 @@ mod tests {
         ShardSelector::parse(Some(&format!("{index}/{count}")))
             .unwrap()
             .unwrap()
+    }
+
+    #[test]
+    fn every_named_host_maps_to_a_weights_bucket() {
+        assert_eq!(weights_platform(HostPlatform::X86_64_LINUX), "linux-x64");
+        assert_eq!(weights_platform(HostPlatform::AARCH64_LINUX), "linux-arm64");
+        assert_eq!(weights_platform(HostPlatform::AARCH64_MACOS), "macos");
+        // Intel macOS is a host Rue's harnesses recognize but the weights file
+        // does not model; it must land on the unmodeled bucket rather than
+        // borrowing another host's measured costs.
+        assert_eq!(
+            weights_platform(HostPlatform::X86_64_MACOS),
+            UNMODELED_PLATFORM
+        );
+    }
+
+    #[test]
+    fn the_running_host_uses_its_own_bucket() {
+        let expected = HostPlatform::current().map_or(UNMODELED_PLATFORM, weights_platform);
+        assert_eq!(host_platform(), expected);
     }
 
     #[test]

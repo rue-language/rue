@@ -1029,15 +1029,19 @@ fn rust_shape(source: &str) -> Result<String, String> {
     Ok(rust_outputs(source)?.shape)
 }
 
+/// Every `.rue` file under `root`, discovered the way every other Rue harness
+/// discovers a corpus.
+///
+/// [`rue_test_runner::discover_files`] is the canonical recursive walk: it
+/// sorts each directory's entries, resolves symlinks explicitly, and refuses to
+/// revisit a directory, so a symlink cycle in the corpus is a bounded error
+/// rather than a hang. Both callers here fold the result into a `BTreeSet` or
+/// sort it, so the extra ordering guarantee costs nothing and the shared walk
+/// replaces a second, weaker one (RUE-1987).
 fn collect_rue_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
-    for entry in fs::read_dir(root).map_err(|e| format!("read {}: {e}", root.display()))? {
-        let path = entry.map_err(|e| e.to_string())?.path();
-        if path.is_dir() {
-            collect_rue_files(&path, files)?;
-        } else if path.extension().is_some_and(|e| e == "rue") {
-            files.push(path);
-        }
-    }
+    let discovered = rue_test_runner::discover_files(root, "rue")
+        .map_err(|error| format!("read {}: {error}", root.display()))?;
+    files.extend(discovered);
     Ok(())
 }
 
