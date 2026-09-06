@@ -15,12 +15,28 @@ pub use validation::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RirSpanField {
     Instruction,
-    MatchPattern { arm: u32 },
-    FunctionDirective { directive: u32 },
-    FunctionParameter { parameter: u32 },
-    ConstDirective { directive: u32 },
-    AllocDirective { directive: u32 },
-    StructDirective { directive: u32 },
+    /// One pattern record of a match arm. `nested` is its index in the arm's
+    /// preorder walk — 0 is the arm's own pattern, and later indices are the
+    /// patterns nested in its payload positions (RUE-2053).
+    MatchPattern {
+        arm: u32,
+        nested: u32,
+    },
+    FunctionDirective {
+        directive: u32,
+    },
+    FunctionParameter {
+        parameter: u32,
+    },
+    ConstDirective {
+        directive: u32,
+    },
+    AllocDirective {
+        directive: u32,
+    },
+    StructDirective {
+        directive: u32,
+    },
     StructInitShorthand,
 }
 
@@ -156,13 +172,18 @@ impl Rir {
                 InstData::Match { arms, .. } => {
                     for (arm, (pattern, _)) in self.match_arms(arms).iter().enumerate() {
                         checkpoint().map_err(RirSpanTraversalError::Callback)?;
-                        emit!(
-                            RirSpanField::MatchPattern {
-                                arm: u32::try_from(arm)
-                                    .expect("validated match-arm count is encoded as u32"),
-                            },
-                            pattern.span()
-                        );
+                        let arm = u32::try_from(arm)
+                            .expect("validated match-arm count is encoded as u32");
+                        for (nested, record) in pattern.preorder().into_iter().enumerate() {
+                            emit!(
+                                RirSpanField::MatchPattern {
+                                    arm,
+                                    nested: u32::try_from(nested)
+                                        .expect("validated nesting depth is encoded as u32"),
+                                },
+                                record.span()
+                            );
+                        }
                     }
                 }
                 InstData::FnDecl {
@@ -298,20 +319,28 @@ impl Rir {
                     if !words.is_empty() {
                         let count = words[0] as usize;
                         let mut position = 1usize;
+                        let mut records = Vec::new();
                         for arm in 0..count {
                             checkpoint().map_err(RirSpanRemapError::Checkpoint)?;
                             let extent = decoded_match_record_extent(words, position)
                                 .expect("validated match record has an exact extent");
-                            let span = take_span(RirSpanSlot::new(
-                                instruction_ref,
-                                RirSpanField::MatchPattern {
-                                    arm: u32::try_from(arm)
-                                        .expect("validated match-arm count is encoded as u32"),
-                                },
-                            ))?;
-                            words[position + RECORD_SPAN_START] = span.start;
-                            words[position + RECORD_SPAN_LEN] = span.end - span.start;
-                            words[position + RECORD_SPAN_FILE] = span.file_id.index();
+                            let arm = u32::try_from(arm)
+                                .expect("validated match-arm count is encoded as u32");
+                            records.clear();
+                            pattern_record_positions(words, position, &mut records);
+                            for (nested, record) in records.iter().copied().enumerate() {
+                                let span = take_span(RirSpanSlot::new(
+                                    instruction_ref,
+                                    RirSpanField::MatchPattern {
+                                        arm,
+                                        nested: u32::try_from(nested)
+                                            .expect("validated nesting depth is encoded as u32"),
+                                    },
+                                ))?;
+                                words[record + RECORD_SPAN_START] = span.start;
+                                words[record + RECORD_SPAN_LEN] = span.end - span.start;
+                                words[record + RECORD_SPAN_FILE] = span.file_id.index();
+                            }
                             position += extent;
                         }
                     }

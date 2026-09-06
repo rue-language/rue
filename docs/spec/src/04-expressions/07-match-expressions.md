@@ -12,6 +12,10 @@ A match expression provides multi-way branching based on pattern matching.
 
 {{ rule(id="4.7:2", cat="normative") }}
 
+<!-- grammar-sync(id="4.7:2", production="path_pattern", role="source") -->
+<!-- grammar-sync(id="4.7:2", production="pattern_elements", role="source") -->
+<!-- grammar-sync(id="4.7:2", production="pattern_element", role="source") -->
+
 ```ebnf
 match_expr     = "match" expression "{" [ match_arms ] "}" ;
 match_arms     = match_arm { "," match_arm } [ "," ] ;
@@ -20,10 +24,10 @@ pattern        = "_"
                | [ "-" ] INTEGER
                | BOOL
                | path_pattern ;
-path_pattern   = pattern_head "." IDENT [ "(" pattern_bindings ")" ] ;
+path_pattern = pattern_head "." IDENT [ "(" pattern_elements ")" ] ;
 pattern_head   = qualified_ident [ "(" [ call_args ] ")" ] ;
-pattern_bindings = pattern_binding { "," pattern_binding } [ "," ] ;
-pattern_binding = IDENT | "_" ;
+pattern_elements = pattern_element { "," pattern_element } [ "," ] ;
+pattern_element = IDENT | "_" | path_pattern ;
 ```
 
 An enum variant is a `path_pattern`: its `pattern_head` may be a qualified
@@ -32,9 +36,10 @@ identifier (such as `module.Enum`) or an inline type-constructor call (such as
 its enum however that enum is reachable there — as a declaration, as a
 comptime-bound type, or as a `const` type alias, including one named through a
 module binding (`module.Alias.Variant`, 10.4:21). A bare variant
-pattern omits the optional binding list and is the all-wildcard form. An
-explicit binding list contains one or more names or `_` wildcards and may have
-a trailing comma; an empty list such as `Enum.Variant()` is not a pattern.
+pattern omits the optional payload list and is the all-wildcard form. An
+explicit payload list contains one or more positions and may have a trailing
+comma; an empty list such as `Enum.Variant()` is not a pattern. Each position is
+a binding name, the `_` wildcard, or a nested variant pattern (4.7:37).
 
 ## Patterns
 
@@ -346,5 +351,75 @@ fn main() -> i32 {
         E.B => 2,
     };
     r + use_again(e)                  // ERROR: use of moved value 'e'
+}
+```
+
+## Nested Variant Patterns
+
+{{ rule(id="4.7:37", cat="normative") }}
+
+A payload position of a tuple-variant pattern (4.7:30) may itself be a variant
+pattern instead of a binding: `R.Err(E.A(b))` matches a value of `R.Err` whose
+payload is a value of `E.A`, and binds `b` to that inner payload. Nesting is
+recursive, so a nested pattern's own payload positions may nest again —
+`R.Err(E.A(Inner.X(v)))`. A nested pattern accepts every head form a top-level
+pattern accepts (4.7:2): unqualified, module-qualified, or an inline
+type-constructor head. It is resolved against the **payload field type** of the
+position it occupies, not against the match's scrutinee type, and the enum it
+names **MUST** be that field's type; a generic enum reached through an
+instantiation — the `E` of `Result(i64, E)` — resolves through the instantiated
+payload type like any other field.
+
+{{ rule(id="4.7:38", cat="normative") }}
+
+A nested pattern binds and consumes exactly as a top-level one does (4.7:30,
+4.7:31). The position it occupies is moved out of the enclosing payload, and the
+nested pattern's own positions are then moved out of *that* value; every
+position of every level is accounted for, so each is dropped once, at the end of
+the arm, in reverse declaration order with its siblings. A `_` inside a nested
+pattern is the same fresh unnameable binding a top-level `_` is, with the same
+consequence: a discarded position whose type carries a linear value is a
+compile-time error at any depth.
+
+{{ rule(id="4.7:39", cat="normative") }}
+
+Exhaustiveness (4.7:19) applies at every level. The arms that match one variant
+and discriminate the same payload position together form a match on that
+payload, and that match **MUST** be exhaustive over the payload's type; an arm
+whose position holds a binding or `_` covers every remaining value there, as a
+wildcard arm does at the top level. `R.Ok(_)`, `R.Err(E.A(b))` and `R.Err(E.B)`
+are together exhaustive over `Result(i64, E)`; dropping the `R.Err(E.B)` arm
+leaves the match non-exhaustive, and the diagnostic names the missing pattern as
+`R.Err(E.B)`. An arm the earlier arms already cover at its own level — a
+repeated nested variant, or any arm after a binding at that position — is
+unreachable (4.7:20).
+
+{{ rule(id="4.7:40", cat="legality-rule") }}
+
+One pattern **MUST NOT** nest variant patterns in more than one of its payload
+positions, and the arms that match the same variant **MUST** nest in the same
+position: the arms sharing a variant discriminate exactly one extracted payload
+field. `Outer.Pair(Inner.A(v), Inner.B)` is rejected, as is
+`Outer.Pair(Inner.A(v), b)` alongside `Outer.Pair(a, Inner.B)`. Bind the other
+positions and match them in a nested `match` expression.
+
+{{ rule(id="4.7:41", cat="example") }}
+
+```rue
+const std = @import("std");
+
+enum E { A(u8), B }
+const R = std.result.Result(i64, E);
+
+fn f(x: i64) -> R {
+    if x > 0 { R.Ok(x) } else { R.Err(E.A(1)) }
+}
+
+fn main() -> i32 {
+    match f(0) {
+        R.Ok(_) => 0,
+        R.Err(E.A(b)) => @intCast(b),   // -> 1
+        R.Err(E.B) => 2,
+    }
 }
 ```

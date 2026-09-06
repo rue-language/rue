@@ -162,7 +162,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 module,
                 type_name,
                 variant,
-                bindings,
+                elements,
                 ..
             } => {
                 let prefix = if let Some(module_ref) = module {
@@ -176,12 +176,19 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     self.interner.resolve(&*type_name),
                     self.interner.resolve(&*variant)
                 );
-                if bindings.is_empty() {
+                if elements.is_empty() {
                     base
                 } else {
-                    let names: Vec<&str> =
-                        bindings.iter().map(|b| self.interner.resolve(&b)).collect();
-                    format!("{}({})", base, names.join(", "))
+                    let positions: Vec<String> = elements
+                        .iter()
+                        .map(|element| match element {
+                            RirPatternElementView::Binding(name) => {
+                                self.interner.resolve(&name).to_string()
+                            }
+                            RirPatternElementView::Nested(nested) => self.format_pattern(&nested),
+                        })
+                        .collect();
+                    format!("{}({})", base, positions.join(", "))
                 }
             }
         }

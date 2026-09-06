@@ -4813,14 +4813,14 @@ impl<'a> ConstraintGenerator<'a> {
             ctor_head,
             type_name,
             variant,
-            bindings,
+            elements,
             span: pat_span,
             ..
         } = pattern
         else {
             return;
         };
-        if bindings.is_empty() {
+        if elements.is_empty() {
             return;
         }
         let enum_ty = ctor_head
@@ -4832,29 +4832,68 @@ impl<'a> ConstraintGenerator<'a> {
                 module.and_then(|module_ref| self.enum_type_for_module(module_ref, type_name, ctx))
             })
             .or_else(|| self.enum_type_for(type_name, pat_span.file_id));
+        let Some(enum_ty) = enum_ty else {
+            return;
+        };
+        self.register_payload_bindings(enum_ty, *variant, *elements, *pat_span, ctx);
+    }
+
+    /// Register the locals one variant pattern's payload positions introduce,
+    /// recursing through nested variant patterns (RUE-2053). A nested position
+    /// matches against the payload field's own type, so the nested enum comes
+    /// from that field rather than from a second name resolution.
+    fn register_payload_bindings(
+        &mut self,
+        enum_ty: Type,
+        variant: lasso::Spur,
+        elements: rue_rir::RirPatternElements<'_>,
+        span: rue_span::Span,
+        ctx: &mut ConstraintContext,
+    ) {
         let Some(payload) = enum_ty
-            .and_then(|ty| ty.as_enum())
+            .as_enum()
             .map(|id| self.type_pool.enum_def(id))
             .and_then(|def| {
-                def.find_variant(self.interner.resolve(variant))
+                def.find_variant(self.interner.resolve(&variant))
                     .map(|v| def.variant_payload(v).to_vec())
             })
         else {
             return;
         };
-        for (index, binding) in bindings.iter().enumerate() {
-            if self.interner.resolve(&binding) == "_" {
+        for (index, element) in elements.iter().enumerate() {
+            let Some(&ty) = payload.get(index) else {
                 continue;
-            }
-            if let Some(&ty) = payload.get(index) {
-                ctx.insert_local(
-                    *binding,
-                    LocalVarInfo {
-                        ty: InferType::Concrete(ty),
-                        is_mut: false,
-                        span: *pat_span,
-                    },
-                );
+            };
+            match element {
+                rue_rir::RirPatternElementView::Binding(name) => {
+                    if self.interner.resolve(&name) == "_" {
+                        continue;
+                    }
+                    ctx.insert_local(
+                        name,
+                        LocalVarInfo {
+                            ty: InferType::Concrete(ty),
+                            is_mut: false,
+                            span,
+                        },
+                    );
+                }
+                rue_rir::RirPatternElementView::Nested(nested) => {
+                    if let rue_rir::RirPatternView::Path {
+                        variant: nested_variant,
+                        elements: nested_elements,
+                        ..
+                    } = nested
+                    {
+                        self.register_payload_bindings(
+                            ty,
+                            nested_variant,
+                            nested_elements,
+                            span,
+                            ctx,
+                        );
+                    }
+                }
             }
         }
     }

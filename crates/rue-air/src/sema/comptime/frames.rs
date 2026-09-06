@@ -199,14 +199,14 @@ pub fn decode_comptime_match_pattern<N>(
             ctor_head,
             type_name,
             variant,
-            bindings,
+            elements,
             ..
         } => ComptimeMatchPattern::Path {
             module_qualified: module.is_some(),
             ctor_qualified: ctor_head.is_some(),
             type_name: name_from_symbol((*type_name).into()),
             variant: name_from_symbol((*variant).into()),
-            binding_count: bindings.len(),
+            binding_count: elements.len(),
         },
     }
 }

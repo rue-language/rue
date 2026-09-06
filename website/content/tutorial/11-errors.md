@@ -79,8 +79,10 @@ The error type is whatever you choose. An enum with one variant per failure,
 as above, is the usual choice: the caller can `match` on the reason, the
 compiler checks that every reason is handled, and variants can carry details.
 A function like `describe` that turns the enum into text keeps the wording in
-one place. Matching on the error is a second `match` inside the `Err` arm;
-patterns cannot yet nest one enum's variant inside another's payload.
+one place. You can also match on the reason directly: a payload position may
+hold another variant pattern, so `ParseResult.Err(ParseError.Negative(n))` is
+one arm of the outer `match`, and the compiler still checks that every reason
+is covered.
 
 ## `?` with `Result`
 
@@ -123,10 +125,8 @@ fn compute(left: StrBuf, right: StrBuf) -> IntResult {
 fn show(left: StrBuf, right: StrBuf) {
     match compute(left, right) {
         IntResult.Ok(v) => println("= " + @to_string(v)),
-        IntResult.Err(e) => match e {
-            CalcError.NotANumber => println("error: not a number"),
-            CalcError.DivisionByZero => println("error: division by zero"),
-        },
+        IntResult.Err(CalcError.NotANumber) => println("error: not a number"),
+        IntResult.Err(CalcError.DivisionByZero) => println("error: division by zero"),
     }
 }
 

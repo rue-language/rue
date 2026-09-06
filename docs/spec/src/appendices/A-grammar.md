@@ -26,6 +26,9 @@ this appendix governs.
 <!-- grammar-sync(id="6.6:2", production="yield_expr", role="appendix") -->
 <!-- grammar-sync(id="6.7:2", production="item", role="appendix", relation="contains", symbol="test_item") -->
 <!-- grammar-sync(id="6.7:2", production="test_item", role="appendix") -->
+<!-- grammar-sync(id="4.7:2", production="path_pattern", role="appendix") -->
+<!-- grammar-sync(id="4.7:2", production="pattern_elements", role="appendix") -->
+<!-- grammar-sync(id="4.7:2", production="pattern_element", role="appendix") -->
 
 <!-- grammar-sync(id="2.1:26", production="INTEGER", role="appendix", relation="contains", symbol="byte_literal") -->
 <!-- grammar-sync(id="2.1:26", production="byte_literal", role="appendix") -->
@@ -227,10 +230,10 @@ pattern        = "_"
                | [ "-" ] INTEGER
                | BOOL
                | path_pattern ;
-path_pattern   = pattern_head "." IDENT [ "(" pattern_bindings ")" ] ;
+path_pattern = pattern_head "." IDENT [ "(" pattern_elements ")" ] ;
 pattern_head   = qualified_ident [ "(" [ call_args ] ")" ] ;
-pattern_bindings = pattern_binding { "," pattern_binding } [ "," ] ;
-pattern_binding = IDENT | "_" ;
+pattern_elements = pattern_element { "," pattern_element } [ "," ] ;
+pattern_element = IDENT | "_" | path_pattern ;
 while_expr     = "while" expression "{" block "}" ;
 loop_expr      = "loop" "{" block "}" ;
 for_expr       = "for" ( IDENT | "_" ) "in" expression "{" block "}" ;
@@ -322,8 +325,11 @@ Notes:
 - **Generic enum patterns** may apply a local or module-qualified type
   constructor immediately before the final variant segment, as in
   `Result(i32, E).Ok(v)` or `std.result.Result(i32, E).Ok(v)`. The final
-  parenthesized group, when present, contains payload bindings rather than
+  parenthesized group, when present, contains payload positions rather than
   constructor arguments.
+- **Nested variant patterns**: a payload position may itself be a
+  `path_pattern`, recursively — `R.Err(E.A(b))` — matching against that
+  position's payload type (4.7:37).
 - **A parameter takes at most one mode** (`comptime`, `inout`, or `borrow`);
   duplicate or conflicting modes are a parse error.
 - **Statement termination**: `let`, assignment, and ordinary expression

@@ -1020,12 +1020,46 @@ pub struct NegIntLit {
     pub span: Span,
 }
 
+/// One payload position of a tuple-variant pattern.
+///
+/// A position either binds the field to a fresh name (or discards it with `_`)
+/// or holds a nested variant pattern the field must itself match
+/// (`R.Err(E.A(b))`, RUE-2053). Nesting is recursive: a nested pattern's own
+/// payload positions are `PatternElement`s again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatternElement {
+    /// A payload binding name, or the wildcard `_` that discards the field.
+    Binding(Ident),
+    /// A nested variant pattern this payload field must match.
+    Nested(PathPattern),
+}
+
+impl PatternElement {
+    /// Get the span of this payload position.
+    pub fn span(&self) -> Span {
+        match self {
+            PatternElement::Binding(ident) => ident.span,
+            PatternElement::Nested(path) => path.span,
+        }
+    }
+
+    /// The binding name this position introduces, when it is a plain binder.
+    pub fn binding(&self) -> Option<&Ident> {
+        match self {
+            PatternElement::Binding(ident) => Some(ident),
+            PatternElement::Nested(_) => None,
+        }
+    }
+}
+
 /// A path pattern (e.g., `Color::Red` or `module.Color::Red` for enum variant matching).
 ///
 /// A tuple-variant pattern binds the variant's payload into fresh names:
-/// `Circle(r)`, `Rect(w, h)`. The `bindings` vector holds those binding names
-/// in payload order; it is empty for a discriminant-only pattern (`Color::Red`).
-/// Payload bindings require the `enum_payloads` preview feature (RUE-221).
+/// `Circle(r)`, `Rect(w, h)`. The `elements` vector holds one entry per payload
+/// position in payload order; it is empty for a discriminant-only pattern
+/// (`Color::Red`). A position is either a binder (`x`, `_`) or a nested variant
+/// pattern (RUE-2053). Payload bindings require the `enum_payloads` preview
+/// feature (RUE-221).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathPattern {
     /// Optional module/namespace prefix (e.g., `utils` in `utils.Color::Red`)
@@ -1041,8 +1075,8 @@ pub struct PathPattern {
     pub ctor_args: Option<Vec<CallArg>>,
     /// The variant name (e.g., `Red`)
     pub variant: Ident,
-    /// Payload binding names (empty = no payload pattern).
-    pub bindings: Vec<Ident>,
+    /// Payload positions (empty = no payload pattern).
+    pub elements: Vec<PatternElement>,
     pub span: Span,
 }
 
@@ -1844,23 +1878,28 @@ fn rebind_pattern(pattern: &mut Pattern, file_id: FileId) {
         Pattern::Int(literal) => rebind_span(&mut literal.span, file_id),
         Pattern::NegInt(literal) => rebind_span(&mut literal.span, file_id),
         Pattern::Bool(literal) => rebind_span(&mut literal.span, file_id),
-        Pattern::Path(path) => {
-            if let Some(base) = &mut path.base {
-                rebind_expr(base, file_id);
-            }
-            rebind_ident(&mut path.type_name, file_id);
-            if let Some(arguments) = &mut path.ctor_args {
-                for argument in arguments {
-                    rebind_call_arg(argument, file_id);
-                }
-            }
-            rebind_ident(&mut path.variant, file_id);
-            for binding in &mut path.bindings {
-                rebind_ident(binding, file_id);
-            }
-            rebind_span(&mut path.span, file_id);
+        Pattern::Path(path) => rebind_path_pattern(path, file_id),
+    }
+}
+
+fn rebind_path_pattern(path: &mut PathPattern, file_id: FileId) {
+    if let Some(base) = &mut path.base {
+        rebind_expr(base, file_id);
+    }
+    rebind_ident(&mut path.type_name, file_id);
+    if let Some(arguments) = &mut path.ctor_args {
+        for argument in arguments {
+            rebind_call_arg(argument, file_id);
         }
     }
+    rebind_ident(&mut path.variant, file_id);
+    for element in &mut path.elements {
+        match element {
+            PatternElement::Binding(binding) => rebind_ident(binding, file_id),
+            PatternElement::Nested(nested) => rebind_path_pattern(nested, file_id),
+        }
+    }
+    rebind_span(&mut path.span, file_id);
 }
 
 fn rebind_call_arg(argument: &mut CallArg, file_id: FileId) {

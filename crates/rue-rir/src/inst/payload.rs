@@ -277,8 +277,8 @@ pub struct RirPayloadStorageStats {
 
 /// A lazily decoded, borrowing view of a match pattern stored in RIR.
 ///
-/// Unlike [`RirPattern`], a path pattern's bindings remain in the compact RIR
-/// word store and are decoded only as they are traversed.
+/// Unlike [`RirPattern`], a path pattern's payload positions remain in the
+/// compact RIR word store and are decoded only as they are traversed.
 #[derive(Debug, Clone)]
 pub enum RirPatternView<'a> {
     Wildcard(Span),
@@ -293,7 +293,7 @@ pub enum RirPatternView<'a> {
         ctor_head: Option<InstRef>,
         type_name: Spur,
         variant: Spur,
-        bindings: RirSymbols<'a>,
+        elements: RirPatternElements<'a>,
         span: Span,
     },
 }
@@ -325,19 +325,151 @@ impl RirPatternView<'_> {
                 ctor_head,
                 type_name,
                 variant,
-                bindings,
+                elements,
                 span,
             } => RirPattern::Path {
                 module: *module,
                 ctor_head: *ctor_head,
                 type_name: *type_name,
                 variant: *variant,
-                bindings: bindings.to_vec(),
+                elements: elements.to_vec(),
                 span: *span,
             },
         }
     }
 }
+
+impl<'a> RirPatternView<'a> {
+    /// This pattern followed by every pattern nested in one of its payload
+    /// positions, outermost first and left to right.
+    ///
+    /// This preorder is the canonical numbering of the
+    /// `RirSpanField::MatchPattern` slots within one arm, so the span visitor,
+    /// the in-place rewriter and the packed codec all walk a nested pattern in
+    /// exactly this order.
+    pub fn preorder(&self) -> Vec<RirPatternView<'a>> {
+        let mut out = Vec::new();
+        self.collect_preorder(&mut out);
+        out
+    }
+
+    fn collect_preorder(&self, out: &mut Vec<RirPatternView<'a>>) {
+        out.push(self.clone());
+        if let Self::Path { elements, .. } = self {
+            for element in elements.iter() {
+                if let RirPatternElementView::Nested(nested) = element {
+                    nested.collect_preorder(out);
+                }
+            }
+        }
+    }
+}
+
+/// One payload position of a borrowed path pattern.
+#[derive(Debug, Clone)]
+pub enum RirPatternElementView<'a> {
+    /// Binder name for this position; the `_` symbol for a discard.
+    Binding(Spur),
+    /// A nested variant pattern the payload field must itself match (RUE-2053).
+    Nested(RirPatternView<'a>),
+}
+
+impl RirPatternElementView<'_> {
+    /// Materialize an owned payload position outliving the RIR borrow.
+    pub fn to_owned(&self) -> RirPatternElement {
+        match self {
+            Self::Binding(name) => RirPatternElement::Binding(*name),
+            Self::Nested(pattern) => RirPatternElement::Nested(pattern.to_owned()),
+        }
+    }
+}
+
+/// Lazily decoded payload positions of a borrowed path pattern.
+///
+/// Positions are variable-width — a binder is two words, a nested pattern is a
+/// whole pattern record — so they are walked rather than indexed.
+#[derive(Clone, Copy)]
+pub struct RirPatternElements<'a> {
+    words: &'a [u32],
+    count: usize,
+    validated: bool,
+}
+
+impl std::fmt::Debug for RirPatternElements<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RirPatternElements")
+            .field("len", &self.count)
+            .finish()
+    }
+}
+
+impl<'a> RirPatternElements<'a> {
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    pub fn iter(&self) -> RirPatternElementIter<'a> {
+        RirPatternElementIter {
+            words: self.words,
+            position: 0,
+            remaining: self.count,
+            validated: self.validated,
+        }
+    }
+
+    pub fn get(&self, index: usize) -> Option<RirPatternElementView<'a>> {
+        self.iter().nth(index)
+    }
+
+    pub fn to_vec(&self) -> Vec<RirPatternElement> {
+        self.iter().map(|element| element.to_owned()).collect()
+    }
+}
+
+impl<'a> IntoIterator for RirPatternElements<'a> {
+    type Item = RirPatternElementView<'a>;
+    type IntoIter = RirPatternElementIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RirPatternElementIter<'a> {
+    words: &'a [u32],
+    position: usize,
+    remaining: usize,
+    validated: bool,
+}
+
+impl<'a> Iterator for RirPatternElementIter<'a> {
+    type Item = RirPatternElementView<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let (element, width) =
+            match decode_pattern_element(self.words, self.position, self.validated) {
+                Some(decoded) => decoded,
+                None => unreachable!("pattern element passed schema validation"),
+            };
+        self.position += width;
+        self.remaining -= 1;
+        Some(element)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for RirPatternElementIter<'_> {}
 
 /// A reusable, zero-allocation view of fixed-width records in the RIR word store.
 pub struct RirSlice<'a, T> {
@@ -607,16 +739,30 @@ pub enum PatternKind {
     Path = 3,
 }
 
-/// Size of each pattern kind in the extra array (including body InstRef).
+/// Words each pattern kind occupies, *excluding* the arm-body word.
+///
+/// A pattern record is the same shape wherever it appears: a top-level match
+/// arm stores it followed by the body InstRef, and a nested payload position
+/// (RUE-2053) stores it alone. The body of a match record therefore always
+/// sits at `position + <pattern words>`.
 ///
 /// The span is stored as three words — start, len, AND file id — so pattern
 /// diagnostics in multi-file compilations attribute to the right file
 /// (dropping the file id here was why pattern-anchored errors reported
 /// "span has an unknown file id", RUE-185).
-const PATTERN_WILDCARD_SIZE: u32 = 5; // kind, span_start, span_len, span_file, body
-const PATTERN_INT_SIZE: u32 = 8; // kind, span_start, span_len, span_file, value_lo, value_hi, negative, body
-const PATTERN_BOOL_SIZE: u32 = 6; // kind, span_start, span_len, span_file, value, body
-const PATTERN_PATH_BASE_SIZE: usize = 10;
+const PATTERN_WILDCARD_WORDS: usize = 4; // kind, span_start, span_len, span_file
+const PATTERN_INT_WORDS: usize = 7; // + value_lo, value_hi, negative
+const PATTERN_BOOL_WORDS: usize = 5; // + value
+const PATTERN_PATH_HEADER_WORDS: usize = 10; // + module, ctor_head, type_name, variant, n_elements, element_words
+/// A binder payload position: [element kind, symbol].
+const PATTERN_ELEMENT_BINDING_WORDS: usize = 2;
+/// Payload-position kinds inside a path record's element section.
+const PATTERN_ELEMENT_BINDING: u32 = 0;
+const PATTERN_ELEMENT_NESTED: u32 = 1;
+/// Deepest payload nesting one RIR pattern record may encode. Decoding walks
+/// nested records recursively, so the schema bounds that recursion rather than
+/// trusting the word store.
+const PATTERN_NESTING_LIMIT: usize = 32;
 const DIRECTIVE_HEADER_WORDS: usize = 5;
 const RECORD_KIND: usize = 0;
 const RECORD_SPAN_START: usize = 1;
@@ -626,14 +772,16 @@ const MATCH_VALUE_LO_OR_BOOL_OR_BODY: usize = 4;
 const MATCH_VALUE_HI_OR_BOOL_BODY: usize = 5;
 const MATCH_INT_NEGATIVE_OR_PATH_TYPE: usize = 6;
 const MATCH_INT_BODY_OR_PATH_VARIANT: usize = 7;
-const MATCH_PATH_BINDING_COUNT: usize = 8;
-const MATCH_PATH_BINDINGS_START: usize = 9;
+const MATCH_PATH_ELEMENT_COUNT: usize = 8;
+const MATCH_PATH_ELEMENT_WORDS: usize = 9;
+const MATCH_PATH_ELEMENTS_START: usize = 10;
 const DIRECTIVE_NAME: usize = 0;
 const DIRECTIVE_ARG_COUNT: usize = 4;
 const DIRECTIVE_ARGS_START: usize = 5;
-// Path patterns are variable-length (RUE-221): kind, span×3, module,
-// type_name, variant, n_bindings, bindings…, body = 9 + n_bindings words.
-// See `add_match_arms`/`get_match_arms` for the layout.
+// Path patterns are variable-length (RUE-221, RUE-2053): kind, span×3, module,
+// ctor_head, type_name, variant, n_elements, element_words, elements…, then the
+// body last for a match arm. Each element is either [0, symbol] or [1, <nested
+// pattern record>]. See `add_match_arms`/`match_arms` for the layout.
 
 /// Stored representation of struct field initializer.
 /// Layout: [field_name: u32, value: u32] = 2 u32s per field
@@ -664,12 +812,48 @@ fn validated_symbol_word(word: u32) -> Spur {
     }
 }
 
-fn encoded_match_record_extent(pattern: &RirPattern) -> Option<usize> {
+fn encoded_pattern_record_words(pattern: &RirPattern) -> Option<usize> {
     match pattern {
-        RirPattern::Wildcard(_) => Some(PATTERN_WILDCARD_SIZE as usize),
-        RirPattern::Int { .. } => Some(PATTERN_INT_SIZE as usize),
-        RirPattern::Bool(..) => Some(PATTERN_BOOL_SIZE as usize),
-        RirPattern::Path { bindings, .. } => PATTERN_PATH_BASE_SIZE.checked_add(bindings.len()),
+        RirPattern::Wildcard(_) => Some(PATTERN_WILDCARD_WORDS),
+        RirPattern::Int { .. } => Some(PATTERN_INT_WORDS),
+        RirPattern::Bool(..) => Some(PATTERN_BOOL_WORDS),
+        RirPattern::Path { elements, .. } => {
+            PATTERN_PATH_HEADER_WORDS.checked_add(encoded_pattern_element_words(elements)?)
+        }
+    }
+}
+
+fn encoded_pattern_element_words(elements: &[RirPatternElement]) -> Option<usize> {
+    elements.iter().try_fold(0usize, |total, element| {
+        let width = match element {
+            RirPatternElement::Binding(_) => PATTERN_ELEMENT_BINDING_WORDS,
+            RirPatternElement::Nested(nested) => {
+                encoded_pattern_record_words(nested)?.checked_add(1)?
+            }
+        };
+        total.checked_add(width)
+    })
+}
+
+fn encoded_match_record_extent(pattern: &RirPattern) -> Option<usize> {
+    encoded_pattern_record_words(pattern)?.checked_add(1)
+}
+
+/// Deepest payload nesting an owned pattern carries, counting the pattern
+/// itself as depth one.
+fn owned_pattern_depth(pattern: &RirPattern) -> usize {
+    match pattern {
+        RirPattern::Path { elements, .. } => {
+            1 + elements
+                .iter()
+                .map(|element| match element {
+                    RirPatternElement::Binding(_) => 0,
+                    RirPatternElement::Nested(nested) => owned_pattern_depth(nested),
+                })
+                .max()
+                .unwrap_or(0)
+        }
+        _ => 1,
     }
 }
 
@@ -677,14 +861,205 @@ fn encoded_directive_record_extent(directive: &RirDirective) -> Option<usize> {
     DIRECTIVE_HEADER_WORDS.checked_add(directive.args.len())
 }
 
-fn decoded_match_record_extent(words: &[u32], position: usize) -> Option<usize> {
+fn decoded_pattern_record_words(words: &[u32], position: usize) -> Option<usize> {
     match words.get(position + RECORD_KIND).copied()? {
-        x if x == PatternKind::Wildcard as u32 => Some(PATTERN_WILDCARD_SIZE as usize),
-        x if x == PatternKind::Int as u32 => Some(PATTERN_INT_SIZE as usize),
-        x if x == PatternKind::Bool as u32 => Some(PATTERN_BOOL_SIZE as usize),
+        x if x == PatternKind::Wildcard as u32 => Some(PATTERN_WILDCARD_WORDS),
+        x if x == PatternKind::Int as u32 => Some(PATTERN_INT_WORDS),
+        x if x == PatternKind::Bool as u32 => Some(PATTERN_BOOL_WORDS),
         x if x == PatternKind::Path as u32 => words
-            .get(position + MATCH_PATH_BINDING_COUNT)
-            .and_then(|count| PATTERN_PATH_BASE_SIZE.checked_add(*count as usize)),
+            .get(position + MATCH_PATH_ELEMENT_WORDS)
+            .and_then(|element_words| {
+                PATTERN_PATH_HEADER_WORDS.checked_add(*element_words as usize)
+            }),
+        _ => None,
+    }
+}
+
+fn decoded_match_record_extent(words: &[u32], position: usize) -> Option<usize> {
+    decoded_pattern_record_words(words, position)?.checked_add(1)
+}
+
+/// Walk one pattern record and everything nested inside it, rejecting a
+/// malformed or over-deep encoding and naming why. This is the fail-closed
+/// gate every unvalidated view passes through, so a published borrowing view
+/// can decode infallibly.
+fn validate_pattern_record(
+    words: &[u32],
+    position: usize,
+    depth: usize,
+) -> Result<(), &'static str> {
+    if depth > PATTERN_NESTING_LIMIT {
+        return Err("pattern nesting exceeds the schema limit");
+    }
+    let Some(record_words) = decoded_pattern_record_words(words, position) else {
+        return Err("invalid pattern kind");
+    };
+    let end = position
+        .checked_add(record_words)
+        .filter(|end| *end <= words.len())
+        .ok_or("record extent is not representable")?;
+    if embedded_span(words, position).is_none() {
+        return Err("pattern span overflows u32");
+    }
+    let kind = words[position + RECORD_KIND];
+    if kind == PatternKind::Int as u32 {
+        if words[position + MATCH_INT_NEGATIVE_OR_PATH_TYPE] > 1 {
+            return Err("invalid integer-sign flag");
+        }
+        return Ok(());
+    }
+    if kind == PatternKind::Bool as u32 {
+        if words[position + MATCH_VALUE_LO_OR_BOOL_OR_BODY] > 1 {
+            return Err("invalid boolean scalar");
+        }
+        return Ok(());
+    }
+    if kind != PatternKind::Path as u32 {
+        return Ok(());
+    }
+    if decode_symbol_word(words[position + MATCH_INT_NEGATIVE_OR_PATH_TYPE]).is_none()
+        || decode_symbol_word(words[position + MATCH_INT_BODY_OR_PATH_VARIANT]).is_none()
+    {
+        return Err("symbol word is not representable");
+    }
+    let count = words[position + MATCH_PATH_ELEMENT_COUNT] as usize;
+    let mut cursor = position + MATCH_PATH_ELEMENTS_START;
+    for _ in 0..count {
+        match words.get(cursor).copied() {
+            Some(PATTERN_ELEMENT_BINDING) => {
+                let word = words
+                    .get(cursor + 1)
+                    .ok_or("record extent is not representable")?;
+                if decode_symbol_word(*word).is_none() {
+                    return Err("symbol word is not representable");
+                }
+                cursor += PATTERN_ELEMENT_BINDING_WORDS;
+            }
+            Some(PATTERN_ELEMENT_NESTED) => {
+                validate_pattern_record(words, cursor + 1, depth + 1)?;
+                let nested = decoded_pattern_record_words(words, cursor + 1)
+                    .expect("nested record width established by validation");
+                cursor += nested + 1;
+            }
+            _ => return Err("invalid pattern payload position"),
+        }
+        if cursor > end {
+            return Err("record extent is not representable");
+        }
+    }
+    // The declared element-section width must match exactly what the positions
+    // consume, so no unreachable words hide inside a record.
+    if cursor != end {
+        return Err("pattern payload positions do not fill the record");
+    }
+    Ok(())
+}
+
+/// Collect the word position of every pattern record inside one match record,
+/// in the preorder that numbers this arm's span slots.
+pub(crate) fn pattern_record_positions(words: &[u32], position: usize, out: &mut Vec<usize>) {
+    out.push(position);
+    if words[position + RECORD_KIND] != PatternKind::Path as u32 {
+        return;
+    }
+    let count = words[position + MATCH_PATH_ELEMENT_COUNT] as usize;
+    let mut cursor = position + MATCH_PATH_ELEMENTS_START;
+    for _ in 0..count {
+        if words[cursor] == PATTERN_ELEMENT_BINDING {
+            cursor += PATTERN_ELEMENT_BINDING_WORDS;
+            continue;
+        }
+        pattern_record_positions(words, cursor + 1, out);
+        cursor += 1 + decoded_pattern_record_words(words, cursor + 1)
+            .expect("validated nested pattern record has an exact extent");
+    }
+}
+
+fn decode_pattern_element(
+    words: &[u32],
+    position: usize,
+    validated: bool,
+) -> Option<(RirPatternElementView<'_>, usize)> {
+    match words.get(position).copied()? {
+        PATTERN_ELEMENT_BINDING => Some((
+            RirPatternElementView::Binding(decode_symbol_word(*words.get(position + 1)?)?),
+            PATTERN_ELEMENT_BINDING_WORDS,
+        )),
+        PATTERN_ELEMENT_NESTED => {
+            let (nested, width) = decode_pattern_record(words, position + 1, validated)?;
+            Some((RirPatternElementView::Nested(nested), width + 1))
+        }
+        _ => None,
+    }
+}
+
+/// Decode one pattern record, returning it and the words it occupies (without
+/// any trailing arm body).
+fn decode_pattern_record(
+    words: &[u32],
+    position: usize,
+    validated: bool,
+) -> Option<(RirPatternView<'_>, usize)> {
+    let kind = *words.get(position + RECORD_KIND)?;
+    let span = embedded_span(words, position)?;
+    let record_words = decoded_pattern_record_words(words, position)?;
+    if position.checked_add(record_words)? > words.len() {
+        return None;
+    }
+    // Views over words that have not passed publication validation decode the
+    // whole record eagerly, so this boundary stays fail-closed: a caller can
+    // never publish a pattern whose payload positions the decoder rejects.
+    if !validated && validate_pattern_record(words, position, 0).is_err() {
+        return None;
+    }
+    match kind {
+        x if x == PatternKind::Wildcard as u32 => {
+            Some((RirPatternView::Wildcard(span), record_words))
+        }
+        x if x == PatternKind::Int as u32 => {
+            let negative = *words.get(position + MATCH_INT_NEGATIVE_OR_PATH_TYPE)?;
+            if negative > 1 {
+                return None;
+            }
+            Some((
+                RirPatternView::Int {
+                    value: *words.get(position + MATCH_VALUE_LO_OR_BOOL_OR_BODY)? as u64
+                        | ((*words.get(position + MATCH_VALUE_HI_OR_BOOL_BODY)? as u64) << 32),
+                    negative: negative != 0,
+                    span,
+                },
+                record_words,
+            ))
+        }
+        x if x == PatternKind::Bool as u32 => {
+            let value = *words.get(position + MATCH_VALUE_LO_OR_BOOL_OR_BODY)?;
+            if value > 1 {
+                return None;
+            }
+            Some((RirPatternView::Bool(value != 0, span), record_words))
+        }
+        x if x == PatternKind::Path as u32 => {
+            let count = *words.get(position + MATCH_PATH_ELEMENT_COUNT)? as usize;
+            let optional_ref = |word| (word != u32::MAX).then(|| InstRef::from_raw(word));
+            let section = position + MATCH_PATH_ELEMENTS_START;
+            Some((
+                RirPatternView::Path {
+                    module: optional_ref(words[position + MATCH_VALUE_LO_OR_BOOL_OR_BODY]),
+                    ctor_head: optional_ref(words[position + MATCH_VALUE_HI_OR_BOOL_BODY]),
+                    type_name: decode_symbol_word(
+                        words[position + MATCH_INT_NEGATIVE_OR_PATH_TYPE],
+                    )?,
+                    variant: decode_symbol_word(words[position + MATCH_INT_BODY_OR_PATH_VARIANT])?,
+                    elements: RirPatternElements {
+                        words: &words[section..position + record_words],
+                        count,
+                        validated: true,
+                    },
+                    span,
+                },
+                record_words,
+            ))
+        }
         _ => None,
     }
 }
@@ -718,79 +1093,9 @@ fn decode_match_record(
     position: usize,
     validated: bool,
 ) -> Option<(RirPatternView<'_>, InstRef, usize)> {
-    let kind = *words.get(position + RECORD_KIND)?;
-    let span = embedded_span(words, position)?;
-    let extent = decoded_match_record_extent(words, position)?;
-    if position.checked_add(extent)? > words.len() {
-        return None;
-    }
-    match kind {
-        x if x == PatternKind::Wildcard as u32 => Some((
-            RirPatternView::Wildcard(span),
-            InstRef::from_raw(*words.get(position + MATCH_VALUE_LO_OR_BOOL_OR_BODY)?),
-            extent,
-        )),
-        x if x == PatternKind::Int as u32 => {
-            let negative = *words.get(position + MATCH_INT_NEGATIVE_OR_PATH_TYPE)?;
-            if negative > 1 {
-                return None;
-            }
-            Some((
-                RirPatternView::Int {
-                    value: *words.get(position + MATCH_VALUE_LO_OR_BOOL_OR_BODY)? as u64
-                        | ((*words.get(position + MATCH_VALUE_HI_OR_BOOL_BODY)? as u64) << 32),
-                    negative: negative != 0,
-                    span,
-                },
-                InstRef::from_raw(*words.get(position + MATCH_INT_BODY_OR_PATH_VARIANT)?),
-                extent,
-            ))
-        }
-        x if x == PatternKind::Bool as u32 => {
-            let value = *words.get(position + MATCH_VALUE_LO_OR_BOOL_OR_BODY)?;
-            if value > 1 {
-                return None;
-            }
-            Some((
-                RirPatternView::Bool(value != 0, span),
-                InstRef::from_raw(*words.get(position + MATCH_VALUE_HI_OR_BOOL_BODY)?),
-                extent,
-            ))
-        }
-        x if x == PatternKind::Path as u32 => {
-            let count = *words.get(position + MATCH_PATH_BINDING_COUNT)? as usize;
-            let end = position.checked_add(extent)?;
-            let optional_ref = |word| (word != u32::MAX).then(|| InstRef::from_raw(word));
-            let binding_start = position + MATCH_PATH_BINDINGS_START;
-            Some((
-                RirPatternView::Path {
-                    module: optional_ref(words[position + MATCH_VALUE_LO_OR_BOOL_OR_BODY]),
-                    ctor_head: optional_ref(words[position + MATCH_VALUE_HI_OR_BOOL_BODY]),
-                    type_name: decode_symbol_word(
-                        words[position + MATCH_INT_NEGATIVE_OR_PATH_TYPE],
-                    )?,
-                    variant: decode_symbol_word(words[position + MATCH_INT_BODY_OR_PATH_VARIANT])?,
-                    bindings: if validated {
-                        RirSlice::new_validated(
-                            &words[binding_start..binding_start + count],
-                            SYMBOL_SCHEMA.width,
-                            |record| validated_symbol_word(record[0]),
-                        )
-                    } else {
-                        RirSlice::new_unvalidated(
-                            &words[binding_start..binding_start + count],
-                            SYMBOL_SCHEMA.width,
-                            |record| validated_symbol_word(record[0]),
-                        )
-                    },
-                    span,
-                },
-                InstRef::from_raw(words[end - 1]),
-                extent,
-            ))
-        }
-        _ => None,
-    }
+    let (pattern, record_words) = decode_pattern_record(words, position, validated)?;
+    let body = InstRef::from_raw(*words.get(position + record_words)?);
+    Some((pattern, body, record_words + 1))
 }
 
 fn decode_directive_record(
@@ -1329,107 +1634,135 @@ impl Rir {
                 })
         })?;
         for (pattern, _) in arms {
-            if let RirPattern::Path {
-                type_name,
-                variant,
-                bindings,
-                ..
-            } = pattern
-            {
-                u32::try_from(bindings.len()).map_err(|_| {
-                    RirPayloadBuildError::ResourceLimitExceeded {
-                        family: RirMatchArmsRange::FAMILY,
-                    }
-                })?;
-                Self::symbol_word(RirMatchArmsRange::FAMILY, *type_name)?;
-                Self::symbol_word(RirMatchArmsRange::FAMILY, *variant)?;
-                for binding in bindings {
-                    Self::symbol_word(RirMatchArmsRange::FAMILY, *binding)?;
-                }
-            }
+            Self::prevalidate_pattern_record(pattern)?;
         }
         let (start, extent) =
             self.append_payload_direct(RirMatchArmsRange::FAMILY, exact_words, |words| {
                 words.push(count);
                 for (pattern, body) in arms {
-                    match pattern {
-                        RirPattern::Wildcard(span) => {
-                            words.extend([
-                                PatternKind::Wildcard as u32,
-                                span.start(),
-                                span.len(),
-                                span.file_id.index(),
-                                body.as_u32(),
-                            ]);
-                        }
-                        RirPattern::Int {
-                            value,
-                            negative,
-                            span,
-                        } => {
-                            words.extend([
-                                PatternKind::Int as u32,
-                                span.start(),
-                                span.len(),
-                                span.file_id.index(),
-                            ]);
-                            // Store u64 magnitude as two u32s (little-endian) plus sign flag
-                            words.extend([
-                                *value as u32,
-                                (*value >> 32) as u32,
-                                u32::from(*negative),
-                                body.as_u32(),
-                            ]);
-                        }
-                        RirPattern::Bool(value, span) => {
-                            words.extend([
-                                PatternKind::Bool as u32,
-                                span.start(),
-                                span.len(),
-                                span.file_id.index(),
-                                u32::from(*value),
-                                body.as_u32(),
-                            ]);
-                        }
-                        RirPattern::Path {
-                            module,
-                            ctor_head,
-                            type_name,
-                            variant,
-                            bindings,
-                            span,
-                        } => {
-                            words.extend([
-                                PatternKind::Path as u32,
-                                span.start(),
-                                span.len(),
-                                span.file_id.index(),
-                            ]);
-                            // Store module as u32::MAX for None, otherwise the InstRef
-                            words.push(module.map_or(u32::MAX, |r| r.as_u32()));
-                            // Store ctor_head (inline type-constructor pattern head,
-                            // RUE-596) the same way — u32::MAX for None.
-                            words.push(ctor_head.map_or(u32::MAX, |r| r.as_u32()));
-                            words.push(
-                                u32::try_from(type_name.into_usize()).expect("prevalidated symbol"),
-                            );
-                            words.push(
-                                u32::try_from(variant.into_usize()).expect("prevalidated symbol"),
-                            );
-                            // Variable-length payload bindings (RUE-221): a count
-                            // followed by the binding symbols, then the body last.
-                            words.push(u32::try_from(bindings.len()).expect("prevalidated length"));
-                            for b in bindings {
-                                words.push(
-                                    u32::try_from(b.into_usize()).expect("prevalidated symbol"),
-                                );
-                            }
-                            words.push(body.as_u32());
-                        }
-                    }
+                    Self::encode_pattern_record(words, pattern);
+                    words.push(body.as_u32());
                 }
             })?;
         Ok(RirMatchArmsRange::from_parts(start, extent))
+    }
+
+    /// Reject a pattern the word store cannot represent before any of it is
+    /// appended, so the encoder below can rely on `expect`. Nested payload
+    /// positions (RUE-2053) are checked with the record they belong to.
+    fn prevalidate_pattern_record(pattern: &RirPattern) -> Result<(), RirPayloadBuildError> {
+        let limit = || RirPayloadBuildError::ResourceLimitExceeded {
+            family: RirMatchArmsRange::FAMILY,
+        };
+        let RirPattern::Path {
+            type_name,
+            variant,
+            elements,
+            ..
+        } = pattern
+        else {
+            return Ok(());
+        };
+        if owned_pattern_depth(pattern) > PATTERN_NESTING_LIMIT {
+            return Err(limit());
+        }
+        u32::try_from(elements.len()).map_err(|_| limit())?;
+        u32::try_from(encoded_pattern_element_words(elements).ok_or_else(limit)?)
+            .map_err(|_| limit())?;
+        Self::symbol_word(RirMatchArmsRange::FAMILY, *type_name)?;
+        Self::symbol_word(RirMatchArmsRange::FAMILY, *variant)?;
+        for element in elements {
+            match element {
+                RirPatternElement::Binding(name) => {
+                    Self::symbol_word(RirMatchArmsRange::FAMILY, *name)?;
+                }
+                RirPatternElement::Nested(nested) => Self::prevalidate_pattern_record(nested)?,
+            }
+        }
+        Ok(())
+    }
+
+    /// Append one pattern record — no arm body — in the layout the decoder
+    /// walks. Callers append the body themselves when the record is a match
+    /// arm rather than a nested payload position.
+    fn encode_pattern_record(words: &mut Vec<u32>, pattern: &RirPattern) {
+        let span = pattern.span();
+        match pattern {
+            RirPattern::Wildcard(_) => {
+                words.extend([
+                    PatternKind::Wildcard as u32,
+                    span.start(),
+                    span.len(),
+                    span.file_id.index(),
+                ]);
+            }
+            RirPattern::Int {
+                value, negative, ..
+            } => {
+                words.extend([
+                    PatternKind::Int as u32,
+                    span.start(),
+                    span.len(),
+                    span.file_id.index(),
+                ]);
+                // Store u64 magnitude as two u32s (little-endian) plus sign flag
+                words.extend([*value as u32, (*value >> 32) as u32, u32::from(*negative)]);
+            }
+            RirPattern::Bool(value, _) => {
+                words.extend([
+                    PatternKind::Bool as u32,
+                    span.start(),
+                    span.len(),
+                    span.file_id.index(),
+                    u32::from(*value),
+                ]);
+            }
+            RirPattern::Path {
+                module,
+                ctor_head,
+                type_name,
+                variant,
+                elements,
+                ..
+            } => {
+                words.extend([
+                    PatternKind::Path as u32,
+                    span.start(),
+                    span.len(),
+                    span.file_id.index(),
+                ]);
+                // Store module as u32::MAX for None, otherwise the InstRef
+                words.push(module.map_or(u32::MAX, |r| r.as_u32()));
+                // Store ctor_head (inline type-constructor pattern head,
+                // RUE-596) the same way — u32::MAX for None.
+                words.push(ctor_head.map_or(u32::MAX, |r| r.as_u32()));
+                words.push(u32::try_from(type_name.into_usize()).expect("prevalidated symbol"));
+                words.push(u32::try_from(variant.into_usize()).expect("prevalidated symbol"));
+                // Variable-length payload positions (RUE-221, RUE-2053): the
+                // position count, the words they occupy, then the positions.
+                words.push(u32::try_from(elements.len()).expect("prevalidated length"));
+                words.push(
+                    u32::try_from(
+                        encoded_pattern_element_words(elements).expect("prevalidated length"),
+                    )
+                    .expect("prevalidated length"),
+                );
+                for element in elements {
+                    match element {
+                        RirPatternElement::Binding(name) => {
+                            words.push(PATTERN_ELEMENT_BINDING);
+                            words.push(
+                                u32::try_from(name.into_usize()).expect("prevalidated symbol"),
+                            );
+                        }
+                        RirPatternElement::Nested(nested) => {
+                            words.push(PATTERN_ELEMENT_NESTED);
+                            Self::encode_pattern_record(words, nested);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Retrieve match arms from the extra array.

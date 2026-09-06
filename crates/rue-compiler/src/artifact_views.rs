@@ -1573,43 +1573,54 @@ fn pattern_record(
             Some(literal.value.to_string().into()),
             Vec::new(),
         ),
-        rue_parser::Pattern::Path(path) => {
-            let mut children = path
-                .base
-                .iter()
-                .map(|base| expr_record(owner, base))
-                .collect::<Vec<_>>();
-            children.extend(
-                path.ctor_args
-                    .iter()
-                    .flatten()
-                    .map(|argument| call_argument_record(owner, argument)),
-            );
-            children.extend(path.bindings.iter().map(|binding| {
-                syntax_record(
-                    "binding",
-                    binding.span,
-                    Some(resolved_ident(owner, *binding)),
-                    None,
-                    Vec::new(),
-                )
-            }));
-            syntax_record(
-                "path_pattern",
-                span,
-                Some(
-                    format!(
-                        "{}::{}",
-                        owner.resolve_raw_symbol(path.type_name.name),
-                        owner.resolve_raw_symbol(path.variant.name)
-                    )
-                    .into(),
-                ),
-                None,
-                children,
-            )
-        }
+        rue_parser::Pattern::Path(path) => path_pattern_record(owner, path, span),
     }
+}
+
+/// Render one variant pattern, recursing through the nested variant patterns
+/// its payload positions may hold (RUE-2053).
+fn path_pattern_record(
+    owner: &crate::parsed_modules::ParsedModule,
+    path: &rue_parser::PathPattern,
+    span: rue_span::Span,
+) -> Arc<SyntaxNodeRecord> {
+    let mut children = path
+        .base
+        .iter()
+        .map(|base| expr_record(owner, base))
+        .collect::<Vec<_>>();
+    children.extend(
+        path.ctor_args
+            .iter()
+            .flatten()
+            .map(|argument| call_argument_record(owner, argument)),
+    );
+    children.extend(path.elements.iter().map(|element| match element {
+        rue_parser::PatternElement::Binding(binding) => syntax_record(
+            "binding",
+            binding.span,
+            Some(resolved_ident(owner, *binding)),
+            None,
+            Vec::new(),
+        ),
+        rue_parser::PatternElement::Nested(nested) => {
+            path_pattern_record(owner, nested, nested.span)
+        }
+    }));
+    syntax_record(
+        "path_pattern",
+        span,
+        Some(
+            format!(
+                "{}::{}",
+                owner.resolve_raw_symbol(path.type_name.name),
+                owner.resolve_raw_symbol(path.variant.name)
+            )
+            .into(),
+        ),
+        None,
+        children,
+    )
 }
 
 fn binary_operator(operator: rue_parser::BinaryOp) -> &'static str {

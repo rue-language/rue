@@ -103,21 +103,32 @@ fn block_charge(block: &ast::BlockExpr) -> u64 {
 
 fn pattern_charge(pattern: &ast::Pattern) -> u64 {
     match pattern {
-        ast::Pattern::Path(path) => path
-            .base
-            .as_ref()
-            .map_or(0, |base| boxed_charge(base, expr_charge))
-            .saturating_add(
-                path.ctor_args
-                    .as_ref()
-                    .map_or(0, |args| owned_slice_charge(args, call_arg_charge)),
-            )
-            .saturating_add(owned_slice_charge(&path.bindings, |_| 0)),
+        ast::Pattern::Path(path) => path_pattern_charge(path),
         ast::Pattern::Wildcard(_)
         | ast::Pattern::Int(_)
         | ast::Pattern::NegInt(_)
         | ast::Pattern::Bool(_) => 0,
     }
+}
+
+fn path_pattern_charge(path: &ast::PathPattern) -> u64 {
+    path.base
+        .as_ref()
+        .map_or(0, |base| boxed_charge(base, expr_charge))
+        .saturating_add(
+            path.ctor_args
+                .as_ref()
+                .map_or(0, |args| owned_slice_charge(args, call_arg_charge)),
+        )
+        // A payload position may hold a whole nested pattern (RUE-2053), so
+        // its retained bytes are charged recursively.
+        .saturating_add(owned_slice_charge(
+            &path.elements,
+            |element| match element {
+                ast::PatternElement::Binding(_) => 0,
+                ast::PatternElement::Nested(nested) => path_pattern_charge(nested),
+            },
+        ))
 }
 
 fn statement_charge(statement: &ast::Statement) -> u64 {
@@ -1368,6 +1379,7 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::LinearStructCopy(value)
             | E::UnknownEnumType(value)
             | E::InvalidMatchType(value)
+            | E::NestedPatternPositionConflict { variant: value }
             | E::UnknownIntrinsic(value)
             | E::CannotInferCastTarget(value)
             | E::CannotInferPointeeType(value)

@@ -1392,7 +1392,7 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                 ctor_head,
                 type_name,
                 variant,
-                bindings,
+                elements,
                 ..
             } => {
                 self.byte(3)?;
@@ -1400,10 +1400,19 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                 self.optional_ref(*ctor_head)?;
                 self.symbol(*type_name)?;
                 self.symbol(*variant)?;
-                self.count(bindings.len())?;
-                for binding in bindings.values() {
+                self.count(elements.len())?;
+                for element in elements.iter() {
                     self.check()?;
-                    self.symbol(binding)?;
+                    match element {
+                        RirPatternElementView::Binding(name) => {
+                            self.byte(0)?;
+                            self.symbol(name)?;
+                        }
+                        RirPatternElementView::Nested(nested) => {
+                            self.byte(1)?;
+                            self.pattern(&nested)?;
+                        }
+                    }
                 }
             }
         }
@@ -1518,16 +1527,23 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                     self.check()?;
                     self.pattern(&pattern)?;
                     self.reference(body)?;
-                    self.basis_span(
-                        RirSpanSlot::new(
-                            instruction,
-                            RirSpanField::MatchPattern {
-                                arm: u32::try_from(ordinal)
-                                    .map_err(|_| PackedRirEncodeError::ResourceLimit)?,
-                            },
-                        ),
-                        pattern.span(),
-                    )?;
+                    let arm =
+                        u32::try_from(ordinal).map_err(|_| PackedRirEncodeError::ResourceLimit)?;
+                    // Nested payload patterns (RUE-2053) contribute their own
+                    // span slots, in the canonical preorder.
+                    for (nested, record) in pattern.preorder().into_iter().enumerate() {
+                        self.basis_span(
+                            RirSpanSlot::new(
+                                instruction,
+                                RirSpanField::MatchPattern {
+                                    arm,
+                                    nested: u32::try_from(nested)
+                                        .map_err(|_| PackedRirEncodeError::ResourceLimit)?,
+                                },
+                            ),
+                            record.span(),
+                        )?;
+                    }
                 }
             }
             InstData::Break { value } => {
@@ -2785,11 +2801,23 @@ impl<
         Ok(values)
     }
 
+    /// Decode one pattern record, taking its span from the basis stream in the
+    /// canonical preorder the encoder wrote: this record, then the patterns
+    /// nested in its payload positions (RUE-2053).
     fn pattern(
         &mut self,
         reader: &mut Reader<'_>,
-        span: Span,
+        basis: &mut Reader<'_>,
+        arm: u32,
+        nested: &mut u32,
     ) -> Result<RirPattern, PackedRirAppendError<E>> {
+        let index = *nested;
+        *nested = nested
+            .checked_add(1)
+            .ok_or(PackedRirDecodeError::CountOutOfBounds {
+                family: "match pattern",
+            })?;
+        let span = self.span(basis, RirSpanField::MatchPattern { arm, nested: index })?;
         Ok(match Self::byte_tag(reader, "match pattern", 3)? {
             0 => RirPattern::Wildcard(span),
             1 => RirPattern::Int {
@@ -2803,21 +2831,29 @@ impl<
                 let ctor_head = self.optional_ref(reader)?;
                 let type_name = self.symbol(reader)?;
                 let variant = self.symbol(reader)?;
-                let count = Self::count(reader, "pattern bindings", 1)?;
-                let mut bindings = Vec::new();
-                bindings
+                let count = Self::count(reader, "pattern payload positions", 1)?;
+                let mut elements = Vec::new();
+                elements
                     .try_reserve_exact(count)
-                    .map_err(|_| Self::capacity("pattern bindings"))?;
+                    .map_err(|_| Self::capacity("pattern payload positions"))?;
                 for _ in 0..count {
                     self.check()?;
-                    bindings.push(self.symbol(reader)?);
+                    elements.push(
+                        match Self::byte_tag(reader, "pattern payload position", 1)? {
+                            0 => RirPatternElement::Binding(self.symbol(reader)?),
+                            1 => {
+                                RirPatternElement::Nested(self.pattern(reader, basis, arm, nested)?)
+                            }
+                            _ => unreachable!(),
+                        },
+                    );
                 }
                 RirPattern::Path {
                     module,
                     ctor_head,
                     type_name,
                     variant,
-                    bindings,
+                    elements,
                     span,
                 }
             }
@@ -2948,8 +2984,8 @@ impl<
                             family: "match arms",
                         }
                     })?;
-                    let pattern_span = self.span(basis, RirSpanField::MatchPattern { arm })?;
-                    let pattern = self.pattern(reader, pattern_span)?;
+                    let mut nested = 0u32;
+                    let pattern = self.pattern(reader, basis, arm, &mut nested)?;
                     let body = self.reference(reader)?;
                     arms.push((pattern, body));
                 }
@@ -4987,7 +5023,17 @@ mod tests {
                         ctor_head: Some(unit),
                         type_name: a,
                         variant: b,
-                        bindings: vec![a, b],
+                        elements: vec![
+                            RirPatternElement::Binding(a),
+                            RirPatternElement::Nested(RirPattern::Path {
+                                module: None,
+                                ctor_head: None,
+                                type_name: b,
+                                variant: a,
+                                elements: vec![RirPatternElement::Binding(b)],
+                                span,
+                            }),
+                        ],
                         span,
                     },
                     block,

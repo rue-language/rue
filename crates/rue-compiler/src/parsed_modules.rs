@@ -2043,6 +2043,32 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
         Ok(())
     }
 
+    /// Bind one variant pattern's payload names and record the type names its
+    /// head references, recursing through nested variant patterns (RUE-2053).
+    fn visit_path_pattern(&mut self, path: &rue_parser::PathPattern) -> CompileResult<()> {
+        if let Some(base) = &path.base {
+            self.visit_expr(base)?;
+        }
+        if let Some(args) = &path.ctor_args {
+            if let Some(base) = &path.base {
+                if let Some(mut head) = self.static_path(base)? {
+                    head.components.push(self.symbol(path.type_name)?);
+                    self.add_path(head);
+                }
+            } else {
+                self.add_unqualified(path.type_name)?;
+            }
+            self.visit_args(args)?;
+        }
+        for element in &path.elements {
+            match element {
+                rue_parser::PatternElement::Binding(binding) => self.bind_local(*binding)?,
+                rue_parser::PatternElement::Nested(nested) => self.visit_path_pattern(nested)?,
+            }
+        }
+        Ok(())
+    }
+
     fn visit_args(&mut self, args: &[rue_parser::ast::CallArg]) -> CompileResult<()> {
         for argument in args {
             self.visit_expr(&argument.expr)?;
@@ -2284,23 +2310,7 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
                     self.scopes.push(AHashMap::new());
                     let outcome = (|| {
                         if let Pattern::Path(path) = &arm.pattern {
-                            if let Some(base) = &path.base {
-                                self.visit_expr(base)?;
-                            }
-                            if let Some(args) = &path.ctor_args {
-                                if let Some(base) = &path.base {
-                                    if let Some(mut head) = self.static_path(base)? {
-                                        head.components.push(self.symbol(path.type_name)?);
-                                        self.add_path(head);
-                                    }
-                                } else {
-                                    self.add_unqualified(path.type_name)?;
-                                }
-                                self.visit_args(args)?;
-                            }
-                            for binding in &path.bindings {
-                                self.bind_local(*binding)?;
-                            }
+                            self.visit_path_pattern(path)?;
                         }
                         self.visit_expr(&arm.body)
                     })();
