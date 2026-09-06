@@ -1645,30 +1645,14 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         QueryAbort,
         crate::semantic_query_nucleus::SemanticNucleusFailure,
     > {
-        use crate::durable_semantics::DurableType as T;
-        Ok(Some(match name {
-            "i8" => T::I8,
-            "i16" => T::I16,
-            "i32" => T::I32,
-            "i64" => T::I64,
-            "isize" => T::I64,
-            "u8" => T::U8,
-            "u16" => T::U16,
-            "u32" => T::U32,
-            "u64" => T::U64,
-            "usize" => T::U64,
-            "bool" => T::Bool,
-            "()" => T::Unit,
-            "!" => T::Never,
-            "type" => T::ComptimeType,
-            "f32" => T::F32,
-            "f64" => T::F64,
-            // `comptime_float` is absent for the same reason `comptime_int`
-            // is: a comptime-only type is inferred, never named (spec 3.12:3).
-            // This table mirrors `rue_air::Type::from_primitive_name` and must
-            // keep mirroring it (RUE-1076).
-            _ => return Ok(None),
-        }))
+        // The primitive-name table has one owner in rue-air. `comptime_float`
+        // is absent from it for the same reason `comptime_int` is: a
+        // comptime-only type is inferred, never named (spec 3.12:3), so this
+        // resolver answers `None` for it without repeating the reason
+        // (RUE-1076, RUE-1989).
+        Ok(crate::durable_semantics::DurableType::from_primitive_name(
+            name,
+        ))
     }
 
     fn builtin_type(
@@ -1941,7 +1925,7 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         );
         Ok(Some(
             crate::durable_semantics::DurableType::BuiltinNominal {
-                name: Arc::from(format!("Str({capacity})")),
+                name: Arc::from(rue_air::fixed_string_name(capacity)),
                 kind: rue_air::SemanticImportNominalKind::Struct,
             },
         ))

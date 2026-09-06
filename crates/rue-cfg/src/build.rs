@@ -4795,7 +4795,12 @@ mod tests {
                 is_linear: false,
                 declared_linear: false,
                 destructor: destructor.map(Into::into),
-                is_builtin: false,
+                // A generated view spelling is a compiler-provided nominal in
+                // production, and the pool's text-view classification reads
+                // that bit as well as the name (RUE-1989); a fixture whose
+                // `str` were registered as source-defined would not classify
+                // as text.
+                is_builtin: rue_air::text_view_name_kind(name).is_some(),
                 is_pub: false,
                 file_id: FileId::DEFAULT,
             },

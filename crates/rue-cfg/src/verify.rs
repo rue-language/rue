@@ -1754,9 +1754,12 @@ impl<'a> Verifier<'a> {
         ) else {
             return false;
         };
-        let is_fixed_str = rue_air::fixed_string_capacity(&source_def.name).is_some();
+        let is_fixed_str = matches!(
+            pool.text_view_kind(source_id),
+            Some(rue_air::TextViewKind::StrFixed(_))
+        );
         is_fixed_str
-            && &*result_def.name == "str"
+            && pool.text_view_kind(result_id) == Some(rue_air::TextViewKind::Str)
             && source_def.fields.len() == result_def.fields.len()
             && source_def
                 .fields

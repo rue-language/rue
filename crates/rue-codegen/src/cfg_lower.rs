@@ -453,8 +453,11 @@ impl<'a> CfgLowerContext<'a> {
     pub fn is_string_like_for_equality(&self, ty: Type) -> bool {
         match ty.kind() {
             TypeKind::Struct(struct_id) => {
-                let struct_def = self.type_pool.struct_def(struct_id);
-                self.is_strbuf(ty) || rue_air::is_string_view_struct_name(&struct_def.name)
+                self.is_strbuf(ty)
+                    || matches!(
+                        self.type_pool.text_view_kind(struct_id),
+                        Some(rue_air::TextViewKind::Str | rue_air::TextViewKind::StrFixed(_))
+                    )
             }
             _ => false,
         }

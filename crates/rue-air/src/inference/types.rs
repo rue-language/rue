@@ -115,7 +115,7 @@ impl InferType {
             InferType::Var(id) => id.to_string(),
             InferType::IntLiteral => "{integer}".to_string(),
             InferType::Array { element, length } => {
-                format!("[{}; {}]", element.name_with_pool(pool), length)
+                crate::types::array_type_name(&element.name_with_pool(pool), *length)
             }
         }
     }

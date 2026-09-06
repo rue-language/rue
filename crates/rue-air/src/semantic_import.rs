@@ -262,6 +262,43 @@ macro_rules! define_semantic_import_const_schema {
 semantic_import_const_schema!(define_semantic_import_const_schema);
 
 impl<K, M> SemanticImportType<K, M> {
+    /// Resolve a primitive type-syntax name in the durable type algebra.
+    ///
+    /// The name table itself belongs to [`crate::Type::from_primitive_name`];
+    /// this is its one projection into the durable algebra, so a durable
+    /// resolver never carries a second spelling table that could accept
+    /// `usize` in one position and reject it in another (RUE-1989). A name that
+    /// resolves to a type the durable algebra has no primitive variant for is
+    /// `None`, exactly as a non-primitive name is.
+    #[must_use]
+    pub fn from_primitive_name(name: &str) -> Option<Self> {
+        use crate::TypeKind as K;
+        Some(match crate::Type::from_primitive_name(name)?.try_kind()? {
+            K::I8 => Self::I8,
+            K::I16 => Self::I16,
+            K::I32 => Self::I32,
+            K::I64 => Self::I64,
+            K::U8 => Self::U8,
+            K::U16 => Self::U16,
+            K::U32 => Self::U32,
+            K::U64 => Self::U64,
+            K::Bool => Self::Bool,
+            K::Unit => Self::Unit,
+            K::Never => Self::Never,
+            K::ComptimeType => Self::ComptimeType,
+            K::F32 => Self::F32,
+            K::F64 => Self::F64,
+            K::ComptimeFloat => Self::ComptimeFloat,
+            K::Struct(_)
+            | K::Enum(_)
+            | K::Array(_)
+            | K::PtrConst(_)
+            | K::PtrMut(_)
+            | K::Module(_)
+            | K::Error => return None,
+        })
+    }
+
     /// Fold this value in post-order through the canonical schema visitor.
     pub fn try_fold<T, E>(
         &self,
@@ -2479,7 +2516,7 @@ mod tests {
             ),
             TypeKind::Array(id) => {
                 let (element, len) = epoch.type_pool().array_def(id);
-                format!("[{element}; {len}]", element = projection(epoch, element))
+                crate::types::array_type_name(&projection(epoch, element), len)
             }
             TypeKind::Module(id) => {
                 format!("module {}", epoch.module_registry().get_def(id).file_path)

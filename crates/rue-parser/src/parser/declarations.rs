@@ -494,7 +494,9 @@ impl Parser {
             _ => false,
         });
         let float_type_initializer = match self.kind() {
-            TokenKind::Ident(symbol) => matches!(self.interner.resolve(&symbol), "f32" | "f64"),
+            TokenKind::Ident(symbol) => {
+                rue_lexer::is_float_type_name(self.interner.resolve(&symbol))
+            }
             _ => false,
         };
         let init = if type_annotated && float_type_initializer {

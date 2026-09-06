@@ -29,7 +29,7 @@ pub(crate) const MAX_TYPE_SIZE_BYTES: u64 = i32::MAX as u64;
 /// policy in spec C.1:2.
 pub(crate) const MAX_TYPE_SLOTS: u64 = MAX_TYPE_SIZE_BYTES / 8;
 use crate::sema::ConstValue;
-use crate::types::{ArrayLen, Type, TypeKind};
+use crate::types::{ArrayLen, TextViewKind, Type, TypeKind};
 
 /// The narrow semantic surface consumed by the canonical type-syntax
 /// evaluator.  This deliberately owns neither a declaration epoch nor a body
@@ -993,16 +993,21 @@ pub(super) fn semantic_type_syntax_compile_error(
 }
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
-    /// Is `ty` the synthetic `str` struct (ADR-0043 Phase 3, RUE-324)? Detected
-    /// by the struct name being exactly `str`. Used to route string literals and
-    /// slice-style `.len()`/index operations through the fat-pointer paths while
-    /// keeping `str` first-class (exempt from the slice second-class rule).
+    /// Which compiler-generated text view `ty` is, if it is one (RUE-1989).
+    ///
+    /// The pool owns the classification — the builtin bit together with the
+    /// canonical spelling — so the engine's string predicates below are thin
+    /// readings of one answer rather than independent name comparisons.
+    pub(crate) fn text_view_kind(&self, ty: Type) -> Option<crate::types::TextViewKind> {
+        self.body_type_pool().text_view_kind(ty.as_struct()?)
+    }
+
+    /// Is `ty` the synthetic `str` struct (ADR-0043 Phase 3, RUE-324)? Used to
+    /// route string literals and slice-style `.len()`/index operations through
+    /// the fat-pointer paths while keeping `str` first-class (exempt from the
+    /// slice second-class rule).
     pub(crate) fn is_str_struct(&self, ty: Type) -> bool {
-        if let TypeKind::Struct(struct_id) = ty.kind() {
-            &*self.body_type_pool().struct_def(struct_id).name == "str"
-        } else {
-            false
-        }
+        matches!(self.text_view_kind(ty), Some(TextViewKind::Str))
     }
 
     /// Is `ty` a fixed-capacity string `Str(N)` (ADR-0043 Phase 5, RUE-326)?
@@ -1013,13 +1018,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// If `ty` is a fixed-capacity string `Str(N)`, return its capacity `N`
-    /// (ADR-0043 Phase 5, RUE-326); otherwise `None`. The builtin bit and
-    /// canonical spelling are checked by one shared classifier.
+    /// (ADR-0043 Phase 5, RUE-326); otherwise `None`.
     pub(crate) fn str_fixed_capacity(&self, ty: Type) -> Option<u64> {
-        if let TypeKind::Struct(struct_id) = ty.kind() {
-            crate::types::fixed_string_struct_capacity(&self.body_type_pool().struct_def(struct_id))
-        } else {
-            None
+        match self.text_view_kind(ty)? {
+            TextViewKind::StrFixed(capacity) => Some(capacity),
+            TextViewKind::Str | TextViewKind::Slice => None,
         }
     }
 
@@ -1030,7 +1033,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// treat them identically. The capacity-fits legality rule is the only place
     /// `Str(N)` diverges from `str`.
     pub(crate) fn is_str_like(&self, ty: Type) -> bool {
-        self.is_str_struct(ty) || self.is_str_fixed_struct(ty)
+        matches!(
+            self.text_view_kind(ty),
+            Some(TextViewKind::Str | TextViewKind::StrFixed(_))
+        )
     }
 }
 

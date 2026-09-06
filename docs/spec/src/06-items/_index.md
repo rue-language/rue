@@ -48,13 +48,16 @@ User-defined type names (structs and enums) **MUST** be unique within their defi
 
 {{ rule(id="6.0:3", cat="legality-rule") }}
 
-User-defined type names are resolved by ordinary lexical and module lookup. The language currently reserves no type-name spellings; in particular, `StrBuf` is an ordinary standard-library declaration and may also name an unrelated user type.
+User-defined type names are resolved by ordinary lexical and module lookup. The language reserves exactly one type-name spelling: `str`, the built-in view over borrowed UTF-8 bytes (3.7), which the implementation provides in every module's scope rather than declaring in source. A struct or enum declaration named `str` produces a compile-time error. No other spelling is reserved; in particular, `StrBuf` is an ordinary standard-library declaration and may also name an unrelated user type.
 
 {{ rule(id="6.0:4", cat="example") }}
 
 ```rue
 // OK: this is an ordinary user nominal, unrelated to std.strbuf.StrBuf.
 struct StrBuf { data: i32 }
+
+// Error: `str` names the built-in text view and may not be redefined.
+struct str { data: i32 }  // compile error: reserved type name
 ```
 
 {{ rule(id="6.0:5", cat="legality-rule") }}

@@ -3116,32 +3116,16 @@ pub(super) fn provider_definition_category(
     }
 }
 
-/// The durable type for a primitive type-syntax name, mirroring
-/// `rue_air::Type::from_primitive_name` in the durable algebra.
+/// The durable type for a primitive type-syntax name.
+///
+/// The spelling table has one owner — `rue_air::Type::from_primitive_name`,
+/// projected into the durable algebra by `DurableType::from_primitive_name`.
+/// In particular there is no `comptime_float`: a comptime-only type is
+/// inferred, never named (spec 3.12:3), exactly as `comptime_int` is not
+/// nameable.
 #[cfg(test)]
 pub(super) fn primitive_durable_type(name: &str) -> Option<crate::DurableType> {
-    use crate::DurableType as T;
-    Some(match name {
-        "i8" => T::I8,
-        "i16" => T::I16,
-        "i32" => T::I32,
-        "i64" => T::I64,
-        "u8" => T::U8,
-        "u16" => T::U16,
-        "u32" => T::U32,
-        "u64" => T::U64,
-        "usize" => T::U64,
-        "isize" => T::I64,
-        "bool" => T::Bool,
-        "()" => T::Unit,
-        "!" => T::Never,
-        "type" => T::ComptimeType,
-        "f32" => T::F32,
-        "f64" => T::F64,
-        // No `comptime_float`: a comptime-only type is inferred, never named
-        // (spec 3.12:3), exactly as `comptime_int` is not nameable.
-        _ => return None,
-    })
+    crate::DurableType::from_primitive_name(name)
 }
 
 #[cfg(test)]

@@ -1977,7 +1977,7 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
     (753, 3_150_885_663_910_159_936),
     (2_598, 10_270_973_964_375_394_836),
     (11653, 15_769_724_788_918_086_723),
-    (106_643, 1_879_126_869_505_685_683),
+    (108_305, 456_066_266_069_628_992),
     (3_254, 11_949_940_325_034_004_149),
     (5_552, 14_658_861_127_087_730_967),
     (872, 14_092_162_116_261_787_003),
@@ -5993,8 +5993,18 @@ fn compiler_uses_air_synthetic_type_identity_policy() {
             include_str!("local_semantic_materialization.rs"),
         ),
         ("revisioned_query_database.rs", REVISIONED_DATABASE_SOURCE),
+        (
+            "provider_body.rs",
+            include_str!("revisioned_query_database/body/provider_body.rs"),
+        ),
     ] {
-        for peer in [".strip_prefix(\"Str(\")", ".starts_with(\"Str(\")"] {
+        // Decoders and renderers alike: the `Str(N)` spelling is read and
+        // written only through rue-air's owner pair (RUE-1989).
+        for peer in [
+            ".strip_prefix(\"Str(\")",
+            ".starts_with(\"Str(\")",
+            "format!(\"Str(",
+        ] {
             assert!(
                 !source.contains(peer),
                 "{name} regained handwritten synthetic-type identity policy: {peer}"

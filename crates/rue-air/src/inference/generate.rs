@@ -788,9 +788,7 @@ impl<'a> ConstraintGenerator<'a> {
         if let InferType::Concrete(t) = ty
             && let Some(id) = t.as_struct()
         {
-            let name: &str = &self.type_pool.struct_def(id).name;
-            return crate::types::is_string_view_struct_name(name)
-                || crate::types::is_slice_struct_name(name);
+            return self.type_pool.text_view_kind(id).is_some();
         }
         false
     }
@@ -813,11 +811,9 @@ impl<'a> ConstraintGenerator<'a> {
     /// StrBuf is not in this family: it is a source-defined struct whose
     /// declared `len` ordinary method lookup already resolves.
     fn is_view_len_call(&self, receiver: StructId, method: Spur, arg_count: usize) -> bool {
-        let name: &str = &self.type_pool.struct_def(receiver).name;
         arg_count == 0
             && self.interner.resolve(&method) == "len"
-            && (crate::types::is_slice_struct_name(name)
-                || crate::types::is_string_view_struct_name(name))
+            && self.type_pool.text_view_kind(receiver).is_some()
     }
 
     /// The string-literal analogue of [`Self::is_view_len_call`]: a zero-arg
@@ -844,7 +840,10 @@ impl<'a> ConstraintGenerator<'a> {
         let Some(id) = t.as_struct() else {
             return false;
         };
-        crate::types::is_string_view_struct_name(&self.type_pool.struct_def(id).name)
+        matches!(
+            self.type_pool.text_view_kind(id),
+            Some(crate::types::TextViewKind::Str | crate::types::TextViewKind::StrFixed(_))
+        )
     }
 
     /// The pointee of a pointer operand whose type is *already* concrete at
@@ -1008,7 +1007,7 @@ impl<'a> ConstraintGenerator<'a> {
         let id = ty.as_struct()?;
         // `str`/`Str(N)` share the view representation but index as bytes;
         // `is_string_indexable_type` answers those before this is consulted.
-        if !crate::types::is_slice_struct_name(&self.type_pool.struct_def(id).name) {
+        if self.type_pool.text_view_kind(id) != Some(crate::types::TextViewKind::Slice) {
             return None;
         }
         match self.type_pool.struct_def(id).fields.first()?.ty.kind() {
@@ -4497,9 +4496,9 @@ impl<'a> ConstraintGenerator<'a> {
     }
 
     fn string_literal_default_is_str(&self) -> bool {
-        self.string_literal_default
-            .as_struct()
-            .is_some_and(|id| &*self.type_pool.struct_def(id).name == "str")
+        self.string_literal_default.as_struct().is_some_and(|id| {
+            self.type_pool.text_view_kind(id) == Some(crate::types::TextViewKind::Str)
+        })
     }
 
     fn call_args_continue(&self, args: &rue_rir::RirCallArgsRange) -> bool {

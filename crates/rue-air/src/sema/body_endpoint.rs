@@ -676,7 +676,7 @@ where
     /// Mint (or return) one generated fixed-capacity string and publish its
     /// name in the same generated-nominal overlay used by slice views.
     pub fn register_generated_fixed_string(&self, capacity: u64) -> Option<StructId> {
-        let name = format!("Str({capacity})");
+        let name = crate::types::fixed_string_name(capacity);
         let symbol = self.identity.pool().intern_name(&name).ok()?;
         let id = self
             .identity

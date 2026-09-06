@@ -1399,13 +1399,16 @@ impl<'a> Interp<'a> {
     }
 
     fn is_bare_str_type(&self, ty: Type) -> bool {
-        ty.as_struct()
-            .is_some_and(|struct_id| &*self.type_pool().struct_def(struct_id).name == "str")
+        ty.as_struct().is_some_and(|struct_id| {
+            self.type_pool().text_view_kind(struct_id) == Some(rue_air::TextViewKind::Str)
+        })
     }
 
     fn is_str_like_struct(&self, struct_id: rue_air::StructId) -> bool {
-        let name: &str = &self.type_pool().struct_def(struct_id).name;
-        rue_air::is_string_view_struct_name(name)
+        matches!(
+            self.type_pool().text_view_kind(struct_id),
+            Some(rue_air::TextViewKind::Str | rue_air::TextViewKind::StrFixed(_))
+        )
     }
 
     fn text_struct_slots(&self, struct_id: rue_air::StructId) -> Option<usize> {
@@ -2004,7 +2007,8 @@ impl<'a> Interp<'a> {
                     return false;
                 };
                 let def = self.type_pool().struct_def(*struct_id);
-                let is_slice = rue_air::is_slice_struct_name(&def.name);
+                let is_slice = self.type_pool().text_view_kind(*struct_id)
+                    == Some(rue_air::TextViewKind::Slice);
                 if !is_slice
                     || def.fields.len() != 2
                     || def.fields[0].ty != pointer_ty

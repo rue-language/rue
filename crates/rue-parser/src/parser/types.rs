@@ -122,7 +122,9 @@ impl Parser {
             // a type the implementation infers and no program may name (spec
             // 3.12:3), so it stays an ordinary identifier and is reported like
             // any other unknown name, exactly as `comptime_int` is (RUE-1076).
-            TokenKind::Ident(symbol) if matches!(self.interner.resolve(&symbol), "f32" | "f64") => {
+            TokenKind::Ident(symbol)
+                if rue_lexer::is_float_type_name(self.interner.resolve(&symbol)) =>
+            {
                 symbol
             }
             _ => return None,

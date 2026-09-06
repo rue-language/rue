@@ -212,7 +212,7 @@ fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
             }
         },
         T::Array { element, len } => {
-            format!("[{}; {len}]", durable_type_diagnostic_name(element))
+            rue_air::array_type_name(&durable_type_diagnostic_name(element), *len)
         }
         T::Slice { name, .. } => name.to_string(),
         T::PtrConst(pointee) => {

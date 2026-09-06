@@ -1126,7 +1126,7 @@ where
         &mut self,
         capacity: u64,
     ) -> Result<Type, IdentityMintError> {
-        let name: Arc<str> = Arc::from(format!("Str({capacity})").as_str());
+        let name: Arc<str> = Arc::from(crate::types::fixed_string_name(capacity).as_str());
         let symbol = self
             .intern_name(&name)
             .map_err(IdentityMintError::Interner)?;
@@ -3935,7 +3935,7 @@ mod tests {
             TypeKind::Enum(id) => pool.enum_def(id).name.to_string(),
             TypeKind::Array(id) => {
                 let (element, len) = pool.array_def(id);
-                format!("[{}; {}]", render(pool, element), len)
+                crate::types::array_type_name(&render(pool, element), len)
             }
             TypeKind::PtrConst(id) => format!("ptr const {}", render(pool, pool.ptr_const_def(id))),
             TypeKind::PtrMut(id) => format!("ptr mut {}", render(pool, pool.ptr_mut_def(id))),

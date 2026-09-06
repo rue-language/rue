@@ -190,14 +190,14 @@ compile_fail = true
 error_contains = ["E0423", "field access on non-struct type 'type'"]
 
 [[case]]
-name = "user_enum_blocks_opposite_kind_builtin_struct_literal"
-description = "RUE-1966 symmetric wrong-kind control: a same-named user enum blocks fallback to builtin str as a struct-literal head."
+name = "user_enum_cannot_take_the_builtin_str_spelling"
+description = "RUE-1966 symmetric wrong-kind control, tightened by RUE-1989: the only builtin struct spelling a user declaration could shadow is `str`, and that name is now reserved, so the declaration is refused before any struct-literal head resolves."
 files = [{ path = "main.rue", source = """
 enum str { Value }
 fn main() -> i32 { let _ = str { x: 1 }; 0 }
 """ }]
 compile_fail = true
-error_contains = ["E0204", "unknown type 'str'"]
+error_contains = ["E0404", "cannot define type `str`"]
 
 [[case]]
 name = "primitive_spelling_blocks_same_named_user_struct_literal"
