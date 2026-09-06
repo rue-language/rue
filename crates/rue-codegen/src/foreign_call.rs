@@ -654,7 +654,12 @@ pub(crate) fn lower_foreign_call<B: ForeignCallLoweringBackend>(
     backend.foreign_cleanup_byref(byref_bytes);
 
     let slots = match (&inputs.ret, plan.signature().ret()) {
-        (ForeignReturn::ZeroSized, _) | (_, LoweredReturn::Void) => {
+        // The Rue-side value has no ABI slots, so `primary` is the never-read
+        // placeholder such a value carries and nothing defines it (RUE-2048).
+        (ForeignReturn::ZeroSized, _) => Vec::new(),
+        // A value the Rue side still reads whose lowered C signature returns
+        // nothing: it has no result register to read, so it takes a zero.
+        (_, LoweredReturn::Void) => {
             backend.foreign_zero_result(primary);
             Vec::new()
         }

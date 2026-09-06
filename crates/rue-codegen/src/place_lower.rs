@@ -56,13 +56,6 @@ pub(crate) trait PlaceLowerBackend: SlotBackend {
     /// Implementations may allocate target-specific temporary vregs.
     fn emit_scale_index_bytes(&mut self, scaled: VReg, plan: ScalePlan);
 
-    /// Materialize the canonical value for a zero-sized place read.
-    ///
-    /// This stays distinct from [`SlotBackend::emit_load_zero`] because x86-64
-    /// historically used a 64-bit immediate here; retaining that exact MIR is
-    /// part of making this extraction mechanically output-neutral.
-    fn emit_zero_sized_place(&mut self, dst: VReg);
-
     /// Materialize [`ZERO_SIZED_PLACE_ADDR`], the canonical address of a place
     /// that occupies no storage.
     ///
@@ -276,8 +269,11 @@ pub(crate) fn lower_place_read_plan<B: PlaceLowerBackend>(
         &crate::types::aggregate_leaf_types(b.ctx().type_pool, ty),
     );
     if b.ctx().type_slot_count(ty) == 0 {
+        // The bounds checks a projection carries still run, but the value has
+        // no slot to load: `dst` is the never-read placeholder a zero-sized
+        // value carries ([`crate::value_plan::ValueShape::ZeroSized`]) and
+        // nothing defines it.
         resolved_offsets(b, place, true);
-        b.emit_zero_sized_place(dst);
         return;
     }
     if place.projections.is_empty() {
@@ -1248,9 +1244,9 @@ mod tests {
 
         // Lock down the two deliberately distinct compatibility leaves. A
         // simple borrow and inout reads must retain AArch64's base-only
-        // LdrIndexed form,
-        // while a projected ZST read must materialize zero without attempting
-        // root-origin address arithmetic (and x86 keeps its 64-bit immediate).
+        // LdrIndexed form, while a projected ZST read must emit nothing at all:
+        // it attempts no root-origin address arithmetic, and its destination is
+        // the never-read placeholder a zero-sized value carries (RUE-2048).
         for (by_ref_fn, writable) in [("read_borrow", false), ("read_inout", true)] {
             let by_ref_cfg = by_ref_scalar_read_cfg(&fixture, by_ref_fn, writable);
             let by_ref_x86 =
@@ -1297,14 +1293,8 @@ mod tests {
         )
         .lower()
         .expect("AArch64 ZST fixture should lower");
-        assert!(matches!(
-            unit_x86.instructions(),
-            [X86Inst::MovRI64 { imm: 0, .. }, X86Inst::Ret]
-        ));
-        assert!(matches!(
-            unit_arm.instructions(),
-            [Aarch64Inst::MovImm { imm: 0, .. }, Aarch64Inst::Ret]
-        ));
+        assert!(matches!(unit_x86.instructions(), [X86Inst::Ret]));
+        assert!(matches!(unit_arm.instructions(), [Aarch64Inst::Ret]));
 
         // A zero-sized indexed place has no load/store, but it still has a
         // language-level bounds check. Both the value and address paths must
