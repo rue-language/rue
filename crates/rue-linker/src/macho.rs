@@ -23,7 +23,11 @@
 //! ```
 
 use crate::constants::*;
-use crate::util::align_up;
+use crate::linker::LinkError;
+use crate::util::{
+    ZERO_FILL, align_up, check_cancellation, extend_bytes_with_cancellation,
+    pad_to_with_cancellation,
+};
 use rue_target::Target;
 
 /// ARM64 macOS page size (16KB).
@@ -909,10 +913,8 @@ impl MachOBuilder {
     pub(crate) fn build_dynamic_with_cancellation(
         mut self,
         cancellation: &mut impl FnMut() -> bool,
-    ) -> Option<(Vec<u8>, u64, u64)> {
-        if cancellation() {
-            return None;
-        }
+    ) -> Result<(Vec<u8>, u64, u64), LinkError> {
+        check_cancellation(cancellation)?;
         // For dynamic executables, we need:
         // 1. LC_LOAD_DYLINKER - loads /usr/lib/dyld
         // 2. LC_LOAD_DYLIB - loads libSystem
@@ -968,9 +970,7 @@ impl MachOBuilder {
 
         // Update segments with actual values
         for seg in &mut self.segments {
-            if cancellation() {
-                return None;
-            }
+            check_cancellation(cancellation)?;
             if &seg.segname[..6] == b"__TEXT" {
                 seg.vmaddr = VM_BASE;
                 seg.vmsize = text_segment_file_size as u64;
@@ -1095,9 +1095,7 @@ impl MachOBuilder {
         // Load commands - segments first (in order: __PAGEZERO, __TEXT, __DATA, __LINKEDIT)
         // Write segments in the order they were added, but insert __DATA before __LINKEDIT
         for seg in &self.segments {
-            if cancellation() {
-                return None;
-            }
+            check_cancellation(cancellation)?;
             let is_linkedit = &seg.segname[..10] == b"__LINKEDIT";
             if is_linkedit {
                 // Write __DATA segment first if it exists
@@ -1110,14 +1108,12 @@ impl MachOBuilder {
 
         // Other commands
         for cmd in &self.commands {
-            if cancellation() {
-                return None;
-            }
+            check_cancellation(cancellation)?;
             cmd.write(&mut buf);
         }
 
         // Pad to text offset (includes codesign padding)
-        resize_with_cancellation(&mut buf, text_file_offset, cancellation)?;
+        pad_to_with_cancellation(&mut buf, text_file_offset, ZERO_FILL, cancellation)?;
 
         // Code
         tracing::trace!(
@@ -1125,7 +1121,7 @@ impl MachOBuilder {
             buf_len_before = format_args!("0x{:x}", buf.len()),
             "MachOBuilder writing code"
         );
-        extend_with_cancellation(&mut buf, &self.code, cancellation)?;
+        extend_bytes_with_cancellation(&mut buf, &self.code, cancellation)?;
         tracing::trace!(
             buf_len_after = format_args!("0x{:x}", buf.len()),
             "MachOBuilder wrote code"
@@ -1134,32 +1130,33 @@ impl MachOBuilder {
         // Pad and write data segment content if present
         if has_data {
             // Pad to data offset
-            resize_with_cancellation(&mut buf, data_file_offset, cancellation)?;
+            pad_to_with_cancellation(&mut buf, data_file_offset, ZERO_FILL, cancellation)?;
 
             // Write rodata with alignment padding
-            extend_with_cancellation(&mut buf, &self.rodata, cancellation)?;
+            extend_bytes_with_cancellation(&mut buf, &self.rodata, cancellation)?;
             let rodata_padding = align_up(self.rodata.len() as u64, 8) as usize - self.rodata.len();
             let rodata_end = buf.len() + rodata_padding;
-            resize_with_cancellation(&mut buf, rodata_end, cancellation)?;
+            pad_to_with_cancellation(&mut buf, rodata_end, ZERO_FILL, cancellation)?;
 
             // Write data with alignment padding
-            extend_with_cancellation(&mut buf, &self.data, cancellation)?;
+            extend_bytes_with_cancellation(&mut buf, &self.data, cancellation)?;
             let data_padding = align_up(self.data.len() as u64, 8) as usize - self.data.len();
             let data_end = buf.len() + data_padding;
-            resize_with_cancellation(&mut buf, data_end, cancellation)?;
+            pad_to_with_cancellation(&mut buf, data_end, ZERO_FILL, cancellation)?;
             // Note: BSS is not written to file (it's zero-filled at runtime)
         }
 
         // Pad to LINKEDIT offset
-        resize_with_cancellation(&mut buf, linkedit_file_offset, cancellation)?;
+        pad_to_with_cancellation(&mut buf, linkedit_file_offset, ZERO_FILL, cancellation)?;
 
         // LINKEDIT content (minimal string table)
         buf.push(0); // null byte for empty string table
 
         // Pad LINKEDIT to declared size
-        resize_with_cancellation(
+        pad_to_with_cancellation(
             &mut buf,
             linkedit_file_offset + linkedit_file_size,
+            ZERO_FILL,
             cancellation,
         )?;
 
@@ -1167,40 +1164,9 @@ impl MachOBuilder {
             final_buf_len = format_args!("0x{:x}", buf.len()),
             "MachOBuilder finished"
         );
-        if cancellation() {
-            return None;
-        }
-        Some((buf, text_file_offset as u64, data_vm_addr))
+        check_cancellation(cancellation)?;
+        Ok((buf, text_file_offset as u64, data_vm_addr))
     }
-}
-
-fn extend_with_cancellation(
-    output: &mut Vec<u8>,
-    bytes: &[u8],
-    cancellation: &mut impl FnMut() -> bool,
-) -> Option<()> {
-    for chunk in bytes.chunks(64 * 1024) {
-        if cancellation() {
-            return None;
-        }
-        output.extend_from_slice(chunk);
-    }
-    Some(())
-}
-
-fn resize_with_cancellation(
-    output: &mut Vec<u8>,
-    new_len: usize,
-    cancellation: &mut impl FnMut() -> bool,
-) -> Option<()> {
-    while output.len() < new_len {
-        if cancellation() {
-            return None;
-        }
-        let chunk_end = new_len.min(output.len().saturating_add(64 * 1024));
-        output.resize(chunk_end, 0);
-    }
-    Some(())
 }
 
 impl Default for MachOBuilder {

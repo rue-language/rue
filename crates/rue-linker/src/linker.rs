@@ -12,7 +12,10 @@ use crate::constants::{
     PF_R, PF_W, PF_X, PT_LOAD,
 };
 use crate::elf::{ObjectFile, Relocation, RelocationType, SectionFlags, Symbol, SymbolBinding};
-use crate::util::align_up;
+use crate::util::{
+    ZERO_FILL, align_up, check_cancellation, extend_bytes_with_cancellation,
+    pad_to_with_cancellation,
+};
 
 #[cfg(test)]
 use crate::elf::Section;
@@ -96,25 +99,118 @@ fn classify_section(name: &str) -> SectionKind {
     }
 }
 
-/// Is this a code section? Accepts both ELF (`.text*`) and Mach-O
-/// (`__TEXT,__text` / `__text*`) names.
-fn is_text_section(name: &str) -> bool {
-    classify_section(name) == SectionKind::Text
+/// Where the merged read-only data lives in the output image.
+///
+/// This is the one placement rule that is genuinely a property of the object
+/// format rather than of the architecture: ld64 puts constants in `__TEXT`, so a
+/// Mach-O image keeps code and rodata in one segment (and one merged buffer),
+/// while ELF gives rodata its own read-only `PT_LOAD` so the code segment can
+/// stay W^X.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RodataHome {
+    /// A separate read-only segment, merged into its own buffer (ELF).
+    OwnSegment,
+    /// Appended to the merged text buffer (Mach-O `__TEXT`).
+    Text,
 }
 
-/// Is this a read-only data section? Accepts both ELF and Mach-O names.
-fn is_rodata_section(name: &str) -> bool {
-    classify_section(name) == SectionKind::Rodata
+/// `BRK #0`, little-endian. AArch64 alignment gaps in the merged text are
+/// filled with this so a gap that is somehow reached traps instead of executing
+/// whatever the padding decodes to.
+const AARCH64_TRAP_FILL: &[u8] = &[0x00, 0x00, 0x20, 0xD4];
+
+/// `INT3`: the x86-64 counterpart of [`AARCH64_TRAP_FILL`].
+const X86_64_TRAP_FILL: &[u8] = &[0xCC];
+
+/// Alignment floor for a merged rodata section, over and above what the section
+/// itself asks for. Objects routinely under-declare alignment for their
+/// constant pools, and a natural-word floor costs at most seven bytes per
+/// section.
+const RODATA_MIN_ALIGN: u64 = 8;
+
+/// Alignment floor for the base of the merged bss region, over and above the
+/// strictest alignment its sections ask for (RUE-1646).
+const BSS_BASE_MIN_ALIGN: u64 = 8;
+
+/// The layout rules [`Linker::merge_sections`] places the merged image by.
+///
+/// Every rule here is derived from the [`Target`], not from the output format:
+/// an alignment floor and a padding fill are properties of the instruction set,
+/// so `aarch64-linux` and `aarch64-macos` get the same ones. Only
+/// [`LayoutPolicy::rodata_home`] is format-derived. Deriving them all in one
+/// place is what makes the two link paths produce the same layout for the same
+/// objects (RUE-1984).
+struct LayoutPolicy {
+    rodata_home: RodataHome,
+    /// Fill for alignment gaps between merged text sections.
+    text_pad: &'static [u8],
+    /// Alignment floor for a merged text section: one instruction word on
+    /// AArch64, where instructions may not straddle a word boundary; a byte on
+    /// x86-64, whose instructions have no alignment requirement.
+    text_min_align: u64,
+    rodata_min_align: u64,
+    bss_base_min_align: u64,
 }
 
-/// Is this a writable data section? Accepts both ELF and Mach-O names.
-fn is_data_section(name: &str) -> bool {
-    classify_section(name) == SectionKind::Data
+impl LayoutPolicy {
+    fn for_target(target: Target) -> Self {
+        let (text_pad, text_min_align) = match target {
+            Target::X86_64Linux => (X86_64_TRAP_FILL, 1),
+            Target::Aarch64Linux | Target::Aarch64Macos => (AARCH64_TRAP_FILL, 4),
+        };
+        Self {
+            rodata_home: if target.is_macho() {
+                RodataHome::Text
+            } else {
+                RodataHome::OwnSegment
+            },
+            text_pad,
+            text_min_align,
+            rodata_min_align: RODATA_MIN_ALIGN,
+            bss_base_min_align: BSS_BASE_MIN_ALIGN,
+        }
+    }
 }
 
-/// Is this a zero-initialized (bss) section? Accepts both ELF and Mach-O names.
-fn is_bss_section(name: &str) -> bool {
-    classify_section(name) == SectionKind::Bss
+/// The merged image: the four output regions, where every placed section landed
+/// in them, and the relocations still to apply.
+///
+/// `rodata` is empty when the policy homes rodata in the text buffer; the
+/// offsets recorded for rodata sections are then offsets into `text`.
+struct MergedImage {
+    text: Vec<u8>,
+    rodata: Vec<u8>,
+    data: Vec<u8>,
+    bss_size: u64,
+    /// (object index, section index) -> offset within the region the section
+    /// merged into.
+    section_offsets: AHashMap<(usize, usize), u64>,
+    pending: Vec<PendingRelocation>,
+}
+
+/// The final virtual address each merged region starts at.
+///
+/// When rodata is homed in the text buffer, `rodata` is the text base, because
+/// that is what its recorded offsets are measured from.
+struct SectionBases {
+    text: u64,
+    rodata: u64,
+    data: u64,
+    bss: u64,
+}
+
+impl SectionBases {
+    /// The base a section of `kind` is placed against, or `None` for a class
+    /// this linker does not place.
+    fn of(&self, kind: SectionKind) -> Option<u64> {
+        match kind {
+            SectionKind::Text => Some(self.text),
+            SectionKind::Rodata => Some(self.rodata),
+            SectionKind::Data => Some(self.data),
+            SectionKind::Bss => Some(self.bss),
+            SectionKind::Other => None,
+        }
+    }
 }
 
 /// Number of bytes written by a supported relocation.
@@ -815,14 +911,6 @@ impl SymbolAddresses {
     }
 }
 
-fn check_cancellation(cancellation: &mut impl FnMut() -> bool) -> Result<(), LinkError> {
-    if cancellation() {
-        Err(LinkError::Canceled)
-    } else {
-        Ok(())
-    }
-}
-
 /// Linker errors.
 #[derive(Debug)]
 pub enum LinkError {
@@ -1035,50 +1123,6 @@ impl LinkSection {
         }
         Ok(())
     }
-}
-
-fn extend_bytes_with_cancellation(
-    output: &mut Vec<u8>,
-    bytes: &[u8],
-    cancellation: &mut impl FnMut() -> bool,
-) -> Result<(), LinkError> {
-    for chunk in bytes.chunks(64 * 1024) {
-        check_cancellation(cancellation)?;
-        output.extend_from_slice(chunk);
-    }
-    Ok(())
-}
-
-fn resize_with_cancellation(
-    output: &mut Vec<u8>,
-    new_len: usize,
-    value: u8,
-    cancellation: &mut impl FnMut() -> bool,
-) -> Result<(), LinkError> {
-    while output.len() < new_len {
-        check_cancellation(cancellation)?;
-        let chunk_end = new_len.min(output.len().saturating_add(64 * 1024));
-        output.resize(chunk_end, value);
-    }
-    Ok(())
-}
-
-fn extend_pattern_with_cancellation(
-    output: &mut Vec<u8>,
-    pattern: &[u8],
-    byte_count: usize,
-    cancellation: &mut impl FnMut() -> bool,
-) -> Result<(), LinkError> {
-    let mut remaining = byte_count;
-    while remaining > 0 {
-        check_cancellation(cancellation)?;
-        let chunk = remaining.min(64 * 1024);
-        for index in 0..chunk {
-            output.push(pattern[index % pattern.len()]);
-        }
-        remaining -= chunk;
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -1559,6 +1603,407 @@ impl Linker {
         }
     }
 
+    /// Merge every placed section of every object into the image's four
+    /// regions, recording where each landed and queuing its relocations.
+    ///
+    /// This is the single section-merge implementation behind both output
+    /// formats. `link_elf` and `link_macho` differ only in the
+    /// [`LayoutPolicy`] they derive from the target and in how they serialize
+    /// the merged buffers afterwards, so the same object set lays out
+    /// identically whichever format it is written as, apart from the rodata
+    /// home (RUE-1984). Sections are visited object by object within each
+    /// class, and the classes in the order text, rodata, data, bss.
+    fn merge_sections(
+        &self,
+        policy: &LayoutPolicy,
+        cancellation: &mut impl FnMut() -> bool,
+    ) -> Result<MergedImage, LinkError> {
+        let mut text = Vec::new();
+        let mut rodata = Vec::new();
+        let mut data = Vec::new();
+        let mut bss_size: u64 = 0;
+        let mut section_offsets: AHashMap<(usize, usize), u64> = AHashMap::new();
+        let mut pending: Vec<PendingRelocation> = Vec::new();
+
+        // Code. An empty text section places nothing and owns no symbol
+        // address, so it is skipped entirely.
+        for (obj_idx, obj) in self.objects.iter().enumerate() {
+            check_cancellation(cancellation)?;
+            for (sec_idx, section) in obj.sections.iter().enumerate() {
+                if classify_section(&section.name) != SectionKind::Text
+                    || section.content_len() == 0
+                {
+                    continue;
+                }
+
+                let align = section.align.max(policy.text_min_align);
+                let aligned = align_up(text.len() as u64, align) as usize;
+                pad_to_with_cancellation(&mut text, aligned, policy.text_pad, cancellation)?;
+
+                let offset = text.len() as u64;
+                section_offsets.insert((obj_idx, sec_idx), offset);
+                section.extend_contents(&mut text, cancellation)?;
+
+                collect_section_relocations(
+                    obj,
+                    section,
+                    offset,
+                    obj_idx,
+                    PatchHome::Text,
+                    &mut pending,
+                    cancellation,
+                )?;
+            }
+        }
+
+        // Read-only data, into whichever buffer the policy homes it in. Empty
+        // rodata sections are kept: a symbol can still sit at offset 0 of one
+        // (an empty string literal) and needs an address. Gaps are zero-filled
+        // even when this buffer is the text buffer — the bytes are the boundary
+        // between code and constants, not a gap in the instruction stream.
+        {
+            let (buffer, home) = match policy.rodata_home {
+                RodataHome::Text => (&mut text, PatchHome::Text),
+                RodataHome::OwnSegment => (&mut rodata, PatchHome::Rodata),
+            };
+            for (obj_idx, obj) in self.objects.iter().enumerate() {
+                check_cancellation(cancellation)?;
+                for (sec_idx, section) in obj.sections.iter().enumerate() {
+                    if classify_section(&section.name) != SectionKind::Rodata {
+                        continue;
+                    }
+
+                    let align = section.align.max(policy.rodata_min_align);
+                    let aligned = align_up(buffer.len() as u64, align) as usize;
+                    pad_to_with_cancellation(buffer, aligned, ZERO_FILL, cancellation)?;
+
+                    let offset = buffer.len() as u64;
+                    section_offsets.insert((obj_idx, sec_idx), offset);
+                    section.extend_contents(buffer, cancellation)?;
+
+                    collect_section_relocations(
+                        obj,
+                        section,
+                        offset,
+                        obj_idx,
+                        home,
+                        &mut pending,
+                        cancellation,
+                    )?;
+                }
+            }
+        }
+
+        // Writable initialized data. No floor beyond what a section asks for;
+        // `max(1)` only keeps a malformed alignment of 0 out of `align_up`.
+        for (obj_idx, obj) in self.objects.iter().enumerate() {
+            check_cancellation(cancellation)?;
+            for (sec_idx, section) in obj.sections.iter().enumerate() {
+                if classify_section(&section.name) != SectionKind::Data
+                    || section.content_len() == 0
+                {
+                    continue;
+                }
+
+                let align = section.align.max(1);
+                let aligned = align_up(data.len() as u64, align) as usize;
+                pad_to_with_cancellation(&mut data, aligned, ZERO_FILL, cancellation)?;
+
+                let offset = data.len() as u64;
+                section_offsets.insert((obj_idx, sec_idx), offset);
+                section.extend_contents(&mut data, cancellation)?;
+
+                collect_section_relocations(
+                    obj,
+                    section,
+                    offset,
+                    obj_idx,
+                    PatchHome::Data,
+                    &mut pending,
+                    cancellation,
+                )?;
+            }
+        }
+
+        // Zero-initialized data. It occupies no file bytes, so only its size
+        // and each section's offset within the region are tracked here.
+        let mut max_bss_align: u64 = 1;
+        for (obj_idx, obj) in self.objects.iter().enumerate() {
+            check_cancellation(cancellation)?;
+            for (sec_idx, section) in obj.sections.iter().enumerate() {
+                if classify_section(&section.name) != SectionKind::Bss {
+                    continue;
+                }
+
+                let align = section.align.max(1);
+                max_bss_align = max_bss_align.max(align);
+                bss_size = align_up(bss_size, align);
+
+                section_offsets.insert((obj_idx, sec_idx), bss_size);
+
+                // `size` rather than the content length: a NOBITS section
+                // carries no bytes but does carry the memory it needs.
+                bss_size += section.size;
+            }
+        }
+
+        // Those offsets are relative to the start of the bss region, so an
+        // offset only lands where its section asked if the region's BASE is
+        // itself aligned at least as strictly as the strictest section in it
+        // (RUE-1646). Align it by padding the INITIALIZED data rather than by
+        // advancing the base alone: both formats derive the bss address and
+        // their data segment's file and memory sizes from `data.len()`, so
+        // growing the buffer keeps all three in agreement. The padding costs
+        // those bytes in the file, which is what buys the alignment.
+        if bss_size > 0 {
+            let base_align = max_bss_align.max(policy.bss_base_min_align);
+            let aligned = align_up(data.len() as u64, base_align) as usize;
+            pad_to_with_cancellation(&mut data, aligned, ZERO_FILL, cancellation)?;
+        }
+
+        Ok(MergedImage {
+            text,
+            rodata,
+            data,
+            bss_size,
+            section_offsets,
+            pending,
+        })
+    }
+
+    /// Give every placed symbol its final virtual address.
+    ///
+    /// Globals (and weaks) are visible across all objects and keyed by name;
+    /// LOCAL symbols are only visible within their defining object and keyed by
+    /// `(object index, name)`, so same-named locals cannot shadow each other
+    /// (RUE-131 item 2).
+    ///
+    /// Each placed section also gets an entry under its own name, for
+    /// relocations that reference a section rather than a symbol in it — the
+    /// internal calls a compiler emits against `.text._ZN...`, and the section
+    /// anchors the Mach-O parser synthesizes for non-extern relocations. Both
+    /// formats register them: keeping this to the ELF path left a Mach-O object
+    /// relocating against a section symbol failing as an undefined symbol
+    /// (RUE-1984).
+    fn resolve_symbol_addresses(
+        &self,
+        section_offsets: &AHashMap<(usize, usize), u64>,
+        bases: &SectionBases,
+        cancellation: &mut impl FnMut() -> bool,
+    ) -> Result<SymbolAddresses, LinkError> {
+        let mut addresses = SymbolAddresses::default();
+
+        for (obj_idx, obj) in self.objects.iter().enumerate() {
+            check_cancellation(cancellation)?;
+            for sym in &obj.symbols {
+                if sym.name.is_empty() {
+                    continue;
+                }
+                let Some(sec_idx) = sym.section_index else {
+                    continue;
+                };
+                if sec_idx >= obj.sections.len() {
+                    continue;
+                }
+                let Some(&section_offset) = section_offsets.get(&(obj_idx, sec_idx)) else {
+                    continue;
+                };
+                let Some(base) = bases.of(classify_section(&obj.sections[sec_idx].name)) else {
+                    continue;
+                };
+                let addr = checked_symbol_address(base, section_offset, sym)?;
+
+                match sym.binding {
+                    SymbolBinding::Local => {
+                        addresses
+                            .locals
+                            .entry(obj_idx)
+                            .or_default()
+                            .insert(sym.name.clone(), addr);
+                    }
+                    SymbolBinding::Global | SymbolBinding::Weak => {
+                        // For duplicate weak definitions the winner was already
+                        // chosen in add_object (first weak wins, strong
+                        // overrides); honor that choice here instead of letting
+                        // the last definition win.
+                        let winner = self
+                            .global_symbols
+                            .get(&sym.name)
+                            .map(|(winning_obj, _)| *winning_obj);
+                        if winner.is_none() || winner == Some(obj_idx) {
+                            addresses.globals.insert(sym.name.clone(), addr);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Section symbols are local to their object, and never displace a real
+        // symbol of the same name.
+        for (obj_idx, obj) in self.objects.iter().enumerate() {
+            check_cancellation(cancellation)?;
+            for (sec_idx, section) in obj.sections.iter().enumerate() {
+                let Some(&offset) = section_offsets.get(&(obj_idx, sec_idx)) else {
+                    continue;
+                };
+                let Some(base) = bases.of(classify_section(&section.name)) else {
+                    continue;
+                };
+                addresses
+                    .locals
+                    .entry(obj_idx)
+                    .or_default()
+                    .entry(section.name.clone())
+                    .or_insert(base + offset);
+            }
+        }
+
+        Ok(addresses)
+    }
+
+    /// The virtual address the image enters at.
+    ///
+    /// Every table the linker keys by name holds *parsed* names, so the
+    /// caller's on-disk entry spelling is normalized through the single
+    /// [`Self::parsed_symbol_name`] authority first — the same one
+    /// [`Self::require_symbol`] uses, so the required-symbol pull that drags the
+    /// entry point out of an archive and this lookup can never disagree about
+    /// the spelling (RUE-919, RUE-1996). ELF names parse through unchanged, so
+    /// normalization is the identity there.
+    fn entry_address(
+        &self,
+        addresses: &SymbolAddresses,
+        entry_point: &str,
+    ) -> Result<u64, LinkError> {
+        addresses
+            .globals
+            .get(Self::parsed_symbol_name(self.target, entry_point))
+            .copied()
+            .ok_or_else(|| LinkError::UndefinedSymbol(entry_point.to_string()))
+    }
+
+    /// Patch every queued relocation into the merged buffer it lives in.
+    ///
+    /// Resolution order is locals within their own object, then globals and
+    /// weaks by name, then the referenced symbol's own section, then zero for
+    /// an undefined weak (RUE-131 items 7 and 9). Any other unresolved symbol
+    /// is an error: this linker emits no dynamic binding information, so an
+    /// unpatched site would be a silent miscompile rather than a deferred
+    /// decision.
+    fn resolve_pending_relocations(
+        &self,
+        image: &mut MergedImage,
+        bases: &SectionBases,
+        addresses: &SymbolAddresses,
+        cancellation: &mut impl FnMut() -> bool,
+    ) -> Result<(), LinkError> {
+        let MergedImage {
+            text,
+            rodata,
+            data,
+            section_offsets,
+            pending,
+            ..
+        } = image;
+
+        for PendingRelocation {
+            offset,
+            symbol_index,
+            obj_idx,
+            rel_type,
+            addend,
+            home,
+        } in std::mem::take(pending)
+        {
+            check_cancellation(cancellation)?;
+            // The referenced symbol, read through its validated index; the
+            // object table is immutable during the link (RUE-1665).
+            let sym = &self.objects[obj_idx].symbols[symbol_index];
+            let sym_name = sym.name.as_str();
+            let sym_section = sym.section_index;
+            let sym_binding = sym.binding;
+
+            // The buffer the patch site lives in and the address that buffer
+            // starts at: a PC-relative relocation in rodata or data measures
+            // from its own region, not from the code segment.
+            let (buf, base_vaddr): (&mut Vec<u8>, u64) = match home {
+                PatchHome::Text => (text, bases.text),
+                PatchHome::Rodata => (rodata, bases.rodata),
+                PatchHome::Data => (data, bases.data),
+            };
+
+            let target_vaddr = if let Some(addr) = addresses.resolve(obj_idx, sym_name, sym_binding)
+            {
+                addr
+            } else if let Some(sec_idx) = sym_section {
+                let obj = &self.objects[obj_idx];
+                if sec_idx >= obj.sections.len() {
+                    return Err(LinkError::InvalidSectionIndex {
+                        symbol: sym_name.to_string(),
+                        section_index: sec_idx,
+                        section_count: obj.sections.len(),
+                    });
+                }
+                let section = &obj.sections[sec_idx];
+                let Some(&sec_offset) = section_offsets.get(&(obj_idx, sec_idx)) else {
+                    return Err(LinkError::UndefinedSymbol(format!(
+                        "{} (section {} not in section_offsets)",
+                        sym_name, sec_idx
+                    )));
+                };
+                let Some(base) = bases.of(classify_section(&section.name)) else {
+                    return Err(LinkError::UndefinedSymbol(format!(
+                        "{} (in section '{}')",
+                        sym_name, section.name
+                    )));
+                };
+                base + sec_offset
+            } else if sym_binding == SymbolBinding::Weak {
+                // An undefined WEAK symbol resolves to address 0 rather than
+                // erroring — standard semantics, and what lets code null-check
+                // an optional symbol.
+                0
+            } else {
+                return Err(LinkError::UndefinedSymbol(format!(
+                    "{} (no section, rel_type={:?})",
+                    if sym_name.is_empty() {
+                        "<empty>"
+                    } else {
+                        sym_name
+                    },
+                    rel_type
+                )));
+            };
+
+            let patch_vaddr = checked_relocation_offset(base_vaddr, offset, rel_type)?;
+
+            tracing::trace!(
+                symbol = %sym_name,
+                patch_offset = format_args!("0x{offset:x}"),
+                rel_type = ?rel_type,
+                target_vaddr = format_args!("0x{target_vaddr:x}"),
+                patch_vaddr = format_args!("0x{patch_vaddr:x}"),
+                addend,
+                "relocating symbol"
+            );
+
+            // Patch the site. The per-kind encoding — including the bounds
+            // check against ITS OWN buffer (RUE-131 item 8) — is shared by both
+            // link paths (RUE-335).
+            apply_relocation(
+                buf,
+                offset,
+                patch_vaddr,
+                target_vaddr,
+                addend,
+                rel_type,
+                sym_name,
+            )?;
+        }
+
+        Ok(())
+    }
+
     /// Link all objects and produce a Mach-O executable.
     ///
     /// This generates a dynamic executable using LC_MAIN that can run on macOS
@@ -1571,165 +2016,23 @@ impl Linker {
         use crate::constants::{VM_PROT_EXECUTE, VM_PROT_READ};
         use crate::macho::{ImageSizes, MachOBuilder, Section64, Segment64, VM_BASE};
 
-        // The Mach-O path splits into the same three phases as `link_elf`.
+        // The Mach-O path splits into the same three phases as `link_elf` and
+        // shares the first two outright: the section merge, the symbol
+        // addresses, and the relocation loop are format-independent. What is
+        // left here is the segment layout and the header serialization
+        // (RUE-1984).
         let layout_span = info_span!("link_layout").entered();
 
-        // Merge sections and collect relocations
-        // For Mach-O, we put code AND rodata in the __TEXT segment (same as clang/ld64).
-        // Only writable data goes in __DATA.
-        let mut merged_text = Vec::new(); // Code + rodata (goes in __TEXT)
-        let mut merged_data = Vec::new(); // Writable data (goes in __DATA)
-        let mut bss_size: u64 = 0;
-        let mut section_offsets: AHashMap<(usize, usize), u64> = AHashMap::new();
-        let mut pending_relocations: Vec<PendingRelocation> = Vec::new();
-
-        // Merge code sections (.text* / __text)
-        for (obj_idx, obj) in self.objects.iter().enumerate() {
-            check_cancellation(cancellation)?;
-            for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if !is_text_section(&section.name) || section.content_len() == 0 {
-                    continue;
-                }
-
-                // Align to section alignment (minimum 4 for ARM64 instructions)
-                let align = section.align.max(4);
-                let current_len = merged_text.len() as u64;
-                let aligned_len = align_up(current_len, align);
-                let padding = (aligned_len - current_len) as usize;
-                // Use BRK #0 (0x00, 0x00, 0x20, 0xD4) as padding for ARM64
-                extend_pattern_with_cancellation(
-                    &mut merged_text,
-                    &[0x00, 0x00, 0x20, 0xD4],
-                    padding,
-                    cancellation,
-                )?;
-
-                let offset = merged_text.len() as u64;
-                section_offsets.insert((obj_idx, sec_idx), offset);
-                section.extend_contents(&mut merged_text, cancellation)?;
-
-                collect_section_relocations(
-                    obj,
-                    section,
-                    offset,
-                    obj_idx,
-                    PatchHome::Text,
-                    &mut pending_relocations,
-                    cancellation,
-                )?;
-            }
-        }
-
-        // Merge rodata sections directly into __TEXT (after code).
-        // This keeps rodata addresses close to code for PC-relative addressing.
-        // Patch sites in rodata live in the merged text buffer, so their home
-        // is Text and their relocations are applied against that base.
-        // (RUE-131 items 8 and 11)
-        for (obj_idx, obj) in self.objects.iter().enumerate() {
-            check_cancellation(cancellation)?;
-            for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if !is_rodata_section(&section.name) {
-                    continue;
-                }
-                // Note: empty sections are kept because they may still have
-                // symbols at offset 0 (e.g., empty strings) that need addresses.
-
-                // Align rodata (8-byte alignment is common for data)
-                let align = section.align.max(8);
-                let padding = align_up(merged_text.len() as u64, align) - merged_text.len() as u64;
-                let new_len = merged_text.len() + padding as usize;
-                resize_with_cancellation(&mut merged_text, new_len, 0, cancellation)?;
-
-                let offset = merged_text.len() as u64;
-                section_offsets.insert((obj_idx, sec_idx), offset);
-                section.extend_contents(&mut merged_text, cancellation)?;
-
-                collect_section_relocations(
-                    obj,
-                    section,
-                    offset,
-                    obj_idx,
-                    PatchHome::Text,
-                    &mut pending_relocations,
-                    cancellation,
-                )?;
-            }
-        }
-
-        // Merge data sections (their patch sites live in the merged data
-        // buffer — patching them against merged_text bounds/contents was
-        // RUE-131 item 8; the ELF side got the same fix via PatchHome in #928)
-        for (obj_idx, obj) in self.objects.iter().enumerate() {
-            check_cancellation(cancellation)?;
-            for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if !is_data_section(&section.name) || section.content_len() == 0 {
-                    continue;
-                }
-
-                let align = section.align.max(1);
-                let padding = align_up(merged_data.len() as u64, align) - merged_data.len() as u64;
-                let new_len = merged_data.len() + padding as usize;
-                resize_with_cancellation(&mut merged_data, new_len, 0, cancellation)?;
-
-                let offset = merged_data.len() as u64;
-                section_offsets.insert((obj_idx, sec_idx), offset);
-                section.extend_contents(&mut merged_data, cancellation)?;
-
-                collect_section_relocations(
-                    obj,
-                    section,
-                    offset,
-                    obj_idx,
-                    PatchHome::Data,
-                    &mut pending_relocations,
-                    cancellation,
-                )?;
-            }
-        }
-
-        // Handle bss sections. As on the ELF path, each offset is relative to
-        // the start of the bss region, so the region's base has to be aligned
-        // at least as strictly as the strictest section in it (RUE-1646).
-        let mut max_bss_align: u64 = 1;
-        for (obj_idx, obj) in self.objects.iter().enumerate() {
-            check_cancellation(cancellation)?;
-            for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if !is_bss_section(&section.name) {
-                    continue;
-                }
-
-                let align = section.align.max(1);
-                max_bss_align = max_bss_align.max(align);
-                let padding = align_up(bss_size, align) - bss_size;
-                bss_size += padding;
-
-                let offset = bss_size;
-                section_offsets.insert((obj_idx, sec_idx), offset);
-                bss_size += section.size;
-            }
-        }
-
-        // Pad the initialized data up to that alignment before the layout below
-        // measures `merged_data.len()`, so the segment's file and VM sizes agree
-        // with where bss actually begins. The historical 8-byte floor is kept as
-        // a floor, so this can only strengthen the base's alignment, never
-        // weaken it.
-        if bss_size > 0 {
-            let bss_base_align = max_bss_align.max(8);
-            let bss_base_padding =
-                align_up(merged_data.len() as u64, bss_base_align) - merged_data.len() as u64;
-            let new_len = merged_data.len() + bss_base_padding as usize;
-            resize_with_cancellation(&mut merged_data, new_len, 0, cancellation)?;
-        }
+        let policy = LayoutPolicy::for_target(self.target);
+        let mut image = self.merge_sections(&policy, cancellation)?;
 
         // Compute the final file/VM layout before placing symbols, using the
         // same single-source-of-truth computation as build_dynamic(). __DATA
-        // begins wherever the actual __TEXT layout ends.
-        // (RUE-131 items 3 and 8)
+        // begins wherever the actual __TEXT layout ends. (RUE-131 items 3 and 8)
         // Only the extents of the merged image matter here, so the pre-pass is
-        // measured rather than fed: handing the builder `merged_text` and
-        // `merged_data` copied the entire linked image for a computation that
-        // never reads a byte of it.
+        // measured rather than fed: handing the builder the merged buffers
+        // copied the entire linked image for a computation that never reads a
+        // byte of it.
         let mut layout_builder = MachOBuilder::new();
         layout_builder.add_segment(Segment64::pagezero());
         let mut text_segment =
@@ -1741,12 +2044,12 @@ impl Linker {
         // either way).
         layout_builder.add_segment(Segment64::new("__LINKEDIT").with_protection(VM_PROT_READ));
         let layout = layout_builder.dynamic_layout_for(ImageSizes {
-            code: merged_text.len(),
-            // __TEXT carries the rodata (merged into `merged_text` above), so
-            // the __DATA-side rodata region is empty on this path.
+            code: image.text.len(),
+            // __TEXT carries the rodata, which the policy merged into the text
+            // buffer, so the __DATA-side rodata region is empty on this path.
             rodata: 0,
-            data: merged_data.len(),
-            bss: bss_size,
+            data: image.data.len(),
+            bss: image.bss_size,
         });
 
         let text_file_offset = layout.text_file_offset as u64;
@@ -1755,13 +2058,13 @@ impl Linker {
         // __DATA segment virtual address (0 if there is no writable data)
         let data_vaddr = layout.data_vm_addr;
         // bss begins right after the initialized data within the __DATA
-        // segment; `merged_data.len()` is the complete offset and must be added
-        // exactly once. (RUE-131 item 4) That length is already padded to the
-        // bss base alignment above, so no rounding belongs here — rounding a
-        // second time would move the base past the length the layout was
-        // measured from (RUE-1646).
-        let bss_vaddr = if bss_size > 0 {
-            data_vaddr + merged_data.len() as u64
+        // segment; the merged data length is the complete offset and must be
+        // added exactly once. (RUE-131 item 4) That length is already padded to
+        // the bss base alignment by the merge, so no rounding belongs here —
+        // rounding a second time would move the base past the length the layout
+        // was measured from (RUE-1646).
+        let bss_vaddr = if image.bss_size > 0 {
+            data_vaddr + image.data.len() as u64
         } else {
             0
         };
@@ -1771,198 +2074,39 @@ impl Linker {
             "calculated Mach-O layout"
         );
 
-        // Build symbol table mapping: name -> final virtual address.
-        // Globals by name; locals by (object, name) so same-named locals in
-        // different objects can't shadow each other (RUE-131 item 2).
-        let mut symbol_addresses = SymbolAddresses::default();
+        // Rodata shares the text buffer here, so rodata offsets are measured
+        // from the text base.
+        let bases = SectionBases {
+            text: text_vaddr,
+            rodata: text_vaddr,
+            data: data_vaddr,
+            bss: bss_vaddr,
+        };
 
-        for (obj_idx, obj) in self.objects.iter().enumerate() {
-            check_cancellation(cancellation)?;
-            for sym in &obj.symbols {
-                if sym.name.is_empty() {
-                    continue;
-                }
+        let symbol_addresses =
+            self.resolve_symbol_addresses(&image.section_offsets, &bases, cancellation)?;
 
-                if let Some(sec_idx) = sym.section_index {
-                    if sec_idx >= obj.sections.len() {
-                        continue;
-                    }
-                    if let Some(&section_offset) = section_offsets.get(&(obj_idx, sec_idx)) {
-                        let section = &obj.sections[sec_idx];
-                        let base =
-                            if is_text_section(&section.name) || is_rodata_section(&section.name) {
-                                // Text and rodata are both in merged_text
-                                text_vaddr
-                            } else if is_data_section(&section.name) {
-                                // Writable data in __DATA segment
-                                data_vaddr
-                            } else if is_bss_section(&section.name) {
-                                bss_vaddr
-                            } else {
-                                continue;
-                            };
-                        let addr = checked_symbol_address(base, section_offset, sym)?;
-
-                        match sym.binding {
-                            SymbolBinding::Local => {
-                                symbol_addresses
-                                    .locals
-                                    .entry(obj_idx)
-                                    .or_default()
-                                    .insert(sym.name.clone(), addr);
-                            }
-                            SymbolBinding::Global | SymbolBinding::Weak => {
-                                // Honor the winner chosen in add_object for
-                                // duplicate weak definitions.
-                                let winner = self
-                                    .global_symbols
-                                    .get(&sym.name)
-                                    .map(|(winning_obj, _)| *winning_obj);
-                                if winner.is_none() || winner == Some(obj_idx) {
-                                    symbol_addresses.globals.insert(sym.name.clone(), addr);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Find entry point (always a global symbol).
-        //
-        // The global symbol table is keyed by source-level names: parsing strips
-        // the single leading underscore that Mach-O adds to every symbol (see
-        // `strip_macho_underscore`). The caller passes the entry point by its
-        // on-disk Mach-O name (e.g. the runtime's `_main` is requested here as
-        // its emitted `__main`), so normalize it the same way `require_symbol`
-        // does before looking it up — one function, so the required-symbol pull
-        // and this lookup can never disagree about the spelling (RUE-1996).
-        // Getting the strip right made `_foo`/`__foo` distinct but also shortened
-        // the runtime entry to `_main`, so this lookup must strip in lockstep
-        // (RUE-919). We still try the raw and one-more-prefixed forms so an
-        // already source-level entry name, or a differently-prefixed one,
-        // resolves too.
-        let parsed_entry = Self::parsed_symbol_name(self.target, entry_point);
-        let entry_vaddr = symbol_addresses
-            .globals
-            .get(parsed_entry)
-            .or_else(|| symbol_addresses.globals.get(entry_point))
-            .or_else(|| symbol_addresses.globals.get(&format!("_{}", entry_point)))
-            .copied()
-            .ok_or_else(|| LinkError::UndefinedSymbol(entry_point.to_string()))?;
+        let entry_vaddr = self.entry_address(&symbol_addresses, entry_point)?;
         let entry_offset = entry_vaddr - text_vaddr;
 
         drop(layout_span);
         let relocate_span = info_span!("link_relocate").entered();
 
-        // Apply relocations
-        for PendingRelocation {
-            offset: patch_offset,
-            symbol_index,
-            obj_idx,
-            rel_type,
-            addend,
-            home,
-        } in pending_relocations
-        {
-            check_cancellation(cancellation)?;
-            // The referenced symbol, read through its validated index; the
-            // object table is immutable during the link (RUE-1665).
-            let sym = &self.objects[obj_idx].symbols[symbol_index];
-            let sym_name = sym.name.as_str();
-            let sym_section = sym.section_index;
-            let sym_binding = sym.binding;
-            // Pick the buffer the patch site lives in and its base vaddr.
-            // (PatchHome::Rodata is unused here: Mach-O merges rodata into
-            // the text buffer.)
-            let (buf, base_vaddr): (&mut Vec<u8>, u64) = match home {
-                PatchHome::Text => (&mut merged_text, text_vaddr),
-                PatchHome::Rodata => unreachable!("Mach-O rodata is merged into the text buffer"),
-                PatchHome::Data => (&mut merged_data, data_vaddr),
-            };
-
-            // Resolve the symbol (locals only within their own object), with
-            // the same fallbacks as the ELF path: the symbol's own section,
-            // then 0 for undefined weaks. Any other unresolved symbol is an
-            // error because this output emits no dynamic binding information;
-            // leaving its relocation unpatched would produce invalid code.
-            // (RUE-131 item 7)
-            let target_vaddr =
-                if let Some(addr) = symbol_addresses.resolve(obj_idx, sym_name, sym_binding) {
-                    addr
-                } else if let Some(sec_idx) = sym_section {
-                    // Section-relative symbol - resolve via the section's address
-                    let obj = &self.objects[obj_idx];
-                    if sec_idx >= obj.sections.len() {
-                        return Err(LinkError::InvalidSectionIndex {
-                            symbol: sym_name.to_string(),
-                            section_index: sec_idx,
-                            section_count: obj.sections.len(),
-                        });
-                    }
-                    let section = &obj.sections[sec_idx];
-                    if let Some(&sec_offset) = section_offsets.get(&(obj_idx, sec_idx)) {
-                        if is_text_section(&section.name) || is_rodata_section(&section.name) {
-                            text_vaddr + sec_offset
-                        } else if is_data_section(&section.name) {
-                            data_vaddr + sec_offset
-                        } else if is_bss_section(&section.name) {
-                            bss_vaddr + sec_offset
-                        } else {
-                            return Err(LinkError::UndefinedSymbol(format!(
-                                "{} (in section '{}')",
-                                sym_name, section.name
-                            )));
-                        }
-                    } else {
-                        return Err(LinkError::UndefinedSymbol(format!(
-                            "{} (section {} not in section_offsets)",
-                            sym_name, sec_idx
-                        )));
-                    }
-                } else if sym_binding == SymbolBinding::Weak {
-                    // An undefined WEAK symbol resolves to address 0 (RUE-131 item 9)
-                    0
-                } else {
-                    return Err(LinkError::UndefinedSymbol(format!(
-                        "{} (no section, rel_type={:?})",
-                        sym_name, rel_type
-                    )));
-                };
-
-            let patch_vaddr = checked_relocation_offset(base_vaddr, patch_offset, rel_type)?;
-
-            tracing::trace!(
-                symbol = %sym_name,
-                patch_offset = format_args!("0x{patch_offset:x}"),
-                rel_type = ?rel_type,
-                target_vaddr = format_args!("0x{target_vaddr:x}"),
-                patch_vaddr = format_args!("0x{patch_vaddr:x}"),
-                addend,
-                "relocating symbol"
-            );
-
-            // Patch the site. The per-kind encoding — including the bounds
-            // check against ITS OWN buffer (RUE-131 item 8) — is shared with
-            // the ELF path via `apply_relocation` (RUE-335).
-            apply_relocation(
-                buf,
-                patch_offset,
-                patch_vaddr,
-                target_vaddr,
-                addend,
-                rel_type,
-                sym_name,
-            )?;
-        }
+        self.resolve_pending_relocations(&mut image, &bases, &symbol_addresses, cancellation)?;
 
         drop(relocate_span);
         check_cancellation(cancellation)?;
         let _emit_span = info_span!("link_emit").entered();
 
-        // Now build the binary with the relocated code.
-        // Note: rodata is already included in merged_text (code + rodata in __TEXT);
-        // only writable data goes to the __DATA segment.
+        // Now build the binary with the relocated code. Rodata is already part
+        // of the text buffer (code + rodata in __TEXT); only writable data goes
+        // to the __DATA segment.
+        let MergedImage {
+            text: merged_text,
+            data: merged_data,
+            bss_size,
+            ..
+        } = image;
         tracing::trace!(
             merged_text_size = format_args!("0x{:x}", merged_text.len()),
             "building Mach-O with relocated code"
@@ -1983,9 +2127,8 @@ impl Linker {
         builder.add_segment(text_segment);
 
         // Build as dynamic executable (uses LC_MAIN + dyld)
-        let (bytes, calculated_offset, _data_vm_addr) = builder
-            .build_dynamic_with_cancellation(cancellation)
-            .ok_or(LinkError::Canceled)?;
+        let (bytes, calculated_offset, _data_vm_addr) =
+            builder.build_dynamic_with_cancellation(cancellation)?;
 
         // Verify our pre-calculated offset matches (sanity check)
         if text_file_offset != calculated_offset {
@@ -2027,182 +2170,20 @@ impl Linker {
         // sibling leaves rather than one opaque `linker` row (RUE-786).
         let layout_span = info_span!("link_layout").entered();
 
-        // First, collect and merge all code sections
-        let mut merged_text = Vec::new();
-        let mut merged_rodata = Vec::new();
-        let mut merged_data = Vec::new();
-        let mut bss_size: u64 = 0;
-        let mut pending_relocations = Vec::new();
+        let policy = LayoutPolicy::for_target(self.target);
+        let mut image = self.merge_sections(&policy, cancellation)?;
 
-        // Track where each section ends up in the merged output
-        // Key: (object_index, section_index) -> offset in merged section
-        let mut section_offsets: AHashMap<(usize, usize), u64> = AHashMap::new();
-
-        // Merge code sections (.text*)
-        for (obj_idx, obj) in self.objects.iter().enumerate() {
-            check_cancellation(cancellation)?;
-            for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if classify_section(&section.name) != SectionKind::Text
-                    || section.content_len() == 0
-                {
-                    continue;
-                }
-
-                // AArch64 instructions are 4-byte words. Keep the existing
-                // section alignment for other ELF machines, but never merge
-                // an AArch64 text section at a byte-only offset.
-                let minimum_alignment = if matches!(self.target, Target::Aarch64Linux) {
-                    4
-                } else {
-                    1
-                };
-                let align = section.align.max(minimum_alignment);
-                let padding = align_up(merged_text.len() as u64, align) - merged_text.len() as u64;
-                let new_len = merged_text.len() + padding as usize;
-                resize_with_cancellation(&mut merged_text, new_len, 0xCC, cancellation)?;
-
-                let offset = merged_text.len() as u64;
-                section_offsets.insert((obj_idx, sec_idx), offset);
-
-                section.extend_contents(&mut merged_text, cancellation)?;
-
-                collect_section_relocations(
-                    obj,
-                    section,
-                    offset,
-                    obj_idx,
-                    PatchHome::Text,
-                    &mut pending_relocations,
-                    cancellation,
-                )?;
-            }
-        }
-
-        // Merge rodata sections (placed on a new page for proper W^X protection)
-        // We need page alignment between code and rodata so they can have different
-        // memory protections at runtime.
-        for (obj_idx, obj) in self.objects.iter().enumerate() {
-            check_cancellation(cancellation)?;
-            for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if classify_section(&section.name) != SectionKind::Rodata {
-                    continue;
-                }
-                // Note: we don't skip empty sections because they may still have
-                // symbols at offset 0 (e.g., empty strings) that need addresses.
-
-                let align = section.align.max(1);
-                let padding =
-                    align_up(merged_rodata.len() as u64, align) - merged_rodata.len() as u64;
-                let new_len = merged_rodata.len() + padding as usize;
-                resize_with_cancellation(&mut merged_rodata, new_len, 0, cancellation)?;
-
-                let offset = merged_rodata.len() as u64;
-                section_offsets.insert((obj_idx, sec_idx), offset);
-
-                section.extend_contents(&mut merged_rodata, cancellation)?;
-
-                collect_section_relocations(
-                    obj,
-                    section,
-                    offset,
-                    obj_idx,
-                    PatchHome::Rodata,
-                    &mut pending_relocations,
-                    cancellation,
-                )?;
-            }
-        }
-
-        // Merge .data sections (initialized data - placed in data segment)
-        for (obj_idx, obj) in self.objects.iter().enumerate() {
-            check_cancellation(cancellation)?;
-            for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if classify_section(&section.name) != SectionKind::Data {
-                    continue;
-                }
-                // Skip empty .data sections
-                if section.content_len() == 0 {
-                    continue;
-                }
-
-                let align = section.align.max(1);
-                let padding = align_up(merged_data.len() as u64, align) - merged_data.len() as u64;
-                let new_len = merged_data.len() + padding as usize;
-                resize_with_cancellation(&mut merged_data, new_len, 0, cancellation)?;
-
-                let offset = merged_data.len() as u64;
-                section_offsets.insert((obj_idx, sec_idx), offset);
-
-                section.extend_contents(&mut merged_data, cancellation)?;
-
-                collect_section_relocations(
-                    obj,
-                    section,
-                    offset,
-                    obj_idx,
-                    PatchHome::Data,
-                    &mut pending_relocations,
-                    cancellation,
-                )?;
-            }
-        }
-
-        // Handle .bss sections (uninitialized data - zero-filled at runtime)
-        // .bss comes after .data in memory, but doesn't take file space.
-        //
-        // Each section's offset below is aligned RELATIVE to the start of the
-        // bss region, so an offset only lands where its section asked if the
-        // region's BASE is itself aligned at least as strictly as the strictest
-        // section in it. Track that maximum here and pad up to it below
-        // (RUE-1646).
-        let mut max_bss_align: u64 = 1;
-
-        for (obj_idx, obj) in self.objects.iter().enumerate() {
-            check_cancellation(cancellation)?;
-            for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if classify_section(&section.name) != SectionKind::Bss {
-                    continue;
-                }
-
-                let align = section.align.max(1);
-                max_bss_align = max_bss_align.max(align);
-                let padding = align_up(bss_size, align) - bss_size;
-                bss_size += padding;
-
-                let offset = bss_size;
-                section_offsets.insert((obj_idx, sec_idx), offset);
-
-                // Use the section.size field which was parsed from the ELF header.
-                // For NOBITS sections (like .bss), the data vec is empty but size
-                // contains the actual memory size needed.
-                bss_size += section.size;
-            }
-        }
-
-        // Align the bss base by padding the INITIALIZED data rather than by
-        // offsetting the base on its own. `p_filesz`, `p_memsz`, and the total
-        // file size are all derived from `merged_data.len()`, so growing the
-        // vector keeps those three in agreement with where bss actually starts;
-        // advancing the base alone would leave `p_memsz` short by the padding.
-        // The padding costs those bytes in the file, which is what buys the
-        // alignment.
-        //
-        // `data_vaddr` is page-aligned, so aligning the offset within the
-        // segment is enough to align the final virtual address for any section
-        // alignment up to a page — every alignment a real object requests.
-        let bss_base_padding =
-            align_up(merged_data.len() as u64, max_bss_align) - merged_data.len() as u64;
-        let new_len = merged_data.len() + bss_base_padding as usize;
-        resize_with_cancellation(&mut merged_data, new_len, 0, cancellation)?;
-        let bss_offset_in_data = merged_data.len() as u64;
+        // The merge padded the initialized data up to the bss base alignment,
+        // so bss starts exactly at its end.
+        let bss_offset_in_data = image.data.len() as u64;
 
         // Determine which optional segments are needed
-        let has_rodata = !merged_rodata.is_empty();
-        let has_data_segment = !merged_data.is_empty() || bss_size > 0;
+        let has_rodata = !image.rodata.is_empty();
+        let has_data_segment = !image.data.is_empty() || image.bss_size > 0;
 
         // Virtual addresses - calculate with page alignment between segments
         let code_vaddr = code_start;
-        let code_size = merged_text.len() as u64;
+        let code_size = image.text.len() as u64;
 
         // Rodata starts on the next page boundary after code for W^X protection
         let rodata_vaddr = align_up(code_vaddr + code_size, self.page_size);
@@ -2212,7 +2193,7 @@ impl Linker {
         let data_vaddr = if has_data_segment {
             // Calculate the end of the last segment before data
             let preceding_end = if has_rodata {
-                rodata_vaddr + merged_rodata.len() as u64
+                rodata_vaddr + image.rodata.len() as u64
             } else {
                 code_vaddr + code_size
             };
@@ -2223,188 +2204,22 @@ impl Linker {
         // BSS follows data in memory
         let bss_vaddr = data_vaddr + bss_offset_in_data;
 
-        // Build final symbol addresses: globals by name, locals by
-        // (object, name) so same-named locals can't shadow each other.
-        let mut symbol_addresses = SymbolAddresses::default();
+        let bases = SectionBases {
+            text: code_vaddr,
+            rodata: rodata_vaddr,
+            data: data_vaddr,
+            bss: bss_vaddr,
+        };
 
-        for (obj_idx, obj) in self.objects.iter().enumerate() {
-            check_cancellation(cancellation)?;
-            for sym in &obj.symbols {
-                if sym.name.is_empty() {
-                    continue;
-                }
+        let symbol_addresses =
+            self.resolve_symbol_addresses(&image.section_offsets, &bases, cancellation)?;
 
-                if let Some(sec_idx) = sym.section_index {
-                    // Validate section index before use (defense in depth - section_offsets
-                    // lookup also implicitly validates, but explicit check is clearer)
-                    if sec_idx >= obj.sections.len() {
-                        continue;
-                    }
-                    if let Some(&section_offset) = section_offsets.get(&(obj_idx, sec_idx)) {
-                        let section = &obj.sections[sec_idx];
-                        let base = match classify_section(&section.name) {
-                            SectionKind::Text => code_vaddr,
-                            SectionKind::Rodata => rodata_vaddr,
-                            SectionKind::Data => data_vaddr,
-                            SectionKind::Bss => bss_vaddr,
-                            SectionKind::Other => continue,
-                        };
-
-                        let addr = checked_symbol_address(base, section_offset, sym)?;
-
-                        match sym.binding {
-                            SymbolBinding::Local => {
-                                symbol_addresses
-                                    .locals
-                                    .entry(obj_idx)
-                                    .or_default()
-                                    .insert(sym.name.clone(), addr);
-                            }
-                            SymbolBinding::Global | SymbolBinding::Weak => {
-                                // For duplicate weak definitions the winner was
-                                // already chosen in add_object (first weak wins,
-                                // strong overrides); honor that choice here
-                                // instead of letting the last definition win.
-                                let winner = self
-                                    .global_symbols
-                                    .get(&sym.name)
-                                    .map(|(winning_obj, _)| *winning_obj);
-                                if winner.is_none() || winner == Some(obj_idx) {
-                                    symbol_addresses.globals.insert(sym.name.clone(), addr);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Also add section symbols for text, rodata, data, and bss relocation
-        // This is needed for internal calls within object files that reference section names
-        // (e.g., .text._ZN11rue_runtime4heap5alloc... for Rust runtime internal calls).
-        // Section symbols are local to their object, so key them per object.
-        for (obj_idx, obj) in self.objects.iter().enumerate() {
-            check_cancellation(cancellation)?;
-            for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if let Some(&offset) = section_offsets.get(&(obj_idx, sec_idx)) {
-                    let addr = match classify_section(&section.name) {
-                        SectionKind::Text => code_vaddr + offset,
-                        SectionKind::Rodata => rodata_vaddr + offset,
-                        SectionKind::Data => data_vaddr + offset,
-                        SectionKind::Bss => bss_vaddr + offset,
-                        SectionKind::Other => continue,
-                    };
-                    // Use section name as fallback
-                    symbol_addresses
-                        .locals
-                        .entry(obj_idx)
-                        .or_default()
-                        .entry(section.name.clone())
-                        .or_insert(addr);
-                }
-            }
-        }
-
-        // Find entry point (always a global symbol).
-        //
-        // ELF parsing passes symbol names through unchanged (RUE-919), so
-        // normalization is the identity here and this lookup sees the caller's
-        // `_start` verbatim. It still goes through the same function as the
-        // required-symbol list and the Mach-O lookup, so the ELF path cannot
-        // drift into the mirror image of RUE-1996 if the parse side ever gains a
-        // decoration of its own.
-        let parsed_entry = Self::parsed_symbol_name(self.target, entry_point);
-        let entry_addr = *symbol_addresses
-            .globals
-            .get(parsed_entry)
-            .ok_or_else(|| LinkError::UndefinedSymbol(entry_point.to_string()))?;
+        let entry_addr = self.entry_address(&symbol_addresses, entry_point)?;
 
         drop(layout_span);
         let relocate_span = info_span!("link_relocate").entered();
 
-        // Apply relocations
-        for PendingRelocation {
-            offset,
-            symbol_index,
-            obj_idx,
-            rel_type,
-            addend,
-            home,
-        } in pending_relocations
-        {
-            check_cancellation(cancellation)?;
-            // The referenced symbol, read through its validated index; the
-            // object table is immutable during the link (RUE-1665).
-            let sym = &self.objects[obj_idx].symbols[symbol_index];
-            let sym_name = sym.name.as_str();
-            let sym_section = sym.section_index;
-            let sym_binding = sym.binding;
-            // Pick the buffer the patch site lives in and its base vaddr.
-            // PC-relative relocations in rodata/data measure from their own
-            // section's address, not the code segment's.
-            let (buf, base_vaddr): (&mut Vec<u8>, u64) = match home {
-                PatchHome::Text => (&mut merged_text, code_vaddr),
-                PatchHome::Rodata => (&mut merged_rodata, rodata_vaddr),
-                PatchHome::Data => (&mut merged_data, data_vaddr),
-            };
-            // Try to resolve the symbol (locals only within their own object)
-            let target_addr =
-                if let Some(addr) = symbol_addresses.resolve(obj_idx, sym_name, sym_binding) {
-                    addr
-                } else if let Some(sec_idx) = sym_section {
-                    // Section-relative symbol - look up the section's address
-                    let obj = &self.objects[obj_idx];
-                    if sec_idx >= obj.sections.len() {
-                        return Err(LinkError::InvalidSectionIndex {
-                            symbol: sym_name.to_string(),
-                            section_index: sec_idx,
-                            section_count: obj.sections.len(),
-                        });
-                    }
-                    let section = &obj.sections[sec_idx];
-                    if let Some(&sec_offset) = section_offsets.get(&(obj_idx, sec_idx)) {
-                        let base = match classify_section(&section.name) {
-                            SectionKind::Text => code_vaddr,
-                            SectionKind::Rodata => rodata_vaddr,
-                            SectionKind::Data => data_vaddr,
-                            SectionKind::Bss => bss_vaddr,
-                            SectionKind::Other => {
-                                return Err(LinkError::UndefinedSymbol(format!(
-                                    "{} (in section '{}')",
-                                    sym_name, section.name
-                                )));
-                            }
-                        };
-                        base + sec_offset
-                    } else {
-                        return Err(LinkError::UndefinedSymbol(format!(
-                            "{} (section {} not in section_offsets)",
-                            sym_name, sec_idx
-                        )));
-                    }
-                } else if sym_binding == SymbolBinding::Weak {
-                    // An undefined WEAK symbol resolves to address 0 rather than
-                    // erroring — standard ELF semantics, lets code do null checks
-                    // against optional symbols. (RUE-131 item 9)
-                    0
-                } else {
-                    return Err(LinkError::UndefinedSymbol(format!(
-                        "{} (no section, rel_type={:?})",
-                        if sym_name.is_empty() {
-                            "<empty>"
-                        } else {
-                            sym_name
-                        },
-                        rel_type
-                    )));
-                };
-
-            let pc = checked_relocation_offset(base_vaddr, offset, rel_type)?;
-
-            // Patch the site; the per-kind encoding is shared with the
-            // Mach-O path via `apply_relocation` (RUE-335).
-            apply_relocation(buf, offset, pc, target_addr, addend, rel_type, sym_name)?;
-        }
+        self.resolve_pending_relocations(&mut image, &bases, &symbol_addresses, cancellation)?;
 
         drop(relocate_span);
         check_cancellation(cancellation)?;
@@ -2427,6 +2242,14 @@ impl Linker {
         //   0x400000 + header_size: .text (R+X)
         //   next page boundary: .rodata (R)       -- only if rodata exists
         //   next page boundary: .data+.bss (R+W)  -- only if data/bss exists
+
+        let MergedImage {
+            text: merged_text,
+            rodata: merged_rodata,
+            data: merged_data,
+            bss_size,
+            ..
+        } = image;
 
         // Calculate number of program headers
         let num_program_headers: u16 =
@@ -2548,7 +2371,7 @@ impl Linker {
         // it is reachable via the Linker API with a code-only / code+rodata
         // object.
         if (elf.len() as u64) < code_file_offset {
-            resize_with_cancellation(&mut elf, code_file_offset as usize, 0, cancellation)?;
+            pad_to_with_cancellation(&mut elf, code_file_offset as usize, ZERO_FILL, cancellation)?;
         }
 
         // Write code section
@@ -2556,9 +2379,12 @@ impl Linker {
 
         // Pad to rodata file offset if needed
         if has_rodata {
-            let padding_needed = rodata_file_offset as usize - elf.len();
-            let new_len = elf.len() + padding_needed;
-            resize_with_cancellation(&mut elf, new_len, 0, cancellation)?;
+            pad_to_with_cancellation(
+                &mut elf,
+                rodata_file_offset as usize,
+                ZERO_FILL,
+                cancellation,
+            )?;
 
             // Write rodata section
             extend_bytes_with_cancellation(&mut elf, &merged_rodata, cancellation)?;
@@ -2566,10 +2392,7 @@ impl Linker {
 
         // Pad to data segment file offset if needed
         if has_data_segment {
-            let current_size = elf.len();
-            let padding_needed = data_file_offset as usize - current_size;
-            let new_len = elf.len() + padding_needed;
-            resize_with_cancellation(&mut elf, new_len, 0, cancellation)?;
+            pad_to_with_cancellation(&mut elf, data_file_offset as usize, ZERO_FILL, cancellation)?;
 
             // Write data segment
             extend_bytes_with_cancellation(&mut elf, &merged_data, cancellation)?;
@@ -2657,16 +2480,19 @@ mod tests {
 
     #[test]
     fn large_single_section_final_emission_is_bounded_and_byte_identical() {
-        for (target, entry) in [
-            (Target::X86_64Linux, "main"),
-            (Target::Aarch64Macos, "__main"),
+        // The defined symbol carries the parsed spelling a structured object
+        // uses; the entry is named the way the caller names it, in the target's
+        // on-disk spelling (RUE-919).
+        for (target, defined, entry) in [
+            (Target::X86_64Linux, "main", "main"),
+            (Target::Aarch64Macos, "_main", "__main"),
         ] {
             let make_linker = || {
                 let mut linker = Linker::new(target);
                 linker
                     .add_structured_object(crate::StructuredObject::function(
                         target,
-                        entry,
+                        defined,
                         Arc::from([Arc::<[u8]>::from(vec![0_u8; 4 * 1024 * 1024])]),
                         Arc::from([]),
                         Vec::new(),
@@ -5784,7 +5610,9 @@ mod tests {
         let mut linker = Linker::new(Target::Aarch64Macos);
         linker.add_object(obj).unwrap();
 
-        let macho = linker.link("_main").unwrap();
+        // The object's table holds the parsed `_main`; the caller names the
+        // entry the way it is spelled on disk.
+        let macho = linker.link("__main").unwrap();
 
         // Verify Mach-O header
         assert!(
@@ -5811,42 +5639,52 @@ mod tests {
     fn test_macho_entry_point_lookup() {
         use crate::elf::{Section, SectionFlags, Symbol, SymbolBinding, SymbolType};
 
-        // Simple ARM64 RET instruction
-        let code = vec![0xC0, 0x03, 0x5F, 0xD6]; // RET
-
-        let text_section = Section {
-            name: "__text".to_string(),
-            data: code.into(),
-            size: 4,
-            flags: SectionFlags::ALLOC | SectionFlags::EXEC,
-            relocations: vec![],
-            align: 4,
+        // A parsed symbol table: the single underscore Mach-O emission adds is
+        // stripped when the object is parsed, so the table holds `main`.
+        let linker_defining_main = || {
+            let text_section = Section {
+                name: "__text".to_string(),
+                data: vec![0xC0, 0x03, 0x5F, 0xD6].into(), // RET
+                size: 4,
+                flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+                relocations: vec![],
+                align: 4,
+            };
+            let main_symbol = Symbol {
+                name: "main".to_string(),
+                section_index: Some(0),
+                value: 0,
+                size: 4,
+                binding: SymbolBinding::Global,
+                sym_type: SymbolType::Func,
+            };
+            let obj = ObjectFile {
+                sections: vec![text_section],
+                symbols: vec![main_symbol],
+                section_map: [("__text".to_string(), 0)].into_iter().collect(),
+                machine: crate::elf::ElfMachine::Aarch64,
+                format: crate::elf::ObjectFormat::MachO,
+            };
+            let mut linker = Linker::new(Target::Aarch64Macos);
+            linker.add_object(obj).unwrap();
+            linker
         };
 
-        // Symbol without underscore prefix (linker should try both)
-        let main_symbol = Symbol {
-            name: "main".to_string(),
-            section_index: Some(0),
-            value: 0,
-            size: 4,
-            binding: SymbolBinding::Global,
-            sym_type: SymbolType::Func,
-        };
-
-        let obj = ObjectFile {
-            sections: vec![text_section],
-            symbols: vec![main_symbol],
-            section_map: [("__text".to_string(), 0)].into_iter().collect(),
-            machine: crate::elf::ElfMachine::Aarch64,
-            format: crate::elf::ObjectFormat::MachO,
-        };
-
-        let mut linker = Linker::new(Target::Aarch64Macos);
-        linker.add_object(obj).unwrap();
-
-        // Should find "main" even though we look for it without underscore
-        let result = linker.link("main");
-        assert!(result.is_ok(), "Should find entry point 'main'");
+        // The caller names the entry the way it is spelled on disk; the lookup
+        // normalizes it to the parsed spelling exactly once.
+        assert!(
+            linker_defining_main().link("_main").is_ok(),
+            "the on-disk entry spelling must resolve against the parsed table"
+        );
+        // Exactly once: `__main` parses to `_main`, which nothing here defines.
+        // The lookup is one normalization, not a search through spellings.
+        assert!(
+            matches!(
+                linker_defining_main().link("__main"),
+                Err(LinkError::UndefinedSymbol(_))
+            ),
+            "a doubly decorated entry name must not resolve"
+        );
     }
 
     #[test]
@@ -6969,11 +6807,270 @@ mod tests {
 
         let aarch64 = link_and_read(Target::Aarch64Linux, crate::elf::ElfMachine::Aarch64);
         assert_eq!(&aarch64[..3], &[0xA0, 0xA1, 0xA2]);
-        assert_eq!(aarch64[3], 0xCC, "AArch64 padding fills the alignment gap");
+        assert_eq!(
+            aarch64[3], AARCH64_TRAP_FILL[3],
+            "AArch64 padding fills the alignment gap with the trap pattern"
+        );
         assert_eq!(aarch64[4], 0xB0, "AArch64 text starts on a 4-byte boundary");
 
         let x86 = link_and_read(Target::X86_64Linux, crate::elf::ElfMachine::X86_64);
         assert_eq!(&x86[..3], &[0xA0, 0xA1, 0xA2]);
         assert_eq!(x86[3], 0xB0, "x86 retains its byte alignment floor");
+    }
+
+    /// RUE-1984: a gap between merged text sections is filled with the
+    /// architecture's trap encoding on BOTH formats. `aarch64-linux` used to
+    /// fill it with x86's `0xCC`, so an AArch64 gap decoded to whatever
+    /// `0xCCCCCCCC` happens to mean instead of faulting; `aarch64-macos`
+    /// already trapped. The fill is phased by the buffer's own offsets, so a
+    /// whole aligned gap is whole `BRK #0` instructions.
+    #[test]
+    fn aarch64_text_padding_is_the_trap_pattern_on_both_formats() {
+        let padding_between_text_sections = |target| {
+            // A 4-byte first section, then one that demands 16-byte alignment:
+            // a 12-byte gap, which is three whole instruction words.
+            let section = |bytes: Vec<u8>, align: u64| Section {
+                name: ".text".into(),
+                size: bytes.len() as u64,
+                data: bytes.into(),
+                flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+                relocations: Vec::new(),
+                align,
+            };
+            let first = make_obj(
+                crate::elf::ElfMachine::Aarch64,
+                vec![section(vec![0xC0, 0x03, 0x5F, 0xD6], 4)],
+                vec![sym("main", Some(0), 0, SymbolBinding::Global)],
+            );
+            let second = make_obj(
+                crate::elf::ElfMachine::Aarch64,
+                vec![section(vec![0xC0, 0x03, 0x5F, 0xD6], 16)],
+                vec![sym("second", Some(0), 0, SymbolBinding::Global)],
+            );
+            let mut linker = Linker::new(target);
+            linker.add_object(first).unwrap();
+            linker.add_object(second).unwrap();
+            let policy = LayoutPolicy::for_target(target);
+            let image = linker.merge_sections(&policy, &mut || false).unwrap();
+            image.text[4..16].to_vec()
+        };
+
+        let expected: Vec<u8> = AARCH64_TRAP_FILL.repeat(3);
+        assert_eq!(
+            padding_between_text_sections(Target::Aarch64Linux),
+            expected,
+            "aarch64-linux text gaps trap"
+        );
+        assert_eq!(
+            padding_between_text_sections(Target::Aarch64Macos),
+            expected,
+            "aarch64-macos text gaps trap"
+        );
+    }
+
+    /// The RUE-1984 acceptance case: one object set, merged for an ELF target
+    /// and for a Mach-O target, lays out identically apart from where rodata
+    /// lives. The merge policy is derived from the architecture, so two targets
+    /// sharing one architecture cannot drift in alignment, padding, or bss base.
+    #[test]
+    fn elf_and_macho_merge_one_object_set_identically_modulo_the_rodata_home() {
+        let objects = || {
+            let text = |bytes: Vec<u8>, align: u64, relocations: Vec<Relocation>| Section {
+                name: ".text".into(),
+                size: bytes.len() as u64,
+                data: bytes.into(),
+                flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+                relocations,
+                align,
+            };
+            let rodata = |bytes: Vec<u8>, align: u64| Section {
+                name: ".rodata".into(),
+                size: bytes.len() as u64,
+                data: bytes.into(),
+                flags: SectionFlags::ALLOC,
+                relocations: Vec::new(),
+                align,
+            };
+            let data = |bytes: Vec<u8>, align: u64, relocations: Vec<Relocation>| Section {
+                name: ".data".into(),
+                size: bytes.len() as u64,
+                data: bytes.into(),
+                flags: SectionFlags::ALLOC | SectionFlags::WRITE,
+                relocations,
+                align,
+            };
+            let bss = |size: u64, align: u64| Section {
+                name: ".bss".into(),
+                data: Vec::new().into(),
+                size,
+                flags: SectionFlags::ALLOC | SectionFlags::WRITE,
+                relocations: Vec::new(),
+                align,
+            };
+            // Odd sizes and mixed alignments, so every floor and every gap in
+            // the merge is exercised rather than landing on a boundary anyway.
+            let first = make_obj(
+                crate::elf::ElfMachine::Aarch64,
+                vec![
+                    text(
+                        vec![0u8; 8],
+                        4,
+                        vec![Relocation {
+                            offset: 0,
+                            symbol_index: 3, // zeroed, in .bss
+                            rel_type: RelocationType::Aarch64Abs64,
+                            addend: 0,
+                        }],
+                    ),
+                    rodata(vec![1, 2, 3, 4, 5], 1),
+                    data(vec![9, 9, 9], 1, Vec::new()),
+                    bss(4, 8),
+                ],
+                vec![
+                    sym("main", Some(0), 0, SymbolBinding::Global),
+                    sym("message", Some(1), 0, SymbolBinding::Local),
+                    sym("counter", Some(2), 0, SymbolBinding::Global),
+                    sym("zeroed", Some(3), 0, SymbolBinding::Global),
+                ],
+            );
+            let second = make_obj(
+                crate::elf::ElfMachine::Aarch64,
+                vec![
+                    text(vec![0u8; 4], 16, Vec::new()),
+                    rodata(vec![7, 7], 8),
+                    data(vec![5], 4, Vec::new()),
+                    bss(9, 16),
+                ],
+                vec![
+                    sym("second", Some(0), 0, SymbolBinding::Global),
+                    sym("other_message", Some(1), 0, SymbolBinding::Local),
+                    sym("other_counter", Some(2), 0, SymbolBinding::Global),
+                    sym("other_zeroed", Some(3), 0, SymbolBinding::Global),
+                ],
+            );
+            vec![first, second]
+        };
+
+        let merged = |target| {
+            let mut linker = Linker::new(target);
+            for obj in objects() {
+                linker.add_object(obj).unwrap();
+            }
+            let policy = LayoutPolicy::for_target(target);
+            let image = linker.merge_sections(&policy, &mut || false).unwrap();
+            (linker, image)
+        };
+
+        let (elf_linker, elf) = merged(Target::Aarch64Linux);
+        let (macho_linker, macho) = merged(Target::Aarch64Macos);
+
+        // The rodata home is the whole difference: ELF merges it into its own
+        // buffer, Mach-O onto the end of the text buffer.
+        assert!(!elf.rodata.is_empty(), "ELF rodata has its own buffer");
+        assert!(macho.rodata.is_empty(), "Mach-O rodata rides in __TEXT");
+
+        let rodata_base = align_up(elf.text.len() as u64, RODATA_MIN_ALIGN);
+        assert_eq!(
+            &macho.text[..elf.text.len()],
+            &elf.text[..],
+            "the merged code is identical"
+        );
+        assert_eq!(
+            &macho.text[rodata_base as usize..],
+            &elf.rodata[..],
+            "the merged rodata is identical, only relocated into __TEXT"
+        );
+        assert_eq!(macho.data, elf.data, "the merged data is identical");
+        assert_eq!(macho.bss_size, elf.bss_size, "the bss region is identical");
+        assert_eq!(macho.pending.len(), elf.pending.len());
+
+        let placed = objects();
+        assert_eq!(elf.section_offsets.len(), macho.section_offsets.len());
+        for (&(obj_idx, sec_idx), &elf_offset) in &elf.section_offsets {
+            let macho_offset = macho.section_offsets[&(obj_idx, sec_idx)];
+            let expected = match classify_section(&placed[obj_idx].sections[sec_idx].name) {
+                SectionKind::Rodata => elf_offset + rodata_base,
+                _ => elf_offset,
+            };
+            assert_eq!(
+                macho_offset, expected,
+                "section ({obj_idx}, {sec_idx}) must land at the same offset"
+            );
+        }
+
+        // And both formats still link the set end to end.
+        elf_linker.link("main").unwrap();
+        macho_linker.link("main").unwrap();
+    }
+
+    /// RUE-1984: a relocation against a section symbol resolves on both
+    /// formats. Only the ELF path used to register an address for every placed
+    /// section under its own name, so the same object failed the Mach-O link as
+    /// an undefined symbol.
+    #[test]
+    fn a_relocation_against_a_section_symbol_resolves_on_both_formats() {
+        let object = || {
+            make_obj(
+                crate::elf::ElfMachine::Aarch64,
+                vec![
+                    Section {
+                        name: ".text".into(),
+                        data: vec![0u8; 8].into(),
+                        size: 8,
+                        flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+                        relocations: vec![Relocation {
+                            offset: 0,
+                            symbol_index: 1,
+                            rel_type: RelocationType::Aarch64Abs64,
+                            addend: 0,
+                        }],
+                        align: 4,
+                    },
+                    Section {
+                        name: ".rodata".into(),
+                        data: vec![1, 2, 3, 4].into(),
+                        size: 4,
+                        flags: SectionFlags::ALLOC,
+                        relocations: Vec::new(),
+                        align: 4,
+                    },
+                ],
+                vec![
+                    sym("main", Some(0), 0, SymbolBinding::Global),
+                    // A reference to the section itself, with no definition of
+                    // its own: the section's placement is its address.
+                    sym(".rodata", None, 0, SymbolBinding::Local),
+                ],
+            )
+        };
+
+        let mut macho_linker = Linker::new(Target::Aarch64Macos);
+        macho_linker.add_object(object()).unwrap();
+        let macho = macho_linker.link("main").unwrap();
+        let (_, text_vmaddr, ..) = macho_segments(&macho)
+            .into_iter()
+            .find(|(name, ..)| name == "__TEXT")
+            .expect("__TEXT segment");
+        let code_file_offset = macho_entryoff(&macho) as usize;
+        // Mach-O homes rodata in __TEXT, right after the 8 bytes of code.
+        assert_eq!(
+            read_u64_at(&macho, code_file_offset),
+            text_vmaddr + code_file_offset as u64 + 8,
+            "the section symbol resolves to the merged rodata's address"
+        );
+
+        let mut elf_linker = Linker::new(Target::Aarch64Linux);
+        elf_linker.add_object(object()).unwrap();
+        let elf = elf_linker.link("main").unwrap();
+        let (_, _, rodata_vaddr) = parse_program_headers(&elf)
+            .into_iter()
+            .find(|(flags, ..)| *flags == PF_R)
+            .expect("read-only rodata segment");
+        let code_offset = TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE;
+        assert_eq!(
+            read_u64_at(&elf, code_offset),
+            rodata_vaddr,
+            "the ELF path resolves the same reference to its own rodata segment"
+        );
     }
 }
