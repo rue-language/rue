@@ -21,7 +21,6 @@
 //!
 //! Inspired by Zig's ZIR (Zig Intermediate Representation).
 
-mod anonymous_sites;
 #[cfg(test)]
 mod api_inventory;
 mod astgen;
@@ -29,9 +28,9 @@ mod inst;
 mod symbol;
 mod type_syntax;
 
-pub use anonymous_sites::{AnonymousTypeSite, AnonymousTypeSiteKind, anonymous_type_sites};
 pub use astgen::{
-    AstGen, AstGenCandidate, AstGenDeclarationRoot, AstGenFinishError, AstGenItemRoots,
+    AnonymousTypeSite, AnonymousTypeSiteKind, AstGen, AstGenCandidate, AstGenDeclarationRoot,
+    AstGenFinishError, AstGenItemRoots, anonymous_type_sites,
 };
 pub use inst::{
     FnDeclFlags, Inst, InstData, InstRef, InternalIntrinsic, MAX_RIR_ENTRIES_PER_PROGRAM,

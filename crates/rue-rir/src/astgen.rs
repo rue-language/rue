@@ -5,6 +5,16 @@
 //! candidate's symbols, append its exact producer, and finish one lowering
 //! session. Whole-program presentation composes these same artifacts rather
 //! than invoking a second module-wide lowering authority.
+//!
+//! This file also owns [`anonymous_type_sites`], the producer-relative
+//! numbering of every value-position anonymous `struct`/`enum` literal a body
+//! can reach. It is the only place anonymous-type anchors are minted: the
+//! lowering resolves each literal it reaches against that table by exact source
+//! span and fails closed on a miss, and the definition index runs the same walk
+//! ahead of time so a declaration lowered on its own is numbered relative to the
+//! same producer root. The walk lives beside the `gen_*` code whose segments it
+//! reproduces, and `site_walk_and_lowering_agree_on_every_form` pins the two to
+//! each other over a corpus of every expression, statement, and pattern form.
 
 use ahash::{AHashMap, AHashSet};
 use lasso::{Spur, ThreadedRodeo};
@@ -67,18 +77,18 @@ pub struct AstGen<'a> {
     compound_counter: u32,
     /// Typed structural route to the AST node currently being lowered. The
     /// route is relative to its producing definition and contains no spans or
-    /// global instruction ordinals. Still the source of string-literal and
-    /// read-only-data anchors; anonymous-type anchors no longer derive from it.
+    /// global instruction ordinals. It anchors string literals and read-only
+    /// data directly; anonymous type literals resolve through
+    /// `anonymous_anchors` instead, which numbers the same route.
     structural_path: Option<std::sync::Arc<crate::inst::RirStructuralPathPrefix>>,
-    /// The single anonymous-type anchor authority (RUE-1089, Theme 1). Each
-    /// value-position anonymous type literal reachable while reducing a producer
-    /// body is recorded here by exact source span when that producer root is
-    /// entered, carrying the anchor the shared [`crate::anonymous_type_sites`]
-    /// walk mints. `AstGen` looks each anonymous literal up here instead of
-    /// minting a second, drift-prone anchor from its own `structural_path`; a
-    /// missing or kind-mismatched lookup fails closed as an internal error.
+    /// The anonymous-type anchor of every value-position literal reachable while
+    /// reducing a producer body, keyed by exact source span and recorded when
+    /// that producer root is entered. [`anonymous_type_sites`] mints these, so
+    /// one traversal owns anonymous numbering; a missing or kind-mismatched
+    /// lookup means that traversal and this one disagree and fails closed as an
+    /// internal error.
     anonymous_anchors:
-        AHashMap<rue_span::Span, (crate::AnonymousTypeSiteKind, crate::RirStructuralAnchor)>,
+        AHashMap<rue_span::Span, (AnonymousTypeSiteKind, crate::RirStructuralAnchor)>,
     authoritative_anonymous_anchors: bool,
     /// Nesting depth of semantic producer roots. A transported authoritative
     /// table belongs to the outer exact declaration only; method bodies nested
@@ -95,6 +105,23 @@ pub struct AstGen<'a> {
     canceled: bool,
     #[cfg(test)]
     interner_limit: Option<usize>,
+    /// Every anonymous literal this session lowered, with the anchor the site
+    /// walk minted for it beside the anchor its live `structural_path` denotes.
+    /// `site_walk_and_lowering_agree_on_every_form` asserts the pair is equal at
+    /// every literal, pinning the walk to the lowering it numbers.
+    #[cfg(test)]
+    anonymous_anchor_agreement: Vec<AnonymousAnchorAgreement>,
+}
+
+/// One lowered anonymous literal, as the walk numbered it and as the lowering
+/// reached it.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AnonymousAnchorAgreement {
+    span: rue_span::Span,
+    kind: AnonymousTypeSiteKind,
+    walked: crate::RirStructuralAnchor,
+    lowered: crate::RirStructuralAnchor,
 }
 
 #[derive(Debug)]
@@ -183,6 +210,8 @@ impl<'a> AstGen<'a> {
             canceled: false,
             #[cfg(test)]
             interner_limit: None,
+            #[cfg(test)]
+            anonymous_anchor_agreement: Vec::new(),
         }
     }
 
@@ -206,7 +235,7 @@ impl<'a> AstGen<'a> {
         anchors: impl IntoIterator<
             Item = (
                 rue_span::Span,
-                crate::AnonymousTypeSiteKind,
+                AnonymousTypeSiteKind,
                 crate::RirStructuralAnchor,
             ),
         >,
@@ -429,16 +458,15 @@ impl<'a> AstGen<'a> {
 
     /// Run one semantic producer with a producer-relative structural path,
     /// recording every value-position anonymous type literal reachable while
-    /// reducing `root` with the anchor the shared [`crate::anonymous_type_sites`]
-    /// walk mints for it.
+    /// reducing `root` with the anchor [`anonymous_type_sites`] mints for it.
     ///
     /// A method may be discovered while traversing a containing struct, for
     /// example, but its body is an independent semantic producer. Anchors in
     /// that body must therefore be unaffected by sibling member insertion or
-    /// reordering in the owner. The walk is the single anchor authority: it does
-    /// not descend into an anonymous struct's method bodies, so each such method
-    /// is entered here as its own root and contributes its own sites. Spans are
-    /// globally unique, so the accumulated map needs no per-root reset.
+    /// reordering in the owner. The walk does not descend into an anonymous
+    /// struct's method bodies, so each such method is entered here as its own
+    /// root and contributes its own sites. Spans are globally unique, so the
+    /// accumulated map needs no per-root reset.
     fn with_producer_root<T>(&mut self, root: &Expr, action: impl FnOnce(&mut Self) -> T) -> T {
         let outer_path = std::mem::take(&mut self.structural_path);
         let outer_for_counter = std::mem::replace(&mut self.for_counter, 0);
@@ -446,7 +474,7 @@ impl<'a> AstGen<'a> {
         let has_transported_root =
             self.authoritative_anonymous_anchors && self.producer_root_depth == 0;
         if !has_transported_root {
-            for site in crate::anonymous_type_sites(root) {
+            for site in anonymous_type_sites(root) {
                 self.anonymous_anchors
                     .insert(site.span, (site.kind, site.anchor));
             }
@@ -486,28 +514,49 @@ impl<'a> AstGen<'a> {
         self.with_structural_segment(segment, |this| this.intern_type(ty))
     }
 
-    /// The exact frontend anchor for the anonymous type literal at `span`, from
-    /// the single-authority table populated when its producer root was entered
-    /// (RUE-1089, Theme 1). A missing locator or a kind disagreement is an
-    /// invariant violation between the walk and this lowering; it fails closed as
-    /// a typed internal error (no recompute, no fallback) rather than mint a
-    /// silent second anchor.
+    /// The exact anchor for the anonymous type literal at `span`, taken from the
+    /// site table its producer root was entered with. [`anonymous_type_sites`]
+    /// is the only place anonymous anchors are minted, so a missing locator or a
+    /// kind disagreement means the walk and this lowering disagree about the
+    /// literal's position; that fails closed as a typed internal error (no
+    /// recompute, no fallback) rather than minting a silent second anchor.
     fn anonymous_type_anchor(
         &mut self,
         span: rue_span::Span,
-        kind: crate::AnonymousTypeSiteKind,
+        kind: AnonymousTypeSiteKind,
+    ) -> crate::RirStructuralAnchor {
+        let anchor = self.take_anonymous_type_anchor(span, kind);
+        #[cfg(test)]
+        self.anonymous_anchor_agreement
+            .push(AnonymousAnchorAgreement {
+                span,
+                kind,
+                walked: anchor.clone(),
+                lowered: RirDeferredStructuralAnchor::new(
+                    self.structural_path.clone(),
+                    crate::RirStructuralPathSegment::AnonymousType(0),
+                )
+                .materialize(),
+            });
+        anchor
+    }
+
+    fn take_anonymous_type_anchor(
+        &mut self,
+        span: rue_span::Span,
+        kind: AnonymousTypeSiteKind,
     ) -> crate::RirStructuralAnchor {
         match self.anonymous_anchors.remove(&span) {
             Some((site_kind, anchor)) if site_kind == kind => anchor,
             Some(_) => {
                 self.record_anonymous_anchor_failure(
-                    "anonymous type literal kind disagrees with its transported frontend anchor",
+                    "anonymous type literal kind disagrees with its producer's site table",
                 );
                 crate::RirStructuralAnchor::new(Vec::new())
             }
             None => {
                 self.record_anonymous_anchor_failure(
-                    "anonymous type literal has no transported frontend anchor",
+                    "anonymous type literal has no site in its producer's site table",
                 );
                 crate::RirStructuralAnchor::new(Vec::new())
             }
@@ -1586,7 +1635,7 @@ impl<'a> AstGen<'a> {
                     } => {
                         let anchor = self.anonymous_type_anchor(
                             type_lit.type_expr.span(),
-                            crate::AnonymousTypeSiteKind::Struct,
+                            AnonymousTypeSiteKind::Struct,
                         );
                         // Generate an anonymous struct type instruction with methods
                         let field_decls: Vec<(Spur, crate::RirTypeSyntaxRef)> = fields
@@ -1646,7 +1695,7 @@ impl<'a> AstGen<'a> {
                             .collect();
                         let anchor = self.anonymous_type_anchor(
                             type_lit.type_expr.span(),
-                            crate::AnonymousTypeSiteKind::Enum,
+                            AnonymousTypeSiteKind::Enum,
                         );
                         self.rir
                             .add_anon_enum_type(
@@ -1868,7 +1917,18 @@ impl<'a> AstGen<'a> {
         let coll_name: Spur = if let Expr::Ident(id) = coll_expr {
             self.symbol(id.name)
         } else {
-            let init = self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), coll_expr);
+            // The collection keeps the structural position it occupies inside
+            // the iterable expression: `Operand(0)` for the iterable itself,
+            // and one further `Operand(0)` for a scalar view's receiver, so
+            // unwrapping the view does not renumber the expressions under it.
+            let init =
+                self.with_structural_segment(crate::RirStructuralPathSegment::Operand(0), |this| {
+                    if is_chars {
+                        this.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), coll_expr)
+                    } else {
+                        this.gen_expr(coll_expr)
+                    }
+                });
             let name = self.intern(format!("@rue:for:coll:{n}"));
             let alloc = self
                 .rir
@@ -2570,6 +2630,353 @@ fn compound_op_data(op: CompoundOp, lhs: InstRef, rhs: InstRef) -> InstData {
     }
 }
 
+/// The two anonymous nominal kinds a value-position type literal introduces.
+/// Kept RIR-local so this crate does not depend on the semantic identity
+/// domain; the compiler maps it onto `rue_air::AnonymousNominalKind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AnonymousTypeSiteKind {
+    Struct,
+    Enum,
+}
+
+/// One value-position anonymous type literal, with the exact anchor
+/// [`AstGen`] emits for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnonymousTypeSite {
+    /// Span of the anonymous literal's `TypeExpr`, in the coordinate space of
+    /// the source the walk ran against. Identity never; a transport locator.
+    pub span: rue_span::Span,
+    pub kind: AnonymousTypeSiteKind,
+    pub anchor: crate::RirStructuralAnchor,
+}
+
+/// Collect every value-position anonymous type literal reachable while reducing
+/// `root` as a producer body, each carrying the exact anchor [`AstGen`] emits.
+///
+/// `root` is the declaration's body expression — a constant initializer or a
+/// function/method/destructor/test body — which `AstGen` lowers via
+/// `gen_expr_at(Body, root)`. The walk therefore starts one `Body` segment deep.
+///
+/// A method body of an anonymous struct is deliberately NOT descended:
+/// `AstGen` resets it to its own producer root ([`AstGen::with_producer_root`]),
+/// so each such method is a separate producer whose anchors are collected by
+/// walking its body as a fresh root.
+pub fn anonymous_type_sites(root: &Expr) -> Vec<AnonymousTypeSite> {
+    let mut walker = SiteWalker {
+        path: vec![crate::RirStructuralPathSegment::Body],
+        sites: Vec::new(),
+    };
+    walker.walk_expr(root);
+    walker.sites
+}
+
+/// The producer-relative numbering of every anonymous type literal a body can
+/// reach.
+///
+/// `AstGen` consumes this table by exact source span rather than deriving a
+/// second anchor from its live `structural_path`, so the anchor a literal
+/// carries into RIR is the one minted here. The walk and the `gen_*` lowering
+/// it numbers therefore have to agree segment for segment: the two are kept
+/// adjacent in this file, share the compound-assignment slot constants and
+/// [`is_replayable_place_operand`], and `site_walk_and_lowering_agree_on_every_form`
+/// asserts the walk's anchor equals the live `structural_path` at every literal
+/// across a corpus of every expression, statement, and pattern form. A literal
+/// the walk misses fails closed as an internal error rather than reaching RIR
+/// with an invented anchor.
+struct SiteWalker {
+    path: Vec<crate::RirStructuralPathSegment>,
+    sites: Vec<AnonymousTypeSite>,
+}
+
+impl SiteWalker {
+    fn at(&mut self, segment: crate::RirStructuralPathSegment, action: impl FnOnce(&mut Self)) {
+        self.path.push(segment);
+        action(self);
+        self.path.pop();
+    }
+
+    fn operand(&mut self, index: u32, action: impl FnOnce(&mut Self)) {
+        self.at(crate::RirStructuralPathSegment::Operand(index), action);
+    }
+
+    fn record(&mut self, span: rue_span::Span, kind: AnonymousTypeSiteKind) {
+        let mut segments = self.path.clone();
+        segments.push(crate::RirStructuralPathSegment::AnonymousType(0));
+        self.sites.push(AnonymousTypeSite {
+            span,
+            kind,
+            anchor: crate::RirStructuralAnchor::new(segments),
+        });
+    }
+
+    /// Numbers `gen_block`: the block body is one `Body` segment deep, then its
+    /// statements are `Statement(i)` and its value is `Operand(0)`
+    /// (`gen_block_contents`, for both the empty- and non-empty-statement forms).
+    fn walk_block(&mut self, block: &rue_parser::BlockExpr) {
+        self.at(crate::RirStructuralPathSegment::Body, |this| {
+            for (index, statement) in block.statements.iter().enumerate() {
+                this.at(
+                    crate::RirStructuralPathSegment::Statement(index as u32),
+                    |this| this.walk_statement(statement),
+                );
+            }
+            this.operand(0, |this| this.walk_expr(&block.expr));
+        });
+    }
+
+    fn walk_statement(&mut self, statement: &Statement) {
+        match statement {
+            // `let` type annotations are annotation position (no value-position
+            // literal); the initializer is `Operand(0)`.
+            Statement::Let(let_stmt) => {
+                self.operand(0, |this| this.walk_expr(&let_stmt.init));
+            }
+            Statement::Assign(assign) if assign.op.is_some() => self.walk_compound_assign(assign),
+            Statement::Assign(assign) => {
+                self.operand(0, |this| this.walk_expr(&assign.value));
+                match &assign.target {
+                    AssignTarget::Var(_) => {}
+                    AssignTarget::Field(field) => {
+                        self.operand(1, |this| this.walk_expr(&field.base));
+                    }
+                    AssignTarget::Index(index) => {
+                        self.operand(1, |this| this.walk_expr(&index.base));
+                        self.operand(2, |this| this.walk_expr(&index.index));
+                    }
+                    AssignTarget::Method(expr) => {
+                        self.operand(1, |this| this.walk_expr(expr));
+                    }
+                }
+            }
+            // A bare expression statement is lowered by `gen_expr` with no extra
+            // segment (the enclosing `Statement(i)` is pushed by `walk_block`).
+            Statement::Expr(expr) => self.walk_expr(expr),
+        }
+    }
+
+    /// Numbers `gen_compound_assign`: the right-hand side keeps `Operand(0)` as
+    /// in a plain assignment, and the target's evaluated-once parts claim the
+    /// dedicated slots the desugaring reserves for them.
+    fn walk_compound_assign(&mut self, assign: &AssignStatement) {
+        self.operand(0, |this| this.walk_expr(&assign.value));
+        // `build_compound_place`: a bare variable target evaluates nothing, and
+        // every projected target decomposes through the same root/step walk.
+        let mut hoists = 0;
+        match &assign.target {
+            AssignTarget::Var(_) => {}
+            AssignTarget::Field(field) => self.walk_place_root(&field.base, &mut hoists),
+            AssignTarget::Index(index) => {
+                self.walk_place_root(&index.base, &mut hoists);
+                self.walk_place_operand(&index.index, &mut hoists);
+            }
+            AssignTarget::Method(expr) => {
+                self.operand(COMPOUND_ROOT_SEGMENT, |this| this.walk_expr(expr))
+            }
+        }
+    }
+
+    /// Numbers `decompose_place`. A root that is a place regenerates for the
+    /// read and for the write, and the only such roots are `Expr::Ident` and
+    /// `Expr::SelfExpr`, which carry no literal; anything else is generated
+    /// once under the shared-root slot.
+    fn walk_place_root(&mut self, expr: &Expr, hoists: &mut u32) {
+        match expr {
+            Expr::Paren(paren) => self.walk_place_root(&paren.inner, hoists),
+            Expr::Ident(_) | Expr::SelfExpr(_) => {}
+            Expr::Field(field) => self.walk_place_root(&field.base, hoists),
+            Expr::Index(index) => {
+                self.walk_place_root(&index.base, hoists);
+                self.walk_place_operand(&index.index, hoists);
+            }
+            other => self.operand(COMPOUND_ROOT_SEGMENT, |this| this.walk_expr(other)),
+        }
+    }
+
+    /// Numbers `hoist_place_operand`. A replayable operand is regenerated under
+    /// the read and write slots instead of being bound, and
+    /// [`is_replayable_place_operand`] admits only literals, names, and
+    /// arithmetic over them, so no anonymous literal can sit there. Every other
+    /// operand is bound once, owning one statement slot.
+    fn walk_place_operand(&mut self, index: &Expr, hoists: &mut u32) {
+        if is_replayable_place_operand(index) {
+            return;
+        }
+        let ordinal = *hoists;
+        *hoists += 1;
+        self.operand(COMPOUND_HOIST_SEGMENT + ordinal, |this| {
+            this.walk_expr(index)
+        });
+    }
+
+    fn walk_call_args(&mut self, args: &[CallArg], base: u32) {
+        for (index, arg) in args.iter().enumerate() {
+            self.operand(base + index as u32, |this| this.walk_expr(&arg.expr));
+        }
+    }
+
+    fn walk_expr(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Bool(_)
+            | Expr::String(_)
+            | Expr::Unit(_)
+            | Expr::Ident(_)
+            | Expr::SelfExpr(_)
+            | Expr::Continue(_)
+            | Expr::Error(_) => {}
+            Expr::Binary(bin) => {
+                self.operand(0, |this| this.walk_expr(&bin.left));
+                self.operand(1, |this| this.walk_expr(&bin.right));
+            }
+            Expr::Unary(un) => self.operand(0, |this| this.walk_expr(&un.operand)),
+            Expr::Try(try_expr) => self.operand(0, |this| this.walk_expr(&try_expr.operand)),
+            // Parentheses are transparent in `gen_expr` (no segment).
+            Expr::Paren(paren) => self.walk_expr(&paren.inner),
+            Expr::Block(block) => self.walk_block(block),
+            Expr::If(if_expr) => {
+                self.operand(0, |this| this.walk_expr(&if_expr.cond));
+                self.at(crate::RirStructuralPathSegment::Branch(0), |this| {
+                    this.walk_block(&if_expr.then_block)
+                });
+                if let Some(else_block) = &if_expr.else_block {
+                    self.at(crate::RirStructuralPathSegment::Branch(1), |this| {
+                        this.walk_block(else_block)
+                    });
+                }
+            }
+            Expr::While(while_expr) => {
+                self.operand(0, |this| this.walk_expr(&while_expr.cond));
+                self.at(crate::RirStructuralPathSegment::Branch(0), |this| {
+                    this.walk_block(&while_expr.body)
+                });
+            }
+            Expr::Loop(loop_expr) => self.at(crate::RirStructuralPathSegment::Branch(0), |this| {
+                this.walk_block(&loop_expr.body)
+            }),
+            Expr::For(for_expr) => {
+                // `gen_for` binds a non-variable iterable to a temporary at
+                // `Operand(0)` and lowers the user body at `Branch(0)`. A bare
+                // variable iterable is referenced by name and lowers no operand.
+                // The scalar-view unwrap keeps the receiver at its own position
+                // inside the iterable, so the whole iterable is numbered here
+                // exactly as any other expression is.
+                if !matches!(&*for_expr.iterable, Expr::Ident(_)) {
+                    self.operand(0, |this| this.walk_expr(&for_expr.iterable));
+                }
+                self.at(crate::RirStructuralPathSegment::Branch(0), |this| {
+                    this.walk_block(&for_expr.body)
+                });
+            }
+            Expr::Match(match_expr) => {
+                self.operand(0, |this| this.walk_expr(&match_expr.scrutinee));
+                for (index, arm) in match_expr.arms.iter().enumerate() {
+                    self.at(
+                        crate::RirStructuralPathSegment::MatchArm(index as u32),
+                        |this| {
+                            this.operand(0, |this| this.walk_pattern(&arm.pattern));
+                            this.operand(1, |this| this.walk_expr(&arm.body));
+                        },
+                    );
+                }
+            }
+            Expr::Call(call) => self.walk_call_args(&call.args, 0),
+            Expr::Break(break_expr) => {
+                if let Some(value) = &break_expr.value {
+                    self.operand(0, |this| this.walk_expr(value));
+                }
+            }
+            Expr::Return(return_expr) => {
+                if let Some(value) = &return_expr.value {
+                    self.operand(0, |this| this.walk_expr(value));
+                }
+            }
+            Expr::Yield(yield_expr) => {
+                self.operand(0, |this| this.walk_expr(&yield_expr.value));
+            }
+            Expr::StructLit(struct_lit) => {
+                if let Some(base) = &struct_lit.base {
+                    self.operand(0, |this| this.walk_expr(base));
+                }
+                if let Some(ctor_args) = &struct_lit.ctor_args {
+                    self.walk_call_args(ctor_args, 1);
+                }
+                for (index, field) in struct_lit.fields.iter().enumerate() {
+                    self.at(
+                        crate::RirStructuralPathSegment::FieldType(index as u32),
+                        |this| this.walk_expr(&field.value),
+                    );
+                }
+            }
+            Expr::Field(field) => self.operand(0, |this| this.walk_expr(&field.base)),
+            Expr::Index(index_expr) => {
+                self.operand(0, |this| this.walk_expr(&index_expr.base));
+                self.operand(1, |this| this.walk_expr(&index_expr.index));
+            }
+            Expr::MethodCall(method_call) => {
+                self.operand(0, |this| this.walk_expr(&method_call.receiver));
+                self.walk_call_args(&method_call.args, 1);
+            }
+            Expr::Path(path) => {
+                // A path expression carries only an optional module base; inline
+                // type-constructor heads are a pattern-only form (`walk_pattern`).
+                if let Some(base) = &path.base {
+                    self.operand(0, |this| this.walk_expr(base));
+                }
+            }
+            Expr::IntrinsicCall(intrinsic) => {
+                // `gen_expr` enumerates every argument to keep operand indices
+                // stable; a type argument becomes a `TypeConst` placeholder with
+                // no anchor. The `@offset_of` / type-intrinsic early returns also
+                // carry no anonymous literal (their type argument is interned, not
+                // anchored), so enumerating and recursing only into expression
+                // arguments reproduces the anchor set exactly.
+                for (index, arg) in intrinsic.args.iter().enumerate() {
+                    if let IntrinsicArg::Expr(inner) = arg {
+                        self.operand(index as u32, |this| this.walk_expr(inner));
+                    }
+                }
+            }
+            Expr::ArrayLit(array_lit) => {
+                if array_lit.repeat.is_some() {
+                    if let Some(value) = array_lit.elements.first() {
+                        self.operand(0, |this| this.walk_expr(value));
+                    }
+                } else {
+                    for (index, element) in array_lit.elements.iter().enumerate() {
+                        self.operand(index as u32, |this| this.walk_expr(element));
+                    }
+                }
+            }
+            Expr::Comptime(comptime) => self.operand(0, |this| this.walk_expr(&comptime.expr)),
+            Expr::Checked(checked) => self.operand(0, |this| this.walk_expr(&checked.expr)),
+            Expr::TypeLit(type_lit) => match &type_lit.type_expr {
+                TypeExpr::AnonymousStruct { .. } => {
+                    // Record the struct, but do not descend: its field types are
+                    // annotation position (forbidden anonymous literals) and its
+                    // methods are separate producer roots.
+                    self.record(type_lit.type_expr.span(), AnonymousTypeSiteKind::Struct);
+                }
+                TypeExpr::AnonymousEnum { .. } => {
+                    self.record(type_lit.type_expr.span(), AnonymousTypeSiteKind::Enum);
+                }
+                _ => {}
+            },
+        }
+    }
+
+    fn walk_pattern(&mut self, pattern: &Pattern) {
+        if let Pattern::Path(path) = pattern {
+            if let Some(base) = &path.base {
+                self.operand(0, |this| this.walk_expr(base));
+            }
+            if let Some(ctor_args) = &path.ctor_args {
+                self.walk_call_args(ctor_args, 1);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2833,7 +3240,7 @@ mod tests {
         let interner = ThreadedRodeo::new();
         let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
         let anchor = crate::RirStructuralAnchor::new(vec![crate::RirStructuralPathSegment::Body]);
-        let kind = crate::AnonymousTypeSiteKind::Struct;
+        let kind = AnonymousTypeSiteKind::Struct;
         let duplicate_span = astgen.install_authoritative_anonymous_anchors([
             (rue_span::Span::new(1, 2), kind, anchor.clone()),
             (
@@ -4289,6 +4696,379 @@ mod tests {
         assert!(
             interner.get("array").is_none(),
             "the rejected shape interns no placeholder type name"
+        );
+    }
+
+    /// One source per grammatical position an anonymous type literal can occupy,
+    /// named by the form whose numbering it exercises. The corpus only has to
+    /// parse: `AstGen` lowers without type checking, so a form can be spelled in
+    /// whatever shape places a literal in the position under test.
+    const ANONYMOUS_SITE_CORPUS: &[(&str, &str)] = &[
+        ("const initializer", "const P = struct { x: i32 };"),
+        ("const initializer, enum", "const E = enum { A, B };"),
+        (
+            "let initializer and block tail",
+            "const K = { let _a = struct { a: i32 }; let _b = enum { X, Y }; struct { c: i32 } };",
+        ),
+        (
+            "let with a type annotation",
+            "const K = { let _a: i32 = struct { a: i32 }; 0 };",
+        ),
+        (
+            "binary and call arguments",
+            "const K = h(struct { l: i32 }) + h(enum { R });",
+        ),
+        ("unary operand", "const K = -h(struct { u: i32 });"),
+        ("try operand", "const K = h(struct { t: i32 })?;"),
+        ("parenthesized", "const K = (struct { p: i32 });"),
+        ("block expression", "const K = { struct { b: i32 } };"),
+        (
+            "if branches",
+            "fn Pick(comptime b: bool) -> type { if b { struct { x: i32 } } else { enum { Y } } }",
+        ),
+        (
+            "while condition and body",
+            "fn f(comptime b: bool) -> i32 { while h(struct { c: i32 }) { let _w = enum { W }; } 0 }",
+        ),
+        (
+            "loop body and break value",
+            "fn f() -> i32 { loop { let _l = struct { l: i32 }; break h(enum { B }); } }",
+        ),
+        (
+            "for over a bare variable",
+            "fn f(xs: [i32; 2]) -> i32 { for _e in xs { let _b = struct { b: i32 }; } 0 }",
+        ),
+        (
+            "for over a temporary iterable",
+            "fn f() -> i32 { for _e in [struct { e: i32 }] { } 0 }",
+        ),
+        (
+            "for over a scalar view of a name",
+            "fn f(s: str) -> i32 { for _c in s.chars() { let _d = struct { d: i32 }; } 0 }",
+        ),
+        (
+            "for over a scalar view of a temporary",
+            "fn f() -> i32 { for _c in h(struct { c: i32 }).chars() { } 0 }",
+        ),
+        (
+            "for over a lossy scalar view of a temporary",
+            "fn f() -> i32 { for _c in h(struct { c: i32 }).chars_lossy() { } 0 }",
+        ),
+        (
+            "for over a plain method call",
+            "fn f() -> i32 { for _e in h(struct { m: i32 }).items() { } 0 }",
+        ),
+        (
+            "match scrutinee, arms, and a constructor-head pattern",
+            "fn Choose(comptime n: i32) -> type {
+                 match h(struct { s: i32 }) {
+                     P(struct { q: i32 }).A => struct { r: i32 },
+                     _ => enum { Z },
+                 }
+             }",
+        ),
+        (
+            "return value",
+            "fn f() -> type { return struct { rv: i32 }; }",
+        ),
+        ("yield value", "fn f() -> i32 { yield struct { yv: i32 } }"),
+        (
+            "struct literal constructor head and field values",
+            "const K = Pair(struct { c0: i32 }, enum { C1 }) { first: struct { f0: i32 }, second: enum { F1 } };",
+        ),
+        ("field access base", "const K = h(struct { fa: i32 }).x;"),
+        (
+            "index base and index",
+            "const K = h(struct { ib: i32 })[h(enum { II })];",
+        ),
+        (
+            "method call receiver and arguments",
+            "const K = h(struct { mr: i32 }).m(struct { m0: i32 }, enum { M1 });",
+        ),
+        (
+            "expression intrinsic arguments",
+            "const K = @syscall(struct { i0: i32 }, enum { I1 });",
+        ),
+        (
+            "array literal elements",
+            "const K = [struct { a0: i32 }, enum { A1 }];",
+        ),
+        ("array repeat value", "const K = [struct { ar: i32 }; 4];"),
+        (
+            "comptime block",
+            "const K = comptime { struct { cb: i32 } };",
+        ),
+        ("checked block", "const K = checked { struct { cb: i32 } };"),
+        (
+            "plain assignment to a variable",
+            "fn f() -> i32 { let mut x = 0; x = struct { av: i32 }; 0 }",
+        ),
+        (
+            "plain assignment to a field",
+            "fn f() -> i32 { h(struct { ab: i32 }).f = struct { av: i32 }; 0 }",
+        ),
+        (
+            "plain assignment to an index",
+            "fn f() -> i32 { h(struct { ab: i32 })[h(enum { AI })] = struct { av: i32 }; 0 }",
+        ),
+        (
+            "plain assignment through an accessor",
+            "fn f(o: i32) -> i32 { o.at(struct { am: i32 }) = struct { av: i32 }; 0 }",
+        ),
+        (
+            "compound assignment to a variable",
+            "fn f() -> i32 { let mut x = 0; x += struct { cv: i32 }; 0 }",
+        ),
+        (
+            "compound assignment with a shared place root",
+            "fn f() -> i32 { h(struct { sr: i32 })[0] += 1; 0 }",
+        ),
+        (
+            "compound assignment with a hoisted index operand",
+            "fn f(a: [i32; 2]) -> i32 { a[h(struct { hz: i32 })] += struct { cv: i32 }; 0 }",
+        ),
+        (
+            "compound assignment with two hoisted index operands",
+            "fn f(a: [i32; 2]) -> i32 { a[h(struct { h0: i32 })][h(struct { h1: i32 })] += 1; 0 }",
+        ),
+        (
+            "compound assignment through an accessor",
+            "fn f(o: i32) -> i32 { o.at(struct { cm: i32 }) += 1; 0 }",
+        ),
+        (
+            "compound assignment through a field of a shared root",
+            "fn f() -> i32 { h(struct { fr: i32 }).f += 1; 0 }",
+        ),
+        (
+            "nested producer roots: an anonymous struct's method body",
+            "fn Option(comptime T: type) -> type { enum { Some(T), None } }
+             fn Wrap(comptime T: type) -> type {
+                 struct {
+                     inner: Option(T),
+                     fn get_or(self, d: T) -> T {
+                         let O = enum { Some(T), None };
+                         match self.inner { O.Some(v) => v, O.None => d }
+                     }
+                 }
+             }",
+        ),
+        (
+            "destructor body",
+            "struct S { x: i32 }
+             drop fn S(self) { let _d = struct { d: i32 }; }",
+        ),
+        (
+            "test body",
+            "test \"anonymous\" { let _t = struct { t: i32 }; }",
+        ),
+    ];
+
+    /// The site walk and the lowering it numbers must agree on every
+    /// `(span, kind, path)`: the walk mints the anchor a literal carries into
+    /// RIR, and the lowering reaches that literal through its own
+    /// `structural_path`, so a form numbered differently by the two would
+    /// silently anchor a nominal to a route no producer actually takes.
+    #[test]
+    fn site_walk_and_lowering_agree_on_every_form() {
+        for (form, source) in ANONYMOUS_SITE_CORPUS {
+            let lexer = Lexer::new(source);
+            let (tokens, interner) = lexer
+                .tokenize()
+                .unwrap_or_else(|error| panic!("{form} must lex: {error:?}"));
+            let parser = Parser::new(tokens, interner);
+            let (ast, interner) = parser
+                .parse()
+                .unwrap_or_else(|error| panic!("{form} must parse: {error:?}"));
+            let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+            astgen.append_items(&ast.items);
+            let agreement = std::mem::take(&mut astgen.anonymous_anchor_agreement);
+            assert!(
+                astgen.payload_error.is_none(),
+                "{form} did not lower cleanly: {:?}",
+                astgen.payload_error
+            );
+            assert!(
+                !agreement.is_empty(),
+                "{form} lowered no anonymous literal, so it pins nothing"
+            );
+            for site in &agreement {
+                assert_eq!(
+                    site.walked.segments(),
+                    site.lowered.segments(),
+                    "the walk and the lowering disagree on the {form} at {:?} ({:?})",
+                    site.span,
+                    site.kind,
+                );
+            }
+        }
+    }
+
+    /// Frontend bijection at the mint, PER PRODUCER: within one declaration body
+    /// every anonymous site maps to exactly one anchor and no two distinct sites
+    /// share an anchor. (Distinct producers may reuse the same relative anchor;
+    /// their identities differ by producer, so uniqueness is producer-local.)
+    #[test]
+    fn walk_anchors_are_unique_within_one_producer() {
+        let source = r#"
+const K = {
+    let _a = struct { a: i32 };
+    let _b = struct { b: i32 };
+    let _c = enum { X, Y };
+    enum { Z }
+};
+"#;
+        let (ast, _) = parse_program(source);
+        let Item::Const(constant) = &ast.items[0] else {
+            panic!("expected a const");
+        };
+        let sites = anonymous_type_sites(&constant.init);
+        assert_eq!(sites.len(), 4, "expected four sites in the producer");
+        let anchors: std::collections::BTreeSet<_> = sites
+            .iter()
+            .map(|site| site.anchor.segments().to_vec())
+            .collect();
+        assert_eq!(
+            anchors.len(),
+            sites.len(),
+            "two distinct sites in one producer share an anchor",
+        );
+    }
+
+    #[test]
+    fn walk_records_kind_per_site() {
+        let (ast, _) = parse_program("const E = enum { A, B };");
+        let Item::Const(constant) = &ast.items[0] else {
+            panic!("expected a const");
+        };
+        let sites = anonymous_type_sites(&constant.init);
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].kind, AnonymousTypeSiteKind::Enum);
+    }
+
+    fn parse_program(source: &str) -> (rue_parser::ast::Ast, ThreadedRodeo) {
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        let parser = Parser::new(tokens, interner);
+        parser.parse().unwrap()
+    }
+
+    /// The anonymous-type anchors `AstGen` emits into RIR, in dense RIR order.
+    fn rir_anonymous_anchors(source: &str) -> Vec<crate::RirStructuralAnchor> {
+        let (rir, _) = gen_rir(source);
+        rir.iter()
+            .filter_map(|(_, instruction)| match &instruction.data {
+                InstData::AnonStructType { anchor, .. } | InstData::AnonEnumType { anchor, .. } => {
+                    Some(anchor.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Anchors the walk mints across every TOP-LEVEL producer root. Test programs
+    /// are chosen so no anonymous literal is nested inside an anonymous struct's
+    /// method body (a separate producer root not walked here), making the walk's
+    /// multiset the complete frontend set.
+    fn walk_anonymous_anchors(source: &str) -> Vec<crate::RirStructuralAnchor> {
+        let (ast, _) = parse_program(source);
+        let mut anchors = Vec::new();
+        for item in &ast.items {
+            let roots: Vec<&Expr> = match item {
+                Item::Function(function) => vec![&function.body],
+                Item::Const(constant) => vec![&constant.init],
+                Item::DropFn(drop_fn) => vec![&drop_fn.body],
+                _ => Vec::new(),
+            };
+            for root in roots {
+                anchors.extend(
+                    anonymous_type_sites(root)
+                        .into_iter()
+                        .map(|site| site.anchor),
+                );
+            }
+        }
+        anchors
+    }
+
+    /// Assert `AstGen` consumes exactly the walk's anchors for `source`: every
+    /// anonymous literal `AstGen` lowers resolves against the walk table (no
+    /// fail-closed miss) and no anonymous type reaches RIR without a walk site.
+    fn assert_walk_matches_rir(source: &str) {
+        let mut walk = walk_anonymous_anchors(source);
+        let mut rir = rir_anonymous_anchors(source);
+        walk.sort_by(|a, b| a.segments().cmp(b.segments()));
+        rir.sort_by(|a, b| a.segments().cmp(b.segments()));
+        assert_eq!(
+            walk, rir,
+            "AstGen did not consume the walk's anchors verbatim for:\n{source}"
+        );
+    }
+
+    #[test]
+    fn walk_reproduces_astgen_anchors_for_type_producers() {
+        // Generic struct producer whose method reaches its anonymous-enum field
+        // (the RUE-1089 Wrap repro), plus its Option producer.
+        assert_walk_matches_rir(
+            r#"
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn Wrap(comptime T: type) -> type {
+    struct {
+        inner: Option(T),
+        fn get_or(self, d: T) -> T {
+            let O = Option(T);
+            match self.inner { O.Some(v) => v, O.None => d }
+        }
+    }
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn walk_reproduces_astgen_anchors_for_direct_const_literal() {
+        assert_walk_matches_rir("const P = struct { x: i32, y: i32 };");
+        assert_walk_matches_rir("const E = enum { A, B };");
+    }
+
+    #[test]
+    fn walk_reproduces_astgen_anchors_for_comptime_branches() {
+        // Both branches carry a same-kind anonymous literal; each must anchor to
+        // its own branch position.
+        assert_walk_matches_rir(
+            r#"
+fn Pick(comptime b: bool) -> type {
+    if b { struct { x: i32 } } else { struct { y: i32 } }
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn walk_reproduces_astgen_anchors_for_statement_bound_literals() {
+        // A const whose block binds several anonymous literals in statements plus
+        // a tail literal: each lands on its own Statement(i) / Operand(0) path.
+        assert_walk_matches_rir(
+            r#"
+const K = {
+    let _a = struct { a: i32 };
+    let _b = enum { X, Y };
+    struct { c: i32 }
+};
+"#,
+        );
+    }
+
+    #[test]
+    fn walk_reproduces_astgen_anchors_for_match_arms() {
+        assert_walk_matches_rir(
+            r#"
+fn Choose(comptime n: i32) -> type {
+    match n {
+        0 => struct { z: i32 },
+        _ => enum { P, Q },
+    }
+}
+"#,
         );
     }
 }
