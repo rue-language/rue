@@ -284,22 +284,14 @@ impl Parser {
             }
             (type_name, Some(Box::new(expr)))
         };
-        let mut bindings = Vec::new();
+        let mut elements = Vec::new();
         if self.eat(TokenKind::LParen) {
             if self.at(TokenKind::RParen) {
                 self.error("expected payload binding");
                 return Err(());
             }
             loop {
-                if self.at(TokenKind::Underscore) {
-                    let span = self.bump().span;
-                    bindings.push(Ident {
-                        name: self.syms.underscore,
-                        span,
-                    });
-                } else {
-                    bindings.push(self.ident()?);
-                }
+                elements.push(self.pattern_element()?);
                 if !self.eat(TokenKind::Comma) {
                     break;
                 }
@@ -314,9 +306,38 @@ impl Parser {
             type_name,
             ctor_args,
             variant,
-            bindings,
+            elements,
             span: self.span_from(start),
         }))
+    }
+
+    /// One payload position of a tuple-variant pattern: a binder, the `_`
+    /// discard, or a nested variant pattern (RUE-2053). A nested pattern is
+    /// parsed by the same `path_pattern` this method is called from — the
+    /// pattern grammar has exactly one path parser (RUE-1988), so a payload
+    /// position accepts every head form a top-level pattern accepts
+    /// (`E.A(b)`, `m.E.A(b)`, `Result(i32, E).Ok(v)`).
+    fn pattern_element(&mut self) -> PResult<PatternElement> {
+        if self.at(TokenKind::Underscore) {
+            let span = self.bump().span;
+            return Ok(PatternElement::Binding(Ident {
+                name: self.syms.underscore,
+                span,
+            }));
+        }
+        // A binder is a lone identifier, so the position is a nested pattern
+        // exactly when the identifier continues into a path (`E.A`) or a
+        // type-constructor head (`Result(i32, E).Ok`).
+        if matches!(self.kind(), TokenKind::Ident(_))
+            && matches!(self.nth(1), TokenKind::Dot | TokenKind::LParen)
+        {
+            let start = self.start();
+            let Pattern::Path(nested) = self.path_pattern(start)? else {
+                unreachable!("path_pattern yields a path pattern")
+            };
+            return Ok(PatternElement::Nested(nested));
+        }
+        Ok(PatternElement::Binding(self.ident()?))
     }
 
     fn let_pattern(&mut self, after_mut: bool) -> PResult<LetPattern> {

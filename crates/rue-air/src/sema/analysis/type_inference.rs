@@ -173,6 +173,39 @@ impl RuntimeNameTrieNode {
 }
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
+    /// Flatten the payload bindings one match pattern introduces, in the order
+    /// they enter scope, pairing each with the payload field type it takes.
+    /// A nested variant pattern (RUE-2053) matches against the field's own
+    /// type, so its bindings are resolved through that type's enum definition.
+    fn flatten_pattern_bindings(
+        &self,
+        pattern: &rue_rir::RirPatternView<'_>,
+        payload_types: Option<&[Type]>,
+        out: &mut Vec<(lasso::Spur, Option<Type>)>,
+    ) {
+        let rue_rir::RirPatternView::Path { elements, .. } = pattern else {
+            return;
+        };
+        for (index, element) in elements.iter().enumerate() {
+            let field_ty = payload_types.and_then(|types| types.get(index).copied());
+            match element {
+                rue_rir::RirPatternElementView::Binding(name) => out.push((name, field_ty)),
+                rue_rir::RirPatternElementView::Nested(nested) => {
+                    let nested_payload = field_ty.and_then(|ty| ty.as_enum()).and_then(|enum_id| {
+                        let def = self.body_type_pool().enum_def(enum_id);
+                        let rue_rir::RirPatternView::Path { variant, .. } = &nested else {
+                            return None;
+                        };
+                        let variant_name = self.body_interner().resolve(variant);
+                        def.find_variant(variant_name)
+                            .map(|position| def.variant_payload(position).to_vec())
+                    });
+                    self.flatten_pattern_bindings(&nested, nested_payload.as_deref(), out);
+                }
+            }
+        }
+    }
+
     fn push_frontier_scope(
         &self,
         scope: &FrontierScope,
@@ -1091,20 +1124,26 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                     def.find_variant(variant_name)
                                         .map(|index| def.variant_payload(index).to_vec())
                                 });
-                            if let rue_rir::RirPatternView::Path { bindings, .. } = pattern {
-                                for (index, binding) in bindings.into_iter().enumerate() {
-                                    scope_nodes = scope_nodes.saturating_add(1);
-                                    names = self.push_frontier_scope(
-                                        &names,
-                                        FrontierBinding {
-                                            name: binding,
-                                            ty: payload_types
-                                                .as_ref()
-                                                .and_then(|types| types.get(index).copied()),
-                                            mode: RirParamMode::Normal,
-                                        },
-                                    );
-                                }
+                            // Nested payload patterns (RUE-2053) introduce their
+                            // own bindings, so the frontier scope is built from
+                            // the flattened pattern rather than one binding
+                            // list.
+                            let mut flattened = Vec::new();
+                            self.flatten_pattern_bindings(
+                                &pattern,
+                                payload_types.as_deref(),
+                                &mut flattened,
+                            );
+                            for (name, ty) in flattened {
+                                scope_nodes = scope_nodes.saturating_add(1);
+                                names = self.push_frontier_scope(
+                                    &names,
+                                    FrontierBinding {
+                                        name,
+                                        ty,
+                                        mode: RirParamMode::Normal,
+                                    },
+                                );
                             }
                             (body, names)
                         })

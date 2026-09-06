@@ -152,6 +152,16 @@ impl RirCallArg {
     }
 }
 
+/// One payload position of a path pattern (RIR level - untyped).
+#[derive(Debug, Clone)]
+pub enum RirPatternElement {
+    /// Binder name for this payload position; the `_` symbol for a discard.
+    Binding(Spur),
+    /// A nested variant pattern the payload field must itself match
+    /// (`R.Err(E.A(b))`, RUE-2053). Nesting is recursive.
+    Nested(RirPattern),
+}
+
 /// A pattern in a match expression (RIR level - untyped).
 #[derive(Debug, Clone)]
 pub enum RirPattern {
@@ -185,9 +195,10 @@ pub enum RirPattern {
         type_name: Spur,
         /// The variant name
         variant: Spur,
-        /// Payload binding names for a tuple-variant pattern `Circle(r)`
-        /// (RUE-221), in payload order. Empty for a discriminant-only pattern.
-        bindings: Vec<Spur>,
+        /// Payload positions of a tuple-variant pattern `Circle(r)` (RUE-221),
+        /// in payload order. Each is a binder or a nested variant pattern
+        /// (RUE-2053). Empty for a discriminant-only pattern.
+        elements: Vec<RirPatternElement>,
         /// Span of the pattern
         span: Span,
     },

@@ -455,7 +455,7 @@ mod typed_payload_tests {
                         ctor_head: Some(value),
                         type_name: a,
                         variant: b,
-                        bindings: vec![a],
+                        elements: vec![RirPatternElement::Binding(a)],
                         span: span(),
                     },
                     value,
@@ -585,7 +585,7 @@ mod typed_payload_tests {
                             ctor_head: None,
                             type_name: a,
                             variant: b,
-                            bindings: vec![a],
+                            elements: vec![RirPatternElement::Binding(a)],
                             span: at(8),
                         },
                         value,
@@ -1512,12 +1512,15 @@ mod typed_payload_tests {
         match pattern {
             RirPatternView::Path {
                 type_name,
-                bindings,
+                elements,
                 span,
                 ..
             } => {
                 assert_eq!(type_name, b);
-                assert_eq!(bindings.to_vec(), [b]);
+                assert!(matches!(
+                    elements.to_vec().as_slice(),
+                    [RirPatternElement::Binding(name)] if *name == b
+                ));
                 assert_eq!(span.file_id, FileId::new(9));
             }
             _ => panic!("expected remapped path pattern"),
@@ -1707,13 +1710,13 @@ mod typed_payload_tests {
                 start: 0,
                 extent: 2,
                 record: Some(0),
-                expected: MATCH_PATH_BINDING_COUNT + 1,
+                expected: MATCH_PATH_ELEMENT_WORDS + 1,
                 actual: 1,
                 reason: "path record header is truncated",
             }
         );
         assert_eq!(error.phase(), "RIR payload decode");
-        assert_eq!(error.expected_width(), MATCH_PATH_BINDING_COUNT + 1);
+        assert_eq!(error.expected_width(), MATCH_PATH_ELEMENT_WORDS + 1);
         assert_eq!(error.actual_width(), 1);
         let rendered = error.to_string();
         assert!(rendered.contains("match arms"));
@@ -1721,7 +1724,7 @@ mod typed_payload_tests {
         assert!(rendered.contains("record 0"));
         assert!(rendered.contains(&format!(
             "expected width={}, actual width=1",
-            MATCH_PATH_BINDING_COUNT + 1
+            MATCH_PATH_ELEMENT_WORDS + 1
         )));
     }
 
@@ -1940,7 +1943,7 @@ mod typed_payload_tests {
                         ctor_head: None,
                         type_name: symbol,
                         variant: symbol,
-                        bindings: vec![symbol],
+                        elements: vec![RirPatternElement::Binding(symbol)],
                         span: span(),
                     },
                     value,
@@ -1948,17 +1951,20 @@ mod typed_payload_tests {
                 span(),
             )
             .unwrap();
-        editor.rir.extra[MATCH_PATH_BINDINGS_START + 1] = u32::MAX;
+        // The arm count occupies word 0, so the record starts at word 1 and its
+        // first payload position is `[element kind, symbol]`; corrupt that
+        // position's symbol word.
+        editor.rir.extra[1 + MATCH_PATH_ELEMENTS_START + 1] = u32::MAX;
 
         assert_eq!(
             ValidatedRir::finish(editor, &context()).unwrap_err(),
             rir_payload_error! {
                 family: RirMatchArmsRange::FAMILY,
                 start: 0,
-                extent: 12,
+                extent: 14,
                 record: Some(0),
-                expected: 11,
-                actual: 11,
+                expected: 13,
+                actual: 13,
                 reason: "symbol word is not representable",
             }
         );
@@ -1986,7 +1992,7 @@ mod typed_payload_tests {
                             ctor_head: ctor,
                             type_name: symbol,
                             variant: symbol,
-                            bindings: vec![],
+                            elements: vec![],
                             span: span(),
                         },
                         body,
@@ -2206,7 +2212,7 @@ mod typed_payload_tests {
                     ctor_head: None,
                     type_name: a,
                     variant: a,
-                    bindings: vec![a],
+                    elements: vec![RirPatternElement::Binding(a)],
                     span: span(),
                 },
                 reference,

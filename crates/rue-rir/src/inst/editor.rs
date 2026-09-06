@@ -785,6 +785,61 @@ impl RirEditor {
             Mapping { slot: RirSpanSlot, error: E },
         }
 
+        /// Rebuild one match-arm pattern against the destination RIR, consuming its
+        /// span slots in the canonical preorder: the arm's own pattern first, then the
+        /// patterns nested in its payload positions (RUE-2053).
+        fn remap_pattern<E>(
+            pattern: &RirPatternView<'_>,
+            arm: u32,
+            nested: &mut u32,
+            take_span: &mut dyn FnMut(RirSpanField) -> Result<Span, RirSpanRemapError<E>>,
+            symbol: &mut dyn FnMut(Spur) -> Spur,
+            remap_ref: &dyn Fn(InstRef) -> InstRef,
+        ) -> Result<RirPattern, RirSpanRemapError<E>> {
+            let index = *nested;
+            *nested += 1;
+            let span = take_span(RirSpanField::MatchPattern { arm, nested: index })?;
+            Ok(match pattern {
+                RirPatternView::Wildcard(_) => RirPattern::Wildcard(span),
+                RirPatternView::Int {
+                    value, negative, ..
+                } => RirPattern::Int {
+                    value: *value,
+                    negative: *negative,
+                    span,
+                },
+                RirPatternView::Bool(value, _) => RirPattern::Bool(*value, span),
+                RirPatternView::Path {
+                    module,
+                    ctor_head,
+                    type_name,
+                    variant,
+                    elements,
+                    ..
+                } => {
+                    let mut positions = Vec::with_capacity(elements.len());
+                    for element in elements.iter() {
+                        positions.push(match element {
+                            RirPatternElementView::Binding(name) => {
+                                RirPatternElement::Binding(symbol(name))
+                            }
+                            RirPatternElementView::Nested(inner) => RirPatternElement::Nested(
+                                remap_pattern(&inner, arm, nested, take_span, symbol, remap_ref)?,
+                            ),
+                        });
+                    }
+                    RirPattern::Path {
+                        module: module.map(|reference| remap_ref(reference)),
+                        ctor_head: ctor_head.map(|reference| remap_ref(reference)),
+                        type_name: symbol(*type_name),
+                        variant: symbol(*variant),
+                        elements: positions,
+                        span,
+                    }
+                }
+            })
+        }
+
         let instruction_start = u32::try_from(self.rir.instructions.len()).map_err(|_| {
             RirPayloadBuildError::ResourceLimitExceeded {
                 family: "instructions",
@@ -1026,42 +1081,20 @@ impl RirEditor {
                             .iter()
                             .enumerate()
                             .map(|(arm, (pattern, body))| {
-                                let pattern_span = take_span(RirSpanField::MatchPattern {
-                                    arm: u32::try_from(arm)
-                                        .expect("validated match-arm count is encoded as u32"),
-                                })?;
-                                let pattern = match pattern {
-                                    RirPatternView::Wildcard(_) => {
-                                        RirPattern::Wildcard(pattern_span)
-                                    }
-                                    RirPatternView::Int {
-                                        value,
-                                        negative,
-                                        span: _,
-                                    } => RirPattern::Int {
-                                        value,
-                                        negative,
-                                        span: pattern_span,
-                                    },
-                                    RirPatternView::Bool(value, _) => {
-                                        RirPattern::Bool(value, pattern_span)
-                                    }
-                                    RirPatternView::Path {
-                                        module,
-                                        ctor_head,
-                                        type_name,
-                                        variant,
-                                        bindings,
-                                        span: _,
-                                    } => RirPattern::Path {
-                                        module: module.map(remap_ref),
-                                        ctor_head: ctor_head.map(remap_ref),
-                                        type_name: symbol(type_name),
-                                        variant: symbol(variant),
-                                        bindings: bindings.values().map(&mut symbol).collect(),
-                                        span: pattern_span,
-                                    },
-                                };
+                                let arm = u32::try_from(arm)
+                                    .expect("validated match-arm count is encoded as u32");
+                                // Nested payload patterns (RUE-2053) carry span
+                                // slots of their own, taken in the same
+                                // preorder the canonical visitor emits them.
+                                let mut nested = 0u32;
+                                let pattern = remap_pattern(
+                                    &pattern,
+                                    arm,
+                                    &mut nested,
+                                    &mut take_span,
+                                    &mut symbol,
+                                    &remap_ref,
+                                )?;
                                 Ok((pattern, remap_ref(body)))
                             })
                             .collect::<Result<Vec<_>, RirSpanRemapError<E>>>()?;

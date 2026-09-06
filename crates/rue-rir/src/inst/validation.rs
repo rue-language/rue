@@ -286,7 +286,7 @@ impl Rir {
                     match words.get(pos + RECORD_KIND).copied() {
                         None => (RECORD_KIND + 1, "record header is truncated"),
                         Some(kind) if kind == PatternKind::Path as u32 => (
-                            MATCH_PATH_BINDING_COUNT + 1,
+                            MATCH_PATH_ELEMENT_WORDS + 1,
                             "path record header is truncated",
                         ),
                         Some(kind)
@@ -565,13 +565,10 @@ impl Rir {
                     });
                 }
             } else if kind == PatternKind::Path as u32 {
-                let binding_count = words[position + MATCH_PATH_BINDING_COUNT] as usize;
-                let binding_start = position + MATCH_PATH_BINDINGS_START;
-                let binding_end = binding_start + binding_count;
-                if words[binding_start..binding_end]
-                    .iter()
-                    .any(|word| decode_symbol_word(*word).is_none())
-                {
+                // Path records nest (RUE-2053), so their symbols, payload
+                // positions and nesting depth are checked by one recursive walk
+                // rather than a flat scan of a binding array.
+                if let Err(reason) = validate_pattern_record(words, position, 0) {
                     return Err(rir_payload_error! {
                         family: RirMatchArmsRange::FAMILY,
                         start: range.start(),
@@ -579,7 +576,7 @@ impl Rir {
                         record: Some(u32::try_from(record).unwrap_or(u32::MAX)),
                         expected: record_width,
                         actual: record_width,
-                        reason: "symbol word is not representable",
+                        reason: reason,
                     });
                 }
             }
@@ -729,25 +726,31 @@ impl Rir {
                     refs!(*scrutinee);
                     for (pattern, body) in self.match_arms(arms).iter() {
                         refs!(body);
-                        check_span(index, pattern.span())?;
-                        if let RirPatternView::Path {
-                            module,
-                            ctor_head,
-                            type_name,
-                            variant,
-                            bindings,
-                            ..
-                        } = pattern
-                        {
-                            if let Some(reference) = module {
-                                refs!(reference);
-                            }
-                            if let Some(reference) = ctor_head {
-                                refs!(reference);
-                            }
-                            symbols!(type_name, variant);
-                            for binding in bindings {
-                                symbols!(binding);
+                        // Payload positions nest (RUE-2053), so every record in
+                        // the arm's pattern tree contributes refs and symbols.
+                        for record in pattern.preorder() {
+                            check_span(index, record.span())?;
+                            if let RirPatternView::Path {
+                                module,
+                                ctor_head,
+                                type_name,
+                                variant,
+                                elements,
+                                ..
+                            } = record
+                            {
+                                if let Some(reference) = module {
+                                    refs!(reference);
+                                }
+                                if let Some(reference) = ctor_head {
+                                    refs!(reference);
+                                }
+                                symbols!(type_name, variant);
+                                for element in elements.iter() {
+                                    if let RirPatternElementView::Binding(name) = element {
+                                        symbols!(name);
+                                    }
+                                }
                             }
                         }
                     }
@@ -1072,12 +1075,14 @@ impl Rir {
                 out.push(*scrutinee);
                 for (pattern, body) in self.match_arms(arms).iter() {
                     out.push(body);
-                    if let RirPatternView::Path {
-                        module, ctor_head, ..
-                    } = pattern
-                    {
-                        out.extend(module);
-                        out.extend(ctor_head);
+                    for record in pattern.preorder() {
+                        if let RirPatternView::Path {
+                            module, ctor_head, ..
+                        } = record
+                        {
+                            out.extend(module);
+                            out.extend(ctor_head);
+                        }
                     }
                 }
             }

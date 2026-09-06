@@ -1479,3 +1479,248 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "out of range"
+
+# =============================================================================
+# Nested Variant Patterns (4.7:37 - 4.7:41, RUE-2053)
+# =============================================================================
+
+[[case]]
+name = "nested_variant_pattern_in_generic_result"
+real_std = true
+spec = ["4.7:37", "4.7:38"]
+description = "RUE-2053: a qualified variant pattern nested in another variant's payload position binds the inner payload; the outer enum is a generic instantiation."
+source = """
+const std = @import("std");
+
+enum E { A(u8), B }
+const R = std.result.Result(i64, E);
+
+fn f(x: i64) -> R {
+    if x > 0 { R.Ok(x) } else { R.Err(E.A(1)) }
+}
+
+fn main() -> i32 {
+    match f(0) {
+        R.Ok(_) => 0,
+        R.Err(E.A(b)) => @intCast(b),
+        R.Err(E.B) => 2,
+    }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "nested_variant_pattern_three_levels"
+spec = ["4.7:37", "4.7:39"]
+description = "Nesting is recursive: a payload pattern may itself nest, to any depth."
+source = """
+enum Deep { X(i32), Y }
+enum Mid { A(Deep), B }
+enum Top { P(Mid), Q }
+
+fn pick(n: i32) -> Top {
+    if n == 0 {
+        Top.P(Mid.A(Deep.X(7)))
+    } else if n == 1 {
+        Top.P(Mid.A(Deep.Y))
+    } else if n == 2 {
+        Top.P(Mid.B)
+    } else {
+        Top.Q
+    }
+}
+
+fn classify(n: i32) -> i32 {
+    match pick(n) {
+        Top.P(Mid.A(Deep.X(v))) => v,
+        Top.P(Mid.A(Deep.Y)) => 20,
+        Top.P(Mid.B) => 30,
+        Top.Q => 40,
+    }
+}
+
+fn main() -> i32 {
+    classify(0) + classify(1) + classify(2) + classify(3)
+}
+"""
+exit_code = 97
+
+[[case]]
+name = "nested_variant_pattern_wildcard_position"
+real_std = true
+spec = ["4.7:37", "4.7:38"]
+description = "A `_` inside a nested pattern discards that position exactly as a top-level `_` does."
+source = """
+const std = @import("std");
+
+enum E { A(u8), B }
+const R = std.result.Result(i64, E);
+
+fn f(x: i64) -> R {
+    if x > 0 { R.Ok(x) } else { R.Err(E.A(1)) }
+}
+
+fn main() -> i32 {
+    match f(0) {
+        R.Ok(_) => 0,
+        R.Err(E.A(_)) => 5,
+        R.Err(E.B) => 2,
+    }
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "nested_variant_pattern_binder_covers_remaining"
+spec = ["4.7:39"]
+description = "A binding at the decomposed position covers every remaining value there, as a wildcard arm does at the top level."
+source = """
+enum Inner { A(i32), B, C }
+enum Outer { W(Inner), Z }
+
+fn f(o: Outer) -> i32 {
+    match o {
+        Outer.W(Inner.A(v)) => v,
+        Outer.W(rest) => match rest {
+            Inner.A(_) => 99,
+            Inner.B => 2,
+            Inner.C => 3,
+        },
+        Outer.Z => 4,
+    }
+}
+
+fn main() -> i32 {
+    f(Outer.W(Inner.A(10))) + f(Outer.W(Inner.B)) + f(Outer.W(Inner.C)) + f(Outer.Z)
+}
+"""
+exit_code = 19
+
+[[case]]
+name = "nested_variant_pattern_non_exhaustive"
+real_std = true
+spec = ["4.7:39"]
+description = "RUE-2053: a nested pattern that leaves an inner variant uncovered makes the match non-exhaustive, and the diagnostic names the missing pattern by its full path."
+source = """
+const std = @import("std");
+
+enum E { A(u8), B }
+const R = std.result.Result(i64, E);
+
+fn f(x: i64) -> R {
+    if x > 0 { R.Ok(x) } else { R.Err(E.A(1)) }
+}
+
+fn main() -> i32 {
+    match f(0) {
+        R.Ok(_) => 0,
+        R.Err(E.A(_)) => 5,
+    }
+}
+"""
+compile_fail = true
+error_contains = "R.Err(E.B)"
+
+[[case]]
+name = "nested_variant_pattern_droppable_payload_drops_once"
+spec = ["4.7:38"]
+description = "A nested pattern that binds a droppable payload moves it out and drops it exactly once at the end of its arm."
+source = """
+struct Res { id: i32 }
+drop fn Res(self) { @dbg(self.id); }
+enum Inner { Full(Res), Nothing }
+enum Outer { Wrap(Inner), Empty }
+
+fn take(o: Outer) -> i32 {
+    match o {
+        Outer.Wrap(Inner.Full(r)) => r.id,
+        Outer.Wrap(Inner.Nothing) => 1,
+        Outer.Empty => 2,
+    }
+}
+
+fn main() -> i32 {
+    let a = take(Outer.Wrap(Inner.Full(Res { id: 7 })));
+    @dbg(-1);
+    let b = take(Outer.Wrap(Inner.Nothing));
+    let c = take(Outer.Empty);
+    a + b + c
+}
+"""
+expected_stdout = "7\n-1\n"
+exit_code = 10
+
+[[case]]
+name = "nested_variant_pattern_discarded_linear_payload"
+spec = ["4.7:38"]
+description = "A `_` nested inside a payload pattern follows the same rule a top-level `_` does: it cannot discard a linear value."
+source = """
+linear struct Token { value: i32 }
+enum Inner { Held(Token), Free }
+enum Outer { Wrap(Inner), Empty }
+
+fn main() -> i32 {
+    match Outer.Wrap(Inner.Free) {
+        Outer.Wrap(Inner.Held(_)) => 1,
+        Outer.Wrap(Inner.Free) => 0,
+        Outer.Empty => 2,
+    }
+}
+"""
+compile_fail = true
+error_contains = "must be consumed"
+
+[[case]]
+name = "nested_variant_pattern_over_option_of_result"
+real_std = true
+spec = ["4.7:37", "4.7:39"]
+description = "Nesting composes over library shapes: `Option(Result(T, E))` discriminates all three levels in one match."
+source = """
+const std = @import("std");
+
+enum E { A(u8), B }
+const R = std.result.Result(i64, E);
+const O = std.option.Option(R);
+
+fn make(n: i32) -> O {
+    if n == 0 {
+        O.Some(R.Ok(11))
+    } else if n == 1 {
+        O.Some(R.Err(E.A(3)))
+    } else {
+        O.None
+    }
+}
+
+fn classify(n: i32) -> i64 {
+    match make(n) {
+        O.Some(R.Ok(v)) => v,
+        O.Some(R.Err(E.A(b))) => @intCast(b),
+        O.Some(R.Err(E.B)) => 100,
+        O.None => 30,
+    }
+}
+
+fn main() -> i32 {
+    @intCast(classify(0) + classify(1) + classify(2))
+}
+"""
+exit_code = 44
+
+[[case]]
+name = "nested_variant_pattern_two_positions_rejected"
+spec = ["4.7:40"]
+description = "One pattern may nest in at most one payload position; two nested positions are rejected."
+source = """
+enum Inner { A(i32), B }
+enum Outer { Pair(Inner, Inner) }
+
+fn main() -> i32 {
+    match Outer.Pair(Inner.A(1), Inner.B) {
+        Outer.Pair(Inner.A(v), Inner.B) => v,
+        Outer.Pair(_, _) => 0,
+    }
+}
+"""
+compile_fail = true
+error_contains = "more than one payload position"

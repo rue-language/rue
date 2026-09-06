@@ -1,0 +1,354 @@
+# Nested variant patterns (RUE-2053, spec 4.7:37-4.7:41). A payload position may
+# hold another variant pattern, so one match discriminates several levels of a
+# sum type. These cases drive the real compiler on both backends: the CFG tests
+# the outer discriminant, extracts the payload, tests the inner discriminant on
+# it, and only then binds.
+
+[section]
+id = "cli.nested_variant_patterns"
+name = "Nested variant patterns"
+description = "Nested payload patterns lower to a match on the extracted payload, on both x86-64 and AArch64."
+
+# The RUE-2053 program itself: a library `Result(i64, E)` whose error payload is
+# discriminated in the same match that discriminates the result.
+[[case]]
+name = "x86_64_linux_nested_error_payload"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "`R.Err(E.A(b))` binds the inner payload of a generic Result's error, on x86-64: exit 1."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+enum E { A(u8), B }
+const R = std.result.Result(i64, E);
+
+fn f(x: i64) -> R {
+    if x > 0 { R.Ok(x) } else { R.Err(E.A(1)) }
+}
+
+fn main() -> i32 {
+    match f(0) {
+        R.Ok(_) => 0,
+        R.Err(E.A(b)) => @intCast(b),
+        R.Err(E.B) => 2,
+    }
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+exit_code = 1
+
+[[case]]
+name = "aarch64_linux_nested_error_payload"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "The same nested error-payload match on AArch64: exit 1."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+enum E { A(u8), B }
+const R = std.result.Result(i64, E);
+
+fn f(x: i64) -> R {
+    if x > 0 { R.Ok(x) } else { R.Err(E.A(1)) }
+}
+
+fn main() -> i32 {
+    match f(0) {
+        R.Ok(_) => 0,
+        R.Err(E.A(b)) => @intCast(b),
+        R.Err(E.B) => 2,
+    }
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 1
+
+# Three levels of discriminant tests plus a binding, exercised for every path
+# through the tree: 7 + 20 + 30 + 40 = 97.
+[[case]]
+name = "x86_64_linux_three_level_nesting"
+description = "Three levels of nested variant patterns dispatch to the right arm on every path, on x86-64: 7+20+30+40 = 97."
+files = [{ path = "main.rue", source = """
+enum Deep { X(i32), Y }
+enum Mid { A(Deep), B }
+enum Top { P(Mid), Q }
+
+fn pick(n: i32) -> Top {
+    if n == 0 {
+        Top.P(Mid.A(Deep.X(7)))
+    } else if n == 1 {
+        Top.P(Mid.A(Deep.Y))
+    } else if n == 2 {
+        Top.P(Mid.B)
+    } else {
+        Top.Q
+    }
+}
+
+fn classify(n: i32) -> i32 {
+    match pick(n) {
+        Top.P(Mid.A(Deep.X(v))) => v,
+        Top.P(Mid.A(Deep.Y)) => 20,
+        Top.P(Mid.B) => 30,
+        Top.Q => 40,
+    }
+}
+
+fn main() -> i32 {
+    classify(0) + classify(1) + classify(2) + classify(3)
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+exit_code = 97
+
+[[case]]
+name = "aarch64_linux_three_level_nesting"
+description = "The same three-level dispatch on AArch64: 97."
+files = [{ path = "main.rue", source = """
+enum Deep { X(i32), Y }
+enum Mid { A(Deep), B }
+enum Top { P(Mid), Q }
+
+fn pick(n: i32) -> Top {
+    if n == 0 {
+        Top.P(Mid.A(Deep.X(7)))
+    } else if n == 1 {
+        Top.P(Mid.A(Deep.Y))
+    } else if n == 2 {
+        Top.P(Mid.B)
+    } else {
+        Top.Q
+    }
+}
+
+fn classify(n: i32) -> i32 {
+    match pick(n) {
+        Top.P(Mid.A(Deep.X(v))) => v,
+        Top.P(Mid.A(Deep.Y)) => 20,
+        Top.P(Mid.B) => 30,
+        Top.Q => 40,
+    }
+}
+
+fn main() -> i32 {
+    classify(0) + classify(1) + classify(2) + classify(3)
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 97
+
+# A droppable payload reached through a nested pattern is moved out and dropped
+# exactly once, at the end of its arm: `7` prints once, before the `-1` marker.
+[[case]]
+name = "x86_64_linux_nested_droppable_payload_drops_once"
+description = "A nested pattern binding a payload with a destructor drops it exactly once at the arm's end, on x86-64: prints 7 then -1, exit 10."
+files = [{ path = "main.rue", source = """
+struct Res { id: i32 }
+drop fn Res(self) { @dbg(self.id); }
+enum Inner { Full(Res), Nothing }
+enum Outer { Wrap(Inner), Empty }
+
+fn take(o: Outer) -> i32 {
+    match o {
+        Outer.Wrap(Inner.Full(r)) => r.id,
+        Outer.Wrap(Inner.Nothing) => 1,
+        Outer.Empty => 2,
+    }
+}
+
+fn main() -> i32 {
+    let a = take(Outer.Wrap(Inner.Full(Res { id: 7 })));
+    @dbg(-1);
+    let b = take(Outer.Wrap(Inner.Nothing));
+    let c = take(Outer.Empty);
+    a + b + c
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+stdout = """
+7
+-1
+"""
+exit_code = 10
+
+[[case]]
+name = "aarch64_linux_nested_droppable_payload_drops_once"
+description = "The same drop-once accounting through a nested pattern on AArch64."
+files = [{ path = "main.rue", source = """
+struct Res { id: i32 }
+drop fn Res(self) { @dbg(self.id); }
+enum Inner { Full(Res), Nothing }
+enum Outer { Wrap(Inner), Empty }
+
+fn take(o: Outer) -> i32 {
+    match o {
+        Outer.Wrap(Inner.Full(r)) => r.id,
+        Outer.Wrap(Inner.Nothing) => 1,
+        Outer.Empty => 2,
+    }
+}
+
+fn main() -> i32 {
+    let a = take(Outer.Wrap(Inner.Full(Res { id: 7 })));
+    @dbg(-1);
+    let b = take(Outer.Wrap(Inner.Nothing));
+    let c = take(Outer.Empty);
+    a + b + c
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = """
+7
+-1
+"""
+exit_code = 10
+
+# A `_` at a nested position is a fresh unnameable binding, so its droppable
+# payload still drops exactly once at the arm's end.
+[[case]]
+name = "x86_64_linux_nested_wildcard_position_drops_once"
+description = "A `_` inside a nested payload pattern drops the discarded value once at the arm's end, on x86-64: prints 7 then -1, exit 5."
+files = [{ path = "main.rue", source = """
+struct Res { id: i32 }
+drop fn Res(self) { @dbg(self.id); }
+enum Inner { Full(Res), Nothing }
+enum Outer { Wrap(Inner), Empty }
+
+fn take(o: Outer) -> i32 {
+    match o {
+        Outer.Wrap(Inner.Full(_)) => 5,
+        Outer.Wrap(Inner.Nothing) => 1,
+        Outer.Empty => 2,
+    }
+}
+
+fn main() -> i32 {
+    let a = take(Outer.Wrap(Inner.Full(Res { id: 7 })));
+    @dbg(-1);
+    a
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+stdout = """
+7
+-1
+"""
+exit_code = 5
+
+[[case]]
+name = "aarch64_linux_nested_wildcard_position_drops_once"
+description = "The same nested-`_` drop accounting on AArch64."
+files = [{ path = "main.rue", source = """
+struct Res { id: i32 }
+drop fn Res(self) { @dbg(self.id); }
+enum Inner { Full(Res), Nothing }
+enum Outer { Wrap(Inner), Empty }
+
+fn take(o: Outer) -> i32 {
+    match o {
+        Outer.Wrap(Inner.Full(_)) => 5,
+        Outer.Wrap(Inner.Nothing) => 1,
+        Outer.Empty => 2,
+    }
+}
+
+fn main() -> i32 {
+    let a = take(Outer.Wrap(Inner.Full(Res { id: 7 })));
+    @dbg(-1);
+    a
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = """
+7
+-1
+"""
+exit_code = 5
+
+# `Option(Result(T, E))`: three levels through two library type constructors.
+[[case]]
+name = "x86_64_linux_nested_option_of_result"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "Nested patterns over `Option(Result(i64, E))` on x86-64: 11 + 3 + 30 = 44."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+enum E { A(u8), B }
+const R = std.result.Result(i64, E);
+const O = std.option.Option(R);
+
+fn make(n: i32) -> O {
+    if n == 0 {
+        O.Some(R.Ok(11))
+    } else if n == 1 {
+        O.Some(R.Err(E.A(3)))
+    } else {
+        O.None
+    }
+}
+
+fn classify(n: i32) -> i64 {
+    match make(n) {
+        O.Some(R.Ok(v)) => v,
+        O.Some(R.Err(E.A(b))) => @intCast(b),
+        O.Some(R.Err(E.B)) => 100,
+        O.None => 30,
+    }
+}
+
+fn main() -> i32 {
+    @intCast(classify(0) + classify(1) + classify(2))
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+exit_code = 44
+
+[[case]]
+name = "aarch64_linux_nested_option_of_result"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "The same `Option(Result(i64, E))` dispatch on AArch64: 44."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+enum E { A(u8), B }
+const R = std.result.Result(i64, E);
+const O = std.option.Option(R);
+
+fn make(n: i32) -> O {
+    if n == 0 {
+        O.Some(R.Ok(11))
+    } else if n == 1 {
+        O.Some(R.Err(E.A(3)))
+    } else {
+        O.None
+    }
+}
+
+fn classify(n: i32) -> i64 {
+    match make(n) {
+        O.Some(R.Ok(v)) => v,
+        O.Some(R.Err(E.A(b))) => @intCast(b),
+        O.Some(R.Err(E.B)) => 100,
+        O.None => 30,
+    }
+}
+
+fn main() -> i32 {
+    @intCast(classify(0) + classify(1) + classify(2))
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 44

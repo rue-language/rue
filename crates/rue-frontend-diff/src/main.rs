@@ -792,7 +792,12 @@ impl Shapes<'_> {
                     "pattern",
                     " form=path",
                     path,
-                    list(v.bindings.iter().map(|_| self.ident())),
+                    list(v.elements.iter().map(|element| match element {
+                        rue_parser::PatternElement::Binding(_) => self.ident(),
+                        rue_parser::PatternElement::Nested(nested) => {
+                            self.pattern(&Pattern::Path(nested.clone()))
+                        }
+                    })),
                     "_".into(),
                     "_".into(),
                 )

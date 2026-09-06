@@ -1718,6 +1718,22 @@ define_error_codes! {
             ErrorCodeReference { title: "Patterns must match the scrutinee type", path: "docs/spec/src/04-expressions/07-match-expressions.md", rule: Some("4.7:13") },
         ],
     };
+    /// A nested variant pattern (RUE-2053, spec 4.7:37) discriminates one
+    /// payload position of the variant it appears in. Nesting in two positions
+    /// of the same pattern, or in different positions across the arms that
+    /// share a variant, would require the arms to dispatch on more than one
+    /// extracted payload at once, which Rue does not yet compile.
+    NESTED_PATTERN_POSITION_CONFLICT = 603 => {
+        explanation: "A variant pattern's payload position may hold a nested variant pattern, and the arms that share the outer variant then dispatch on that one extracted payload field. Nesting in two positions of the same pattern, or in different positions across arms matching the same variant, asks for a dispatch on several payloads at once.",
+        likely_cause: "Two payload positions of one pattern were written as nested variant patterns, or two arms matching the same variant nested in different positions. Nest in a single position and bind the others, matching them in a nested `match`.",
+        examples: [
+            ErrorCodeExample { title: "Nest in two payload positions", source: "enum Inner { A(i32), B }\nenum Outer { Pair(Inner, Inner) }\nfn main() -> i32 {\n    match Outer.Pair(Inner.A(1), Inner.B) {\n        Outer.Pair(Inner.A(v), Inner.B) => v,\n        Outer.Pair(_, _) => 0,\n    }\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Nest in one position and match the other", source: "enum Inner { A(i32), B }\nenum Outer { Pair(Inner, Inner) }\nfn main() -> i32 {\n    match Outer.Pair(Inner.A(1), Inner.B) {\n        Outer.Pair(Inner.A(v), second) => match second {\n            Inner.A(w) => v + w,\n            Inner.B => v,\n        },\n        Outer.Pair(Inner.B, second) => match second {\n            Inner.A(w) => w,\n            Inner.B => 0,\n        },\n    }\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [
+            ErrorCodeReference { title: "Nested variant patterns", path: "docs/spec/src/04-expressions/07-match-expressions.md", rule: Some("4.7:37") },
+        ],
+    };
 
     // ========================================================================
     // Intrinsic errors (E0700-E0799)
@@ -3630,6 +3646,8 @@ pub enum ErrorKind {
     EmptyMatch,
     #[error("cannot match on type '{0}', expected integer, bool, or enum")]
     InvalidMatchType(String),
+    #[error("the arms matching `{variant}` nest patterns in more than one payload position")]
+    NestedPatternPositionConflict { variant: String },
 
     // Intrinsic errors
     #[error("unknown intrinsic '@{0}'")]
@@ -4175,6 +4193,9 @@ impl ErrorKind {
             ErrorKind::NonExhaustiveMatch => ErrorCode::NON_EXHAUSTIVE_MATCH,
             ErrorKind::EmptyMatch => ErrorCode::EMPTY_MATCH,
             ErrorKind::InvalidMatchType(_) => ErrorCode::INVALID_MATCH_TYPE,
+            ErrorKind::NestedPatternPositionConflict { .. } => {
+                ErrorCode::NESTED_PATTERN_POSITION_CONFLICT
+            }
 
             // Intrinsic errors (E0700-E0799)
             ErrorKind::UnknownIntrinsic(_) => ErrorCode::UNKNOWN_INTRINSIC,
@@ -4785,6 +4806,7 @@ mod tests {
             ErrorCode::NON_EXHAUSTIVE_MATCH,
             ErrorCode::EMPTY_MATCH,
             ErrorCode::INVALID_MATCH_TYPE,
+            ErrorCode::NESTED_PATTERN_POSITION_CONFLICT,
         ];
         let active = error_code_metadata()
             .iter()

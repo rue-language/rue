@@ -62,6 +62,7 @@ pub use ast::{
     PathExpr,
     PathPattern,
     Pattern,
+    PatternElement,
     ReturnExpr,
     SelfParam,
     Statement,

@@ -30,7 +30,7 @@ use rue_parser::{
 use crate::inst::{
     FnDeclFlags, Inst, InstData, InstRef, InternalIntrinsic, PayloadFallback, RepeatCount, Rir,
     RirArgMode, RirCallArg, RirDeferredStructuralAnchor, RirDirective, RirEditor, RirParam,
-    RirParamMode, RirPattern,
+    RirParamMode, RirPattern, RirPatternElement,
 };
 
 trait RecordPayloadFailure<T> {
@@ -1774,7 +1774,17 @@ impl<'a> AstGen<'a> {
                 span: lit.span,
             },
             Pattern::Bool(lit) => RirPattern::Bool(lit.value, lit.span),
-            Pattern::Path(path) => {
+            Pattern::Path(path) => self.gen_path_pattern(path),
+        }
+    }
+
+    /// Lower one path pattern, recursing through nested payload positions
+    /// (RUE-2053). Each nested position occupies its own structural operand
+    /// slot, numbered after the head's module operand and constructor
+    /// arguments so the two can never collide.
+    fn gen_path_pattern(&mut self, path: &rue_parser::PathPattern) -> RirPattern {
+        {
+            {
                 // If there's a base expression (module reference), generate it first
                 let module = path.base.as_ref().map(|base| {
                     self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), base)
@@ -1804,15 +1814,35 @@ impl<'a> AstGen<'a> {
                     }
                     .record_failure(&mut self.payload_error)
                 });
-                // Payload binding names for a tuple-variant pattern (RUE-221).
-                let bindings: Vec<Spur> =
-                    path.bindings.iter().map(|b| self.symbol(b.name)).collect();
+                // Payload positions of a tuple-variant pattern (RUE-221): a
+                // binder, or a nested variant pattern (RUE-2053).
+                let ctor_arity = path.ctor_args.as_ref().map_or(0, |args| args.len());
+                let elements: Vec<RirPatternElement> = path
+                    .elements
+                    .iter()
+                    .enumerate()
+                    .map(|(position, element)| match element {
+                        rue_parser::PatternElement::Binding(name) => {
+                            RirPatternElement::Binding(self.symbol(name.name))
+                        }
+                        rue_parser::PatternElement::Nested(nested) => {
+                            let segment = crate::RirStructuralPathSegment::Operand(
+                                (1 + ctor_arity + position) as u32,
+                            );
+                            RirPatternElement::Nested(
+                                self.with_structural_segment(segment, |this| {
+                                    this.gen_path_pattern(nested)
+                                }),
+                            )
+                        }
+                    })
+                    .collect();
                 RirPattern::Path {
                     module,
                     ctor_head,
                     type_name: self.symbol(path.type_name.name),
                     variant: self.symbol(path.variant.name),
-                    bindings,
+                    elements,
                     span: path.span,
                 }
             }
@@ -2966,11 +2996,23 @@ impl SiteWalker {
 
     fn walk_pattern(&mut self, pattern: &Pattern) {
         if let Pattern::Path(path) = pattern {
-            if let Some(base) = &path.base {
-                self.operand(0, |this| this.walk_expr(base));
-            }
-            if let Some(ctor_args) = &path.ctor_args {
-                self.walk_call_args(ctor_args, 1);
+            self.walk_path_pattern(path);
+        }
+    }
+
+    fn walk_path_pattern(&mut self, path: &rue_parser::PathPattern) {
+        if let Some(base) = &path.base {
+            self.operand(0, |this| this.walk_expr(base));
+        }
+        if let Some(ctor_args) = &path.ctor_args {
+            self.walk_call_args(ctor_args, 1);
+        }
+        let ctor_arity = path.ctor_args.as_ref().map_or(0, |args| args.len());
+        for (position, element) in path.elements.iter().enumerate() {
+            if let rue_parser::PatternElement::Nested(nested) = element {
+                self.operand((1 + ctor_arity + position) as u32, |this| {
+                    this.walk_path_pattern(nested)
+                });
             }
         }
     }

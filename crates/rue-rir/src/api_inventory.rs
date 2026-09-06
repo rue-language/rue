@@ -426,18 +426,21 @@ fn fixed_payload_views_keep_the_validated_boundary_and_direct_indexing() {
         );
     }
 
-    let match_decoder = payload
-        .split("fn decode_match_record(")
+    // A path pattern's payload positions are variable-width once they nest
+    // (RUE-2053), so they are not a fixed-width `RirSlice`. The unvalidated
+    // boundary is held instead by the recursive record walk below, which the
+    // decoder runs before publishing any borrowing view.
+    let pattern_decoder = payload
+        .split("fn decode_pattern_record(")
         .nth(1)
-        .and_then(|rest| rest.split("fn decode_directive_record(").next())
-        .expect("match decoder");
-    let match_bindings = match_decoder
+        .and_then(|rest| rest.split("fn decode_match_record(").next())
+        .expect("pattern decoder");
+    assert!(pattern_decoder.contains("!validated && validate_pattern_record("));
+    let pattern_positions = pattern_decoder
         .split("x if x == PatternKind::Path")
         .nth(1)
-        .expect("path-pattern binding decoder");
-    assert!(match_bindings.contains("validated"));
-    assert!(match_bindings.contains("RirSlice::new_validated"));
-    assert!(match_bindings.contains("RirSlice::new_unvalidated"));
+        .expect("path-pattern position decoder");
+    assert!(pattern_positions.contains("RirPatternElements"));
 
     let directive_decoder = payload
         .split("fn decode_directive_record(")
