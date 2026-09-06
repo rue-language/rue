@@ -47,8 +47,9 @@ use rue_air::{
 use rue_cfg::{CfgInstData, CfgValue, ValidatedCfg};
 use rue_target::{Arch, CRegisterClass, CallingConvention, SretRegisterKind, Target};
 
-use crate::call_plan::{AbiSlotClass, ReturnPlan, ReturnSlotReg, return_plan, return_registers};
-use crate::native_abi::{NativeArg, native_by_value_arg};
+use crate::abi_slot_class::AbiSlotClass;
+use crate::call_plan::{ReturnPlan, ReturnSlotReg, return_plan, return_registers};
+use crate::native_abi::native_by_value_arg;
 
 // ============================================================================
 // Register naming
@@ -267,12 +268,6 @@ pub enum NativePlacement {
     None,
     /// One argument, placed by the target's own C rules.
     Argument(CPlacement),
-    /// One already-flattened value of the cleanup convention: each leaf is a
-    /// register-width argument of its own, in ascending order.
-    PerLeaf {
-        /// One placement per leaf.
-        leaves: Vec<CPlacement>,
-    },
     /// The result is written to caller storage whose address travels in the
     /// target row's own indirect-result register.
     Sret {
@@ -475,52 +470,41 @@ fn native_side(
             })
         })
         .collect();
-    let mut parameters_facts = Vec::new();
-    let mut spans = Vec::with_capacity(descriptors.len());
-    for (descriptor, mode) in descriptors.iter().zip(&modes) {
-        let convention = if *mode == AbiParameterMode::ByValue {
-            rue_air::ArgConvention::ByValue
-        } else {
-            rue_air::ArgConvention::ByReference
-        };
-        let native = match (convention, descriptor.ty) {
-            (rue_air::ArgConvention::ByValue, Some(ty)) => native_by_value_arg(type_pool, ty),
-            (rue_air::ArgConvention::ByValue, None) => NativeArg::PerLeaf {
-                count: descriptor.slot_count.max(1),
-            },
-            _ => NativeArg::Scalar {
-                kind: rue_air::CAbiScalarKind::RegisterWidth,
-                class: AbiSlotClass::Gp,
-            },
-        };
-        let start = parameters_facts.len();
-        parameters_facts.extend(native.facts().into_iter().map(|facts| (facts, convention)));
-        spans.push(start..parameters_facts.len());
-    }
+    // One parameter, one placement: the native convention places every value as
+    // a whole, so the lowered signature's arguments line up with the
+    // descriptors one-for-one.
+    let parameters_facts = descriptors
+        .iter()
+        .zip(&modes)
+        .map(|(descriptor, mode)| {
+            let convention = if *mode == AbiParameterMode::ByValue {
+                rue_air::ArgConvention::ByValue
+            } else {
+                rue_air::ArgConvention::ByReference
+            };
+            let native = match (convention, descriptor.ty) {
+                (rue_air::ArgConvention::ByValue, Some(ty)) => native_by_value_arg(type_pool, ty),
+                _ => crate::call_plan::register_width_leaf(),
+            };
+            (native.facts(), convention)
+        })
+        .collect::<Vec<_>>();
     let signature =
         rue_air::lower_native_signature(pairing, &parameters_facts, native_incoming_return(plan));
 
     let parameters = modes
         .iter()
         .zip(&types)
-        .zip(spans)
+        .zip(signature.arguments())
         .enumerate()
-        .map(|(index, ((mode, ty), span))| {
-            let mut leaves = signature.arguments()[span]
-                .iter()
-                .map(|argument| CPlacement::from(argument.location))
-                .collect::<Vec<_>>();
-            AbiParameter {
-                index: index as u32,
-                ty: type_text(type_pool, *ty),
-                mode: *mode,
-                placement: AbiPlacement::Native(if leaves.len() == 1 {
-                    NativePlacement::Argument(leaves.remove(0))
-                } else {
-                    NativePlacement::PerLeaf { leaves }
-                }),
-                extension: ScalarAbiExtension::None,
-            }
+        .map(|(index, ((mode, ty), argument))| AbiParameter {
+            index: index as u32,
+            ty: type_text(type_pool, *ty),
+            mode: *mode,
+            placement: AbiPlacement::Native(NativePlacement::Argument(CPlacement::from(
+                argument.location,
+            ))),
+            extension: ScalarAbiExtension::None,
         })
         .collect();
 
@@ -991,16 +975,6 @@ fn native_placement_text(
         NativePlacement::Argument(placement) => {
             (c_placement_text(registers, *placement), Vec::new())
         }
-        NativePlacement::PerLeaf { leaves } => (
-            format!("{}, one per leaf", counted(leaves.len() as u32, "leaf")),
-            leaves
-                .iter()
-                .enumerate()
-                .map(|(index, placement)| {
-                    format!("leaf {index}: {}", c_placement_text(registers, *placement))
-                })
-                .collect(),
-        ),
         NativePlacement::Sret {
             register,
             echoed,

@@ -312,7 +312,6 @@ fn foreign_call_and_mir_state_have_one_shared_authority() {
             "ForeignArg",
             "ForeignReturn",
             "ForeignCallPlan",
-            "TargetCCallAbi",
             "ForeignArgPlacement",
             "used_registers",
             "register_budget",
@@ -329,7 +328,7 @@ fn foreign_call_and_mir_state_have_one_shared_authority() {
             !production.contains("fn lower_foreign_call("),
             "backend must not define a local foreign-call sequencer"
         );
-        for forbidden in ["ForeignArg", "ForeignReturn", "TargetCCallAbi"] {
+        for forbidden in ["ForeignArg", "ForeignReturn"] {
             assert!(
                 !production.contains(forbidden),
                 "backend production source must not own foreign-call classification: {forbidden}"

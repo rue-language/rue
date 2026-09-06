@@ -15,6 +15,7 @@ use rue_cfg::{Cfg, CfgArgMode, CfgCallArg, Type};
 use rue_runtime_abi::{ReservedExportClass, ReservedExportId};
 use rue_target::{CRegisterClass, CallingConvention, ConventionSpec, SretRegisterKind};
 
+use crate::abi_slot_class::AbiSlotClass;
 use crate::native_abi::{
     NativeArg, NativeArgMarshal, NativeImage, native_arg, native_by_value_arg,
 };
@@ -24,19 +25,23 @@ use crate::vreg::VReg;
 
 use crate::frame_layout::checked_aligned_cell_region_bytes;
 
-/// The convention a call target's callee follows.
+/// The description a call target's callee is placed by.
 ///
-/// A Rue-compiled function uses the native convention, which places every
-/// argument where the compilation target's own C row places it (ADR-0084). A
-/// compiler-built C memory routine crosses that C row directly; which row it is
-/// comes from the compilation target, so the caller supplies it.
-const fn callee_convention(
+/// This is the only branch left in call planning, and it chooses a *description*
+/// rather than an algorithm: one lowering (`lower_native_signature`) walks
+/// whichever `ConventionSpec` this returns. A Rue-compiled function is placed by
+/// `ConventionSpec::native` — the compilation target's own C description with
+/// the native amendments (ADR-0084) — and a compiler-built C memory routine by
+/// that target's plain C row, which the caller supplies because the row comes
+/// from the whole target rather than from the architecture.
+const fn callee_pairing(
     target: &CallTarget,
+    native: ConventionSpec,
     c_convention: CallingConvention,
-) -> CallingConvention {
+) -> ConventionSpec {
     match target {
-        CallTarget::Rue(_) => CallingConvention::Rue,
-        CallTarget::MemoryBuiltin(_) => c_convention,
+        CallTarget::Rue(_) => native,
+        CallTarget::MemoryBuiltin(_) => ConventionSpec::c(c_convention),
     }
 }
 
@@ -163,32 +168,6 @@ impl From<i32> for AbiRegisterBanks {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AbiSlotClass {
-    Gp,
-    Fp(crate::value_plan::FloatWidth),
-}
-
-impl AbiSlotClass {
-    /// The class of an ABI slot carrying `leaf`, the one rule every direction
-    /// of the native convention uses: a float leaf goes to the FP bank, at its
-    /// own width; everything else to the GP bank.
-    pub fn for_leaf(leaf: Type) -> Self {
-        match crate::value_plan::float_width(leaf) {
-            Some(width) => Self::Fp(width),
-            None => Self::Gp,
-        }
-    }
-
-    /// The register bank this class travels in.
-    pub const fn bank(self) -> CRegisterClass {
-        match self {
-            Self::Gp => CRegisterClass::Gp,
-            Self::Fp(_) => CRegisterClass::Fp,
-        }
-    }
-}
-
 /// Where one native ABI slot travels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AbiSlotLocation {
@@ -276,7 +255,7 @@ pub fn return_registers(
     pairing: ConventionSpec,
 ) -> ReturnRegisters {
     let native = native_by_value_arg(type_pool, ty);
-    let lowered = rue_air::lower_native_return(pairing, native.facts()[0]);
+    let lowered = rue_air::lower_native_return(pairing, native.facts());
     let LoweredReturn::Registers { pieces, .. } = lowered else {
         panic!("only a register return names result registers");
     };
@@ -698,7 +677,7 @@ fn stacked_pieces(location: ArgLocation, scalar: bool, count: usize) -> Vec<AbiS
 fn place_argument<M: CallMaterializer>(
     arg: &CallArgInput,
     native: &NativeArg,
-    placements: &[ArgLocation],
+    location: ArgLocation,
     materializer: &mut M,
     caller_indirect_bytes: &mut u32,
 ) -> (
@@ -707,7 +686,6 @@ fn place_argument<M: CallMaterializer>(
     Vec<AbiSlotClass>,
     Vec<AbiSlotLocation>,
 ) {
-    let location = placements[0];
     if let CallArgInput::ByRef { mode, address } = arg {
         // A reference is an ABI pointer even when the pointee has no storage
         // slots, so this precedes zero-sized omission.
@@ -728,23 +706,6 @@ fn place_argument<M: CallMaterializer>(
     else {
         unreachable!("a by-reference argument was handled above");
     };
-
-    if let NativeArg::PerLeaf { count } = native {
-        // The cleanup convention hands each already-materialized leaf to its
-        // own register-width placement, in ascending order.
-        let values = materializer.materialize_aggregate(*value);
-        assert_eq!(
-            values.len(),
-            *count as usize,
-            "cleanup-convention materialization must produce every leaf"
-        );
-        return (
-            UserArgMode::Value,
-            values,
-            vec![AbiSlotClass::Gp; *count as usize],
-            placements.iter().copied().map(scalar_location).collect(),
-        );
-    }
 
     if let ArgLocation::Indirect { pointer, .. } = location {
         let NativeArg::Aggregate { image } = native else {
@@ -843,6 +804,15 @@ fn place_argument<M: CallMaterializer>(
     (UserArgMode::Value, values, classes, locations)
 }
 
+/// One already-materialized leaf of a cleanup callee's flattened parameter
+/// list: a register-width general-purpose scalar.
+pub(crate) const fn register_width_leaf() -> NativeArg {
+    NativeArg::Scalar {
+        kind: rue_air::CAbiScalarKind::RegisterWidth,
+        class: AbiSlotClass::Gp,
+    }
+}
+
 /// The position of a value that occupies exactly one register or one stacked
 /// placement.
 fn scalar_location(location: ArgLocation) -> AbiSlotLocation {
@@ -918,22 +888,20 @@ impl CallPlan {
             natives.len(),
             "every call argument carries its native description"
         );
-        let callee_convention = callee_convention(&target, materializer.target_c_convention());
-        let pairing = match callee_convention {
-            CallingConvention::Rue => materializer.native_convention(),
-            row => ConventionSpec::c(row),
-        };
-        // Every argument contributes one placement, except the cleanup
-        // convention's already-flattened leaves, which contribute one each; the
-        // spans map an argument back to the run of placements it owns.
-        let mut parameters = Vec::with_capacity(args.len());
-        let mut spans = Vec::with_capacity(args.len());
-        for (arg, native) in args.iter().zip(natives) {
-            let start = parameters.len();
-            let convention = arg.arg_convention();
-            parameters.extend(native.facts().into_iter().map(|facts| (facts, convention)));
-            spans.push(start..parameters.len());
-        }
+        let pairing = callee_pairing(
+            &target,
+            materializer.native_convention(),
+            materializer.target_c_convention(),
+        );
+        let callee_convention = pairing.convention();
+        // One argument, one placement: the convention places every value as a
+        // whole, so the lowered signature's arguments line up with these
+        // one-for-one.
+        let parameters = args
+            .iter()
+            .zip(natives)
+            .map(|(arg, native)| (native.facts(), arg.arg_convention()))
+            .collect::<Vec<_>>();
         let signature = lower_native_signature(pairing, &parameters, lowered_return(return_plan));
 
         let mut hidden_sret = None;
@@ -974,15 +942,11 @@ impl CallPlan {
 
         let mut user_args = Vec::with_capacity(args.len());
         let mut caller_indirect_bytes = 0u32;
-        for ((arg, native), span) in args.iter().zip(natives).zip(spans) {
-            let placements = signature.arguments()[span]
-                .iter()
-                .map(|argument| argument.location)
-                .collect::<Vec<_>>();
+        for ((arg, native), argument) in args.iter().zip(natives).zip(signature.arguments()) {
             let (mode, slots, classes, locations) = place_argument(
                 arg,
                 native,
-                &placements,
+                argument.location,
                 materializer,
                 &mut caller_indirect_bytes,
             );
@@ -1033,26 +997,18 @@ impl CallPlan {
     /// drop glue body — whose slots have already been materialized by the
     /// canonical aggregate leaves.
     ///
-    /// A cleanup callee receives those leaves directly rather than a
-    /// reconstructed value ([`NativeArg::PerLeaf`]), so each leaf is placed as
-    /// one register-width argument by the same lowering every other call goes
-    /// through. The callee's own parameter plan reads the same arm, so the two
-    /// ends cannot disagree.
+    /// A cleanup callee's parameters *are* those leaves: the synthesized body
+    /// addresses an owner's decomposition one slot at a time, so its signature
+    /// is one register-width scalar per leaf. That signature goes through the
+    /// same lowering every other call uses, and the callee's own parameter plan
+    /// reads the same per-slot descriptors, so the two ends cannot disagree.
     pub fn from_slot_values(
         target: CallTarget,
         slots: &[VReg],
         native_convention: ConventionSpec,
-        arg_register_banks: impl Into<AbiRegisterBanks>,
         c_convention: CallingConvention,
     ) -> Self {
-        let _ = arg_register_banks.into();
-        let count = u32::try_from(slots.len()).expect("cleanup leaf count must fit u32");
-        let native = NativeArg::PerLeaf { count };
-        let parameters = native
-            .facts()
-            .into_iter()
-            .map(|facts| (facts, ArgConvention::ByValue))
-            .collect::<Vec<_>>();
+        let parameters = vec![(register_width_leaf().facts(), ArgConvention::ByValue); slots.len()];
         let signature = lower_native_signature(native_convention, &parameters, LoweredReturn::Void);
         let abi_classes = vec![AbiSlotClass::Gp; slots.len()];
         let abi_locations = signature
@@ -1065,7 +1021,8 @@ impl CallPlan {
             .filter(|location| matches!(location, AbiSlotLocation::Stack { .. }))
             .count();
         Self {
-            callee_convention: callee_convention(&target, c_convention),
+            callee_convention: callee_pairing(&target, native_convention, c_convention)
+                .convention(),
             target,
             hidden_sret: None,
             user_args: vec![UserArgPlan {
@@ -1104,7 +1061,7 @@ pub fn return_plan(
 ) -> ReturnPlan {
     let native = native_by_value_arg(type_pool, ty);
     let slot_count = type_pool.abi_slot_count(ty);
-    match rue_air::lower_native_return(pairing, native.facts()[0]) {
+    match rue_air::lower_native_return(pairing, native.facts()) {
         LoweredReturn::Void => ReturnPlan::ZeroSized,
         LoweredReturn::Registers { .. } => {
             if matches!(native, NativeArg::Aggregate { .. }) {
@@ -1297,7 +1254,6 @@ mod tests {
             CallTarget::rue("drop"),
             &slots,
             ConventionSpec::native(rue_target::Target::X86_64Linux),
-            6,
             CallingConvention::X86_64SysV,
         );
 
@@ -1309,8 +1265,8 @@ mod tests {
 
     #[test]
     fn every_row_places_a_cleanup_leaf_in_a_whole_ascending_eightbyte() {
-        // The cleanup convention (destructors and drop glue) passes an
-        // aggregate's already-flattened leaves one register-width value per
+        // A cleanup callee (a destructor, a drop glue body) takes an
+        // aggregate's leaves as one register-width parameter per
         // leaf, each carrying a canonically 64-bit-extended value, so a leaf the
         // roster cannot hold claims one whole eightbyte from its convention's
         // argument area — under Apple's natural-size packing as much as under
@@ -1322,7 +1278,6 @@ mod tests {
                 CallTarget::rue("drop"),
                 &slots,
                 ConventionSpec::native(*target),
-                6,
                 target.c_calling_convention(),
             );
             let registers =
@@ -1624,11 +1579,21 @@ mod tests {
         // A memory builtin crosses the caller's `"C"` boundary, so it takes
         // whichever row the compilation target resolves the alias to.
         assert_eq!(
-            callee_convention(&target, CallingConvention::Aarch64AapcsDarwin),
+            callee_pairing(
+                &target,
+                ConventionSpec::native(rue_target::Target::Aarch64Macos),
+                CallingConvention::Aarch64AapcsDarwin
+            )
+            .convention(),
             CallingConvention::Aarch64AapcsDarwin
         );
         assert_eq!(
-            callee_convention(&CallTarget::rue("f"), CallingConvention::Aarch64AapcsDarwin),
+            callee_pairing(
+                &CallTarget::rue("f"),
+                ConventionSpec::native(rue_target::Target::Aarch64Macos),
+                CallingConvention::Aarch64AapcsDarwin
+            )
+            .convention(),
             CallingConvention::Rue
         );
         assert!(matches!(

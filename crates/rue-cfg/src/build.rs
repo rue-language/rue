@@ -802,16 +802,14 @@ fn derive_source_param_abi(builder: &CfgBuilder<'_>) -> Vec<SourceParamAbi> {
     let num_params = builder.cfg.num_params();
     let by_ref: Vec<bool> = builder.cfg.param_modes().to_vec();
 
-    // Destructors and drop glue are invoked exclusively through the cleanup
-    // convention (`CallPlan::from_slot_values`), which passes an aggregate's
-    // already-materialized leaves DIRECTLY and flattened (RUE-998 / RUE-311):
-    // the callee walks those leaves rather than reconstructing a value, so it
-    // must receive one register-width leaf per slot. Withholding the type is
-    // what selects that arm on the callee side; these synthetic symbols are
-    // compiler-reserved (`__rue_drop_*` glue, `<Type>.__drop` destructors), the
-    // same identity code generation already resolves them by. Retires with
-    // RUE-2039.
-    let direct_slot_abi = builder.callable_kind.uses_direct_slot_abi();
+    // A cleanup callee — a destructor or a drop glue body — addresses its
+    // owner's decomposition one slot at a time (RUE-998 / RUE-311), so its
+    // parameter list *is* those leaves: one register-width parameter per slot,
+    // which is exactly what its caller `CallPlan::from_slot_values` hands over.
+    // These synthetic symbols are compiler-reserved (`__rue_drop_*` glue,
+    // `<Type>.__drop` destructors), the same identity code generation already
+    // resolves them by.
+    let flattened_leaf_parameters = builder.callable_kind.has_flattened_leaf_parameters();
 
     // Slot -> source type. A parameter's own extent is what groups the slots,
     // so every by-value parameter needs one: the drop schedule and the body's
@@ -837,12 +835,11 @@ fn derive_source_param_abi(builder: &CfgBuilder<'_>) -> Vec<SourceParamAbi> {
         // parameter the body can observe, so an unrecovered one is unread, and
         // the only shape that reaches this arm is the `str` view a `borrow str`
         // parameter is passed by value as — two register-width slots either way,
-        // so the split leaves every later parameter's placement unchanged.
-        let (slot_count, ty) = match (is_by_ref, ty_at.get(&slot)) {
-            (false, Some(&ty)) => {
-                let width = type_pool.abi_slot_count(ty).max(1);
-                (width, (!direct_slot_abi).then_some(ty))
-            }
+        // so the split leaves every later parameter's placement unchanged. A
+        // typeless descriptor therefore always spans exactly one slot, which is
+        // what lets code generation place every parameter as a single value.
+        let (slot_count, ty) = match (is_by_ref || flattened_leaf_parameters, ty_at.get(&slot)) {
+            (false, Some(&ty)) => (type_pool.abi_slot_count(ty).max(1), Some(ty)),
             _ => (1, None),
         };
         descriptors.push(SourceParamAbi {

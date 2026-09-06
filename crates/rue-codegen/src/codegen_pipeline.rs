@@ -30,7 +30,7 @@ use crate::frame_layout::{FrameLayout, FramePointer, SavedRegScheme};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ParamHoming {
     pub(crate) start_slot: u32,
-    pub(crate) class: crate::call_plan::AbiSlotClass,
+    pub(crate) class: crate::abi_slot_class::AbiSlotClass,
     pub(crate) location: crate::call_plan::AbiSlotLocation,
     /// The narrow load a stacked value narrower than an eightbyte needs, so the
     /// frame slot holds Rue's canonical 64-bit form. `None` for a whole

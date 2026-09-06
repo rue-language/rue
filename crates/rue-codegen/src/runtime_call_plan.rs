@@ -5,6 +5,7 @@
 //! against that helper's complete manifest signature, and retains logical
 //! argument materialization until a target adapter assigns physical registers.
 
+use rue_air::{ArgConvention, CAbiScalarKind, CAbiTypeFacts, LoweredSignature, lower_c_signature};
 use rue_runtime_abi::{
     AbiParameter, AbiResult, AbiType, AggregateShapeId, ParameterMode, ReturnBehavior,
     RuntimeHelperId, RuntimeTarget,
@@ -133,6 +134,79 @@ impl RuntimeCallArg {
             Self::OutPointer { shape } => AbiParameter::out_pointer(shape),
         }
     }
+}
+
+/// The width-and-signedness class one manifest scalar presents to the C
+/// classifier.
+///
+/// The manifest's own vocabulary is deliberately narrow: an `i32`/`u32` value
+/// is the only sub-register scalar a helper takes or returns, and every pointer
+/// and canonical boolean word fills its register. `Byte` names a pointee, never
+/// a value, so it reaches this table only through a pointer mode.
+const fn scalar_kind(ty: AbiType) -> CAbiScalarKind {
+    match ty {
+        AbiType::I32 => CAbiScalarKind::I32,
+        AbiType::U32 => CAbiScalarKind::U32,
+        AbiType::Byte => CAbiScalarKind::U8,
+        AbiType::I64
+        | AbiType::U64
+        | AbiType::Usize
+        | AbiType::BoolWordI64
+        | AbiType::MutBytePointer => CAbiScalarKind::RegisterWidth,
+    }
+}
+
+/// The classification facts one manifest parameter presents.
+///
+/// A helper boundary is a C call (ADR-0055), so its parameters reach exactly
+/// the facts every other C crossing presents. A pointer parameter — a const or
+/// mutable pointee, or the caller's out-pointer — is one register-width
+/// pointer whatever it points at; a value parameter is its own scalar class.
+fn parameter_facts(parameter: AbiParameter) -> CAbiTypeFacts {
+    let kind = match parameter.mode {
+        ParameterMode::ConstPointer | ParameterMode::MutPointer | ParameterMode::OutPointer(_) => {
+            CAbiScalarKind::RegisterWidth
+        }
+        ParameterMode::Value => scalar_kind(parameter.ty),
+    };
+    CAbiTypeFacts::Scalar {
+        kind,
+        class: kind.register_class(),
+    }
+}
+
+/// The classification facts one manifest result presents.
+fn result_facts(result: AbiResult) -> CAbiTypeFacts {
+    match result {
+        AbiResult::Void => CAbiTypeFacts::ZeroSized,
+        AbiResult::Scalar(ty) => {
+            let kind = scalar_kind(ty);
+            CAbiTypeFacts::Scalar {
+                kind,
+                class: kind.register_class(),
+            }
+        }
+    }
+}
+
+/// Where every argument and the result of `helper` travel on `target`.
+///
+/// This is [`lower_c_signature`] against the helper's own manifest signature —
+/// the same classifier a foreign call, a compiler-built memory routine, and
+/// (through `ConventionSpec::native`) an ordinary Rue call consume. The backend
+/// reads the placements out of it and chooses no register of its own.
+pub fn manifest_signature(helper: RuntimeHelperId, target: Target) -> LoweredSignature {
+    let manifest = helper.helper();
+    let parameters = manifest
+        .parameters
+        .iter()
+        .map(|parameter| (parameter_facts(*parameter), ArgConvention::ByValue))
+        .collect::<Vec<_>>();
+    lower_c_signature(
+        RuntimeCallPlan::calling_convention(target),
+        &parameters,
+        result_facts(manifest.result),
+    )
 }
 
 /// Manifest-derived result materialization.
@@ -353,6 +427,12 @@ impl RuntimeCallPlan {
         self.helper.symbol()
     }
 
+    /// Where this call's arguments and result travel on `target`
+    /// ([`manifest_signature`]).
+    pub fn lowered_signature(&self, target: Target) -> LoweredSignature {
+        manifest_signature(self.helper, target)
+    }
+
     pub fn out_shape(&self) -> Option<AggregateShapeId> {
         match self.result() {
             RuntimeCallResult::OutPointer(shape) => Some(shape),
@@ -419,6 +499,61 @@ mod tests {
             RuntimeCallPlan::calling_convention(Target::X86_64Linux),
             CallingConvention::X86_64SysV
         );
+    }
+
+    /// The manifest's own registers-only property.
+    ///
+    /// Both backends lower a helper call by reading the placements out of
+    /// [`manifest_signature`], so nothing there assumes a register budget. What
+    /// keeps the lowering total is a property of the manifest itself: on every
+    /// supported target every helper's arguments fit its row's argument
+    /// registers, one general-purpose register each, with no outgoing argument
+    /// area, and every result comes back in registers rather than through the
+    /// row's indirect-result pointer. A helper added past the budget fails
+    /// here, where the manifest is, rather than in a backend assertion.
+    #[test]
+    fn every_helper_places_its_whole_signature_in_registers_on_every_target() {
+        use rue_air::{ArgLocation, LoweredReturn};
+        for target in Target::all() {
+            for helper in RuntimeHelperId::ALL {
+                let signature = manifest_signature(helper, *target);
+                assert_eq!(
+                    signature.stack_bytes(),
+                    0,
+                    "{helper} takes outgoing stack arguments on {target:?}"
+                );
+                for (index, argument) in signature.arguments().iter().enumerate() {
+                    let ArgLocation::Registers { pieces } = argument.location else {
+                        panic!(
+                            "{helper} argument {index} is not register-passed on \
+                             {target:?}: {:?}",
+                            argument.location
+                        );
+                    };
+                    assert_eq!(
+                        pieces.len(),
+                        1,
+                        "{helper} argument {index} spans more than one register on {target:?}"
+                    );
+                    assert_eq!(
+                        pieces.as_slice()[0].class,
+                        rue_target::CRegisterClass::Gp,
+                        "{helper} argument {index} is not general-purpose on {target:?}"
+                    );
+                }
+                match signature.ret() {
+                    LoweredReturn::Void => {}
+                    LoweredReturn::Registers { pieces, .. } => assert_eq!(
+                        pieces.len(),
+                        1,
+                        "{helper} returns more than one register on {target:?}"
+                    ),
+                    LoweredReturn::Sret { .. } => {
+                        panic!("{helper} returns indirectly on {target:?}")
+                    }
+                }
+            }
+        }
     }
 
     #[test]

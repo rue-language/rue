@@ -44,7 +44,8 @@ use rue_air::{
 use rue_cfg::{Cfg, CfgArgMode, CfgInstData, PlaceBase};
 use rue_target::ConventionSpec;
 
-use crate::call_plan::{AbiRegisterBanks, AbiSlotClass, AbiSlotLocation};
+use crate::abi_slot_class::AbiSlotClass;
+use crate::call_plan::{AbiRegisterBanks, AbiSlotLocation, register_width_leaf};
 use crate::codegen_pipeline::ParamHoming;
 use crate::native_abi::{NativeArg, NativeArgMarshal, NativeImage, native_by_value_arg};
 
@@ -134,36 +135,31 @@ fn incoming_return(pairing: ConventionSpec, has_sret: bool) -> LoweredReturn {
 /// The native description of one source parameter.
 ///
 /// A by-reference parameter is one pointer whatever it points at. A by-value
-/// parameter with no recovered type is one register-width slot, which is what
-/// the direct-slot cleanup convention (destructors and drop glue) presents for
-/// every one of an aggregate's already-flattened leaves, and what a synthetic
-/// CFG without descriptors presents for each of its slots.
+/// parameter with no recovered type is one register-width slot — a leaf of a
+/// cleanup callee's flattened parameter list (a destructor or drop glue body,
+/// whose caller `CallPlan::from_slot_values` hands over one leaf per
+/// parameter), or a slot of a synthetic CFG without descriptors. The CFG
+/// derivation guarantees such a descriptor spans exactly one slot, which is
+/// what makes every parameter a single value the convention places as a whole.
 fn parameter_native(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
     descriptor: &SourceParamAbi,
 ) -> (NativeArg, ArgConvention) {
     if cfg.is_param_by_ref(descriptor.start_slot) {
-        return (
-            NativeArg::Scalar {
-                kind: rue_air::CAbiScalarKind::RegisterWidth,
-                class: AbiSlotClass::Gp,
-            },
-            ArgConvention::ByReference,
-        );
+        return (register_width_leaf(), ArgConvention::ByReference);
     }
     match descriptor.ty {
         Some(ty) => (native_by_value_arg(type_pool, ty), ArgConvention::ByValue),
-        // A typeless by-value descriptor spans already-flattened leaves: the
-        // cleanup convention's parameters, whose caller
-        // (`CallPlan::from_slot_values`) hands each leaf its own register-width
-        // placement.
-        None => (
-            NativeArg::PerLeaf {
-                count: descriptor.slot_count.max(1),
-            },
-            ArgConvention::ByValue,
-        ),
+        None => {
+            assert_eq!(
+                descriptor.slot_count, 1,
+                "a by-value parameter with no type is one register-width slot; \
+                 anything wider must reach code generation with the type the \
+                 convention classifies it by"
+            );
+            (register_width_leaf(), ArgConvention::ByValue)
+        }
     }
 }
 
@@ -178,45 +174,11 @@ fn parameter_native(
 /// the unmarshal reads through it.
 fn parameter_homing(
     native: &NativeArg,
-    placements: &[ArgLocation],
+    location: ArgLocation,
     param_slot: u32,
     area_slot: u32,
     slot_count: u32,
 ) -> (Vec<ParamHoming>, Option<ParamUnmarshal>) {
-    if let NativeArg::PerLeaf { .. } = native {
-        // Each already-flattened leaf arrives in its own register-width
-        // placement and homes into its own frame slot.
-        return (
-            placements
-                .iter()
-                .enumerate()
-                .map(|(index, placement)| ParamHoming {
-                    start_slot: area_slot + index as u32,
-                    class: AbiSlotClass::Gp,
-                    location: match *placement {
-                        ArgLocation::Registers { pieces } => {
-                            AbiSlotLocation::GpReg(pieces.as_slice()[0].index as usize)
-                        }
-                        ArgLocation::Stack {
-                            offset,
-                            size,
-                            align,
-                        } => AbiSlotLocation::Stack {
-                            offset,
-                            size,
-                            align,
-                        },
-                        ArgLocation::Omitted | ArgLocation::Indirect { .. } => {
-                            panic!("a register-width leaf is never omitted or indirect")
-                        }
-                    },
-                    narrow_stack_load: None,
-                })
-                .collect(),
-            None,
-        );
-    }
-    let location = placements[0];
     let marshal = native.marshal(location);
     let image = match native {
         NativeArg::Aggregate { image } => Some(image.clone()),
@@ -362,11 +324,8 @@ impl ParamStoragePlan {
         native_convention: ConventionSpec,
         register_banks: AbiRegisterBanks,
     ) -> Self {
-        let native = NativeArg::Scalar {
-            kind: rue_air::CAbiScalarKind::RegisterWidth,
-            class: AbiSlotClass::Gp,
-        };
-        let parameters = vec![(native.facts()[0], ArgConvention::ByValue); num_params as usize];
+        let native = register_width_leaf();
+        let parameters = vec![(native.facts(), ArgConvention::ByValue); num_params as usize];
         let signature = lower_native_signature(
             native_convention,
             &parameters,
@@ -376,7 +335,7 @@ impl ParamStoragePlan {
         let mut homing = Vec::new();
         for (slot, argument) in signature.arguments().iter().enumerate() {
             let (entries, _) =
-                parameter_homing(&native, &[argument.location], slot as u32, slot as u32, 1);
+                parameter_homing(&native, argument.location, slot as u32, slot as u32, 1);
             homing.extend(entries);
         }
         Self {
@@ -427,16 +386,13 @@ impl ParamStoragePlan {
             .iter()
             .map(|descriptor| parameter_native(cfg, type_pool, descriptor))
             .collect();
-        // Every parameter contributes one placement, except the cleanup
-        // convention's already-flattened leaves, which contribute one each; the
-        // spans map a parameter back to the run of placements it owns.
-        let mut parameters: Vec<(CAbiTypeFacts, ArgConvention)> = Vec::new();
-        let mut spans = Vec::with_capacity(natives.len());
-        for (native, mode) in &natives {
-            let start = parameters.len();
-            parameters.extend(native.facts().into_iter().map(|facts| (facts, *mode)));
-            spans.push(start..parameters.len());
-        }
+        // One parameter, one placement: the convention places every value as a
+        // whole, so the lowered signature's arguments line up with the
+        // descriptors one-for-one.
+        let parameters: Vec<(CAbiTypeFacts, ArgConvention)> = natives
+            .iter()
+            .map(|(native, mode)| (native.facts(), *mode))
+            .collect();
         let signature = lower_native_signature(
             native_convention,
             &parameters,
@@ -448,14 +404,12 @@ impl ParamStoragePlan {
         let mut homing = Vec::new();
         let mut unmarshals = Vec::new();
         let mut area = 0u32;
-        for ((descriptor, (native, _)), span) in descriptors.iter().zip(&natives).zip(spans) {
+        for ((descriptor, (native, _)), argument) in
+            descriptors.iter().zip(&natives).zip(signature.arguments())
+        {
             let slot = descriptor.start_slot;
-            let placements = signature.arguments()[span]
-                .iter()
-                .map(|argument| argument.location)
-                .collect::<Vec<_>>();
             let (entries, unmarshal) =
-                parameter_homing(native, &placements, slot, area, descriptor.slot_count);
+                parameter_homing(native, argument.location, slot, area, descriptor.slot_count);
             // A register-only parameter must be a single slot arriving in a
             // single register that actually is a register (not stack-passed)
             // and needing no image. A by-reference parameter's slot holds only
@@ -572,10 +526,9 @@ struct ParamReferenceScan {
 /// A reference rooted at a parameter's first ABI slot can span the
 /// parameter's whole type — a multi-slot `Param` read, a place access, or a
 /// by-value `ParamStore` addresses `[index, index + slot_count)` as one
-/// contiguous frame region. Under the direct-slot cleanup convention
-/// (destructors and drop glue) those slots are described by *separate*
-/// single-slot descriptors, so every mark covers the referenced type's full
-/// slot span, not just the base slot.
+/// contiguous frame region. A cleanup callee (a destructor or drop glue body)
+/// describes those same slots as *separate* single-slot parameters, so every
+/// mark covers the referenced type's full slot span, not just the base slot.
 fn scan_param_references(cfg: &Cfg, type_pool: &FrozenTypeInternPool) -> ParamReferenceScan {
     let num_params = cfg.num_params() as usize;
     let num_locals = cfg.num_locals();
@@ -607,9 +560,9 @@ fn scan_param_references(cfg: &Cfg, type_pool: &FrozenTypeInternPool) -> ParamRe
                     mark_span(&mut used, *index, span);
                     // A multi-slot by-value read loads the value out of its
                     // contiguous frame region, so the whole span must be
-                    // homed even when the cleanup convention split it into
-                    // single-slot descriptors. A scalar read consumes the
-                    // register copy and needs no home.
+                    // homed even when the parameter list describes it as
+                    // single-slot leaves. A scalar read consumes the register
+                    // copy and needs no home.
                     if !cfg.is_param_by_ref(*index) && span > 1 {
                         mark_span(&mut needs_home, *index, span);
                     }
@@ -730,6 +683,37 @@ mod tests {
 
     fn pool() -> rue_air::FrozenTypeInternPool {
         TypeInternPool::new().freeze()
+    }
+
+    /// A pool holding one two-slot `{i64, i64}` probe struct.
+    fn pool_with_pair() -> (rue_air::FrozenTypeInternPool, Type) {
+        let interner = lasso::ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let (id, _) = pool.register_struct(
+            interner.get_or_intern("Pair"),
+            rue_air::StructDef {
+                name: "Pair".into(),
+                fields: vec![
+                    rue_air::StructField {
+                        name: "a".into(),
+                        ty: Type::I64,
+                    },
+                    rue_air::StructField {
+                        name: "b".into(),
+                        ty: Type::I64,
+                    },
+                ],
+                is_copy: true,
+                is_linear: false,
+                declared_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: rue_span::FileId::DEFAULT,
+            },
+        );
+        let ty = Type::new_struct(id);
+        (pool.freeze(), ty)
     }
 
     fn scalar_descriptors(count: u32) -> Vec<SourceParamAbi> {
@@ -1010,10 +994,10 @@ mod tests {
         );
     }
 
-    /// The direct-slot cleanup convention (destructors, drop glue) describes
-    /// one source aggregate as SEPARATE single-slot descriptors. A place or
-    /// multi-slot `Param` reference rooted at the first slot addresses the
-    /// whole contiguous region, so the scan must home the full type span —
+    /// A cleanup callee (a destructor, a drop glue body) describes one source
+    /// aggregate as SEPARATE single-slot parameters. A place or multi-slot
+    /// `Param` reference rooted at the first slot addresses the whole
+    /// contiguous region, so the scan must home the full type span —
     /// homing only the base slot leaves the tail slots reading garbage (the
     /// RUE-1170 ArrayBuf destructor regression).
     #[test]
@@ -1047,8 +1031,8 @@ mod tests {
         let pool = type_pool.freeze();
 
         let mut cfg = Cfg::new(Type::UNIT, 0, 2, "split".into(), vec![false, false]);
-        // Two single-slot descriptors for one two-slot source value, the
-        // direct-slot cleanup shape.
+        // Two single-slot descriptors for one two-slot source value: the
+        // shape a cleanup callee's flattened parameter list has.
         cfg.set_source_param_abi(scalar_descriptors(2));
         let entry = cfg.new_block();
         cfg.entry = entry;
@@ -1076,12 +1060,13 @@ mod tests {
     fn aggregates_and_raw_slot_references_keep_homes() {
         // Param 0 is a two-slot aggregate; param slot 2 is referenced as a
         // raw frame slot (num_locals + 2).
+        let (pool, pair) = pool_with_pair();
         let mut cfg = Cfg::new(Type::I64, 1, 3, "agg".into(), vec![false, false, false]);
         cfg.set_source_param_abi(vec![
             SourceParamAbi {
                 start_slot: 0,
                 slot_count: 2,
-                ty: None,
+                ty: Some(pair),
             },
             SourceParamAbi {
                 start_slot: 2,
@@ -1100,7 +1085,7 @@ mod tests {
             },
         );
 
-        let plan = ParamStoragePlan::plan(&cfg, &pool(), false, SYSV, 6);
+        let plan = ParamStoragePlan::plan(&cfg, &pool, false, SYSV, 6);
         assert_eq!(plan.slot(0), ParamSlotStorage::Frame { area_slot: 0 });
         assert_eq!(plan.slot(1), ParamSlotStorage::Frame { area_slot: 1 });
         assert_eq!(plan.slot(2), ParamSlotStorage::Frame { area_slot: 2 });

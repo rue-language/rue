@@ -373,7 +373,7 @@ impl<'a> CfgLowerContext<'a> {
         &self,
     ) -> Vec<(
         u32,
-        crate::call_plan::AbiSlotClass,
+        crate::abi_slot_class::AbiSlotClass,
         crate::call_plan::AbiSlotLocation,
     )> {
         match self.param_storage {

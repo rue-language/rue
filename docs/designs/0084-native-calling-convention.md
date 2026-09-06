@@ -317,17 +317,21 @@ object-size ceiling (E0906) is spelled in those slots: C.4:3 limits an object to
 frame-displacement range divided by the 8-byte slot width, and C.4:2 explains the
 count as "one 8-byte slot per scalar, per struct field, and per array element".
 
-**The limit's wording does need to change**, and the change is deferred to phase
-3. The ceiling itself does not move: it is a frame-addressing bound, it is
-independent of how a value crosses a call, and changing which programs it accepts
-would be a language-visible change this ADR does not make. What becomes wrong is
-the *name and the justification*: once no call decomposes a value into one slot
-per leaf, "ABI slot" names a measure with no ABI in it, and a reader who follows
-the term to the calling convention will find nothing that matches. Phase 3, which
-is where the documentation catches up with the architecture, decides whether to
-rename the measure, restate the ceiling's derivation without the word, or leave
-the spelling and correct the prose — and lands that answer in
-`docs/spec/src/appendices/C-implementation-limits.md` with its traceability.
+**The limit's wording does need to change**, and phase 3 answers it: **the
+spelling is kept and the prose is corrected.** The ceiling does not move — it is
+a frame-addressing bound, independent of how a value crosses a call — so what
+was wrong was never the number but the implication a reader drew from the name.
+C.4:2 now says outright that an "ABI slot" measures a layout's 8-byte frame
+cells, that the ceiling is therefore about addressing a value in a frame, and
+that a calling convention places whole values by the target's own rules and
+never decomposes one into these slots. The spelling stays because it is the one
+the E0906 diagnostic, `--explain E0906`, and the compiler's own
+`abi_slot_count` query all use; renaming it in the specification alone would
+create a fresh mismatch between the published limit and the diagnostic C.1:2
+requires to name it, and renaming it everywhere would be a consumer-visible
+diagnostic change that buys no precision the prose does not.
+`the_slot_measure_describes_a_layout_not_a_crossing` (C.4:2) is the traceability
+for the distinction.
 
 ## Implementation Phases
 
@@ -360,7 +364,7 @@ moves in the same change as the convention it models, never in a follow-up.
   (`ObjectBuilder::alias`, `StructuredObject::with_alias`), so an export that
   reduces emits no object of its own; `--emit abi` names each export's entry and,
   for a thunk, the disagreement that keeps it.
-- [ ] **Phase 3: One classifier, and the docs describe it** — RUE-2039. The CFG
+- [x] **Phase 3: One classifier, and the docs describe it** — RUE-2039. The CFG
   parameter contract drops `NativeArgClass` and the slot-oriented description;
   the native/runtime/C branching in call planning and both backends' CFG lowering
   collapses to one classifier; the runtime helper path consumes it as a C call
@@ -369,6 +373,23 @@ moves in the same change as the convention it models, never in a follow-up.
   the present architecture with no old-versus-new narration, and the Appendix
   C.4 wording question above is answered. RUE-2030 closes with the matrices green
   on all three native hosts.
+
+  **Status.** Landed. Every argument and every parameter now presents exactly one
+  value to the classifier: `NativeArg::PerLeaf` and `NativePlacement::PerLeaf`
+  are gone, a CFG parameter descriptor without a type is exactly one
+  register-width slot (asserted where code generation reads it), and
+  `TargetCCallAbi` is deleted in favour of `lower_c_signature`. The runtime
+  helper path lowers the manifest signature through `lower_c_signature`
+  (`runtime_call_plan::manifest_signature`) and the backends read placements out
+  of it; the registers-only guard is now a manifest property test. `AbiSlotClass`
+  is a codegen-internal register-bank-and-width selector with one owner
+  (`rue-codegen`'s `abi_slot_class`). One thing the phase did not do: a cleanup
+  entry point still crosses as one register-width scalar per leaf rather than as
+  its owner's aggregate image, because the synthesized drop-glue body addresses
+  its owner's leaves as individual parameter slots. Giving it a single aggregate
+  parameter means re-authoring the glue AIR and its frame-image indexing, which
+  is a separate slice; what retired here is the *convention* branch, not the
+  flattened glue signature.
 
 ## Consequences
 

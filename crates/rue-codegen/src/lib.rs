@@ -57,6 +57,7 @@ macro_rules! roster_names {
 pub(crate) use roster_names;
 
 pub mod abi_report;
+mod abi_slot_class;
 mod allocation;
 mod backend;
 pub mod call_plan;

@@ -59,9 +59,11 @@ An array length is a compile-time value of type `u64`, so the language itself ad
 
 An array whose element count is legal for the type system may still be rejected: the binding constraint is the number of ABI slots the array type's layout occupies (C.4:3), not available memory. A layout spends one 8-byte slot per scalar, per struct field, and per array element, *whatever the element's own width* — so for an array the slot count is exactly the element count times the element type's own slot count, and for an array of scalars it is exactly the element count. A narrow element type therefore buys no extra headroom: `[i8; N]` and `[i64; N]` reach the ceiling at the same `N`.
 
+An "ABI slot" here is a **measure of a layout's storage**, not a description of a call. It counts the 8-byte frame cells a value of the type occupies, which is what makes the ceiling a frame-addressing bound (C.4:3). It says nothing about where a value travels when it crosses a call: a calling convention places whole values by the target's own rules and never decomposes one into these slots. The name is kept because it is the one the diagnostic, `--explain E0906`, and the compiler's own layout query all spell; the measure it names is a layout measure.
+
 {{ rule(id="C.4:3", cat="normative") }}
 
-The current implementation limits any single object (including an array type) to 268,435,455 ABI slots. That ceiling is the code generator's frame-offset addressing range (`i32::MAX`, 2,147,483,647 bytes) divided by the 8-byte slot width, so a layout that fits it is always addressable by a signed 32-bit displacement. A type whose layout needs more slots is rejected with a diagnostic (E0906) wherever a value of the type would be materialized — a variable, a parameter, or a `@size_of`/`@align_of` query — and the diagnostic names the slot ceiling, as C.1:2 requires.
+The current implementation limits any single object (including an array type) to 268,435,455 ABI slots. That ceiling is the code generator's frame-offset addressing range (`i32::MAX`, 2,147,483,647 bytes) divided by the 8-byte slot width, so a layout that fits it is always addressable by a signed 32-bit displacement. The bound is therefore about *addressing a value in a frame*, and it is independent of how a value crosses a call boundary: changing a calling convention neither moves the ceiling nor changes which programs it accepts. A type whose layout needs more slots is rejected with a diagnostic (E0906) wherever a value of the type would be materialized — a variable, a parameter, or a `@size_of`/`@align_of` query — and the diagnostic names the slot ceiling, as C.1:2 requires.
 
 Because the check counts slots rather than bytes, it binds well below 2,147,483,647 bytes for any element narrower than 8 bytes: `[i8; 268435455]` is accepted and reports `@size_of` of 268,435,455 (about 256 MiB), while `[i8; 268435456]` — one element more, and still only about 256 MiB — is rejected. Only an object built entirely from 8-byte scalars reaches the ceiling and the byte range together.
 
@@ -128,7 +130,7 @@ The compiler stores syntax, untyped IR, and typed IR in compact index-based form
 | Variants of one enum | 4,294,967,295 | 1 payload word per variant; the discriminant tag widens to at most `u32` | E1401, via the shared word store |
 | Elements of one array literal | 4,294,967,295 | 1 payload word per element | E1401, via the shared word store |
 | Distinct composite types (structs, enums, arrays, pointers, modules) | 16,777,216 | `Type` is a `u32`: an 8-bit kind tag plus a 24-bit type-pool index | E1401, at the semantic boundary |
-| ABI slots in one object's layout | 268,435,455 slots | signed 32-bit frame displacement divided by the 8-byte slot width; one slot per scalar, struct field, and array element (C.4:2) | E0906 |
+| ABI slots in one object's layout | 268,435,455 slots | signed 32-bit frame displacement divided by the 8-byte slot width; one slot per scalar, struct field, and array element, a layout measure rather than a call description (C.4:2) | E0906 |
 | Cumulative storage of one function | 2,147,483,632 bytes | signed 32-bit frame displacement, 16-byte aligned | E0907 |
 | Syntactic nesting depth | 256 | guarded recursion depth in the parser and RIR lowering | E0482 |
 

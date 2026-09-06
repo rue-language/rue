@@ -92,6 +92,36 @@ fn foreign_argument_register(class: rue_target::CRegisterClass, index: u32) -> R
 /// instead; see `crate::cfg_lower::type_uses_sret_return`.
 pub(super) const RET_REGS: [Reg; 6] = [Reg::Rax, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9, Reg::R10];
 
+/// The general-purpose argument-roster index a lowered placement names.
+///
+/// Every value a runtime helper takes is one general-purpose register; that is
+/// the manifest's own property, tested where the manifest is.
+fn gp_argument_index(location: rue_air::ArgLocation) -> usize {
+    let rue_air::ArgLocation::Registers { pieces } = location else {
+        panic!("a runtime-helper argument is register-passed: {location:?}");
+    };
+    assert_eq!(pieces.len(), 1, "a runtime-helper argument is one register");
+    let piece = pieces.as_slice()[0];
+    assert_eq!(
+        piece.class,
+        rue_target::CRegisterClass::Gp,
+        "a runtime-helper argument is general-purpose"
+    );
+    piece.index as usize
+}
+
+/// The general-purpose result-roster index a lowered return names.
+fn gp_result_index(pieces: rue_air::RegisterPieces) -> usize {
+    assert_eq!(pieces.len(), 1, "a runtime-helper result is one register");
+    let piece = pieces.as_slice()[0];
+    assert_eq!(
+        piece.class,
+        rue_target::CRegisterClass::Gp,
+        "a runtime-helper result is general-purpose"
+    );
+    piece.index as usize
+}
+
 /// Floating-point return registers. A float-classed return slot travels in the
 /// same XMM bank a float argument does — `xmm0` is already the scalar float
 /// return register — so the two directions name one register file.
@@ -388,18 +418,14 @@ impl<'a> CfgLower<'a> {
         &mut self,
         plan: crate::runtime_call_plan::RuntimeCallPlan,
     ) -> crate::value_plan::MaterializedValue {
-        use crate::runtime_call_plan::{RuntimeCallArg, RuntimeCallPlan, RuntimeCallResult};
+        use crate::runtime_call_plan::{RuntimeCallArg, RuntimeCallResult};
 
-        assert_eq!(
-            RuntimeCallPlan::calling_convention(X86_64_TARGET),
-            rue_target::CallingConvention::X86_64SysV,
-            "this lowering implements SysV AMD64, the convention the runtime-helper \
-             boundary resolves to on x86-64"
-        );
-        assert!(
-            plan.args().len() <= ARG_REGS.len(),
-            "runtime manifest exceeds the x86-64 target-C register budget"
-        );
+        // A helper boundary is a C call, so where its arguments and result
+        // travel is the one classifier's answer against the manifest signature
+        // (ADR-0055, ADR-0084). Nothing here assumes a register budget: the
+        // manifest's own test pins that every helper's signature places wholly
+        // in registers.
+        let signature = plan.lowered_signature(X86_64_TARGET);
 
         let out_shape = plan.out_shape();
         let out_bytes = out_shape
@@ -467,8 +493,13 @@ impl<'a> CfgLower<'a> {
             })
             .collect::<Vec<_>>();
 
-        for (index, (arg, value)) in plan.args().iter().zip(&materialized).enumerate() {
-            let dst = Operand::Physical(ARG_REGS[index]);
+        for ((arg, value), argument) in plan
+            .args()
+            .iter()
+            .zip(&materialized)
+            .zip(signature.arguments())
+        {
+            let dst = Operand::Physical(ARG_REGS[gp_argument_index(argument.location)]);
             match *arg {
                 RuntimeCallArg::Slot { .. }
                 | RuntimeCallArg::Scaled { .. }
@@ -536,11 +567,19 @@ impl<'a> CfgLower<'a> {
                 }
             }
             RuntimeCallResult::Scalar(_) => {
+                let rue_air::LoweredReturn::Registers { pieces, extension } = signature.ret()
+                else {
+                    panic!("a scalar runtime result comes back in result registers");
+                };
                 let primary = self.mir.alloc_vreg();
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Virtual(primary),
-                    src: Operand::Physical(Reg::Rax),
+                    src: Operand::Physical(RET_REGS[gp_result_index(pieces)]),
                 });
+                // A C callee leaves the bits above a narrow result unspecified;
+                // Rue's canonical 64-bit form is restored here, by the same
+                // extension every other C return crossing applies.
+                self.emit_c_return_extension(primary, extension);
                 crate::value_plan::MaterializedValue {
                     primary,
                     slots: Vec::new(),
@@ -600,7 +639,7 @@ impl<'a> CfgLower<'a> {
         for (param_slot, class, location) in self.ctx.param_entry_copies() {
             let (vreg, copy) = match (class, location) {
                 (
-                    crate::call_plan::AbiSlotClass::Gp,
+                    crate::abi_slot_class::AbiSlotClass::Gp,
                     crate::call_plan::AbiSlotLocation::GpReg(class_index),
                 ) => {
                     let vreg = self.mir.alloc_vreg();
@@ -613,7 +652,7 @@ impl<'a> CfgLower<'a> {
                     )
                 }
                 (
-                    crate::call_plan::AbiSlotClass::Fp(width),
+                    crate::abi_slot_class::AbiSlotClass::Fp(width),
                     crate::call_plan::AbiSlotLocation::FpReg(class_index),
                 ) => {
                     let vreg = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
@@ -653,10 +692,6 @@ impl<'a> CfgLower<'a> {
             crate::call_plan::CallTarget::rue(symbol),
             arg_vregs,
             rue_target::ConventionSpec::native(X86_64_TARGET),
-            crate::call_plan::AbiRegisterBanks {
-                gp: ARG_REGS.len(),
-                fp: FP_ARG_REGS.len(),
-            },
             x86_64_target_c_convention(),
         );
         let _ = self.lower_call_plan(plan);
@@ -1271,7 +1306,7 @@ impl<'a> CfgLower<'a> {
             );
             let offset = checked_displacement_bytes(u64::from(*offset))
                 .expect("call stack slot offset must fit displacement");
-            if let crate::call_plan::AbiSlotClass::Fp(width) = class {
+            if let crate::abi_slot_class::AbiSlotClass::Fp(width) = class {
                 self.mir.push(X86Inst::FloatStore {
                     base: Reg::Rsp,
                     offset,
@@ -1302,7 +1337,7 @@ impl<'a> CfgLower<'a> {
             .zip(&plan.abi_locations)
             .filter_map(|((arg, class), location)| match (class, location) {
                 (
-                    crate::call_plan::AbiSlotClass::Fp(width),
+                    crate::abi_slot_class::AbiSlotClass::Fp(width),
                     crate::call_plan::AbiSlotLocation::FpReg(index),
                 ) => Some((*index, *arg, *width)),
                 _ => None,
@@ -6553,13 +6588,13 @@ mod tests {
                 // eightbyte lands in the parameter's LAST slot.
                 crate::codegen_pipeline::ParamHoming {
                     start_slot: 2,
-                    class: crate::call_plan::AbiSlotClass::Gp,
+                    class: crate::abi_slot_class::AbiSlotClass::Gp,
                     narrow_stack_load: None,
                     location: crate::call_plan::AbiSlotLocation::GpReg(0),
                 },
                 crate::codegen_pipeline::ParamHoming {
                     start_slot: 1,
-                    class: crate::call_plan::AbiSlotClass::Gp,
+                    class: crate::abi_slot_class::AbiSlotClass::Gp,
                     narrow_stack_load: None,
                     location: crate::call_plan::AbiSlotLocation::GpReg(1),
                 },
@@ -6573,7 +6608,7 @@ mod tests {
         assert_eq!(
             plan.slot(3),
             crate::param_storage::ParamSlotStorage::Register {
-                class: crate::call_plan::AbiSlotClass::Gp,
+                class: crate::abi_slot_class::AbiSlotClass::Gp,
                 location: crate::call_plan::AbiSlotLocation::GpReg(2),
             }
         );

@@ -52,7 +52,11 @@ One function reads that data against a type's facts:
 `rue_air::lower_c_signature` answers where every argument and the result of a
 `"C"` signature lives, and its `LoweredSignature` is consumed by every C
 crossing site — the `extern "C"` import planner, the `pub extern "C" fn` export
-entry, and the stable query plane's `compiler.call-abi`. That single answer is
+entry, the runtime-helper boundary and the compiler-built memory routines, and
+the stable query plane's `compiler.call-abi`. A Rue-to-Rue call reads the same
+walk under `ConventionSpec::native` (`lower_native_signature` /
+`lower_native_return`), so the compiler has **one** classifier rather than a
+native one beside a C one. That single answer is
 ADR-0064's ratified acceptance criterion (the by-value classifier agreeing across
 calls, returns, exports, and callbacks) discharged by construction rather than by
 review; `the_c_by_value_classifier_agrees_across_sites_shapes_and_planes` pins it
@@ -86,7 +90,7 @@ supported representation.
 | Stack arguments | The row's own argument-area packing | The row's own argument-area packing | Not implemented; every current helper fits registers |
 | Scalar result | `rax` | `x0` | `rax` or `x0`/`w0` |
 | Multi-slot result | Up to six slots in `rax`, `rdx`, `rcx`, `r8`, `r9`, `r10` | Up to eight slots in `x0`-`x7` | No direct aggregate results |
-| Aggregate result storage | Hidden first ordinary slot (`rdi`) | Hidden first ordinary slot (`x0`) | Explicit first out-pointer parameter where required |
+| Aggregate result storage | The row's own indirect-result register (`rdi`, echoed in `rax`) | The row's own dedicated `x8` | Explicit first out-pointer parameter where required |
 | Aggregate argument order | Ascending memory order, eightbyte by eightbyte | Ascending memory order, eightbyte by eightbyte | The same order |
 | Call-site stack alignment | 16 bytes | 16 bytes | 16 bytes |
 | Red zone use | None | None | None |
@@ -139,15 +143,24 @@ what packs `{u8, u8, u8, u8}` into one register; the callee lays that image back
 down in its frame and reads the leaves out of it. `NativeImage::direct_leaves`
 is the one predicate that chooses between the two, consulted from both ends.
 
-### The cleanup convention
+### Cleanup entry points
 
-Destructors and drop glue are invoked with an aggregate's leaves already
-flattened: the caller has materialized them and the callee walks them as leaves
-rather than reconstructing a value, so each leaf crosses as its own
-register-width argument. That is `NativeArg::PerLeaf`, an explicit arm of the
-same classifier both ends read (`CallPlan::from_slot_values` at the caller,
-`ParamStoragePlan` at the callee), and it is transitional: RUE-2039 collapses the
-remaining convention branches.
+A destructor and a drop glue body address their owner's decomposition one slot
+at a time: the synthesized glue reads a field, an array element, or a variant
+payload straight out of a parameter slot, and the destructor's `self` spans the
+whole run. Their *signature* is therefore one register-width scalar per leaf,
+and the convention places that signature exactly as it places any other list of
+register-width scalars — the roster in order, then the row's own argument-area
+packing. There is no cleanup arm in the classifier: `CallPlan::from_slot_values`
+at the caller and `ParamStoragePlan` at the callee both present one
+register-width value per leaf to `lower_native_signature`, and the CFG's own
+parameter descriptors say the same thing, one slot each.
+
+Every by-value parameter the CFG describes with a type is placed by that type
+(`SourceParamAbi::ty`); a descriptor with no type is exactly one register-width
+slot — a by-reference pointer, a cleanup leaf, or a slot no instruction names —
+which is asserted where code generation reads it. Nothing reaches placement as a
+run of untyped slots.
 
 ### Returns
 
@@ -320,17 +333,28 @@ ABI:
 - no helper is variadic or requires a stack argument. The largest current
   signature has five physical parameters.
 
-The x86-64 lowerer maps those parameters to the System V integer registers and
-returns scalars in `rax`. The AArch64 lowerer maps them to `x0`-`x7` and returns
-scalars in `x0`/`w0`. Caller-owned aggregate-result storage is rounded to a
-16-byte call-frame allocation. When source `i8`/`u8` values feed debugging
-helpers, the call adapter sign- or zero-extends them to the manifest's 64-bit
-parameter before the C call.
+Where a helper's arguments and result travel is not a backend decision:
+`runtime_call_plan::manifest_signature` projects each manifest parameter and
+result onto the same `CAbiTypeFacts` every other C crossing presents — a pointer
+mode is one register-width pointer, a value parameter is its own scalar class —
+and lowers them with `lower_c_signature` against the target's `"C"` row. Each
+backend reads the roster index out of that placement and names its own register;
+a narrow result is re-extended to Rue's canonical 64-bit form by the extension
+the lowered return carries, the same one an `extern "C"` return applies.
+Caller-owned aggregate-result storage is rounded to a 16-byte call-frame
+allocation. When source `i8`/`u8` values feed debugging helpers, the call
+adapter sign- or zero-extends them to the manifest's 64-bit parameter before the
+C call.
 
-This subset conforms for all signatures currently present. It must not grow by
-assuming that arbitrary C signatures share the native Rue slot rules. Backend
-unit guards fail if a manifest helper exceeds the current register-only budget;
-adding such a helper requires implementing and testing target-C stack placement.
+That the whole subset fits registers is a property **of the manifest**, tested
+where the manifest is:
+`every_helper_places_its_whole_signature_in_registers_on_every_target` lowers
+every `RuntimeHelperId` on every target and requires one general-purpose
+register per argument, no outgoing argument area, and a result in registers
+rather than through the row's indirect-result pointer. A helper added past the
+budget fails that test rather than tripping an assertion inside a code
+generator, and admitting one requires implementing and testing target-C stack
+placement.
 
 ## Reading a placement out of the compiler
 
@@ -353,7 +377,9 @@ consumes and nothing else: a C boundary's placements come from
 `ExportSignature` projections the import lowering and the export entry build,
 and the native side's come from `rue_air::lower_native_signature` and
 `rue_air::lower_native_return` through the same `return_plan` /
-`return_registers` projections the call planner and both return paths build.
+`return_registers` projections the call planner and both return paths build. A
+native parameter prints one placement, because the convention places one value
+per parameter.
 Register *names* are asked of the backend that owns the roster. A
 `pub extern "C" fn` export prints both halves of its crossing, headed by whether
 its C entry is an alias of the native body or a thunk and, when it is a thunk,
