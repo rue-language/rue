@@ -17,7 +17,7 @@ const StrBuf = std.strbuf.StrBuf;
 
 fn shout(borrow s: StrBuf) -> StrBuf {
     let mut out = StrBuf.new();
-    for b in s.clone() {
+    for b in s {
         if b >= b'a' && b <= b'z' {
             out.push(b - (b'a' - b'A'));
         } else {
@@ -40,10 +40,10 @@ HELLO, RUE
 length: 10
 ```
 
-Two things in `shout` are explained later in this chapter. `b'a'` is a *byte
-literal*, the integer value of an ASCII character. And `shout` iterates
-`s.clone()` rather than `s` because today `for` cannot walk a borrowed
-`StrBuf` directly (RUE-2052); once that is fixed, the clone goes away.
+One thing in `shout` is explained later in this chapter: `b'a'` is a *byte
+literal*, the integer value of an ASCII character. Note that `for` walks the
+borrowed `s` directly — iteration is a shared read, so the string stays
+usable in the caller afterward.
 
 ## `str` and `StrBuf`
 
@@ -163,7 +163,7 @@ fn main() -> i32 {
     let word: StrBuf = "héllo";
     let mut bytes = 0;
     let mut chars = 0;
-    for _ in word.clone() {
+    for _ in word {
         bytes += 1;
     }
     for _ in word.chars() {

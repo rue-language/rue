@@ -362,3 +362,158 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "array or a StrBuf"
+
+# =============================================================================
+# By-reference iterables (RUE-2052)
+#
+# Iteration is a shared read (4.8:26), so the iterable never has to be owned by
+# the iterating function: a `borrow` or an `inout` parameter is read through its
+# loan exactly as a local is.
+# =============================================================================
+
+# The reported program: a `borrow StrBuf` parameter is iterable, because reading
+# it for the bound and for each byte is a loan rather than a move out of the
+# borrow (previously rejected E0429).
+[[case]]
+name = "for_borrow_strbuf_parameter"
+spec = ["4.8:25", "4.8:26"]
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn count_spaces(borrow s: StrBuf) -> u64 {
+    let mut n: u64 = 0;
+    for b in s {
+        if b == 32 { n += 1; }
+    }
+    n
+}
+
+fn main() -> i32 {
+    let s: StrBuf = "a b c";
+    @intCast(count_spaces(borrow s))
+}
+"""
+exit_code = 2
+
+# The `.chars()` scalar view of a `borrow` parameter is the same shared read.
+[[case]]
+name = "for_chars_of_borrow_strbuf_parameter"
+spec = ["4.8:25", "4.8:26"]
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn count_chars(borrow s: StrBuf) -> u64 {
+    let mut n: u64 = 0;
+    for _c in s.chars() {
+        n += 1;
+    }
+    n
+}
+
+fn main() -> i32 {
+    let s: StrBuf = "café";
+    @intCast(count_chars(borrow s))
+}
+"""
+exit_code = 4
+
+# Reading an `inout` parameter in a `for` is a shared read, not a write: it is
+# accepted, and the parameter is still a mutable place afterward, so the
+# caller's variable sees the later mutation.
+[[case]]
+name = "for_inout_strbuf_parameter_reads"
+spec = ["4.8:26"]
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn count_then_push(inout s: StrBuf) -> u64 {
+    let mut n: u64 = 0;
+    for b in s {
+        if b == 32 { n += 1; }
+    }
+    s.push(33);
+    n
+}
+
+fn main() -> i32 {
+    let mut s: StrBuf = "a b c";
+    let n = count_then_push(inout s);
+    @intCast(n + s.len())
+}
+"""
+exit_code = 8
+
+# A local StrBuf iterated by a `for` is borrowed, not moved: it is still usable
+# after the loop.
+[[case]]
+name = "for_local_strbuf_usable_after_loop"
+spec = ["4.8:26"]
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let s: StrBuf = "a b c";
+    let mut n: u64 = 0;
+    for b in s {
+        if b == 32 { n += 1; }
+    }
+    @intCast(n + s.len())
+}
+"""
+exit_code = 7
+
+# An array with non-Copy elements passed `borrow` is iterable for the same
+# reason: the loop reads the elements through the parameter's loan and moves
+# nothing out of it.
+[[case]]
+name = "for_borrow_array_of_non_copy_elements"
+spec = ["4.8:25", "4.8:26"]
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn total_len(borrow a: [StrBuf; 2]) -> u64 {
+    let mut t: u64 = 0;
+    for s in a {
+        t += s.len();
+    }
+    t
+}
+
+fn main() -> i32 {
+    let a: [StrBuf; 2] = ["ab", "cde"];
+    let n = total_len(borrow a);
+    @intCast(n + a[0].len())
+}
+"""
+exit_code = 7
+
+# A by-value temporary iterable has no owner outside the loop, so the `for`
+# binds it once and its destructor still runs exactly once, after the loop.
+[[case]]
+name = "for_temporary_iterable_dropped_once_after_loop"
+spec = ["4.8:26"]
+source = """
+struct Res { tag: i32 }
+drop fn Res(self) { @dbg(self.tag); }
+fn make() -> [Res; 2] { [Res { tag: 7 }, Res { tag: 8 }] }
+fn main() -> i32 {
+    let mut total = 0;
+    for r in make() {
+        total = total + r.tag;
+    }
+    @dbg(99);
+    total
+}
+"""
+exit_code = 15
+expected_stdout = "7\n8\n99\n"
