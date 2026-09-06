@@ -173,7 +173,6 @@ function __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s3_736574t0_:
     mov v0, rdi
     mov v1, 42
     mov [v0], v1
-    mov v2, 0
     ret
 
 function main:
@@ -187,7 +186,6 @@ function main:
     push rax
     pop rdi
     call __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s3_736574t0_
-    mov v3, 0
     mov v5, [rbp-8]
     mov rdi, v5
     call __rue_exit
@@ -213,7 +211,6 @@ function __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s3_736574t0_:
     mov v0, x0
     mov v1, #42
     str v1, [v0]
-    mov v2, #0
     ret
 
 function main:
@@ -225,7 +222,6 @@ function main:
     add v4, fp, #-8
     mov x0, v4
     bl __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s3_736574t0_
-    mov v3, #0
     ldr v5, [fp, #-8]
     mov x0, v5
     bl __rue_exit
@@ -937,7 +933,6 @@ function main:
     mov v0, 1
     mov v1, 42
     mov v2, v0
-    mov v3, 0
     mov [rbp-16], v0
     mov [rbp-8], v1
     mov v4, 0
@@ -976,7 +971,6 @@ function main:
     mov v0, #1
     mov v1, #42
     mov v2, v0
-    mov v3, #0
     str v0, [fp, #-16]
     str v1, [fp, #-8]
     mov v4, #0
