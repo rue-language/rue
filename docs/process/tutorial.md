@@ -124,8 +124,6 @@ when the limitation is lifted and update the chapter that mentions it.
 
 - `[T]` slice parameters accept only 64-bit element types (E0908, RUE-2055);
   the slice examples use `i64`.
-- `for` over a `borrow` `StrBuf` parameter is rejected (E0429, RUE-2052); the
-  examples iterate a clone or take the string by value.
 - A qualified enum path cannot appear inside another variant's payload
   pattern (`R.Err(E.A(x))` does not parse, RUE-2053); the examples use a
   nested `match`.

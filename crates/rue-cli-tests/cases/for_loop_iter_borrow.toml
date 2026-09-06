@@ -1,6 +1,6 @@
 # A `for` loop is a shared borrow of the collection for the loop's duration
-# (spec 4.8:26, RUE-233/RUE-257/RUE-259 — one root: the loop desugared to a
-# move-out instead of the shared borrow the spec mandates). Three faces:
+# (spec 4.8:26, RUE-233/RUE-257/RUE-259/RUE-2052 — one root: the loop desugared
+# to a move-out instead of the shared borrow the spec mandates). Four faces:
 #
 #  * RUE-233: mutating the iterated place — element (`a[i]=`), whole variable
 #    (`a=`), or field — inside the body is E0428 (`MutateBorrowedValue`), like
@@ -11,13 +11,16 @@
 #  * RUE-259: a NON-Copy element type is bound by shared borrow, not moved out
 #    of the collection — the loop compiles (used to be E0904), the array drops
 #    each element exactly once, and moving the binder out is rejected.
+#  * RUE-2052: because the loop only reads the collection through that borrow,
+#    the iterable need not be owned by the iterating function — a `borrow` or
+#    `inout` parameter is iterable (used to be E0429).
 #
 # Iterating a different collection, and read-only iteration, still compile.
 
 [section]
 id = "cli.for_loop_iter_borrow"
 name = "For-loop iterable borrow-check"
-description = "A `for` loop is a shared borrow: non-Copy elements iterate without moving, per-element destructors run once, mutating the collection mid-loop is E0428 (RUE-233/257/259)."
+description = "A `for` loop is a shared borrow: non-Copy elements iterate without moving, borrowed iterables are accepted, per-element destructors run once, mutating the collection mid-loop is E0428 (RUE-233/257/259/2052)."
 
 [[case]]
 name = "mutate_iterated_element_is_e0428"
@@ -239,3 +242,153 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 9
+
+# --- RUE-2052: the iterable may itself be borrowed ---------------------------
+# Iteration reads the collection through a loan, so the iterating function does
+# not have to own it: a `borrow` or `inout` parameter is iterable, and no move
+# is recorded against a local either. The reported program is target-pinned like
+# cli.abi_conformance: every host compiles and links both backends, and the
+# matching native host executes it.
+
+[[case]]
+name = "x86_64_linux_for_over_borrow_strbuf_parameter"
+description = "RUE-2052: `for b in s` over a `borrow StrBuf` parameter compiles and counts 2 spaces on x86-64 (was E0429)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn count_spaces(borrow s: StrBuf) -> u64 {
+    let mut n: u64 = 0;
+    for b in s {
+        if b == 32 { n += 1; }
+    }
+    n
+}
+
+fn main() -> i32 {
+    let s: StrBuf = "a b c";
+    @intCast(count_spaces(borrow s))
+}
+""" }]
+exit_code = 2
+
+[[case]]
+name = "aarch64_linux_for_over_borrow_strbuf_parameter"
+description = "RUE-2052: the same borrowed-iterable program compiles, links, and (on a native host) counts 2 spaces on AArch64."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn count_spaces(borrow s: StrBuf) -> u64 {
+    let mut n: u64 = 0;
+    for b in s {
+        if b == 32 { n += 1; }
+    }
+    n
+}
+
+fn main() -> i32 {
+    let s: StrBuf = "a b c";
+    @intCast(count_spaces(borrow s))
+}
+""" }]
+exit_code = 2
+
+[[case]]
+name = "for_over_inout_strbuf_parameter_is_a_read"
+description = "RUE-2052: iterating an `inout StrBuf` parameter is a shared read, not a write — the parameter stays mutable afterward (2 spaces + 6 bytes = 8)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn count_then_push(inout s: StrBuf) -> u64 {
+    let mut n: u64 = 0;
+    for b in s {
+        if b == 32 { n += 1; }
+    }
+    s.push(33);
+    n
+}
+
+fn main() -> i32 {
+    let mut s: StrBuf = "a b c";
+    let n = count_then_push(inout s);
+    @intCast(n + s.len())
+}
+""" }]
+exit_code = 8
+
+[[case]]
+name = "for_over_borrow_array_of_non_copy_elements"
+description = "RUE-2052: a `borrow [StrBuf; 2]` parameter iterates without moving out of the loan (2 + 3 bytes, plus 2 read back from the caller's array = 7)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn total_len(borrow a: [StrBuf; 2]) -> u64 {
+    let mut t: u64 = 0;
+    for s in a {
+        t += s.len();
+    }
+    t
+}
+
+fn main() -> i32 {
+    let a: [StrBuf; 2] = ["ab", "cde"];
+    let n = total_len(borrow a);
+    @intCast(n + a[0].len())
+}
+""" }]
+exit_code = 7
+
+[[case]]
+name = "for_over_local_strbuf_leaves_it_usable"
+description = "RUE-2052 (the other side): a local StrBuf iterated by a `for` is borrowed, not moved, so `s.len()` after the loop is fine (2 + 5 = 7)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let s: StrBuf = "a b c";
+    let mut n: u64 = 0;
+    for b in s {
+        if b == 32 { n += 1; }
+    }
+    @intCast(n + s.len())
+}
+""" }]
+exit_code = 7
+
+[[case]]
+name = "for_over_temporary_iterable_drops_it_once_after_the_loop"
+description = "RUE-2052 control: a by-value temporary iterable is still owned by the loop's hidden binding and dropped exactly once, after the loop."
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Res { tag: i32 }
+drop fn Res(self) { @dbg(self.tag); }
+fn make() -> [Res; 2] { [Res { tag: 7 }, Res { tag: 8 }] }
+fn main() -> i32 {
+    let mut total = 0;
+    for r in make() {
+        total = total + r.tag;
+    }
+    @dbg(99);
+    total
+}
+""" }]
+stdout = "7\n8\n99\n"
+exit_code = 15

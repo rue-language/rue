@@ -835,8 +835,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     // These three intrinsics are synthesized ONLY by the `for`-loop desugaring
     // in AstGen (`gen_for`); they are the type-dependent leaves of the
     // desugaring, resolved here once the collection's type is known. Reading
-    // the collection is a scoped borrow (ADR-0037): the move state is snapshot
-    // and restored so iterating does not consume the source.
+    // the collection is a scoped borrow (ADR-0037, spec 4.8:26): it is analyzed
+    // under a by-ref root so iterating neither consumes the source nor moves
+    // out of a `borrow`/`inout` parameter.
     // ========================================================================
 
     /// [`rue_rir::InternalIntrinsic::IterLen`] computes the loop bound
@@ -998,10 +999,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(AnalysisResult::new(call_ref, ret_ty))
     }
 
-    /// Analyze a for-loop's collection operand as a scoped borrow: the value is
-    /// read but its move state is restored afterward, so referencing it each
-    /// iteration (for the bound, the element, and the advance) does not consume
-    /// the source and it remains usable after the loop.
+    /// Analyze a for-loop's collection operand as a scoped borrow (spec
+    /// 4.8:26): referencing it each iteration (for the bound, the element, and
+    /// the advance) reads through a loan instead of consuming the source, so
+    /// the collection is neither moved nor dropped by the loop and remains
+    /// usable afterward.
+    ///
+    /// The read is analyzed under `byref_arg_root`, exactly as a `borrow` call
+    /// argument is: that is what makes a `borrow` or `inout` parameter
+    /// iterable, since moving out of either is rejected outright and no
+    /// after-the-fact move-state restore can undo that diagnostic (RUE-2052).
+    /// The snapshot/restore around it stays as the belt-and-braces guarantee
+    /// that no move state survives the operand, whatever place shape the
+    /// desugar hands in.
     pub(super) fn analyze_borrowed_collection(
         &mut self,
         air: &mut Air,
@@ -1010,7 +1020,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> CompileResult<AnalysisResult> {
         let root = self.extract_root_variable(coll);
         let move_before = self.snapshot_move_state(root, ctx);
-        let coll_result = self.analyze_inst(air, coll, ctx)?;
+        let coll_result = self.analyze_with_borrow_root(air, coll, root, ctx)?;
         self.restore_move_state_and_cancel(air, coll_result.air_ref, move_before, ctx);
         Ok(coll_result)
     }
