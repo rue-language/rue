@@ -362,6 +362,105 @@ compile_stdout_contains = [
 ]
 
 [[case]]
+name = "a_very_long_panic_message_is_truncated_and_stays_a_trap_panic"
+description = """
+RUE-2064: the record's `message` is bounded to 4096 bytes and marked with
+` …[truncated]`, and the bound covers the whole field, so the pinned `panic: `
+prefix counts toward it. `HEAD` and `TAIL` bracket exactly 4081 filler bytes, so
+the record ending immediately after `TAIL` is what pins the cut at 4096 and not
+merely somewhere.
+
+Unbounded, this message costs the test its verdict rather than its tail: the
+channel's retention budget is a quarter of a stream's, the runner kills the
+process group when a record exhausts it, and the report that reaches the event
+stream is `output_overflow` with no kind and no exit code — which is what this
+case asserts against. Stderr keeps the whole 300008-byte message, so the bound
+is the channel's alone.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+
+test "gives up at length" {
+    let mut message = std.strbuf.StrBuf.from_str(borrow "HEAD");
+    let mut i: u64 = 0;
+    while i < 4081 {
+        message.push(120);
+        i = i + 1;
+    }
+    message.append_str(borrow "TAIL");
+    while i < 300000 {
+        message.push(120);
+        i = i + 1;
+    }
+    @panic(message);
+}
+""" },
+]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"failure":{"exit_code":101,"kind":"trap:panic","location":{"column":5,"file":"tests.rue","line":15},"message":"panic: HEADxxxxx',
+    'xxxxxTAIL …[truncated]"}',
+    '"stderr":{"bytes_total":300016,',
+    '"verdict":"fail"',
+]
+compile_stdout_not_contains = ['output_overflow']
+
+[[case]]
+name = "a_panic_message_that_is_not_utf8_still_reports_its_class"
+description = """
+RUE-2064: a Rue string is an arbitrary byte sequence, so a `@panic` message can
+carry bytes that are not UTF-8. The writer escapes each one as `\\u00xx` rather
+than passing it through, because a channel line the runner cannot decode costs
+the test its class: the record was dropped as malformed and the verdict fell
+back to a bare `exit` with a runner note. The `c` before the two escaped bytes
+is what shows the escaping is per-byte rather than per-line.
+
+Stderr is unchanged and still carries the raw bytes, which is why it is tagged
+`base64` here while the record is ordinary text (§2).
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+
+test "gives up in no encoding at all" {
+    let mut message = std.strbuf.StrBuf.new();
+    message.push(99);
+    message.push(255);
+    message.push(254);
+    @panic(message);
+}
+""" },
+]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"failure":{"exit_code":101,"kind":"trap:panic","location":{"column":5,"file":"tests.rue","line":8},"message":"panic: cÿþ"}',
+    # The channel line spelled those two bytes `\u00ff\u00fe`; the event
+    # stream publishes the scalars they name, so the bytes read back.
+    '"stderr":{"bytes_total":11,"data":"cGFuaWM6IGP//go=","encoding":"base64"}',
+    '"verdict":"fail"',
+]
+compile_stdout_not_contains = ["runner_note"]
+
+[[case]]
 name = "an_out_of_bounds_index_takes_its_class_from_the_channel"
 description = """
 `__rue_bounds_check` writes its own `trap:bounds_check` record, so the class is

@@ -119,6 +119,37 @@ without the newline. The two routes to one trap therefore agree: a runner
 reading the channel and a runner reading stderr publish the same kind and the
 same text, and the record adds only the site (RUE-2019).
 
+**The `message` field is bounded to 4096 bytes**, the same rendering bound the
+test-body `?` payload and the comparison operands use. A longer one is cut to
+that bound and the marker ` …[truncated]` is appended, in the spelling spec
+6.7:15 already fixes for a truncated rendering; the bound covers the whole
+field, so a trap's pinned `panic: ` prefix counts toward it. This is what keeps
+a long message from costing the test its verdict: the channel's retention budget
+is a quarter of a stream's and escaping can expand a control byte six-fold, so a
+message a few tens of kilobytes long would exhaust the budget, and the runner
+answers an exhausted channel by killing the process group and publishing
+`output_overflow` — losing the class and the exit status the record was carrying
+(RUE-2064). Stderr has no such role and still prints the message whole within
+its own 1 MiB retention budget, so the two routes to a trap agree except on the
+tail of a message past the bound. The bound buys the verdict back only up to
+that budget: a message long enough to exhaust stderr's own retention still
+overflows there, and is still published as `output_overflow`.
+
+**Every string field is JSON text.** A Rue string is an arbitrary byte sequence,
+so a `message`, a `payload`, or a rendered operand can carry bytes that are not
+UTF-8. The writer escapes the quote, the backslash, every control byte below
+`0x20`, and — of the bytes at or above `0x80` — only those that are not part of
+a well-formed UTF-8 sequence, each as `\u00xx` naming the byte's own value.
+Ordinary non-ASCII text therefore reaches the record byte-identical and stays
+legible, while an ill-formed byte reaches it as an escape instead of making the
+whole line undecodable, which before RUE-2064 turned a `trap:panic` into a bare
+`exit` with a runner note about an unreadable channel. The escape keeps the line
+JSON text; it is not a lossless encoding. `message` is **not byte-reversible**:
+a scalar in `U+0080`–`U+00FF` may be either an escaped raw byte or a genuine
+character of that value, and the two decode identically. A consumer that needs
+the exact original bytes reads the stderr capture instead, whose `encoding` tag
+makes it byte-faithful within its retained window (see Capture records).
+
 A `failure` record carries **at most one of** `payload` and the pair
 `left`/`right`, and a bare `@assert` carries neither: its record ends at the
 location object, because it has no operands to report and nothing structured to
@@ -158,11 +189,18 @@ Writes are best-effort by design: an image run by hand has no descriptor 3, and
 security boundary** — it prevents accidental collision with a test's own stdout,
 which is all its consumers are promised.
 
-**Producers in this version.** Every record on this channel is
-compiler-synthesized: `@assert`, `@assert_eq`, `@assert_ne`, the test-body `?`
-failure arm, and the dispatcher's `complete` epilogue. Nothing in the language
-can call `__rue_test_failure_site` or `__rue_test_fail`, so the user assertion
-library of ADR-0083 §5.1 is what the open `kind` and the reserved payload shapes
+**Producers in this version.** Records reach the channel by two routes, both
+the implementation's. Compiler-synthesized code writes them for `@assert`,
+`@assert_eq`, `@assert_ne`, the test-body `?` failure arm, and the dispatcher's
+`complete` epilogue; for `@panic` it stages only the site, and the panic helper
+that `@panic` aborts through writes the record. The runtime writes them for
+itself from inside the trap helpers, which is how a failure with no Rue call
+site at all still reports: an allocation failure reaches `__rue_panic`, an
+`s[i]` past the end reaches `__rue_bounds_check` from within
+`__rue_str_byte_at`, and a standard library guard that spells `@panic` reports
+as any other `@panic` does (RUE-2019). Nothing in the language can call
+`__rue_test_failure_site` or `__rue_test_fail`, so the user assertion library of
+ADR-0083 §5.1 is what the open `kind` and the reserved payload shapes
 are *for* rather than something that exists yet — a line naming an unknown
 `record` is recorded as malformed, which fails the test. A user-callable
 intrinsic is tracked as RUE-2027.
@@ -281,17 +319,20 @@ Which failures carry a site of their own, and which still fall back to the
 | `trap:panic` | The `@panic` intrinsic's own site, both spellings alike (RUE-2019). |
 | Every other `trap:<class>` | The `test` declaration's header. |
 
-The remaining traps are the checks the compiler emits below AIR — the
-fixed-array bounds check in the place lowering, and the division-by-zero,
-overflow, and `@intCast` range checks the CFG and codegen insert. None of them
-is an AIR call carrying a span, and the two ways to give them one both cost the
-*passing* path: staging a site beside the check runs on every access, and
-staging it inside the failing arm costs a branch on the negated condition and
-the arm's register pressure in every function that indexes. Until the trap edge
-can carry a site the passing path does not pay for, those failures name the
-header, and their `kind` is still exact — `__rue_bounds_check` writes its
-`trap:bounds_check` record whether or not a site was staged, so the class comes
-from the channel rather than from matching a stderr line.
+The remaining traps are the checks no lowering stages a site beside: the
+fixed-array bounds check in the place lowering, the slice bounds check semantic
+analysis emits as a `BoundsCheck` intrinsic, the `s[i]` check
+`__rue_str_byte_at` performs inside the runtime, and the division-by-zero,
+overflow, and `@intCast` range checks the CFG and codegen insert. The slice
+check is an AIR intrinsic and does carry a span, so what stops it is cost rather
+than reach, and both ways to spend it fall on the *passing* path: staging a site
+beside the check runs on every access, and staging it inside the failing arm
+costs a branch on the negated condition and the arm's register pressure in every
+function that indexes. Until the trap edge can carry a site the passing path
+does not pay for, those failures name the header, and their `kind` is still
+exact — `__rue_bounds_check` writes its `trap:bounds_check` record whether or
+not a site was staged, so the class comes from the channel rather than from
+matching a stderr line.
 
 `timeout` and `crash` verdicts also carry a failure record, with kind `timeout`
 and `signal` respectively.

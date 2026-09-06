@@ -16,8 +16,17 @@
 //!   reader terminates the process before `write` returns at all. The runner
 //!   holds its read end open until the child exits precisely for this reason.)
 //! - **No allocation, and no staging buffer.** A record is emitted as runs
-//!   borrowed straight from the caller's own bytes, so an arbitrarily long
-//!   message needs no heap and no bound on its own length.
+//!   borrowed straight from the caller's own bytes, so no part of it is ever
+//!   assembled in memory first. The only fixed-size buffer is the six bytes one
+//!   escape occupies.
+//!
+//! A record's `message` is bounded to [`MESSAGE_BOUND`] because the channel has
+//! a retention budget of its own and a record that exhausts it costs the test
+//! its verdict: the runner kills the process group and publishes
+//! `output_overflow` in place of the class and the exit status the record was
+//! carrying. Stderr, which has no such role, still prints the message whole
+//! within its own retention budget — a message large enough to exhaust that
+//! budget too still overflows there.
 //!
 //! Records reserved by §5.1 and §5.2 — `promotion` payloads and per-case
 //! `sub_result` identities — are named by the schema and produced by nothing in
@@ -108,6 +117,22 @@ const BOUNDS_CHECK_MESSAGE: [u8; 26] = *b"error: index out of bounds";
 /// The pinned malformed-selector diagnostic (ADR-0083 §3).
 const USAGE_MESSAGE: [u8; 50] = *b"rue-test: expected one 16-hex-digit test selector\n";
 
+/// How many bytes of a record's `message` reach the channel.
+///
+/// The same 4 KiB rendering bound the `?` payload and the comparison operands
+/// are held to (spec 6.7:15), applied here for a different reason: those are
+/// bounded so a report stays readable, and this is bounded so a report stays a
+/// report. The channel's retention budget is a quarter of a stream's and JSON
+/// escaping can expand a control byte six-fold, so a message a few tens of
+/// kilobytes long would exhaust the budget, and the runner answers an exhausted
+/// channel by killing the process group and publishing `output_overflow` — the
+/// trap's class and its exit status lost to the length of its own text.
+const MESSAGE_BOUND: usize = 4096;
+
+/// Appended to a `message` the bound cut short, in the spelling spec 6.7:15
+/// already fixes for a truncated rendering.
+const TRUNCATION_MARKER: [u8; 15] = *b" \xe2\x80\xa6[truncated]";
+
 /// Emitter for one channel frame.
 ///
 /// `emit` receives already-escaped bytes in order, and the frame is assembled
@@ -137,21 +162,55 @@ impl<'a> FrameWriter<'a> {
 
     /// Emit `bytes` as the body of a JSON string.
     ///
-    /// Rue strings are arbitrary byte sequences, not guaranteed UTF-8, so this
-    /// escapes exactly what JSON requires and nothing else: the quote, the
-    /// backslash, and every control byte below `0x20` as a `\u00xx` escape.
-    /// Bytes at or above `0x80` are emitted raw, which keeps a valid UTF-8
-    /// message byte-identical on the wire and leaves an invalid one to the
-    /// runner's encoding tag (§2) rather than corrupting it here.
+    /// A record has to be JSON *text*, and a Rue string is an arbitrary byte
+    /// sequence: `@panic` and `@assert(c, msg)` both take one, and so does
+    /// anything the standard library panics with. A byte that is not part of a
+    /// well-formed UTF-8 sequence therefore cannot travel raw — the whole line
+    /// would decode as malformed and the runner would drop a real `trap:panic`
+    /// to a bare `exit` with a note about an unreadable channel.
+    ///
+    /// So this escapes what JSON requires — the quote, the backslash, and every
+    /// control byte below `0x20` — and, of the bytes at or above `0x80`, only
+    /// the ones that do not form a valid sequence. Each of those becomes
+    /// `\u00xx`, which names the byte's own value and keeps the line JSON text.
+    /// The field is not byte-reversible, though: an escaped byte and a genuine
+    /// character of the same value decode to the same scalar, so a consumer
+    /// that needs the exact bytes reads the stderr capture instead. Validating
+    /// rather than escaping every high byte is what keeps an ordinary non-ASCII
+    /// message byte-identical on the wire and legible in a report.
     ///
     /// Unescaped stretches are emitted as one run, so a message that needs no
     /// escaping costs exactly one write.
     fn escaped(&mut self, bytes: &[u8]) {
         const HEX: [u8; 16] = *b"0123456789abcdef";
         let mut run_start = 0;
-        for (index, byte) in bytes.iter().enumerate() {
+        let mut index = 0;
+        while index < bytes.len() {
+            let byte = bytes[index];
+            if byte >= 0x80 {
+                // A valid sequence stays in the run whole; an invalid lead or
+                // continuation byte is escaped one byte at a time, so the next
+                // iteration re-examines the rest as a fresh sequence.
+                if let Some(width) = utf8_sequence_width(&bytes[index..]) {
+                    index += width;
+                } else {
+                    self.raw(&bytes[run_start..index]);
+                    let escape = [
+                        b'\\',
+                        b'u',
+                        b'0',
+                        b'0',
+                        HEX[usize::from(byte >> 4)],
+                        HEX[usize::from(byte & 0x0f)],
+                    ];
+                    self.raw(&escape);
+                    index += 1;
+                    run_start = index;
+                }
+                continue;
+            }
             let mut escape = [0u8; 6];
-            let escape_len = match *byte {
+            let escape_len = match byte {
                 b'"' => {
                     escape[0] = b'\\';
                     escape[1] = b'"';
@@ -178,6 +237,7 @@ impl<'a> FrameWriter<'a> {
                 self.raw(&escape[..escape_len]);
                 run_start = index + 1;
             }
+            index += 1;
         }
         self.raw(&bytes[run_start..]);
     }
@@ -206,6 +266,44 @@ impl<'a> FrameWriter<'a> {
     }
 }
 
+/// The width of the well-formed UTF-8 sequence `bytes` starts with, or `None`
+/// when it does not start with one.
+///
+/// The ranges are Unicode's own well-formed byte sequences (Table 3-7), which
+/// reject an overlong encoding, a surrogate, and a scalar above `U+10FFFF` as
+/// well as a truncated sequence — `serde_json` and every other reader applies
+/// the same table, so anything looser here would let a line through that a
+/// reader still rejects. Written out rather than delegated to
+/// `core::str::from_utf8` so the freestanding build's emitted code stays a
+/// handful of comparisons with no libcall in it.
+fn utf8_sequence_width(bytes: &[u8]) -> Option<usize> {
+    let lead = *bytes.first()?;
+    let (width, first_continuation) = match lead {
+        0x00..=0x7f => return Some(1),
+        0xc2..=0xdf => (2, 0x80..=0xbf),
+        0xe0 => (3, 0xa0..=0xbf),
+        0xe1..=0xec | 0xee..=0xef => (3, 0x80..=0xbf),
+        0xed => (3, 0x80..=0x9f),
+        0xf0 => (4, 0x90..=0xbf),
+        0xf1..=0xf3 => (4, 0x80..=0xbf),
+        0xf4 => (4, 0x80..=0x8f),
+        _ => return None,
+    };
+    if bytes.len() < width || !first_continuation.contains(&bytes[1]) {
+        return None;
+    }
+    // The lead byte's range already constrained the first continuation; the
+    // rest are unconstrained trail bytes.
+    let mut index = 2;
+    while index < width {
+        if !(0x80..=0xbf).contains(&bytes[index]) {
+            return None;
+        }
+        index += 1;
+    }
+    Some(width)
+}
+
 /// Write the terminal completion frame.
 ///
 /// The dispatcher's epilogue is the only producer: exit 0 with end of stream
@@ -219,16 +317,22 @@ fn complete_frame(emit: &mut dyn FnMut(&[u8])) {
 /// Write every field the failure shapes share, through the open location
 /// object: they differ only in what follows the column.
 ///
-/// The message arrives as two runs rather than one so a trap can report the
-/// whole of its pinned stderr line — `panic: ` and the programmer's own bytes —
-/// with no staging buffer and no bound on the message's length. Every producer
-/// whose message is one piece passes an empty prefix, which costs no write.
-#[allow(clippy::too_many_arguments)]
+/// The message arrives as a list of runs rather than one view so a producer
+/// whose text is spelled in pieces — a trap's pinned stderr line is its
+/// `panic: ` prefix and then the programmer's own bytes — can report the whole
+/// of it without joining the pieces in a buffer first. They are one JSON string
+/// on the wire and one message to every consumer.
+///
+/// The runs are bounded together to [`MESSAGE_BOUND`]: the bound belongs to the
+/// `message` field a reader sees, not to whichever producer's piece happened to
+/// be long. A run the bound falls inside is cut at that byte, so a UTF-8
+/// sequence the cut lands in the middle of reaches the record as the escapes
+/// its leftover bytes get — still JSON text, which is the property that has to
+/// hold.
 fn failure_head(
     writer: &mut FrameWriter<'_>,
     kind: &[u8],
-    message_prefix: &[u8],
-    message: &[u8],
+    message: &[&[u8]],
     file: &[u8],
     line: u32,
     column: u32,
@@ -236,8 +340,16 @@ fn failure_head(
     writer.raw(&FAILURE_HEAD);
     writer.escaped(kind);
     writer.raw(&MESSAGE_FIELD);
-    writer.escaped(message_prefix);
-    writer.escaped(message);
+    let mut remaining = MESSAGE_BOUND;
+    for run in message {
+        if run.len() > remaining {
+            writer.escaped(&run[..remaining]);
+            writer.raw(&TRUNCATION_MARKER);
+            break;
+        }
+        writer.escaped(run);
+        remaining -= run.len();
+    }
     writer.raw(&LOCATION_FIELD);
     writer.escaped(file);
     writer.raw(&LINE_FIELD);
@@ -261,7 +373,7 @@ fn failure_frame(
     payload: &[u8],
 ) {
     let mut writer = FrameWriter::new(emit);
-    failure_head(&mut writer, kind, &[], message, file, line, column);
+    failure_head(&mut writer, kind, &[message], file, line, column);
     writer.raw(&PAYLOAD_FIELD);
     writer.escaped(payload);
     writer.raw(&FRAME_TAIL);
@@ -292,8 +404,7 @@ fn comparison_frame(
     failure_head(
         &mut writer,
         kind,
-        &[],
-        comparison_message(kind),
+        &[comparison_message(kind)],
         file,
         line,
         column,
@@ -329,7 +440,7 @@ fn comparison_message(kind: &[u8]) -> &'static [u8] {
 /// `payload` would claim otherwise.
 fn assert_frame(emit: &mut dyn FnMut(&[u8]), message: &[u8], file: &[u8], line: u32, column: u32) {
     let mut writer = FrameWriter::new(emit);
-    failure_head(&mut writer, &ASSERT_KIND, &[], message, file, line, column);
+    failure_head(&mut writer, &ASSERT_KIND, &[message], file, line, column);
     writer.raw(&LOCATION_TAIL);
 }
 
@@ -337,10 +448,9 @@ fn assert_frame(emit: &mut dyn FnMut(&[u8]), message: &[u8], file: &[u8], line: 
 ///
 /// The shape is the bare assertion's: a trap has no operands to report and
 /// nothing structured for the open `payload`, so the record ends at the
-/// location object. The message arrives as two runs rather than one so
-/// `@panic(msg)` can report the whole pinned stderr line — the `panic: `
-/// prefix and the programmer's own bytes — with no staging buffer and no bound
-/// on the message's length.
+/// location object. Its message is the pinned stderr line, spelled as the two
+/// runs [`failure_head`] joins into one string: the `panic: ` prefix and the
+/// programmer's own bytes.
 fn trap_frame(
     emit: &mut dyn FnMut(&[u8]),
     kind: &[u8],
@@ -354,8 +464,7 @@ fn trap_frame(
     failure_head(
         &mut writer,
         kind,
-        message_prefix,
-        message,
+        &[message_prefix, message],
         file,
         line,
         column,
@@ -896,8 +1005,11 @@ mod tests {
         );
     }
 
+    /// A well-formed sequence travels raw and an ill-formed byte is escaped, so
+    /// a message that mixes the two stays legible where it can be and stays
+    /// JSON text where it cannot.
     #[test]
-    fn bytes_at_or_above_0x80_are_written_raw() {
+    fn valid_utf8_travels_raw_and_an_invalid_byte_is_escaped() {
         let bytes = frame_bytes(|emit| {
             failure_frame(
                 emit,
@@ -909,26 +1021,143 @@ mod tests {
                 b"",
             )
         });
-        // The message field body appears verbatim, invalid UTF-8 included.
-        let needle: &[u8] = &[
-            b'"', b'm', b'e', b's', b's', b'a', b'g', b'e', b'"', b':', b'"',
-        ];
-        let start = bytes
-            .windows(needle.len())
-            .position(|window| window == needle)
-            .unwrap()
-            + needle.len();
-        assert_eq!(&bytes[start..start + 4], &[0xe2, 0x9c, 0x93, 0xff]);
+        let rendered = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            rendered.contains("\"message\":\"\u{2713}\\u00ff\""),
+            "{rendered}"
+        );
     }
 
+    /// Every ill-formed shape Unicode's Table 3-7 rejects: a bare continuation
+    /// byte, a lead byte with no continuation after it, an overlong encoding, a
+    /// surrogate, and a scalar above `U+10FFFF`. Each contributes exactly its
+    /// own bytes as escapes, so nothing is dropped and nothing is invented.
     #[test]
-    fn a_long_message_is_emitted_in_order_across_runs() {
-        let long = std::vec![b'x'; 4_096];
+    fn every_ill_formed_sequence_is_escaped_byte_by_byte() {
+        for (input, expected) in [
+            (&[0x80u8][..], "\\u0080"),
+            (&[0xc2][..], "\\u00c2"),
+            (&[0xc2, 0x41][..], "\\u00c2A"),
+            // Overlong: `/` encoded in two bytes.
+            (&[0xc0, 0xaf][..], "\\u00c0\\u00af"),
+            // Surrogate U+D800.
+            (&[0xed, 0xa0, 0x80][..], "\\u00ed\\u00a0\\u0080"),
+            // Above U+10FFFF.
+            (
+                &[0xf4, 0x90, 0x80, 0x80][..],
+                "\\u00f4\\u0090\\u0080\\u0080",
+            ),
+            (&[0xff, 0xfe][..], "\\u00ff\\u00fe"),
+            // Truncated four-byte sequence at the end of the message.
+            (&[0xf0, 0x9f][..], "\\u00f0\\u009f"),
+        ] {
+            let bytes =
+                frame_bytes(|emit| failure_frame(emit, b"assert", input, b"a.rue", 1, 1, b""));
+            let rendered = std::str::from_utf8(&bytes).unwrap();
+            assert!(
+                rendered.contains(&std::format!("\"message\":\"{expected}\"")),
+                "{input:?}: {rendered}"
+            );
+        }
+    }
+
+    /// Every well-formed shape reaches the record byte-identical: two, three,
+    /// and four-byte sequences, and the boundary scalars of each range.
+    #[test]
+    fn every_well_formed_sequence_travels_raw() {
+        for text in [
+            "\u{80}",
+            "\u{7ff}",
+            "\u{800}",
+            "\u{d7ff}",
+            "\u{e000}",
+            "\u{ffff}",
+            "\u{10000}",
+            "\u{10ffff}",
+        ] {
+            let bytes = frame_bytes(|emit| {
+                failure_frame(emit, b"assert", text.as_bytes(), b"a.rue", 1, 1, b"")
+            });
+            let rendered = std::str::from_utf8(&bytes).unwrap();
+            assert!(
+                rendered.contains(&std::format!("\"message\":\"{text}\"")),
+                "{text:?}: {rendered}"
+            );
+        }
+    }
+
+    /// A message exactly at the bound is emitted in order across its runs and
+    /// carries no marker: the bound is the last length that fits, not the first
+    /// that truncates.
+    #[test]
+    fn a_message_at_the_bound_is_emitted_whole_across_runs() {
+        let long = std::vec![b'x'; MESSAGE_BOUND];
         let bytes = frame_bytes(|emit| failure_frame(emit, b"assert", &long, b"a.rue", 1, 1, b""));
         let rendered = std::str::from_utf8(&bytes).unwrap();
         assert!(rendered.starts_with("{\"record\":\"failure\","));
         assert!(rendered.ends_with("\"payload\":\"\"}\n"));
         assert_eq!(rendered.matches('x').count(), long.len());
+        assert!(!rendered.contains("[truncated]"), "{}", &rendered[..80]);
+    }
+
+    /// One byte past the bound is cut to it and marked. Without this the record
+    /// grows with the message, and a message a few tens of kilobytes long
+    /// exhausts the channel's retention budget — which costs the test its whole
+    /// verdict, not just the tail of its text (RUE-2064).
+    #[test]
+    fn a_message_past_the_bound_is_cut_to_it_and_marked() {
+        let long = std::vec![b'x'; MESSAGE_BOUND + 1];
+        let bytes = frame_bytes(|emit| failure_frame(emit, b"assert", &long, b"a.rue", 1, 1, b""));
+        let rendered = std::str::from_utf8(&bytes).unwrap();
+        assert_eq!(rendered.matches('x').count(), MESSAGE_BOUND);
+        assert!(
+            rendered.contains(&std::format!(
+                "x \u{2026}[truncated]\",\"location\":{{\"file\":\"a.rue\""
+            )),
+            "{}",
+            &rendered[rendered.len() - 80..]
+        );
+    }
+
+    /// The bound belongs to the `message` field, so a trap's pinned prefix
+    /// counts toward it: the field a reader sees is 4096 bytes plus the marker
+    /// however many runs the producer spelled it in.
+    #[test]
+    fn a_traps_prefix_counts_against_the_same_bound() {
+        let long = std::vec![b'x'; MESSAGE_BOUND];
+        let bytes = frame_bytes(|emit| {
+            trap_frame(emit, &TRAP_PANIC_KIND, &PANIC_PREFIX, &long, b"a.rue", 1, 1)
+        });
+        let rendered = std::str::from_utf8(&bytes).unwrap();
+        assert_eq!(
+            rendered.matches('x').count(),
+            MESSAGE_BOUND - PANIC_PREFIX.len()
+        );
+        assert!(
+            rendered.contains("\"message\":\"panic: x"),
+            "{}",
+            &rendered[..80]
+        );
+        assert!(rendered.contains(" \u{2026}[truncated]\","));
+    }
+
+    /// A cut that lands inside a UTF-8 sequence leaves that sequence's head
+    /// bytes ill-formed, and the escaper answers them the way it answers any
+    /// other ill-formed byte. The record stays JSON text, which is the property
+    /// truncation must not be able to break.
+    #[test]
+    fn a_cut_inside_a_sequence_still_yields_json_text() {
+        // 4095 filler bytes, then a three-byte sequence the bound splits after
+        // its first byte.
+        let mut long = std::vec![b'x'; MESSAGE_BOUND - 1];
+        long.extend_from_slice("\u{2713}".as_bytes());
+        let bytes = frame_bytes(|emit| failure_frame(emit, b"assert", &long, b"a.rue", 1, 1, b""));
+        let rendered = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            rendered.contains("x\\u00e2 \u{2026}[truncated]\""),
+            "{}",
+            &rendered[rendered.len() - 80..]
+        );
     }
 
     #[test]
