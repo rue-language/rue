@@ -96,8 +96,8 @@ ALLOWANCES = {
         "oracle harness ABI, representation-vector, and typed-view bookkeeping"
         " checks, not compiler correctness gates",
     ),
+    "crates/rue-parser/src/parser/expressions.rs": Allowance(1, "redundant parser entry precondition"),
     "crates/rue-parser/src/parser/shared.rs": Allowance(2, "redundant parser entry preconditions"),
-    "crates/rue-parser/src/parser/statements.rs": Allowance(1, "redundant parser entry precondition"),
     "crates/rue-rir/src/inst/payload.rs": Allowance(
         1, "redundant RIR variable-width encoding check"
     ),

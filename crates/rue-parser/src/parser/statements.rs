@@ -203,87 +203,17 @@ impl Parser {
         }
     }
 
-    /// With the cursor at a `(`, scan to the matching `)` and report whether the
-    /// token immediately after it is a `.`. This distinguishes an inline
-    /// type-constructor call on a pattern head (`Result(i32, i32).Ok`, the group
-    /// precedes a dot) from a variant's payload bindings (`Ok(v)`, the group is
-    /// terminal) during a single left-to-right pass (RUE-947).
-    fn paren_group_precedes_dot(&self) -> bool {
-        debug_assert!(self.at(TokenKind::LParen));
-        let mut cursor = self.cursor;
-        let mut depth = 0usize;
-        while let Some(token) = self.tokens.get(cursor) {
-            match token.kind {
-                TokenKind::LParen => depth += 1,
-                TokenKind::RParen => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return self.tokens.get(cursor + 1).map(|t| t.kind) == Some(TokenKind::Dot);
-                    }
-                }
-                TokenKind::Eof => return false,
-                _ => {}
-            }
-            cursor += 1;
-        }
-        false
-    }
-
+    /// One enum-variant pattern: `path_pattern = pattern_head "." IDENT
+    /// [ "(" pattern_elements ")" ]` (spec 4.7:2).
+    ///
+    /// The head is parsed by [`Parser::path_head`], the grammar's one
+    /// path-head parser, so a pattern head is built from the same forms and
+    /// carried in the same shape as an expression's struct-literal head. What is left here is
+    /// the classification the pattern grammar adds on top: the trailing name is
+    /// the variant, and a terminal `(...)` is its payload list of patterns
+    /// rather than the call arguments an expression would parse there.
     fn path_pattern(&mut self, start: u32) -> PResult<Pattern> {
-        let first = self.ident()?;
-        // The inline type-constructor call (RUE-596) attaches to the `type_name`
-        // segment — the last one before the variant. For a local head that is
-        // the first ident (`Result(i32, i32).Ok(v)`); for a module-qualified
-        // head it is a later segment (`std.result.Result(i32, i32).Ok(v)`,
-        // RUE-947). A `(...)` group is the ctor call only when it precedes a
-        // dot; a terminal `(...)` is the variant's payload bindings.
-        let mut ctor_args = None;
-        if self.at(TokenKind::LParen) {
-            ctor_args = Some(self.call_args()?);
-        }
-        self.expect(TokenKind::Dot)?;
-        let mut segments = vec![self.ident()?];
-        // Exactly one identifier — the variant — may follow constructor
-        // arguments. Reject a group attached to an earlier module segment
-        // instead of silently moving it onto the final type-name segment.
-        let mut segments_after_ctor = ctor_args.as_ref().map(|_| 1usize);
-        if ctor_args.is_none() && self.at(TokenKind::LParen) && self.paren_group_precedes_dot() {
-            ctor_args = Some(self.call_args()?);
-            segments_after_ctor = Some(0);
-        }
-        while self.eat(TokenKind::Dot) {
-            segments.push(self.ident()?);
-            if let Some(count) = &mut segments_after_ctor {
-                *count += 1;
-            }
-            if ctor_args.is_none() && self.at(TokenKind::LParen) && self.paren_group_precedes_dot()
-            {
-                ctor_args = Some(self.call_args()?);
-                segments_after_ctor = Some(0);
-            }
-        }
-        if matches!(segments_after_ctor, Some(count) if count != 1) {
-            self.error(
-                "type-constructor arguments in a pattern must follow the final type path segment",
-            );
-            return Err(());
-        }
-        let variant = segments.pop().unwrap();
-        let (type_name, base) = if segments.is_empty() {
-            (first, None)
-        } else {
-            let type_name = segments.pop().unwrap();
-            let mut expr = Expr::Ident(first);
-            for field in segments {
-                let span = expr.span().extend_to(field.span.end);
-                expr = Expr::Field(FieldExpr {
-                    base: Box::new(expr),
-                    field,
-                    span,
-                });
-            }
-            (type_name, Some(Box::new(expr)))
-        };
+        let (head, variant) = self.path_head()?;
         let mut elements = Vec::new();
         if self.eat(TokenKind::LParen) {
             if self.at(TokenKind::RParen) {
@@ -302,9 +232,9 @@ impl Parser {
             self.expect(TokenKind::RParen)?;
         }
         Ok(Pattern::Path(PathPattern {
-            base,
-            type_name,
-            ctor_args,
+            base: head.base,
+            type_name: head.name,
+            ctor_args: head.ctor_args,
             variant,
             elements,
             span: self.span_from(start),
@@ -678,6 +608,60 @@ mod tests {
         assert!(!parses("fn f() { let x = 1 x }"));
     }
 
+    fn parse_errors(source: &str) -> Vec<String> {
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        match Parser::new(tokens, interner).parse() {
+            Ok(_) => Vec::new(),
+            Err(errors) => errors.iter().map(|error| error.to_string()).collect(),
+        }
+    }
+
+    /// The pattern of the first arm of the `match` that is `f`'s body.
+    fn first_arm_pattern(source: &str) -> PathPattern {
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        let (ast, _) = Parser::new(tokens, interner).parse().unwrap();
+        let Item::Function(function) = &ast.items[0] else {
+            panic!("expected a function item");
+        };
+        let Expr::Block(body) = &function.body else {
+            panic!("expected a block body");
+        };
+        let Expr::Match(match_expr) = &*body.expr else {
+            panic!("expected a match expression, got {:?}", body.expr);
+        };
+        match &match_expr.arms[0].pattern {
+            Pattern::Path(path) => path.clone(),
+            other => panic!("expected a path pattern, got {other:?}"),
+        }
+    }
+
+    /// The `.`-separated identifiers a pattern head's module base is spelled
+    /// as, innermost first, resolved through the interner.
+    fn base_segments(pattern: &PathPattern, interner: &lasso::ThreadedRodeo) -> Vec<String> {
+        let mut segments = Vec::new();
+        let mut cursor = pattern.base.as_deref();
+        while let Some(expr) = cursor {
+            match expr {
+                Expr::Field(field) => {
+                    segments.push(interner.resolve(&field.field.name).to_owned());
+                    cursor = Some(&field.base);
+                }
+                Expr::Ident(ident) => {
+                    segments.push(interner.resolve(&ident.name).to_owned());
+                    cursor = None;
+                }
+                other => panic!("a pattern head base is a field chain, got {other:?}"),
+            }
+        }
+        segments.reverse();
+        segments
+    }
+
+    fn interner_of(source: &str) -> lasso::ThreadedRodeo {
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        Parser::new(tokens, interner).parse().unwrap().1
+    }
+
     #[test]
     fn pattern_constructor_arguments_follow_the_final_type_segment() {
         assert!(parses(
@@ -689,5 +673,94 @@ mod tests {
         assert!(!parses(
             "fn f(x: i32) -> i32 { match x { std(i32).result.Result.Ok(v) => v } }"
         ));
+    }
+
+    /// A module-qualified head carries its module segments as the same field
+    /// chain an expression path builds, with and without payload bindings.
+    #[test]
+    fn module_qualified_variant_pattern_carries_a_field_chain_base() {
+        for (source, bindings) in [
+            ("fn f(x: i32) -> i32 { match x { a.b.E.A => 0 } }", 0),
+            ("fn f(x: i32) -> i32 { match x { a.b.E.A(v) => v } }", 1),
+        ] {
+            let interner = interner_of(source);
+            let pattern = first_arm_pattern(source);
+            assert_eq!(base_segments(&pattern, &interner), ["a", "b"], "{source}");
+            assert_eq!(interner.resolve(&pattern.type_name.name), "E", "{source}");
+            assert_eq!(interner.resolve(&pattern.variant.name), "A", "{source}");
+            assert!(pattern.ctor_args.is_none(), "{source}");
+            assert_eq!(pattern.elements.len(), bindings, "{source}");
+        }
+    }
+
+    /// A generic-call head attaches its arguments to the final type segment,
+    /// leaving the module segments before it as the base.
+    #[test]
+    fn generic_call_head_attaches_to_the_final_type_segment() {
+        let source = "fn f(x: i32) -> i32 { match x { m.Generic(i32, u8).Variant(v) => v } }";
+        let interner = interner_of(source);
+        let pattern = first_arm_pattern(source);
+        assert_eq!(base_segments(&pattern, &interner), ["m"]);
+        assert_eq!(interner.resolve(&pattern.type_name.name), "Generic");
+        assert_eq!(interner.resolve(&pattern.variant.name), "Variant");
+        assert_eq!(pattern.ctor_args.as_ref().map(Vec::len), Some(2));
+        assert_eq!(pattern.elements.len(), 1);
+    }
+
+    /// A payload position parses with the same head parser, so every head form
+    /// nests (RUE-2053).
+    #[test]
+    fn nested_variant_patterns_accept_every_head_form() {
+        for source in [
+            "fn f(x: i32) -> i32 { match x { E.A(F.B) => 0 } }",
+            "fn f(x: i32) -> i32 { match x { E.A(F.B(v)) => v } }",
+            "fn f(x: i32) -> i32 { match x { E.A(m.F.B(v), _) => v } }",
+            "fn f(x: i32) -> i32 { match x { E.A(Result(i32, u8).Ok(v)) => v } }",
+            "fn f(x: i32) -> i32 { match x { E.A(F.B(G.C(v))) => v } }",
+        ] {
+            assert!(parses(source), "{source}");
+        }
+        let source = "fn f(x: i32) -> i32 { match x { E.A(m.F.B(v), _) => v } }";
+        let interner = interner_of(source);
+        let pattern = first_arm_pattern(source);
+        let PatternElement::Nested(nested) = &pattern.elements[0] else {
+            panic!("expected a nested pattern");
+        };
+        assert_eq!(base_segments(nested, &interner), ["m"]);
+        assert_eq!(interner.resolve(&nested.type_name.name), "F");
+        assert_eq!(interner.resolve(&nested.variant.name), "B");
+        assert!(matches!(pattern.elements[1], PatternElement::Binding(_)));
+    }
+
+    /// The pattern grammar is narrower than the expression path grammar: a
+    /// parenthesized head or `Self` reaches sema in expression position but is
+    /// not a `pattern_head` (spec 4.7:2), and the head parser does not widen it.
+    #[test]
+    fn non_pattern_heads_are_still_rejected_as_patterns() {
+        for source in [
+            "fn f(x: i32) -> i32 { match x { (Color).Red => 0 } }",
+            "fn f(x: i32) -> i32 { match x { Self.Red => 0 } }",
+            "fn f(x: i32) -> i32 { match x { (Color.Red) => 0 } }",
+        ] {
+            assert_eq!(
+                parse_errors(source).first().map(String::as_str),
+                Some("expected pattern"),
+                "{source}"
+            );
+        }
+    }
+
+    /// A head with no variant reports the missing `.` at the token that ends
+    /// the head, not at the group the head consumed on the way there.
+    #[test]
+    fn a_head_without_a_variant_reports_the_missing_dot() {
+        assert_eq!(
+            parse_errors("fn f(x: i32) -> i32 { match x { Some(v) => v } }").first(),
+            Some(&"expected '.', found '=>'".to_owned())
+        );
+        assert_eq!(
+            parse_errors("fn f(x: i32) -> i32 { match x { Color => 0 } }").first(),
+            Some(&"expected '.', found '=>'".to_owned())
+        );
     }
 }

@@ -229,10 +229,6 @@ fn expr_charge(expr: &ast::Expr) -> u64 {
             .saturating_add(value.repeat.as_ref().map_or(0, array_length_charge)),
         Expr::Index(value) => boxed_charge(&value.base, expr_charge)
             .saturating_add(boxed_charge(&value.index, expr_charge)),
-        Expr::Path(value) => value
-            .base
-            .as_ref()
-            .map_or(0, |base| boxed_charge(base, expr_charge)),
         Expr::Comptime(value) => boxed_charge(&value.expr, expr_charge),
         Expr::Checked(value) => boxed_charge(&value.expr, expr_charge),
         Expr::TypeLit(value) => type_charge(&value.type_expr),

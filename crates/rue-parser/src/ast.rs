@@ -843,8 +843,6 @@ pub enum Expr {
     ArrayLit(ArrayLitExpr),
     /// Array indexing (e.g., `arr[0]`)
     Index(IndexExpr),
-    /// Path expression (e.g., `Color::Red`)
-    Path(PathExpr),
     /// Self expression (e.g., `self` in method bodies)
     SelfExpr(SelfExpr),
     /// Comptime block expression (e.g., `comptime { 1 + 2 }`)
@@ -1257,18 +1255,6 @@ pub struct IndexExpr {
     pub span: Span,
 }
 
-/// A path expression (e.g., `Color::Red` or `module.Color::Red` for enum variant).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PathExpr {
-    /// Optional module/namespace prefix (e.g., `utils` in `utils.Color::Red`)
-    pub base: Option<Box<Expr>>,
-    /// The type name (e.g., `Color`)
-    pub type_name: Ident,
-    /// The variant name (e.g., `Red`)
-    pub variant: Ident,
-    pub span: Span,
-}
-
 /// A statement (does not produce a value).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement {
@@ -1547,7 +1533,6 @@ impl Expr {
             Expr::IntrinsicCall(intrinsic) => intrinsic.span,
             Expr::ArrayLit(array_lit) => array_lit.span,
             Expr::Index(index_expr) => index_expr.span,
-            Expr::Path(path_expr) => path_expr.span,
             Expr::SelfExpr(self_expr) => self_expr.span,
             Expr::Comptime(comptime_expr) => comptime_expr.span,
             Expr::Checked(checked_expr) => checked_expr.span,
@@ -1649,7 +1634,6 @@ impl Expr {
             })),
             Expr::ArrayLit(literal) => out.extend(literal.elements.iter()),
             Expr::Index(index) => out.extend([index.base.as_ref(), index.index.as_ref()]),
-            Expr::Path(path) => out.extend(path.base.as_deref()),
             Expr::Comptime(expr) => out.push(&expr.expr),
             Expr::Checked(expr) => out.push(&expr.expr),
         }
@@ -2050,14 +2034,6 @@ fn rebind_expr(expr: &mut Expr, file_id: FileId) {
             rebind_expr(&mut index.base, file_id);
             rebind_expr(&mut index.index, file_id);
             rebind_span(&mut index.span, file_id);
-        }
-        Expr::Path(path) => {
-            if let Some(base) = &mut path.base {
-                rebind_expr(base, file_id);
-            }
-            rebind_ident(&mut path.type_name, file_id);
-            rebind_ident(&mut path.variant, file_id);
-            rebind_span(&mut path.span, file_id);
         }
         Expr::SelfExpr(self_expr) => rebind_span(&mut self_expr.span, file_id),
         Expr::Comptime(block) => {
@@ -2500,12 +2476,6 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
             writeln!(f, "Index:")?;
             fmt_expr(f, &index.index, level + 2)
         }
-        Expr::Path(path) => writeln!(
-            f,
-            "Path sym:{}::sym:{}",
-            path.type_name.name.into_usize(),
-            path.variant.name.into_usize()
-        ),
         Expr::SelfExpr(_) => {
             writeln!(f, "SelfExpr")
         }

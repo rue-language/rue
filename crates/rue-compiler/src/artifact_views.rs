@@ -1500,23 +1500,6 @@ fn expr_record(
                 expr_record(owner, &index.index),
             ],
         ),
-        Expr::Path(path) => syntax_record(
-            "path",
-            span,
-            Some(
-                format!(
-                    "{}::{}",
-                    owner.resolve_raw_symbol(path.type_name.name),
-                    owner.resolve_raw_symbol(path.variant.name)
-                )
-                .into(),
-            ),
-            None,
-            path.base
-                .iter()
-                .map(|base| expr_record(owner, base))
-                .collect(),
-        ),
         Expr::SelfExpr(_) => syntax_record("self", span, None, None, Vec::new()),
         Expr::Comptime(block) => syntax_record(
             "comptime",
