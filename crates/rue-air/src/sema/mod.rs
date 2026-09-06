@@ -88,7 +88,8 @@ pub use comptime::{
     ComptimeStructuredTypeResolution, ComptimeStructuredTypeSuspension, ComptimeStructuredTypes,
     ComptimeTargetIntrinsic, ComptimeTrap, ComptimeType, ComptimeTypeAlgebra,
     ComptimeTypeIntrinsic, ComptimeValue, ComptimeValueAlgebra, MAX_COMPTIME_CALL_DEPTH,
-    comptime_depth_over_limit, next_comptime_depth,
+    comptime_call_cycle_reason, comptime_depth_exceeded_reason, comptime_depth_over_limit,
+    next_comptime_depth,
 };
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;

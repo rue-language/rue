@@ -1192,16 +1192,15 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
         let value = match self.provider.nucleus_result(query) {
             Ok(Some(value)) => value,
             Ok(None) => return rue_air::DurableComptimeCallOutcome::NotReduced,
+            // A cycle is not an overrun. The query graph re-entered this exact
+            // comptime call with these exact arguments, so no depth budget
+            // would let it finish; reporting a nesting depth would send the
+            // reader looking for a runaway argument that is not there
+            // (RUE-1975).
             Err(QueryAbort::Cycle(_)) => {
                 return rue_air::DurableComptimeCallOutcome::Diagnostic(
                     rue_air::DurableComptimeDiagnostic {
-                        kind: rue_error::ErrorKind::ComptimeEvaluationFailed {
-                            reason: format!(
-                                "specialization of '{}' exceeded the maximum nesting depth ({}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
-                                definition.name(),
-                                rue_air::MAX_COMPTIME_CALL_DEPTH,
-                            ),
-                        },
+                        kind: rue_air::comptime_call_cycle_diagnostic(definition.name()),
                         span: None,
                     },
                 );
@@ -1246,18 +1245,15 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
                     rue_air::DurableComptimeDiagnostic { kind, span },
                 );
             }
+            // The same cycle, observed as a recorded nucleus failure rather
+            // than an abort. It is the arm a self-dependent comptime call such
+            // as `fn Bad() -> type { Bad() }` actually reaches (RUE-1975).
             crate::semantic_query_nucleus::SemanticNucleusValue::Failure(
                 crate::semantic_query_nucleus::SemanticNucleusFailure::Cycle(_),
             ) => {
                 return rue_air::DurableComptimeCallOutcome::Diagnostic(
                     rue_air::DurableComptimeDiagnostic {
-                        kind: rue_error::ErrorKind::ComptimeEvaluationFailed {
-                            reason: format!(
-                                "specialization of '{}' exceeded the maximum nesting depth ({}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
-                                definition.name(),
-                                rue_air::MAX_COMPTIME_CALL_DEPTH,
-                            ),
-                        },
+                        kind: rue_air::comptime_call_cycle_diagnostic(definition.name()),
                         span: None,
                     },
                 );

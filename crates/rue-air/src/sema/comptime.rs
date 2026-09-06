@@ -133,6 +133,36 @@ pub const fn comptime_depth_over_limit(depth: usize) -> bool {
     depth > MAX_COMPTIME_CALL_DEPTH
 }
 
+/// The one wording for a comptime call that ran past
+/// [`MAX_COMPTIME_CALL_DEPTH`] (spec 4.14:18).
+///
+/// Three independent mechanisms can be the first to observe the same overrun:
+/// the engine's own frame stack, the query boundary that re-enters a child
+/// comptime-call query, and the body scheduler's specialization frontier. They
+/// bound different quantities but enforce one language rule, so which one trips
+/// first is an implementation detail of the path a program takes. Spelling the
+/// sentence here keeps that detail invisible: the same program cannot be
+/// described two ways depending on whether it was reached from a `const`
+/// initializer, a `comptime` block, or an ordinary body.
+pub fn comptime_depth_exceeded_reason(name: &str) -> String {
+    format!(
+        "specialization of '{name}' exceeded the maximum nesting depth ({MAX_COMPTIME_CALL_DEPTH}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?"
+    )
+}
+
+/// The one wording for a comptime call that is required to evaluate itself
+/// (spec 4.14:18a).
+///
+/// A call whose reduction demands the very same call with the very same
+/// compile-time arguments is a cycle, not an overrun: no depth budget, however
+/// large, would let it finish, and reporting a nesting depth invites the
+/// reader to look for a runaway argument that is not there.
+pub fn comptime_call_cycle_reason(name: &str) -> String {
+    format!(
+        "specialization of '{name}' depends on its own result: reducing this call with these compile-time arguments requires that same call, so the recursion has no base case to start from"
+    )
+}
+
 /// Both operands of a binary arithmetic or ordering operation, classified by
 /// the value domain they were reduced to.
 enum ArithOperands<V> {
@@ -774,10 +804,13 @@ pub trait ComptimeRejections: ComptimeDomain {
         what: &str,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<(), Self::Failure>;
+    /// Report the depth overrun this host's failure type spells. The limit is
+    /// not a parameter: hosts word it with
+    /// [`comptime_depth_exceeded_reason`] rather than a number of their own,
+    /// so no host can name a boundary the engine did not enforce.
     fn depth_exceeded(
         &self,
         name: &Self::Name,
-        depth: usize,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Self::Failure;
     /// Report an integer constant that is not representable in `ty`. `value`
@@ -1543,11 +1576,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             .count();
         if frame.name.is_some() && comptime_depth_over_limit(entered_depth) {
             let site = ComptimeDiagnosticSite::new(frame.program.clone(), frame.function_span);
-            return ComptimeOutcome::HostFailure(self.host.depth_exceeded(
-                frame.name.as_ref().expect("named frame"),
-                MAX_COMPTIME_CALL_DEPTH,
-                &site,
-            ));
+            return ComptimeOutcome::HostFailure(
+                self.host
+                    .depth_exceeded(frame.name.as_ref().expect("named frame"), &site),
+            );
         }
         if let Some(name) = frame.name.clone() {
             let canonical_identity = if let Some(identity) = frame.call_identity.clone() {

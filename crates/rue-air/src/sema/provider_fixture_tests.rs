@@ -604,7 +604,7 @@ fn provider_local_memo_hit_still_obeys_depth_before_lookup() {
     assert!(matches!(
         &error.kind,
         ErrorKind::ComptimeEvaluationFailed { reason }
-            if reason == "specialization of 'recur' exceeded the maximum nesting depth (64); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?"
+            if *reason == crate::sema::comptime_depth_exceeded_reason("recur")
     ));
     assert_eq!(error_source_slice(source, &error), source);
 }
@@ -627,7 +627,7 @@ fn provider_specialized_body_failed_reduction_is_not_cached_and_retries() {
     assert!(matches!(
         &first_error.kind,
         ErrorKind::ComptimeEvaluationFailed { reason }
-            if reason == "specialization of 'looping' exceeded the maximum nesting depth (64); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?"
+            if *reason == crate::sema::comptime_depth_exceeded_reason("looping")
     ));
     assert_eq!(error_source_slice(source, &first_error), source);
     assert_eq!(first_stats.publications, 0);

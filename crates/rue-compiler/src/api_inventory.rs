@@ -1995,7 +1995,7 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
     (3_611, 15_282_171_189_445_768_455),
     (4_802, 13_585_732_442_571_114_436),
     (2_906, 14_218_343_244_686_701_314),
-    (52_774, 6_578_628_352_398_612_154),
+    (51_769, 14_289_453_487_945_239_920),
     (8_851, 7_734_652_166_175_953_446),
     (14_038, 8_977_560_222_769_304_814),
     (380, 6_623_933_847_739_557_204),
@@ -8456,11 +8456,57 @@ fn comptime_depth_consumers_use_the_air_authority() {
     assert!(
         database.contains("comptime_specialization_depth")
             && database.contains("rue_air::comptime_depth_over_limit")
-            && database.contains("rue_air::MAX_COMPTIME_CALL_DEPTH")
             && database.contains("ComptimeFrame::callable_body")
             && database.contains("!rue_air::comptime_depth_over_limit")
             && !database.contains("<= rue_air::MAX_COMPTIME_CALL_DEPTH"),
         "durable query scheduling must use the canonical AIR depth authority"
+    );
+}
+
+/// No consumer in this crate restates the depth sentence, and the two
+/// query-cycle arms say cycle rather than depth (RUE-1975).
+///
+/// The scheduler frontier, the query-boundary ticket, and the durable host all
+/// enforce one limit on quantities they each measure differently; the wording
+/// is AIR's so which of them notices first stays invisible. The cycle arms are
+/// the pointed case: `nucleus_result` returning `Cycle` means the query graph
+/// re-entered this exact call, which no depth budget would have saved.
+#[test]
+fn comptime_depth_and_cycle_wording_come_from_air() {
+    for (name, source) in [
+        ("revisioned_query_database", REVISIONED_DATABASE_SOURCE),
+        (
+            "durable_comptime/diagnostics",
+            DURABLE_COMPTIME_DIAGNOSTICS_SOURCE,
+        ),
+        ("durable_comptime/host", DURABLE_COMPTIME_HOST_SOURCE),
+    ] {
+        assert!(
+            !source.contains("exceeded the maximum nesting depth"),
+            "{name} restates the depth sentence instead of consuming rue_air's"
+        );
+    }
+    let database = REVISIONED_DATABASE_SOURCE;
+    assert_eq!(
+        database
+            .matches("rue_air::comptime_call_cycle_diagnostic(definition.name())")
+            .count(),
+        2,
+        "both query-cycle arms must report a cycle, not a depth overrun"
+    );
+    assert_eq!(
+        database
+            .matches("rue_air::comptime_depth_exceeded_diagnostic(")
+            .count(),
+        2,
+        "both scheduler depth arms must report the shared depth sentence"
+    );
+    assert!(
+        DURABLE_COMPTIME_DIAGNOSTICS_SOURCE
+            .contains("rue_air::comptime_depth_exceeded_diagnostic(name)")
+            && DURABLE_COMPTIME_HOST_SOURCE
+                .contains("DurableComptimeFailure::maximum_depth(name.as_str())"),
+        "the durable terminal must forward the name and nothing else"
     );
 }
 

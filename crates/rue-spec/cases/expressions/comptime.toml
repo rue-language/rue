@@ -2291,6 +2291,38 @@ compile_fail = true
 error_contains = "exceeded the maximum"
 
 [[case]]
+name = "comptime_call_that_depends_on_itself_is_a_cycle"
+spec = ["4.14:18a"]
+description = "A comptime call whose reduction requires that same call is diagnosed as self-dependence, not as an overrun of the 4.14:18 nesting depth"
+source = """
+fn Bad() -> type {
+    Bad()
+}
+fn main() -> i32 {
+    Bad();
+    0
+}
+"""
+compile_fail = true
+error_contains = "depends on its own result"
+
+[[case]]
+name = "comptime_call_cycle_is_not_reported_as_depth_exhaustion"
+spec = ["4.14:18a"]
+description = "The self-dependent call reports the cycle rather than the depth sentence, so a reader is not sent looking for a runaway argument that does not exist"
+source = """
+fn f(comptime n: u64) -> u64 {
+    comptime { f(n) }
+}
+fn main() -> i32 {
+    f(0);
+    0
+}
+"""
+compile_fail = true
+error_contains = "depends on its own result"
+
+[[case]]
 name = "comptime_match_selects_arm_recursion"
 spec = ["4.14:19"]
 description = "A match on a comptime-known scrutinee selects its arm at compile time, letting comptime recursion written with match terminate (RUE-191)"

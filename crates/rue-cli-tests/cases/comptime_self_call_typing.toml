@@ -688,8 +688,8 @@ compile_fail = true
 error_contains = ["E1200", "exceeded the maximum nesting depth"]
 
 [[case]]
-name = "control_same_argument_self_recursion_reaches_depth_diagnostic"
-description = "A self call with an unchanging argument revisits one canonical query key. That is a genuine cycle, and it must surface as the nesting-depth diagnostic, not as a query-cycle ICE."
+name = "control_same_argument_self_recursion_reports_the_cycle"
+description = "A self call with an unchanging argument revisits one canonical query key. That is a genuine cycle: it must surface as self-dependence, not as a query-cycle ICE and not as the nesting-depth diagnostic, which would describe a runaway argument this program does not have (RUE-1975)."
 files = [{ path = "main.rue", source = """
 fn f(comptime n: u64) -> u64 {
     comptime { f(n) }
@@ -701,4 +701,5 @@ fn main() -> i32 {
 }
 """ }]
 compile_fail = true
-error_contains = ["E1200", "exceeded the maximum nesting depth"]
+error_contains = ["E1200", "depends on its own result"]
+compile_stderr_not_contains = ["exceeded the maximum nesting depth"]

@@ -13,10 +13,21 @@ fn semantic_comptime_call_depth_guard_restores_after_every_exit() {
     }
     SEMANTIC_COMPTIME_CALL_DEPTH
         .with(|depth| assert_eq!(depth.get(), rue_air::MAX_COMPTIME_CALL_DEPTH));
-    assert!(
-        SemanticComptimeCallDepthGuard::enter("count").is_err(),
-        "the exact next depth must be rejected"
-    );
+    // The query boundary reports the overrun the engine's frame stack cannot
+    // see, so it must report it in the engine's own words (RUE-1975).
+    let rejected = SemanticComptimeCallDepthGuard::enter("count")
+        .err()
+        .expect("the exact next depth must be rejected");
+    let crate::durable_comptime::DurableComptimeFailure::Failure(failure) = rejected else {
+        panic!("a depth overrun is a domain failure, not an abort");
+    };
+    let crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+        rue_error::ErrorKind::ComptimeEvaluationFailed { reason },
+    ) = *failure
+    else {
+        panic!("a depth overrun is the comptime-evaluation diagnostic");
+    };
+    assert_eq!(reason, rue_air::comptime_depth_exceeded_reason("count"));
     while guards.pop().is_some() {}
     SEMANTIC_COMPTIME_CALL_DEPTH.with(|depth| assert_eq!(depth.get(), 0));
 

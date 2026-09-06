@@ -186,6 +186,16 @@ fn runaway(comptime n: i32) -> i32 {
 }
 ```
 
+{{ rule(id="4.14:18a", cat="legality-rule") }}
+
+It is a compile-time error when reducing a comptime call requires the result of that same call with the same compile-time arguments, directly or through other comptime calls. Such a call has no base case at any depth, so an implementation **MUST** diagnose the self-dependence itself rather than report it as an overrun of the 4.14:18 nesting depth: no larger depth would admit the program.
+
+```rue
+fn Bad() -> type {
+    Bad()  // ERROR: reducing Bad() requires Bad()
+}
+```
+
 {{ rule(id="4.14:19", cat="normative") }}
 
 Within a specialized function body, a `match` expression whose scrutinee can be evaluated at compile time likewise selects its arm at compile time: only the body of the first arm whose pattern matches the comptime value is analyzed and compiled. Comptime recursion may therefore equivalently be written with `match`. The pattern set itself must still be exhaustive (4.7:9) — exhaustiveness is a property of the patterns, which are checked even though unselected arm bodies are not.
