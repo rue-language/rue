@@ -57,6 +57,7 @@ use import_discovery_owner::ImportDiscoveryOwner;
 pub use metrics::*;
 use program_artifacts::no_published_program;
 pub use rooted_artifacts::*;
+pub(crate) use rooted_projections::{TestClosureAnalysis, TestClosureAnalysisOutcome};
 #[cfg(test)]
 use rooted_projections::{stable_function_definition_root, stable_producer_definition_root};
 

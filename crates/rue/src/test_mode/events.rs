@@ -287,6 +287,11 @@ pub(crate) enum Event {
         shard: Option<String>,
         selected: usize,
         total: usize,
+        /// The 1-based watch cycle this run is, so a consumer tailing one
+        /// `rue test --watch` process can group the events of each cycle.
+        /// **Absent** outside `--watch`, where a process runs exactly once
+        /// and there is nothing to group (RUE-2023).
+        cycle: Option<u64>,
     },
     TestStarted {
         id: String,
@@ -302,6 +307,23 @@ pub(crate) enum Event {
         wall_ms: u64,
         unimported_test_files: Option<Vec<UnimportedFile>>,
         test_candidates: CandidateSource,
+    },
+    /// A watch cycle abandoned mid-run: an edit landed while tests were
+    /// executing, the runner killed their process groups, and the cycle is
+    /// over (RUE-2023).
+    ///
+    /// It replaces this cycle's `run_finished`, never accompanies one: the
+    /// verdicts already published stand, the tests still running produced
+    /// none, and a `run_finished` whose counts described neither would be a
+    /// lie. A cycle canceled before its image existed emits nothing at all,
+    /// because no `run_started` opened it.
+    RunCanceled {
+        cycle: u64,
+        /// Verdicts this cycle published before the edit landed.
+        reported: usize,
+        /// Tests the plan selected.
+        selected: usize,
+        wall_ms: u64,
     },
     /// A `--list --format json` inventory record. The listing stream carries
     /// no `run_started`, so this record carries the schema version itself —
@@ -351,6 +373,7 @@ impl Event {
                 shard,
                 selected,
                 total,
+                cycle,
             } => {
                 object.insert("event".to_owned(), Value::String("run_started".to_owned()));
                 object.insert(
@@ -362,6 +385,12 @@ impl Event {
                 object.insert("opt_level".to_owned(), Value::String(opt_level.clone()));
                 object.insert("seed".to_owned(), Value::from(*seed));
                 object.insert("jobs".to_owned(), Value::from(*jobs));
+                // Absent rather than zero outside `--watch`: a consumer that
+                // finds the key knows it is reading one cycle of a retained
+                // watch host, the way `shard` says the run was partitioned.
+                if let Some(cycle) = cycle {
+                    object.insert("cycle".to_owned(), Value::from(*cycle));
+                }
                 if let Some(shard) = shard {
                     object.insert("shard".to_owned(), Value::String(shard.clone()));
                 }
@@ -473,6 +502,18 @@ impl Event {
                     Value::String(test_candidates.as_str().to_owned()),
                 );
             }
+            Self::RunCanceled {
+                cycle,
+                reported,
+                selected,
+                wall_ms,
+            } => {
+                object.insert("event".to_owned(), Value::String("run_canceled".to_owned()));
+                object.insert("cycle".to_owned(), Value::from(*cycle));
+                object.insert("reported".to_owned(), Value::from(*reported));
+                object.insert("selected".to_owned(), Value::from(*selected));
+                object.insert("wall_ms".to_owned(), Value::from(*wall_ms));
+            }
             Self::Test {
                 id,
                 module,
@@ -516,6 +557,7 @@ mod tests {
             shard: Some("1/2".to_owned()),
             selected: 3,
             total: 8,
+            cycle: None,
         }
         .to_ndjson();
         assert_eq!(
@@ -537,9 +579,51 @@ mod tests {
             shard: None,
             selected: 1,
             total: 1,
+            cycle: None,
         }
         .to_ndjson();
         assert!(!line.contains("shard"), "{line}");
+        assert!(!line.contains("cycle"), "{line}");
+    }
+
+    /// The watch cycle number is additive: it appears only for a `--watch`
+    /// cycle, and lands in alphabetical order like every other key (RUE-2023).
+    #[test]
+    fn a_watch_cycle_publishes_its_number_in_the_head_event() {
+        let line = Event::RunStarted {
+            root: "m.rue".to_owned(),
+            target: "x86-64-linux".to_owned(),
+            opt_level: "1".to_owned(),
+            seed: 1,
+            jobs: 1,
+            shard: None,
+            selected: 1,
+            total: 1,
+            cycle: Some(3),
+        }
+        .to_ndjson();
+        assert!(
+            line.contains("\"cycle\":3,\"event\":\"run_started\""),
+            "{line}"
+        );
+    }
+
+    /// A canceled cycle publishes what it managed rather than a `run_finished`
+    /// whose counts would describe neither the verdicts it published nor the
+    /// tests it killed (RUE-2023).
+    #[test]
+    fn a_canceled_cycle_names_itself_and_what_it_reported() {
+        let line = Event::RunCanceled {
+            cycle: 2,
+            reported: 3,
+            selected: 9,
+            wall_ms: 41,
+        }
+        .to_ndjson();
+        assert_eq!(
+            line,
+            "{\"cycle\":2,\"event\":\"run_canceled\",\"reported\":3,\"selected\":9,\"wall_ms\":41}"
+        );
     }
 
     #[test]

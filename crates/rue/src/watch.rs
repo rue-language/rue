@@ -7,17 +7,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rue_compiler::CompileOptions;
 use rue_compiler::unstable::{CompilationCancellation, SourceInfo};
+use rue_compiler::{CompileOptions, OptLevel};
 #[cfg(test)]
 use rue_driver::watch_inputs_changed_with_reader;
 use rue_driver::{
     FilesystemCompilerHost, SourceLoadError, WatchFingerprint, WatchInput, watch_inputs_changed,
 };
+use rue_target::Target;
 
 use crate::compile::{
     Announcement, CycleObservation, CycleReport, CycleRequest, Supersession, drive_cycle,
 };
+use crate::test_mode;
 use crate::{DiagnosticOutput, ErrorFormat, render_source_load_error};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
@@ -35,14 +37,21 @@ const TEST_COMPILE_DELAY_ENV: &str = "RUE_WATCH_TEST_COMPILE_DELAY_MS";
 const TEST_ACQUIRE_DELAY_ENV: &str = "RUE_WATCH_TEST_ACQUIRE_DELAY_MS";
 const TEST_BOUNDARY_DELAY_ENV: &str = "RUE_WATCH_TEST_BOUNDARY_DELAY_MS";
 
-fn test_event(event: &str) {
+pub(crate) fn test_event(event: &str) {
     let Some(path) = std::env::var_os(TEST_PROTOCOL_ENV) else {
         return;
     };
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
         return;
     };
-    let _ = writeln!(file, "{event}");
+    // One `write(2)`, not two. `writeln!` on an unbuffered `File` issues the
+    // payload and the newline separately, and two writers can interleave
+    // between them: `test-spawned` is emitted from the run's worker threads
+    // rather than from this loop, so under `--jobs N` that produced
+    // concatenated lines and a harness undercount. A single append-mode write
+    // of this size is atomic (RUE-2023).
+    let line = format!("{event}\n");
+    let _ = file.write_all(line.as_bytes());
     let _ = file.flush();
 }
 
@@ -111,8 +120,73 @@ pub(crate) struct WatchRequest {
     pub(crate) host: FilesystemCompilerHost,
     pub(crate) compile_options: CompileOptions,
     pub(crate) source_path: String,
-    pub(crate) output_path: String,
     pub(crate) error_format: ErrorFormat,
+    pub(crate) mode: WatchMode,
+}
+
+/// What one accepted source revision produces.
+///
+/// The loop itself — the change monitor, re-observation, acquisition,
+/// cancellation, debouncing, and the cycle boundary — is the same either way;
+/// only the cycle body differs, which is what lets `rue test --watch` reuse the
+/// retained host instead of paying a fresh process and a full compile per run
+/// (RUE-2023).
+pub(crate) enum WatchMode {
+    /// Publish the user's executable at this path.
+    Executable { output_path: String },
+    /// Build the request's test image and run its tests.
+    Test(Box<TestWatch>),
+}
+
+/// The test-mode configuration a watch cycle repeats verbatim.
+pub(crate) struct TestWatch {
+    pub(crate) options: test_mode::TestOptions,
+    pub(crate) repro_flags: Vec<String>,
+    pub(crate) repro_env: Vec<(String, String)>,
+    pub(crate) jobs: usize,
+    pub(crate) target: Target,
+    pub(crate) opt_level: OptLevel,
+    /// `--test-candidates`, re-read per cycle: the declared list and the files
+    /// it names are both ordinary disk state, and a cycle reports what is on
+    /// disk now.
+    pub(crate) test_candidates_path: Option<String>,
+    /// Derived once for the whole process unless `--seed` was given, so
+    /// consecutive cycles shuffle the same way and a difference between two of
+    /// them is attributable to the edit rather than to the order.
+    pub(crate) seed: u64,
+}
+
+/// Everything one cycle is canceled through.
+///
+/// A compile is canceled cooperatively inside the query graph; a run is
+/// canceled by killing the process groups it is supervising. One edit ends
+/// both, so the change monitor holds both and the two can never disagree about
+/// whether this cycle is still wanted (RUE-2023).
+#[derive(Clone)]
+struct CycleCancellation {
+    compilation: CompilationCancellation,
+    run: Option<test_mode::RunCancellation>,
+}
+
+impl CycleCancellation {
+    fn cancel(&self) {
+        self.compilation.cancel();
+        if let Some(run) = &self.run {
+            run.cancel();
+        }
+    }
+}
+
+/// What one cycle did, in the vocabulary the loop's boundary logic needs.
+enum CycleStatus {
+    /// The cycle produced its artifact: an executable at the output path, or a
+    /// completed test run.
+    Completed,
+    /// The cycle was rejected. Its diagnostics are already out and the loop
+    /// keeps watching.
+    Failed,
+    Superseded(Supersession),
+    Canceled,
 }
 
 struct ChangeMonitor {
@@ -137,7 +211,7 @@ struct WatchSymlinkObservation {
 }
 
 impl ChangeMonitor {
-    fn start(inputs: Vec<WatchInput>, cancellation: CompilationCancellation) -> Self {
+    fn start(inputs: Vec<WatchInput>, cancellation: CycleCancellation) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let changed = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
@@ -215,9 +289,37 @@ impl ChangeMonitor {
     }
 }
 
-pub(crate) fn run(mut request: WatchRequest) -> ! {
+pub(crate) fn run(request: WatchRequest) -> ! {
+    let WatchRequest {
+        mut host,
+        compile_options,
+        source_path,
+        error_format,
+        mut mode,
+    } = request;
     let mut needs_reobserve = false;
-    println!("Watching {} for changes", request.source_path);
+    let mut cycle: u64 = 0;
+
+    if let WatchMode::Test(_) = &mode {
+        // Once for the process, before anything can spawn: descriptor 3 is
+        // pinned shut so no pipe the standard library opens for its own
+        // bookkeeping can be allocated there and then destroyed by a child's
+        // `dup2` onto the failure channel (`exec::reserve_channel_descriptor`).
+        // Per cycle would be pointless — the reservation is idempotent and
+        // never released — and per spawn would be a race.
+        test_mode::reserve_channel_descriptor();
+        // A watch process has no natural end, so being asked to stop IS its
+        // result: it reports the last completed cycle's status rather than
+        // dying of the signal a one-shot run dies of (ADR-0083 §2).
+        test_mode::install_watch_signal_exit();
+    }
+
+    match &mode {
+        // stdout is the event stream in test mode, so the loop's own voice
+        // goes where every other runner notice goes.
+        WatchMode::Test(_) => eprintln!("Watching {source_path} for changes"),
+        WatchMode::Executable { .. } => println!("Watching {source_path} for changes"),
+    }
     test_event("ready");
 
     loop {
@@ -229,30 +331,29 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
             // instead of waiting for compilation proper to notice it
             // (RUE-1830, RUE-1863). One monitor spans both so the window has
             // no unobserved seam between them.
-            let stale_inputs = request.host.watch_inputs();
+            let stale_inputs = host.watch_inputs();
             let cancellation = CompilationCancellation::new();
             let (monitor, observation_baseline) =
                 ChangeMonitor::start_reobservation(stale_inputs.clone(), cancellation.clone());
             let superseded = || cancellation.is_canceled();
             test_event("reobserve-started");
             let mut phase = ObservationPhase::Reobserve;
-            let mut observed = request.host.reobserve_superseding(&superseded);
+            let mut observed = host.reobserve_superseding(&superseded);
             if observed.is_ok() {
                 test_event("reobserve-ok");
                 phase = ObservationPhase::Acquire;
                 test_acquire_delay();
-                observed = request.host.acquire_reached_toolchain_modules_superseding(
-                    &request.compile_options,
-                    &superseded,
-                );
+                observed = host
+                    .acquire_reached_toolchain_modules_superseding(&compile_options, &superseded);
             }
             let monitor_changed = monitor.finish();
             let changed =
                 monitor_changed || current_observations(&stale_inputs) != observation_baseline;
             if changed || matches!(&observed, Err(SourceLoadError::Superseded)) {
                 test_event(phase.superseded_event());
-                print_watch_status(
-                    request.error_format,
+                print_cycle_status(
+                    &mode,
+                    error_format,
                     format!(
                         "Watch re-observation superseded after {} ms; a newer source revision is available",
                         cycle_started.elapsed().as_millis()
@@ -271,12 +372,14 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
                 }
                 Err(error) => {
                     test_event(phase.error_event());
-                    print_source_load_error(error, request.error_format);
-                    print_watch_status(
-                        request.error_format,
+                    print_source_load_error(error, error_format);
+                    print_cycle_status(
+                        &mode,
+                        error_format,
                         format!(
-                            "Watch cycle failed after {} ms; keeping the last successful executable",
-                            cycle_started.elapsed().as_millis()
+                            "Watch cycle failed after {} ms; {}",
+                            cycle_started.elapsed().as_millis(),
+                            failure_consequence(&mode)
                         ),
                     );
                     thread::sleep(FAILED_REOBSERVE_RETRY);
@@ -285,39 +388,77 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
             }
         }
 
-        let inputs = request.host.watch_inputs();
-        let source_snapshot = request.host.source_snapshot().clone();
+        let inputs = host.watch_inputs();
+        let source_snapshot = host.source_snapshot().clone();
         let source_infos = source_snapshot
             .files()
             .map(|source| (source.file_id, SourceInfo::new(source.source, source.path)))
             .collect();
-        let diagnostics = DiagnosticOutput::new(request.error_format, source_infos);
+        let diagnostics = DiagnosticOutput::new(error_format, source_infos);
 
         let cancellation = CompilationCancellation::new();
-        let monitor = ChangeMonitor::start(inputs.clone(), cancellation.clone());
+        // A test cycle stays abandonable past its compile: one edit cancels
+        // whichever half of the cycle it lands in, so the monitor carries the
+        // authority to kill this cycle's running tests alongside the one that
+        // cancels its compilation (RUE-2023). An executable cycle has no
+        // execution phase and so carries none.
+        let run_cancellation =
+            matches!(mode, WatchMode::Test(_)).then(test_mode::RunCancellation::new);
+        let monitor = ChangeMonitor::start(
+            inputs.clone(),
+            CycleCancellation {
+                compilation: cancellation.clone(),
+                run: run_cancellation.clone(),
+            },
+        );
         test_event("compile-started");
         test_compile_delay();
         // A cycle is superseded once the monitor has seen an edit, or once a
         // fresh read of the closure disagrees with what this cycle observed.
         let superseded = || monitor.changed() || inputs_changed(&inputs);
-        let report = drive_cycle(CycleRequest {
-            host: &mut request.host,
-            options: &request.compile_options,
-            diagnostics: &diagnostics,
-            source_path: &request.source_path,
-            output_path: &request.output_path,
-            observation: CycleObservation::Watch {
-                inputs: inputs.clone(),
-                cancellation,
-                superseded: &superseded,
-            },
-            announcement: Announcement::Cycle(cycle_started),
-        });
+        let observation = CycleObservation::Watch {
+            inputs: inputs.clone(),
+            cancellation,
+            superseded: &superseded,
+        };
+        let status = match &mut mode {
+            WatchMode::Executable { output_path } => executable_status(drive_cycle(CycleRequest {
+                host: &mut host,
+                options: &compile_options,
+                diagnostics: &diagnostics,
+                source_path: &source_path,
+                output_path,
+                observation,
+                announcement: Announcement::Cycle(cycle_started),
+            })),
+            WatchMode::Test(config) => {
+                cycle += 1;
+                test_status(test_watch_cycle(TestWatchCycle {
+                    host: &mut host,
+                    compile_options: &compile_options,
+                    config,
+                    diagnostics: &diagnostics,
+                    source_path: &source_path,
+                    cycle,
+                    cancellation: run_cancellation
+                        .as_ref()
+                        .expect("a test cycle always holds a run cancellation"),
+                    observation,
+                }))
+            }
+        };
 
         let mut publication_changed = false;
-        match report {
-            CycleReport::Published(_) => test_event("published"),
-            CycleReport::Superseded(boundary) => {
+        match status {
+            CycleStatus::Completed => {
+                // The milestone names the artifact reaching disk, which both
+                // modes do: an executable at the output path, a test image in
+                // the cycle's own run directory. A test cycle's run milestones
+                // are `test_mode`'s and were emitted inside it.
+                test_event("published");
+                announce_watching(&mode);
+            }
+            CycleStatus::Superseded(boundary) => {
                 // The compile monitor and the publication guard both refuse to
                 // publish a stale revision; the milestone says which of them
                 // caught it, and only the publication guard's answer feeds the
@@ -327,33 +468,40 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
                     Supersession::AtPublication => "canceled-at-publication",
                     Supersession::BeforePublication => "canceled-before-publication",
                 });
-                print_watch_status(
-                    request.error_format,
+                print_cycle_status(
+                    &mode,
+                    error_format,
                     format!(
                         "Watch cycle canceled after {} ms; a newer source revision is available",
                         cycle_started.elapsed().as_millis()
                     ),
                 );
             }
-            CycleReport::Canceled => {
+            CycleStatus::Canceled => {
                 test_event("canceled");
-                print_watch_status(
-                    request.error_format,
+                print_cycle_status(
+                    &mode,
+                    error_format,
                     format!(
                         "Watch cycle canceled after {} ms",
                         cycle_started.elapsed().as_millis()
                     ),
                 );
             }
-            CycleReport::Failed => {
+            CycleStatus::Failed => {
                 test_event("compile-error");
-                print_watch_status(
-                    request.error_format,
+                print_cycle_status(
+                    &mode,
+                    error_format,
                     format!(
-                        "Watch cycle failed after {} ms; keeping the last successful executable",
-                        cycle_started.elapsed().as_millis()
+                        "Watch cycle failed after {} ms; {}",
+                        cycle_started.elapsed().as_millis(),
+                        failure_consequence(&mode)
                     ),
                 );
+                // A failed cycle ends the same way a completed one does: the
+                // loop goes back to waiting, and a person is told so.
+                announce_watching(&mode);
             }
         }
 
@@ -379,6 +527,143 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
     }
 }
 
+/// What a failed cycle leaves the user with, which is the one thing the two
+/// modes' status lines disagree about.
+///
+/// An executable watch keeps the last executable it published on disk. A test
+/// watch published nothing to keep: this revision reached no `run_finished`,
+/// and whatever the last completed cycle reported is still on the stream above
+/// rather than reprinted here.
+///
+/// "No summary" rather than "no tests ran", because the one failure that can
+/// reach here after the image existed — a test the runner could not execute at
+/// all — did run some. What is true of every failed cycle is that it published
+/// no summary.
+fn failure_consequence(mode: &WatchMode) -> &'static str {
+    match mode {
+        WatchMode::Executable { .. } => "keeping the last successful executable",
+        WatchMode::Test(_) => "no summary for this revision",
+    }
+}
+
+/// Say the loop is idle again after a cycle a person watched go by.
+///
+/// Said after a cycle that ENDED — completed or failed — and not after one a
+/// newer revision superseded or canceled, because that loop is not idle: the
+/// next cycle starts immediately.
+///
+/// Human format only: `--format json` delimits its cycles with `run_finished`
+/// and `run_canceled`, and a consumer of that stream is owed no prose.
+fn announce_watching(mode: &WatchMode) {
+    if let WatchMode::Test(config) = mode
+        && config.options.format == test_mode::OutputFormat::Human
+    {
+        eprintln!("watching…");
+    }
+}
+
+fn executable_status(report: CycleReport) -> CycleStatus {
+    match report {
+        CycleReport::Published(_) => CycleStatus::Completed,
+        CycleReport::Failed => CycleStatus::Failed,
+        CycleReport::Superseded(boundary) => CycleStatus::Superseded(boundary),
+        CycleReport::Canceled => CycleStatus::Canceled,
+    }
+}
+
+/// Fold a test cycle's outcome into the loop's vocabulary, and publish the
+/// status a later interrupt exits with.
+///
+/// `rue test --watch` produces an exit code only when it is asked to stop, and
+/// that code is the last cycle that actually COMPLETED reporting itself: a
+/// cycle that could not build its image, or that an edit abandoned, leaves the
+/// previous answer standing rather than overwriting it with "the run did not
+/// happen" (ADR-0083 §2, RUE-2023).
+///
+/// A completed cycle's own status carries through unchanged, `EmptySelection`
+/// included. "Your filter matched nothing" and "tests failed" are the different
+/// mistakes ADR-0083 §2 gives `3` its own code for, and a watcher stopped after
+/// such a cycle owes an agent that distinction exactly as a one-shot run does.
+fn test_status(outcome: test_mode::CycleOutcome) -> CycleStatus {
+    match outcome {
+        // Not a completed cycle: the image failed, or the runner did. This is
+        // the one status that must not reach the atomic — it would claim the
+        // last completed cycle never happened.
+        test_mode::CycleOutcome::Finished(test_mode::TestExitCode::RunnerError) => {
+            CycleStatus::Failed
+        }
+        test_mode::CycleOutcome::Finished(exit) => {
+            test_mode::set_watch_exit_status(exit);
+            CycleStatus::Completed
+        }
+        test_mode::CycleOutcome::Canceled => CycleStatus::Canceled,
+        test_mode::CycleOutcome::Superseded(boundary) => CycleStatus::Superseded(boundary),
+    }
+}
+
+/// One `rue test --watch` cycle: the declared candidate list as it stands now,
+/// then the ordinary test cycle over this revision's image.
+struct TestWatchCycle<'a, 'diagnostics> {
+    host: &'a mut FilesystemCompilerHost,
+    compile_options: &'a CompileOptions,
+    config: &'a TestWatch,
+    diagnostics: &'a DiagnosticOutput<'diagnostics>,
+    source_path: &'a str,
+    cycle: u64,
+    cancellation: &'a test_mode::RunCancellation,
+    observation: CycleObservation<'a>,
+}
+
+fn test_watch_cycle(request: TestWatchCycle<'_, '_>) -> test_mode::CycleOutcome {
+    let TestWatchCycle {
+        host,
+        compile_options,
+        config,
+        diagnostics,
+        source_path,
+        cycle,
+        cancellation,
+        observation,
+    } = request;
+    // Re-read per cycle: the list is disk state and so are the files it names,
+    // so a candidate added, removed, or newly broken since the last cycle is
+    // reported by this one. The warning it produces is printed by the cycle
+    // itself, once, in each cycle whose report is non-empty (RUE-2023).
+    let candidates = match &config.test_candidates_path {
+        Some(path) => match rue_driver::load_declared_candidates(path) {
+            Ok(declared) => match host.acquire_test_candidates(&declared) {
+                Ok(inventory) => Some(inventory),
+                Err(errors) => {
+                    diagnostics.print_errors(&errors);
+                    return test_mode::CycleOutcome::Finished(test_mode::TestExitCode::RunnerError);
+                }
+            },
+            Err(message) => {
+                eprintln!("{message}");
+                return test_mode::CycleOutcome::Finished(test_mode::TestExitCode::RunnerError);
+            }
+        },
+        None => None,
+    };
+    test_mode::run_cycle(test_mode::CycleRequest {
+        host,
+        compile_options,
+        options: &config.options,
+        diagnostics,
+        root: source_path,
+        repro_flags: &config.repro_flags,
+        repro_env: &config.repro_env,
+        jobs: config.jobs,
+        target: config.target,
+        opt_level: config.opt_level,
+        candidates: candidates.as_ref(),
+        seed: config.seed,
+        cycle: Some(cycle),
+        cancellation: Some(cancellation),
+        observation,
+    })
+}
+
 fn print_source_load_error(error: SourceLoadError, error_format: ErrorFormat) {
     eprintln!("{}", render_source_load_error(error, error_format));
 }
@@ -390,6 +675,23 @@ fn print_watch_status(error_format: ErrorFormat, message: impl std::fmt::Display
     match error_format {
         ErrorFormat::Text => eprintln!("{message}"),
         ErrorFormat::Json => println!("{message}"),
+    }
+}
+
+/// Cycle status, on the stream this mode can spare.
+///
+/// An executable watch keeps the placement above. A test watch cannot: stdout
+/// is the event stream there, and `--format json` promises a consumer that
+/// every line of it parses. Its status goes to stderr in both formats, which is
+/// where `rue test`'s other notices already go (test-events.md, "Streams").
+fn print_cycle_status(
+    mode: &WatchMode,
+    error_format: ErrorFormat,
+    message: impl std::fmt::Display,
+) {
+    match mode {
+        WatchMode::Test(_) => eprintln!("{message}"),
+        WatchMode::Executable { .. } => print_watch_status(error_format, message),
     }
 }
 

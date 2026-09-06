@@ -258,6 +258,7 @@ The head event, and the only one carrying the schema version for a run.
 | `seed` | integer | The run's shuffle seed (see `--seed`). |
 | `jobs` | integer | Concurrent test processes, which is all `--jobs` bounds in test mode; compilation uses auto-detected parallelism. |
 | `shard` | string | `"K/N"`. **Absent** when `--shard` was not given. |
+| `cycle` | integer | The 1-based watch cycle this run is. **Absent** outside `--watch`. Under `--watch` the cycle it opens ends with `run_finished` or `run_canceled`, and a later `run_started` closes it either way. |
 | `plan` | object | `{"selected": integer, "total": integer}` — tests selected, and tests in the closure. |
 
 ### `test_started`
@@ -460,6 +461,30 @@ DIRECTORY — the compiler's project root — and its build-side producer is the
 `rue_test` rule (`rue_rules.bzl`, ADR-0083's boundary), which writes it from
 the target's declared `srcs` and fails the target when this array is non-empty,
 since `rue test` itself reports the orphan and still exits `0`.
+
+### `run_canceled`
+
+A `--watch` cycle abandoned while its tests were running. **Only `rue test
+--watch` produces this event**; a one-shot run has nothing that could end it.
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `event` | `"run_canceled"` | |
+| `cycle` | integer | The cycle this ends, matching its `run_started.cycle`. |
+| `reported` | integer | Verdicts this cycle published before the edit landed. |
+| `selected` | integer | Tests the cycle's plan held. |
+| `wall_ms` | integer | Wall time from `run_started` to the cancellation. |
+
+It **replaces** this cycle's `run_finished` and never accompanies one. The
+`test_finished` events already published stand; the tests still running were
+killed with their process groups and produced none, so the cycle's last
+`test_started` has no `test_finished` and a `run_finished` whose counts
+described neither would be a lie. Under `--format human` the same event reads
+`canceled after 3 of 9 tests (0.4s); a newer source revision is available`.
+
+A cycle canceled *before* its image existed emits nothing at all, because no
+`run_started` had opened it — the same rule as any other compile failure, in
+[Streams](#streams). The status line on stderr is what reports those.
 
 ### `test` (listing records)
 
@@ -756,7 +781,10 @@ Directories live under a per-run directory named for the seed and the runner's
 process id, and are themselves named `rue-test-<seed>-<ordinal>`. The run
 directory is what keeps two runs that share an explicit `--seed` — a repro next
 to the run that produced it, or two suites in parallel — from deleting each
-other's live working directories.
+other's live working directories. Under `--watch` the run directory also carries
+the cycle: `rue-test-<seed>-<pid>-c<cycle>`. One process runs the same seed many
+times there, and without the cycle in the name the next cycle's fresh-directory
+setup would delete the evidence a failing test in this one deliberately kept.
 
 **Retention is the user's to undo.** The run directory and every scratch
 directory it holds sit under the OS temp directory. A retained one is evidence,
@@ -781,6 +809,60 @@ containment. ADR-0083 §3 scopes that clause to verified-hermetic tests, which
 the deferred capability ADR introduces; the MVP verifies nothing and claims it
 for no test.
 
+## `--watch`
+
+`rue test <root> --watch` keeps **one** compiler for the life of the process and
+runs one test cycle per accepted source revision, so a cycle pays for what the
+edit changed rather than for a whole recompile. It combines with every test-mode
+flag except `--list` — a listing is an inventory of one revision, and a watcher
+has no one revision — and keeps compile mode's own exclusions (`--emit`,
+`--benchmark-json`, `--time-passes`, `-o`).
+
+- **One cycle is one run.** Each publishes its own `run_started` /
+  `run_finished` pair, and `run_started.cycle` numbers them from 1 so a consumer
+  tailing the process can group what lies between. The number counts CYCLES, not
+  runs, so the stream can skip one: a cycle that failed to build its image
+  published no events at all, and the gap is what says so.
+- **A new `run_started` closes whatever was open.** A cycle ends with
+  `run_finished` **or** [`run_canceled`](#run_canceled) — and, for the one
+  failure that can reach the stream after `run_started`, with neither: a runner
+  error (the image could not be executed at all) ends the cycle with no
+  terminator, exactly as it does for a one-shot run. A consumer tailing the
+  stream must therefore treat the next `run_started` as closing the previous
+  cycle rather than waiting for a terminator it may never be owed.
+- **The seed is fixed for the process** unless `--seed` was given. Consecutive
+  cycles therefore shuffle identically, and a difference between two of them is
+  attributable to the edit rather than to the order.
+- **`--test-candidates` is re-read each cycle**, list and named files both, so
+  the unimported-test-file warning describes what is on disk now. It is printed
+  once per cycle whose report is non-empty. Neither the list nor the files it
+  names are watch inputs — they are not sources of the program — so editing one
+  alone wakes nothing; the new report arrives with the next cycle a source edit
+  triggers.
+- **An edit cancels the cycle it lands in.** During compilation nothing is
+  published, exactly as a compile failure publishes nothing. During execution
+  the running tests' process groups are killed and the cycle ends with
+  [`run_canceled`](#run_canceled) instead of `run_finished`.
+- **A compile failure keeps the loop watching.** Its diagnostics go to stderr as
+  always, followed by a status line (`Watch cycle failed after N ms; no summary
+  for this revision`), and the previous cycle's verdicts are not reprinted. Every status line
+  the loop writes goes to stderr in both formats — stdout belongs to the event
+  stream — which is where the runner's other notices already go.
+- **The exit status is produced only on SIGINT or SIGTERM**, and is the last
+  cycle that COMPLETED reporting itself on the ordinary
+  [exit-code table](#exit-codes): `0` if it passed, `1` if it failed, `3` if it
+  selected nothing — and `2` while no cycle has completed at all. A cycle that failed to build its image or that an
+  edit abandoned leaves the previous answer standing, because it answered
+  nothing itself. The live tests are killed before the process exits, as they
+  are for a one-shot run; unlike a one-shot run the watcher exits with that
+  status rather than dying of the signal, because being asked to stop is the
+  only end a watcher has.
+
+Changed-only re-execution — re-running just the tests whose reached set
+intersects the edit — is deliberately not part of this. It is unsound for any
+test that touches the filesystem or the network, and belongs to the deferred
+verdict cache (ADR-0083 §6), which is opt-in and knows what it is claiming.
+
 ## Versioning
 
 This schema follows ADR-0061 §6. The version is `1.0`, published in the head
@@ -803,6 +885,14 @@ event of a run and in each `--list --format json` record.
   and optional, and `repro` still holds what it always did — the argv that
   reproduces this one test — in a spelling that resolves from more places than
   the old one, not a different kind of value.
+- `run_started.cycle` and the `run_canceled` event arrived the same way
+  (RUE-2023), as an optional field and a new event kind. The version stays
+  `1.0`: nothing a `1.0` consumer already read changed, and a consumer that
+  reads only one-shot runs never sees either. A consumer that tails a
+  `rue test --watch` process must handle `run_canceled` as a cycle terminator
+  alongside `run_finished`, which is exactly the "ignore unknown event kinds"
+  rule doing its job — an old consumer waits for a `run_finished` that this
+  cycle owes it no more, and reads the next `run_started` instead.
 - The comparison operands were briefly named `expected`/`actual` and were
   renamed to `left`/`right` in place, still at `1.0` (RUE-1954): the rename
   landed before any consumer outside this repository existed, so it is the one

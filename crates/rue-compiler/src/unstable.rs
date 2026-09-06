@@ -840,30 +840,10 @@ pub fn test_image_in_compile_scope(
 ) -> crate::MultiErrorResult<TestImage> {
     require_test_root_selection(options)?;
     let analysis = session.rooted_test_closure_analysis(options)?;
-    let inventory = TestInventory {
-        entries: analysis
-            .inventory
-            .iter()
-            .map(|test| test.entry.clone())
-            .collect(),
-    };
-    let compile_failures = analysis
-        .failed
-        .iter()
-        .map(|failure| TestCompileFailure {
-            entry: failure.test.entry.clone(),
-            errors: failure.errors.clone(),
-        })
-        .collect::<Vec<_>>();
-    let excluded: std::sync::Arc<[crate::FunctionInstanceKey]> = analysis
-        .failed
-        .iter()
-        .map(|failure| failure.test.identity.clone())
-        .collect::<Vec<_>>()
-        .into();
+    let assembled = assemble_test_image(&analysis);
     // The second request analyzes a smaller root set, so it can fail where the
     // first did not.
-    let output = match session.with_excluded_test_roots(excluded, |session| {
+    let output = match session.with_excluded_test_roots(assembled.excluded, |session| {
         session.executable_in_compile_scope(options)
     }) {
         Ok(output) => output,
@@ -871,8 +851,8 @@ pub fn test_image_in_compile_scope(
     };
     Ok(TestImage {
         output,
-        inventory,
-        compile_failures,
+        inventory: assembled.inventory,
+        compile_failures: assembled.compile_failures,
         failure_diagnostics: analysis.diagnostics,
     })
 }
@@ -897,6 +877,108 @@ pub(crate) fn carrying_first_pass(
         }
     }
     errors
+}
+
+/// Host-facing outcome of a cancellable retained test-image build (RUE-2023).
+///
+/// The counterpart of [`CancellableCompileOutcome`] for `RootSelection::Tests`,
+/// so a retained watch host can build one test image per accepted source
+/// revision and abandon the one an edit overtook.
+pub enum CancellableTestImageOutcome {
+    Completed(Box<TestImage>),
+    Errors(crate::CompileErrors),
+    Canceled,
+}
+
+/// [`test_image_in_compile_scope`] with cooperative cancellation (RUE-2023).
+///
+/// Both halves of the request observe the token: the closure analysis that
+/// decides which tests the image can hold, and the second, narrowed request
+/// that links it. A cycle the watcher canceled reports neither diagnostics nor
+/// an image, because both describe a revision the user has already replaced.
+pub fn cancellable_test_image_in_compile_scope(
+    session: &mut crate::CompilerSession,
+    options: &crate::CompileOptions,
+    cancellation: CompilationCancellation,
+) -> CancellableTestImageOutcome {
+    if let Err(errors) = require_test_root_selection(options) {
+        return CancellableTestImageOutcome::Errors(errors);
+    }
+    let analysis =
+        match session.cancellable_test_closure_analysis(options, cancellation.token.clone()) {
+            crate::session::TestClosureAnalysisOutcome::Analyzed(analysis) => analysis,
+            crate::session::TestClosureAnalysisOutcome::Errors(errors) => {
+                return CancellableTestImageOutcome::Errors(errors);
+            }
+            crate::session::TestClosureAnalysisOutcome::Canceled => {
+                return CancellableTestImageOutcome::Canceled;
+            }
+        };
+    let assembled = assemble_test_image(&analysis);
+    let snapshot = match session.committed_snapshot_for_executable() {
+        Ok(snapshot) => snapshot,
+        Err(errors) => return CancellableTestImageOutcome::Errors(errors),
+    };
+    // The second request analyzes a smaller root set, so it can fail where the
+    // first did not.
+    let output = session.with_excluded_test_roots(assembled.excluded, |session| {
+        crate::queries::compile_with_session_with_cancellation(
+            session,
+            &snapshot,
+            options,
+            cancellation.token,
+        )
+    });
+    match output {
+        Ok(output) => CancellableTestImageOutcome::Completed(Box::new(TestImage {
+            output,
+            inventory: assembled.inventory,
+            compile_failures: assembled.compile_failures,
+            failure_diagnostics: analysis.diagnostics,
+        })),
+        Err(crate::session::PipelineRequestControl::Abort(rue_query::QueryAbort::Canceled)) => {
+            CancellableTestImageOutcome::Canceled
+        }
+        Err(control) => CancellableTestImageOutcome::Errors(carrying_first_pass(
+            analysis.diagnostics,
+            crate::session::pipeline_control_errors("cancellable test image", control),
+        )),
+    }
+}
+
+/// The inventory, the per-test failures, and the exclusion set one analysis
+/// decides, shared by the cancellable and uncancellable image requests so the
+/// two can never disagree about which tests an image holds.
+struct AssembledTestImage {
+    inventory: TestInventory,
+    compile_failures: Vec<TestCompileFailure>,
+    excluded: std::sync::Arc<[crate::FunctionInstanceKey]>,
+}
+
+fn assemble_test_image(analysis: &crate::session::TestClosureAnalysis) -> AssembledTestImage {
+    AssembledTestImage {
+        inventory: TestInventory {
+            entries: analysis
+                .inventory
+                .iter()
+                .map(|test| test.entry.clone())
+                .collect(),
+        },
+        compile_failures: analysis
+            .failed
+            .iter()
+            .map(|failure| TestCompileFailure {
+                entry: failure.test.entry.clone(),
+                errors: failure.errors.clone(),
+            })
+            .collect(),
+        excluded: analysis
+            .failed
+            .iter()
+            .map(|failure| failure.test.identity.clone())
+            .collect::<Vec<_>>()
+            .into(),
+    }
 }
 
 fn require_test_root_selection(options: &crate::CompileOptions) -> crate::MultiErrorResult<()> {

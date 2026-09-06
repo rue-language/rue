@@ -1,7 +1,10 @@
 use std::path::Path;
 use std::time::Instant;
 
-use rue_compiler::unstable::{CancellableCompileOutcome, CompilationCancellation, OneShotMetrics};
+use rue_compiler::unstable::{
+    CancellableCompileOutcome, CancellableTestImageOutcome, CompilationCancellation,
+    OneShotMetrics, TestCompileFailure, TestImage, TestInventory,
+};
 use rue_compiler::{CompileOptions, CompileWarning, LinkerMode};
 use rue_driver::{FilesystemCompilerHost, WatchInput};
 
@@ -315,5 +318,159 @@ fn linker_name(linker: &LinkerMode) -> &str {
     match linker {
         LinkerMode::Internal => "internal",
         LinkerMode::System(command) => command,
+    }
+}
+
+/// What a published test image hands the runner (ADR-0083 §3).
+///
+/// The linked bytes are already at the cycle's image path; what the run still
+/// needs is the inventory that assigned the dispatch ordinals and the tests the
+/// image could not hold.
+pub(crate) struct PublishedTestImage {
+    pub(crate) inventory: TestInventory,
+    pub(crate) compile_failures: Vec<TestCompileFailure>,
+}
+
+/// One test-image cycle, the test-mode twin of [`CycleRequest`].
+///
+/// Same steps in the same order as [`drive_cycle`] — discovery gate,
+/// destination preflight, compile, publish, warnings — over the request's test
+/// root set instead of its executable one, so `rue test` and `rue test --watch`
+/// reach the image through one orchestration rather than two (RUE-2023). What
+/// a watch cycle adds around it stays in `watch`, exactly as it does for the
+/// executable cycle; what a test cycle adds *after* it — the run — is
+/// `test_mode`'s.
+pub(crate) struct TestCycleRequest<'a, 'diagnostics> {
+    pub(crate) host: &'a mut FilesystemCompilerHost,
+    pub(crate) options: &'a CompileOptions,
+    pub(crate) diagnostics: &'a DiagnosticOutput<'diagnostics>,
+    /// Where the linked image is staged. Always inside the run's own private
+    /// directory, never a path the user named: `rue test` refuses `-o` for
+    /// exactly this reason, so no cycle here can publish over a user artifact.
+    pub(crate) image_path: &'a Path,
+    pub(crate) observation: CycleObservation<'a>,
+}
+
+/// The outcome of a test-image cycle, on the same terms as [`CycleReport`].
+pub(crate) enum TestCycleReport {
+    /// The image reached the cycle's image path and can be run.
+    Published(Box<PublishedTestImage>),
+    /// The request was rejected outside every test closure, or the image could
+    /// not be staged. Diagnostics are already on the diagnostic stream.
+    Failed,
+    /// A newer source revision arrived before the image could be published.
+    Superseded(Supersession),
+    /// The image build was canceled without a newer revision being observed.
+    Canceled,
+}
+
+pub(crate) fn drive_test_cycle(request: TestCycleRequest<'_, '_>) -> TestCycleReport {
+    let TestCycleRequest {
+        host,
+        options,
+        diagnostics,
+        image_path,
+        observation,
+    } = request;
+
+    // The same gate the executable cycle opens with, and for the same reason:
+    // an unresolved `@import` is the user's problem and is reported as itself
+    // rather than as whatever the staging preflight would have said (RUE-810).
+    if let Some(errors) = host.discovery_refusal() {
+        diagnostics.print_errors(&errors);
+        return TestCycleReport::Failed;
+    }
+
+    let destination = match preflight(image_path, host, &observation) {
+        Ok(destination) => destination,
+        Err(error) => {
+            diagnostics.print_error(&error.into_compile_error());
+            return TestCycleReport::Failed;
+        }
+    };
+
+    let image = match observation {
+        CycleObservation::OneShot => match host.test_image_in_compile_scope(options) {
+            Ok(image) => image,
+            Err(errors) => {
+                diagnostics.print_errors(&errors);
+                return TestCycleReport::Failed;
+            }
+        },
+        CycleObservation::Watch {
+            ref cancellation,
+            superseded,
+            ..
+        } => {
+            let outcome =
+                host.cancellable_test_image_in_compile_scope(options, cancellation.clone());
+            // A superseded cycle describes an image the user's source no longer
+            // asks for. Check before reporting, so a transient error already
+            // fixed on disk never reaches the terminal.
+            if superseded() {
+                return TestCycleReport::Superseded(Supersession::BeforePublication);
+            }
+            match outcome {
+                CancellableTestImageOutcome::Completed(image) => *image,
+                CancellableTestImageOutcome::Errors(errors) => {
+                    diagnostics.print_errors(&errors);
+                    return TestCycleReport::Failed;
+                }
+                CancellableTestImageOutcome::Canceled => return TestCycleReport::Canceled,
+            }
+        }
+    };
+
+    let TestImage {
+        output,
+        inventory,
+        compile_failures,
+        failure_diagnostics,
+    } = image;
+    let metrics = output.unstable_metrics();
+    let linked = LinkedExecutable {
+        target: options.target,
+        warnings: output.warnings,
+        metrics,
+        linked_bytes: output.elf,
+        destination,
+        observation: match observation {
+            CycleObservation::OneShot => PublicationObservation::OneShot,
+            CycleObservation::Watch { inputs, .. } => PublicationObservation::Watch(inputs),
+        },
+    };
+    let publication = {
+        let _span = tracing::info_span!("output_write", driver_phase = true).entered();
+        linked.publish()
+    };
+    // Warnings and the closure's own analysis failures live outside the
+    // publication result so a failed publication cannot discard them, exactly
+    // as the executable cycle treats its warnings.
+    //
+    // stderr is the authoritative diagnostic stream and carries the failures
+    // exactly as a whole-request failure would have: once, in the run's own
+    // `--error-format`, before any event. The copies inside the `compile_error`
+    // events are the attribution (ADR-0083 §3). They are published here rather
+    // than by the run, and so whatever the selection turns out to be, because
+    // the closure that produced them is the WHOLE closure: a filter narrows the
+    // run set, never the analysis root set, and a filtered run that silently
+    // swallowed a broken test file would be the papercut the
+    // unimported-test-file warning exists to prevent.
+    diagnostics.print_warnings(&publication.warnings);
+    if !failure_diagnostics.is_empty() {
+        diagnostics.print_errors(&failure_diagnostics);
+    }
+    match publication.result {
+        Ok(_) => TestCycleReport::Published(Box::new(PublishedTestImage {
+            inventory,
+            compile_failures,
+        })),
+        Err(PublishError::InputsChanged) => {
+            TestCycleReport::Superseded(Supersession::AtPublication)
+        }
+        Err(error) => {
+            diagnostics.print_error(&error.into_compile_error());
+            TestCycleReport::Failed
+        }
     }
 }

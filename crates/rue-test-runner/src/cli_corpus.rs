@@ -212,6 +212,55 @@ pub enum WatchScenarioKind {
     InitialFailure,
 }
 
+/// A synchronized end-to-end `rue test --watch` scenario (RUE-2023).
+///
+/// The sibling of [`WatchScenario`] for the test-mode watcher. It drives the
+/// same milestone protocol, so a case waits for the cycle it is about to assert
+/// on instead of sleeping, and it asserts on the event stream the watcher
+/// publishes rather than on a produced executable — a test watcher publishes
+/// none.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WatchTestScenario {
+    pub kind: WatchTestScenarioKind,
+    /// `--format` for the run. Defaults to `json`, because the event stream is
+    /// the surface these cases exist to pin.
+    #[serde(default)]
+    pub format: Option<String>,
+    /// `--timeout-ms` for the run, when a case needs one that is not the
+    /// default (a deliberately spinning test wants a short leash).
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    /// Extra compiler arguments, appended after the standard ones.
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub edits: Vec<WatchEdit>,
+    /// Substrings the whole of stdout must contain, and must not.
+    #[serde(default)]
+    pub stdout_contains: Vec<String>,
+    #[serde(default)]
+    pub stdout_not_contains: Vec<String>,
+    #[serde(default)]
+    pub stderr_contains: Vec<String>,
+    /// The status the watcher exits with when the case interrupts it: the last
+    /// COMPLETED cycle's, which is the only exit status a watcher produces.
+    pub expected_exit: i32,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchTestScenarioKind {
+    /// One edit, one further cycle. The case's `stdout_contains` says what the
+    /// second cycle's verdicts must be.
+    Edit,
+    /// Break the closure, observe the failed cycle, repair it, observe the
+    /// next completed one.
+    CompileError,
+    /// Edit while a test is running: the cycle is abandoned with
+    /// `run_canceled` and the next one completes.
+    Cancel,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WatchEdit {
@@ -273,6 +322,9 @@ pub struct Case {
     /// A synchronized, imperative `--watch` integration scenario.
     #[serde(default)]
     pub watch: Option<WatchScenario>,
+    /// A synchronized, imperative `rue test --watch` integration scenario.
+    #[serde(default)]
+    pub watch_test: Option<WatchTestScenario>,
     /// Extra environment variables for the compiler invocation.
     #[serde(default)]
     pub env: HashMap<String, String>,

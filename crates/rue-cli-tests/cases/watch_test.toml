@@ -1,0 +1,327 @@
+[section]
+id = "cli.watch_test"
+name = "The rue test watch loop"
+description = """
+RUE-2023: `rue test <root> --watch` runs one test cycle per accepted source
+revision on ONE retained compiler, so an iteration pays for what the edit
+changed rather than for a whole fresh compile.
+
+These cases drive the real binary through the same milestone protocol
+`cli.watch` uses, so every step waits for the cycle it is about to assert on
+rather than sleeping. What they pin is the surface a consumer sees: one
+`run_started`/`run_finished` pair per cycle with the cycle number in the head
+event, `run_canceled` in place of `run_finished` for a cycle an edit abandoned,
+a failed cycle that publishes no events and keeps watching, and the exit status
+the watcher reports when it is finally asked to stop — which is the only exit
+status a watcher produces at all.
+
+The schema is docs/process/test-events.md; `cli.rue_test` pins the one-shot
+stream, and these pin what `--watch` adds to it.
+"""
+
+[[case]]
+name = "an_edited_test_body_changes_only_that_tests_verdict"
+description = """
+The cycle is the whole suite, not a guess at what the edit reached: both tests
+run again, and only the edited one's verdict moves. Changed-only re-execution is
+deliberately not this (test-events.md, `--watch`).
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 { 0 }
+""" },
+    { path = "tests.rue", source = """
+test "doubles" {
+    @assert(2 * 2 == 4);
+}
+
+test "adds" {
+    @assert(1 + 1 == 2);
+}
+""" },
+]
+
+[case.watch_test]
+kind = "edit"
+expected_exit = 1
+stdout_contains = [
+    # Cycle 1: the head event carries its number, and both tests pass.
+    '"cycle":1,"event":"run_started","jobs":1,"opt_level":"0","plan":{"selected":2,"total":2},"root":"main.rue","schema":"1.0","seed":1',
+    '"compile_error":0,"crash":0,"event":"run_finished","failed":0,"passed":2',
+    # Cycle 2: a second pair, numbered, over the same two tests.
+    '"cycle":2,"event":"run_started"',
+    '"compile_error":0,"crash":0,"event":"run_finished","failed":1,"passed":1',
+    # And the failure is the edited test's own assertion, at its own site.
+    '"failure":{"exit_code":101,"kind":"assert","location":{"column":5,"file":"tests.rue","line":2}',
+    '"id":"tests.rue::doubles"',
+]
+stdout_not_contains = [
+    # `adds` was not touched, so nothing ever failed at its assertion's site.
+    '"file":"tests.rue","line":6',
+    '"cycle":3',
+]
+
+[[case.watch_test.edits]]
+path = "tests.rue"
+source = """
+test "doubles" {
+    @assert(2 * 2 == 5);
+}
+
+test "adds" {
+    @assert(1 + 1 == 2);
+}
+"""
+
+[[case]]
+name = "an_edited_helper_reruns_the_tests_that_reach_it"
+description = """
+The edit is in a module no test declares: the cycle re-observes the closure, the
+retained compiler re-analyzes what the change reached, and the test that calls
+the helper reports a new verdict. The test that does not call it is unaffected.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 { 0 }
+""" },
+    { path = "helper.rue", source = """
+pub fn double(x: i32) -> i32 { x * 2 }
+""" },
+    { path = "tests.rue", source = """
+const helper = @import("helper.rue");
+
+test "doubles through the helper" {
+    @assert(helper.double(2) == 4);
+}
+
+test "adds without it" {
+    @assert(1 + 1 == 2);
+}
+""" },
+]
+
+[case.watch_test]
+kind = "edit"
+expected_exit = 1
+stdout_contains = [
+    '"cycle":1,"event":"run_started"',
+    '"compile_error":0,"crash":0,"event":"run_finished","failed":0,"passed":2',
+    '"cycle":2,"event":"run_started","jobs":1,"opt_level":"0","plan":{"selected":2,"total":2}',
+    '"compile_error":0,"crash":0,"event":"run_finished","failed":1,"passed":1',
+    '"id":"tests.rue::doubles through the helper"',
+]
+stdout_not_contains = ['"cycle":3']
+
+[[case.watch_test.edits]]
+path = "helper.rue"
+source = """
+pub fn double(x: i32) -> i32 { x * 3 }
+"""
+
+[[case]]
+name = "a_broken_closure_fails_the_cycle_and_the_loop_keeps_watching"
+description = """
+An `@import` that no longer resolves is outside every test closure, so the cycle
+publishes NO events — not even a `run_started` for a run that never began — and
+says so on stderr with the compiler's own diagnostic plus a status line. The
+loop keeps watching, and the repairing edit produces an ordinary cycle. The
+previous cycle's verdicts are not reprinted (test-events.md, `--watch`).
+
+The cycle number is the loop's, not the stream's: the failed cycle consumed 2,
+so the repaired one is 3 and the stream skips a number. That is the point of
+publishing it — a gap says a revision produced no run.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 { 0 }
+""" },
+    { path = "helper.rue", source = """
+pub fn double(x: i32) -> i32 { x * 2 }
+""" },
+    { path = "tests.rue", source = """
+const helper = @import("helper.rue");
+
+test "doubles through the helper" {
+    @assert(helper.double(2) == 4);
+}
+""" },
+]
+
+[case.watch_test]
+kind = "compile_error"
+expected_exit = 0
+stdout_contains = [
+    '"cycle":1,"event":"run_started"',
+    '"cycle":3,"event":"run_started"',
+    '"compile_error":0,"crash":0,"event":"run_finished","failed":0,"passed":1',
+]
+stdout_not_contains = [
+    # Cycle 2 is the failed one: no head event, no verdicts, no summary.
+    '"cycle":2',
+    '"event":"run_canceled"',
+]
+stderr_contains = [
+    "E0704",
+    "cannot find module 'helper.rue'",
+    "Watch cycle failed after",
+    "no summary for this revision",
+]
+
+[[case.watch_test.edits]]
+path = "helper.rue"
+delete = true
+
+[[case.watch_test.edits]]
+path = "helper.rue"
+source = """
+pub fn double(x: i32) -> i32 { x * 2 }
+"""
+
+[[case]]
+name = "an_edit_during_the_run_cancels_the_cycle"
+description = """
+The edit lands while a test is running. Its process group is killed, the cycle
+ends with `run_canceled` rather than a `run_finished` whose counts would
+describe neither the verdicts it published nor the test it killed, and the
+`test_started` it had already published stays unfinished. The next cycle is
+ordinary.
+
+The spinning test's budget is short so a missed kill still ends the case rather
+than the suite's hang guard; the cancellation is what the case asserts, and it
+lands long before that budget expires.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 { 0 }
+""" },
+    { path = "tests.rue", source = """
+test "spins" {
+    let mut i: i32 = 0;
+    while i >= 0 {
+        if i > 0 {
+            i = i - 1;
+        }
+    }
+}
+""" },
+]
+
+[case.watch_test]
+kind = "cancel"
+timeout_ms = 8000
+expected_exit = 0
+stdout_contains = [
+    '"cycle":1,"event":"run_started","jobs":1,"opt_level":"0","plan":{"selected":1,"total":1}',
+    '{"event":"test_started","id":"tests.rue::spins"}',
+    '{"cycle":1,"event":"run_canceled","reported":0,"selected":1,',
+    '"cycle":2,"event":"run_started"',
+    '"compile_error":0,"crash":0,"event":"run_finished","failed":0,"passed":1',
+]
+stdout_not_contains = [
+    # The killed test produced no verdict, and the abandoned cycle no summary.
+    '"id":"tests.rue::spins","repro"',
+    '"verdict":"crash"',
+    '"verdict":"timeout"',
+]
+stderr_contains = ["Watch cycle canceled after"]
+
+[[case.watch_test.edits]]
+path = "tests.rue"
+source = """
+test "settles" {
+    @assert(1 + 1 == 2);
+}
+"""
+
+[[case]]
+name = "an_empty_selection_keeps_its_own_exit_status"
+description = """
+`3` is a distinct outcome rather than a vacuous success because an empty
+selection is how a typo becomes false evidence, and a watcher stopped after such
+a cycle owes an agent that distinction exactly as a one-shot run does. Only the
+runner-error `2` is withheld from the watch exit status, because that is the one
+answer that would claim no cycle ever completed.
+
+The cycle itself is complete and ordinary: `run_started` with an empty plan,
+`run_finished` with zero counts, and the reason on stderr.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 { 0 }
+""" },
+    { path = "tests.rue", source = """
+test "doubles" {
+    @assert(2 * 2 == 4);
+}
+""" },
+]
+
+[case.watch_test]
+kind = "edit"
+args = ["--filter", "nothing matches this"]
+expected_exit = 3
+stdout_contains = [
+    '"cycle":1,"event":"run_started","jobs":1,"opt_level":"0","plan":{"selected":0,"total":1}',
+    '"cycle":2,"event":"run_started","jobs":1,"opt_level":"0","plan":{"selected":0,"total":1}',
+    '"compile_error":0,"crash":0,"event":"run_finished","failed":0,"passed":0',
+]
+stderr_contains = ["error: no tests matched the selection"]
+
+[[case.watch_test.edits]]
+path = "tests.rue"
+source = """
+test "doubles" {
+    @assert(2 * 2 == 5);
+}
+"""
+
+[[case]]
+name = "human_format_prints_a_summary_per_cycle_and_says_it_is_watching"
+description = """
+Passes stay silent and failures print whole, exactly as a one-shot run reports
+them; what `--watch` adds for a person is one summary per cycle and the
+`watching…` line that says the loop is idle again. The line is stderr's, like
+every other status the loop writes, because stdout is the event stream in the
+other format and the two must not disagree about which stream carries what.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 { 0 }
+""" },
+    { path = "tests.rue", source = """
+test "doubles" {
+    @assert(2 * 2 == 4);
+}
+""" },
+]
+
+[case.watch_test]
+kind = "edit"
+format = "human"
+expected_exit = 1
+stdout_contains = [
+    "1 passed (",
+    "FAIL tests.rue::doubles",
+    "0 passed, 1 failed (",
+]
+stderr_contains = ["watching…"]
+
+[[case.watch_test.edits]]
+path = "tests.rue"
+source = """
+test "doubles" {
+    @assert(2 * 2 == 5);
+}
+"""

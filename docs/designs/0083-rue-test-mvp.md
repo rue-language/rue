@@ -958,9 +958,12 @@ them — recorded in the follow-up issues (§6), not here.
 The four deferred ADRs of §6 (RUE-1621 through RUE-1624), then: structured
 assertion intrinsics beyond Phase 2.5's comparison family; capability
 declarations in types and at trait boundaries (flagged from the capability
-work); JUnit and CTRF adapters; test-aware `--watch` (rerun exactly the
-dirtied selection on save — needs the deferred selection work plus the
-existing watch loop).
+work); JUnit and CTRF adapters; changed-only re-execution under `--watch`
+(rerun exactly the dirtied selection on save, rather than the whole suite —
+needs the deferred verdict cache of §6, and is unsound for any test that
+touches the filesystem or the network). `rue test --watch` itself shipped in
+RUE-2023: one retained compiler runs one whole test cycle per accepted source
+revision, which is the part that needed only the existing watch loop.
 
 ## References
 

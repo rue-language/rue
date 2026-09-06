@@ -82,6 +82,10 @@ pub(crate) struct Dispatch<'a> {
     pub(crate) seed: u64,
     pub(crate) timeout: Duration,
     pub(crate) stream_budget: usize,
+    /// A watch cycle's run cancellation, so a child that starts in the instant
+    /// the cycle is abandoned is killed by the observer that registers it
+    /// rather than running to its own timeout (RUE-2023).
+    pub(crate) cancellation: Option<&'a RunCancellation>,
 }
 
 /// Render a selector exactly as the dispatcher parses it: sixteen lowercase
@@ -98,8 +102,17 @@ pub(crate) fn selector(ordinal: u32) -> String {
 /// cases in a parallel suite — would otherwise name the same scratch
 /// directories, and one run's fresh-directory setup would delete the other
 /// run's working directory out from under a live test.
-pub(crate) fn run_root(seed: u64) -> PathBuf {
-    std::env::temp_dir().join(format!("rue-test-{seed}-{}", std::process::id()))
+/// `cycle` is `Some` under `rue test --watch`, where one process runs many
+/// times: without it, cycle N+1 would delete the scratch directory a failing
+/// test in cycle N deliberately retained (RUE-2023). A one-shot run passes
+/// `None` and keeps the name it always had.
+pub(crate) fn run_root(seed: u64, cycle: Option<u64>) -> PathBuf {
+    let pid = std::process::id();
+    let name = match cycle {
+        Some(cycle) => format!("rue-test-{seed}-{pid}-c{cycle}"),
+        None => format!("rue-test-{seed}-{pid}"),
+    };
+    std::env::temp_dir().join(name)
 }
 
 /// The scratch directory one test runs in.
@@ -214,8 +227,47 @@ fn unregister_group(slot: usize, pgid: i32) {
 /// This is what the handler runs, and the tests exercise the same body over a
 /// registry of their own — the only way to observe it without signalling the
 /// test binary itself.
-fn kill_registered_groups() {
+pub(crate) fn kill_registered_groups() {
     kill_groups_in(&LIVE_GROUPS);
+}
+
+/// The authority that ends a watch cycle's execution phase (RUE-2023).
+///
+/// A `rue test --watch` cycle is abandonable at every point, including while
+/// tests are running: an edit kills the live process groups and the cycle
+/// publishes `run_canceled` rather than verdicts about source the user has
+/// already replaced. The flag and the kill are one operation because a worker
+/// between two tests must be stopped by the flag while the test already
+/// running must be stopped by the signal.
+///
+/// A one-shot run holds none of these: nothing outside the run can end it, and
+/// a terminal's Ctrl-C is [`install_signal_forwarding`]'s.
+#[derive(Clone, Default)]
+pub(crate) struct RunCancellation {
+    canceled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl RunCancellation {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Stop the run: publish the flag, then kill every live group.
+    ///
+    /// That order is what makes the two halves cover each other. A worker
+    /// about to spawn observes the flag and never spawns; a worker that
+    /// spawned before the flag was published has already registered its group
+    /// and the sweep reaches it; and a worker that registered *between* the
+    /// flag and the sweep re-reads the flag from `LiveGroup::spawned` and kills
+    /// its own child. `SeqCst` on both sides is what leaves no fourth case.
+    pub(crate) fn cancel(&self) {
+        self.canceled.store(true, Ordering::SeqCst);
+        kill_registered_groups();
+    }
+
+    pub(crate) fn is_canceled(&self) -> bool {
+        self.canceled.load(Ordering::SeqCst)
+    }
 }
 
 /// The registry operations, over the array rather than the static, so a test
@@ -300,6 +352,64 @@ pub(crate) fn install_signal_forwarding() {
     });
 }
 
+/// The status a watch-mode interrupt exits with (ADR-0083 §2, RUE-2023).
+///
+/// `rue test --watch` produces an exit code only when it is asked to stop, and
+/// that code is the last completed cycle's: `0` all passed, `1` otherwise, and
+/// `2` while no cycle has completed at all. Held here, next to the handler that
+/// reads it, because a signal handler may not take a lock.
+static WATCH_EXIT_STATUS: AtomicI32 = AtomicI32::new(super::TestExitCode::RunnerError as i32);
+
+/// Publish the status a later interrupt should exit with.
+pub(crate) fn set_watch_exit_status(exit: super::TestExitCode) {
+    WATCH_EXIT_STATUS.store(exit.code(), Ordering::SeqCst);
+}
+
+/// The handler `rue test --watch` installs for SIGINT and SIGTERM.
+///
+/// A watch process has no natural end, so being asked to stop IS its result:
+/// it kills the tests and reports the last completed cycle's status rather
+/// than dying of the signal the way a one-shot run does. `_exit` is used
+/// because it is async-signal-safe and because every event is already
+/// flushed as it is written.
+extern "C" fn exit_with_last_cycle_status(_signal: i32) {
+    kill_registered_groups();
+    // SAFETY: `_exit` is async-signal-safe and does not return.
+    unsafe {
+        libc::_exit(WATCH_EXIT_STATUS.load(Ordering::SeqCst));
+    }
+}
+
+static WATCH_SIGNAL_EXIT: OnceLock<()> = OnceLock::new();
+
+/// Take responsibility for the tests, and for the process's exit status, in
+/// watch mode.
+///
+/// The counterpart of [`install_signal_forwarding`], installed instead of it:
+/// the two disagree about what a stopped runner should look like, and only one
+/// disposition can be in force. A signal already ignored when we started stays
+/// ignored, for the same reason it does there.
+pub(crate) fn install_watch_signal_exit() {
+    WATCH_SIGNAL_EXIT.get_or_init(|| {
+        for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+            // SAFETY: `sigaction` on a catchable signal with a valid handler.
+            unsafe {
+                let mut previous: libc::sigaction = std::mem::zeroed();
+                if libc::sigaction(signal, std::ptr::null(), &mut previous) == 0
+                    && previous.sa_sigaction == libc::SIG_IGN
+                {
+                    continue;
+                }
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = exit_with_last_cycle_status as libc::sighandler_t;
+                libc::sigemptyset(&mut action.sa_mask);
+                action.sa_flags = libc::SA_RESTART;
+                libc::sigaction(signal, &action, std::ptr::null_mut());
+            }
+        }
+    });
+}
+
 /// Run one test to a verdict.
 ///
 /// Errors are runner errors — the image could not be executed at all — and are
@@ -338,6 +448,7 @@ pub(crate) fn run_one(dispatch: Dispatch<'_>) -> io::Result<Execution> {
     let mut live = LiveGroup {
         channel_write: Some(channel_write),
         slot: None,
+        cancellation: dispatch.cancellation,
     };
     let run = Supervisor::new(command, dispatch.timeout)
         .stream_budget(dispatch.stream_budget)
@@ -413,12 +524,13 @@ pub(crate) fn run_one(dispatch: Dispatch<'_>) -> io::Result<Execution> {
 /// Both halves exist only while the child does: the parent's copy of the
 /// channel's write end, which must be released the moment the child owns its
 /// own, and the registry slot the signal handler walks.
-struct LiveGroup {
+struct LiveGroup<'a> {
     channel_write: Option<OwnedFd>,
     slot: Option<usize>,
+    cancellation: Option<&'a RunCancellation>,
 }
 
-impl GroupObserver for LiveGroup {
+impl GroupObserver for LiveGroup<'_> {
     fn spawned(&mut self, pgid: i32) {
         // While the parent's write end is open, the channel's reader can never
         // see end of stream.
@@ -426,6 +538,17 @@ impl GroupObserver for LiveGroup {
         // Published before anything can block, so a signal arriving during the
         // drain still finds this test.
         self.slot = register_group(pgid);
+        // A watch cycle canceled while this child was being spawned would
+        // otherwise have swept the registry before this entry joined it, and
+        // the child would run to its own timeout with nobody waiting for its
+        // verdict (RUE-2023).
+        if self.cancellation.is_some_and(RunCancellation::is_canceled) {
+            // SAFETY: a negative pid names the group led by `pgid`; an
+            // already-empty group fails harmlessly.
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
+        }
     }
 
     fn reaped(&mut self, pgid: i32) {
@@ -580,7 +703,7 @@ mod tests {
     /// from the event stream alone.
     #[test]
     fn a_scratch_directory_is_named_from_the_seed_and_ordinal() {
-        let root = run_root(417);
+        let root = run_root(417, None);
         let path = scratch_path(&root, 417, 3);
         assert_eq!(
             path.file_name().unwrap().to_str().unwrap(),
@@ -594,7 +717,7 @@ mod tests {
     /// directory. The run root is what keeps them disjoint.
     #[test]
     fn a_run_root_is_private_to_its_process() {
-        let root = run_root(417);
+        let root = run_root(417, None);
         assert_eq!(root.parent().unwrap(), std::env::temp_dir());
         assert!(
             root.file_name()
@@ -604,6 +727,43 @@ mod tests {
                 .ends_with(&format!("-{}", std::process::id())),
             "{root:?}"
         );
+    }
+
+    /// A watch process runs the same seed many times, so its run root also
+    /// names the cycle: without that, cycle N+1 would delete the scratch
+    /// directory a failing test in cycle N deliberately retained (RUE-2023).
+    #[test]
+    fn a_watch_cycle_gets_a_run_root_of_its_own() {
+        let first = run_root(417, Some(1));
+        let second = run_root(417, Some(2));
+        assert_ne!(first, second);
+        assert_ne!(first, run_root(417, None));
+        assert!(
+            first
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .ends_with("-c1"),
+            "{first:?}"
+        );
+        // A retained scratch directory is still tied to the run by seed and
+        // ordinal; only the root that holds it moved.
+        assert_eq!(
+            scratch_path(&first, 417, 3).file_name(),
+            scratch_path(&second, 417, 3).file_name()
+        );
+    }
+
+    /// Cancellation is published before the sweep, so a worker that reads the
+    /// flag at any point after `cancel` returns never spawns.
+    #[test]
+    fn a_canceled_run_reports_itself_to_every_worker() {
+        let cancellation = RunCancellation::new();
+        assert!(!cancellation.is_canceled());
+        let clone = cancellation.clone();
+        cancellation.cancel();
+        assert!(clone.is_canceled(), "cancellation is shared, not copied");
     }
 
     /// The channel's budget is separate from the streams' so a test that floods
