@@ -153,6 +153,37 @@ case "$cmd" in
                 break
             fi
         done
+        # No package is spelled like the token: it may still be the *target*
+        # name of a second rue_crate/rue_binary living inside some other
+        # package's BUCK file (RUE-2045), e.g. crates/rue declares both `rue`
+        # and `rue-driver`. Scan every BUCK file's macro bodies for an exact
+        # `name = "<token>",` line; a unique hit resolves straight to that
+        # package with the target defaulted below, same as a package match.
+        if [[ -z "$pkg" && -z "$unit_target" ]]; then
+            target_matches=()
+            for buck_file in crates/*/BUCK; do
+                [[ -f "$buck_file" ]] || continue
+                if [[ "$(awk -v tok="$crate" '
+                        /^(rue_crate|rue_binary)\(/ { in_macro = 1; next }
+                        in_macro && /^\)/ { in_macro = 0 }
+                        in_macro {
+                            line = $0
+                            sub(/^[ \t]+/, "", line)
+                            sub(/[ \t]+$/, "", line)
+                            if (line == "name = \"" tok "\",") { print "1"; exit }
+                        }
+                    ' "$buck_file")" == "1" ]]; then
+                    target_matches+=("$(basename "$(dirname "$buck_file")")")
+                fi
+            done
+            if [[ ${#target_matches[@]} -eq 1 ]]; then
+                pkg="${target_matches[0]}"
+                unit_target="$crate-test"
+            elif [[ ${#target_matches[@]} -gt 1 ]]; then
+                echo "scripts/rue unit: target '$crate' is ambiguous across packages: ${target_matches[*]} (use <package>:$crate-test)" >&2
+                exit 2
+            fi
+        fi
         # An unknown crate produces a clear message naming every package that
         # was probed, instead of a raw buck2 target-not-found dump.
         if [[ -z "$pkg" ]]; then
