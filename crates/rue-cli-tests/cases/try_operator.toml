@@ -1,10 +1,11 @@
-# `?` accepts only exact specializations of the trusted std Option
-# (std.option.Option). User-defined Some/None lookalikes are ordinary enums with
-# no `?` behavior. This is exercised by pure `?` on std Option (no intrinsics).
+# `?` accepts only exact specializations of the trusted std producers
+# (std.option.Option, std.result.Result). User-defined Some/None lookalikes are
+# ordinary enums with no `?` behavior. This is exercised by pure `?` on those
+# two std types (no intrinsics).
 [section]
 id = "cli.try_operator"
-name = "The `?` (try) operator on Option"
-description = "End-to-end runtime behavior of `?`: unwrap Some, short-circuit None, propagate a StrBuf payload, and the two static errors (E0503/E0504). RUE-6, ADR-0038."
+name = "The `?` (try) operator"
+description = "End-to-end runtime behavior of `?`: unwrap Some, short-circuit None, propagate a StrBuf payload, propagate a droppable Result error exactly once, and the two static errors (E0503/E0504). RUE-6, ADR-0038."
 
 # The `?` operator unwraps Some and short-circuits None, driven from real stdin
 # through the compiled binary. `pick` returns Some for a positive count and None
@@ -127,3 +128,102 @@ fn main() -> i32 { f(); 0 }
 args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0504", "applied to an `Option`"]
+
+# `?` on a `Result` whose error type has drop glue, in an ordinary function
+# (RUE-2051). The failure arm moves the error payload out of the operand and
+# into the `Err` of the enclosing function's return type; that constructor owns
+# it from there. The payload used to be named as a statement of the failure
+# arm's block as well, so an error type with drop glue was dropped at the `?`
+# site and then handed to the constructor already dropped, which the CFG
+# verifier rejected.
+[[case]]
+name = "try_result_droppable_error_payload"
+description = "`?` on Result(i64, StrBuf) in an ordinary function: the Ok path yields 3, the Err path carries the StrBuf out."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const R = std.result.Result(i64, StrBuf);
+
+fn parse(n: i64) -> R {
+    if n < 0 { R.Err("negative") } else { R.Ok(n) }
+}
+
+fn compute(a: i64, b: i64) -> R {
+    let x = parse(a)?;
+    R.Ok(x + b)
+}
+
+fn report(a: i64) {
+    match compute(a, 2) {
+        R.Ok(v) => println("ok " + @to_string(v)),
+        R.Err(e) => println("err " + e),
+    }
+}
+
+fn main() -> i32 {
+    report(0 - 1);
+    match compute(1, 2) {
+        R.Ok(v) => @intCast(v),
+        R.Err(_) => 1,
+    }
+}
+""" },
+]
+args = ["main.rue", "-o", "prog"]
+stdout = """
+err negative
+"""
+exit_code = 3
+
+# The propagated error payload is dropped exactly once. `Failure`'s destructor
+# prints its code, so the drop count and its position in the output are both
+# pinned: the Ok run prints nothing, and the Err run prints exactly one `5`,
+# when the caller's binding for the propagated payload leaves scope.
+[[case]]
+name = "try_result_error_payload_drops_once"
+description = "A `?`-propagated error payload with a destructor runs it exactly once, at its final owner."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "main.rue", source = """
+const std = @import("std");
+
+struct Failure { code: i32 }
+
+drop fn Failure(self) {
+    @dbg(self.code);
+}
+
+const R = std.result.Result(i64, Failure);
+
+fn parse(n: i64) -> R {
+    if n < 0 { R.Err(Failure { code: 5 }) } else { R.Ok(n) }
+}
+
+fn compute(a: i64, b: i64) -> R {
+    let x = parse(a)?;
+    R.Ok(x + b)
+}
+
+fn run(a: i64) -> i32 {
+    match compute(a, 2) {
+        R.Ok(v) => @intCast(v),
+        R.Err(_e) => 0 - 1,
+    }
+}
+
+fn main() -> i32 {
+    @dbg(run(1));
+    @dbg(run(0 - 1));
+    0
+}
+""" },
+]
+args = ["main.rue", "-o", "prog"]
+stdout = """
+3
+5
+-1
+"""
+exit_code = 0
