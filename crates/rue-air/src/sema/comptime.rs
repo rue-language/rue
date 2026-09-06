@@ -29,6 +29,7 @@ mod model;
 mod registry;
 mod sites;
 mod structured_type;
+mod value_policy;
 
 pub use frames::*;
 pub use intrinsics::*;
@@ -36,6 +37,7 @@ pub use model::*;
 pub use registry::*;
 pub use sites::*;
 pub use structured_type::*;
+pub use value_policy::*;
 
 #[cfg(test)]
 mod value_domain_tests;
@@ -57,6 +59,7 @@ pub(crate) const COMPTIME_PRODUCTION_SOURCE: &str = concat!(
     include_str!("comptime/sites.rs"),
     include_str!("comptime/frames.rs"),
     include_str!("comptime/structured_type.rs"),
+    include_str!("comptime/value_policy.rs"),
     include_str!("comptime.rs"),
 );
 
@@ -70,6 +73,7 @@ pub(crate) const COMPTIME_SOURCE: &str = concat!(
     include_str!("comptime/sites.rs"),
     include_str!("comptime/frames.rs"),
     include_str!("comptime/structured_type.rs"),
+    include_str!("comptime/value_policy.rs"),
     include_str!("comptime.rs"),
     "\n#[cfg(test)]\nmod value_domain_tests {\n",
     include_str!("comptime/value_domain_tests.rs"),
@@ -411,14 +415,25 @@ pub trait ComptimeValueAlgebra: ComptimeDomain {
         name: Self::Name,
         span: Span,
     ) -> ComptimeHostResult<ComptimeNamedValueResolution<Self::Value>, Self::Failure>;
-    fn match_pattern(
+    /// Decide an enum-variant path pattern against an already-reduced
+    /// scrutinee. Wildcard, boolean, and integer patterns are decided once
+    /// for every host by `comptime_scalar_pattern_decision` (RUE-1968); a
+    /// path pattern is the one form whose meaning depends on which
+    /// enum-shaped values a domain can represent, and the default domain
+    /// represents none of them.
+    fn match_path_pattern(
         &self,
-        pattern: &ComptimeMatchPattern<Self::Name>,
-        value: &Self::Value,
-    ) -> Option<bool>;
-    /// Resolve the terminal policy when every reached match arm declined.
-    /// Ordinary body evaluation remains runtime-dependent; durable hosts may
-    /// preserve a declaration-time failure through this semantic hook.
+        _pattern: &ComptimeMatchPattern<Self::Name>,
+        _value: &Self::Value,
+    ) -> Option<bool> {
+        None
+    }
+    /// Report a comptime-known `match` whose reached arms all declined.
+    /// Selection happens over an exhaustive pattern set (4.14:19, 4.7:9), so
+    /// arriving here means the set was not exhaustive: an error in `const`
+    /// position and in `comptime {}` position alike. Hosts differ only in how
+    /// they carry the failure, and both spell it
+    /// `COMPTIME_MATCH_NO_SELECTED_ARM`.
     fn match_no_selected_arm(
         &self,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
@@ -867,6 +882,21 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         })
     }
 
+    /// Decide one decoded arm pattern against a reduced scrutinee. The scalar
+    /// domain is the engine's own (RUE-1968) so both hosts cannot answer it
+    /// differently; only an enum-variant path reaches the host.
+    fn match_pattern(
+        &self,
+        pattern: &ComptimeMatchPattern<H::Name>,
+        value: &H::Value,
+    ) -> Option<bool> {
+        match comptime_scalar_pattern_decision(pattern, value) {
+            ComptimePatternDecision::Decided(matched) => Some(matched),
+            ComptimePatternDecision::Undecidable => None,
+            ComptimePatternDecision::HostPath => self.host.match_path_pattern(pattern, value),
+        }
+    }
+
     fn classify_array_length_binding(
         env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
         name: &H::Name,
@@ -1313,7 +1343,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     .enumerate()
                     .find_map(|(index, (pattern, _))| {
                         let pattern = self.decode_match_pattern(&self.program_key(), &pattern);
-                        match self.host.match_pattern(&pattern, &value) {
+                        match self.match_pattern(&pattern, &value) {
                             Some(true) => Some(ComptimeOutcome::Known(ComptimeSelection::Match {
                                 arm: index,
                             })),
@@ -2921,16 +2951,18 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
 
             // Comptime-known `match`: evaluate the scrutinee, select the first
             // arm whose pattern matches, and reduce to that arm's body value
-            // (spec 4.14:19, RUE-262). An enum-variant (`Path`) pattern isn't
-            // representable in the host's value domain, and a non-constant scrutinee is
-            // not decidable here — both make the `match` non-evaluable.
+            // (spec 4.14:19, RUE-262). Scalar patterns are decided here for
+            // every host; an enum-variant (`Path`) pattern is left to the
+            // host's value domain, which may not represent enum values at
+            // all, and a non-constant scrutinee is not decidable either —
+            // both make the `match` non-evaluable.
             InstData::Match { scrutinee, arms } => {
                 let scrutinee = *scrutinee;
                 let scrut = outcome_value!(self.eval(scrutinee, env));
                 let arms = self.program_rir().match_arms(arms).to_vec();
                 for (pattern, body) in arms.iter() {
                     let semantic_pattern = self.decode_match_pattern(&self.program_key(), pattern);
-                    match self.host.match_pattern(&semantic_pattern, &scrut) {
+                    match self.match_pattern(&semantic_pattern, &scrut) {
                         Some(true) => return self.eval(*body, env),
                         Some(false) => continue,
                         // Undecidable pattern (e.g. an enum-variant `Path`

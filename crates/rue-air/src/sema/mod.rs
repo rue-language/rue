@@ -65,6 +65,13 @@ pub use binding_manifest::{
 // stays private; only the guard source crosses this boundary.
 pub(crate) use aggregate_resolution::{decode_module_spine, select_module_nominal};
 pub use comptime::ComptimeMethodReceiverPolicy;
+pub use comptime::{
+    COMPTIME_MATCH_NO_SELECTED_ARM, ComptimeDiagnosticSite, ComptimeFloatWidth,
+    ComptimeMatchPattern, ComptimePatternDecision, ComptimeSemanticRejection,
+    ComptimeUnaryOperation, comptime_arithmetic_operation_name,
+    comptime_arithmetic_overflow_reason, comptime_scalar_pattern_decision,
+    comptime_untyped_integer_result, decode_comptime_match_pattern,
+};
 #[cfg(test)]
 pub(crate) use comptime::{COMPTIME_PRODUCTION_SOURCE, COMPTIME_SOURCE};
 pub use comptime::{
@@ -82,10 +89,6 @@ pub use comptime::{
     ComptimeTargetIntrinsic, ComptimeTrap, ComptimeType, ComptimeTypeAlgebra,
     ComptimeTypeIntrinsic, ComptimeValue, ComptimeValueAlgebra, MAX_COMPTIME_CALL_DEPTH,
     comptime_depth_over_limit, next_comptime_depth,
-};
-pub use comptime::{
-    ComptimeDiagnosticSite, ComptimeFloatWidth, ComptimeMatchPattern, ComptimeSemanticRejection,
-    ComptimeUnaryOperation, decode_comptime_match_pattern,
 };
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;

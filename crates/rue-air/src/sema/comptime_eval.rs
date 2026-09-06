@@ -56,15 +56,16 @@ use rue_span::{FileId, Span};
 
 use super::aggregate_resolution::decode_module_spine;
 use super::comptime::{
-    ComptimeAnonymousKind, ComptimeArgMode, ComptimeArrayLengthBinding, ComptimeCallAdmission,
-    ComptimeCallArgument, ComptimeCallKey, ComptimeCallPreparation, ComptimeCallProtocol,
-    ComptimeDiagnosticSite, ComptimeDomain, ComptimeEngine, ComptimeEnv as GenericComptimeEnv,
-    ComptimeFile, ComptimeFrame, ComptimeHost, ComptimeHostError, ComptimeHostResult,
-    ComptimeIdentity, ComptimeInterrupts, ComptimeMatchPattern, ComptimeMethodDescriptor,
-    ComptimeName, ComptimeNamedValueResolution, ComptimeOutcome, ComptimeProgramFacts,
-    ComptimeRejections, ComptimeSelection, ComptimeSemanticRejection,
+    COMPTIME_MATCH_NO_SELECTED_ARM, ComptimeAnonymousKind, ComptimeArgMode,
+    ComptimeArrayLengthBinding, ComptimeCallAdmission, ComptimeCallArgument, ComptimeCallKey,
+    ComptimeCallPreparation, ComptimeCallProtocol, ComptimeDiagnosticSite, ComptimeDomain,
+    ComptimeEngine, ComptimeEnv as GenericComptimeEnv, ComptimeFile, ComptimeFrame, ComptimeHost,
+    ComptimeHostError, ComptimeHostResult, ComptimeIdentity, ComptimeInterrupts,
+    ComptimeMethodDescriptor, ComptimeName, ComptimeNamedValueResolution, ComptimeOutcome,
+    ComptimeProgramFacts, ComptimeRejections, ComptimeSelection, ComptimeSemanticRejection,
     ComptimeStructuredTypeResolution, ComptimeStructuredTypes, ComptimeTrap, ComptimeType,
-    ComptimeTypeAlgebra, ComptimeValueAlgebra,
+    ComptimeTypeAlgebra, ComptimeValueAlgebra, comptime_arithmetic_overflow_reason,
+    comptime_untyped_integer_result,
 };
 use super::context::{AnalysisContext, CheckedConstIndexCandidate, ConstValue};
 use super::info::FunctionCallInfo;
@@ -350,30 +351,6 @@ impl<'a>
             defining_file: Some(ctx.current_file_id),
             expected_result: None,
         }
-    }
-}
-
-/// Decide whether a compile-time-known scrutinee value matches a match arm's
-/// pattern (RUE-262). Returns:
-/// - `Some(true)` / `Some(false)` — the pattern definitely does / does not match;
-/// - `None` — the match can't be decided at compile time here (an enum-variant
-///   `Path` pattern, or a scrutinee whose kind the pattern can't compare
-///   against), so the caller treats the whole `match` as non-evaluable.
-pub(crate) fn const_pattern_matches(
-    pattern: &ComptimeMatchPattern<impl ComptimeName>,
-    scrut: ConstValue,
-) -> Option<bool> {
-    match pattern {
-        ComptimeMatchPattern::Wildcard => Some(true),
-        ComptimeMatchPattern::Bool(b) => match scrut {
-            ConstValue::Bool(sb) => Some(sb == *b),
-            _ => None,
-        },
-        ComptimeMatchPattern::Integer(pattern) => match scrut {
-            ConstValue::Integer(n) => Some(n == *pattern),
-            _ => None,
-        },
-        ComptimeMatchPattern::Path { .. } => None,
     }
 }
 
@@ -867,10 +844,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Finish an arithmetic operation using the kernel's typed result and its
     /// available raw mathematical result for diagnostics.
     ///
-    /// - Typed: out-of-range results are a hard error (the operation would
-    ///   panic at runtime, spec 8.1 / 4.14:4).
-    /// - Untyped fallback: results outside the `i64` range make the
-    ///   expression non-evaluable (legacy checked-i64 semantics).
+    /// Both the overflow wording and the untyped-result rule come from the
+    /// shared value policy (RUE-1968), so the same fragment reads the same in
+    /// `const` position and in `comptime {}` position; this host only decides
+    /// how to carry the failure.
     fn finish_arith(
         &self,
         result: CheckedIntegerResult,
@@ -878,31 +855,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         op: &str,
         span: Span,
     ) -> CompileResult<Option<ConstValue>> {
-        match ty {
-            Some(ty) => match result.checked() {
-                Some(v) => Ok(Some(ConstValue::Integer(v))),
-                _ => {
-                    let ty_name = self.format_type_name(ty);
-                    let detail = match result.raw() {
-                        Some(v) => format!("the result {} does not fit in {}", v, ty_name),
-                        None => format!("the result does not fit in {}", ty_name),
-                    };
-                    Err(comptime_panic_err(
-                        format!(
-                            "integer overflow evaluating `{}` at type {}: {} \
-                             (this operation would panic at runtime)",
-                            op, ty_name, detail
-                        ),
-                        span,
-                    ))
-                }
-            },
-            None => match result.raw() {
-                Some(v) if v >= i128::from(i64::MIN) && v <= i128::from(i64::MAX) => {
-                    Ok(Some(ConstValue::Integer(v)))
-                }
-                _ => Ok(None),
-            },
+        let Some(ty) = ty else {
+            return Ok(comptime_untyped_integer_result(result).map(ConstValue::Integer));
+        };
+        match result.checked() {
+            Some(value) => Ok(Some(ConstValue::Integer(value))),
+            None => Err(comptime_panic_err(
+                comptime_arithmetic_overflow_reason(op, &self.format_type_name(ty), result),
+                span,
+            )),
         }
     }
 
@@ -2665,18 +2626,17 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeValueAlgebra for OrdinaryBodyEngin
             None => ComptimeNamedValueResolution::RuntimeDependent,
         })
     }
-    fn match_pattern(
-        &self,
-        pattern: &ComptimeMatchPattern<Spur>,
-        value: &ConstValue,
-    ) -> Option<bool> {
-        const_pattern_matches(pattern, value.clone())
-    }
+    // The ordinary body value domain has no enum-shaped value, so every
+    // path pattern stays undecidable here; the engine decides the scalar
+    // patterns for both hosts (RUE-1968).
     fn match_no_selected_arm(
         &self,
-        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeOutcome<Self::Value, Self::Failure> {
-        ComptimeOutcome::RuntimeDependent
+        ComptimeOutcome::HostFailure(comptime_panic_err(
+            COMPTIME_MATCH_NO_SELECTED_ARM.to_owned(),
+            site.span(),
+        ))
     }
     fn evaluate_binary_rhs_after_rejection(&self) -> bool {
         false
@@ -2688,17 +2648,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeValueAlgebra for OrdinaryBodyEngin
         op: &str,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<Option<ConstValue>, Self::Failure> {
-        // The engine uses a distinct semantic token for unary negation so
-        // durable hosts can preserve its operation-specific wording. The
-        // ordinary body diagnostic remains the historical `-` spelling.
-        OrdinaryBodyEngine::finish_arith(
-            self,
-            result,
-            ty,
-            if op == "negation" { "-" } else { op },
-            site.span(),
-        )
-        .map_err(Into::into)
+        OrdinaryBodyEngine::finish_arith(self, result, ty, op, site.span()).map_err(Into::into)
     }
 
     fn resolve_float_const(
@@ -3038,10 +2988,17 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeHost for OrdinaryBodyEngine<'h, H>
 
 #[cfg(test)]
 mod binding_tests {
+    use super::super::comptime::{
+        ComptimeMatchPattern, ComptimePatternDecision, comptime_scalar_pattern_decision,
+    };
     use super::*;
 
     #[test]
-    fn ordinary_pattern_policy_keeps_unknown_paths_undecidable() {
+    fn ordinary_values_answer_the_shared_pattern_policy() {
+        // The ordinary body domain owns no pattern decision of its own
+        // (RUE-1968): the shared policy reads its values through
+        // `ComptimeValue`, and an enum-variant path is left to the host,
+        // which has no enum-shaped value to answer with.
         let interner = lasso::ThreadedRodeo::<lasso::Spur>::new();
         let type_name = interner.get_or_intern("Os");
         let variant = interner.get_or_intern("Macos");
@@ -3053,27 +3010,37 @@ mod binding_tests {
             binding_count: 0,
         };
         assert_eq!(
-            const_pattern_matches(
+            comptime_scalar_pattern_decision(
                 &ComptimeMatchPattern::<lasso::Spur>::Wildcard,
-                ConstValue::Unit
+                &ConstValue::Unit
             ),
-            Some(true)
+            ComptimePatternDecision::Decided(true)
         );
         assert_eq!(
-            const_pattern_matches(
+            comptime_scalar_pattern_decision(
                 &ComptimeMatchPattern::<lasso::Spur>::Integer(-3),
-                ConstValue::Integer(-3)
+                &ConstValue::Integer(-3)
             ),
-            Some(true)
+            ComptimePatternDecision::Decided(true)
         );
         assert_eq!(
-            const_pattern_matches(
-                &ComptimeMatchPattern::<lasso::Spur>::Bool(true),
-                ConstValue::Integer(1)
+            comptime_scalar_pattern_decision(
+                &ComptimeMatchPattern::<lasso::Spur>::Integer(-3),
+                &ConstValue::Integer(3)
             ),
-            None
+            ComptimePatternDecision::Decided(false)
         );
-        assert_eq!(const_pattern_matches(&target, ConstValue::Unit), None);
+        assert_eq!(
+            comptime_scalar_pattern_decision(
+                &ComptimeMatchPattern::<lasso::Spur>::Bool(true),
+                &ConstValue::Integer(1)
+            ),
+            ComptimePatternDecision::Undecidable
+        );
+        assert_eq!(
+            comptime_scalar_pattern_decision(&target, &ConstValue::Unit),
+            ComptimePatternDecision::HostPath
+        );
     }
 
     #[test]

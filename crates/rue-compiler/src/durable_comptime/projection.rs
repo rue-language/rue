@@ -466,6 +466,12 @@ impl DurableComptimeScalarPolicy {
         Self::integer_operation_type(expected, operand, None)
     }
 
+    /// An untyped integer operand only carries a magnitude; the operation's
+    /// type is what decides whether that magnitude denotes a value at all.
+    /// A magnitude outside it is the out-of-range literal (E0800, 3.1:17,
+    /// 6.5:5) the body type checker reports for the same source text -- not a
+    /// trapping operation -- so `const` and `comptime {}` positions agree on
+    /// both the code and the wording (RUE-1968).
     pub(crate) fn require_integer_fits(
         ty: &DurableType,
         value: i128,
@@ -474,29 +480,24 @@ impl DurableComptimeScalarPolicy {
         if durable_const_fits_type(&integer, ty) {
             return Ok(());
         }
-        Err(DurableComptimeFailure::integer_literal_overflow(
+        Err(DurableComptimeFailure::literal_out_of_range(
             &durable_type_diagnostic_name(ty),
             value,
         ))
     }
 
+    /// The overflow text comes from the shared value policy (RUE-1968), so a
+    /// `const` initializer and a `comptime {}` block report one wording.
     pub(crate) fn checked_integer_result(
         ty: &DurableType,
         result: rue_air::integer_semantics::CheckedIntegerResult,
         operation: &str,
     ) -> Result<i128, DurableComptimeFailure> {
         let Some(value) = result.checked() else {
-            let type_name = durable_type_diagnostic_name(ty);
-            let detail = result.raw().map_or_else(
-                || format!("the result does not fit in {type_name}"),
-                |value| {
-                    format!(
-                        "value {value} is out of range for type {type_name}; {value} does not fit in {type_name}"
-                    )
-                },
-            );
             return Err(DurableComptimeFailure::arithmetic_overflow(
-                &type_name, operation, &detail,
+                &durable_type_diagnostic_name(ty),
+                operation,
+                result,
             ));
         };
         Ok(value)
@@ -681,39 +682,31 @@ pub(crate) fn durable_named_array_length_integer(
     })
 }
 
-/// Match semantics shared by the durable evaluator and the AIR host.
+/// The durable half of the shared match policy (RUE-1968): the enum-variant
+/// path domain, which is the one pattern form the AIR engine cannot decide
+/// from `ComptimeValue` alone. Every scalar pattern is decided for both hosts
+/// by `rue_air::comptime_scalar_pattern_decision`.
+///
 /// Durable values deliberately remain narrower than the language's runtime
 /// enum algebra: only an exact, unqualified, binding-free target descriptor
-/// path is decidable here.
-pub(crate) fn durable_match_pattern_matches<N: AsRef<str>>(
+/// path is matchable here, and every other path is a definite non-match.
+pub(crate) fn durable_target_path_pattern_matches<N: AsRef<str>>(
     pattern: &ComptimeMatchPattern<N>,
     value: &EvaluatedSemanticConst,
 ) -> bool {
-    match pattern {
-        ComptimeMatchPattern::Wildcard => true,
-        ComptimeMatchPattern::Integer(pattern) => matches!(
-            value,
-            EvaluatedSemanticConst::Value(value)
-                if matches!(value.value, DurableConstValue::Integer(actual) if actual == *pattern)
-        ),
-        ComptimeMatchPattern::Bool(pattern) => matches!(
-            value,
-            EvaluatedSemanticConst::Value(value)
-                if matches!(value.value, DurableConstValue::Bool(actual) if actual == *pattern)
-        ),
-        ComptimeMatchPattern::Path {
-            module_qualified: false,
-            ctor_qualified: false,
-            type_name,
-            variant,
-            binding_count: 0,
-        } => matches!(
-            value,
-            EvaluatedSemanticConst::TargetEnum(target)
-                if type_name.as_ref() == target.type_name && variant.as_ref() == target.variant
-        ),
-        ComptimeMatchPattern::Path { .. } => false,
-    }
+    matches!(
+        (pattern, value),
+        (
+            ComptimeMatchPattern::Path {
+                module_qualified: false,
+                ctor_qualified: false,
+                type_name,
+                variant,
+                binding_count: 0,
+            },
+            EvaluatedSemanticConst::TargetEnum(target),
+        ) if type_name.as_ref() == target.type_name && variant.as_ref() == target.variant
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1075,8 +1068,8 @@ mod tests {
             DurableComptimeScalarPolicy::require_integer_fits(&T::U8, 256),
             Err(DurableComptimeFailure::Failure(value))
                 if matches!(*value, SemanticNucleusFailure::Diagnostic(
-                    rue_error::ErrorKind::ComptimeEvaluationFailed { ref reason }
-                ) if reason.contains("does not fit in u8"))
+                    rue_error::ErrorKind::LiteralOutOfRange { value: 256, ref ty }
+                ) if ty == "u8")
         ));
         let integer = rue_air::integer_semantics::IntegerType::new(8, true).unwrap();
         assert_eq!(
@@ -1369,7 +1362,10 @@ mod tests {
     }
 
     #[test]
-    fn durable_match_kernel_preserves_scalar_and_target_pattern_policy() {
+    fn durable_path_kernel_preserves_target_pattern_policy() {
+        // Scalar patterns are decided once for both hosts by the shared AIR
+        // policy (RUE-1968); the durable kernel keeps only the target
+        // descriptor path domain, which no other host can answer.
         let integer = value(DurableConstValue::Integer(-7), Some(DurableType::I16));
         let boolean = value(DurableConstValue::Bool(true), Some(DurableType::Bool));
         let target = EvaluatedSemanticConst::TargetEnum(TargetEnumValue {
@@ -1386,31 +1382,7 @@ mod tests {
             }
         };
 
-        assert!(durable_match_pattern_matches(
-            &ComptimeMatchPattern::<Arc<str>>::Wildcard,
-            &EvaluatedSemanticConst::Module(ModuleId::from_logical_path("m").unwrap()),
-        ));
-        assert!(durable_match_pattern_matches(
-            &ComptimeMatchPattern::<Arc<str>>::Integer(-7),
-            &integer,
-        ));
-        assert!(!durable_match_pattern_matches(
-            &ComptimeMatchPattern::<Arc<str>>::Integer(7),
-            &integer,
-        ));
-        assert!(durable_match_pattern_matches(
-            &ComptimeMatchPattern::<Arc<str>>::Bool(true),
-            &boolean,
-        ));
-        assert!(!durable_match_pattern_matches(
-            &ComptimeMatchPattern::<Arc<str>>::Bool(false),
-            &integer,
-        ));
-        assert!(!durable_match_pattern_matches(
-            &ComptimeMatchPattern::<Arc<str>>::Integer(-7),
-            &boolean,
-        ));
-        assert!(durable_match_pattern_matches(
+        assert!(durable_target_path_pattern_matches(
             &path(false, false, "Os", "Macos", 0),
             &target,
         ));
@@ -1421,7 +1393,46 @@ mod tests {
             path(false, true, "Os", "Macos", 0),
             path(false, false, "Os", "Macos", 1),
         ] {
-            assert!(!durable_match_pattern_matches(&pattern, &target));
+            assert!(!durable_target_path_pattern_matches(&pattern, &target));
         }
+        // A path pattern is never satisfied by a durable scalar value.
+        for scrutinee in [&integer, &boolean] {
+            assert!(!durable_target_path_pattern_matches(
+                &path(false, false, "Os", "Macos", 0),
+                scrutinee,
+            ));
+        }
+
+        // The shared scalar policy answers from the durable value domain.
+        assert_eq!(
+            rue_air::comptime_scalar_pattern_decision(
+                &ComptimeMatchPattern::<Arc<str>>::Integer(-7),
+                &integer,
+            ),
+            rue_air::ComptimePatternDecision::Decided(true)
+        );
+        assert_eq!(
+            rue_air::comptime_scalar_pattern_decision(
+                &ComptimeMatchPattern::<Arc<str>>::Bool(true),
+                &boolean,
+            ),
+            rue_air::ComptimePatternDecision::Decided(true)
+        );
+        assert_eq!(
+            rue_air::comptime_scalar_pattern_decision(
+                &ComptimeMatchPattern::<Arc<str>>::Wildcard,
+                &EvaluatedSemanticConst::Module(ModuleId::from_logical_path("m").unwrap()),
+            ),
+            rue_air::ComptimePatternDecision::Decided(true)
+        );
+        // A scalar pattern against a value of another kind carries no
+        // evidence either way, in every value domain.
+        assert_eq!(
+            rue_air::comptime_scalar_pattern_decision(
+                &ComptimeMatchPattern::<Arc<str>>::Integer(-7),
+                &boolean,
+            ),
+            rue_air::ComptimePatternDecision::Undecidable
+        );
     }
 }

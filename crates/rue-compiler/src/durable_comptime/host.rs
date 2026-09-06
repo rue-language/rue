@@ -770,12 +770,12 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
         Ok(rue_air::ComptimeNamedValueResolution::Known(value))
     }
 
-    fn match_pattern(
+    fn match_path_pattern(
         &self,
         pattern: &rue_air::ComptimeMatchPattern<Self::Name>,
         value: &Self::Value,
     ) -> Option<bool> {
-        Some(durable_match_pattern_matches(pattern, value))
+        Some(durable_target_path_pattern_matches(pattern, value))
     }
 
     fn match_no_selected_arm(
@@ -829,12 +829,8 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
         _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> rue_air::ComptimeHostResult<Option<Self::Value>, Self::Failure> {
         let ty = ty.unwrap_or(DurableComptimeType(DurableType::I32));
-        let value = DurableComptimeScalarPolicy::checked_integer_result(
-            ty.as_ref(),
-            result,
-            durable_arithmetic_operation_name(op),
-        )
-        .map_err(durable_host_error)?;
+        let value = DurableComptimeScalarPolicy::checked_integer_result(ty.as_ref(), result, op)
+            .map_err(durable_host_error)?;
         Ok(Some(EvaluatedSemanticConst::integer_typed(value, Some(ty))))
     }
 
@@ -1726,16 +1722,6 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeRejections
             &self.diagnostic_site(site),
             rue_error::ErrorKind::CannotNegate(DurableComptimeScalarPolicy::type_name(ty.as_ref())),
         )
-    }
-
-    fn reject_unsigned_negation(
-        &self,
-        _ty: &Self::Type,
-        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Option<Self::Failure> {
-        // Declaration-time evaluation reports the checked integer overflow
-        // from `finish_arith`, rather than AIR's ordinary CannotNegate policy.
-        None
     }
 
     fn label_ctor_instantiation_site(

@@ -139,8 +139,11 @@ pub use sema::{
     comptime_depth_over_limit, next_comptime_depth, occupying_body_parameter_types,
 };
 pub use sema::{
-    ComptimeDiagnosticSite, ComptimeIntegerOperation, ComptimeMatchPattern,
-    ComptimeSemanticRejection, ComptimeUnaryOperation, decode_comptime_match_pattern,
+    COMPTIME_MATCH_NO_SELECTED_ARM, ComptimeDiagnosticSite, ComptimeIntegerOperation,
+    ComptimeMatchPattern, ComptimePatternDecision, ComptimeSemanticRejection,
+    ComptimeUnaryOperation, comptime_arithmetic_operation_name,
+    comptime_arithmetic_overflow_reason, comptime_scalar_pattern_decision,
+    comptime_untyped_integer_result, decode_comptime_match_pattern,
 };
 pub use semantic_body::{
     SEMANTIC_BODY_INST_KINDS, SemanticAnonymousBodyExport, SemanticBody, SemanticBodyAnchor,

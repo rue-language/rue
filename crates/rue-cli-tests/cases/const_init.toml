@@ -169,7 +169,9 @@ fn main() -> i32 { 0 }
 compile_fail = true
 error_contains = ["E0800", "out of range", "u8"]
 
-# A negative value can't adopt an unsigned annotation.
+# A negative value can't adopt an unsigned annotation. Unary `-` on an
+# unsigned type is the stronger rule (4.2:14) and fires first, exactly as it
+# does in a function body (RUE-1968).
 [[case]]
 name = "negative_value_unsigned_annotation_rejected"
 files = [{ path = "main.rue", source = """
@@ -178,7 +180,7 @@ const N: u8 = -5;
 fn main() -> i32 { 0 }
 """ }]
 compile_fail = true
-error_contains = ["value -5 is out of range for type u8"]
+error_contains = ["E0801", "cannot apply unary operator `-` to type 'u8'"]
 
 # Forward reference within a file: declaration order does not matter.
 [[case]]

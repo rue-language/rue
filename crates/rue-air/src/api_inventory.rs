@@ -1646,6 +1646,10 @@ fn comptime_instdata_evaluation_has_one_production_authority() {
             "sema/comptime/value_domain_tests",
             include_str!("sema/comptime/value_domain_tests.rs"),
         ),
+        (
+            "sema/comptime/value_policy",
+            include_str!("sema/comptime/value_policy.rs"),
+        ),
         ("sema/comptime_eval", include_str!("sema/comptime_eval.rs")),
         (
             "sema/consistency_tests",
@@ -2248,14 +2252,35 @@ fn comptime_match_patterns_have_one_decoder_and_a_semantic_host_boundary() {
     );
 
     let host = comptime_host_contract(comptime);
+    // RUE-1968: the host contract offers only the enum-variant path domain.
+    // Wildcard, boolean, and integer patterns are decided once, by the engine,
+    // for every host -- a host that could answer them again is how the two
+    // hosts drifted apart in the first place.
+    assert!(
+        !host.contains("fn match_pattern("),
+        "scalar pattern matching must not return to the host contract"
+    );
     let match_hook = host
-        .split("fn match_pattern(")
+        .split("fn match_path_pattern(")
         .nth(1)
         .and_then(|source| source.split("fn match_no_selected_arm(").next())
         .expect("bounded ComptimeHost match hook");
     assert!(match_hook.contains("ComptimeMatchPattern<Self::Name>"));
     assert!(!match_hook.contains("ProgramKey"));
     assert!(!match_hook.contains("RirPatternView"));
+
+    let policy = comptime
+        .split("pub fn comptime_scalar_pattern_decision")
+        .nth(1)
+        .and_then(|source| source.split("\n}\n").next())
+        .expect("one shared scalar pattern policy");
+    for scalar in [
+        "ComptimeMatchPattern::Wildcard",
+        "ComptimeMatchPattern::Bool(expected)",
+        "ComptimeMatchPattern::Integer(expected)",
+    ] {
+        assert!(policy.contains(scalar), "shared policy misses {scalar}");
+    }
 
     let engine_match = comptime
         .rsplit("InstData::Match { scrutinee, arms } => {")
@@ -2265,10 +2290,14 @@ fn comptime_match_patterns_have_one_decoder_and_a_semantic_host_boundary() {
     let decode = engine_match
         .find("self.decode_match_pattern")
         .expect("engine decodes reached patterns");
-    let host_match = engine_match
-        .find("self.host.match_pattern")
-        .expect("engine offers semantic patterns to host");
-    assert!(decode < host_match, "decode must precede the host hook");
+    let decide = engine_match
+        .find("self.match_pattern")
+        .expect("engine decides reached patterns");
+    assert!(decode < decide, "decode must precede the decision");
+    assert!(
+        !engine_match.contains("self.host.match_pattern"),
+        "the engine must not hand a scalar pattern back to the host"
+    );
     assert!(engine_match.contains("for (pattern, body) in arms.iter()"));
     assert!(!engine_match.contains("RirPatternView::"));
 }
@@ -2768,7 +2797,12 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         .nth(1)
         .and_then(|source| source.split("\n    fn ").next())
         .expect("ordinary match terminal hook");
-    assert!(ordinary_match.contains("ComptimeOutcome::RuntimeDependent"));
+    // RUE-1968: a comptime-known match that selects no arm is a
+    // non-exhaustive pattern set (4.14:19, 4.7:9). Both hosts report it, and
+    // both spell it with the one shared reason, so `const` position and
+    // `comptime {}` position cannot drift apart again.
+    assert!(ordinary_match.contains("COMPTIME_MATCH_NO_SELECTED_ARM"));
+    assert!(!ordinary_match.contains("ComptimeOutcome::RuntimeDependent"));
     let macro_start = production
         .find("macro_rules! host_value")
         .expect("canonical host-value funnel");
@@ -3990,6 +4024,10 @@ fn sema_diagnostics_use_the_friendly_type_display_authority() {
         (
             "sema/comptime/value_domain_tests",
             include_str!("sema/comptime/value_domain_tests.rs"),
+        ),
+        (
+            "sema/comptime/value_policy",
+            include_str!("sema/comptime/value_policy.rs"),
         ),
         ("sema/comptime_eval", include_str!("sema/comptime_eval.rs")),
         ("sema/context", include_str!("sema/context.rs")),
