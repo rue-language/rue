@@ -1253,11 +1253,6 @@ impl<'a> CfgLower<'a> {
             let _ = self.lower_call_plan(plan);
         }
 
-        let primary = self.mir.alloc_vreg();
-        self.mir.push(X86Inst::MovRI32 {
-            dst: Operand::Virtual(primary),
-            imm: 0,
-        });
         crate::value_plan::ValueResult::SideEffect
     }
 
@@ -1485,12 +1480,9 @@ impl<'a> CfgLower<'a> {
                     }
                 },
             );
-        } else if matches!(plan.return_plan, ReturnPlan::ZeroSized) {
-            self.mir.push(X86Inst::MovRI32 {
-                dst: Operand::Virtual(primary),
-                imm: 0,
-            });
         }
+        // A `ReturnPlan::ZeroSized` call leaves `primary` the never-read
+        // placeholder described on `zero_slot_placeholder`; nothing defines it.
         crate::value_plan::MaterializedValue { primary, slots }
     }
 
@@ -1692,6 +1684,12 @@ impl<'a> CfgLower<'a> {
         let mut slots = Vec::new();
         let primary = match plan.value {
             ResidualValuePlan::Const { value } => {
+                if plan.policy.shape.slot_count() == 0 {
+                    return ValueResult::Materialized(crate::value_plan::MaterializedValue {
+                        primary: self.zero_slot_placeholder(),
+                        slots: Vec::new(),
+                    });
+                }
                 if let Some(float_width) = crate::value_plan::float_width(ty) {
                     let dst = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
                     self.mir.push(X86Inst::FloatConst {
@@ -2163,9 +2161,9 @@ impl<'a> CfgLower<'a> {
                     slots.extend(source);
                 }
                 // The primary vreg mirrors logical slot 0, so it takes that
-                // slot's register class and is written with that class's move
-                //. The zero placeholders are general-purpose: nothing
-                // reads them as a value.
+                // slot's register class and is written with that class's move.
+                // An aggregate with no slot 0 to mirror gets the never-read
+                // placeholder instead, which nothing defines.
                 match (
                     plan.policy.aggregate_primary,
                     slots.first().copied(),
@@ -2188,14 +2186,7 @@ impl<'a> CfgLower<'a> {
                         });
                         dst
                     }
-                    _ => {
-                        let dst = self.mir.alloc_vreg();
-                        self.mir.push(X86Inst::MovRI32 {
-                            dst: Operand::Virtual(dst),
-                            imm: 0,
-                        });
-                        dst
-                    }
+                    _ => self.zero_slot_placeholder(),
                 }
             }
             ResidualValuePlan::EnumVariant {
@@ -2354,6 +2345,21 @@ impl<'a> CfgLower<'a> {
         ValueResult::Materialized(crate::value_plan::MaterializedValue { primary, slots })
     }
 
+    /// Reserve the never-read placeholder vreg a value with no ABI slots
+    /// carries, leaving it undefined.
+    ///
+    /// A zero-sized value still needs a primary vreg so the CFG value maps to
+    /// something ([`crate::value_plan::ValueShape::ZeroSized`]), but no
+    /// consumer reads it: the terminator planner emits no edge move and no
+    /// return register for a zero-sized value, aggregate builds and place
+    /// writes skip zero-slot operands, and the calling convention omits a
+    /// zero-sized argument. Defining it cost one dead register write per
+    /// zero-sized value, which the register allocator then colored into
+    /// whatever register the next instruction wanted (RUE-2048).
+    fn zero_slot_placeholder(&mut self) -> VReg {
+        self.mir.alloc_vreg()
+    }
+
     fn lower_param_value(
         &mut self,
         index: u32,
@@ -2374,10 +2380,7 @@ impl<'a> CfgLower<'a> {
         });
         let count = policy.shape.slot_count();
         if count == 0 {
-            self.mir.push(X86Inst::MovRI32 {
-                dst: Operand::Virtual(dst),
-                imm: 0,
-            });
+            // No slot to load: `dst` stays the never-read placeholder.
             return (dst, Vec::new());
         }
         if let crate::value_plan::StoragePolicy::ParameterSlot { by_ref: true, .. } = policy.storage
@@ -3184,12 +3187,8 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Virtual(value.primary),
                     });
                 }
-                let dst = self.mir.alloc_vreg();
-                self.mir.push(X86Inst::MovRI32 {
-                    dst: Operand::Virtual(dst),
-                    imm: 0,
-                });
-                dst
+                // The write's own result is `()`: the never-read placeholder.
+                self.zero_slot_placeholder()
             }
             rue_air::IntrinsicOperation::PtrOffset => {
                 let offset = plan.args[1].primary;
@@ -4863,13 +4862,6 @@ impl crate::place_lower::PlaceLowerBackend for CfgLower<'_> {
 
     fn emit_scale_index_bytes(&mut self, scaled: VReg, plan: crate::allocation::ScalePlan) {
         <Self as crate::allocation::ScaleBackend>::emit_scale(self, scaled, scaled, plan);
-    }
-
-    fn emit_zero_sized_place(&mut self, dst: VReg) {
-        self.mir.push(X86Inst::MovRI64 {
-            dst: Operand::Virtual(dst),
-            imm: 0,
-        });
     }
 
     fn emit_zero_sized_place_addr(&mut self, dst: VReg) {
@@ -7621,5 +7613,86 @@ mod tests {
                 imm: -8
             }
         )));
+    }
+
+    /// RUE-2048: a call whose result is zero-sized defines no register. The
+    /// result is the never-read placeholder `ValueShape::ZeroSized` describes,
+    /// and materializing it wrote a dead zero that the allocator then colored
+    /// into the register the following parameter reload overwrote in full:
+    ///
+    /// ```text
+    /// call bump
+    /// xor  r11, r11        <- dead
+    /// mov  r11, [rbp-8]
+    /// ```
+    #[test]
+    fn zero_sized_call_result_defines_no_register() {
+        // `fn f(v: i64) -> i64 { bump(inout v); v }`: the parameter is
+        // writable, so it keeps a frame home and the re-read is a real load.
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::I64,
+            0,
+            "f",
+            ParamSlotModes::new(vec![false], vec![true]),
+            scalar_param_abi(1),
+            &pool,
+            &interner,
+        );
+        let value = fixture.param(0, Type::I64);
+        fixture.call(
+            "bump",
+            vec![CfgCallArg {
+                value,
+                mode: CfgArgMode::Inout,
+            }],
+            Type::UNIT,
+        );
+        let reload = fixture.param(0, Type::I64);
+        fixture.ret(Some(reload));
+        let mir = fixture.lower_with_plan();
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::MovRM { base: Reg::Rbp, .. })),
+            "the parameter re-read must still reload the frame home: {:?}",
+            mir.instructions()
+        );
+        assert!(
+            !mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::MovRI32 { imm: 0, .. })),
+            "nothing may zero a register for the zero-sized call result: {:?}",
+            mir.instructions()
+        );
+    }
+
+    /// RUE-2048 guard: a zero that a consumer really reads is still emitted.
+    /// Only a value with no ABI slots loses its materialization.
+    #[test]
+    fn scalar_zero_constant_still_materializes_its_register() {
+        // `fn f() -> i64 { 0 }`.
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::I64,
+            0,
+            "f",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        let zero = fixture.konst(0, Type::I64);
+        fixture.ret(Some(zero));
+        let mir = fixture.lower_with_plan();
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::MovRI32 { imm: 0, .. })),
+            "a scalar zero constant is read as a value and must be materialized: {:?}",
+            mir.instructions()
+        );
     }
 }

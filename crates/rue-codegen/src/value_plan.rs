@@ -493,9 +493,11 @@ pub trait ValueLowerAdapter:
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueShape {
     /// No storage slots exist.  A primary vreg may still be used as a
-    /// never-read placeholder for CFG bookkeeping.  A zero-slot struct or
-    /// array is represented by `CompleteAggregate { slot_count: 0 }` instead;
-    /// this shape is reserved for non-aggregate zero-sized values.
+    /// never-read placeholder for CFG bookkeeping; because nothing reads it,
+    /// the backends reserve it without emitting an instruction that defines
+    /// it (RUE-2048).  A zero-slot struct or array is represented by
+    /// `CompleteAggregate { slot_count: 0 }` instead; this shape is reserved
+    /// for non-aggregate zero-sized values.
     ZeroSized,
     /// Exactly one logical slot; the primary vreg is the complete value.
     Scalar,
