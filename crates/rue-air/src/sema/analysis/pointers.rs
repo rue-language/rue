@@ -185,17 +185,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let divergence_before_value = ctx.divergence_kinds;
         let value_result = match &value_inst.data {
             InstData::IntConst(value) if pointee_type.is_integer() => {
-                if !pointee_type.literal_fits(*value) {
-                    return Err(CompileError::new(
-                        ErrorKind::LiteralOutOfRange {
-                            value: *value,
-                            ty: self.format_type_name(pointee_type),
-                        },
-                        value_inst.span,
-                    ));
-                }
+                let data =
+                    self.materialize_int_const(i128::from(*value), pointee_type, value_inst.span)?;
                 let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::Const(*value),
+                    data,
                     ty: pointee_type,
                     span: value_inst.span,
                 });

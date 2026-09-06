@@ -3,6 +3,7 @@
 //! This category is the canonical instruction dispatcher and owns assignment
 //! analysis for projected places.
 
+use super::super::analyze_ops::FloatConstSource;
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 use crate::sema::comptime::{ComptimeEngine, ComptimeMethodType, ComptimeOutcome};
@@ -265,35 +266,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
                         // Backstop range check: negative results are legal
                         // for signed targets (RUE-71); the value just has to
-                        // be representable in the target type.
-                        if !super::super::comptime_eval::const_int_fits(value, ty) {
-                            return if value >= 0 {
-                                Err(CompileError::new(
-                                    ErrorKind::LiteralOutOfRange {
-                                        value: value as u64,
-                                        ty: self.format_type_name(ty),
-                                    },
-                                    inst.span,
-                                ))
-                            } else {
-                                Err(CompileError::new(
-                                    ErrorKind::ComptimeEvaluationFailed {
-                                        reason: format!(
-                                            "value {} is out of range for type {}",
-                                            value,
-                                            self.format_type_name(ty)
-                                        ),
-                                    },
-                                    inst.span,
-                                ))
-                            };
-                        }
-
-                        // Two's-complement encoding: negative values are
-                        // sign-extended into the u64 payload, matching how
-                        // negative literals are emitted elsewhere.
+                        // be representable in the target type. The shared
+                        // owner reports a value that is not (E0800), so a
+                        // comptime block and the same value written directly
+                        // fail with one code and one message.
+                        let data = self.materialize_int_const(value, ty, inst.span)?;
                         let air_ref = air.add_inst(AirInst {
-                            data: AirInstData::Const(value as u64),
+                            data,
                             ty,
                             span: inst.span,
                         });
@@ -341,29 +320,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             inst.span,
                             "comptime floating-point value",
                         )?;
-                        let spelling = self.body_interner().resolve(&content.spur());
-                        if !ty.is_float() {
-                            return Err(CompileError::new(
-                                ErrorKind::TypeMismatch {
-                                    expected: "f32 or f64".to_owned(),
-                                    found: self.format_type_name(ty),
-                                },
-                                inst.span,
-                            ));
-                        }
                         // A computed comptime value may be `inf` or `NaN`; only a
                         // source literal is held to the finite-range rule.
-                        let bits = crate::float_value_bits(spelling, ty).ok_or_else(|| {
-                            CompileError::new(
-                                ErrorKind::TypeMismatch {
-                                    expected: format!("{} value", self.format_type_name(ty)),
-                                    found: spelling.to_owned(),
-                                },
-                                inst.span,
-                            )
-                        })?;
+                        let spelling = self.body_interner().resolve(&content.spur()).to_owned();
+                        let data = self.materialize_float_const(
+                            FloatConstSource::ComputedValue {
+                                spelling: &spelling,
+                            },
+                            ty,
+                            inst.span,
+                        )?;
                         let air_ref = air.add_inst(AirInst {
-                            data: AirInstData::Const(bits),
+                            data,
                             ty,
                             span: inst.span,
                         });

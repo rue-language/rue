@@ -2111,7 +2111,7 @@ impl ComptimeRejections for FakeHost {
     }
     fn literal_out_of_range(
         &self,
-        _value: u64,
+        _value: i128,
         _ty: &Self::Type,
         _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Self::Failure {
@@ -3301,6 +3301,56 @@ fn typed_division_by_zero_is_a_structured_trap() {
 
 #[test]
 fn direct_negative_literal_uses_the_distinct_negation_operation() {
+    // `128` at a signed 8-bit type is the case that separates the two: as a
+    // literal magnitude it negates to the type minimum, while an ordinary
+    // value would canonicalize to -128 first and then fail to negate.
+    let mut editor = rue_rir::RirEditor::new();
+    let magnitude = editor.add_inst(rue_rir::Inst {
+        data: InstData::IntConst(128),
+        span: Span::new(0, 3),
+    });
+    let negative = editor.add_inst(rue_rir::Inst {
+        data: InstData::Neg { operand: magnitude },
+        span: Span::new(0, 4),
+    });
+    let interner = lasso::ThreadedRodeo::new();
+    let mut host = FakeHost {
+        programs: vec![editor.finish()],
+        type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+        constant: None,
+        dependencies: Vec::new(),
+        call_plans: AHashMap::new(),
+        recursive: None,
+        enter_count: 0,
+        finish_outcome: FakeFinishOutcome::Identity,
+        finished: Vec::new(),
+        float_evaluations: Cell::new(0),
+    };
+    let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+    FINISH_ARITH_OPERATIONS.with(|operations| operations.borrow_mut().clear());
+
+    assert!(matches!(
+        ComptimeEngine::new(&mut host).evaluate(
+            ComptimeFrame {
+                expected_result: Some(FakeType(8)),
+                ..ComptimeFrame::expression(0, negative)
+            },
+            &mut env,
+        ),
+        ComptimeOutcome::Known(FakeValue::Integer(-128))
+    ));
+    FINISH_ARITH_OPERATIONS.with(|operations| {
+        assert_eq!(operations.borrow().as_slice(), ["negation"]);
+    });
+}
+
+/// A negated literal the signed type cannot represent is the literal
+/// out-of-range fact (E0800), not a trapping arithmetic operation: it is
+/// reported through the host's literal channel and never reaches the checked
+/// arithmetic policy, so a comptime block and the same value written directly
+/// fail with one code.
+#[test]
+fn out_of_range_negative_literal_reports_through_the_literal_channel() {
     let mut editor = rue_rir::RirEditor::new();
     let magnitude = editor.add_inst(rue_rir::Inst {
         data: InstData::IntConst(129),
@@ -3334,10 +3384,10 @@ fn direct_negative_literal_uses_the_distinct_negation_operation() {
             },
             &mut env,
         ),
-        ComptimeOutcome::RuntimeDependent
+        ComptimeOutcome::HostFailure(_)
     ));
     FINISH_ARITH_OPERATIONS.with(|operations| {
-        assert_eq!(operations.borrow().as_slice(), ["negation"]);
+        assert!(operations.borrow().is_empty());
     });
 }
 

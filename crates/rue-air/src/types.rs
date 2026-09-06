@@ -996,18 +996,6 @@ impl Type {
         )
     }
 
-    /// Check if a u64 value fits within the range of this integer type.
-    ///
-    /// For signed types, only the positive range is checked (0 to max positive).
-    /// Negation is handled separately to allow values like `-128` for i8.
-    ///
-    /// Returns `true` if the value fits, `false` otherwise.
-    /// For non-integer types, returns `false`.
-    #[must_use]
-    pub fn literal_fits(&self, value: u64) -> bool {
-        self.int_max().is_some_and(|max| i128::from(value) <= max)
-    }
-
     /// Get the bit width of this integer type (8, 16, 32, or 64).
     ///
     /// Returns `None` for non-integer types.
@@ -1044,19 +1032,6 @@ impl Type {
     #[must_use]
     pub fn int_max(&self) -> Option<i128> {
         self.integer_semantics().map(IntegerType::max_i128)
-    }
-
-    /// Check if a u64 value can be negated to fit within the range of this signed integer type.
-    ///
-    /// This is used to allow literals like `2147483648` when negated to `-2147483648` (i32::MIN).
-    /// Returns `true` if the negated value fits, `false` otherwise.
-    #[must_use]
-    pub fn negated_literal_fits(&self, value: u64) -> bool {
-        self.integer_semantics().is_some_and(|integer| {
-            integer
-                .checked_neg_literal_i128(i128::from(value))
-                .is_some()
-        })
     }
 
     /// Encode this type as a u32 for storage in extra arrays.
@@ -1445,111 +1420,6 @@ mod tests {
         assert!(!Type::BOOL.can_coerce_to(&Type::I32));
         assert!(!Type::I32.can_coerce_to(&Type::I64));
         assert!(!Type::new_struct(StructId(0)).can_coerce_to(&Type::I32));
-    }
-
-    // ========== Type::literal_fits() tests ==========
-
-    #[test]
-    fn test_literal_fits_i8() {
-        assert!(Type::I8.literal_fits(0));
-        assert!(Type::I8.literal_fits(127)); // i8::MAX
-        assert!(!Type::I8.literal_fits(128));
-    }
-
-    #[test]
-    fn test_literal_fits_i16() {
-        assert!(Type::I16.literal_fits(0));
-        assert!(Type::I16.literal_fits(32767)); // i16::MAX
-        assert!(!Type::I16.literal_fits(32768));
-    }
-
-    #[test]
-    fn test_literal_fits_i32() {
-        assert!(Type::I32.literal_fits(0));
-        assert!(Type::I32.literal_fits(2147483647)); // i32::MAX
-        assert!(!Type::I32.literal_fits(2147483648));
-    }
-
-    #[test]
-    fn test_literal_fits_i64() {
-        assert!(Type::I64.literal_fits(0));
-        assert!(Type::I64.literal_fits(9223372036854775807)); // i64::MAX
-        assert!(!Type::I64.literal_fits(9223372036854775808));
-    }
-
-    #[test]
-    fn test_literal_fits_u8() {
-        assert!(Type::U8.literal_fits(0));
-        assert!(Type::U8.literal_fits(255)); // u8::MAX
-        assert!(!Type::U8.literal_fits(256));
-    }
-
-    #[test]
-    fn test_literal_fits_u16() {
-        assert!(Type::U16.literal_fits(0));
-        assert!(Type::U16.literal_fits(65535)); // u16::MAX
-        assert!(!Type::U16.literal_fits(65536));
-    }
-
-    #[test]
-    fn test_literal_fits_u32() {
-        assert!(Type::U32.literal_fits(0));
-        assert!(Type::U32.literal_fits(4294967295)); // u32::MAX
-        assert!(!Type::U32.literal_fits(4294967296));
-    }
-
-    #[test]
-    fn test_literal_fits_u64() {
-        assert!(Type::U64.literal_fits(0));
-        assert!(Type::U64.literal_fits(u64::MAX)); // Any u64 fits
-    }
-
-    #[test]
-    fn test_literal_fits_non_integer() {
-        assert!(!Type::BOOL.literal_fits(0));
-        assert!(!Type::new_struct(StructId(0)).literal_fits(0));
-        assert!(!Type::UNIT.literal_fits(0));
-    }
-
-    // ========== Type::negated_literal_fits() tests ==========
-
-    #[test]
-    fn test_negated_literal_fits_i8() {
-        assert!(Type::I8.negated_literal_fits(128)); // -128 = i8::MIN
-        assert!(!Type::I8.negated_literal_fits(129));
-    }
-
-    #[test]
-    fn test_negated_literal_fits_i16() {
-        assert!(Type::I16.negated_literal_fits(32768)); // -32768 = i16::MIN
-        assert!(!Type::I16.negated_literal_fits(32769));
-    }
-
-    #[test]
-    fn test_negated_literal_fits_i32() {
-        assert!(Type::I32.negated_literal_fits(2147483648)); // -2147483648 = i32::MIN
-        assert!(!Type::I32.negated_literal_fits(2147483649));
-    }
-
-    #[test]
-    fn test_negated_literal_fits_i64() {
-        assert!(Type::I64.negated_literal_fits(9223372036854775808)); // i64::MIN abs
-        assert!(!Type::I64.negated_literal_fits(9223372036854775809));
-    }
-
-    #[test]
-    fn test_negated_literal_fits_unsigned() {
-        // Unsigned types don't support negated literals
-        assert!(!Type::U8.negated_literal_fits(1));
-        assert!(!Type::U16.negated_literal_fits(1));
-        assert!(!Type::U32.negated_literal_fits(1));
-        assert!(!Type::U64.negated_literal_fits(1));
-    }
-
-    #[test]
-    fn test_negated_literal_fits_non_integer() {
-        assert!(!Type::BOOL.negated_literal_fits(1));
-        assert!(!Type::new_struct(StructId(0)).negated_literal_fits(1));
     }
 
     // ========== Type Display tests ==========

@@ -6,6 +6,14 @@
 //! - [`analyze_literal`] - Integer, boolean, string, and unit constants
 //! - [`analyze_unary_op`] - Negation, logical NOT, bitwise NOT
 //!
+//! It also owns constant materialization for the whole crate: every position
+//! that turns an integer or floating-point constant into an AIR `Const` goes
+//! through [`OrdinaryBodyEngine::materialize_int_const`] or
+//! [`OrdinaryBodyEngine::materialize_float_const`], so one range rule, one
+//! "does not fit" diagnostic, and one payload encoding stand behind literals,
+//! struct-initializer fields, pointer writes, named constant uses, and
+//! comptime-block results alike.
+//!
 //! Control-flow expressions are owned by the sibling `control_flow` module.
 //! Aggregate construction and member operations are owned by the sibling
 //! `aggregates` module. Place and ownership behavior remains canonical in
@@ -25,9 +33,20 @@ use rue_rir::{InstData, InstRef};
 
 use super::context::{AnalysisContext, AnalysisResult};
 use crate::inst::{Air, AirInst, AirInstData};
-use crate::types::{Type, TypeKind};
+use crate::types::Type;
 
 // ============================================================================
+
+/// How a floating-point constant reached materialization.
+///
+/// A literal is held to the source-literal rule — its spelling must name a
+/// finite value at the target width — while a value computed at compile time
+/// may legitimately be `inf` or `NaN`, so the two read the same spelling with
+/// different parsers.
+pub(crate) enum FloatConstSource<'a> {
+    Literal { spelling: &'a str, negated: bool },
+    ComputedValue { spelling: &'a str },
+}
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Resolve an integer expression through canonical inference, admitting
@@ -47,6 +66,106 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         } else {
             Self::get_resolved_type(ctx, inst_ref, span, context)
         }
+    }
+
+    // ========================================================================
+    // Constant materialization: the one owner
+    // ========================================================================
+
+    /// Materialize an integer constant as the AIR `Const` payload for `ty`.
+    ///
+    /// Every position that turns an integer written in source — or computed
+    /// at compile time from integers written in source — into an AIR constant
+    /// comes through here: ordinary literals, negated literals, the
+    /// struct-initializer field shortcut, `@ptr_write` value coercion, named
+    /// constant uses, and comptime-block results. One range rule and one
+    /// "does not fit" diagnostic (E0800, spec 6.5:5) therefore stand behind
+    /// all of them, and the payload has one encoding.
+    ///
+    /// `value` is the mathematical value, so a negated literal passes the
+    /// value it denotes (`-129`), not the magnitude its operand spells.
+    pub(crate) fn materialize_int_const(
+        &self,
+        value: i128,
+        ty: Type,
+        span: rue_span::Span,
+    ) -> CompileResult<AirInstData> {
+        // An integer is admitted directly where a float is expected
+        // (ADR-0065 §3): it becomes the float nearest to it. This is literal
+        // contextualization, not a runtime integer/float conversion.
+        if ty.is_float() {
+            let bits = if ty == Type::F32 {
+                u64::from((value as f32).to_bits())
+            } else {
+                (value as f64).to_bits()
+            };
+            return Ok(AirInstData::Const(bits));
+        }
+
+        // A target with no integer range at all — an array, a struct — is one
+        // the value cannot be represented in either, so it takes the same
+        // report rather than materializing a payload the backend would then
+        // have to make sense of.
+        if !ty
+            .integer_semantics()
+            .is_some_and(|integer| integer.fits_i128(value))
+        {
+            return Err(CompileError::new(
+                ErrorKind::LiteralOutOfRange {
+                    value,
+                    ty: self.format_type_name(ty),
+                },
+                span,
+            ));
+        }
+
+        // Two's-complement encoding: a negative value is sign-extended into
+        // the u64 payload.
+        Ok(AirInstData::Const(value as u64))
+    }
+
+    /// Materialize a floating-point constant as the AIR `Const` payload for
+    /// `ty`, with the spelling read by the parser its source calls for.
+    pub(crate) fn materialize_float_const(
+        &self,
+        source: FloatConstSource<'_>,
+        ty: Type,
+        span: rue_span::Span,
+    ) -> CompileResult<AirInstData> {
+        // `comptime_float` has no runtime width to round to; its uses are
+        // resolved before lowering, so the placeholder payload is zero.
+        if ty == Type::COMPTIME_FLOAT {
+            return Ok(AirInstData::Const(0));
+        }
+        if !ty.is_float() {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: "f32 or f64".to_owned(),
+                    found: self.format_type_name(ty),
+                },
+                span,
+            ));
+        }
+        let type_name = self.format_type_name(ty);
+        let (bits, expected, found) = match source {
+            FloatConstSource::Literal { spelling, negated } => (
+                crate::finite_float_literal_bits_with_sign(spelling, ty, negated),
+                format!("finite {type_name} literal"),
+                if negated {
+                    format!("-{spelling}")
+                } else {
+                    spelling.to_owned()
+                },
+            ),
+            FloatConstSource::ComputedValue { spelling } => (
+                crate::float_value_bits(spelling, ty),
+                format!("{type_name} value"),
+                spelling.to_owned(),
+            ),
+        };
+        let bits = bits
+            .ok_or_else(|| CompileError::new(ErrorKind::TypeMismatch { expected, found }, span))?;
+        Ok(AirInstData::Const(bits))
     }
 
     // ========================================================================
@@ -75,34 +194,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let ty =
                     Self::get_resolved_type(ctx, inst_ref, inst.span, "floating-point literal")?;
                 let spelling = self.body_interner().resolve(text);
-                if ty == Type::COMPTIME_FLOAT {
-                    let air_ref = air.add_inst(AirInst {
-                        data: AirInstData::Const(0),
-                        ty,
-                        span: inst.span,
-                    });
-                    return Ok(AnalysisResult::new(air_ref, ty));
-                }
-                if !ty.is_float() {
-                    return Err(CompileError::new(
-                        ErrorKind::TypeMismatch {
-                            expected: "f32 or f64".to_string(),
-                            found: self.format_type_name(ty),
-                        },
-                        inst.span,
-                    ));
-                }
-                let bits = crate::finite_float_literal_bits(spelling, ty).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::TypeMismatch {
-                            expected: format!("finite {} literal", self.format_type_name(ty)),
-                            found: spelling.to_string(),
-                        },
-                        inst.span,
-                    )
-                })?;
+                let data = self.materialize_float_const(
+                    FloatConstSource::Literal {
+                        spelling,
+                        negated: false,
+                    },
+                    ty,
+                    inst.span,
+                )?;
                 let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::Const(bits),
+                    data,
                     ty,
                     span: inst.span,
                 });
@@ -118,36 +219,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // Normal inferred literals still take the resolved-map path.
                 let ty = Self::resolved_integer_type(ctx, inst_ref, inst.span, "integer literal")?;
 
-                // Integer literals are admitted directly in a float context
-                // (ADR-0065 §3); this is literal contextualization, not a
-                // runtime implicit integer/float conversion.
-                if ty.is_float() {
-                    let bits = if ty == Type::F32 {
-                        u64::from((*value as f32).to_bits())
-                    } else {
-                        (*value as f64).to_bits()
-                    };
-                    let air_ref = air.add_inst(AirInst {
-                        data: AirInstData::Const(bits),
-                        ty,
-                        span: inst.span,
-                    });
-                    return Ok(AnalysisResult::new(air_ref, ty));
-                }
-
-                // Check if the literal value fits in the target type's range
-                if !ty.literal_fits(*value) {
-                    return Err(CompileError::new(
-                        ErrorKind::LiteralOutOfRange {
-                            value: *value,
-                            ty: self.format_type_name(ty),
-                        },
-                        inst.span,
-                    ));
-                }
-
+                let data = self.materialize_int_const(i128::from(*value), ty, inst.span)?;
                 let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::Const(*value),
+                    data,
                     ty,
                     span: inst.span,
                 });
@@ -284,44 +358,40 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     && ty.is_float()
                 {
                     let spelling = self.body_interner().resolve(text);
-                    let bits = crate::finite_float_literal_bits_with_sign(spelling, ty, true)
-                        .ok_or_else(|| {
-                            CompileError::new(
-                                ErrorKind::TypeMismatch {
-                                    expected: format!(
-                                        "finite {} literal",
-                                        self.format_type_name(ty)
-                                    ),
-                                    found: format!("-{spelling}"),
-                                },
-                                inst.span,
-                            )
-                        })?;
+                    let data = self.materialize_float_const(
+                        FloatConstSource::Literal {
+                            spelling,
+                            negated: true,
+                        },
+                        ty,
+                        inst.span,
+                    )?;
                     let air_ref = air.add_inst(AirInst {
-                        data: AirInstData::Const(bits),
+                        data,
                         ty,
                         span: inst.span,
                     });
                     return Ok(AnalysisResult::new(air_ref, ty));
                 }
-                if let InstData::IntConst(value) = &operand_inst.data {
-                    // Check if this value, when negated, fits in the target signed type
-                    if ty.negated_literal_fits(*value) && !ty.literal_fits(*value) {
-                        // This is the MIN value case - store the MIN value directly.
-                        let neg_value = match ty.kind() {
-                            TypeKind::I8 => (i8::MIN as i64) as u64,
-                            TypeKind::I16 => (i16::MIN as i64) as u64,
-                            TypeKind::I32 => (i32::MIN as i64) as u64,
-                            TypeKind::I64 => i64::MIN as u64,
-                            _ => unreachable!(),
-                        };
-                        let air_ref = air.add_inst(AirInst {
-                            data: AirInstData::Const(neg_value),
-                            ty,
-                            span: inst.span,
-                        });
-                        return Ok(AnalysisResult::new(air_ref, ty));
-                    }
+                // A negated integer literal whose magnitude alone is out of
+                // range is one literal, not an operation on one: `-128` at
+                // `i8` denotes the type minimum even though `128` does not
+                // fit, so the operand cannot be analyzed on its own. Handing
+                // the owner the value the literal denotes admits that case
+                // and, when the denoted value does not fit either, reports
+                // `-129` rather than the magnitude the operand spells.
+                if let InstData::IntConst(magnitude) = &operand_inst.data
+                    && let Some(integer) = ty.integer_semantics()
+                    && !integer.fits_i128(i128::from(*magnitude))
+                {
+                    let data =
+                        self.materialize_int_const(-i128::from(*magnitude), ty, inst.span)?;
+                    let air_ref = air.add_inst(AirInst {
+                        data,
+                        ty,
+                        span: inst.span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, ty));
                 }
 
                 let operand_result = self.analyze_inst(air, *operand, ctx)?;

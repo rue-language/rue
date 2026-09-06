@@ -1160,29 +1160,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let field_span = self.body_rir_ref().get(field_value).span;
             let field_inst = self.body_rir_ref().get(field_value);
             let field_result = if let InstData::IntConst(value) = &field_inst.data {
-                // Integer literal - use the expected field type directly, but
-                // range-check it first because this shortcut bypasses
-                // `analyze_literal`; `S { a: 300 }` with `a: u8` must produce
-                // E0800 rather than truncate to 44. (RUE-72)
-                let encoded = if expected_field_type == Type::F32 {
-                    u64::from((*value as f32).to_bits())
-                } else if expected_field_type == Type::F64 {
-                    (*value as f64).to_bits()
-                } else if expected_field_type.literal_fits(*value) {
-                    *value
-                } else {
-                    return Err(CompileError::new(
-                        ErrorKind::LiteralOutOfRange {
-                            value: *value,
-                            ty: self.format_type_name(expected_field_type),
-                        },
-                        field_inst.span,
-                    ));
-                };
+                // Integer literal: adopt the expected field type directly, so
+                // a field type HM could not resolve (a struct reached through
+                // a comptime type variable) still types its literal. The
+                // constant itself is materialized by the shared owner, which
+                // is what keeps `S { a: 300 }` with `a: u8` an E0800 rather
+                // than a truncation to 44 (RUE-72).
+                let span = field_inst.span;
+                let data =
+                    self.materialize_int_const(i128::from(*value), expected_field_type, span)?;
                 let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::Const(encoded),
+                    data,
                     ty: expected_field_type,
-                    span: field_inst.span,
+                    span,
                 });
                 AnalysisResult::new(air_ref, expected_field_type)
             } else if self.is_str_like(expected_field_type) {

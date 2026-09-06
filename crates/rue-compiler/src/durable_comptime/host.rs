@@ -1704,7 +1704,7 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeRejections
 
     fn literal_out_of_range(
         &self,
-        value: u64,
+        value: i128,
         ty: &Self::Type,
         site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Self::Failure {

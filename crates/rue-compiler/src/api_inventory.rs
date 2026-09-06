@@ -1977,7 +1977,7 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
     (753, 3_150_885_663_910_159_936),
     (2_598, 10_270_973_964_375_394_836),
     (11653, 15_769_724_788_918_086_723),
-    (109_638, 5_326_388_425_001_326_533),
+    (106_643, 1_879_126_869_505_685_683),
     (3_254, 11_949_940_325_034_004_149),
     (5_552, 14_658_861_127_087_730_967),
     (872, 14_092_162_116_261_787_003),
@@ -8352,6 +8352,46 @@ fn rue_1191_anonymous_digest_collision_authority_is_body_closure_owned() {
     assert!(
         !transaction_evaluator.contains("register_body_closure_anonymous_digest("),
         "the per-body evaluator must not call the cross-body registrar"
+    );
+}
+
+#[test]
+fn durable_integer_widths_have_one_kernel_adapter() {
+    let projection = DURABLE_COMPTIME_PROJECTION_SOURCE;
+    let nucleus =
+        include_str!("revisioned_query_database/registrations/semantic/semantic_nucleus.rs");
+    let provider_body = include_str!("revisioned_query_database/body/provider_body.rs");
+
+    // One match turns a `DurableType` into the kernel's `IntegerType`. A
+    // second table here would keep answering for eight widths after the
+    // kernel learned a ninth, and the declaration-time answer would then
+    // disagree with the body path for the same program.
+    assert!(projection.contains("pub(crate) fn durable_int_width("));
+    assert_eq!(
+        projection.matches("DurableType::I8 => (8, true),").count(),
+        1
+    );
+
+    for (name, source) in [
+        ("the semantic nucleus", nucleus),
+        ("the body provider", provider_body),
+    ] {
+        assert!(
+            source.contains("durable_int_width(") || source.contains("durable_const_fits_type("),
+            "{name} stopped asking the kernel adapter about integer widths"
+        );
+        assert!(
+            !source.contains("DurableType::I8"),
+            "{name} regained a per-width DurableType table"
+        );
+    }
+
+    // One code for "does not fit": the nucleus reports the same E0800 the
+    // body path does, whatever the value's sign.
+    assert!(nucleus.contains("ErrorKind::LiteralOutOfRange"));
+    assert!(
+        !nucleus.contains("value {value} is out of range for type"),
+        "the nucleus regained a second out-of-range channel"
     );
 }
 

@@ -5,6 +5,7 @@
 //! them. It extends the canonical body-analysis engine rather than
 //! introducing peer analysis state.
 
+use super::super::analyze_ops::FloatConstSource;
 use super::super::context::{LocalVar, ParamInfo};
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::super::ownership_state::{FieldPath, VariableMoveState};
@@ -2190,7 +2191,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
     ) -> CompileResult<(AirInstData, Type)> {
         Ok(match value {
-            ConstValue::Integer(v) => (AirInstData::Const(v as u64), ty),
+            ConstValue::Integer(v) => (self.materialize_int_const(v, ty, span)?, ty),
             ConstValue::Bool(b) => (AirInstData::BoolConst(b), Type::BOOL),
             ConstValue::Unit => (AirInstData::UnitConst, Type::UNIT),
             ConstValue::Function(_) => unreachable!(
@@ -2215,32 +2216,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 (AirInstData::StringConst(local_id), ty)
             }
             ConstValue::Float(content) => {
-                let spelling = self.body_interner().resolve(&content.spur());
-                if ty == Type::COMPTIME_FLOAT {
-                    return Ok((AirInstData::Const(0), ty));
-                }
-                if !ty.is_float() {
-                    return Err(CompileError::new(
-                        ErrorKind::TypeMismatch {
-                            expected: "f32 or f64".to_owned(),
-                            found: self.format_type_name(ty),
-                        },
-                        span,
-                    ));
-                }
                 // A literal's spelling was already range-checked where it was
                 // written; a computed constant may legitimately be `inf` or
-                // `NaN`, so the value parser is the permissive one.
-                let bits = crate::float_value_bits(spelling, ty).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::TypeMismatch {
-                            expected: format!("{} value", self.format_type_name(ty)),
-                            found: spelling.to_owned(),
-                        },
-                        span,
-                    )
-                })?;
-                (AirInstData::Const(bits), ty)
+                // `NaN`, so this reads the spelling as a value.
+                let spelling = self.body_interner().resolve(&content.spur()).to_owned();
+                let data = self.materialize_float_const(
+                    FloatConstSource::ComputedValue {
+                        spelling: &spelling,
+                    },
+                    ty,
+                    span,
+                )?;
+                (data, ty)
             }
         })
     }

@@ -845,32 +845,27 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
     ) -> CompileResult<i64> {
         let ty_name = self.format_type_name(scrutinee_type);
-        if negative {
-            if scrutinee_type.is_unsigned() {
-                return Err(
-                    CompileError::new(ErrorKind::CannotNegate(ty_name), span).with_note(
-                        "unsigned values are never negative, so this pattern could never match",
-                    ),
-                );
-            }
-            if !scrutinee_type.negated_literal_fits(value) {
-                return Err(CompileError::new(
-                    ErrorKind::LiteralOutOfRange { value, ty: ty_name },
-                    span,
-                )
-                .with_note(format!("the pattern value is -{}", value)));
-            }
-            // wrapping_neg handles the i64::MIN magnitude (9223372036854775808).
-            Ok((value as i64).wrapping_neg())
-        } else {
-            if !scrutinee_type.literal_fits(value) {
-                return Err(CompileError::new(
-                    ErrorKind::LiteralOutOfRange { value, ty: ty_name },
-                    span,
-                ));
-            }
-            Ok(value as i64)
+        if negative && scrutinee_type.is_unsigned() {
+            return Err(
+                CompileError::new(ErrorKind::CannotNegate(ty_name), span).with_note(
+                    "unsigned values are never negative, so this pattern could never match",
+                ),
+            );
         }
+        let denoted = pattern_int_denoted(value, negative);
+        if !scrutinee_type
+            .integer_semantics()
+            .is_some_and(|integer| integer.fits_i128(denoted))
+        {
+            return Err(CompileError::new(
+                ErrorKind::LiteralOutOfRange {
+                    value: denoted,
+                    ty: ty_name,
+                },
+                span,
+            ));
+        }
+        Ok(denoted as i64)
     }
 
     /// Emit unreachable-pattern warnings (spec 4.7:20) for a `match` that the
@@ -1573,14 +1568,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 RirPattern::Int {
                     value, negative, ..
                 } => {
-                    // Already range-checked above; wrapping_neg handles the
-                    // i64::MIN magnitude (9223372036854775808).
-                    let n = if *negative {
-                        (*value as i64).wrapping_neg()
-                    } else {
-                        *value as i64
-                    };
-                    AirPattern::Int(n)
+                    // Already range-checked above.
+                    AirPattern::Int(pattern_int_denoted(*value, *negative) as i64)
                 }
                 RirPattern::Bool(b, _) => AirPattern::Bool(*b),
                 RirPattern::Path {
@@ -3008,6 +2997,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             Ok(AnalysisResult::with_continues(air_ref, ty, !diverged))
         }
     }
+}
+
+/// The value an integer pattern denotes: the magnitude its literal spells,
+/// negated when the pattern is written with a leading `-`. The magnitude is
+/// carried unsigned so `-9223372036854775808` names `i64::MIN` without the
+/// operand itself having to be representable; the i128 arithmetic is what
+/// makes that exact rather than a wrapping trick.
+fn pattern_int_denoted(value: u64, negative: bool) -> i128 {
+    let magnitude = i128::from(value);
+    if negative { -magnitude } else { magnitude }
 }
 
 #[cfg(test)]
