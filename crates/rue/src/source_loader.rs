@@ -1,7 +1,7 @@
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -31,6 +31,7 @@ use rue_compiler::unstable::{
 };
 #[cfg(test)]
 use rue_compiler::unstable::{frontend_query_invalidations, rooted_cfg};
+use rue_compiler::unstable::{normalize_module_path, requested_path_for_module};
 use rue_compiler::{
     AcceptedReadManifest, CompileErrors, CompileOptions, CompilerSession, DependencyEnvelope,
     FileId, FileMetadataFingerprint, ImportDiscoveryContext, ImportDiscoveryStatus,
@@ -310,6 +311,15 @@ impl SourceManifest {
     }
 }
 
+/// Anchor a host-supplied spelling at the current directory and reduce it with
+/// the compiler's one path normalizer.
+///
+/// Anchoring is the driver's own step: a relative command line argument or
+/// manifest entry names a file relative to the process, and every identity the
+/// compiler mints is absolute. The reduction itself is not the driver's to
+/// decide — a manifest key that collapsed `..` differently from the requested
+/// path discovery mints would deny a file the compiler considers declared
+/// (RUE-1979), so it delegates to `normalize_module_path`.
 fn normalize_lexical_path(path: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -318,18 +328,7 @@ fn normalize_lexical_path(path: &Path) -> PathBuf {
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(path)
     };
-    let mut normalized = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            Component::Normal(part) => normalized.push(part),
-            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
-        }
-    }
-    normalized
+    PathBuf::from(normalize_module_path(&absolute.to_string_lossy()))
 }
 
 /// Capture the standard-library root in the same physical spelling every
@@ -348,22 +347,6 @@ fn normalize_lexical_path(path: &Path) -> PathBuf {
 /// diagnostics report against the path the user configured.
 fn capture_std_root(std_root: &Path) -> PathBuf {
     fs::canonicalize(std_root).unwrap_or_else(|_| normalize_lexical_path(std_root))
-}
-
-fn reject_project_root_inside_std(
-    root_canonical: &Path,
-    std_root: Option<&Path>,
-) -> Result<(), SourceLoadError> {
-    let Some(project_root) = root_canonical.parent() else {
-        return Ok(());
-    };
-    if std_root.is_some_and(|std_root| project_root.starts_with(std_root)) {
-        return Err(SourceLoadError::Message(format!(
-            "Error: project root {:?} is inside the configured standard-library root",
-            project_root
-        )));
-    }
-    Ok(())
 }
 
 #[derive(Debug)]
@@ -515,14 +498,6 @@ fn symlink_component_identity(_: &fs::Metadata) -> Option<PhysicalFileIdentity> 
     None
 }
 
-fn spelling_boundary(context: &ImportDiscoveryContext, requested: &Path) -> PathBuf {
-    context
-        .std_root()
-        .filter(|std_root| requested.starts_with(std_root))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(context.project_root()))
-}
-
 fn accepted_source_from_read(
     entry: &rue_compiler::AcceptedReadManifestEntry,
     canonical_path: &Path,
@@ -576,7 +551,7 @@ fn reobserve_accepted_reads(
                 ))
             })?;
         let requested_path = Path::new(entry.requested_path());
-        let boundary = spelling_boundary(context, requested_path);
+        let boundary = context.boundary_for_requested(requested_path);
         if source_manifest.is_some_and(|policy| !policy.declares_path_without_probe(requested_path))
         {
             continue;
@@ -613,7 +588,7 @@ fn reobserve_accepted_reads(
                 entry.metadata_fingerprint(),
                 cached_source,
             )
-            .map(|source| source.with_symlink_route(symlink_route(requested_path, &boundary)))
+            .map(|source| source.with_symlink_route(symlink_route(requested_path, boundary)))
             .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?
         } else {
             let read = match stable_read_to_string(&canonical_path) {
@@ -625,7 +600,7 @@ fn reobserve_accepted_reads(
                 &canonical_path,
                 read,
                 canonical_unchanged.then_some(cached_source.clone()),
-                &boundary,
+                boundary,
             )?
         };
         control.checkpoint()?;
@@ -705,7 +680,7 @@ fn execute_import_request_uncancelled(
                 .map(|source| {
                     source.with_symlink_route(symlink_route(
                         candidate,
-                        &spelling_boundary(request.context(), candidate),
+                        request.context().boundary_for_requested(candidate),
                     ))
                 })
                 .expect("stable file reads satisfy accepted import invariants");
@@ -872,6 +847,20 @@ fn test_reobserve_delay(control: DiscoveryControl<'_>) -> Result<(), SourceLoadE
     control.checkpoint()
 }
 
+/// Report a compiler-owned input failure raised while the driver was capturing
+/// its discovery context.
+///
+/// The reachable case is the project-root/standard-library-root overlap policy
+/// `ImportDiscoveryContext::new` owns (RUE-1979). It is a typed compiler input
+/// error rather than a driver message, so one code and one rendering answer for
+/// it whether the context is captured by this driver or by an embedder.
+pub(crate) fn source_load_compiler_error(error: rue_error::CompileError) -> SourceLoadError {
+    SourceLoadError::Compiler {
+        snapshot: None,
+        errors: CompileErrors::from(error),
+    }
+}
+
 /// Turn a host-side contradiction into the canonical graceful ICE diagnostic.
 /// These failures are not environmental source-load/toolchain errors: they
 /// mean the compiler's own continuation protocol violated its invariant.
@@ -1006,7 +995,10 @@ impl ImportDiscoveryResult {
                 requested.clone(),
                 PathBuf::from(entry.canonical_path()),
                 fingerprint,
-                spelling_boundary(&self.resolution.context, &requested),
+                self.resolution
+                    .context
+                    .boundary_for_requested(&requested)
+                    .to_path_buf(),
                 Arc::from(entry.symlink_route().to_vec()),
             ));
         }
@@ -1264,11 +1256,11 @@ fn accepted_path_is_stable(
 ) -> bool {
     let requested = Path::new(requested_path);
     let canonical = Path::new(canonical_path);
-    let boundary = spelling_boundary(context, requested);
-    let route_before = symlink_route(requested, &boundary);
+    let boundary = context.boundary_for_requested(requested);
+    let route_before = symlink_route(requested, boundary);
     let observed_canonical = fs::canonicalize(requested).ok();
     let observed_metadata = fs::metadata(canonical).ok();
-    let route_after = symlink_route(requested, &boundary);
+    let route_after = symlink_route(requested, boundary);
     route_before.as_ref() == expected_route
         && route_after.as_ref() == expected_route
         && observed_canonical.as_deref() == Some(canonical)
@@ -1782,17 +1774,21 @@ pub(crate) fn discover_and_load_imports(
         })
     };
     // The compiler context retains the lexical project spelling for durable
-    // caller identities, but the trust boundary is physical. When a toolchain
-    // root is configured, validate that boundary before discovery can classify
-    // any source. Keep the no-std path's established context-before-root-read
-    // order so watch cycles do not change their fast publication timing.
+    // caller identities, but the trust boundary is physical, so discovery is
+    // given both spellings and applies its one overlap policy to each before it
+    // can classify any source. Resolving the root physically is what produces
+    // the second spelling, and only a configured toolchain needs it: the
+    // no-std path keeps its established context-before-root-read order so watch
+    // cycles do not change their fast publication timing.
     let root_canonical = if std_root.is_some() {
-        let root_canonical = canonicalize_root()?;
-        reject_project_root_inside_std(&root_canonical, std_root.as_deref())?;
-        Some(root_canonical)
+        Some(canonicalize_root()?)
     } else {
         None
     };
+    let canonical_root_dir = root_canonical
+        .as_deref()
+        .and_then(Path::parent)
+        .map(|directory| directory.to_string_lossy().into_owned());
     let policy_revision = source_manifest
         .as_ref()
         .map(SourceManifest::policy_revision)
@@ -1800,13 +1796,14 @@ pub(crate) fn discover_and_load_imports(
     let context = ImportDiscoveryContext::new(
         1,
         root_dir.to_string_lossy(),
+        canonical_root_dir.as_deref(),
         std_root
             .as_deref()
             .map(|path| path.to_string_lossy())
             .as_deref(),
         policy_revision,
     )
-    .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+    .map_err(source_load_compiler_error)?;
     let root_canonical = match root_canonical {
         Some(root_canonical) => root_canonical,
         None => canonicalize_root()?,
@@ -1908,10 +1905,11 @@ pub(crate) fn reload_from_filesystem(
     let context = ImportDiscoveryContext::new(
         result.resolution.context.epoch(),
         result.resolution.context.project_root(),
+        None,
         result.resolution.context.std_root(),
-        policy_revision,
+        policy_revision.clone(),
     )
-    .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+    .map_err(source_load_compiler_error)?;
     let reobserved = reobserve_accepted_reads(
         &result.source_snapshot,
         &result.read_manifest,
@@ -1931,13 +1929,22 @@ pub(crate) fn reload_from_filesystem(
             root_entry.requested_path()
         ))
     })?;
-    // The retained root may have been retargeted since the previous close. Run
-    // the same physical containment guard after reobservation, before the new
-    // assembler can classify or publish the retargeted source.
-    reject_project_root_inside_std(
-        Path::new(root.canonical_path()),
-        context.std_root().map(Path::new),
-    )?;
+    // The retained root may have been retargeted since the previous close, so
+    // its physical spelling is known only after reobservation. Recapture the
+    // context with that spelling: discovery owns the overlap policy, and the
+    // retargeted root passes it before the new assembler can classify or
+    // publish the source.
+    let context = ImportDiscoveryContext::new(
+        context.epoch(),
+        context.project_root(),
+        Path::new(root.canonical_path())
+            .parent()
+            .map(|directory| directory.to_string_lossy())
+            .as_deref(),
+        context.std_root(),
+        policy_revision,
+    )
+    .map_err(source_load_compiler_error)?;
     let mut assembler = DiscoverySourceAssembler::new_with_symlink_route(
         context.clone(),
         root.requested_path(),
@@ -2091,6 +2098,7 @@ pub(crate) fn acquire_reached_toolchain_modules_superseding(
                     control.checkpoint()?;
                     satisfy_toolchain_module_demand(
                         &mut round_assembler,
+                        &result.resolution.context,
                         result.std_root.as_deref(),
                         result.source_manifest.as_ref(),
                         demand,
@@ -2142,7 +2150,7 @@ pub(crate) fn acquire_reached_toolchain_modules_superseding(
                     Err(error) => {
                         let error = reclassify_reclose_failure(
                             error,
-                            result.std_root.as_deref(),
+                            &result.resolution.context,
                             park.demands(),
                         );
                         abort_import_input_request(&mut result.session).map_err(|errors| {
@@ -2258,7 +2266,7 @@ fn classify_trusted_transitive_failure(
 /// errors pass through unchanged.
 fn reclassify_reclose_failure(
     error: SourceLoadError,
-    std_root: Option<&Path>,
+    context: &ImportDiscoveryContext,
     demands: &[TrustedToolchainModuleDemand],
 ) -> SourceLoadError {
     match error {
@@ -2286,7 +2294,7 @@ fn reclassify_reclose_failure(
                         .map(|demand| demand.logical_path().to_owned())
                         .unwrap_or_default(),
                     demand
-                        .map(|demand| toolchain_module_path(std_root, demand))
+                        .map(|demand| toolchain_module_path(context, demand))
                         .unwrap_or_default(),
                 )
             });
@@ -2459,14 +2467,24 @@ impl From<ToolchainAcquisitionError> for SourceLoadError {
 /// deterministically distinct from a missing or malformed toolchain.
 fn satisfy_toolchain_module_demand(
     assembler: &mut DiscoverySourceAssembler,
+    context: &ImportDiscoveryContext,
     std_root: Option<&Path>,
     source_manifest: Option<&SourceManifest>,
     demand: &TrustedToolchainModuleDemand,
 ) -> Result<(), ToolchainAcquisitionError> {
-    let std_root = std_root.ok_or_else(|| ToolchainIntegrityError::StdRootUnavailable {
+    let std_root_unavailable = || ToolchainIntegrityError::StdRootUnavailable {
         logical_path: demand.logical_path().to_owned(),
-    })?;
-    let requested = normalize_lexical_path(&std_root.join(demand.std_relative_path()));
+    };
+    let std_root = std_root.ok_or_else(std_root_unavailable)?;
+    // Discovery owns "trusted module -> requested spelling". Deriving it here
+    // instead would be a second answer to that question, free to disagree with
+    // the identity the compiler mints for the module it publishes.
+    let module = demand
+        .trusted_module_id()
+        .map_err(|_| std_root_unavailable())?;
+    let requested = PathBuf::from(
+        requested_path_for_module(context, &module).map_err(|_| std_root_unavailable())?,
+    );
 
     // Manifest authority before any probe. A path the policy does not lexically
     // declare must not touch the filesystem at all, so this check precedes
@@ -2582,14 +2600,19 @@ fn satisfy_toolchain_module_demand(
     Ok(())
 }
 
+/// The path a trusted toolchain module would have been read from, for a
+/// diagnostic that must name one. Discovery answers it; a context with no
+/// captured std root has no filesystem spelling to give, so the module is named
+/// by its logical path.
 fn toolchain_module_path(
-    std_root: Option<&Path>,
+    context: &ImportDiscoveryContext,
     demand: &TrustedToolchainModuleDemand,
 ) -> PathBuf {
-    match std_root {
-        Some(root) => normalize_lexical_path(&root.join(demand.std_relative_path())),
-        None => PathBuf::from(demand.logical_path()),
-    }
+    demand
+        .trusted_module_id()
+        .and_then(|module| requested_path_for_module(context, &module))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(demand.logical_path()))
 }
 
 #[cfg(test)]
@@ -4368,12 +4391,18 @@ mod tests {
 
         let error = reload_from_filesystem(&mut result, None)
             .expect_err("a retained project retarget into std must fail closed");
-        assert!(matches!(
-            error,
-            SourceLoadError::Message(message)
-                if message.contains("project root")
-                    && message.contains("inside the configured standard-library root")
-        ));
+        // The overlap policy belongs to discovery, so the retarget is refused
+        // by the compiler's typed input error rather than a driver message.
+        let SourceLoadError::Compiler { snapshot, errors } = error else {
+            panic!("expected a typed compiler diagnostic, got {error:?}");
+        };
+        assert!(snapshot.is_none());
+        let message = errors.iter().next().expect("one refusal").to_string();
+        assert!(
+            message.contains("project root")
+                && message.contains("inside the configured standard-library root"),
+            "unexpected refusal: {message}"
+        );
     }
 
     #[cfg(unix)]

@@ -353,7 +353,8 @@ mod tests {
     use super::*;
 
     fn context(std_root: Option<&str>) -> ImportDiscoveryContext {
-        ImportDiscoveryContext::new(1, "/rue-fixture", std_root, "test-candidate-policy").unwrap()
+        ImportDiscoveryContext::new(1, "/rue-fixture", None, std_root, "test-candidate-policy")
+            .unwrap()
     }
 
     fn inventory(std_root: Option<&str>) -> TestCandidateInventory {
@@ -434,7 +435,7 @@ mod tests {
     fn the_read_regime_travels_with_the_candidate_key() {
         let mut open = inventory(None);
         let mut sandboxed = TestCandidateInventory::new(
-            &ImportDiscoveryContext::new(1, "/rue-fixture", None, "manifest-abc").unwrap(),
+            &ImportDiscoveryContext::new(1, "/rue-fixture", None, None, "manifest-abc").unwrap(),
         );
         open.declare("app/a.rue", present("")).unwrap();
         sandboxed.declare("app/a.rue", present("")).unwrap();

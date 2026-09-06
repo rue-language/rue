@@ -1237,9 +1237,14 @@ fn query_cfg_state_with_trusted_std(
     };
     use std::sync::Arc;
 
-    let context =
-        ImportDiscoveryContext::new(1, "/project", Some("/project/std"), "oracle-trusted-std")
-            .expect("valid discovery context");
+    let context = ImportDiscoveryContext::new(
+        1,
+        "/project",
+        None,
+        Some("/project/std"),
+        "oracle-trusted-std",
+    )
+    .expect("valid discovery context");
     let root = Arc::new(root.to_owned());
     let mut assembler = DiscoverySourceAssembler::new(
         context.clone(),

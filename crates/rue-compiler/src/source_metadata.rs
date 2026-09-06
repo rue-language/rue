@@ -776,6 +776,24 @@ mod tests {
         );
     }
 
+    /// RUE-1979: physical collision keys and discovery identities reduce an
+    /// absolute spelling the same way, so a root-escaping `..` cannot make one
+    /// layer see two modules where the other sees one.
+    #[test]
+    fn absolute_physical_spellings_agree_with_discovery_identities() {
+        let escaping = "/../project/main.rue";
+        assert_eq!(normalize_module_path(escaping), "/project/main.rue");
+        assert_eq!(
+            error_message(SourceMetadata::new(
+                FileId::new(1),
+                physical(&[(1, escaping), (2, "/project/main.rue")]),
+                physical(&[(1, "main.rue"), (2, "other.rue")]),
+            )),
+            "invalid compiler input: physical paths for 1 and 2 normalize to the \
+             same identity \"/project/main.rue\""
+        );
+    }
+
     #[test]
     fn rejects_empty_input() {
         assert_eq!(

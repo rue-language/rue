@@ -6537,9 +6537,14 @@ fn unreadable_and_unparsable_candidates_are_reported_and_ordered_by_path() {
 #[test]
 fn candidates_declared_under_another_read_policy_are_refused() {
     let mut session = committed_test_closure();
-    let foreign =
-        crate::ImportDiscoveryContext::new(1, "/rue-fixture", None, "a-different-source-manifest")
-            .unwrap();
+    let foreign = crate::ImportDiscoveryContext::new(
+        1,
+        "/rue-fixture",
+        None,
+        None,
+        "a-different-source-manifest",
+    )
+    .unwrap();
     let mut candidates = crate::TestCandidateInventory::new(&foreign);
     candidates
         .declare("orphan_tests.rue", present("test \"a\" { }\n"))

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn incremental_pending_requests_stop_at_conclusive_vendored_std_failure() {
-    let context = ImportDiscoveryContext::new(1, "/project", Some("/sdk"), "all").unwrap();
+    let context = ImportDiscoveryContext::new(1, "/project", None, Some("/sdk"), "all").unwrap();
     let occurrence = crate::ImportOccurrenceKey::from_directive(&crate::ImportDirective::new(
         ModuleId::from_logical_path("main.rue").unwrap(),
         0,
@@ -1452,7 +1452,7 @@ fn import_fixture(
     ImportDiscoveryContext,
 ) {
     let context =
-        ImportDiscoveryContext::new(epoch, "/project", Some("/sdk"), "test-policy").unwrap();
+        ImportDiscoveryContext::new(epoch, "/project", None, Some("/sdk"), "test-policy").unwrap();
     let assembler = DiscoverySourceAssembler::new(
         context.clone(),
         "/project/main.rue",
@@ -1535,7 +1535,7 @@ fn import_frontier_rejects_roots_outside_the_pinned_plan() {
 #[test]
 fn ordinary_and_rooted_publication_share_one_compatibility_namespace() {
     let context =
-        ImportDiscoveryContext::new(401, "/project", Some("/sdk"), "test-policy").unwrap();
+        ImportDiscoveryContext::new(401, "/project", None, Some("/sdk"), "test-policy").unwrap();
     let mut assembler = DiscoverySourceAssembler::new(
         context.clone(),
         "/project/main.rue",
@@ -2206,7 +2206,7 @@ fn resolved_declaration_import_observes_only_winning_physical_provenance() {
         )
         .unwrap();
     let green_context =
-        ImportDiscoveryContext::new(307, "/project", Some("/sdk"), "test-policy").unwrap();
+        ImportDiscoveryContext::new(307, "/project", None, Some("/sdk"), "test-policy").unwrap();
     let (green_snapshot, green_reads, green_revision, green_plan) =
         begin_database_plan(&mut database, &mut green_assembler, green_context);
     let green_revision = publish_remapped_observations(
@@ -2336,7 +2336,7 @@ fn facade_declaration_import_observes_its_provenance_leaf_only() {
         )
         .unwrap();
     let green_context =
-        ImportDiscoveryContext::new(308, "/project", Some("/sdk"), "test-policy").unwrap();
+        ImportDiscoveryContext::new(308, "/project", None, Some("/sdk"), "test-policy").unwrap();
     let (green_snapshot, green_reads, green_revision, green_plan) =
         begin_database_plan(&mut database, &mut green_assembler, green_context);
     let green_revision = publish_remapped_observations(
@@ -2713,7 +2713,8 @@ fn resolve_import_recomputes_when_only_discovery_context_changes() {
     );
 
     let second_context =
-        ImportDiscoveryContext::new(24, "/project", Some("/other-sdk"), "other-policy").unwrap();
+        ImportDiscoveryContext::new(24, "/project", None, Some("/other-sdk"), "other-policy")
+            .unwrap();
     let snapshot = assembler.snapshot().unwrap();
     let reads = assembler.accepted_read_manifest();
     let second_revision = session
@@ -3060,7 +3061,7 @@ fn successor_revisions_carry_observations_but_new_epochs_reread() {
     );
 
     let new_context =
-        ImportDiscoveryContext::new(4, "/project", Some("/sdk"), "test-policy").unwrap();
+        ImportDiscoveryContext::new(4, "/project", None, Some("/sdk"), "test-policy").unwrap();
     let new_snapshot = assembler.snapshot().unwrap();
     let new_revision = session
         .begin_import_input_request(
@@ -3110,13 +3111,15 @@ fn input_stamp_tables_follow_exact_retained_full_and_overlay_views() {
 
     let mut database = RevisionedQueryDatabase::default();
     let first_context =
-        ImportDiscoveryContext::new(10_000, "/project", Some("/sdk"), "retention-stress").unwrap();
+        ImportDiscoveryContext::new(10_000, "/project", None, Some("/sdk"), "retention-stress")
+            .unwrap();
     let mut latest_context = first_context.clone();
 
     for generation in 0..GENERATIONS {
         let context = ImportDiscoveryContext::new(
             10_000 + generation,
             "/project",
+            None,
             Some("/sdk"),
             "retention-stress",
         )

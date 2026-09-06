@@ -84,7 +84,7 @@ fn step(name: &'static str, snapshot: SourceSnapshot) -> Step {
 }
 
 fn import_step(name: &'static str, epoch: u64, value: i32) -> Step {
-    let context = ImportDiscoveryContext::new(epoch, "/p", None, "oracle").unwrap();
+    let context = ImportDiscoveryContext::new(epoch, "/p", None, None, "oracle").unwrap();
     let metadata = |length| FileMetadataFingerprint::new(length, epoch, epoch);
     let root = Arc::new("const a = @import(\"a.rue\"); fn main() -> i32 { a.value() }".to_owned());
     let imported = Arc::new(format!("pub fn value() -> i32 {{ {value} }}"));

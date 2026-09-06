@@ -4,7 +4,7 @@ use super::*;
 use crate::{CompileOptions, SourceMetadata};
 
 fn continuation_std_context() -> crate::ImportDiscoveryContext {
-    crate::ImportDiscoveryContext::new(1, "/project", Some("/sdk"), "test-policy").unwrap()
+    crate::ImportDiscoveryContext::new(1, "/project", None, Some("/sdk"), "test-policy").unwrap()
 }
 
 fn continuation_metadata() -> crate::FileMetadataFingerprint {

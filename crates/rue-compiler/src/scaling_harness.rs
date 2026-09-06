@@ -824,7 +824,7 @@ fn import_source(
     value: i32,
     epoch: u64,
 ) -> (SourceSnapshot, ImportDiscoveryContext, AcceptedReadManifest) {
-    let context = ImportDiscoveryContext::new(epoch, "/p", None, "scaling-import").unwrap();
+    let context = ImportDiscoveryContext::new(epoch, "/p", None, None, "scaling-import").unwrap();
     let root = Arc::new("const a = @import(\"a.rue\"); fn main() -> i32 { a.value() }".to_owned());
     let imported = Arc::new(format!("pub fn value() -> i32 {{ {value} }}"));
     let mut assembler = DiscoverySourceAssembler::new(
@@ -860,7 +860,7 @@ fn rooted_demand_locality_source(
     // The observation regime remains fixed across revisions. Only the imported
     // source leaf changes, matching a long-lived host whose read policy is
     // stable while it services successive import-input requests.
-    let context = ImportDiscoveryContext::new(1, "/p", None, "scaling-import").unwrap();
+    let context = ImportDiscoveryContext::new(1, "/p", None, None, "scaling-import").unwrap();
     let root = Arc::new(
         "const a = @import(\"a.rue\");\n\
          fn main() -> i32 { a.value() }\n"
@@ -2027,7 +2027,8 @@ impl TestRootCorpus {
     /// `main.rue` imports every module (the aggregator idiom), so the request
     /// closure is the whole corpus under either root selection.
     fn sources(&self) -> (SourceSnapshot, ImportDiscoveryContext, AcceptedReadManifest) {
-        let context = ImportDiscoveryContext::new(1, "/p", None, "rue-1919-test-roots").unwrap();
+        let context =
+            ImportDiscoveryContext::new(1, "/p", None, None, "rue-1919-test-roots").unwrap();
         let root = Arc::new(self.main_source());
         let mut assembler = DiscoverySourceAssembler::new(
             context.clone(),
@@ -2385,6 +2386,7 @@ fn rue_1919_example_sources(
     let context = ImportDiscoveryContext::new(
         1,
         project.to_str().unwrap(),
+        None,
         Some(std_root.to_str().unwrap()),
         "rue-1919-example",
     )

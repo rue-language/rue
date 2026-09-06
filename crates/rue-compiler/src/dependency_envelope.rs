@@ -358,7 +358,7 @@ mod tests {
     };
 
     fn context(epoch: u64) -> ImportDiscoveryContext {
-        ImportDiscoveryContext::new(epoch, "/project", Some("/sdk"), "test-policy").unwrap()
+        ImportDiscoveryContext::new(epoch, "/project", None, Some("/sdk"), "test-policy").unwrap()
     }
 
     fn metadata() -> FileMetadataFingerprint {
