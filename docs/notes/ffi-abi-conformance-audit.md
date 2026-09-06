@@ -466,7 +466,8 @@ the Rue side with the real driver, links the two with `--linker cc
 --link-archive`, runs the executable, and compares its stdout with checksums the
 generator computed from the same table it emitted both sources from.
 
-The grid is shape x position x direction x ABI spelling:
+The grid is every shape's own position set, crossed with direction and ABI
+spelling:
 
 - **Shapes** (31): `i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `i64`, `u64`, `bool`,
   `f32`, `f64`, `ptr const u8`, and twenty `@repr(c)` structs chosen for the
@@ -482,11 +483,35 @@ The grid is shape x position x direction x ABI spelling:
   A float leaf carries a whole number, exactly representable in binary32 and
   binary64 alike, so the odd-multiplier checksum stays exact integer
   arithmetic.
-- **Positions** (5): argument 0, the convention's last argument register, the
-  first stack slot, a deep stack slot, and the result type. The indices come
-  from `CConventionSpec::gp_argument_registers`, so a convention with a
-  different register budget moves them without a source edit. Every other
-  argument is an `i64` filler, and every cell also stacks arguments.
+- **Positions** (6 or 8, per shape): argument 0, the last register, the first
+  stack slot and a deeper stack slot of the *general-purpose* roster; the
+  *floating-point* roster's first stack slot; its last register and a deeper
+  stack slot too when the shape has a float leaf; and the result type. Indices
+  come from `CConventionSpec::gp_argument_registers` and
+  `fp_argument_registers`, so a convention with a different register budget
+  moves them without a source edit.
+
+  An argument cell's other slots are fillers of one bank — integers for a
+  general-purpose position, alternating `f64` and `f32` for a floating-point
+  one — long enough to run three registers past that roster, so every cell also
+  stacks arguments. The last slot is always a filler of the *other* bank. That
+  is what makes a stacked float a cell at all: a float scalar, a homogeneous
+  floating-point aggregate, and a split-bank composite only reach the outgoing
+  argument area once the floating-point roster is spent, which an integer
+  filler run never does. It is also what pins the two rosters' independence in
+  both directions — a float scalar is still in a floating-point register when
+  the integer roster is exhausted, an integer argument still in a
+  general-purpose register when the floating-point one is, and SysV's rule that
+  an aggregate forced to memory leaves the other bank's registers to the
+  arguments after it. Fillers are checksummed exactly like the shape's own
+  leaves, so a misplaced filler fails a cell rather than passing silently.
+
+  `//crates/rue-c-abi-matrix:rue-c-abi-matrix-test` holds the coverage property
+  structurally: for every shape and every one of the three rows it asks
+  `lower_c_signature` — the classifier the compiler itself places by — where the
+  shape lands at each generated position, and asserts that some position stacks
+  it and that some position keeps it in registers whenever the row places it in
+  registers at all.
 - **Directions** (2): import (Rue calls generated C) and export (a generated C
   driver calls a `pub extern` Rue function).
 - **ABI spellings** (2): `"C"` and the host row's own name, so the alias and the
@@ -502,13 +527,13 @@ also round-trip a seed: the callee answers a deliberately different value when
 the seed did not arrive intact, so a broken argument crossing cannot hide behind
 a correct result.
 
-That is 400 cells in four generated programs — one per direction and spelling —
-which compile, link, and run in about five seconds. The generated C is
-freestanding on every row: no headers, no libc, fixed-width typedefs spelled
-from the target's data model with `_Static_assert`s holding them, and no
-platform conditionals. Linking goes through `cc` because the objects `cc`
-produces carry relocation and section kinds the internal linker's static subset
-does not promise to handle.
+That is 208 cells per program and 832 across the four generated programs — one
+per direction and spelling — which compile, link, and run in about thirteen
+seconds. The generated C is freestanding on every row: no headers, no libc,
+fixed-width typedefs spelled from the target's data model with
+`_Static_assert`s holding them, and no platform conditionals. Linking goes
+through `cc` because the objects `cc` produces carry relocation and section
+kinds the internal linker's static subset does not promise to handle.
 
 The target is host-only by construction and carries the `rue_platform_native`
 label, so the native lanes run it: SysV AMD64 on linux-x64, AAPCS64 on
@@ -517,13 +542,17 @@ linux-arm64, and the Apple arm64 row on macos-arm64. A host with no `cc` and
 `./buck2 test //crates/rue-c-abi-matrix:c-abi-matrix-test`; `scripts/rue
 premerge` includes it, and `scripts/rue quick` deliberately does not.
 
-One gap the grid does *not* close is the open Apple amendment above. Every
-filler is an `i64`, so a stacked composite is followed by an 8-byte-aligned
-argument that re-aligns the outgoing area, and the difference between Apple's
-natural-size footprint and the whole-eightbyte one Rue emits is absorbed rather
-than observed. Distinguishing them needs a filler narrower than a slot next to a
-stacked composite, which is worth adding with the byte-granular marshaling that
-would make it pass.
+The alternating float run puts a four-byte argument next to a stacked one, so
+Apple's natural-size footprint for a stacked `f32` and the eight-byte slot the
+other two rows give it are different offsets for the arguments that follow, and
+the Apple lane executes the difference. The open Apple amendment above is the
+half that remains: a stacked *composite* claims whole eightbytes on every row
+here, and every general-purpose filler is an `i64`, so a stacked composite is
+still followed by an 8-byte-aligned argument that absorbs the difference between
+Apple's natural-size footprint and the whole-eightbyte image Rue emits.
+Observing that one needs a filler narrower than a slot beside a stacked
+composite, which is worth adding with the byte-granular marshaling that would
+make it pass.
 
 Backend tests additionally enforce that the typed runtime manifest stays within
 each backend's implemented register-only subset and that its boundary resolves

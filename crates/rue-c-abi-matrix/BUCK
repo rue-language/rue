@@ -8,6 +8,12 @@ load("//:test_defs.bzl", "rue_sh_test")
 # generator itself (grid completeness, position derivation, name uniqueness,
 # literal ranges), so the macro's generated `rue-c-abi-matrix-test` target is
 # kept: those assertions need no compiler and no C toolchain.
+#
+# `rue-air` is a test-only dependency: the position-coverage assertion asks
+# `lower_c_signature` — the one classifier the compiler places by — where each
+# shape lands at each generated position, so the coverage property is checked
+# against the real placement rules rather than against a second copy of them.
+# The generator itself needs only the psABI description in `rue-target`.
 rue_binary(
     name = "rue-c-abi-matrix",
     deps = [
@@ -15,6 +21,9 @@ rue_binary(
         "//crates/rue-test-runner:rue-test-runner",
         "//third-party:libtest2-mimic",
         "//third-party:tempfile",
+    ],
+    test_deps = [
+        "//crates/rue-air:rue-air",
     ],
 )
 

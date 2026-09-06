@@ -281,27 +281,197 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::grid::{
-        Direction, Leaf, PROBE_BYTES, Position, SHAPES, Ty, Value, generate, positions_for,
+        Bank, Direction, Leaf, PROBE_BYTES, Position, SHAPES, Shape, Ty, Value, generate,
+        positions_for,
     };
-    use rue_target::{CConventionSpec, CallingConvention, Target};
+    use rue_air::{
+        AggregateLeaves, ArgConvention, ArgLocation, CAbiLeaf, CAbiLeafKind, CAbiScalarKind,
+        CAbiTypeFacts, PointerLocation, lower_c_signature,
+    };
+    use rue_target::{CConventionSpec, CRegisterClass, CallingConvention, Target};
 
     fn spec() -> CConventionSpec {
         CallingConvention::X86_64SysV.c_spec()
     }
 
+    /// Every C row the grid is generated for. The host runs one of them; the
+    /// generator's own answers are checkable for all three from any host.
+    const ROWS: [CallingConvention; 3] = [
+        CallingConvention::X86_64SysV,
+        CallingConvention::Aarch64Aapcs,
+        CallingConvention::Aarch64AapcsDarwin,
+    ];
+
+    /// Every shape's argument positions under `spec`, as one flat list.
+    fn argument_positions(spec: &CConventionSpec) -> Vec<(&'static Shape, Position)> {
+        SHAPES
+            .iter()
+            .flat_map(|shape| {
+                positions_for(spec, shape)
+                    .into_iter()
+                    .map(move |position| (shape, position))
+            })
+            .filter(|(_, position)| matches!(position, Position::Argument { .. }))
+            .collect()
+    }
+
+    /// The width of one leaf in the C layout both generated sources declare.
+    fn leaf_bytes(leaf: Leaf) -> u64 {
+        match leaf {
+            Leaf::I8 | Leaf::U8 | Leaf::Bool => 1,
+            Leaf::I16 | Leaf::U16 => 2,
+            Leaf::I32 | Leaf::U32 | Leaf::F32 => 4,
+            Leaf::I64 | Leaf::U64 | Leaf::F64 | Leaf::Ptr => 8,
+        }
+    }
+
+    /// A shape's alignment: its leaf's own, or its widest field's.
+    fn align_of(ty: Ty) -> u64 {
+        match ty {
+            Ty::Leaf(leaf) | Ty::Array(leaf, _) => leaf_bytes(leaf),
+            Ty::Struct(def) => def
+                .fields
+                .iter()
+                .map(|field| align_of(field.ty))
+                .max()
+                .expect("every grid struct has at least one field"),
+        }
+    }
+
+    /// A shape's `sizeof`: fields at their own alignments in declaration order,
+    /// the whole padded to the shape's alignment.
+    fn size_of(ty: Ty) -> u64 {
+        match ty {
+            Ty::Leaf(leaf) => leaf_bytes(leaf),
+            Ty::Array(leaf, len) => leaf_bytes(leaf) * len as u64,
+            Ty::Struct(_) => {
+                let align = align_of(ty);
+                let mut end = 0;
+                collect_leaves(ty, 0, &mut end, &mut Vec::new());
+                end.div_ceil(align) * align
+            }
+        }
+    }
+
+    /// Append every scalar leaf of `ty` at its byte offset from `base`, leaving
+    /// the byte after the last one in `end`.
+    fn collect_leaves(ty: Ty, base: u64, end: &mut u64, out: &mut Vec<CAbiLeaf>) {
+        match ty {
+            Ty::Leaf(leaf) => {
+                let width = leaf_bytes(leaf);
+                out.push(CAbiLeaf {
+                    offset: base,
+                    width,
+                    kind: match leaf {
+                        Leaf::F32 => CAbiLeafKind::F32,
+                        Leaf::F64 => CAbiLeafKind::F64,
+                        _ => CAbiLeafKind::Integer,
+                    },
+                });
+                *end = base + width;
+            }
+            Ty::Array(leaf, len) => {
+                for index in 0..len as u64 {
+                    collect_leaves(Ty::Leaf(leaf), base + index * leaf_bytes(leaf), end, out);
+                }
+            }
+            Ty::Struct(def) => {
+                let mut offset = base;
+                for field in def.fields {
+                    let align = align_of(field.ty);
+                    offset = offset.div_ceil(align) * align;
+                    collect_leaves(field.ty, offset, end, out);
+                    offset = *end;
+                }
+                *end = offset;
+            }
+        }
+    }
+
+    /// The classifier's view of one shape or filler type.
+    fn facts(ty: Ty) -> CAbiTypeFacts {
+        if let Ty::Leaf(leaf) = ty {
+            let kind = match leaf {
+                Leaf::I8 => CAbiScalarKind::I8,
+                Leaf::I16 => CAbiScalarKind::I16,
+                Leaf::I32 => CAbiScalarKind::I32,
+                Leaf::U8 => CAbiScalarKind::U8,
+                Leaf::U16 => CAbiScalarKind::U16,
+                Leaf::U32 => CAbiScalarKind::U32,
+                Leaf::Bool => CAbiScalarKind::Bool,
+                Leaf::F32 => CAbiScalarKind::F32,
+                Leaf::F64 => CAbiScalarKind::F64,
+                Leaf::I64 | Leaf::U64 | Leaf::Ptr => CAbiScalarKind::RegisterWidth,
+            };
+            return CAbiTypeFacts::Scalar {
+                kind,
+                class: kind.register_class(),
+            };
+        }
+        let size = size_of(ty);
+        let mut leaves = Vec::new();
+        collect_leaves(ty, 0, &mut 0, &mut leaves);
+        CAbiTypeFacts::Aggregate {
+            size,
+            align: align_of(ty),
+            leaves: AggregateLeaves::from_leaves(size, leaves),
+        }
+    }
+
+    /// Where `shape` lands when a cell passes it at `position`, according to the
+    /// one classifier the compiler places by.
+    fn placement(
+        convention: CallingConvention,
+        shape: &Shape,
+        position: Position,
+    ) -> Option<ArgLocation> {
+        let Position::Argument { index, arity, .. } = position else {
+            return None;
+        };
+        let parameters: Vec<(CAbiTypeFacts, ArgConvention)> = (0..arity)
+            .map(|slot| {
+                let ty = if slot == index {
+                    shape.ty
+                } else {
+                    Ty::Leaf(position.filler_leaf(slot))
+                };
+                (facts(ty), ArgConvention::ByValue)
+            })
+            .collect();
+        // Every argument cell answers the `u64` checksum, so no row's hidden
+        // indirect-result pointer shifts the argument registers.
+        let lowered = lower_c_signature(convention, &parameters, facts(Ty::Leaf(Leaf::U64)));
+        Some(lowered.arguments()[index].location)
+    }
+
+    /// Whether a placement reaches the callee without the outgoing argument
+    /// area: in registers, or as a by-reference copy whose pointer is in one.
+    fn in_registers(location: ArgLocation) -> bool {
+        match location {
+            ArgLocation::Registers { .. } => true,
+            ArgLocation::Indirect { pointer, .. } => {
+                matches!(pointer, PointerLocation::Register { .. })
+            }
+            ArgLocation::Stack { .. } | ArgLocation::Omitted => false,
+        }
+    }
+
     #[test]
     fn every_shape_reaches_every_position_in_both_directions() {
-        let layout = positions_for(&spec());
+        let cells: usize = SHAPES
+            .iter()
+            .map(|shape| positions_for(&spec(), shape).len())
+            .sum();
         for direction in [Direction::Import, Direction::Export] {
             let program = generate(direction, "C", &spec());
             assert_eq!(
                 program.cells.len(),
-                SHAPES.len() * layout.positions.len(),
-                "the grid must be the full shape x position product"
+                cells,
+                "the grid must be every shape's whole position set"
             );
             assert_eq!(program.cells.len(), program.expected.len());
             for shape in SHAPES {
-                for position in &layout.positions {
+                for position in positions_for(&spec(), shape) {
                     assert!(
                         program
                             .cells
@@ -317,26 +487,140 @@ mod tests {
     }
 
     #[test]
-    fn positions_come_from_the_conventions_register_budget() {
-        for convention in [
-            CallingConvention::X86_64SysV,
-            CallingConvention::Aarch64Aapcs,
-            CallingConvention::Aarch64AapcsDarwin,
-        ] {
-            let registers = convention.c_spec().gp_argument_registers as usize;
-            let layout = positions_for(&convention.c_spec());
-            let indices: Vec<usize> = layout
-                .positions
-                .iter()
-                .filter_map(|position| match position {
-                    Position::Argument { index, .. } => Some(*index),
-                    Position::Return => None,
-                })
-                .collect();
-            assert_eq!(indices, vec![0, registers - 1, registers, registers + 3]);
-            assert!(
-                layout.arity > registers,
-                "every cell must also stack arguments"
+    fn positions_come_from_both_register_rosters() {
+        for convention in ROWS {
+            let spec = convention.c_spec();
+            let gp = spec.gp_argument_registers as usize;
+            let fp = spec.fp_argument_registers as usize;
+            for shape in SHAPES {
+                let float_leaved = shape
+                    .ty
+                    .leaves()
+                    .iter()
+                    .any(|(_, leaf)| matches!(leaf, Leaf::F32 | Leaf::F64));
+                let places: Vec<(&'static str, Bank, usize, usize)> = positions_for(&spec, shape)
+                    .into_iter()
+                    .filter_map(|position| match position {
+                        Position::Argument {
+                            key,
+                            bank,
+                            index,
+                            arity,
+                        } => Some((key, bank, index, arity)),
+                        Position::Return => None,
+                    })
+                    .collect();
+                let mut expected = vec![
+                    ("arg0", Bank::Gp, 0, gp + 5),
+                    ("gp_last_reg", Bank::Gp, gp - 1, gp + 5),
+                    ("gp_first_stack", Bank::Gp, gp, gp + 5),
+                    ("gp_deep_stack", Bank::Gp, gp + 3, gp + 5),
+                ];
+                if float_leaved {
+                    expected.push(("fp_last_reg", Bank::Fp, fp - 1, fp + 5));
+                }
+                expected.push(("fp_first_stack", Bank::Fp, fp, fp + 5));
+                if float_leaved {
+                    expected.push(("fp_deep_stack", Bank::Fp, fp + 3, fp + 5));
+                }
+                assert_eq!(places, expected, "positions for {}", shape.key);
+            }
+        }
+    }
+
+    #[test]
+    fn a_filler_run_spends_its_own_roster_and_ends_in_the_other() {
+        for convention in ROWS {
+            let spec = convention.c_spec();
+            for (shape, position) in argument_positions(&spec) {
+                let Position::Argument {
+                    key, bank, arity, ..
+                } = position
+                else {
+                    unreachable!("argument_positions keeps only argument positions");
+                };
+                let own = match bank {
+                    Bank::Gp => CRegisterClass::Gp,
+                    Bank::Fp => CRegisterClass::Fp,
+                };
+                let class = |slot: usize| match position.filler_leaf(slot) {
+                    Leaf::F32 | Leaf::F64 => CRegisterClass::Fp,
+                    _ => CRegisterClass::Gp,
+                };
+                assert!(
+                    (0..arity - 1).all(|slot| class(slot) == own),
+                    "{}/{key}: every filler before the last must be the position's own bank",
+                    shape.key
+                );
+                assert_ne!(
+                    class(arity - 1),
+                    own,
+                    "{}/{key}: the last filler must be the other bank's",
+                    shape.key
+                );
+                // The run reaches three registers past its roster, and the list
+                // adds the shape's own slot and the cross-bank filler on top, so
+                // every cell stacks arguments whatever the shape's placement is.
+                assert_eq!(
+                    arity,
+                    spec.argument_registers(own) as usize + 5,
+                    "{}/{key}: the run must overflow its roster",
+                    shape.key
+                );
+            }
+        }
+    }
+
+    /// The coverage property the position set exists for: every shape is
+    /// stacked somewhere, and every shape that can travel in registers at all
+    /// does so somewhere. Both answers come from `lower_c_signature`, the one
+    /// classifier the compiler places by, rather than from reading the table.
+    #[test]
+    fn every_shape_is_stacked_and_registered_where_the_classifier_allows() {
+        for convention in ROWS {
+            let spec = convention.c_spec();
+            let mut cells = 0usize;
+            for shape in SHAPES {
+                let positions = positions_for(&spec, shape);
+                cells += positions.len();
+                let placements: Vec<(Position, ArgLocation)> = positions
+                    .iter()
+                    .filter_map(|position| {
+                        placement(convention, shape, *position)
+                            .map(|location| (*position, location))
+                    })
+                    .collect();
+                assert!(
+                    placements
+                        .iter()
+                        .any(|(_, location)| !in_registers(*location)),
+                    "{}: no position of the {} row puts it on the stack",
+                    shape.key,
+                    convention.name()
+                );
+                // A shape travels in registers somewhere exactly when it does at
+                // the one position where neither roster is spent; anything else
+                // is a shape the row always passes through memory.
+                let ever_registers = placements
+                    .iter()
+                    .any(|(_, location)| in_registers(*location));
+                let registers_with_empty_rosters = placements
+                    .iter()
+                    .find(|(position, _)| position.key() == "arg0")
+                    .map(|(_, location)| in_registers(*location))
+                    .expect("every shape has the arg0 position");
+                assert_eq!(
+                    ever_registers,
+                    registers_with_empty_rosters,
+                    "{}: the {} row's register placement must be reachable from the position set",
+                    shape.key,
+                    convention.name()
+                );
+            }
+            println!(
+                "{}: {cells} cells per generated program over {} shapes",
+                convention.name(),
+                SHAPES.len()
             );
         }
     }

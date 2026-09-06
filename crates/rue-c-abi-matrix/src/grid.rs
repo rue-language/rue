@@ -31,11 +31,43 @@
 //! odd-multiplier checksum stays exact arithmetic and a rounding difference
 //! never masks a placement bug.
 //!
+//! # Positions
+//!
+//! An argument cell's parameter list is a run of filler arguments of one
+//! register bank with the shape somewhere inside it and one filler of the
+//! *other* bank at the end. [`positions_for`] sizes the run from that bank's
+//! roster — [`CConventionSpec::gp_argument_registers`] or
+//! [`CConventionSpec::fp_argument_registers`] — and places the shape at the
+//! first register, the last register, the first stack slot, or a deeper stack
+//! slot of it. Integer fillers move an integer shape past the general-purpose
+//! roster; float fillers move a float shape past the floating-point one, which
+//! is the only way a stacked float scalar, a stacked homogeneous
+//! floating-point aggregate, or a stacked split-bank composite becomes a cell
+//! at all.
+//!
+//! Both rosters reach every shape. A shape with a float leaf gets the whole
+//! floating-point run; every shape also gets the position where the
+//! floating-point roster is spent and the general-purpose one is not, the
+//! mirror of the general-purpose first-stack position. Between the two, a
+//! float scalar is proven still in a floating-point register when the integer
+//! roster is exhausted, and an integer argument still in a general-purpose
+//! register when the floating-point roster is. The trailing cross-bank filler
+//! carries that proof past the shape as well, which is what pins SysV's rule
+//! that an aggregate forced to memory leaves the other bank's registers to the
+//! arguments after it. Every filler is checksummed like every leaf, so a
+//! filler that lands in the wrong register or at the wrong stack offset is a
+//! failing cell rather than a silent one.
+//!
+//! Floating-point runs alternate `f64` and `f32`, so a stacked run holds
+//! adjacent four-byte arguments: the placement Apple's natural-size packing
+//! and the eight-byte stack slot of the other two rows disagree about.
+//!
 //! # Extending the table
 //!
 //! Adding a leaf type is a table edit: one [`Leaf`] variant with its two type
 //! spellings and its conversion rules, and one [`SHAPES`] row per new shape.
-//! Nothing else in this module knows the leaf inventory.
+//! Nothing else in this module knows the leaf inventory, and a shape that
+//! carries a float leaf earns the floating-point positions by carrying it.
 
 use rue_target::CConventionSpec;
 
@@ -741,12 +773,32 @@ impl Direction {
     }
 }
 
+/// Which register roster a position's filler run spends.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Bank {
+    /// Integer fillers, spending [`CConventionSpec::gp_argument_registers`].
+    Gp,
+    /// Floating-point fillers, spending
+    /// [`CConventionSpec::fp_argument_registers`].
+    Fp,
+}
+
 /// Where the shape sits in the crossing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Position {
-    /// The shape occupies argument `index`; every other argument is an `i64`
-    /// filler.
-    Argument { key: &'static str, index: usize },
+    /// The shape occupies argument `index` of an `arity`-slot list. Every other
+    /// slot is a filler: `bank`'s own type up to the last slot, which always
+    /// carries the other bank's.
+    Argument {
+        /// The position's name, which is also part of the cell's seed.
+        key: &'static str,
+        /// The roster the filler run spends.
+        bank: Bank,
+        /// The shape's slot in the argument list.
+        index: usize,
+        /// How many arguments the list has.
+        arity: usize,
+    },
     /// The shape is the result type.
     Return,
 }
@@ -758,47 +810,92 @@ impl Position {
             Position::Return => "return",
         }
     }
-}
 
-/// The argument positions for one convention, plus the arity every argument
-/// cell uses. Positions are named by what they exercise, and their indices come
-/// from the convention's own register budget rather than a hard-coded number.
-pub struct Positions {
-    pub arity: usize,
-    pub positions: Vec<Position>,
-}
-
-pub fn positions_for(spec: &CConventionSpec) -> Positions {
-    let registers = spec.gp_argument_registers as usize;
-    assert!(
-        registers >= 2,
-        "a C convention with fewer than two argument registers has no distinct positions"
-    );
-    // Four slots past the register budget, so `deep_stack` is genuinely deep and
-    // every cell — whatever its position — also stacks arguments.
-    let arity = registers + 4;
-    Positions {
-        arity,
-        positions: vec![
-            Position::Argument {
-                key: "arg0",
-                index: 0,
-            },
-            Position::Argument {
-                key: "last_reg",
-                index: registers - 1,
-            },
-            Position::Argument {
-                key: "first_stack",
-                index: registers,
-            },
-            Position::Argument {
-                key: "deep_stack",
-                index: registers + 3,
-            },
-            Position::Return,
-        ],
+    /// How many arguments an argument cell at this position passes.
+    pub fn arity(self) -> usize {
+        match self {
+            Position::Argument { arity, .. } => arity,
+            Position::Return => 0,
+        }
     }
+
+    /// The leaf type of the filler in `slot`.
+    ///
+    /// Every slot but the last carries the position's own bank, so the run
+    /// spends exactly that roster and nothing else. The last slot carries the
+    /// other bank's, which is what proves that the roster the shape did not
+    /// exhaust still hands out registers to the arguments after it.
+    ///
+    /// A floating-point run alternates the two widths, so a run long enough to
+    /// stack holds adjacent four-byte arguments — the one placement Apple's
+    /// natural-size packing and the eight-byte stack slot of the other two rows
+    /// disagree about.
+    pub fn filler_leaf(self, slot: usize) -> Leaf {
+        let Position::Argument { bank, arity, .. } = self else {
+            panic!("only an argument position has filler slots");
+        };
+        assert!(
+            slot < arity,
+            "filler slot {slot} is past the {arity}-argument list"
+        );
+        if slot + 1 == arity {
+            return match bank {
+                Bank::Gp => Leaf::F64,
+                Bank::Fp => Leaf::I64,
+            };
+        }
+        match bank {
+            Bank::Gp => Leaf::I64,
+            Bank::Fp if slot % 2 == 0 => Leaf::F64,
+            Bank::Fp => Leaf::F32,
+        }
+    }
+}
+
+/// The positions one shape crosses at under `spec`: its argument positions in
+/// both banks, then the result.
+///
+/// Indices come from the convention's own rosters rather than a hard-coded
+/// number, so a convention with a different register budget moves them without
+/// a source edit. A run is three registers longer than its roster, so every
+/// cell also stacks arguments whatever the shape's own placement is, and the
+/// deep-stack position is genuinely deep.
+pub fn positions_for(spec: &CConventionSpec, shape: &Shape) -> Vec<Position> {
+    let gp = spec.gp_argument_registers as usize;
+    let fp = spec.fp_argument_registers as usize;
+    assert!(
+        gp >= 2 && fp >= 2,
+        "a C convention with fewer than two argument registers in a bank has no distinct \
+         positions in it"
+    );
+    // The run, the shape's own slot, and the trailing cross-bank filler.
+    let gp_arity = gp + 5;
+    let fp_arity = fp + 5;
+    let argument = |key, bank, index, arity| Position::Argument {
+        key,
+        bank,
+        index,
+        arity,
+    };
+    let float_leaves = shape.ty.leaves().iter().any(|(_, leaf)| leaf.is_float());
+    let mut positions = vec![
+        argument("arg0", Bank::Gp, 0, gp_arity),
+        argument("gp_last_reg", Bank::Gp, gp - 1, gp_arity),
+        argument("gp_first_stack", Bank::Gp, gp, gp_arity),
+        argument("gp_deep_stack", Bank::Gp, gp + 3, gp_arity),
+    ];
+    if float_leaves {
+        positions.push(argument("fp_last_reg", Bank::Fp, fp - 1, fp_arity));
+    }
+    // Every shape reaches a spent floating-point roster, float-leaved or not: it
+    // is where an integer argument proves it still takes a general-purpose
+    // register, the mirror of what `gp_first_stack` proves about a float one.
+    positions.push(argument("fp_first_stack", Bank::Fp, fp, fp_arity));
+    if float_leaves {
+        positions.push(argument("fp_deep_stack", Bank::Fp, fp + 3, fp_arity));
+    }
+    positions.push(Position::Return);
+    positions
 }
 
 /// What one line of the program's stdout proves, for a mismatch report.
@@ -1089,7 +1186,6 @@ struct CellPlan {
 fn plan_cell(
     shape: &'static Shape,
     position: Position,
-    arity: usize,
     direction: Direction,
     abi: &str,
 ) -> CellPlan {
@@ -1104,8 +1200,10 @@ fn plan_cell(
     let leaves = shape.ty.leaves();
 
     let (fillers, shape_values, multipliers) = match position {
-        Position::Argument { index, .. } => {
-            let mut fillers: Vec<Value> = (0..arity).map(|_| rng.value(Leaf::I64)).collect();
+        Position::Argument { index, arity, .. } => {
+            let mut fillers: Vec<Value> = (0..arity)
+                .map(|slot| rng.value(position.filler_leaf(slot)))
+                .collect();
             // The shape occupies this slot; its filler value is never emitted.
             fillers[index] = Value::Int(0);
             let shape_values: Vec<Value> =
@@ -1155,7 +1253,7 @@ fn plan_cell(
                         mix(leaf_value, *leaf, &mut checksum);
                     }
                 } else {
-                    mix(value, Leaf::I64, &mut checksum);
+                    mix(value, position.filler_leaf(slot), &mut checksum);
                 }
             }
         }
@@ -1178,14 +1276,15 @@ fn plan_cell(
     }
 }
 
-/// Parameter list for an argument cell, as `(name, type)` pairs.
-fn argument_parameters(plan: &CellPlan, arity: usize, index: usize) -> Vec<(String, Ty)> {
-    (0..arity)
+/// Parameter list for an argument cell, as `(name, type)` pairs: the shape in
+/// its own slot and the position's fillers everywhere else.
+fn argument_parameters(plan: &CellPlan, index: usize) -> Vec<(String, Ty)> {
+    (0..plan.position.arity())
         .map(|slot| {
             let ty = if slot == index {
                 plan.shape.ty
             } else {
-                Ty::Leaf(Leaf::I64)
+                Ty::Leaf(plan.position.filler_leaf(slot))
             };
             (format!("a{slot}"), ty)
         })
@@ -1269,7 +1368,6 @@ fn rue_return_builder(plan: &CellPlan, abi: &str) -> String {
 /// Generate the paired sources and expected output for one direction and one
 /// ABI spelling.
 pub fn generate(direction: Direction, abi: &str, spec: &CConventionSpec) -> Program {
-    let layout = positions_for(spec);
     let mut structs: Vec<&'static StructDef> = Vec::new();
     for shape in SHAPES {
         shape.ty.structs(&mut structs);
@@ -1278,12 +1376,11 @@ pub fn generate(direction: Direction, abi: &str, spec: &CConventionSpec) -> Prog
     let plans: Vec<CellPlan> = SHAPES
         .iter()
         .flat_map(|shape| {
-            layout
-                .positions
-                .iter()
-                .map(move |position| (shape, *position))
+            positions_for(spec, shape)
+                .into_iter()
+                .map(move |position| (shape, position))
         })
-        .map(|(shape, position)| plan_cell(shape, position, layout.arity, direction, abi))
+        .map(|(shape, position)| plan_cell(shape, position, direction, abi))
         .collect();
 
     let mut c_body = String::new();
@@ -1295,8 +1392,8 @@ pub fn generate(direction: Direction, abi: &str, spec: &CConventionSpec) -> Prog
         let leaves = plan.shape.ty.leaves();
         match (direction, plan.position) {
             // --- Rue calls C with the shape in one argument slot -------------
-            (Direction::Import, Position::Argument { index, .. }) => {
-                let parameters = argument_parameters(plan, layout.arity, index);
+            (Direction::Import, Position::Argument { index, arity, .. }) => {
+                let parameters = argument_parameters(plan, index);
                 let c_params: Vec<String> = parameters
                     .iter()
                     .map(|(name, ty)| format!("{} {name}", ty.c_type()))
@@ -1319,7 +1416,7 @@ pub fn generate(direction: Direction, abi: &str, spec: &CConventionSpec) -> Prog
                     } else {
                         c_body.push_str(&c_mix(
                             &format!("a{slot}"),
-                            Leaf::I64,
+                            plan.position.filler_leaf(slot),
                             *multiplier.next().expect("a multiplier per filler"),
                         ));
                     }
@@ -1338,7 +1435,7 @@ pub fn generate(direction: Direction, abi: &str, spec: &CConventionSpec) -> Prog
 
                 rue_body.push_str(&format!("fn call_{}() -> u64 {{\n", plan.name));
                 rue_body.push_str(&rue_argument_value(plan));
-                let arguments: Vec<String> = (0..layout.arity)
+                let arguments: Vec<String> = (0..arity)
                     .map(|slot| {
                         if slot == index {
                             "v".to_string()
@@ -1378,8 +1475,8 @@ pub fn generate(direction: Direction, abi: &str, spec: &CConventionSpec) -> Prog
             }
 
             // --- C calls a Rue export with the shape in one argument slot ----
-            (Direction::Export, Position::Argument { index, .. }) => {
-                let parameters = argument_parameters(plan, layout.arity, index);
+            (Direction::Export, Position::Argument { index, arity, .. }) => {
+                let parameters = argument_parameters(plan, index);
                 let rue_params: Vec<String> = parameters
                     .iter()
                     .map(|(name, ty)| format!("{name}: {}", ty.rue_type()))
@@ -1406,7 +1503,7 @@ pub fn generate(direction: Direction, abi: &str, spec: &CConventionSpec) -> Prog
                         rue_body.push_str(&rue_mix(
                             step,
                             &format!("a{slot}"),
-                            Leaf::I64,
+                            plan.position.filler_leaf(slot),
                             *multiplier.next().expect("a multiplier per filler"),
                         ));
                         step += 1;
@@ -1430,12 +1527,12 @@ pub fn generate(direction: Direction, abi: &str, spec: &CConventionSpec) -> Prog
                     &leaves,
                     &plan.shape_values,
                 ));
-                let arguments: Vec<String> = (0..layout.arity)
+                let arguments: Vec<String> = (0..arity)
                     .map(|slot| {
                         if slot == index {
                             "v".to_string()
                         } else {
-                            plan.fillers[slot].c_literal(Leaf::I64)
+                            plan.fillers[slot].c_literal(plan.position.filler_leaf(slot))
                         }
                     })
                     .collect();
