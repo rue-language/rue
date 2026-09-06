@@ -169,3 +169,31 @@ source = "pub fn answer() -> i32 { 2 }\n"
 [[case.watch.edits]]
 path = "helper.rue"
 source = "pub fn answer() -> i32 { 3 }\n"
+
+# RUE-1969. Watch used to assemble its own compile orchestration and never
+# gated on the discovery status, so a root whose import graph did not close
+# reached the compiler and came back with the driver's own internal-input
+# error: `E1400 invalid compiler input: compilation requires a closed-valid
+# import discovery revision`. The user never saw the unresolved `@import` that
+# actually failed, nor the ADR-0078 migration help a batch compile prints for
+# it. The gate now lives in the host's compile-scope entry points, so every
+# driver reports the program's own diagnostic.
+[[case]]
+name = "discovery_failure_reports_the_unresolved_import_with_its_help"
+files = [
+    { path = "main.rue", source = "const util = @import(\"util\");\nfn main() -> i32 { util.value() }\n" },
+    { path = "util.rue", source = "pub fn value() -> i32 { 7 }\n" },
+]
+
+[case.watch]
+kind = "initial_failure"
+stderr_contains = [
+    "E0704",
+    "cannot find module 'util'",
+    "imported with its extension: @import(\"util.rue\")",
+]
+expected_exit_codes = [7]
+
+[[case.watch.edits]]
+path = "main.rue"
+source = "const util = @import(\"util.rue\");\nfn main() -> i32 { util.value() }\n"

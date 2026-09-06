@@ -246,7 +246,7 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
     let image = match host.test_image_in_compile_scope(&compile_options) {
         Ok(image) => image,
         Err(errors) => {
-            diagnostics.print_errors(&crate::with_import_migration_helps(&errors));
+            diagnostics.print_errors(&errors);
             return TestExitCode::RunnerError;
         }
     };
@@ -275,7 +275,7 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
     // silently swallowed a broken test file would be the papercut the
     // unimported-test-file warning exists to prevent.
     if !failure_diagnostics.is_empty() {
-        diagnostics.print_errors(&crate::with_import_migration_helps(&failure_diagnostics));
+        diagnostics.print_errors(&failure_diagnostics);
     }
     let compile_errors = CompileErrorVerdicts::new(&compile_failures, diagnostics);
 
@@ -529,7 +529,7 @@ fn list(
     let listing = match host.test_inventory(compile_options) {
         Ok(listing) => listing,
         Err(errors) => {
-            diagnostics.print_errors(&crate::with_import_migration_helps(&errors));
+            diagnostics.print_errors(&errors);
             return TestExitCode::RunnerError;
         }
     };
@@ -544,7 +544,7 @@ fn list(
     // a reader inspecting a suite would see nothing wrong with tests the run
     // will report as `compile_error`.
     if !failure_diagnostics.is_empty() {
-        diagnostics.print_errors(&crate::with_import_migration_helps(&failure_diagnostics));
+        diagnostics.print_errors(&failure_diagnostics);
     }
     let selected = selection::select(&inventory.entries, &options.filters, options.shard);
     if selected.is_empty() {

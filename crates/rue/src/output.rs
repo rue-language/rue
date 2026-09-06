@@ -24,7 +24,12 @@ pub(crate) struct PublicationDestination {
 
 #[derive(Debug)]
 pub(crate) enum PublishError {
-    WouldClobberSource,
+    /// The destination is, or became, one of the program's own input sources.
+    /// The refused path travels with the variant so every driver renders one
+    /// message naming the output the user asked for.
+    WouldClobberSource {
+        path: PathBuf,
+    },
     InputsChanged,
     Io {
         operation: &'static str,
@@ -48,9 +53,10 @@ impl PublishError {
 
     pub(crate) fn into_compile_error(self) -> CompileError {
         let message = match self {
-            Self::WouldClobberSource => {
-                "output path is also an input source file; refusing to overwrite it".to_owned()
-            }
+            Self::WouldClobberSource { path } => format!(
+                "output path '{}' is also an input source file; refusing to overwrite it",
+                path.display()
+            ),
             Self::InputsChanged => "an accepted input changed before output publication".to_owned(),
             Self::Io {
                 operation,
@@ -120,7 +126,9 @@ fn validate_destination(destination: &PublicationDestination) -> Result<(), Publ
         .iter()
         .any(|source| output_would_clobber(&output_key, output_metadata.as_ref(), source))
     {
-        return Err(PublishError::WouldClobberSource);
+        return Err(PublishError::WouldClobberSource {
+            path: destination.path.clone(),
+        });
     }
     Ok(())
 }
@@ -488,7 +496,7 @@ mod tests {
 
         assert!(matches!(
             preflight_watch_destination(&destination, &inputs),
-            Err(PublishError::WouldClobberSource)
+            Err(PublishError::WouldClobberSource { .. })
         ));
         assert!(!destination.exists());
         fs::remove_dir_all(directory).unwrap();
@@ -514,7 +522,7 @@ mod tests {
                 bytes: b"executable",
                 target: Target::X86_64Linux,
             }),
-            Err(PublishError::WouldClobberSource)
+            Err(PublishError::WouldClobberSource { .. })
         ));
         assert_eq!(
             fs::read_to_string(&source).unwrap(),

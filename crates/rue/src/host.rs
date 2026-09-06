@@ -165,11 +165,41 @@ impl FilesystemCompilerHost {
         self.state.session.unstable_present(request)
     }
 
+    /// Discovery's own diagnostics when this revision's import graph did not
+    /// close valid, and nothing when it did.
+    ///
+    /// The compiler answers a compile request made against an uncommitted
+    /// revision with its internal-input error (`E1400`), which describes the
+    /// driver's mistake rather than the user's program. Every compile-scope
+    /// entry point below refuses on this first, so no driver can reach the
+    /// compiler with an unclosed graph: the unresolved `@import` that actually
+    /// failed is what the caller receives, whichever endpoint it called.
+    ///
+    /// It is public because a driver also wants to ask before it starts
+    /// preparing an output the revision will never produce — a program that
+    /// will not resolve its imports is reported as that, not as whatever the
+    /// destination preflight would have said about the path it was given
+    /// (RUE-810).
+    pub fn discovery_refusal(&self) -> Option<CompileErrors> {
+        if self.discovery_status() == ImportDiscoveryStatus::ClosedValid {
+            return None;
+        }
+        Some(self.discovery_revision().diagnostics().clone())
+    }
+
+    fn closed_discovery(&self) -> Result<(), CompileErrors> {
+        match self.discovery_refusal() {
+            Some(errors) => Err(errors),
+            None => Ok(()),
+        }
+    }
+
     /// Preserve the command-line compiler's existing one-shot timed adapter.
     pub fn executable_in_compile_scope(
         &mut self,
         options: &CompileOptions,
     ) -> MultiErrorResult<CompileOutput> {
+        self.closed_discovery()?;
         executable_in_compile_scope(&mut self.state.session, options)
     }
 
@@ -178,6 +208,9 @@ impl FilesystemCompilerHost {
         options: &CompileOptions,
         cancellation: CompilationCancellation,
     ) -> CancellableCompileOutcome {
+        if let Err(errors) = self.closed_discovery() {
+            return CancellableCompileOutcome::Errors(errors);
+        }
         cancellable_executable_in_compile_scope(&mut self.state.session, options, cancellation)
     }
 
@@ -185,6 +218,7 @@ impl FilesystemCompilerHost {
     /// (ADR-0083 §2's `--list`), without codegen or linking, alongside the
     /// diagnostics of every body in the closure that failed to analyze.
     pub fn test_inventory(&mut self, options: &CompileOptions) -> MultiErrorResult<TestListing> {
+        self.closed_discovery()?;
         test_inventory(&mut self.state.session, options)
     }
 
@@ -195,6 +229,7 @@ impl FilesystemCompilerHost {
         &mut self,
         options: &CompileOptions,
     ) -> MultiErrorResult<TestImage> {
+        self.closed_discovery()?;
         test_image_in_compile_scope(&mut self.state.session, options)
     }
 
@@ -429,6 +464,42 @@ mod tests {
 
         assert!(!errors.is_empty());
         assert!(errors.to_string().contains("missing_name"));
+    }
+
+    /// A revision whose import graph did not close valid never reaches the
+    /// compiler: every compile-scope entry point answers with discovery's own
+    /// diagnostics instead of the compiler's internal-input error (RUE-1969).
+    /// The watch loop compiles through the cancellable endpoint and the batch
+    /// driver through the plain one, so both are pinned here.
+    #[test]
+    fn unclosed_discovery_reports_the_unresolved_import_at_every_entry_point() {
+        let dir = TestDir::new("unclosed-discovery");
+        dir.write(
+            "main.rue",
+            "const helper = @import(\"missing.rue\");\nfn main() -> i32 { helper.value() }\n",
+        );
+        let mut host = dir.open();
+        assert_ne!(host.discovery_status(), ImportDiscoveryStatus::ClosedValid);
+
+        let options = CompileOptions::default();
+        let batch = match host.executable_in_compile_scope(&options) {
+            Err(errors) => errors,
+            Ok(_) => panic!("an unresolved import must not compile"),
+        };
+        let watch = match host
+            .cancellable_executable_in_compile_scope(&options, CompilationCancellation::new())
+        {
+            CancellableCompileOutcome::Errors(errors) => errors,
+            _ => panic!("an unresolved import must not compile"),
+        };
+
+        for rendered in [batch.to_string(), watch.to_string()] {
+            assert!(rendered.contains("missing.rue"), "{rendered}");
+            assert!(
+                !rendered.contains("closed-valid import discovery revision"),
+                "the driver's internal-input error must not reach a user: {rendered}"
+            );
+        }
     }
 
     #[test]

@@ -7,16 +7,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use rue_compiler::CompileOptions;
 use rue_compiler::unstable::{CompilationCancellation, SourceInfo};
-use rue_compiler::{CompileOptions, LinkerMode};
 #[cfg(test)]
 use rue_driver::watch_inputs_changed_with_reader;
 use rue_driver::{
     FilesystemCompilerHost, SourceLoadError, WatchFingerprint, WatchInput, watch_inputs_changed,
 };
 
-use crate::compile::{CancellableCompileRequest, CompileCycleOutcome, execute_cancellable};
-use crate::output;
+use crate::compile::{
+    Announcement, CycleObservation, CycleReport, CycleRequest, Supersession, drive_cycle,
+};
 use crate::{DiagnosticOutput, ErrorFormat, render_source_load_error};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
@@ -292,115 +293,67 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
             .collect();
         let diagnostics = DiagnosticOutput::new(request.error_format, source_infos);
 
-        let destination = match output::preflight_watch_destination(
-            Path::new(&request.output_path),
-            &inputs,
-        ) {
-            Ok(destination) => destination,
-            Err(output::PublishError::WouldClobberSource) => {
-                print_watch_status(
-                    request.error_format,
-                    format!(
-                        "Error: output path '{}' is also an input source file; refusing to overwrite it",
-                        request.output_path
-                    ),
-                );
-                wait_for_change(&inputs);
-                debounce(&inputs);
-                needs_reobserve = true;
-                continue;
-            }
-            Err(error) => {
-                diagnostics.print_error(&error.into_compile_error());
-                wait_for_change(&inputs);
-                debounce(&inputs);
-                needs_reobserve = true;
-                continue;
-            }
-        };
-
         let cancellation = CompilationCancellation::new();
         let monitor = ChangeMonitor::start(inputs.clone(), cancellation.clone());
         test_event("compile-started");
         test_compile_delay();
-        let outcome = execute_cancellable(CancellableCompileRequest {
+        // A cycle is superseded once the monitor has seen an edit, or once a
+        // fresh read of the closure disagrees with what this cycle observed.
+        let superseded = || monitor.changed() || inputs_changed(&inputs);
+        let report = drive_cycle(CycleRequest {
             host: &mut request.host,
-            options: request.compile_options.clone(),
-            destination,
-            cancellation,
-            watch_inputs: inputs.clone(),
+            options: &request.compile_options,
+            diagnostics: &diagnostics,
+            source_path: &request.source_path,
+            output_path: &request.output_path,
+            observation: CycleObservation::Watch {
+                inputs: inputs.clone(),
+                cancellation,
+                superseded: &superseded,
+            },
+            announcement: Announcement::Cycle(cycle_started),
         });
 
-        let changed_before_publication = monitor.changed() || inputs_changed(&inputs);
         let mut publication_changed = false;
-        if changed_before_publication {
-            test_event("canceled-before-publication");
-            print_watch_status(
-                request.error_format,
-                format!(
-                    "Watch cycle canceled after {} ms; a newer source revision is available",
-                    cycle_started.elapsed().as_millis()
-                ),
-            );
-        } else {
-            match outcome {
-                CompileCycleOutcome::Linked(output) => {
-                    let publication = (*output).publish();
-                    diagnostics.print_warnings(&publication.warnings);
-                    match publication.result {
-                        Ok(_) => {
-                            test_event("published");
-                            println!(
-                                "Compiled {} -> {} in {} ms (target: {}, linker: {})",
-                                request.source_path,
-                                request.output_path,
-                                cycle_started.elapsed().as_millis(),
-                                request.compile_options.target,
-                                linker_name(&request.compile_options.linker),
-                            );
-                        }
-                        Err(output::PublishError::WouldClobberSource) => print_watch_status(
-                            request.error_format,
-                            format!(
-                                "Error: output path '{}' became an input source; keeping the last successful executable",
-                                request.output_path
-                            ),
-                        ),
-                        Err(output::PublishError::InputsChanged) => {
-                            publication_changed = true;
-                            test_event("canceled-at-publication");
-                            print_watch_status(
-                                request.error_format,
-                                format!(
-                                    "Watch cycle canceled after {} ms; a newer source revision is available",
-                                    cycle_started.elapsed().as_millis()
-                                ),
-                            );
-                        }
-                        Err(error) => diagnostics.print_error(&error.into_compile_error()),
-                    }
-                }
-                CompileCycleOutcome::Canceled => {
-                    test_event("canceled");
-                    print_watch_status(
-                        request.error_format,
-                        format!(
-                            "Watch cycle canceled after {} ms",
-                            cycle_started.elapsed().as_millis()
-                        ),
-                    );
-                }
-                CompileCycleOutcome::Errors(errors) => {
-                    test_event("compile-error");
-                    diagnostics.print_errors(&errors);
-                    print_watch_status(
-                        request.error_format,
-                        format!(
-                            "Watch cycle failed after {} ms; keeping the last successful executable",
-                            cycle_started.elapsed().as_millis()
-                        ),
-                    );
-                }
+        match report {
+            CycleReport::Published(_) => test_event("published"),
+            CycleReport::Superseded(boundary) => {
+                // The compile monitor and the publication guard both refuse to
+                // publish a stale revision; the milestone says which of them
+                // caught it, and only the publication guard's answer feeds the
+                // cycle-boundary decision below.
+                publication_changed = matches!(boundary, Supersession::AtPublication);
+                test_event(match boundary {
+                    Supersession::AtPublication => "canceled-at-publication",
+                    Supersession::BeforePublication => "canceled-before-publication",
+                });
+                print_watch_status(
+                    request.error_format,
+                    format!(
+                        "Watch cycle canceled after {} ms; a newer source revision is available",
+                        cycle_started.elapsed().as_millis()
+                    ),
+                );
+            }
+            CycleReport::Canceled => {
+                test_event("canceled");
+                print_watch_status(
+                    request.error_format,
+                    format!(
+                        "Watch cycle canceled after {} ms",
+                        cycle_started.elapsed().as_millis()
+                    ),
+                );
+            }
+            CycleReport::Failed => {
+                test_event("compile-error");
+                print_watch_status(
+                    request.error_format,
+                    format!(
+                        "Watch cycle failed after {} ms; keeping the last successful executable",
+                        cycle_started.elapsed().as_millis()
+                    ),
+                );
             }
         }
 
@@ -423,13 +376,6 @@ pub(crate) fn run(mut request: WatchRequest) -> ! {
         }
         debounce(&inputs);
         needs_reobserve = true;
-    }
-}
-
-fn linker_name(linker: &LinkerMode) -> &str {
-    match linker {
-        LinkerMode::Internal => "internal",
-        LinkerMode::System(command) => command,
     }
 }
 

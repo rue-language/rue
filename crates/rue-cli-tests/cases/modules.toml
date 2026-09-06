@@ -349,6 +349,32 @@ pub fn t() -> i32 { 1 }
 compile_fail = true
 error_contains = ["E0704", "imported with its extension", "@import(\"thing.rue\")"]
 
+# RUE-1969: `--emit` printed the same discovery diagnostics without the
+# migration help, because the help was applied per entry point and only the
+# batch compile applied it. The help now belongs to the renderer, so the JSON
+# `helps` array is populated wherever the diagnostic is published.
+[[case]]
+name = "extensionless_file_miss_suggests_extensioned_spelling_under_emit"
+description = "RUE-1969: an `--emit` stopped by a discovery failure reports the same E0704 as a batch compile, migration help included, with `helps` populated in the JSON surface."
+files = [
+    { path = "main.rue", source = """
+const thing = @import("thing");
+fn main() -> i32 { 0 }
+""" },
+    { path = "thing.rue", source = """
+pub fn t() -> i32 { 1 }
+""" },
+]
+args = ["--error-format", "json", "--emit", "ast", "main.rue"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E0704 main.rue:1:15"]
+error_contains = [
+    "\"code\":\"E0704\"",
+    "imported with its extension: @import(\\\"thing.rue\\\")",
+]
+compile_stderr_not_contains = ["\"helps\":[]"]
+
 [[case]]
 name = "import_escaping_root_is_e0713"
 description = "ADR-0078: a relative import whose normalized candidate leaves the project root is E0713 with no filesystem probe."
