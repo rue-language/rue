@@ -166,6 +166,89 @@ compile_fail = true
 error_contains = ["unsupported extern ABI", "rue"]
 
 # =============================================================================
+# FFI-safe types (9.3:1e, 9.3:1f, 9.3:1g)
+#
+# The admitted set is the C-compatible scalars — every integer width, `bool`,
+# both floating-point widths, and raw pointers — plus `@repr(c)` structs built
+# from them. Everything else is rejected rather than approximated.
+# =============================================================================
+
+[[case]]
+name = "foreign_float_scalars_are_ffi_safe"
+spec = ["9.3:1e", "9.3:1f"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "`f32` and `f64` are FFI-safe scalars: they name C `float` and `double` and are accepted in both directions of a foreign signature"
+source = """
+extern "C" {
+    fn c_scale(x: f64, factor: f32) -> f64;
+}
+
+pub extern "C" fn rue_widen(x: f32) -> f64 { @float_cast(x) }
+
+fn main() -> i32 { 0 }
+"""
+compile_only = true
+
+[[case]]
+name = "foreign_float_bearing_repr_c_aggregate_is_ffi_safe"
+spec = ["9.3:1e", "9.3:1f"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "A `@repr(c)` struct whose fields are floating-point, and one mixing a float with an integer, cross by value like any other C-classifiable aggregate"
+source = """
+@repr(c)
+struct Vec2 { x: f64, y: f64 }
+
+@repr(c)
+struct Tagged { tag: i64, value: f64 }
+
+extern "C" {
+    fn c_len2(v: Vec2) -> f64;
+    fn c_tag(t: Tagged) -> Tagged;
+}
+
+pub extern "C" fn rue_flip(v: Vec2) -> Vec2 { Vec2 { x: v.y, y: v.x } }
+
+fn main() -> i32 { 0 }
+"""
+compile_only = true
+
+[[case]]
+name = "foreign_enum_parameter_is_not_ffi_safe"
+spec = ["9.3:1e"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "A Rue enum is a tagged sum type with no C counterpart and is rejected in a foreign signature rather than given one"
+source = """
+enum Mode { Fast, Slow }
+
+extern "C" {
+    fn run(mode: Mode) -> i64;
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1101", "enums are not FFI-safe"]
+
+[[case]]
+name = "foreign_array_parameter_is_not_ffi_safe"
+spec = ["9.3:1e"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "A fixed-size array is eligible only as a `@repr(c)` struct field: C decays an array argument to a pointer, so it is not a boundary type of its own"
+source = """
+extern "C" {
+    fn sum(values: [f64; 4]) -> f64;
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1103", "decays arrays to pointers"]
+
+# =============================================================================
 # Foreign redeclaration (9.3:5, RUE-1218)
 # =============================================================================
 

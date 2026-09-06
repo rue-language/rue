@@ -79,34 +79,100 @@ use rue_air::ScalarAbiExtension;
 use crate::{EmittedRelocation, MachineCode};
 
 /// One flattened leaf of a value's compact memory image: where one native ABI
-/// slot lives in the C image, and how wide it is there.
+/// slot lives in the C image, how wide it is there, and which register file it
+/// travels in.
 ///
-/// Loading a leaf into a native slot extends it to Rue's canonical 64-bit form;
-/// storing a native slot back into the image truncates it to `width`.
+/// Loading an integer leaf into a native slot extends it to Rue's canonical
+/// 64-bit form; storing a native slot back into the image truncates it to
+/// `width`. A floating-point leaf has no extension in either direction — it
+/// fills its register — so `float` selects the floating-point load and store of
+/// exactly `width` bytes instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImageLeaf {
     /// Byte offset of the leaf within the compact image.
     pub byte_offset: u32,
     /// Physical width in bytes: 1, 2, 4, or 8.
     pub width: u32,
-    /// Whether a load sign-extends (`true`) or zero-extends (`false`).
+    /// Whether a load sign-extends (`true`) or zero-extends (`false`). Never
+    /// set for a floating-point leaf.
     pub signed: bool,
+    /// Whether the leaf lives in the floating-point file.
+    pub float: bool,
+}
+
+/// The marshaling rule's view of a flattened leaf run.
+fn leaf_classes(leaves: &[ImageLeaf]) -> Vec<crate::native_abi::ImageLeafClass> {
+    leaves.iter().map(ImageLeaf::class).collect()
+}
+
+impl ImageLeaf {
+    /// The pair the shared marshaling rule reads: where the leaf starts, and
+    /// the file its own vreg lives in.
+    fn class(&self) -> crate::native_abi::ImageLeafClass {
+        (
+            i32::try_from(self.byte_offset).unwrap_or(i32::MAX),
+            if self.float {
+                crate::abi_slot_class::AbiSlotClass::Fp(if self.width == 4 {
+                    crate::value_plan::FloatWidth::F32
+                } else {
+                    crate::value_plan::FloatWidth::F64
+                })
+            } else {
+                crate::abi_slot_class::AbiSlotClass::Gp
+            },
+        )
+    }
+
+    /// One whole eightbyte of an image at `index`, the shape a packed value's
+    /// register piece carries.
+    const fn eightbyte(index: u32) -> Self {
+        Self {
+            byte_offset: index * 8,
+            width: 8,
+            signed: false,
+            float: false,
+        }
+    }
+
+    /// Whether a C caller leaves bits of this leaf's register undefined that
+    /// Rue's canonical 64-bit form defines. A float fills its own register, so
+    /// only a narrow *integer* owes the entry a re-extension.
+    const fn needs_reextension(&self) -> bool {
+        !self.float && self.width < 8
+    }
 }
 
 /// How the native body reads one parameter apart.
 ///
 /// *Where* the parameter travels is the native lowering's answer, the same one
-/// the callee's own parameter plan reads; this is the other half — whether the
-/// value's leaves are its eightbytes, and where each leaf sits in the compact
-/// image either way.
+/// the callee's own parameter plan reads; this is the other half — where each
+/// leaf sits in the compact image, and therefore, against a placement, whether
+/// the leaves themselves cross or the image's eightbytes do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeParameter {
     /// The value's flattened leaves, in ascending image order.
     pub leaves: Vec<ImageLeaf>,
-    /// Whether each leaf starts its own eightbyte, so the leaves themselves
-    /// cross in Rue's canonical 64-bit form rather than the image's eightbytes
-    /// crossing whole (`crate::native_abi::NativeImage::direct_leaves`).
-    pub leaves_are_eightbytes: bool,
+    /// How many eightbytes the compact image spans.
+    pub eightbytes: u32,
+}
+
+impl NativeParameter {
+    /// How the value reaches `location`: as its own leaf vregs, or as the
+    /// eightbytes of its image. The export asks the shared rule
+    /// (`crate::native_abi::aggregate_marshal`) the import and the native call
+    /// ask, so the three cannot disagree about a crossing.
+    fn marshal(&self, location: ArgLocation) -> crate::native_abi::NativeArgMarshal {
+        crate::native_abi::aggregate_marshal(&leaf_classes(&self.leaves), self.eightbytes, location)
+    }
+
+    /// Whether the value's own leaves cross at `location`, rather than the
+    /// eightbytes of its image.
+    fn crosses_by_leaf(&self, location: ArgLocation) -> bool {
+        matches!(
+            self.marshal(location),
+            crate::native_abi::NativeArgMarshal::Direct { .. }
+        )
+    }
 }
 
 /// How the native body returns.
@@ -161,9 +227,8 @@ pub struct ExportSignature {
     /// Whether the result is an aggregate rather than a scalar, which decides
     /// whether a register return names leaves or a single canonical value.
     result_is_aggregate: bool,
-    /// Whether the native convention hands the result's leaves over as
-    /// themselves rather than packing them into the image's eightbytes.
-    return_leaves_are_eightbytes: bool,
+    /// How many eightbytes the result's compact image spans.
+    return_eightbytes: u32,
     return_leaves: Vec<ImageLeaf>,
     return_padding: Vec<PaddingRange>,
     /// The result's byte size, which is how much of the C caller's storage an
@@ -192,7 +257,7 @@ impl ExportSignature {
                 c: rue_air::c_abi_type_facts(type_pool, ty),
                 native: NativeParameter {
                     leaves: image_leaves(type_pool, ty),
-                    leaves_are_eightbytes: native_leaves_are_eightbytes(type_pool, ty),
+                    eightbytes: image_eightbytes(type_pool, ty),
                 },
             })
             .collect();
@@ -201,12 +266,36 @@ impl ExportSignature {
             parameters,
             result: rue_air::c_abi_type_facts(type_pool, return_type),
             result_is_aggregate: crate::types::is_multislot_aggregate(type_pool, return_type),
-            return_leaves_are_eightbytes: native_leaves_are_eightbytes(type_pool, return_type),
+            return_eightbytes: image_eightbytes(type_pool, return_type),
             return_leaves: image_leaves(type_pool, return_type),
             return_padding: type_pool.compact_image_padding_ranges(return_type),
             return_bytes: u32::try_from(type_pool.layout(return_type).size)
                 .expect("an export result size fits u32"),
         }
+    }
+
+    /// Whether the result comes back one homogeneous floating-point *member*
+    /// per register, rather than one eightbyte or one leaf.
+    fn return_is_float_members(&self, pieces: rue_air::RegisterPieces) -> bool {
+        pieces.uniform_class() == Some(CRegisterClass::Fp)
+            && matches!(
+                crate::native_abi::image_float_members(&leaf_classes(&self.return_leaves)),
+                Some((_, members)) if members == pieces.len()
+            )
+    }
+
+    /// Whether the result's own leaves come back in the registers `pieces`
+    /// names, rather than the eightbytes of its image — the shared marshaling
+    /// rule, read in the result direction.
+    fn return_crosses_by_leaf(&self, pieces: rue_air::RegisterPieces) -> bool {
+        matches!(
+            crate::native_abi::aggregate_marshal(
+                &leaf_classes(&self.return_leaves),
+                self.return_eightbytes,
+                ArgLocation::Registers { pieces },
+            ),
+            crate::native_abi::NativeArgMarshal::Direct { .. }
+        )
     }
 
     /// The lowered C signature a caller of this export writes and this thunk
@@ -233,7 +322,7 @@ impl ExportSignature {
             LoweredReturn::Registers { pieces, .. } => {
                 if !self.result_is_aggregate {
                     NativeReturn::Scalar
-                } else if self.return_leaves_are_eightbytes {
+                } else if self.return_crosses_by_leaf(pieces) {
                     NativeReturn::Registers {
                         leaves: self.return_leaves.clone(),
                     }
@@ -311,8 +400,14 @@ impl ExportSignature {
             let crosses_by_leaf = matches!(
                 c_argument.location,
                 ArgLocation::Registers { .. } | ArgLocation::Stack { .. }
-            ) && parameter.native.leaves_are_eightbytes;
-            if crosses_by_leaf && parameter.native.leaves.iter().any(|leaf| leaf.width < 8) {
+            ) && parameter.native.crosses_by_leaf(c_argument.location);
+            if crosses_by_leaf
+                && parameter
+                    .native
+                    .leaves
+                    .iter()
+                    .any(ImageLeaf::needs_reextension)
+            {
                 return CEntry::Thunk(ThunkReason::NarrowParameter { parameter: index });
             }
         }
@@ -346,15 +441,21 @@ impl ExportSignature {
                     NativeReturn::Scalar => false,
                     // The image's eightbytes *are* the C image's eightbytes.
                     NativeReturn::Eightbytes { .. } => false,
-                    // One register per leaf is the C image only when every leaf
-                    // fills its own eightbyte, leaving no padding byte for the
-                    // thunk to zero and no narrow slot to place inside a wider
-                    // one (ADR-0052 ruling 5).
+                    // A homogeneous floating-point aggregate comes back one
+                    // *member* per register under both rows (AAPCS64 rule
+                    // C.3), so the native body already left exactly what a C
+                    // caller reads — members leave no padding and fill their
+                    // registers by construction. Otherwise one register per
+                    // leaf is the C image only when every leaf fills its own
+                    // eightbyte, leaving no padding byte for the thunk to zero
+                    // and no narrow slot to place inside a wider one (ADR-0052
+                    // ruling 5).
                     NativeReturn::Registers { leaves } => {
-                        !self.return_padding.is_empty()
-                            || leaves.iter().enumerate().any(|(index, leaf)| {
-                                leaf.width != 8 || leaf.byte_offset != (index as u32) * 8
-                            })
+                        !self.return_is_float_members(native)
+                            && (!self.return_padding.is_empty()
+                                || leaves.iter().enumerate().any(|(index, leaf)| {
+                                    leaf.width != 8 || leaf.byte_offset != (index as u32) * 8
+                                }))
                     }
                     NativeReturn::Void | NativeReturn::Sret => true,
                 }
@@ -444,33 +545,38 @@ fn image_leaves(type_pool: &FrozenTypeInternPool, ty: Type) -> Vec<ImageLeaf> {
         )
         .into_iter()
         .map(|slot| {
-            assert!(
-                slot.float_width.is_none(),
-                "the C boundary still rejects floats, so no export leaf is float-classed"
+            // An enum payload's union slot is a general-purpose bit carrier
+            // even where a variant puts a float there, so the file follows the
+            // same rule every other direction of a crossing uses.
+            let float = matches!(
+                crate::native_abi::leaf_slot_class(&slot),
+                crate::abi_slot_class::AbiSlotClass::Fp(_)
             );
             ImageLeaf {
                 byte_offset: u32::try_from(slot.byte_offset)
                     .expect("a compact image offset is non-negative and fits u32"),
                 width: slot.access.map_or(8, |access| u32::from(access.width)),
                 signed: slot.access.is_some_and(|access| access.signed),
+                float,
             }
         })
         .collect()
 }
 
-/// Whether the native convention hands `ty`'s leaves over as themselves rather
-/// than packing them into the image's eightbytes.
-///
-/// This is the one predicate both ends of a native crossing consult
-/// (`crate::native_abi::NativeImage::direct_leaves`); a scalar is trivially its
-/// own eightbyte. Every export type is C-passable, so every leaf is
-/// general-purpose and the bank agreement the predicate also checks is
-/// automatic.
-fn native_leaves_are_eightbytes(type_pool: &FrozenTypeInternPool, ty: Type) -> bool {
-    match crate::native_abi::native_by_value_arg(type_pool, ty) {
-        crate::native_abi::NativeArg::Aggregate { image } => image.direct_leaves().is_some(),
-        _ => true,
+/// The width one floating-point piece moves at: its leaf's own width when the
+/// leaves cross, and a whole eightbyte lane otherwise.
+fn float_piece_width(leaf: ImageLeaf) -> crate::value_plan::FloatWidth {
+    if leaf.float && leaf.width == 4 {
+        crate::value_plan::FloatWidth::F32
+    } else {
+        crate::value_plan::FloatWidth::F64
     }
+}
+
+/// How many eightbytes `ty`'s compact image spans — the count of register
+/// pieces a placement that packs it names.
+fn image_eightbytes(type_pool: &FrozenTypeInternPool, ty: Type) -> u32 {
+    u32::try_from(type_pool.layout(ty).size.div_ceil(8)).expect("an export image fits u32")
 }
 
 /// Build the machine code for a Rue-to-C export thunk.
@@ -518,14 +624,38 @@ enum NativeSlotSource {
     Leaf { parameter: usize, leaf: usize },
     /// Eightbyte `index` of parameter `parameter`'s compact image, whole.
     Eightbyte { parameter: usize, index: usize },
+    /// A value the C caller left in one incoming argument register, spilled to
+    /// `offset` in the thunk frame. `leaf` names the width and signedness it is
+    /// read back at; its `byte_offset` is zero, because the register holds that
+    /// value and nothing else.
+    ///
+    /// This is how a register-placed parameter's pieces are reached, rather
+    /// than through a contiguous image: a value whose eightbytes travel in
+    /// different banks — `{i64, f64}` on SysV AMD64 — has no contiguous
+    /// register image to read, but every piece still sits alone in the
+    /// register the classification named for it.
+    SavedRegister { save_offset: u32, leaf: ImageLeaf },
 }
 
 /// Where the native convention puts one of those values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeSlotDestination {
-    /// Native argument register `index` of the general-purpose roster. Every
-    /// export type is C-passable, so no value reaches the floating-point one.
+    /// Native argument register `index` of the general-purpose roster.
     Register { index: u32 },
+    /// Native argument register `index` of the floating-point roster, loaded
+    /// at `width`.
+    ///
+    /// Reached only when the C row *stacked* the value and the native row
+    /// register-places it, which the wider native return bank can do by
+    /// leaving a general-purpose register the C row spent on a hidden
+    /// indirect-result pointer. A value the C row itself put in a
+    /// floating-point register is already in the register the native row wants
+    /// — both rows place the floating-point roster identically (ADR-0084) —
+    /// and the thunk leaves it alone.
+    FpRegister {
+        index: u32,
+        width: crate::value_plan::FloatWidth,
+    },
     /// The target row's dedicated indirect-result register, outside the
     /// argument roster (AAPCS64 `x8`, section 6.9).
     SretRegister,
@@ -569,6 +699,11 @@ struct ThunkPlan {
     slots: Vec<(NativeSlotSource, NativeSlotDestination)>,
     /// The return value's leaves, when the native body returns in registers.
     return_leaves: Vec<ImageLeaf>,
+    /// How many eightbytes the result's compact image spans.
+    return_eightbytes: u32,
+    /// The result registers the *native* body left its value in, when it
+    /// returns in registers.
+    native_return_pieces: rue_air::RegisterPieces,
     return_padding: Vec<PaddingRange>,
     /// Frame offset each native value is assembled at: a staging cell for a
     /// register-passed one, its own position in the outgoing native argument
@@ -576,7 +711,7 @@ struct ThunkPlan {
     slot_offsets: Vec<u32>,
     /// `(native argument register, staging cell)` for every register-passed
     /// value, in placement order.
-    register_loads: Vec<(Option<u32>, u32)>,
+    register_loads: Vec<(RegisterLoad, u32)>,
     /// Frame offset of the incoming C argument register save block.
     save_base: u32,
     /// Frame offset holding the C caller's indirect-result pointer, when the C
@@ -587,6 +722,20 @@ struct ThunkPlan {
     /// return is indirect (through [`Self::c_sret_offset`]).
     return_image: Option<ReturnImage>,
     frame_bytes: u32,
+}
+
+/// Which register one staging cell is loaded into before the native call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegisterLoad {
+    /// Native argument register `index` of the general-purpose roster.
+    Gp { index: u32 },
+    /// Native argument register `index` of the floating-point roster.
+    Fp {
+        index: u32,
+        width: crate::value_plan::FloatWidth,
+    },
+    /// The native convention's dedicated indirect-result register.
+    Sret,
 }
 
 /// Where the C image of an aggregate return is assembled.
@@ -658,8 +807,13 @@ impl ThunkPlan {
             .enumerate()
         {
             let value_leaves = &description.native.leaves;
+            let c_location = c.arguments()[parameter].location;
+            // Which shape the value presents where the *C caller* left it,
+            // which is the shape the thunk reads: its own leaves, or the whole
+            // eightbytes of its image.
+            let by_leaf = description.native.crosses_by_leaf(c_location);
             let source = |index: usize| {
-                if description.native.leaves_are_eightbytes {
+                if by_leaf {
                     NativeSlotSource::Leaf {
                         parameter,
                         leaf: index,
@@ -668,18 +822,68 @@ impl ThunkPlan {
                     NativeSlotSource::Eightbyte { parameter, index }
                 }
             };
+            // The piece's own value, read back at its own width: one leaf when
+            // the leaves cross, one whole eightbyte otherwise.
+            let piece_leaf = |index: usize| {
+                if by_leaf {
+                    ImageLeaf {
+                        byte_offset: 0,
+                        ..value_leaves[index]
+                    }
+                } else {
+                    ImageLeaf::eightbyte(0)
+                }
+            };
             match placement.location {
                 ArgLocation::Omitted => {}
                 ArgLocation::Registers { pieces } => {
-                    assert_eq!(
-                        pieces.uniform_class(),
-                        Some(CRegisterClass::Gp),
-                        "an export argument still crosses only in general-purpose registers"
-                    );
                     for (index, piece) in pieces.as_slice().iter().enumerate() {
+                        let destination = match piece.class {
+                            CRegisterClass::Gp => {
+                                NativeSlotDestination::Register { index: piece.index }
+                            }
+                            CRegisterClass::Fp => NativeSlotDestination::FpRegister {
+                                index: piece.index,
+                                width: float_piece_width(piece_leaf(index)),
+                            },
+                        };
+                        let ArgLocation::Registers { pieces: c_pieces } = c_location else {
+                            // The C row stacked what the native row registers:
+                            // the wider native return bank can leave a
+                            // general-purpose register free that the C row
+                            // spent on a hidden indirect-result pointer. The
+                            // value is read out of the C caller's own argument
+                            // area.
+                            slots.push((source(index), destination));
+                            continue;
+                        };
+                        let c_piece = c_pieces.as_slice()[index];
+                        // Both rows spend the floating-point roster
+                        // identically — only the hidden indirect-result
+                        // pointer can shift a placement, and it takes a
+                        // general-purpose register (ADR-0084) — so a
+                        // floating-point piece is already in the register the
+                        // native body reads it from and the thunk leaves it
+                        // alone.
+                        if piece.class == CRegisterClass::Fp {
+                            assert_eq!(
+                                (c_piece.class, c_piece.index),
+                                (piece.class, piece.index),
+                                "the two rows place the floating-point argument roster alike"
+                            );
+                            continue;
+                        }
+                        // A general-purpose piece occupies its incoming
+                        // register alone, so it is read back out of that
+                        // register's own save cell rather than through an
+                        // image — a `{i64, f64}` has no contiguous register
+                        // image to read.
                         slots.push((
-                            source(index),
-                            NativeSlotDestination::Register { index: piece.index },
+                            NativeSlotSource::SavedRegister {
+                                save_offset: c_piece.index * 8,
+                                leaf: piece_leaf(index),
+                            },
+                            destination,
                         ));
                     }
                 }
@@ -716,7 +920,11 @@ impl ThunkPlan {
         let register_slots = slots
             .iter()
             .filter(|(_, destination)| {
-                matches!(destination, NativeSlotDestination::Register { .. })
+                matches!(
+                    destination,
+                    NativeSlotDestination::Register { .. }
+                        | NativeSlotDestination::FpRegister { .. }
+                )
             })
             .count() as u32;
         // The outgoing native argument area sits at the base of the frame, so
@@ -803,19 +1011,14 @@ impl ThunkPlan {
             .iter()
             .zip(c.arguments())
             .map(|(_, argument)| match argument.location {
-                ArgLocation::Registers { pieces } => {
-                    // The register save block holds the general-purpose roster,
-                    // and a register-passed value's eightbytes are contiguous in
-                    // it, so its image needs no repacking. Nothing reaches the
-                    // floating-point roster while the C boundary rejects floats.
-                    assert_eq!(
-                        pieces.uniform_class(),
-                        Some(CRegisterClass::Gp),
-                        "an export argument still crosses only in general-purpose registers"
-                    );
-                    ImageBase::Frame {
-                        offset: save_base + pieces.first_index().unwrap_or(0) * 8,
-                    }
+                // A register-placed value is never read through an image: each
+                // of its pieces sits alone in the register the classification
+                // named, and is reached through that register's own save cell
+                // ([`NativeSlotSource::SavedRegister`]). The base is set to the
+                // save block so a debug print of the plan names something
+                // meaningful; nothing reads it.
+                ArgLocation::Registers { .. } | ArgLocation::Omitted => {
+                    ImageBase::Frame { offset: save_base }
                 }
                 ArgLocation::Stack { offset, .. } => ImageBase::Incoming { offset },
                 ArgLocation::Indirect { pointer, .. } => match pointer {
@@ -827,8 +1030,6 @@ impl ThunkPlan {
                     // which the incoming area addresses directly.
                     PointerLocation::Stack { offset } => ImageBase::Incoming { offset },
                 },
-                // A zero-sized argument has no image; its base is never read.
-                ArgLocation::Omitted => ImageBase::Frame { offset: save_base },
             })
             .collect::<Vec<_>>();
 
@@ -839,21 +1040,21 @@ impl ThunkPlan {
         let mut slot_offsets = Vec::with_capacity(slots.len());
         let mut register_loads = Vec::new();
         for (_, destination) in &slots {
-            match *destination {
-                NativeSlotDestination::Register { index } => {
-                    let offset = stage_base + staged * 8;
-                    staged += 1;
-                    register_loads.push((Some(index), offset));
-                    slot_offsets.push(offset);
+            let load = match *destination {
+                NativeSlotDestination::Register { index } => RegisterLoad::Gp { index },
+                NativeSlotDestination::FpRegister { index, width } => {
+                    RegisterLoad::Fp { index, width }
                 }
-                NativeSlotDestination::SretRegister => {
-                    let offset = stage_base + staged * 8;
-                    staged += 1;
-                    register_loads.push((None, offset));
+                NativeSlotDestination::SretRegister => RegisterLoad::Sret,
+                NativeSlotDestination::Stack { offset } => {
                     slot_offsets.push(offset);
+                    continue;
                 }
-                NativeSlotDestination::Stack { offset } => slot_offsets.push(offset),
-            }
+            };
+            let offset = stage_base + staged * 8;
+            staged += 1;
+            register_loads.push((load, offset));
+            slot_offsets.push(offset);
         }
 
         Self {
@@ -863,6 +1064,12 @@ impl ThunkPlan {
             leaves,
             slots,
             return_leaves: signature.return_leaves.clone(),
+            return_eightbytes: signature.return_eightbytes,
+            native_return_pieces: lower_native_return(
+                ConventionSpec::native(target),
+                signature.result,
+            )
+            .register_pieces(),
             return_padding: signature.return_padding.clone(),
             slot_offsets,
             register_loads,
@@ -948,21 +1155,30 @@ impl ThunkPlan {
                     // whole and the callee reads the leaves back out of it.
                     self.set_base(emitter, parameter);
                     emitter.load_leaf(
-                        ImageLeaf {
-                            byte_offset: (index as u32) * 8,
-                            width: 8,
-                            signed: false,
-                        },
+                        ImageLeaf::eightbyte(
+                            u32::try_from(index).expect("an eightbyte index fits"),
+                        ),
                         destination,
                     );
+                }
+                NativeSlotSource::SavedRegister { save_offset, leaf } => {
+                    // The value occupies its incoming register alone, so its
+                    // save cell *is* its image. Reading it as an integer at its
+                    // own width restores the canonical extension Rue's scalar
+                    // invariant relies on and no C caller promises.
+                    emitter.base_from_frame(save_base + save_offset);
+                    emitter.load_leaf(leaf, destination);
                 }
             }
         }
 
         for (register, offset) in &self.register_loads {
-            match register {
-                Some(index) => emitter.load_argument_register(*index, *offset),
-                None => emitter.load_sret_register(*offset),
+            match *register {
+                RegisterLoad::Gp { index } => emitter.load_argument_register(index, *offset),
+                RegisterLoad::Fp { index, width } => {
+                    emitter.load_fp_argument_register(index, *offset, width)
+                }
+                RegisterLoad::Sret => emitter.load_sret_register(*offset),
             }
         }
         emitter.call(native_symbol);
@@ -979,6 +1195,53 @@ impl ThunkPlan {
             }
             ImageBase::Incoming { offset } => emitter.base_from_incoming(offset),
             ImageBase::SavedPointer { offset } => emitter.base_from_saved_pointer(offset),
+        }
+    }
+
+    /// The file, move width, and image position of result-register piece
+    /// `index` of an aggregate result placed in `pieces` — the shared
+    /// marshaling rule read in the result direction.
+    fn result_piece(
+        &self,
+        pieces: rue_air::RegisterPieces,
+        index: usize,
+    ) -> (crate::abi_slot_class::AbiSlotClass, u32) {
+        let marshal = crate::native_abi::aggregate_marshal(
+            &leaf_classes(&self.return_leaves),
+            self.return_eightbytes,
+            ArgLocation::Registers { pieces },
+        );
+        let class = marshal.class(index, pieces.as_slice()[index].class);
+        let offset = match marshal {
+            // A register holds one of the value's own leaves — an HFA's
+            // member most visibly, which sits at its own member stride.
+            crate::native_abi::NativeArgMarshal::Direct { .. } => {
+                self.return_leaves[index].byte_offset
+            }
+            crate::native_abi::NativeArgMarshal::Image { .. } => {
+                u32::try_from(index).expect("a result index fits u32") * 8
+            }
+        };
+        (class, offset)
+    }
+
+    /// Write native result register `index` into the C image at `leaf`, from
+    /// the file the native row returned it in.
+    fn store_native_result_piece<E: ThunkEmitter>(
+        &self,
+        emitter: &mut E,
+        index: usize,
+        leaf: ImageLeaf,
+    ) {
+        let piece = self.native_return_pieces.as_slice()[index];
+        let (class, _) = self.result_piece(self.native_return_pieces, index);
+        match class {
+            crate::abi_slot_class::AbiSlotClass::Gp => {
+                emitter.store_return_register(piece.index, leaf)
+            }
+            crate::abi_slot_class::AbiSlotClass::Fp(width) => {
+                emitter.store_fp_return_register(piece.index, leaf.byte_offset, width)
+            }
         }
     }
 
@@ -1014,13 +1277,10 @@ impl ThunkPlan {
             // Stage the whole eightbytes, then hand the C caller exactly the
             // bytes its storage holds.
             for index in 0..*count {
-                emitter.store_return_register(
-                    index,
-                    ImageLeaf {
-                        byte_offset: index * 8,
-                        width: 8,
-                        signed: false,
-                    },
+                self.store_native_result_piece(
+                    emitter,
+                    index as usize,
+                    ImageLeaf::eightbyte(index),
                 );
             }
             emitter.base_from_saved_pointer(pointer_offset);
@@ -1036,23 +1296,24 @@ impl ThunkPlan {
                 let end = u32::try_from(range.end).expect("a padding offset fits u32");
                 emitter.zero_image_bytes(start, end - start);
             }
-            for (index, leaf) in self.return_leaves.iter().enumerate() {
-                emitter.store_return_register(
-                    u32::try_from(index).expect("a return slot index fits u32"),
-                    *leaf,
-                );
+            for index in 0..self.return_leaves.len() {
+                self.store_native_result_piece(emitter, index, self.return_leaves[index]);
             }
         }
 
         match self.c.ret() {
             LoweredReturn::Registers { pieces, .. } => {
-                assert_eq!(
-                    pieces.uniform_class(),
-                    Some(CRegisterClass::Gp),
-                    "the C boundary still returns only general-purpose values"
-                );
-                for index in 0..pieces.len() {
-                    emitter.load_result_register(index, index * 8);
+                for index in 0..pieces.len() as usize {
+                    let piece = pieces.as_slice()[index];
+                    let (class, offset) = self.result_piece(pieces, index);
+                    match class {
+                        crate::abi_slot_class::AbiSlotClass::Gp => {
+                            emitter.load_result_register(piece.index, offset)
+                        }
+                        crate::abi_slot_class::AbiSlotClass::Fp(width) => {
+                            emitter.load_fp_result_register(piece.index, offset, width)
+                        }
+                    }
                 }
             }
             LoweredReturn::Sret { echoed, .. } => {
@@ -1108,6 +1369,14 @@ trait ThunkEmitter {
     fn store_base(&mut self, destination: u32);
     /// Native argument register `index` := frame + `offset`.
     fn load_argument_register(&mut self, index: u32, offset: u32);
+    /// Native floating-point argument register `index` := the `width` bytes at
+    /// frame + `offset`.
+    fn load_fp_argument_register(
+        &mut self,
+        index: u32,
+        offset: u32,
+        width: crate::value_plan::FloatWidth,
+    );
     /// The native convention's dedicated indirect-result register := frame +
     /// `offset`.
     fn load_sret_register(&mut self, offset: u32);
@@ -1116,10 +1385,26 @@ trait ThunkEmitter {
     /// base + `leaf.byte_offset` := the low `leaf.width` bytes of native return
     /// register `index`.
     fn store_return_register(&mut self, index: u32, leaf: ImageLeaf);
+    /// base + `offset` := the low `width` bytes of native floating-point return
+    /// register `index`.
+    fn store_fp_return_register(
+        &mut self,
+        index: u32,
+        offset: u32,
+        width: crate::value_plan::FloatWidth,
+    );
     /// Zero `len` bytes at base + `offset`.
     fn zero_image_bytes(&mut self, offset: u32, len: u32);
     /// C result register `index` := the eight bytes at base + `offset`.
     fn load_result_register(&mut self, index: u32, offset: u32);
+    /// C floating-point result register `index` := the `width` bytes at base +
+    /// `offset`.
+    fn load_fp_result_register(
+        &mut self,
+        index: u32,
+        offset: u32,
+        width: crate::value_plan::FloatWidth,
+    );
     /// The primary C result register := the pointer stored at frame + `offset`.
     fn echo_sret_pointer(&mut self, offset: u32);
     /// base + 0 .. base + `byte_count` := frame + `source_offset` .. , copied in
@@ -1222,6 +1507,25 @@ impl X86Emitter {
     fn load_frame(&mut self, reg: u8, offset: u32) {
         self.mem(&[0x8B], reg, X86_RSP, Self::frame_disp(offset), true, false);
     }
+
+    /// `movss`/`movsd` between `xmm` and `[base + disp]`; `store` picks the
+    /// direction. The mandatory SSE prefix precedes any REX byte, which is
+    /// what [`Self::mem`] emits next.
+    fn sse_mem(
+        &mut self,
+        xmm: u8,
+        base: u8,
+        disp: i32,
+        width: crate::value_plan::FloatWidth,
+        store: bool,
+    ) {
+        self.code.push(match width {
+            crate::value_plan::FloatWidth::F32 => 0xF3,
+            crate::value_plan::FloatWidth::F64 => 0xF2,
+        });
+        let opcode = if store { 0x11 } else { 0x10 };
+        self.mem(&[0x0F, opcode], xmm, base, disp, false, false);
+    }
 }
 
 impl ThunkEmitter for X86Emitter {
@@ -1318,6 +1622,16 @@ impl ThunkEmitter for X86Emitter {
         self.load_frame(X86_ARG_REGS[index as usize], offset);
     }
 
+    fn load_fp_argument_register(
+        &mut self,
+        index: u32,
+        offset: u32,
+        width: crate::value_plan::FloatWidth,
+    ) {
+        let disp = Self::frame_disp(offset);
+        self.sse_mem(index as u8, X86_RSP, disp, width, false);
+    }
+
     fn load_sret_register(&mut self, _offset: u32) {
         unreachable!("SysV AMD64 has no dedicated indirect-result register");
     }
@@ -1345,6 +1659,16 @@ impl ThunkEmitter for X86Emitter {
             1 => self.mem(&[0x88], reg, X86_BASE, disp, false, true),
             width => unreachable!("a compact image leaf is 1, 2, 4, or 8 bytes, not {width}"),
         }
+    }
+
+    fn store_fp_return_register(
+        &mut self,
+        index: u32,
+        offset: u32,
+        width: crate::value_plan::FloatWidth,
+    ) {
+        let disp = Self::frame_disp(offset);
+        self.sse_mem(index as u8, X86_BASE, disp, width, true);
     }
 
     fn zero_image_bytes(&mut self, offset: u32, len: u32) {
@@ -1381,6 +1705,16 @@ impl ThunkEmitter for X86Emitter {
             true,
             false,
         );
+    }
+
+    fn load_fp_result_register(
+        &mut self,
+        index: u32,
+        offset: u32,
+        width: crate::value_plan::FloatWidth,
+    ) {
+        let disp = Self::frame_disp(offset);
+        self.sse_mem(index as u8, X86_BASE, disp, width, false);
     }
 
     fn echo_sret_pointer(&mut self, offset: u32) {
@@ -1500,6 +1834,25 @@ impl Aarch64Emitter {
         self.access(0xF940_0000, 8, rt, base, offset);
     }
 
+    /// `ldr`/`str` of an `s`- or `d`-register at `base + offset` (the
+    /// SIMD&FP scaled-immediate forms); `store` picks the direction.
+    fn fp_access(
+        &mut self,
+        rt: u32,
+        base: u32,
+        offset: u32,
+        width: crate::value_plan::FloatWidth,
+        store: bool,
+    ) {
+        let (opcode, size) = match (width, store) {
+            (crate::value_plan::FloatWidth::F32, false) => (0xBD40_0000, 4),
+            (crate::value_plan::FloatWidth::F32, true) => (0xBD00_0000, 4),
+            (crate::value_plan::FloatWidth::F64, false) => (0xFD40_0000, 8),
+            (crate::value_plan::FloatWidth::F64, true) => (0xFD00_0000, 8),
+        };
+        self.access(opcode, size, rt, base, offset);
+    }
+
     /// The incoming argument area begins just past the frame record the
     /// prologue pushed.
     fn incoming_base(&mut self, offset: u32) -> u32 {
@@ -1581,6 +1934,15 @@ impl ThunkEmitter for Aarch64Emitter {
         self.load64(index, A64_SP, offset);
     }
 
+    fn load_fp_argument_register(
+        &mut self,
+        index: u32,
+        offset: u32,
+        width: crate::value_plan::FloatWidth,
+    ) {
+        self.fp_access(index, A64_SP, offset, width, false);
+    }
+
     fn load_sret_register(&mut self, offset: u32) {
         self.load64(A64_SRET, A64_SP, offset);
     }
@@ -1603,6 +1965,15 @@ impl ThunkEmitter for Aarch64Emitter {
         self.access(opcode, leaf.width, index, A64_BASE, leaf.byte_offset);
     }
 
+    fn store_fp_return_register(
+        &mut self,
+        index: u32,
+        offset: u32,
+        width: crate::value_plan::FloatWidth,
+    ) {
+        self.fp_access(index, A64_BASE, offset, width, true);
+    }
+
     fn zero_image_bytes(&mut self, offset: u32, len: u32) {
         for (position, width) in zero_runs(offset, len) {
             let opcode = match width {
@@ -1617,6 +1988,15 @@ impl ThunkEmitter for Aarch64Emitter {
 
     fn load_result_register(&mut self, index: u32, offset: u32) {
         self.load64(index, A64_BASE, offset);
+    }
+
+    fn load_fp_result_register(
+        &mut self,
+        index: u32,
+        offset: u32,
+        width: crate::value_plan::FloatWidth,
+    ) {
+        self.fp_access(index, A64_BASE, offset, width, false);
     }
 
     fn echo_sret_pointer(&mut self, _offset: u32) {
@@ -1672,6 +2052,7 @@ mod tests {
             byte_offset: 0,
             width,
             signed,
+            float: false,
         }
     }
 
@@ -1684,7 +2065,7 @@ mod tests {
             c: scalar_facts(kind),
             native: NativeParameter {
                 leaves: vec![scalar_leaf(width, signed)],
-                leaves_are_eightbytes: true,
+                eightbytes: 1,
             },
         }
     }
@@ -1713,7 +2094,7 @@ mod tests {
             parameters,
             result: CAbiTypeFacts::ZeroSized,
             result_is_aggregate: false,
-            return_leaves_are_eightbytes: true,
+            return_eightbytes: 1,
             return_bytes: 0,
             return_leaves: Vec::new(),
             return_padding: Vec::new(),
@@ -1729,16 +2110,19 @@ mod tests {
                 byte_offset: 0,
                 width: 8,
                 signed: false,
+                float: false,
             },
             ImageLeaf {
                 byte_offset: 8,
                 width: 8,
                 signed: false,
+                float: false,
             },
             ImageLeaf {
                 byte_offset: 16,
                 width: 8,
                 signed: false,
+                float: false,
             },
         ];
         ExportSignature {
@@ -1747,12 +2131,12 @@ mod tests {
                 c: CAbiTypeFacts::integer_aggregate(24, 8),
                 native: NativeParameter {
                     leaves: leaves.clone(),
-                    leaves_are_eightbytes: true,
+                    eightbytes: 1,
                 },
             }],
             result: CAbiTypeFacts::integer_aggregate(24, 8),
             result_is_aggregate: true,
-            return_leaves_are_eightbytes: true,
+            return_eightbytes: 1,
             return_bytes: 24,
             return_leaves: leaves,
             return_padding: Vec::new(),
@@ -1768,11 +2152,13 @@ mod tests {
                 byte_offset: 0,
                 width: 4,
                 signed: true,
+                float: false,
             },
             ImageLeaf {
                 byte_offset: 4,
                 width: 4,
                 signed: true,
+                float: false,
             },
         ];
         ExportSignature {
@@ -1781,12 +2167,12 @@ mod tests {
                 c: CAbiTypeFacts::integer_aggregate(8, 4),
                 native: NativeParameter {
                     leaves: leaves.clone(),
-                    leaves_are_eightbytes: false,
+                    eightbytes: 1,
                 },
             }],
             result: CAbiTypeFacts::integer_aggregate(8, 4),
             result_is_aggregate: true,
-            return_leaves_are_eightbytes: false,
+            return_eightbytes: 1,
             return_bytes: 8,
             return_leaves: leaves,
             return_padding: Vec::new(),
@@ -1841,13 +2227,13 @@ mod tests {
                         c: scalar_facts(kind),
                         native: NativeParameter {
                             leaves: vec![scalar_leaf(kind.natural_bytes(), false)],
-                            leaves_are_eightbytes: true,
+                            eightbytes: 1,
                         },
                     })
                     .collect(),
                 result,
                 result_is_aggregate: false,
-                return_leaves_are_eightbytes: true,
+                return_eightbytes: 1,
                 return_bytes: 8,
                 return_leaves: vec![scalar_leaf(2, true)],
                 return_padding: Vec::new(),
@@ -2057,12 +2443,13 @@ mod tests {
                     .iter()
                     .map(|(source, _)| *source)
                     .collect::<Vec<_>>(),
-                vec![NativeSlotSource::Eightbyte {
-                    parameter: 0,
-                    index: 0
+                vec![NativeSlotSource::SavedRegister {
+                    save_offset: 0,
+                    leaf: ImageLeaf::eightbyte(0),
                 }],
                 "no hidden return pointer crosses, so the packed pair takes the \
-                 first argument register"
+                 first argument register, and its one eightbyte is read out of \
+                 that register's own save cell"
             );
             // The eightbyte the native body returned is the eightbyte C wants.
             assert_eq!(plan.return_image, None);
@@ -2081,6 +2468,7 @@ mod tests {
                 byte_offset: index * 4,
                 width: 4,
                 signed: true,
+                float: false,
             })
             .collect();
         ExportSignature {
@@ -2088,7 +2476,7 @@ mod tests {
             parameters: Vec::new(),
             result: CAbiTypeFacts::integer_aggregate(20, 4),
             result_is_aggregate: true,
-            return_leaves_are_eightbytes: false,
+            return_eightbytes: 1,
             return_bytes: 20,
             return_leaves: leaves,
             return_padding: Vec::new(),
@@ -2244,6 +2632,7 @@ mod tests {
                 byte_offset: 0,
                 width,
                 signed,
+                float: false,
             }];
             let signature = ExportSignature {
                 convention: CallingConvention::X86_64SysV,
@@ -2251,12 +2640,12 @@ mod tests {
                     c: CAbiTypeFacts::integer_aggregate(width.into(), width.into()),
                     native: NativeParameter {
                         leaves: leaves.clone(),
-                        leaves_are_eightbytes: true,
+                        eightbytes: 1,
                     },
                 }],
                 result: CAbiTypeFacts::integer_aggregate(width.into(), width.into()),
                 result_is_aggregate: true,
-                return_leaves_are_eightbytes: true,
+                return_eightbytes: 1,
                 return_bytes: width.into(),
                 return_leaves: leaves,
                 return_padding: vec![PaddingRange {
@@ -2285,6 +2674,7 @@ mod tests {
                 byte_offset: index * 8,
                 width: 8,
                 signed: false,
+                float: false,
             })
             .collect()
     }
@@ -2297,7 +2687,7 @@ mod tests {
             parameters,
             result: CAbiTypeFacts::integer_aggregate(u64::from(bytes), 8),
             result_is_aggregate: true,
-            return_leaves_are_eightbytes: true,
+            return_eightbytes: 1,
             return_bytes: bytes,
             return_leaves: word_leaves(bytes / 8),
             return_padding: Vec::new(),
@@ -2316,7 +2706,7 @@ mod tests {
             parameters,
             result: scalar_facts(kind),
             result_is_aggregate: false,
-            return_leaves_are_eightbytes: true,
+            return_eightbytes: 1,
             return_bytes: width,
             return_leaves: vec![scalar_leaf(width, signed)],
             return_padding: Vec::new(),
@@ -2410,7 +2800,7 @@ mod tests {
             c: CAbiTypeFacts::integer_aggregate(16, 8),
             native: NativeParameter {
                 leaves: word_leaves(2),
-                leaves_are_eightbytes: true,
+                eightbytes: 1,
             },
         };
         for (target, entry) in entries(&word_aggregate_result(vec![sixteen], 16)) {
@@ -2465,18 +2855,20 @@ mod tests {
             parameters: Vec::new(),
             result: CAbiTypeFacts::integer_aggregate(16, 8),
             result_is_aggregate: true,
-            return_leaves_are_eightbytes: true,
+            return_eightbytes: 1,
             return_bytes: 16,
             return_leaves: vec![
                 ImageLeaf {
                     byte_offset: 0,
                     width: 4,
                     signed: true,
+                    float: false,
                 },
                 ImageLeaf {
                     byte_offset: 8,
                     width: 8,
                     signed: false,
+                    float: false,
                 },
             ],
             return_padding: vec![PaddingRange { start: 4, end: 8 }],
@@ -2514,9 +2906,12 @@ mod tests {
             for &target in Target::all() {
                 let signature = on(target, &signature);
                 let plan = ThunkPlan::new(target, &signature);
-                let identity = plan.slots.iter().all(|(source, _)| {
-                    !matches!(source, NativeSlotSource::Leaf { parameter, leaf }
-                        if plan.leaves[*parameter][*leaf].width < 8)
+                let identity = plan.slots.iter().all(|(source, _)| match source {
+                    NativeSlotSource::Leaf { parameter, leaf } => {
+                        !plan.leaves[*parameter][*leaf].needs_reextension()
+                    }
+                    NativeSlotSource::SavedRegister { leaf, .. } => !leaf.needs_reextension(),
+                    _ => true,
                 }) && !plan.adapts_result();
                 assert_eq!(
                     identity,

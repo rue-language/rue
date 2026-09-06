@@ -42,13 +42,13 @@
 //!
 //! ## Floats
 //!
-//! Classification is complete over floating-point values: an eightbyte whose
-//! every leaf is a float classifies [`EightbyteClass::Sse`] and travels in
-//! [`CRegisterClass::Fp`], and AAPCS64's homogeneous floating-point aggregates
-//! travel in consecutive floating-point registers. No *C* signature reaches
-//! that surface, because the C boundary rejects `f32`/`f64`
-//! (`c_passable_by_value`); the native convention is what has floats to place,
-//! and it places them by these same rules.
+//! Classification is complete over floating-point values, and both conventions
+//! reach it: an eightbyte whose every leaf is a float classifies
+//! [`EightbyteClass::Sse`] and travels in [`CRegisterClass::Fp`], and AAPCS64's
+//! homogeneous floating-point aggregates travel in consecutive floating-point
+//! registers, one per *member* rather than one per eightbyte. `f32` and `f64`
+//! are FFI-safe scalars naming C `float` and `double` (ADR-0064 P5), so a C
+//! signature places them by these rules exactly as a native one does.
 
 use rue_target::{
     AggregateClassificationRule, CConventionSpec, CRegisterClass, CallingConvention,
@@ -69,8 +69,8 @@ pub enum CAbiTypeFacts {
     Scalar {
         /// The scalar's width-and-signedness class.
         kind: CAbiScalarKind,
-        /// The register bank the scalar travels in. `Gp` for every scalar the
-        /// C boundary currently admits.
+        /// The register bank the scalar travels in: `Fp` for `f32` and `f64`,
+        /// `Gp` for every integer, `bool`, and pointer.
         class: CRegisterClass,
     },
     /// An aggregate (struct, array, or enum) of `size` bytes at `align`
@@ -372,10 +372,12 @@ const fn eightbyte_mask(size: u64) -> u64 {
 /// The register class of one eightbyte of an aggregate.
 ///
 /// SysV AMD64 section 3.2.3 classifies each eightbyte of an aggregate and
-/// assigns it a register of the matching bank; AAPCS64's composite rule reaches
-/// the same answer for the integer-only surface. Every eightbyte of every
-/// currently admissible type is [`Integer`](Self::Integer): a field that would
-/// classify [`Sse`](Self::Sse) is a float, which the boundary rejects.
+/// assigns it a register of the matching bank: an eightbyte whose every leaf is
+/// a float is [`Sse`](Self::Sse) and everything else is
+/// [`Integer`](Self::Integer). AAPCS64 never classifies per eightbyte — a
+/// composite that is not a homogeneous floating-point aggregate travels in
+/// integer registers whatever its fields are (section 6.8.2 rules C.13 and
+/// C.14) — so this classification is read only under the SysV rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EightbyteClass {
     /// The eightbyte travels in a general-purpose integer register.

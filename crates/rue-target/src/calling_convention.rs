@@ -179,8 +179,7 @@ pub struct CConventionSpec {
     /// stack area begins (6 on SysV AMD64, 8 on AAPCS64).
     pub gp_argument_registers: u32,
     /// How many floating-point registers carry arguments (8 on every current
-    /// row). Unreached while the C boundary rejects floats; carried so the
-    /// float slice extends this table rather than rewriting it.
+    /// row): `xmm0`-`xmm7` on SysV AMD64, `v0`-`v7` on AAPCS64.
     pub fp_argument_registers: u32,
     /// How many general-purpose registers carry a result (`rax:rdx` on SysV
     /// AMD64, `x0:x1` on AAPCS64).

@@ -242,6 +242,8 @@ impl SemanticNucleusTypeProvider<'_> {
             | T::U32
             | T::U64
             | T::Bool
+            | T::F32
+            | T::F64
             | T::PtrConst(_)
             | T::PtrMut(_) => Ok(None),
             T::Array { element, .. } => self.ffi_shape_failure(element, path),
@@ -296,8 +298,6 @@ impl SemanticNucleusTypeProvider<'_> {
             | T::Unit
             | T::Never
             | T::ComptimeType
-            | T::F32
-            | T::F64
             | T::ComptimeFloat
             | T::BuiltinNominal { .. }
             | T::Module(_)
@@ -2692,6 +2692,8 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                                 | T::U32
                                 | T::U64
                                 | T::Bool
+                                | T::F32
+                                | T::F64
                                 | T::PtrConst(_)
                                 | T::PtrMut(_)
                         ) {

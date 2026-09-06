@@ -24,11 +24,13 @@ use rue_air::{
     LoweredSignature, PointerLocation, ScalarAbiExtension, Type, lower_c_signature,
 };
 use rue_cfg::{Cfg, CfgCallArg, CfgValue};
-use rue_target::{CRegisterClass, CallingConvention};
+use rue_target::CallingConvention;
 
+use crate::abi_slot_class::AbiSlotClass;
 use crate::frame_layout::{
     FrameBudgetExceeded, checked_aligned_region_bytes, checked_call_area_from_stack_bytes,
 };
+use crate::native_abi::{NativeArgMarshal, aggregate_marshal};
 use crate::types::{self, PhysicalEnumSlot};
 use crate::vreg::VReg;
 
@@ -94,6 +96,30 @@ impl AggregateImage {
             leaves: self.leaves,
         }
     }
+
+    /// How this image reaches `location`: as the value's own leaf vregs, or as
+    /// the eightbytes of a staged buffer. The C boundary asks the very question
+    /// a native crossing asks, of the same function, so an import and a native
+    /// call of one shape marshal it identically (ADR-0084).
+    pub(crate) fn marshal(&self, location: ArgLocation) -> NativeArgMarshal {
+        aggregate_marshal(&self.leaf_classes(), self.eightbytes(), location)
+    }
+
+    /// The marshaling rule's view of this image's leaves.
+    fn leaf_classes(&self) -> Vec<crate::native_abi::ImageLeafClass> {
+        self.map
+            .iter()
+            .map(|leaf| (leaf.byte_offset, crate::native_abi::leaf_slot_class(leaf)))
+            .collect()
+    }
+
+    /// The file the aggregate's first native leaf lives in, which is the file
+    /// the value's primary vreg is synced from.
+    pub(crate) fn first_leaf_class(&self) -> AbiSlotClass {
+        self.map
+            .first()
+            .map_or(AbiSlotClass::Gp, crate::native_abi::leaf_slot_class)
+    }
 }
 
 /// One value crossing into a foreign call. *Where* it crosses is the lowered
@@ -143,6 +169,28 @@ impl ForeignArg {
     fn packs_as_scalar(&self) -> bool {
         matches!(self, Self::Scalar { .. })
     }
+
+    /// How this argument reaches `location`: which register file and move width
+    /// each piece uses, and whether the pieces are the value's own leaf vregs.
+    fn marshal(&self, location: ArgLocation) -> NativeArgMarshal {
+        match self {
+            Self::Scalar { kind, .. } => NativeArgMarshal::Direct {
+                classes: vec![scalar_slot_class(*kind)],
+            },
+            Self::Aggregate { image, .. } => image.marshal(location),
+        }
+    }
+}
+
+/// The register file and move width one C scalar travels in: a float rides the
+/// floating-point file at its own width, every integer, `bool`, and pointer the
+/// general-purpose one.
+fn scalar_slot_class(kind: CAbiScalarKind) -> AbiSlotClass {
+    match kind {
+        CAbiScalarKind::F32 => AbiSlotClass::Fp(crate::value_plan::FloatWidth::F32),
+        CAbiScalarKind::F64 => AbiSlotClass::Fp(crate::value_plan::FloatWidth::F64),
+        _ => AbiSlotClass::Gp,
+    }
 }
 
 /// How a foreign call's return value crosses. *Where* it crosses — result
@@ -181,6 +229,10 @@ pub struct ForeignCallInputs {
     symbol: String,
     args: Vec<ForeignArg>,
     ret: ForeignReturn,
+    /// The result's own classification facts, which name the file a scalar
+    /// result comes back in — `xmm0`/`v0` for a float, the integer result
+    /// register otherwise.
+    return_facts: CAbiTypeFacts,
     signature: LoweredSignature,
 }
 
@@ -205,7 +257,17 @@ impl ForeignCallInputs {
             symbol,
             args,
             ret,
+            return_facts,
             signature,
+        }
+    }
+
+    /// The register file a scalar result comes back in, and the width of the
+    /// move that takes it out.
+    fn return_class(&self) -> AbiSlotClass {
+        match self.return_facts {
+            CAbiTypeFacts::Scalar { kind, .. } => scalar_slot_class(kind),
+            CAbiTypeFacts::Aggregate { .. } | CAbiTypeFacts::ZeroSized => AbiSlotClass::Gp,
         }
     }
 
@@ -236,11 +298,17 @@ impl ForeignCallInputs {
 ///
 /// `offset` is always a multiple of `bytes`, which is what makes every store
 /// encodable in AArch64's scaled `imm12` addressing mode.
+///
+/// `class` is the file the stored vreg lives in: a stacked `f32`/`f64` argument
+/// and an HFA member hold their value in the floating-point file, so the store
+/// is a floating-point one. An eightbyte read out of a staged image is an
+/// integer-shaped lane whatever it carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ForeignStackStore {
     pub(crate) value: VReg,
     pub(crate) offset: u32,
     pub(crate) bytes: u32,
+    pub(crate) class: AbiSlotClass,
 }
 
 /// The complete outgoing argument area: what to store where, and how many bytes
@@ -291,16 +359,16 @@ impl ForeignCallPlan {
     /// The stores one stacked argument makes: its eightbyte (or narrower)
     /// pieces at ascending offsets from the argument's own packed offset.
     fn stack_stores(&self, arg_index: usize, values: &[VReg]) -> Vec<ForeignStackStore> {
-        let ArgLocation::Stack { offset, size, .. } =
-            self.signature().arguments()[arg_index].location
-        else {
+        let location = self.signature().arguments()[arg_index].location;
+        let ArgLocation::Stack { offset, size, .. } = location else {
             panic!("stack stores are only emitted for a stacked argument");
         };
-        let bytes = if self.inputs.args[arg_index].packs_as_scalar() {
-            size
-        } else {
-            8
-        };
+        let arg = &self.inputs.args[arg_index];
+        let bytes = if arg.packs_as_scalar() { size } else { 8 };
+        // A stacked aggregate crosses as the whole eightbytes of its staged
+        // image, which are integer-shaped lanes; only a stacked *scalar* keeps
+        // its own file, and a stacked `f32`/`f64` is stored from there.
+        let marshal = arg.marshal(location);
         values
             .iter()
             .enumerate()
@@ -309,6 +377,7 @@ impl ForeignCallPlan {
                 offset: offset
                     + u32::try_from(piece * 8).expect("foreign stack offset must fit u32"),
                 bytes,
+                class: marshal.class(piece, marshal.stacked_bank(piece)),
             })
             .collect()
     }
@@ -355,8 +424,10 @@ impl ForeignCallPlan {
 /// pair to a physical register rather than counting the values it has seen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ForeignRegisterArg {
-    /// The register bank.
-    pub(crate) class: CRegisterClass,
+    /// The register file the value travels in, and the width of the move that
+    /// puts it there — an `f32` and an `f64` share the floating-point bank but
+    /// not the instruction.
+    pub(crate) class: AbiSlotClass,
     /// Roster index within that bank's argument registers.
     pub(crate) index: u32,
     /// The vreg holding the value.
@@ -379,6 +450,18 @@ pub(crate) trait ForeignCallLoweringBackend {
         value: CfgValue,
         image: &AggregateImage,
     ) -> Vec<VReg>;
+    /// The aggregate's own leaf vregs, in ascending image order, each already
+    /// in the file its leaf lives in. Taken when the placement crosses the
+    /// value leaf by leaf rather than through its staged eightbytes.
+    fn foreign_aggregate_leaves(&mut self, value: CfgValue) -> Vec<VReg>;
+    /// Move one eightbyte read out of a staged image into the floating-point
+    /// file. The lane is a bit pattern rather than a number, so the whole
+    /// eightbyte crosses even where the leaves inside it are `f32`s.
+    fn foreign_eightbyte_as_float(
+        &mut self,
+        bits: VReg,
+        width: crate::value_plan::FloatWidth,
+    ) -> VReg;
     fn foreign_byref_copy(&mut self, value: CfgValue, image: &AggregateImage) -> VReg;
     /// Reserve the outgoing argument area and commit every store in it. The
     /// area's size and each store's offset and width are the convention's
@@ -395,15 +478,33 @@ pub(crate) trait ForeignCallLoweringBackend {
     fn foreign_cleanup_stack(&mut self, stack: &ForeignStackArea);
     fn foreign_cleanup_byref(&mut self, byref_bytes: u32);
     fn foreign_zero_result(&mut self, primary: VReg);
-    fn foreign_scalar_result(&mut self, primary: VReg, ext: ScalarAbiExtension);
-    fn foreign_register_result(&mut self, primary: VReg, image: &AggregateImage) -> Vec<VReg>;
+    /// Take the scalar result out of the primary result register of `class`'s
+    /// bank and re-extend it (a C callee leaves a narrow integer's high bits
+    /// unspecified; a float fills its register and needs nothing).
+    fn foreign_scalar_result(
+        &mut self,
+        primary: VReg,
+        class: AbiSlotClass,
+        ext: ScalarAbiExtension,
+    );
+    /// Reconstruct a register-returned aggregate's native leaves. `pieces`
+    /// names the result register each piece came back in and `marshal` whether
+    /// those registers hold the value's own leaves or its staged eightbytes.
+    fn foreign_register_result(
+        &mut self,
+        primary: VReg,
+        image: &AggregateImage,
+        pieces: rue_air::RegisterPieces,
+        marshal: &NativeArgMarshal,
+    ) -> Vec<VReg>;
     fn foreign_sret_result(
         &mut self,
         primary: VReg,
         image: &AggregateImage,
         sret_ptr: VReg,
     ) -> Vec<VReg>;
-    fn foreign_move_primary(&mut self, primary: VReg, slot: VReg);
+    /// Sync the primary vreg with logical slot 0, whose file `class` names.
+    fn foreign_move_primary(&mut self, primary: VReg, slot: VReg, class: AbiSlotClass);
 }
 
 /// Lower one foreign call through the single shared event sequence. Concrete
@@ -449,7 +550,7 @@ pub(crate) fn lower_foreign_call<B: ForeignCallLoweringBackend>(
         // it takes the first general-purpose argument register and the
         // classification already shifted every user argument past it.
         register_args.push(ForeignRegisterArg {
-            class: CRegisterClass::Gp,
+            class: AbiSlotClass::Gp,
             index: 0,
             value: sret_ptr.expect("SysV sret placement requires storage"),
         });
@@ -460,16 +561,40 @@ pub(crate) fn lower_foreign_call<B: ForeignCallLoweringBackend>(
         .zip(plan.signature().arguments())
         .enumerate()
     {
-        let values = match (arg, argument.location) {
+        // How the value reaches the placement: its own leaf vregs when every
+        // piece the row named is one leaf in that leaf's own file — a scalar,
+        // a value whose leaves start their own eightbytes, an HFA the row
+        // carries member-wise — and the staged image's eightbytes otherwise.
+        let marshal = arg.marshal(argument.location);
+        let mut values = match (arg, argument.location) {
             (_, ArgLocation::Omitted) => continue,
             (ForeignArg::Scalar { value, .. }, _) => vec![backend.foreign_get_vreg(*value)],
             (ForeignArg::Aggregate { value, image }, ArgLocation::Indirect { .. }) => {
                 vec![backend.foreign_byref_copy(*value, image)]
             }
+            (ForeignArg::Aggregate { value, .. }, _)
+                if matches!(marshal, NativeArgMarshal::Direct { .. }) =>
+            {
+                backend.foreign_aggregate_leaves(*value)
+            }
             (ForeignArg::Aggregate { value, image }, _) => {
                 backend.foreign_image_arg_eightbytes(*value, image)
             }
         };
+        // An eightbyte read out of a staged image comes back integer-shaped;
+        // one the classification put in the floating-point bank takes its bits
+        // there as a whole lane.
+        if let (NativeArgMarshal::Image { .. }, ArgLocation::Registers { pieces }) =
+            (&marshal, argument.location)
+        {
+            for (index, value) in values.iter_mut().enumerate() {
+                if let AbiSlotClass::Fp(width) =
+                    marshal.class(index, pieces.as_slice()[index].class)
+                {
+                    *value = backend.foreign_eightbyte_as_float(*value, width);
+                }
+            }
+        }
         match argument.location {
             ArgLocation::Registers { pieces } => {
                 assert_eq!(
@@ -477,9 +602,9 @@ pub(crate) fn lower_foreign_call<B: ForeignCallLoweringBackend>(
                     values.len(),
                     "one value per register the classification named"
                 );
-                register_args.extend(pieces.as_slice().iter().zip(&values).map(
-                    |(piece, value)| ForeignRegisterArg {
-                        class: piece.class,
+                register_args.extend(pieces.as_slice().iter().zip(&values).enumerate().map(
+                    |(index, (piece, value))| ForeignRegisterArg {
+                        class: marshal.class(index, piece.class),
                         index: piece.index,
                         value: *value,
                     },
@@ -489,11 +614,18 @@ pub(crate) fn lower_foreign_call<B: ForeignCallLoweringBackend>(
                 pointer: PointerLocation::Register { index },
                 ..
             } => register_args.push(ForeignRegisterArg {
-                class: CRegisterClass::Gp,
+                class: AbiSlotClass::Gp,
                 index,
                 value: values[0],
             }),
-            ArgLocation::Stack { .. } => stack.stores.extend(plan.stack_stores(arg_index, &values)),
+            ArgLocation::Stack { .. } => {
+                assert_eq!(
+                    marshal.eightbyte_count(),
+                    values.len(),
+                    "one value per piece the classification stacked"
+                );
+                stack.stores.extend(plan.stack_stores(arg_index, &values));
+            }
             ArgLocation::Indirect {
                 pointer: PointerLocation::Stack { offset },
                 ..
@@ -501,6 +633,7 @@ pub(crate) fn lower_foreign_call<B: ForeignCallLoweringBackend>(
                 value: values[0],
                 offset,
                 bytes: 8,
+                class: AbiSlotClass::Gp,
             }),
             ArgLocation::Omitted => unreachable!("an omitted argument was skipped above"),
         }
@@ -526,11 +659,33 @@ pub(crate) fn lower_foreign_call<B: ForeignCallLoweringBackend>(
             Vec::new()
         }
         (ForeignReturn::Scalar, LoweredReturn::Registers { extension, .. }) => {
-            backend.foreign_scalar_result(primary, extension);
+            backend.foreign_scalar_result(primary, inputs.return_class(), extension);
             Vec::new()
         }
-        (ForeignReturn::Aggregate { image }, LoweredReturn::Registers { .. }) => {
-            backend.foreign_register_result(primary, image)
+        (ForeignReturn::Aggregate { image }, LoweredReturn::Registers { pieces, .. }) => {
+            // A returned aggregate is reconstructed through its image, which
+            // reads every leaf at its own width: a C callee leaves the bits
+            // above a narrow leaf unspecified, so the leaf's own vreg cannot
+            // simply be the result register. The one shape that has no image
+            // eightbytes to read is a homogeneous floating-point aggregate the
+            // row returned one *member* per register, whose members fill their
+            // registers and are the value's own leaves.
+            let marshal = if pieces.len() == image.eightbytes() {
+                NativeArgMarshal::Image {
+                    eightbytes: image.eightbytes(),
+                }
+            } else {
+                let marshal = image.marshal(ArgLocation::Registers { pieces });
+                assert!(
+                    matches!(&marshal, NativeArgMarshal::Direct { classes }
+                        if classes.len() == pieces.len() as usize),
+                    "a result whose register count is not its image's eightbyte \
+                     count comes back one homogeneous floating-point member per \
+                     register"
+                );
+                marshal
+            };
+            backend.foreign_register_result(primary, image, pieces, &marshal)
         }
         (ForeignReturn::Aggregate { image }, LoweredReturn::Sret { .. }) => backend
             .foreign_sret_result(
@@ -543,7 +698,11 @@ pub(crate) fn lower_foreign_call<B: ForeignCallLoweringBackend>(
         }
     };
     if let Some(&slot) = slots.first() {
-        backend.foreign_move_primary(primary, slot);
+        let class = match &inputs.ret {
+            ForeignReturn::Aggregate { image } => image.first_leaf_class(),
+            ForeignReturn::Scalar | ForeignReturn::ZeroSized => AbiSlotClass::Gp,
+        };
+        backend.foreign_move_primary(primary, slot, class);
     }
     crate::value_plan::MaterializedValue { primary, slots }
 }
@@ -1001,6 +1160,20 @@ mod tests {
             (0..image.eightbytes()).map(|_| self.vreg()).collect()
         }
 
+        fn foreign_aggregate_leaves(&mut self, _value: CfgValue) -> Vec<VReg> {
+            self.record("leaves");
+            vec![self.vreg()]
+        }
+
+        fn foreign_eightbyte_as_float(
+            &mut self,
+            _bits: VReg,
+            width: crate::value_plan::FloatWidth,
+        ) -> VReg {
+            self.record(format!("lane_to_float:{width:?}"));
+            self.vreg()
+        }
+
         fn foreign_byref_copy(&mut self, _value: CfgValue, image: &AggregateImage) -> VReg {
             self.record(format!("byref:{}", image.storage_bytes));
             self.vreg()
@@ -1043,11 +1216,22 @@ mod tests {
             self.record("zero_result");
         }
 
-        fn foreign_scalar_result(&mut self, _primary: VReg, _ext: ScalarAbiExtension) {
+        fn foreign_scalar_result(
+            &mut self,
+            _primary: VReg,
+            _class: AbiSlotClass,
+            _ext: ScalarAbiExtension,
+        ) {
             self.record("scalar_result");
         }
 
-        fn foreign_register_result(&mut self, _primary: VReg, image: &AggregateImage) -> Vec<VReg> {
+        fn foreign_register_result(
+            &mut self,
+            _primary: VReg,
+            image: &AggregateImage,
+            _pieces: rue_air::RegisterPieces,
+            _marshal: &NativeArgMarshal,
+        ) -> Vec<VReg> {
             self.record(format!("register_result:{}", image.eightbytes()));
             vec![self.vreg()]
         }
@@ -1062,7 +1246,7 @@ mod tests {
             vec![self.vreg()]
         }
 
-        fn foreign_move_primary(&mut self, _primary: VReg, _slot: VReg) {
+        fn foreign_move_primary(&mut self, _primary: VReg, _slot: VReg, _class: AbiSlotClass) {
             self.record("move_primary");
         }
     }

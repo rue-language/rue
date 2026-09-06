@@ -172,12 +172,11 @@ impl AbiParameterMode {
 pub enum CPlacement {
     /// No register, no stack byte, no pointer.
     Omitted,
-    /// `count` consecutive registers of `class` from roster index `first`.
-    Registers {
-        class: CRegisterClass,
-        first: u32,
-        count: u32,
-    },
+    /// One register per piece, in ascending memory order. An argument can span
+    /// both banks — SysV AMD64 passes `{i64, f64}` in one integer register and
+    /// one SSE register — so the pieces are named individually and a run of
+    /// one bank is recognized when it prints.
+    Registers { pieces: RegisterPieces },
     /// By value in the outgoing argument area.
     Stack { offset: u32, size: u32, align: u32 },
     /// By pointer to a caller-owned copy.
@@ -205,13 +204,7 @@ impl From<ArgLocation> for CPlacement {
     fn from(location: ArgLocation) -> Self {
         match location {
             ArgLocation::Omitted => Self::Omitted,
-            ArgLocation::Registers { pieces } => Self::Registers {
-                class: pieces.uniform_class().expect(
-                    "a C argument's registers are one bank while the boundary rejects floats",
-                ),
-                first: pieces.first_index().unwrap_or(0),
-                count: pieces.len(),
-            },
+            ArgLocation::Registers { pieces } => Self::Registers { pieces },
             ArgLocation::Stack {
                 offset,
                 size,
@@ -820,18 +813,27 @@ fn sret_pointer_text(registers: TargetRegisters, register: SretRegisterKind) -> 
     }
 }
 
-/// The result registers a value comes back in, named one per eightbyte. A run
-/// of one bank reads as a run; a result split across banks names each piece,
-/// because there is no single roster to run over.
-fn result_register_text(
+/// The `(bank, roster index)` pairs the rendering reads.
+fn piece_pairs(pieces: RegisterPieces) -> Vec<(CRegisterClass, u32)> {
+    pieces
+        .as_slice()
+        .iter()
+        .map(|piece| (piece.class, piece.index))
+        .collect()
+}
+
+/// The registers a value travels in, named one per piece. A run of one bank
+/// reads as a run; a value split across banks names each piece, because there
+/// is no single roster to run over.
+fn register_pieces_text(
     registers: TargetRegisters,
+    role: RegisterRole,
     pieces: &[(CRegisterClass, u32)],
     noun: &str,
 ) -> String {
-    let noun = format!("{noun} register");
     match pieces {
         [] => "no value".to_owned(),
-        [(class, index)] => register_run(registers, RegisterRole::Result, *class, *index, 1, &noun),
+        [(class, index)] => register_run(registers, role, *class, *index, 1, noun),
         many if many.iter().all(|(class, _)| *class == many[0].0)
             && many
                 .iter()
@@ -840,19 +842,36 @@ fn result_register_text(
         {
             register_run(
                 registers,
-                RegisterRole::Result,
+                role,
                 many[0].0,
                 many[0].1,
                 many.len() as u32,
-                &noun,
+                noun,
             )
         }
         many => many
             .iter()
-            .map(|(class, index)| registers.result(*class, *index).to_owned())
+            .map(|(class, index)| match role {
+                RegisterRole::Argument => registers.argument(*class, *index).to_owned(),
+                RegisterRole::Result => registers.result(*class, *index).to_owned(),
+            })
             .collect::<Vec<_>>()
             .join(", "),
     }
+}
+
+/// [`register_pieces_text`] for a result, whose noun carries the role.
+fn result_register_text(
+    registers: TargetRegisters,
+    pieces: &[(CRegisterClass, u32)],
+    noun: &str,
+) -> String {
+    register_pieces_text(
+        registers,
+        RegisterRole::Result,
+        pieces,
+        &format!("{noun} register"),
+    )
 }
 
 /// Where an indirectly-passed argument's own pointer lives, with the
@@ -910,16 +929,10 @@ fn placement_text(registers: TargetRegisters, placement: &AbiPlacement) -> (Stri
 fn c_placement_text(registers: TargetRegisters, placement: CPlacement) -> String {
     match placement {
         CPlacement::Omitted => "omitted (zero-sized)".to_owned(),
-        CPlacement::Registers {
-            class,
-            first,
-            count,
-        } => register_run(
+        CPlacement::Registers { pieces } => register_pieces_text(
             registers,
             RegisterRole::Argument,
-            class,
-            first,
-            count,
+            &piece_pairs(pieces),
             "register",
         ),
         CPlacement::Stack {
@@ -1203,9 +1216,7 @@ mod tests {
         let (line, continuation) = native_placement_text(
             registers,
             &NativePlacement::Argument(CPlacement::Registers {
-                class: CRegisterClass::Gp,
-                first: 0,
-                count: 2,
+                pieces: RegisterPieces::consecutive(CRegisterClass::Gp, 0, 2),
             }),
         );
         assert_eq!(line, "gp registers 0-1 (rdi, rsi)");

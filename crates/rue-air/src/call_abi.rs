@@ -122,7 +122,9 @@ pub fn is_slot_identical_layout<P: crate::FfiTypePool + ?Sized>(type_pool: &P, t
         | TypeKind::ComptimeType
         | TypeKind::ComptimeFloat
         | TypeKind::Module(_) => true,
-        // Phase 4 deliberately has no float ABI lowering yet.
+        // A float leaf is read and written by a floating-point access at its
+        // own width, never as an opaque slot, so it is not slot-identical even
+        // where its footprint is eight bytes.
         TypeKind::F32 | TypeKind::F64 => false,
         // Narrow scalars: one/two/four bytes under the compact layout.
         TypeKind::I8
@@ -184,9 +186,10 @@ impl CAbiScalarKind {
     /// compile-time-only type). The stable query plane makes the same
     /// projection from its own type keys.
     ///
-    /// The float classes are part of the projection because the native
-    /// convention places floats by these same rules (ADR-0084); the C boundary
-    /// rejects them earlier, in `c_passable_by_value`.
+    /// The float classes are part of the projection because both conventions
+    /// place a float by one rule: the native row by ADR-0084, and the C row
+    /// because `f32` and `f64` are FFI-safe scalars naming C `float` and
+    /// `double` (ADR-0064 P5).
     pub fn for_live_type(ty: Type) -> Option<Self> {
         Some(match ty.kind() {
             TypeKind::I8 => Self::I8,
@@ -302,12 +305,14 @@ impl ScalarAbiExtension {
 /// The narrow-integer extension every C row asks for, and who owes it.
 ///
 /// Every supported scalar (`c_passable_by_value`: the full integer set, `bool`,
-/// pointers) occupies exactly one general-purpose register, and Rue's internal
-/// invariant keeps a narrow value canonically 64-bit-extended in its vreg
-/// (signed sign-extended, unsigned and `bool` zero-extended). That is a
-/// *stronger* guarantee than any row asks of an argument, so **argument passing
-/// needs no boundary instruction** on any of them — including Apple's row,
-/// which makes the caller extend an argument narrower than 32 bits.
+/// pointers, and the two floating-point widths) occupies exactly one register
+/// of its own bank, and Rue's internal invariant keeps a narrow *integer*
+/// canonically 64-bit-extended in its vreg (signed sign-extended, unsigned and
+/// `bool` zero-extended). That is a *stronger* guarantee than any row asks of
+/// an argument, so **argument passing needs no boundary instruction** on any of
+/// them — including Apple's row, which makes the caller extend an argument
+/// narrower than 32 bits. A float fills its own register and is extended in
+/// neither direction.
 ///
 /// The one direction that does need an instruction is the **return**: SysV
 /// AMD64 leaves the bits above a narrow result unspecified, and AAPCS64 defines

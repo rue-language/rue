@@ -397,11 +397,39 @@ fn synthesize_answer_archive(target: Target) -> TestResult<Vec<u8>> {
             0x00, 0x91, 0x01, 0x09, 0x00, 0xF9, 0xC0, 0x03, 0x5F, 0xD6,
         ],
     };
+    // --- P5 floating-point leaves (ADR-0064 P5, RUE-1059) --------------------
+    //
+    // The float half of the boundary, in the same hand-assembled leaf form as
+    // every member above: a `double` and a `float` arriving in the row's
+    // floating-point argument registers and leaving in its first floating-point
+    // result register, with no integer register touched at all. Both are the
+    // shape the ADR's proof program names — a `double`-taking probe called from
+    // Rue with an exact result — reduced to a leaf so no C toolchain or libm is
+    // needed to link one.
+    //
+    // ffi_fadd(double a, double b) -> a + b.
+    let fadd: Vec<u8> = match target.arch() {
+        // addsd xmm0, xmm1 ; ret
+        Arch::X86_64 => vec![0xF2, 0x0F, 0x58, 0xC1, 0xC3],
+        // fadd d0, d0, d1 ; ret
+        Arch::Aarch64 => vec![0x00, 0x28, 0x61, 0x1E, 0xC0, 0x03, 0x5F, 0xD6],
+    };
+    // ffi_fmul32(float a, float b) -> a * b. An `f32` argument occupies the low
+    // half of its register on both rows, so a leaf that reads it at 32 bits is
+    // exactly the check that the caller placed it there.
+    let fmul32: Vec<u8> = match target.arch() {
+        // mulss xmm0, xmm1 ; ret
+        Arch::X86_64 => vec![0xF3, 0x0F, 0x59, 0xC1, 0xC3],
+        // fmul s0, s0, s1 ; ret
+        Arch::Aarch64 => vec![0x00, 0x08, 0x21, 0x1E, 0xC0, 0x03, 0x5F, 0xD6],
+    };
     for (symbol, code) in [
         ("ffi_pair_combine", pair_combine),
         ("ffi_triple_tail", triple_tail),
         ("ffi_make_pair", make_pair),
         ("ffi_fill_triple", fill_triple),
+        ("ffi_fadd", fadd),
+        ("ffi_fmul32", fmul32),
     ] {
         objects.push((
             format!("{symbol}.o"),
@@ -653,6 +681,46 @@ fn synthesize_answer_archive(target: Target) -> TestResult<Vec<u8>> {
             vec![(32, "rue_five_shift")],
         ),
     };
+    // The float half of the export direction (ADR-0064 P5, RUE-1059): a C
+    // caller that hands two `double`s and two `float`s to Rue exports and reads
+    // both results back out of the row's floating-point result register.
+    //
+    //   long ffi_call_float_exports(void) {
+    //       long a = (long)rue_fadd_export(1.0, 2.0);   // 3
+    //       long b = (long)rue_f32_export(3.0f, 5.0f);  // 15
+    //       return a * 100 + b;                         // 315
+    //   }
+    //
+    // Hand-assembled rather than compiled, because a C compiler materializes
+    // each floating-point constant from `.rodata` and this archive's members
+    // carry none: the immediates are built in a general-purpose register and
+    // moved whole into the floating-point file instead.
+    let (float_exports_code, float_exports_relocs): (Vec<u8>, Vec<(u64, &str)>) = match target
+        .arch()
+    {
+        Arch::X86_64 => (
+            vec![
+                0x48, 0x83, 0xEC, 0x18, 0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F,
+                0x66, 0x48, 0x0F, 0x6E, 0xC0, 0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x40, 0x66, 0x48, 0x0F, 0x6E, 0xC8, 0xE8, 0x00, 0x00, 0x00, 0x00, 0xF2, 0x48, 0x0F,
+                0x2C, 0xC0, 0x48, 0x89, 0x04, 0x24, 0xB8, 0x00, 0x00, 0x40, 0x40, 0x66, 0x0F, 0x6E,
+                0xC0, 0xB8, 0x00, 0x00, 0xA0, 0x40, 0x66, 0x0F, 0x6E, 0xC8, 0xE8, 0x00, 0x00, 0x00,
+                0x00, 0xF3, 0x48, 0x0F, 0x2C, 0xC0, 0x48, 0x8B, 0x14, 0x24, 0x48, 0x6B, 0xD2, 0x64,
+                0x48, 0x01, 0xD0, 0x48, 0x83, 0xC4, 0x18, 0xC3,
+            ],
+            vec![(35, "rue_fadd_export"), (67, "rue_f32_export")],
+        ),
+        Arch::Aarch64 => (
+            vec![
+                0xFD, 0x7B, 0xBE, 0xA9, 0xFD, 0x03, 0x00, 0x91, 0x00, 0x10, 0x6E, 0x1E, 0x01, 0x10,
+                0x60, 0x1E, 0x00, 0x00, 0x00, 0x94, 0x00, 0x00, 0x78, 0x9E, 0xE0, 0x0B, 0x00, 0xF9,
+                0x00, 0x10, 0x21, 0x1E, 0x01, 0x90, 0x22, 0x1E, 0x00, 0x00, 0x00, 0x94, 0x00, 0x00,
+                0x38, 0x9E, 0xE1, 0x0B, 0x40, 0xF9, 0x82, 0x0C, 0x80, 0xD2, 0x20, 0x00, 0x02, 0x9B,
+                0xFD, 0x7B, 0xC2, 0xA8, 0xC0, 0x03, 0x5F, 0xD6,
+            ],
+            vec![(16, "rue_fadd_export"), (36, "rue_f32_export")],
+        ),
+    };
     let mut caller_objects: Vec<(String, Vec<u8>)> = Vec::new();
     for (symbol, code, relocs) in [
         ("ffi_call_exports", call_exports_code, call_exports_relocs),
@@ -664,6 +732,11 @@ fn synthesize_answer_archive(target: Target) -> TestResult<Vec<u8>> {
         ),
         ("ffi_call_wide_return", wide_return_code, wide_return_relocs),
         ("ffi_sret_echo_ok", sret_echo_code, sret_echo_relocs),
+        (
+            "ffi_call_float_exports",
+            float_exports_code,
+            float_exports_relocs,
+        ),
     ] {
         let mut builder = rue_linker::ObjectBuilder::new(target, symbol).code(code);
         for (offset, target_symbol) in relocs {

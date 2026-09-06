@@ -532,6 +532,18 @@ pub enum FloatWidth {
     F64,
 }
 
+impl FloatWidth {
+    /// The value's footprint in memory: four bytes for binary32, eight for
+    /// binary64 (ADR-0065). This is the stride an aggregate's float members sit
+    /// at and the width a load or store of one commits.
+    pub const fn bytes(self) -> u8 {
+        match self {
+            Self::F32 => 4,
+            Self::F64 => 8,
+        }
+    }
+}
+
 pub fn float_width(ty: Type) -> Option<FloatWidth> {
     match ty.kind() {
         TypeKind::F32 => Some(FloatWidth::F32),
@@ -1772,7 +1784,13 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                         call_args,
                         convention,
                     );
-                    let result_vreg = adapter.reserve_typed_value_result(float_width(inst.ty));
+                    // The result vreg mirrors the return's logical slot 0, so
+                    // its class follows that slot's LEAF, exactly as a native
+                    // call's does: a `@repr(c)` aggregate whose first field is
+                    // a float lands in an FP vreg.
+                    let result_vreg = adapter.reserve_typed_value_result(primary_slot_float_width(
+                        &crate::types::aggregate_leaf_types(ctx.type_pool, inst.ty),
+                    ));
                     adapter.emit_foreign_call(foreign_inputs, result_vreg)
                 } else {
                     // The result vreg mirrors the return's logical slot 0, so its

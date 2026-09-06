@@ -43,20 +43,15 @@ pub(super) const FP_ARG_REGS: [Reg; 8] = [
     Reg::V7,
 ];
 
-/// The physical register a foreign call's classified register piece names.
-///
-/// A foreign argument is marshaled through its compact memory image, whose
-/// pieces are whole eightbytes in general-purpose vregs, so a floating-point
-/// piece has no value to move: the C boundary rejects `f32`/`f64`
-/// (`c_passable_by_value`), which is what keeps every piece integer-classed.
-fn foreign_argument_register(class: rue_target::CRegisterClass, index: u32) -> Reg {
-    assert_eq!(
-        class,
-        rue_target::CRegisterClass::Gp,
-        "a foreign argument crosses through its eightbyte image in the \
-         general-purpose bank"
-    );
-    ARG_REGS[index as usize]
+/// The physical register a foreign call's classified register piece names:
+/// AAPCS64's `x0`-`x7` for a general-purpose piece and `v0`-`v7` for a
+/// floating-point one, which carries a float scalar and each member of a
+/// homogeneous floating-point aggregate (section 6.8.2 rule C.3).
+fn foreign_argument_register(class: crate::abi_slot_class::AbiSlotClass, index: u32) -> Reg {
+    match class.bank() {
+        rue_target::CRegisterClass::Gp => ARG_REGS[index as usize],
+        rue_target::CRegisterClass::Fp => FP_ARG_REGS[index as usize],
+    }
 }
 
 /// The native convention's result registers (ADR-0084). AAPCS64 defines only
@@ -4237,6 +4232,20 @@ impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
         self.image_arg_eightbytes(value, image)
     }
 
+    fn foreign_aggregate_leaves(&mut self, value: CfgValue) -> Vec<VReg> {
+        self.require_aggregate_slots(value)
+    }
+
+    fn foreign_eightbyte_as_float(&mut self, bits: VReg, width: FloatWidth) -> VReg {
+        let dst = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
+        self.mir.push(Aarch64Inst::BitsToFloat {
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(bits),
+            width,
+        });
+        dst
+    }
+
     fn foreign_byref_copy(
         &mut self,
         value: CfgValue,
@@ -4282,6 +4291,26 @@ impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
             let offset = checked_displacement_bytes(u64::from(store.offset))
                 .expect("foreign stack slot offset must fit displacement");
             let src = Operand::Virtual(store.value);
+            // A value the placement carries in the floating-point file is
+            // stored from there, and it commits exactly its own width: Apple's
+            // amendment gives a stacked `f32` a four-byte footprint, and
+            // AAPCS64 proper gives it the low four bytes of an eight-byte slot
+            // whose remaining bytes no callee is entitled to read (section
+            // 6.8.2 rule C.15).
+            if let crate::abi_slot_class::AbiSlotClass::Fp(width) = store.class {
+                assert!(
+                    u32::from(width.bytes()) <= store.bytes,
+                    "a stacked floating-point argument fits the footprint the \
+                     convention gave it"
+                );
+                self.mir.push(Aarch64Inst::FloatStore {
+                    base: Reg::Sp,
+                    offset,
+                    src,
+                    width,
+                });
+                continue;
+            }
             match store.bytes {
                 8 => self.mir.push(Aarch64Inst::Str {
                     src,
@@ -4305,11 +4334,20 @@ impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
         &mut self,
         register_args: &[crate::foreign_call::ForeignRegisterArg],
     ) {
+        // Every argument register of both banks is reserved from allocation, so
+        // no source vreg can already be sitting in one and each value moves
+        // straight into the register the classification named.
         for arg in register_args {
-            self.mir.push(Aarch64Inst::MovRR {
-                dst: Operand::Physical(foreign_argument_register(arg.class, arg.index)),
-                src: Operand::Virtual(arg.value),
-            });
+            let dst = Operand::Physical(foreign_argument_register(arg.class, arg.index));
+            let src = Operand::Virtual(arg.value);
+            match arg.class {
+                crate::abi_slot_class::AbiSlotClass::Gp => {
+                    self.mir.push(Aarch64Inst::MovRR { dst, src })
+                }
+                crate::abi_slot_class::AbiSlotClass::Fp(width) => {
+                    self.mir.push(Aarch64Inst::FloatMov { dst, src, width })
+                }
+            }
         }
     }
 
@@ -4354,19 +4392,73 @@ impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
         });
     }
 
-    fn foreign_scalar_result(&mut self, primary: VReg, ext: rue_air::ScalarAbiExtension) {
-        self.mir.push(Aarch64Inst::MovRR {
-            dst: Operand::Virtual(primary),
-            src: Operand::Physical(Reg::X0),
-        });
-        self.emit_c_return_extension(primary, ext);
+    fn foreign_scalar_result(
+        &mut self,
+        primary: VReg,
+        class: crate::abi_slot_class::AbiSlotClass,
+        ext: rue_air::ScalarAbiExtension,
+    ) {
+        match class {
+            crate::abi_slot_class::AbiSlotClass::Gp => {
+                self.mir.push(Aarch64Inst::MovRR {
+                    dst: Operand::Virtual(primary),
+                    src: Operand::Physical(Reg::X0),
+                });
+                self.emit_c_return_extension(primary, ext);
+            }
+            // A float fills its result register; nothing is extended into or
+            // out of `v0`.
+            crate::abi_slot_class::AbiSlotClass::Fp(width) => {
+                self.mir.push(Aarch64Inst::FloatMov {
+                    dst: Operand::Virtual(primary),
+                    src: Operand::Physical(Reg::V0),
+                    width,
+                })
+            }
+        }
     }
 
     fn foreign_register_result(
         &mut self,
         _primary: VReg,
         image: &crate::foreign_call::AggregateImage,
+        pieces: rue_air::RegisterPieces,
+        marshal: &crate::native_abi::NativeArgMarshal,
     ) -> Vec<VReg> {
+        use crate::abi_slot_class::AbiSlotClass;
+        // Every result register the classification named, read back in the file
+        // it came home in. C's own result rosters are a prefix of the native
+        // ones (ADR-0084), so a piece's roster index addresses both.
+        let read =
+            |lower: &mut Self, piece: rue_air::RegisterPiece, class: AbiSlotClass| match class {
+                AbiSlotClass::Gp => {
+                    let v = lower.mir.alloc_vreg();
+                    lower.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Virtual(v),
+                        src: Operand::Physical(RET_REGS[piece.index as usize]),
+                    });
+                    v
+                }
+                AbiSlotClass::Fp(width) => {
+                    let v = lower.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
+                    lower.mir.push(Aarch64Inst::FloatMov {
+                        dst: Operand::Virtual(v),
+                        src: Operand::Physical(FP_RET_REGS[piece.index as usize]),
+                        width,
+                    });
+                    v
+                }
+            };
+        if let crate::native_abi::NativeArgMarshal::Direct { classes } = marshal {
+            // The result registers hold the value's own leaves — an HFA's
+            // members most visibly; nothing is read out of memory.
+            return pieces
+                .as_slice()
+                .iter()
+                .zip(classes)
+                .map(|(piece, class)| read(self, *piece, *class))
+                .collect();
+        }
         self.mir.push(Aarch64Inst::SubImm {
             dst: Operand::Physical(Reg::Sp),
             src: Operand::Physical(Reg::Sp),
@@ -4378,14 +4470,25 @@ impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
             dst: Operand::Virtual(buf),
             src: Operand::Physical(Reg::Sp),
         });
-        let mut eb_vals = Vec::with_capacity(image.eightbytes() as usize);
-        for index in 0..image.eightbytes() as usize {
-            let v = self.mir.alloc_vreg();
-            self.mir.push(Aarch64Inst::MovRR {
-                dst: Operand::Virtual(v),
-                src: Operand::Physical(RET_REGS[index]),
+        let mut eb_vals = Vec::with_capacity(pieces.len() as usize);
+        for (index, piece) in pieces.as_slice().iter().enumerate() {
+            let class = marshal.class(index, piece.class);
+            let value = read(self, *piece, class);
+            // A marshaled eightbyte is a bit pattern, not a number, so one the
+            // row returned in the floating-point file moves back into a
+            // general-purpose vreg for the image store.
+            eb_vals.push(match class {
+                AbiSlotClass::Gp => value,
+                AbiSlotClass::Fp(width) => {
+                    let bits = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::FloatToBits {
+                        dst: Operand::Virtual(bits),
+                        src: Operand::Virtual(value),
+                        width,
+                    });
+                    bits
+                }
             });
-            eb_vals.push(v);
         }
         crate::agg_slots::store_slots_through_ptr(self, &eb_vals, buf, 0);
         let native = crate::agg_slots::load_enum_slots_through_ptr(self, buf, &image.map);
@@ -4414,11 +4517,24 @@ impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
         native
     }
 
-    fn foreign_move_primary(&mut self, primary: VReg, slot: VReg) {
-        self.mir.push(Aarch64Inst::MovRR {
-            dst: Operand::Virtual(primary),
-            src: Operand::Virtual(slot),
-        });
+    fn foreign_move_primary(
+        &mut self,
+        primary: VReg,
+        slot: VReg,
+        class: crate::abi_slot_class::AbiSlotClass,
+    ) {
+        // The primary vreg mirrors logical slot 0, so the move that syncs it is
+        // the one for that slot's own file.
+        let dst = Operand::Virtual(primary);
+        let src = Operand::Virtual(slot);
+        match class {
+            crate::abi_slot_class::AbiSlotClass::Gp => {
+                self.mir.push(Aarch64Inst::MovRR { dst, src })
+            }
+            crate::abi_slot_class::AbiSlotClass::Fp(width) => {
+                self.mir.push(Aarch64Inst::FloatMov { dst, src, width })
+            }
+        }
     }
 }
 

@@ -11,9 +11,9 @@
 //! 2. [`c_ffi_safe`] — the structural hard-error policy: linear,
 //!    destructor-bearing, and ownership-bearing fields are forbidden across the
 //!    boundary. Pointee layouts are *not* required, so opaque pointers pass.
-//! 3. [`c_passable_by_value`] — the by-value classifier seam. In P1.5 it
-//!    delegates to the P1 register-only restriction (`i64`/`u64`/pointers); it is
-//!    the seam P2/P3 fill with eightbyte classification and register packing.
+//! 3. [`c_passable_by_value`] — the by-value classifier seam: the scalars and
+//!    C-classifiable aggregates [`lower_c_signature`](crate::lower_c_signature)
+//!    places, by eightbyte classification and register packing.
 //!
 //! Every failure carries the failing [`FfiPredicate`], the offending field
 //! *path*, and a structured [`FfiRejectReason`] rather than a bare `bool` — the
@@ -68,8 +68,8 @@ pub enum FfiRejectReason {
     /// A type with no C representation at all (unit, never, module, comptime,
     /// slice-shaped, …).
     UnsupportedType,
-    /// A type that is not in the by-value set the current phase (P2) implements
-    /// — the [`c_passable_by_value`] seam P3 widens to aggregates.
+    /// A type with no by-value form at a C parameter or result position: a
+    /// fixed-size array, which C decays to a pointer.
     NotRegisterPassable,
 }
 
@@ -95,8 +95,9 @@ impl FfiRejectReason {
             }
             FfiRejectReason::UnsupportedType => "this type has no C representation in v0",
             FfiRejectReason::NotRegisterPassable => {
-                "this type is not yet passable by value across a C boundary (only \
-                 integer and pointer scalars are; aggregates await a later FFI phase)"
+                "this type has no by-value C parameter form (C decays an array \
+                 argument to a pointer; pass a pointer or wrap the value in a \
+                 `@repr(c)` struct)"
             }
         }
     }
@@ -166,7 +167,8 @@ pub trait FfiTypePool {
 }
 
 /// Whether a scalar type kind is a C-compatible scalar (integer widths, `bool`,
-/// or a raw pointer). The `std.c` transparent aliases resolve to these.
+/// the two binary floating-point widths, or a raw pointer). The `std.c`
+/// transparent aliases resolve to these.
 fn is_c_scalar(kind: TypeKind) -> bool {
     matches!(
         kind,
@@ -179,6 +181,8 @@ fn is_c_scalar(kind: TypeKind) -> bool {
             | TypeKind::U32
             | TypeKind::U64
             | TypeKind::Bool
+            | TypeKind::F32
+            | TypeKind::F64
             | TypeKind::PtrConst(_)
             | TypeKind::PtrMut(_)
     )
@@ -308,22 +312,24 @@ fn check_c_ffi_safe<P: FfiTypePool>(
     }
 }
 
-/// Predicate 3: can `ty` cross a C boundary *by value* in the current phase?
+/// Predicate 3: can `ty` cross a C boundary *by value*?
 ///
 /// This is the classifier seam, kept in lock-step with
 /// [`lower_c_signature`](crate::lower_c_signature), the one function that places
-/// each crossing. The admitted set is the **full integer scalar set** — every
-/// signed and unsigned integer width, `bool` as the 1-byte `_Bool`, and raw
-/// pointers, the scalars the placement assigns to a single integer register with
-/// a defined narrow-integer extension
-/// ([`ScalarAbiExtension`](crate::call_abi::ScalarAbiExtension)) — plus
+/// each crossing. The admitted set is the **full scalar set** — every signed and
+/// unsigned integer width, `bool` as the 1-byte `_Bool`, raw pointers, and the
+/// two binary floating-point widths (`f32` as C `float`, `f64` as C `double`) —
+/// each of which the placement assigns to a single register of its own bank,
+/// with a defined narrow-integer extension
+/// ([`ScalarAbiExtension`](crate::call_abi::ScalarAbiExtension)) for the narrow
+/// integers and none for a float, which fills its register. Added to that are
 /// **C-classifiable aggregates**: a struct marked `@repr(c)` that satisfies
 /// [`has_c_layout`] and [`c_ffi_safe`] (i.e. is [`repr_c_marker_eligible`]) is
 /// passable by value. The placement assigns an aggregate eightbyte-wise — ≤16
-/// bytes packs into one or two registers in C field order; larger goes to memory
-/// by the convention's own rule. In the integer-only core every eightbyte
-/// classifies INTEGER; a field type that would classify SSE cannot exist until
-/// RUE-714 adds floats (P5).
+/// bytes packs into one or two registers in C field order, each in the bank its
+/// own leaves classify it into, and AAPCS64 additionally carries a homogeneous
+/// floating-point aggregate one member per register; larger goes to memory by
+/// the convention's own rule.
 ///
 /// Fixed arrays stay rejected here (`NotRegisterPassable`) — C decays an array
 /// parameter to a pointer, so a by-value array is not a boundary type; it is
@@ -340,6 +346,8 @@ pub fn c_passable_by_value<P: FfiTypePool>(pool: &P, ty: Type) -> Result<(), Ffi
         | TypeKind::I64
         | TypeKind::U64
         | TypeKind::Bool
+        | TypeKind::F32
+        | TypeKind::F64
         | TypeKind::PtrConst(_)
         | TypeKind::PtrMut(_) => Ok(()),
         // A C-classifiable aggregate is passable by value iff it is a marked and
@@ -440,12 +448,21 @@ mod tests {
     #[test]
     fn scalars_and_pointers_have_c_layout_and_are_safe_and_passable() {
         let pool = MockPool::default();
-        for ty in [Type::I64, Type::U64, Type::I32, Type::U8, Type::BOOL, ptr()] {
+        for ty in [
+            Type::I64,
+            Type::U64,
+            Type::I32,
+            Type::U8,
+            Type::BOOL,
+            Type::F32,
+            Type::F64,
+            ptr(),
+        ] {
             assert!(has_c_layout(&pool, ty), "{ty:?} should have C layout");
             assert!(c_ffi_safe(&pool, ty).is_ok(), "{ty:?} should be FFI-safe");
         }
-        // P2 (RUE-1056) widens by-value passing to the full integer scalar set
-        // plus `bool` and pointers.
+        // The by-value scalar set is every integer width, `bool` as the 1-byte
+        // `_Bool`, both floating-point widths (P5, RUE-1059), and pointers.
         for ty in [
             Type::I8,
             Type::U8,
@@ -456,11 +473,13 @@ mod tests {
             Type::I64,
             Type::U64,
             Type::BOOL,
+            Type::F32,
+            Type::F64,
             ptr(),
         ] {
             assert!(
                 c_passable_by_value(&pool, ty).is_ok(),
-                "{ty:?} should be passable by value in P2"
+                "{ty:?} should be passable by value"
             );
         }
         // P3 (RUE-1057): an eligible `@repr(c)` aggregate is now passable by

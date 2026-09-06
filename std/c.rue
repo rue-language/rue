@@ -100,6 +100,26 @@ pub const c_ssize_t = i64;
 pub const c_ptrdiff_t = i64;
 
 // ---------------------------------------------------------------------------
+// Floating point
+// ---------------------------------------------------------------------------
+//
+// C `float` and `double` are IEEE-754 binary32 and binary64 on every supported
+// target, which is exactly what Rue's `f32` and `f64` are (ADR-0065), and both
+// are FFI-safe scalars at the C boundary (spec 9.3:1e). Write `f32` and `f64`
+// directly in an `extern "C"` signature; there is no `c_float`/`c_double`
+// alias here.
+//
+// A transparent alias is a file-level `const` whose initializer names a type,
+// and only the type keywords (`i8`-`u64`, `bool`, `type`) are nameable in
+// value position today; `f32`/`f64` lex as ordinary identifiers, so
+// `const c_double = f64;` does not compile (RUE-2076). The aliases arrive
+// with that fix.
+//
+// `long double` has no Rue counterpart either — it is 80-bit x87 on x86-64 and
+// binary128 on AArch64 — so nothing names it, rather than something naming it
+// wrongly.
+
+// ---------------------------------------------------------------------------
 // Boolean
 // ---------------------------------------------------------------------------
 
