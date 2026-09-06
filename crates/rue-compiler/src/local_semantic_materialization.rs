@@ -266,7 +266,7 @@ impl crate::error_printer::ErrorPrinterTypes for LocalFactSelectionIndex<'_> {
 
     fn type_name(&self, ty: &crate::TypeInstanceKey) -> Arc<str> {
         Arc::from(crate::durable_comptime::durable_type_diagnostic_name(
-            &crate::drop_glue::semantic_type_from_instance(ty),
+            &crate::semantic_identity::semantic_type_from_instance(ty),
         ))
     }
 }
@@ -382,15 +382,15 @@ fn collect_slice_sources(
     work.type_nodes_scanned += 1;
     match ty {
         T::Slice { element, name } => {
-            if let Some(element) = crate::semantic_identity::type_instance_from_semantic(element) {
-                output.insert(
-                    name.clone(),
-                    crate::TypeInstanceKey::Slice {
-                        element: Node::new(element),
-                        name: name.clone(),
-                    },
-                );
-            }
+            output.insert(
+                name.clone(),
+                crate::TypeInstanceKey::Slice {
+                    element: Node::new(crate::semantic_identity::type_instance_from_semantic(
+                        element,
+                    )),
+                    name: name.clone(),
+                },
+            );
             collect_slice_sources(element, output, work);
         }
         T::Array { element, .. } | T::PtrConst(element) | T::PtrMut(element) => {
@@ -1284,7 +1284,7 @@ pub(crate) fn materialize_semantic_body_with_indexes_in_space(
                         .map(|(name, ty)| {
                             (
                                 name.clone(),
-                                crate::drop_glue::semantic_type_from_instance(ty),
+                                crate::semantic_identity::semantic_type_from_instance(ty),
                             )
                         })
                         .collect::<Vec<_>>()
@@ -1312,7 +1312,7 @@ pub(crate) fn materialize_semantic_body_with_indexes_in_space(
                                 name.clone(),
                                 fields
                                     .iter()
-                                    .map(crate::drop_glue::semantic_type_from_instance)
+                                    .map(crate::semantic_identity::semantic_type_from_instance)
                                     .collect::<Vec<_>>()
                                     .into(),
                             )
@@ -1333,7 +1333,7 @@ pub(crate) fn materialize_semantic_body_with_indexes_in_space(
                         (
                             Arc::from("ptr"),
                             rue_air::SemanticImportType::PtrConst(Arc::new(
-                                crate::drop_glue::semantic_type_from_instance(element),
+                                crate::semantic_identity::semantic_type_from_instance(element),
                             )),
                         ),
                         (Arc::from("len"), rue_air::SemanticImportType::U64),
@@ -1978,11 +1978,14 @@ pub(crate) fn select_drop_glue_materialization_facts(
     interner: &mut LocalMaterializationFactInterner,
 ) -> Result<LocalMaterializationFacts, LocalFactSelectionFailure> {
     let identity = FunctionInstanceKey::DropGlue(Node::new(owner.clone()));
-    let mut roots = vec![(0, crate::drop_glue::semantic_type_from_instance(owner))];
+    let mut roots = vec![(
+        0,
+        crate::semantic_identity::semantic_type_from_instance(owner),
+    )];
     roots.extend(facts.nested.iter().enumerate().map(|(index, ty)| {
         (
             u32::try_from(index + 1).expect("drop-glue fact count fits u32"),
-            crate::drop_glue::semantic_type_from_instance(ty),
+            crate::semantic_identity::semantic_type_from_instance(ty),
         )
     }));
     let body = rue_air::SemanticBody {

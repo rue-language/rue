@@ -6,12 +6,6 @@
 
 use super::super::*;
 
-pub(crate) fn durable_type_from_instance_key(
-    value: &crate::TypeInstanceKey,
-) -> Option<crate::durable_semantics::DurableType> {
-    crate::durable_comptime::durable_type_from_instance_key(value)
-}
-
 pub(crate) fn durable_value_from_argument(
     value: &crate::CanonicalArgumentValue,
 ) -> Option<crate::durable_semantics::DurableConstValue> {
@@ -20,7 +14,7 @@ pub(crate) fn durable_value_from_argument(
     Some(match value {
         V::Integer(value) => D::Integer(*value),
         V::Bool(value) => D::Bool(*value),
-        V::Type(value) => D::Type(durable_type_from_instance_key(value)?),
+        V::Type(value) => D::Type(crate::semantic_identity::semantic_type_from_instance(value)),
         V::Function(value) => {
             let crate::FunctionInstanceKey::Definition(key) = value.as_ref() else {
                 return None;
@@ -95,7 +89,10 @@ pub(in crate::revisioned_query_database) fn comptime_call_for_anonymous_function
         if parameter.ty == crate::durable_semantics::DurableType::ComptimeType
             && let Some(value) = type_arguments.next()
         {
-            types.push((header.name.clone(), durable_type_from_instance_key(value)?));
+            types.push((
+                header.name.clone(),
+                crate::semantic_identity::semantic_type_from_instance(value),
+            ));
         } else {
             values.push((
                 header.name.clone(),

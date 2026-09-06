@@ -4880,7 +4880,7 @@ pub(super) use register_parse_import_parse;"#;
         });
     assert_eq!(
         (declarations.len(), fingerprint),
-        (215, 5_525_279_941_277_473_575),
+        (214, 11_207_454_508_476_726_153),
         "crate-visible declaration names, signatures, fields, or phase owners changed"
     );
 
@@ -4979,10 +4979,6 @@ fn revisioned_body_and_program_assembly_have_exact_source_owners() {
             "body_closure_nucleus",
         ),
         (
-            "pub(crate) fn durable_type_from_instance_key(",
-            "body_durable_comptime_adapters",
-        ),
-        (
             "pub(crate) fn durable_value_from_argument(",
             "body_durable_comptime_adapters",
         ),
@@ -4994,7 +4990,6 @@ fn revisioned_body_and_program_assembly_have_exact_source_owners() {
             "pub(in crate::revisioned_query_database) struct DurableComptimeRootAuthority",
             "body_durable_comptime_adapters",
         ),
-        ("fn body_type_instance(", "body_provider_body"),
         (
             "pub(in crate::revisioned_query_database) fn collect_published_body_references(",
             "body_provider_body",
@@ -5234,7 +5229,6 @@ use:provider_body
 use:transactions
 fn:semantic_nucleus_failure_is_internal_error
 fn:collect_instance_anonymous_nominals
-fn:durable_type_from_instance_key
 fn:durable_value_from_argument
 fn:semantic_candidate_import_occurrences
 fn:with_declaration_memo_retention
@@ -8435,6 +8429,61 @@ fn durable_named_array_length_consumers_share_one_conversion_kernel() {
     }
 }
 
+/// Count the match arms that relocate an anonymous-nominal identity between
+/// `SemanticImportType` and `TypeInstanceKey`.
+///
+/// Every conversion ladder between those two enums spells that arm in one
+/// direction or the other, and nothing else in the crate pairs the two
+/// spellings, so this is the number of ladders a module owns. Path prefixes
+/// and formatting are normalized away first, so an aliased or reformatted
+/// copy is still counted.
+fn semantic_type_instance_ladders(source: &str) -> usize {
+    const SEMANTIC_ARM: &str = "AnonymousNominal(";
+    const INSTANCE_ARM: &str = "Nominal(NominalInstanceKey::Anonymous(";
+
+    let code = rust_code_only(source)
+        .replace("crate::", "")
+        .replace("rue_air::", "");
+    let arms = code
+        .split("=>")
+        .map(|arm| arm.split_whitespace().collect::<String>())
+        .collect::<Vec<_>>();
+    arms.windows(2)
+        .filter(|arm| {
+            (arm[0].contains(SEMANTIC_ARM) && arm[1].contains(INSTANCE_ARM))
+                || (arm[0].contains(INSTANCE_ARM) && arm[1].contains(SEMANTIC_ARM))
+        })
+        .count()
+}
+
+/// `SemanticImportType` and `TypeInstanceKey` name the same types in two
+/// vocabularies, and every query family needs both. One owner keeps layout,
+/// drop glue, CFG dependencies, and comptime deriving the same key for the
+/// same type, so a new variant is one edit rather than one per family.
+#[test]
+fn semantic_import_type_and_type_instance_convert_in_one_place() {
+    let identity = include_str!("semantic_identity.rs");
+    for (direction, definition) in [
+        ("forward", "pub(crate) fn type_instance_from_semantic("),
+        ("reverse", "pub(crate) fn semantic_type_from_instance("),
+    ] {
+        assert_eq!(
+            identity.matches(definition).count(),
+            1,
+            "semantic_identity must own exactly one {direction} conversion"
+        );
+    }
+    for (module, source) in PRODUCTION_MODULES {
+        let expected = usize::from(*module == "semantic_identity") * 2;
+        assert_eq!(
+            semantic_type_instance_ladders(source),
+            expected,
+            "{module} must convert between SemanticImportType and TypeInstanceKey \
+             through semantic_identity instead of its own ladder"
+        );
+    }
+}
+
 #[test]
 fn durable_specialized_producer_issuance_has_one_ordered_kernel() {
     let durable = DURABLE_COMPTIME_LIFECYCLE_SOURCE;
@@ -8660,11 +8709,6 @@ fn durable_comptime_responsibilities_have_exact_module_owners() {
             "pub(crate) fn finalize_registered_imports(",
             "lifecycle",
             DURABLE_COMPTIME_LIFECYCLE_SOURCE,
-        ),
-        (
-            "pub(crate) fn durable_type_from_instance_key(",
-            "projection",
-            DURABLE_COMPTIME_PROJECTION_SOURCE,
         ),
         (
             "pub(crate) enum DurableComptimeValueFitFailure",

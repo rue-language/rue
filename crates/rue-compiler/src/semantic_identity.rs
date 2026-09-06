@@ -9,6 +9,7 @@
 
 use rue_air::Node;
 use std::fmt::Write as _;
+use std::sync::Arc;
 
 use crate::{ModuleId, StableDefinitionKey, bound_definitions::StableNamedTypeKey};
 
@@ -342,11 +343,19 @@ pub(crate) fn named_nominal_source_symbol(identity: &StableDefinitionKey) -> Opt
     ))
 }
 
+/// Relocate one durable semantic type into the type-instance vocabulary.
+///
+/// Declaration facts, signatures, and comptime arguments spell a type as a
+/// `SemanticImportType`, while layouts, drop plans, CFG dependencies, and
+/// printer plans key on `TypeInstanceKey`. The two enums describe the same
+/// domain, so this is the crate's only forward ladder: every query family
+/// derives the same key for the same type, and a new `SemanticImportType`
+/// variant is one edit rather than one per family.
 pub(crate) fn type_instance_from_semantic(
     value: &rue_air::SemanticImportType<StableDefinitionKey, ModuleId>,
-) -> Option<TypeInstanceKey> {
+) -> TypeInstanceKey {
     use rue_air::SemanticImportType as T;
-    Some(match value {
+    match value {
         T::I8 => TypeInstanceKey::I8,
         T::I16 => TypeInstanceKey::I16,
         T::I32 => TypeInstanceKey::I32,
@@ -374,22 +383,81 @@ pub(crate) fn type_instance_from_semantic(
             TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(Node::new(key.clone())))
         }
         T::Array { element, len } => TypeInstanceKey::Array {
-            element: Node::new(type_instance_from_semantic(element)?),
+            element: Node::new(type_instance_from_semantic(element)),
             len: *len,
         },
         T::Slice { element, name } => TypeInstanceKey::Slice {
-            element: Node::new(type_instance_from_semantic(element)?),
+            element: Node::new(type_instance_from_semantic(element)),
             name: name.clone(),
         },
         T::PtrConst(pointee) => {
-            TypeInstanceKey::PtrConst(Node::new(type_instance_from_semantic(pointee)?))
+            TypeInstanceKey::PtrConst(Node::new(type_instance_from_semantic(pointee)))
         }
         T::PtrMut(pointee) => {
-            TypeInstanceKey::PtrMut(Node::new(type_instance_from_semantic(pointee)?))
+            TypeInstanceKey::PtrMut(Node::new(type_instance_from_semantic(pointee)))
         }
         T::Module(module) => TypeInstanceKey::Module(module.clone()),
         T::GenericParameter(index) => TypeInstanceKey::GenericParameter(*index),
-    })
+    }
+}
+
+/// Relocate one type instance back into the durable semantic vocabulary.
+///
+/// The exact inverse of [`type_instance_from_semantic`] and the crate's only
+/// reverse ladder. `NominalInstanceKey::Builtin` and the separate
+/// `TypeInstanceKey::BuiltinNominal` spelling name the same builtin nominal,
+/// so both project onto `SemanticImportType::BuiltinNominal`.
+pub(crate) fn semantic_type_from_instance(
+    value: &TypeInstanceKey,
+) -> rue_air::SemanticImportType<StableDefinitionKey, ModuleId> {
+    use rue_air::SemanticImportType as S;
+    match value {
+        TypeInstanceKey::I8 => S::I8,
+        TypeInstanceKey::I16 => S::I16,
+        TypeInstanceKey::I32 => S::I32,
+        TypeInstanceKey::I64 => S::I64,
+        TypeInstanceKey::U8 => S::U8,
+        TypeInstanceKey::U16 => S::U16,
+        TypeInstanceKey::U32 => S::U32,
+        TypeInstanceKey::U64 => S::U64,
+        TypeInstanceKey::Bool => S::Bool,
+        TypeInstanceKey::Unit => S::Unit,
+        TypeInstanceKey::Never => S::Never,
+        TypeInstanceKey::ComptimeType => S::ComptimeType,
+        TypeInstanceKey::F32 => S::F32,
+        TypeInstanceKey::F64 => S::F64,
+        TypeInstanceKey::ComptimeFloat => S::ComptimeFloat,
+        TypeInstanceKey::BuiltinNominal { kind, name }
+        | TypeInstanceKey::Nominal(NominalInstanceKey::Builtin { kind, name }) => {
+            S::BuiltinNominal {
+                kind: match kind {
+                    AnonymousNominalKind::Struct => rue_air::SemanticImportNominalKind::Struct,
+                    AnonymousNominalKind::Enum => rue_air::SemanticImportNominalKind::Enum,
+                },
+                name: name.clone(),
+            }
+        }
+        TypeInstanceKey::Nominal(NominalInstanceKey::Named(key)) => S::Nominal(key.clone()),
+        TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(key)) => {
+            S::AnonymousNominal((**key).clone())
+        }
+        TypeInstanceKey::Array { element, len } => S::Array {
+            element: Arc::new(semantic_type_from_instance(element)),
+            len: *len,
+        },
+        TypeInstanceKey::Slice { element, name } => S::Slice {
+            element: Arc::new(semantic_type_from_instance(element)),
+            name: name.clone(),
+        },
+        TypeInstanceKey::PtrConst(pointee) => {
+            S::PtrConst(Arc::new(semantic_type_from_instance(pointee)))
+        }
+        TypeInstanceKey::PtrMut(pointee) => {
+            S::PtrMut(Arc::new(semantic_type_from_instance(pointee)))
+        }
+        TypeInstanceKey::Module(module) => S::Module(module.clone()),
+        TypeInstanceKey::GenericParameter(index) => S::GenericParameter(*index),
+    }
 }
 
 pub(crate) fn argument_value_from_semantic(
@@ -400,7 +468,7 @@ pub(crate) fn argument_value_from_semantic(
         V::Integer(value) => CanonicalArgumentValue::Integer(*value),
         V::Bool(value) => CanonicalArgumentValue::Bool(*value),
         V::Type(value) => {
-            CanonicalArgumentValue::Type(Node::new(type_instance_from_semantic(value)?))
+            CanonicalArgumentValue::Type(Node::new(type_instance_from_semantic(value)))
         }
         V::Function(value) => CanonicalArgumentValue::Function(Node::new(
             FunctionInstanceKey::Definition(value.clone()),
@@ -418,7 +486,7 @@ pub(crate) fn function_instance_from_specialization(
         .type_arguments
         .iter()
         .map(type_instance_from_semantic)
-        .collect::<Option<Vec<_>>>()?;
+        .collect::<Vec<_>>();
     let values = value
         .value_arguments
         .iter()
