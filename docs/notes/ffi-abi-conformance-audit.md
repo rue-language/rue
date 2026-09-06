@@ -85,7 +85,7 @@ supported representation.
 | Property | Native Rue: x86-64 Linux | Native Rue: AArch64 Linux/macOS | Current target-C runtime subset |
 | --- | --- | --- | --- |
 | Integer/pointer argument registers | `rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9` | `x0`-`x7` | Same target registers |
-| Floating-point argument registers | `xmm0`-`xmm7` | `v0`-`v7` | Not reached; the C boundary rejects floats |
+| Floating-point argument registers | `xmm0`-`xmm7` | `v0`-`v7` | The same registers |
 | Argument placement | SysV eightbyte classification | AAPCS64 composite rules, with Apple's amendments on the Darwin row | The same rows |
 | Stack arguments | The row's own argument-area packing | The row's own argument-area packing | Not implemented; every current helper fits registers |
 | Scalar result | `rax` | `x0` | `rax` or `x0`/`w0` |
@@ -297,6 +297,14 @@ usually the same place:
   extension, in ascending memory order.
 - A value whose leaves pack together crosses as the image's eightbytes, loaded
   whole.
+- A value the row placed in *floating-point* registers is already in the
+  register the native body reads it from, and the thunk leaves it alone: the two
+  rows spend the floating-point roster identically, because the only placement
+  the wider native return bank can shift is a general-purpose one — the hidden
+  indirect-result pointer's. A general-purpose piece is read back out of its own
+  incoming register's save cell rather than through a contiguous image, which is
+  what lets a value whose eightbytes travel in different banks — `{i64, f64}` on
+  SysV AMD64 — reach the body at all.
 - When both directions are indirect, the C caller's indirect-result storage *is*
   the native body's storage, so the result is never copied; SysV's `rax` echo is
   then a reload of the saved pointer. When the native body returns its leaves in
@@ -460,12 +468,20 @@ generator computed from the same table it emitted both sources from.
 
 The grid is shape x position x direction x ABI spelling:
 
-- **Shapes** (20): `i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `i64`, `u64`, `bool`,
-  `ptr const u8`, and ten `@repr(c)` structs chosen for the classification
-  boundaries — `{u8}`, `{u8,u8}`, `{i32,i32}`, `{i64,u8}`, `{i64,i64}`,
-  `{i64,i64,u8}`, `{i64,i64,i64}`, `{u8,i64}`, a nested `{{i32,i32},i64}`, and
-  `{[u8;4],i32}`. Floats are still rejected at the boundary; the table is shaped
-  so adding them is a table edit.
+- **Shapes** (31): `i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `i64`, `u64`, `bool`,
+  `f32`, `f64`, `ptr const u8`, and twenty `@repr(c)` structs chosen for the
+  classification boundaries — `{u8}`, `{u8,u8}`, `{i32,i32}`, `{i64,u8}`,
+  `{i64,i64}`, `{i64,i64,u8}`, `{i64,i64,i64}`, `{u8,i64}`, a nested
+  `{{i32,i32},i64}`, and `{[u8;4],i32}` on the integer side, and `{f32,f32}`,
+  `{f32,f32,f32,f32}`, `{f64,f64}`, `{f64,f64,f64}`, `{[f64;5]}`, `{i64,f64}`,
+  `{f64,i64}`, `{i32,f32}`, and `{i32,f32,i32}` on the floating-point side.
+  Those last rows are the ones the two psABI rows disagree about most: an HFA
+  crosses member-wise under AAPCS64 and eightbyte-wise under SysV, a split-bank
+  pair spends one register of each bank under SysV and two integer registers
+  under AAPCS64, and `{[f64;5]}` is over both rows' limits in different ways.
+  A float leaf carries a whole number, exactly representable in binary32 and
+  binary64 alike, so the odd-multiplier checksum stays exact integer
+  arithmetic.
 - **Positions** (5): argument 0, the convention's last argument register, the
   first stack slot, a deep stack slot, and the result type. The indices come
   from `CConventionSpec::gp_argument_registers`, so a convention with a
@@ -541,7 +557,8 @@ signature and its executing cases. What remains open:
 - Apple's byte-exact placement of a stacked composite argument, which needs
   byte-granular marshaling rather than the whole-eightbyte image stores the
   current path emits;
-- floating-point/vector arguments and results, which the boundary still rejects;
+- vector arguments and results, which have no Rue type to cross as (scalar
+  floating point crosses; see the floating-point rows of the matrix above);
 - variadic calls, or an explicit diagnostic rejecting them; and
 - pointer provenance, mutability, and lifetime rules.
 

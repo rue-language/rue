@@ -26,12 +26,16 @@
 //! deliberately different ("poisoned") value when the seed did not arrive
 //! intact, so a broken argument crossing cannot hide behind a correct result.
 //!
+//! Floating-point leaves carry values that are exactly representable in both
+//! widths — small integers — and contribute the integer they convert to, so the
+//! odd-multiplier checksum stays exact arithmetic and a rounding difference
+//! never masks a placement bug.
+//!
 //! # Extending the table
 //!
-//! Floats are still rejected at Rue's C boundary. Adding them later is a table
-//! edit: one [`Leaf`] variant with its two type spellings and its conversion
-//! rules, and one [`SHAPES`] row per new shape. Nothing else in this module
-//! knows the leaf inventory.
+//! Adding a leaf type is a table edit: one [`Leaf`] variant with its two type
+//! spellings and its conversion rules, and one [`SHAPES`] row per new shape.
+//! Nothing else in this module knows the leaf inventory.
 
 use rue_target::CConventionSpec;
 
@@ -53,6 +57,10 @@ pub enum Leaf {
     I64,
     U64,
     Bool,
+    /// `f32` in Rue, `float` in C.
+    F32,
+    /// `f64` in Rue, `double` in C.
+    F64,
     /// `ptr const u8` in Rue, `const rue_u8 *` in C.
     Ptr,
 }
@@ -69,6 +77,8 @@ impl Leaf {
             Leaf::I64 => "i64",
             Leaf::U64 => "u64",
             Leaf::Bool => "bool",
+            Leaf::F32 => "f32",
+            Leaf::F64 => "f64",
             Leaf::Ptr => "ptr const u8",
         }
     }
@@ -87,6 +97,8 @@ impl Leaf {
             Leaf::I64 => "rue_i64",
             Leaf::U64 => "rue_u64",
             Leaf::Bool => "rue_bool",
+            Leaf::F32 => "rue_f32",
+            Leaf::F64 => "rue_f64",
             Leaf::Ptr => "const rue_u8 *",
         }
     }
@@ -97,8 +109,14 @@ impl Leaf {
             Leaf::I16 | Leaf::U16 => Some(16),
             Leaf::I32 | Leaf::U32 => Some(32),
             Leaf::I64 | Leaf::U64 => Some(64),
-            Leaf::Bool | Leaf::Ptr => None,
+            Leaf::Bool | Leaf::F32 | Leaf::F64 | Leaf::Ptr => None,
         }
+    }
+
+    /// Whether the leaf lives in the floating-point file, which is what makes
+    /// it worth a row here: its placement bank differs from every other leaf's.
+    fn is_float(self) -> bool {
+        matches!(self, Leaf::F32 | Leaf::F64)
     }
 
     fn is_signed(self) -> bool {
@@ -112,6 +130,9 @@ impl Leaf {
             Leaf::I64 => "L",
             Leaf::U64 => "UL",
             Leaf::U8 | Leaf::U16 | Leaf::U32 => "U",
+            // An unsuffixed C floating literal is a `double`; the `f` suffix is
+            // what keeps a `float` field's initializer its own type.
+            Leaf::F32 => "f",
             _ => "",
         }
     }
@@ -122,6 +143,12 @@ impl Leaf {
 pub enum Value {
     Int(i128),
     Bool(bool),
+    /// A floating-point value, held as the integer it equals. Every float in
+    /// the grid is a small whole number, so it is exactly representable in both
+    /// binary32 and binary64 and converts back to this integer with no
+    /// rounding — which is what lets the checksum stay exact integer arithmetic
+    /// on both sides of the boundary.
+    Float(i64),
     /// An index into [`PROBE_BYTES`]; the pointer itself is `&c_probe_bytes[i]`.
     Ptr(u8),
 }
@@ -140,6 +167,9 @@ impl Value {
                 }
             }
             Value::Bool(b) => u64::from(b),
+            // Both sides convert the float to a signed 64-bit integer before
+            // mixing it, which is exact for a whole number in range.
+            Value::Float(v) => v as u64,
             Value::Ptr(index) => u64::from(PROBE_BYTES[usize::from(index)]),
         }
     }
@@ -149,6 +179,7 @@ impl Value {
             Value::Int(v) => v.to_string(),
             Value::Bool(true) => "true".to_string(),
             Value::Bool(false) => "false".to_string(),
+            Value::Float(v) => format!("{v}.0"),
             Value::Ptr(index) => index.to_string(),
         }
     }
@@ -157,6 +188,7 @@ impl Value {
         match self {
             Value::Int(v) => format!("{v}{}", leaf.c_literal_suffix()),
             Value::Bool(b) => (if b { "1" } else { "0" }).to_string(),
+            Value::Float(v) => format!("{v}.0{}", leaf.c_literal_suffix()),
             Value::Ptr(index) => format!("&c_probe_bytes[{index}]"),
         }
     }
@@ -169,6 +201,8 @@ impl Value {
             Value::Int(0) => Value::Int(1),
             Value::Int(_) => Value::Int(0),
             Value::Bool(b) => Value::Bool(!b),
+            Value::Float(0) => Value::Float(1),
+            Value::Float(_) => Value::Float(0),
             Value::Ptr(index) => Value::Ptr((index + 1) % 8),
         }
     }
@@ -404,11 +438,164 @@ static ABI_ARRAY: StructDef = StructDef {
     ],
 };
 
+// --- Floating-point shapes (ADR-0064 P5) ------------------------------------
+//
+// Chosen to land on every boundary the two rows' floating-point rules have.
+// SysV AMD64 classifies each eightbyte by its own leaves, so `{f32, f32}` is
+// one SSE eightbyte and `{f32, f32, f32, f32}` is two; AAPCS64 instead asks
+// whether the whole aggregate is a homogeneous floating-point aggregate and
+// spends one register per *member*, so those two shapes take one and four
+// `v`-registers there. `{i64, f64}` and `{f64, i64}` split the banks in either
+// order under SysV and are ordinary integer composites under AAPCS64;
+// `{i32, f32}` packs into a single INTEGER eightbyte under SysV and is not an
+// HFA either way. `{f64, f64, f64}` is an HFA of three members and MEMORY
+// under SysV. `{f64; 5}` is over both limits — too large for SysV's register
+// budget, and not an HFA of at most four members, so AAPCS64 passes it by
+// reference. `{i32, f32, i32}` puts a float in the middle of integers, where
+// its eightbyte is INTEGER-classified by the leaves around it.
+
+static ABI_F32_F32: StructDef = StructDef {
+    name: "AbiF32F32",
+    fields: &[
+        Field {
+            name: "f0",
+            ty: Ty::Leaf(Leaf::F32),
+        },
+        Field {
+            name: "f1",
+            ty: Ty::Leaf(Leaf::F32),
+        },
+    ],
+};
+
+static ABI_F32_X4: StructDef = StructDef {
+    name: "AbiF32X4",
+    fields: &[
+        Field {
+            name: "f0",
+            ty: Ty::Leaf(Leaf::F32),
+        },
+        Field {
+            name: "f1",
+            ty: Ty::Leaf(Leaf::F32),
+        },
+        Field {
+            name: "f2",
+            ty: Ty::Leaf(Leaf::F32),
+        },
+        Field {
+            name: "f3",
+            ty: Ty::Leaf(Leaf::F32),
+        },
+    ],
+};
+
+static ABI_F64_F64: StructDef = StructDef {
+    name: "AbiF64F64",
+    fields: &[
+        Field {
+            name: "f0",
+            ty: Ty::Leaf(Leaf::F64),
+        },
+        Field {
+            name: "f1",
+            ty: Ty::Leaf(Leaf::F64),
+        },
+    ],
+};
+
+static ABI_F64_X3: StructDef = StructDef {
+    name: "AbiF64X3",
+    fields: &[
+        Field {
+            name: "f0",
+            ty: Ty::Leaf(Leaf::F64),
+        },
+        Field {
+            name: "f1",
+            ty: Ty::Leaf(Leaf::F64),
+        },
+        Field {
+            name: "f2",
+            ty: Ty::Leaf(Leaf::F64),
+        },
+    ],
+};
+
+static ABI_F64_X5: StructDef = StructDef {
+    name: "AbiF64X5",
+    fields: &[Field {
+        name: "f0",
+        ty: Ty::Array(Leaf::F64, 5),
+    }],
+};
+
+static ABI_I64_F64: StructDef = StructDef {
+    name: "AbiI64F64",
+    fields: &[
+        Field {
+            name: "f0",
+            ty: Ty::Leaf(Leaf::I64),
+        },
+        Field {
+            name: "f1",
+            ty: Ty::Leaf(Leaf::F64),
+        },
+    ],
+};
+
+static ABI_F64_I64: StructDef = StructDef {
+    name: "AbiF64I64",
+    fields: &[
+        Field {
+            name: "f0",
+            ty: Ty::Leaf(Leaf::F64),
+        },
+        Field {
+            name: "f1",
+            ty: Ty::Leaf(Leaf::I64),
+        },
+    ],
+};
+
+static ABI_I32_F32: StructDef = StructDef {
+    name: "AbiI32F32",
+    fields: &[
+        Field {
+            name: "f0",
+            ty: Ty::Leaf(Leaf::I32),
+        },
+        Field {
+            name: "f1",
+            ty: Ty::Leaf(Leaf::F32),
+        },
+    ],
+};
+
+static ABI_I32_F32_I32: StructDef = StructDef {
+    name: "AbiI32F32I32",
+    fields: &[
+        Field {
+            name: "f0",
+            ty: Ty::Leaf(Leaf::I32),
+        },
+        Field {
+            name: "f1",
+            ty: Ty::Leaf(Leaf::F32),
+        },
+        Field {
+            name: "f2",
+            ty: Ty::Leaf(Leaf::I32),
+        },
+    ],
+};
+
 /// The shape rows. Scalars first, then `@repr(c)` structs chosen to land on the
 /// classification boundaries both current psABI rows care about: one and two
 /// bytes, two fields sharing one eightbyte, a padded 16, an exact 16, a 17-byte
 /// footprint padded to 24, an exact 24 (past the two-register budget on both
-/// rows), a leading narrow field, a nested struct, and an array field.
+/// rows), a leading narrow field, a nested struct, and an array field — then
+/// the floating-point rows above.
 pub static SHAPES: &[Shape] = &[
     Shape {
         key: "i8",
@@ -489,6 +676,50 @@ pub static SHAPES: &[Shape] = &[
     Shape {
         key: "s_array",
         ty: Ty::Struct(&ABI_ARRAY),
+    },
+    Shape {
+        key: "f32",
+        ty: Ty::Leaf(Leaf::F32),
+    },
+    Shape {
+        key: "f64",
+        ty: Ty::Leaf(Leaf::F64),
+    },
+    Shape {
+        key: "s_f32f32",
+        ty: Ty::Struct(&ABI_F32_F32),
+    },
+    Shape {
+        key: "s_f32x4",
+        ty: Ty::Struct(&ABI_F32_X4),
+    },
+    Shape {
+        key: "s_f64f64",
+        ty: Ty::Struct(&ABI_F64_F64),
+    },
+    Shape {
+        key: "s_f64x3",
+        ty: Ty::Struct(&ABI_F64_X3),
+    },
+    Shape {
+        key: "s_f64x5",
+        ty: Ty::Struct(&ABI_F64_X5),
+    },
+    Shape {
+        key: "s_i64f64",
+        ty: Ty::Struct(&ABI_I64_F64),
+    },
+    Shape {
+        key: "s_f64i64",
+        ty: Ty::Struct(&ABI_F64_I64),
+    },
+    Shape {
+        key: "s_i32f32",
+        ty: Ty::Struct(&ABI_I32_F32),
+    },
+    Shape {
+        key: "s_i32f32i32",
+        ty: Ty::Struct(&ABI_I32_F32_I32),
     },
 ];
 
@@ -633,6 +864,11 @@ impl Rng {
         match leaf {
             Leaf::Bool => Value::Bool(self.next() & 1 == 1),
             Leaf::Ptr => Value::Ptr((self.next() % PROBE_BYTES.len() as u64) as u8),
+            // A whole number in +/-1,000,000: exactly representable in binary32
+            // (every integer below 2^24 is) and therefore in binary64 too, so
+            // neither width rounds it and both sides convert it back to the
+            // same integer.
+            Leaf::F32 | Leaf::F64 => Value::Float((self.next() % 2_000_001) as i64 - 1_000_000),
             _ => {
                 let width = leaf
                     .integer_width()
@@ -676,12 +912,16 @@ fn c_prelude() -> String {
     out.push_str("typedef unsigned int rue_u32;\n");
     out.push_str("typedef long rue_i64;\n");
     out.push_str("typedef unsigned long rue_u64;\n");
-    out.push_str("typedef _Bool rue_bool;\n\n");
+    out.push_str("typedef _Bool rue_bool;\n");
+    out.push_str("typedef float rue_f32;\n");
+    out.push_str("typedef double rue_f64;\n\n");
     out.push_str("_Static_assert(sizeof(rue_i8) == 1, \"signed char must be 8-bit\");\n");
     out.push_str("_Static_assert(sizeof(rue_i16) == 2, \"short must be 16-bit\");\n");
     out.push_str("_Static_assert(sizeof(rue_i32) == 4, \"int must be 32-bit\");\n");
     out.push_str("_Static_assert(sizeof(rue_i64) == 8, \"long must be 64-bit under LP64\");\n");
-    out.push_str("_Static_assert(sizeof(void *) == 8, \"pointers must be 64-bit\");\n\n");
+    out.push_str("_Static_assert(sizeof(void *) == 8, \"pointers must be 64-bit\");\n");
+    out.push_str("_Static_assert(sizeof(rue_f32) == 4, \"float must be binary32\");\n");
+    out.push_str("_Static_assert(sizeof(rue_f64) == 8, \"double must be binary64\");\n\n");
     out.push_str(&format!(
         "static const rue_u8 c_probe_bytes[{}] = {{ {probe} }};\n\n",
         PROBE_BYTES.len()
@@ -738,7 +978,10 @@ fn c_mix(expr: &str, leaf: Leaf, multiplier: u64) -> String {
     let widened = match leaf {
         Leaf::Ptr => format!("(rue_u64)(*({expr}))"),
         Leaf::Bool => format!("(rue_u64)(({expr}) ? 1 : 0)"),
-        _ if leaf.is_signed() => format!("(rue_u64)(rue_i64)({expr})"),
+        // Both go through `rue_i64`: a signed integer so the cast to `rue_u64`
+        // sees the sign extension, and a float because converting it to a
+        // signed 64-bit integer is exact for the whole numbers the grid uses.
+        _ if leaf.is_float() || leaf.is_signed() => format!("(rue_u64)(rue_i64)({expr})"),
         _ => format!("(rue_u64)({expr})"),
     };
     format!("    acc += {widened} * {multiplier}UL;\n")
@@ -760,6 +1003,10 @@ fn rue_mix(index: usize, expr: &str, leaf: Leaf, multiplier: u64) -> String {
             out.push_str(&format!(
                 "    let x{index}: u64 = if {expr} {{ 1 }} else {{ 0 }};\n"
             ));
+        }
+        Leaf::F32 | Leaf::F64 => {
+            out.push_str(&format!("    let t{index}: i64 = @float_to_int({expr});\n"));
+            out.push_str(&format!("    let x{index}: u64 = @bitCast(t{index});\n"));
         }
         Leaf::I64 => {
             out.push_str(&format!("    let x{index}: u64 = @bitCast({expr});\n"));

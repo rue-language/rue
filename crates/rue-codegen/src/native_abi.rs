@@ -85,6 +85,34 @@ impl NativeImage {
         }
     }
 
+    /// The value's members when it is a homogeneous floating-point aggregate:
+    /// the width every member shares and how many there are.
+    ///
+    /// AAPCS64 rule C.3 spends one floating-point register per HFA *member*,
+    /// not one per eightbyte, so a `{f32, f32, f32, f32}` crosses in four
+    /// `s`-registers spanning two eightbytes. Recognizing that shape is what
+    /// lets [`NativeArg::marshal`] hand each member's own leaf vreg to its own
+    /// register instead of packing the image; `{f64, f64}`, whose members
+    /// already start their own eightbytes, reaches the same answer through
+    /// [`Self::direct_leaves`].
+    ///
+    /// A tag-dispatched image has no members, nor does a map whose leaves are
+    /// not all floats of one width laid end to end, nor one whose float leaf is
+    /// an enum payload's general-purpose bit carrier.
+    pub fn homogeneous_float_members(&self) -> Option<(FloatWidth, u32)> {
+        image_float_members(&self.leaf_classes()?)
+    }
+
+    /// The marshaling rule's view of this image's leaves, or `None` for a
+    /// tag-dispatched image, whose leaves move with the active variant and so
+    /// are always read out of memory.
+    pub fn leaf_classes(&self) -> Option<Vec<ImageLeafClass>> {
+        let NativeImageKind::Map { map, .. } = &self.kind else {
+            return None;
+        };
+        Some(map.iter().map(leaf_class).collect())
+    }
+
     /// The bank and width each leaf's own vreg travels in when the leaves *are*
     /// the eightbytes, or `None` when the image must be marshaled.
     ///
@@ -95,25 +123,117 @@ impl NativeImage {
     /// are padding, which no reader of the image looks at.) A tag-dispatched
     /// image is never direct: its leaves move with the active variant.
     pub fn direct_leaves(&self) -> Option<Vec<AbiSlotClass>> {
-        let NativeImageKind::Map { map, .. } = &self.kind else {
-            return None;
-        };
-        let direct = map
-            .iter()
-            .enumerate()
-            .all(|(index, leaf)| leaf.byte_offset == i32::try_from(index * 8).unwrap_or(i32::MAX));
-        if !direct {
-            return None;
-        }
-        Some(map.iter().map(leaf_slot_class).collect())
+        image_direct_leaves(&self.leaf_classes()?)
     }
+}
+
+/// The one fact the marshaling rule reads about each leaf of a compact image:
+/// the byte it starts at, and the register file its own vreg lives in.
+///
+/// Every crossing projects its own leaf description onto this pair — a native
+/// call and a foreign call from the image's slot map, an export from its
+/// flattened [`crate::export_thunk::ImageLeaf`]s — so all three consult one
+/// marshaling rule rather than three lookalikes.
+pub type ImageLeafClass = (i32, AbiSlotClass);
+
+/// The pair one compact-image slot presents to the marshaling rule.
+fn leaf_class(leaf: &PhysicalEnumSlot) -> ImageLeafClass {
+    (leaf.byte_offset, leaf_slot_class(leaf))
+}
+
+/// The value's members when it is a homogeneous floating-point aggregate: the
+/// width every member shares and how many there are, or `None` when the leaves
+/// are not all floats of one width laid end to end.
+///
+/// Both crossings ask this one question so an import, an export, and a native
+/// call cannot disagree about whether an aggregate travels member-wise.
+pub fn image_float_members(leaves: &[ImageLeafClass]) -> Option<(FloatWidth, u32)> {
+    let AbiSlotClass::Fp(width) = leaves.first()?.1 else {
+        return None;
+    };
+    let stride = i32::from(width.bytes());
+    leaves
+        .iter()
+        .enumerate()
+        .all(|(index, (offset, class))| {
+            *class == AbiSlotClass::Fp(width)
+                && *offset == i32::try_from(index).unwrap_or(i32::MAX) * stride
+        })
+        .then(|| (width, u32::try_from(leaves.len()).unwrap_or(u32::MAX)))
+}
+
+/// The file each leaf's own vreg travels in when the leaves *are* the
+/// eightbytes — leaf *i* starts at byte `8 * i` — and `None` otherwise.
+pub fn image_direct_leaves(leaves: &[ImageLeafClass]) -> Option<Vec<AbiSlotClass>> {
+    leaves
+        .iter()
+        .enumerate()
+        .all(|(index, (offset, _))| *offset == i32::try_from(index * 8).unwrap_or(i32::MAX))
+        .then(|| leaves.iter().map(|(_, class)| *class).collect())
+}
+
+/// How an aggregate with these image `leaves` presents itself to `location`:
+/// as its own leaf vregs, or as the eightbytes of a staged image.
+///
+/// This is the whole marshaling decision, made once for every crossing —
+/// a native call's argument and result, a foreign call's, and an export's.
+/// Three shapes reach [`NativeArgMarshal::Direct`]: a homogeneous
+/// floating-point aggregate the row placed member-wise (AAPCS64 rule C.3), a
+/// value whose leaves already start their own eightbytes, and — through those
+/// two — every one-leaf value. Anything else, and anything whose leaf banks
+/// disagree with the banks the placement named, is packed through the image.
+pub fn aggregate_marshal(
+    leaves: &[ImageLeafClass],
+    eightbytes: u32,
+    location: ArgLocation,
+) -> NativeArgMarshal {
+    let packed = NativeArgMarshal::Image { eightbytes };
+    // A value with no leaves has nothing to hand over leaf by leaf; whatever
+    // bytes it occupies cross as its image.
+    if leaves.is_empty() {
+        return packed;
+    }
+    // A homogeneous floating-point aggregate placed in floating-point registers
+    // crosses one *member* per register (AAPCS64 rule C.3). Its members are
+    // exactly its leaves, so every leaf vreg travels whole and nothing is
+    // packed; the placement's register count is what says the row read the
+    // aggregate by member rather than by eightbyte.
+    if let ArgLocation::Registers { pieces } = location
+        && pieces.uniform_class() == Some(CRegisterClass::Fp)
+        && let Some((width, members)) = image_float_members(leaves)
+        && members == pieces.len()
+    {
+        return NativeArgMarshal::Direct {
+            classes: vec![AbiSlotClass::Fp(width); members as usize],
+        };
+    }
+    let Some(classes) = image_direct_leaves(leaves) else {
+        return packed;
+    };
+    // An aggregate whose leaves start their own eightbytes still marshals
+    // through its image when the convention puts an eightbyte in a bank its
+    // leaf does not live in — AAPCS64 passes a composite in integer registers
+    // whatever its members are (section 6.8.2 rules C.13 and C.14), and an
+    // enum's union payload is a general-purpose bit carrier even where every
+    // variant puts a float there.
+    if let ArgLocation::Registers { pieces } = location {
+        let banks_agree = classes.len() == pieces.len() as usize
+            && classes
+                .iter()
+                .zip(pieces.as_slice())
+                .all(|(class, piece)| class.bank() == piece.class);
+        if !banks_agree {
+            return packed;
+        }
+    }
+    NativeArgMarshal::Direct { classes }
 }
 
 /// The bank one image leaf's own vreg belongs to: an enum's union payload is a
 /// general-purpose bit carrier whatever its variants hold, a float leaf rides
 /// in the floating-point file at its own width, everything else is
 /// general-purpose.
-fn leaf_slot_class(leaf: &PhysicalEnumSlot) -> AbiSlotClass {
+pub fn leaf_slot_class(leaf: &PhysicalEnumSlot) -> AbiSlotClass {
     match leaf.float_width {
         Some(width) if !leaf.bit_carrier => AbiSlotClass::Fp(width),
         _ => AbiSlotClass::Gp,
@@ -175,33 +295,25 @@ impl NativeArg {
     /// The bank and move width of each eightbyte the value presents to
     /// `location`, and whether they are the value's own leaf vregs.
     ///
-    /// A value's leaves are its eightbytes only if they also travel in the
-    /// banks the placement named: an aggregate whose leaves start their own
-    /// eightbytes still marshals through its image when the convention puts an
-    /// eightbyte in a bank its leaf does not live in — AAPCS64 passes a
-    /// composite in integer registers whatever its members are (section 6.8.2
-    /// rules C.13 and C.14), and an enum's union payload is a general-purpose
-    /// bit carrier even where every variant puts a float there.
+    /// An aggregate's answer is [`aggregate_marshal`]'s, the one home of that
+    /// decision; a scalar is trivially its own single piece and a zero-sized
+    /// value presents none.
     pub fn marshal(&self, location: ArgLocation) -> NativeArgMarshal {
-        let marshal = self.eightbyte_classes();
-        let (NativeArgMarshal::Direct { classes }, ArgLocation::Registers { pieces }) =
-            (&marshal, location)
-        else {
-            return marshal;
-        };
-        let banks_agree = classes.len() == pieces.len() as usize
-            && classes
-                .iter()
-                .zip(pieces.as_slice())
-                .all(|(class, piece)| class.bank() == piece.class);
-        if banks_agree {
-            return marshal;
-        }
         match self {
-            Self::Aggregate { image } => NativeArgMarshal::Image {
-                eightbytes: image.eightbytes(),
+            Self::Omitted => NativeArgMarshal::Direct {
+                classes: Vec::new(),
             },
-            _ => marshal,
+            Self::Scalar { class, .. } => NativeArgMarshal::Direct {
+                classes: vec![*class],
+            },
+            Self::Aggregate { image } => match image.leaf_classes() {
+                Some(leaves) => aggregate_marshal(&leaves, image.eightbytes(), location),
+                // A tag-dispatched image's leaves move with the active variant,
+                // so its eightbytes are always read out of memory.
+                None => NativeArgMarshal::Image {
+                    eightbytes: image.eightbytes(),
+                },
+            },
         }
     }
 
@@ -214,28 +326,6 @@ impl NativeArg {
     /// construction (ADR-0084).
     pub fn marshal_in_registers(&self, pieces: rue_air::RegisterPieces) -> NativeArgMarshal {
         self.marshal(ArgLocation::Registers { pieces })
-    }
-
-    /// The banks the value's own leaf vregs live in, before the placement is
-    /// consulted.
-    fn eightbyte_classes(&self) -> NativeArgMarshal {
-        match self {
-            Self::Omitted => NativeArgMarshal::Direct {
-                classes: Vec::new(),
-            },
-            Self::Scalar { class, .. } => NativeArgMarshal::Direct {
-                classes: vec![*class],
-            },
-            Self::Aggregate { image } => match image.direct_leaves() {
-                Some(classes) => NativeArgMarshal::Direct { classes },
-                // A marshaled eightbyte is a 64-bit lane of the image, so an
-                // SSE-classified one moves as a whole double even when the
-                // leaves inside it are `f32`s.
-                None => NativeArgMarshal::Image {
-                    eightbytes: image.eightbytes(),
-                },
-            },
-        }
     }
 }
 

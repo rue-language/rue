@@ -1372,3 +1372,221 @@ fn main() -> i32 {
   { path = "a.rue", source = """pub fn main() -> i32 { 7 }""" },
 ]
 exit_code = 7
+
+# --- P5: floating point and the FP calling convention (ADR-0064 P5) ---------
+#
+# Floats are FFI-safe scalars (spec 9.3:1e): `f32` is C `float` and `f64` is C
+# `double`, and both cross in the row's floating-point register file. The
+# archive's `ffi_fadd` / `ffi_fmul32` members are leaves that read their
+# arguments out of `xmm0`/`xmm1` (SysV) or `d0`/`d1` and `s0`/`s1` (AAPCS64)
+# and answer in the first of them, so a wrong bank or a wrong move width
+# produces a different number rather than a link error. Every value here is a
+# whole number in both binary32 and binary64, so the printed integer is exact.
+
+[[case]]
+name = "x86_64_linux_float_import_returns_exact_result"
+description = "An `extern \"C\"` import taking two `f64`s and one taking two `f32`s cross in the SSE registers and return exact results on x86-64."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn ffi_fadd(a: f64, b: f64) -> f64;
+    fn ffi_fmul32(a: f32, b: f32) -> f32;
+}
+
+fn main() -> i32 {
+    let sum = checked { ffi_fadd(1.5, 2.25) };
+    let product = checked { ffi_fmul32(3.0, 5.0) };
+    @dbg(@float_to_int(sum * 4.0));
+    @dbg(@float_to_int(@float_cast(product)));
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "x86-64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = "15\n15\n"
+exit_code = 0
+
+[[case]]
+name = "aarch64_linux_float_import_returns_exact_result"
+description = "The same float imports cross in `d0`/`d1` and `s0`/`s1` under AAPCS64 and return the same exact results."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn ffi_fadd(a: f64, b: f64) -> f64;
+    fn ffi_fmul32(a: f32, b: f32) -> f32;
+}
+
+fn main() -> i32 {
+    let sum = checked { ffi_fadd(1.5, 2.25) };
+    let product = checked { ffi_fmul32(3.0, 5.0) };
+    @dbg(@float_to_int(sum * 4.0));
+    @dbg(@float_to_int(@float_cast(product)));
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "aarch64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = "15\n15\n"
+exit_code = 0
+
+[[case]]
+name = "x86_64_linux_float_export_called_from_c"
+description = "A separately compiled C caller invokes `pub extern \"C\" fn` exports taking and returning `f64` and `f32`; both reduce to aliases of their native bodies, since the two rows place a float identically."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn ffi_call_float_exports() -> i64;
+}
+
+pub extern "C" fn rue_fadd_export(a: f64, b: f64) -> f64 { a + b }
+pub extern "C" fn rue_f32_export(a: f32, b: f32) -> f32 { a * b }
+
+fn main() -> i32 {
+    @dbg(checked { ffi_call_float_exports() });
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "x86-64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = "315\n"
+exit_code = 0
+
+[[case]]
+name = "aarch64_linux_float_export_called_from_c"
+description = "The same C caller reaches the same float exports through `d0`/`d1` and `s0`/`s1` under AAPCS64."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn ffi_call_float_exports() -> i64;
+}
+
+pub extern "C" fn rue_fadd_export(a: f64, b: f64) -> f64 { a + b }
+pub extern "C" fn rue_f32_export(a: f32, b: f32) -> f32 { a * b }
+
+fn main() -> i32 {
+    @dbg(checked { ffi_call_float_exports() });
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "aarch64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = "315\n"
+exit_code = 0
+
+# A float-carrying `@repr(c)` aggregate crosses by value in every direction the
+# classifier can place one. The shapes here are the ones whose two rows differ:
+# `{f64, f64}` is two SSE eightbytes under SysV and a homogeneous
+# floating-point aggregate of two members under AAPCS64; `{f32; 4}` is two SSE
+# eightbytes of packed pairs under SysV and four `s`-register members under
+# AAPCS64; `{i64, f64}` splits the banks under SysV and is an ordinary integer
+# composite under AAPCS64; the 40-byte one is MEMORY under SysV and
+# by-reference under AAPCS64. Execution across the whole grid at every argument
+# and result position is `//crates/rue-c-abi-matrix:c-abi-matrix-test`; what
+# these two pin is that each row's classifier reaches machine code at all.
+
+[[case]]
+name = "float_aggregates_cross_by_value_under_sysv"
+description = "HFA, packed-pair, split-bank, and oversized float `@repr(c)` aggregates are accepted in both directions of a foreign signature and reach machine code on the x86-64 row."
+files = [{ path = "main.rue", source = """
+@repr(c) struct Pair { x: f64, y: f64 }
+@repr(c) struct Quad { a: f32, b: f32, c: f32, d: f32 }
+@repr(c) struct Split { tag: i64, value: f64 }
+@repr(c) struct Wide { values: [f64; 5] }
+
+extern "C" {
+    fn c_pair(p: Pair) -> Pair;
+    fn c_quad(q: Quad) -> Quad;
+    fn c_split(s: Split) -> Split;
+    fn c_wide(w: Wide) -> Wide;
+}
+
+pub extern "C" fn rue_pair(p: Pair) -> Pair { p }
+pub extern "C" fn rue_quad(q: Quad) -> Quad { q }
+pub extern "C" fn rue_split(s: Split) -> Split { s }
+pub extern "C" fn rue_wide(w: Wide) -> Wide { w }
+
+fn main() -> i32 { 0 }
+""" }]
+args = ["--preview", "c_ffi", "--target", "x86-64-linux", "--emit", "asm", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Assembly (x86-64-linux) ==="]
+
+[[case]]
+name = "float_aggregates_cross_by_value_under_aapcs64"
+description = "The same aggregates reach machine code under AAPCS64, where the two HFAs travel one member per `v`-register and the 40-byte one goes by reference."
+files = [{ path = "main.rue", source = """
+@repr(c) struct Pair { x: f64, y: f64 }
+@repr(c) struct Quad { a: f32, b: f32, c: f32, d: f32 }
+@repr(c) struct Split { tag: i64, value: f64 }
+@repr(c) struct Wide { values: [f64; 5] }
+
+extern "C" {
+    fn c_pair(p: Pair) -> Pair;
+    fn c_quad(q: Quad) -> Quad;
+    fn c_split(s: Split) -> Split;
+    fn c_wide(w: Wide) -> Wide;
+}
+
+pub extern "C" fn rue_pair(p: Pair) -> Pair { p }
+pub extern "C" fn rue_quad(q: Quad) -> Quad { q }
+pub extern "C" fn rue_split(s: Split) -> Split { s }
+pub extern "C" fn rue_wide(w: Wide) -> Wide { w }
+
+fn main() -> i32 { 0 }
+""" }]
+args = ["--preview", "c_ffi", "--target", "aarch64-linux", "--emit", "asm", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Assembly (aarch64-linux) ==="]
+
+# An `f32` argument past the floating-point register budget is stacked, and the
+# footprint it takes there is the one row-level difference a float has: AAPCS64
+# gives it the low four bytes of a whole eight-byte slot, while Apple's arm64
+# amendment packs the outgoing argument area at natural size and gives it four
+# bytes outright. Both rows are built here; neither is executed, because this
+# suite has no Apple host and the archive carries no ten-argument leaf.
+
+[[case]]
+name = "aarch64_macos_stacked_f32_packs_at_natural_size"
+description = "A ninth and tenth `f32` argument are past the eight `v`-register budget and are stacked; Apple's arm64 row packs each at its own four-byte width."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn ffi_stack_f32(
+        a: f32, b: f32, c: f32, d: f32, e: f32,
+        f: f32, g: f32, h: f32, i: f32, j: f32,
+    ) -> f32;
+}
+
+fn main() -> i32 {
+    let value = checked { ffi_stack_f32(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0) };
+    @dbg(@float_to_int(@float_cast(value)));
+    0
+}
+""" }]
+args = ["--preview", "c_ffi", "--target", "aarch64-macos", "--emit", "asm", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Assembly (aarch64-macos) ==="]
+
+[[case]]
+name = "aarch64_linux_stacked_f32_takes_a_whole_slot"
+description = "The same signature under AAPCS64 proper, where a stacked `f32` occupies the low four bytes of a whole eight-byte slot."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn ffi_stack_f32(
+        a: f32, b: f32, c: f32, d: f32, e: f32,
+        f: f32, g: f32, h: f32, i: f32, j: f32,
+    ) -> f32;
+}
+
+fn main() -> i32 {
+    let value = checked { ffi_stack_f32(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0) };
+    @dbg(@float_to_int(@float_cast(value)));
+    0
+}
+""" }]
+args = ["--preview", "c_ffi", "--target", "aarch64-linux", "--emit", "asm", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Assembly (aarch64-linux) ==="]

@@ -70,6 +70,42 @@ denote the same convention and place values identically; the difference is what
 the declaration *says*, which is why the mismatched case is a rejection rather
 than a substitution.
 
+## FFI-safe types
+
+{{ rule(id="9.3:1e", cat="legality-rule") }}
+
+Every parameter and result type of a foreign declaration or export **MUST** be
+FFI-safe. The FFI-safe types are the **C-compatible scalars** — the signed and
+unsigned integer types `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`;
+`bool`, which crosses as C `_Bool` with its one-byte 0/1 representation; the
+floating-point types `f32` and `f64`, which cross as C `float` and `double`; and
+the raw pointer types `ptr const T` and `ptr mut T`, which cross as C pointers —
+together with a struct marked `@repr(c)` that is itself FFI-eligible (§ 2.5:36).
+A type that is none of these is ill-formed in a foreign signature and **MUST** be
+rejected at compile time; in particular an enum, which is a tagged sum type with
+no C counterpart, is not FFI-safe, and a fixed-size array is eligible only as a
+`@repr(c)` struct *field*, never as a parameter or result of its own, because C
+decays an array argument to a pointer.
+
+{{ rule(id="9.3:1f", cat="normative") }}
+
+A value of an FFI-safe type crosses the boundary where the named calling
+convention places it, and its representation on each side is the other's:
+`f32` and `f64` are IEEE-754 binary32 and binary64 (§ 3.12), which is what C
+`float` and `double` are on every target Rue supports, so a float crosses in the
+convention's floating-point register file with no conversion, and a `@repr(c)`
+struct crosses as the C object its layout guarantee (§ 2.5:33) makes it —
+including one whose fields are floating-point, which the platform psABI may
+classify into floating-point registers rather than integer ones.
+
+{{ rule(id="9.3:1g", cat="informative") }}
+
+The FFI-safe set is deliberately the set whose representation is *known* rather
+than the set that could be given one: C has no representation for a Rue enum,
+and Rue has none for C `long double`, so neither crosses and neither is
+approximated. The same reject-don't-guess discipline is why a nested aggregate
+must carry its own `@repr(c)` marker (§ 2.5:36) instead of inheriting one.
+
 ## Abort at the boundary
 
 {{ rule(id="9.3:2", cat="dynamic-semantics") }}
