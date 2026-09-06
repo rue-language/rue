@@ -4,11 +4,12 @@
 //! including test case parsing, execution, and output comparison.
 
 pub mod pipe_drain;
+pub mod supervise;
 
-use pipe_drain::{PIPE_DRAIN_FINISH_TIMEOUT, spawn_pipe_drain};
 use rue_error::{PreviewFeature, error_code_metadata};
 use rue_target::Target;
 use serde::{Deserialize, Deserializer};
+use supervise::{CaptureStream, Outcome, OverflowPolicy, Supervisor};
 
 /// Default timeout for test execution in milliseconds (10 seconds).
 pub const DEFAULT_TIMEOUT_MS: u64 = 10_000;
@@ -23,7 +24,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// The coordinates of one slice in a sharded test corpus (RUE-1116).
 ///
@@ -2696,21 +2697,9 @@ pub fn kill_process_group(child: &mut std::process::Child) {
 
 /// Run a command with a timeout and optional stdin input.
 ///
-/// This function spawns a child process (in its own process group), drains its
-/// stdout and stderr on dedicated reader threads, feeds it stdin (if provided)
-/// on its own writer thread, and polls for completion, killing the whole
-/// process group if it exceeds the specified timeout.
-///
-/// # Why the reader/writer threads (RUE-338 deadlock class)
-///
-/// Draining stdout AND stderr **concurrently**, starting immediately after
-/// spawn, is essential: if the pipes were read only after the child exits, a
-/// program that writes more than the OS pipe capacity (~64KB on Linux) would
-/// block forever in `write()`, `try_wait` would never report an exit, and the
-/// timeout would manufacture a false failure. For the same reason stdin is
-/// written on its own thread — a large input can't block the drain, and the
-/// drain can't block the stdin write. Mirrors the oracle-diff fuzzer's
-/// `run_with_timeout` (RUE-338).
+/// A thin adapter over [`supervise::Supervisor`]: the child runs in its own
+/// process group with its pipes drained concurrently, and the group is killed
+/// if it outlives `timeout`.
 ///
 /// # Arguments
 /// * `cmd` - The command to run (already configured with arguments)
@@ -2734,10 +2723,11 @@ pub fn run_with_timeout(
 /// from each of stdout and stderr.
 ///
 /// Unlike checking [`Output`] after [`run_with_timeout`] returns, this limit is
-/// enforced by the pipe-drain threads as bytes arrive. Once either stream
-/// exceeds the limit, further bytes are discarded, the process group is
-/// killed, and the function returns a fatal failure identifying the stream.
-/// The limit applies independently to stdout and stderr.
+/// enforced by the pipe-drain threads as bytes arrive. This harness runs
+/// [`supervise::OverflowPolicy::Fail`]: once either stream exceeds the limit,
+/// further bytes are discarded, the process group is killed, and the function
+/// returns a fatal failure identifying the stream. The limit applies
+/// independently to stdout and stderr.
 pub fn run_with_timeout_and_output_limit(
     cmd: Command,
     timeout: Duration,
@@ -2753,106 +2743,49 @@ fn run_with_timeout_impl(
     stdin_input: Option<&str>,
     output_limit: Option<usize>,
 ) -> TestResult<Output> {
-    configure_process_group(&mut cmd);
-    let mut child = cmd
-        .stdin(if stdin_input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| TestFailure::fatal(format!("Failed to spawn process: {}", e)))?;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut supervisor = Supervisor::new(cmd, timeout).overflow_policy(OverflowPolicy::Fail);
+    if let Some(limit) = output_limit {
+        supervisor = supervisor.stream_budget(limit);
+    }
+    if let Some(input) = stdin_input {
+        supervisor = supervisor.stdin_input(input);
+    }
+    let run = supervisor
+        .run()
+        .map_err(|error| TestFailure::fatal(error.to_string()))?;
 
-    // Drain stdout and stderr on their own threads, started right after spawn so
-    // neither pipe can fill and wedge the child (see the RUE-338 note above).
-    // The drains send chunks over channels instead of being joined directly:
-    // if a descendant process inherits a pipe fd and keeps it open after the
-    // direct child exits, a reader thread can block forever waiting for EOF.
-    let mut stdout_drain = spawn_pipe_drain(child.stdout.take(), output_limit);
-    let mut stderr_drain = spawn_pipe_drain(child.stderr.take(), output_limit);
-
-    // Feed stdin on its own thread so a large input can't block the drain (and
-    // vice versa). A program may exit without reading all of its input; a broken
-    // pipe here is not a test failure, so errors are ignored (matching the CLI
-    // harness). Dropping the pipe when the closure ends closes it, signaling EOF.
-    let stdin_writer = child.stdin.take().map(|mut stdin| {
-        let input = stdin_input.unwrap_or_default().to_string();
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(input.as_bytes());
-        })
-    });
-
-    let start = Instant::now();
-
-    loop {
-        stdout_drain.poll();
-        stderr_drain.poll();
-        if stdout_drain.overflowed() || stderr_drain.overflowed() {
-            kill_process_group(&mut child);
-            let stream = match (stdout_drain.overflowed(), stderr_drain.overflowed()) {
-                (true, true) => "stdout and stderr",
-                (true, false) => "stdout",
-                (false, true) => "stderr",
-                (false, false) => unreachable!(),
+    match run.outcome {
+        Outcome::Exited => Ok(Output {
+            status: run
+                .status
+                .expect("a child that exited reported its own status"),
+            stdout: run.stdout.bytes,
+            stderr: run.stderr.bytes,
+        }),
+        Outcome::TimedOut => Err(TestFailure::fatal(format!(
+            "{} test execution timed out after {} ms (process group killed)",
+            TIMEOUT_PREFIX,
+            timeout.as_millis()
+        ))),
+        Outcome::Overflowed(overflow) => {
+            let stream = match overflow.stream {
+                CaptureStream::Stdout => "stdout",
+                CaptureStream::Stderr => "stderr",
+                // No caller of this entry point adds one.
+                CaptureStream::Extra(index) => unreachable!("unexpected extra capture {index}"),
             };
-            return Err(TestFailure::fatal(format!(
-                "OUTPUT LIMIT: {stream} exceeded the {}-byte capture limit (process group killed)",
-                output_limit.expect("overflow requires an output limit")
-            )));
-        }
-
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                // Process finished: collect any fully-drained output, but do
-                // not wait forever if a descendant inherited a pipe fd.
-                stdout_drain.finish(PIPE_DRAIN_FINISH_TIMEOUT);
-                stderr_drain.finish(PIPE_DRAIN_FINISH_TIMEOUT);
-                drop(stdin_writer);
-                if stdout_drain.overflowed() || stderr_drain.overflowed() {
-                    let stream = match (stdout_drain.overflowed(), stderr_drain.overflowed()) {
-                        (true, true) => "stdout and stderr",
-                        (true, false) => "stdout",
-                        (false, true) => "stderr",
-                        (false, false) => unreachable!(),
-                    };
-                    return Err(TestFailure::fatal(format!(
-                        "OUTPUT LIMIT: {stream} exceeded the {}-byte capture limit",
-                        output_limit.expect("overflow requires an output limit")
-                    )));
-                }
-                return Ok(Output {
-                    status,
-                    stdout: stdout_drain.into_bytes(),
-                    stderr: stderr_drain.into_bytes(),
-                });
-            }
-            Ok(None) => {
-                // Still running - check timeout
-                if start.elapsed() > timeout {
-                    // Kill the whole process group, then collect whatever the
-                    // drain helpers already captured without waiting forever
-                    // for EOF from an escaped descendant.
-                    kill_process_group(&mut child);
-                    stdout_drain.finish(PIPE_DRAIN_FINISH_TIMEOUT);
-                    stderr_drain.finish(PIPE_DRAIN_FINISH_TIMEOUT);
-                    drop(stdin_writer);
-                    return Err(TestFailure::fatal(format!(
-                        "{} test execution timed out after {} ms (process group killed)",
-                        TIMEOUT_PREFIX,
-                        timeout.as_millis()
-                    )));
-                }
-                // Sleep briefly before polling again
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(e) => {
-                return Err(TestFailure::fatal(format!(
-                    "Failed to wait for process: {}",
-                    e
-                )));
-            }
+            // A process still running when its budget was exceeded was killed
+            // to stop the flood; one that had already exited was not.
+            let killed = if run.status.is_none() {
+                " (process group killed)"
+            } else {
+                ""
+            };
+            Err(TestFailure::fatal(format!(
+                "OUTPUT LIMIT: {stream} exceeded the {}-byte capture limit{killed}",
+                overflow.budget
+            )))
         }
     }
 }
@@ -3446,6 +3379,7 @@ pub fn find_rue_binary() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     const VALID_TEST_FILE: &str = r#"
 [section]

@@ -63,10 +63,10 @@ rue_binary(
     crate_root = "src/main.rs",
     deps = _DEPS + _COMPILER_ALLOCATOR_DEPS + [
         ":rue-driver",
-        # `rue test` supervises one process per test with the same bounded
-        # pipe-drain, process-group, and timeout mechanics the harnesses use
-        # (ADR-0083 §3 adopts them as contract). One implementation, in
-        # //crates/rue-test-runner:pipe_drain, rather than a second copy here.
+        # `rue test` supervises one process per test through the same loop the
+        # harnesses use — bounded pipe drains, process group, timeout, group
+        # reap (ADR-0083 §3 adopts them as contract). One implementation, in
+        # rue-test-runner's `supervise` module, rather than a second copy here.
         "//crates/rue-test-runner:rue-test-runner",
     ],
     test_deps = [

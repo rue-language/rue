@@ -27,12 +27,14 @@ use rue_oracle::{
     MAX_STDERR_BYTES, MAX_STDOUT_BYTES, RunSourceError, TrapKind, Unsupported, UnsupportedKind,
     run_source_cfg_differential,
 };
+use rue_test_runner::supervise::{
+    Outcome as SupervisedOutcome, OverflowPolicy, SupervisionError, Supervisor,
+};
 use std::fmt;
-use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitCode, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, ExitCode, ExitStatus, Stdio};
+use std::time::Duration;
 
 /// Compiler optimization lanes covered by the native differential.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -700,103 +702,50 @@ enum ProcessOutcome {
     TimedOut,
 }
 
-/// Spawn a configured command, drain any piped stdout/stderr **concurrently**
-/// via reader threads, and wait with a manual timeout.
+/// Run a configured command under the shared supervisor
+/// ([`rue_test_runner::supervise`]), retaining a bounded prefix of each stream.
 ///
-/// Draining concurrently is essential (RUE-338): if the pipes were only read
-/// after the child exits, a program that writes more than the OS pipe capacity
-/// (~64KB on Linux) would block on `write()` forever, `try_wait` would never
-/// report an exit. This applies to the Rue compiler as well as to generated
-/// binaries: compiler diagnostics can also exceed a pipe's capacity.
+/// The differential runs [`OverflowPolicy::Truncate`]: a program past its
+/// retention budget keeps running and the capture records that it was cut, so
+/// the comparison can refuse the prefix rather than let a divergence past the
+/// cap read as agreement. Draining while the child runs is what keeps a program
+/// writing more than a pipe's capacity (~64KB on Linux) from blocking in
+/// `write` forever and turning into a manufactured timeout (RUE-338); this
+/// applies to the compiler as much as to a generated binary, since diagnostics
+/// can also outgrow a pipe.
 ///
-/// The reader threads start immediately after `spawn` so the child always has
-/// a consumer. On timeout or a wait error, kill/reap happens before joining the
-/// readers; the closed write ends give them EOF, so no child or thread leaks.
-fn run_process_with_timeout(
-    mut cmd: Command,
-    timeout: Duration,
-) -> std::io::Result<ProcessOutcome> {
-    rue_test_runner::configure_process_group(&mut cmd);
-    let child = cmd.spawn()?;
-    wait_for_process(child, timeout)
-}
+/// The group is SIGKILLed once the direct child is gone, so a linker or a
+/// native grandchild that inherited a pipe cannot outlive the run.
+fn run_process_with_timeout(cmd: Command, timeout: Duration) -> std::io::Result<ProcessOutcome> {
+    let run = Supervisor::new(cmd, timeout)
+        .stream_budgets(MAX_STDOUT_BYTES, MAX_STDERR_BYTES)
+        .overflow_policy(OverflowPolicy::Truncate)
+        .reap_group(true)
+        .run()
+        .map_err(SupervisionError::into_io)?;
 
-fn wait_for_process(mut child: Child, timeout: Duration) -> std::io::Result<ProcessOutcome> {
-    // When piped, stdout and stderr are drained to EOF while retaining fixed
-    // prefixes; compiler stdout is configured as null. Both readers run on
-    // their own thread so neither pipe can fill and block the child.
-    let stdout_pipe = child.stdout.take();
-    let stderr_pipe = child.stderr.take();
-    let stdout_reader = std::thread::spawn(move || {
-        stdout_pipe.map_or_else(CappedRead::default, |out| {
-            read_capped(out, MAX_STDOUT_BYTES)
-        })
-    });
-    let stderr_reader = std::thread::spawn(move || {
-        stderr_pipe.map_or_else(CappedRead::default, |err| {
-            read_capped(err, MAX_STDERR_BYTES)
-        })
-    });
-
-    let start = Instant::now();
-    let status: std::io::Result<Option<ExitStatus>> = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                // The direct child is authoritative for success even if it
-                // crossed the deadline concurrently with this poll. Tear down
-                // any descendants it left in its private process group before
-                // joining readers, because an inherited pipe fd would
-                // otherwise keep those joins blocked forever.
-                terminate_and_reap(&mut child);
-                break Ok(Some(status));
-            }
-            Ok(None) if start.elapsed() >= timeout => {
-                terminate_and_reap(&mut child);
-                break Ok(None);
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-            Err(error) => {
-                terminate_and_reap(&mut child);
-                break Err(error);
-            }
-        }
-    };
-
-    // Whether the child exited, timed out, or hit a wait error, it has been
-    // reaped before these joins. Its write ends are closed, so both readers hit
-    // EOF and finish promptly.
-    let stdout_capture = stdout_reader.join().unwrap_or_default();
-    let stderr_capture = stderr_reader.join().unwrap_or_default();
-    // Keep stdout raw through ProcessOutcome and Compiled. Lossy conversion is
-    // reserved for diagnostics, so invalid bytes cannot collapse into a false
-    // differential agreement.
-    let stdout = stdout_capture.bytes;
-    let stderr = String::from_utf8_lossy(&stderr_capture.bytes).into_owned();
-
-    match status? {
-        Some(status) => Ok(ProcessOutcome::Exited {
-            status,
-            stdout,
-            stdout_truncated: stdout_capture.truncated,
-            stderr,
-            stderr_truncated: stderr_capture.truncated,
-        }),
-        None => Ok(ProcessOutcome::TimedOut),
-    }
-}
-
-fn terminate_and_reap(child: &mut Child) {
-    // The canonical helper signals the child's private process group before
-    // reaping the direct child. This closes pipe fds inherited by compiler
-    // linkers or native grandchildren as well as handling a natural-exit race.
-    rue_test_runner::kill_process_group(child);
+    Ok(match run.outcome {
+        SupervisedOutcome::TimedOut => ProcessOutcome::TimedOut,
+        // `Truncate` never stops a child, so every other ending is the child's
+        // own.
+        SupervisedOutcome::Exited | SupervisedOutcome::Overflowed(_) => ProcessOutcome::Exited {
+            status: run
+                .status
+                .expect("a child that exited reported its own status"),
+            // Keep stdout raw through ProcessOutcome and Compiled. Lossy
+            // conversion is reserved for diagnostics, so invalid bytes cannot
+            // collapse into a false differential agreement.
+            stdout: run.stdout.bytes,
+            stdout_truncated: run.stdout.truncated,
+            stderr: String::from_utf8_lossy(&run.stderr.bytes).into_owned(),
+            stderr_truncated: run.stderr.truncated,
+        },
+    })
 }
 
 /// Run one generated native binary using the shared bounded subprocess path.
 fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::io::Result<Compiled> {
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     Ok(match run_process_with_timeout(cmd, timeout)? {
         ProcessOutcome::TimedOut => Compiled::Timeout,
         ProcessOutcome::Exited {
@@ -816,41 +765,6 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::io::Result<Comp
             None => Compiled::Crash(status.signal().unwrap_or(0)),
         },
     })
-}
-
-/// Read `r` to EOF, retaining at most `cap` bytes. Reading all the way to EOF
-/// (rather than stopping after `cap`, as `Read::take` would) is what prevents a
-/// drain-deadlock: a program that writes more than `cap` to this pipe must still
-/// have every byte consumed or it blocks on a full pipe forever (RUE-338). The
-/// cap bounds only the memory we keep, not how much we drain; `truncated` records
-/// whether any bytes were discarded after the retained prefix.
-#[derive(Default)]
-struct CappedRead {
-    bytes: Vec<u8>,
-    truncated: bool,
-}
-
-fn read_capped<R: Read>(mut r: R, cap: usize) -> CappedRead {
-    let mut capture = CappedRead::default();
-    let mut chunk = [0u8; 8192];
-    loop {
-        match r.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => {
-                if capture.bytes.len() < cap {
-                    let take = (cap - capture.bytes.len()).min(n);
-                    capture.bytes.extend_from_slice(&chunk[..take]);
-                    capture.truncated |= take < n;
-                } else {
-                    capture.truncated = true;
-                }
-                // Bytes beyond `cap` are read and discarded — draining, not
-                // storing — so the pipe never fills.
-            }
-            Err(_) => break,
-        }
-    }
-    capture
 }
 
 struct Disagreement {
@@ -1074,6 +988,7 @@ mod tests {
     use super::*;
     use rue_oracle::Outcome;
     use std::os::unix::fs::PermissionsExt;
+    use std::time::Instant;
 
     fn make_executable(path: &Path) {
         let mut permissions = std::fs::metadata(path)
@@ -1612,7 +1527,7 @@ mod tests {
 
         assert!(
             start.elapsed() < Duration::from_secs(5),
-            "compiler kill/reap/join must return promptly"
+            "the compiler kill and bounded collection must return promptly"
         );
         assert!(
             matches!(result, Compiled::CompileTimeout),
@@ -1652,7 +1567,7 @@ mod tests {
         assert!(matches!(result, Compiled::CompileTimeout));
         assert!(
             start.elapsed() < Duration::from_secs(5),
-            "process-group kill must close descendant-held pipes before reader joins"
+            "the process-group kill must close descendant-held pipes before collection"
         );
     }
 
@@ -1873,7 +1788,8 @@ mod tests {
         // Run the writer directly so killing the timed child closes the only
         // pipe write end. This is the adversarial always-on-smoke case: a
         // miscompiled binary can print forever, but retained memory stays at
-        // MAX_STDOUT_BYTES and kill/reap/join still returns promptly.
+        // MAX_STDOUT_BYTES and the kill and bounded collection still return
+        // promptly.
         let mut cmd = Command::new("yes");
         cmd.arg("y");
         let start = Instant::now();
@@ -1919,34 +1835,12 @@ mod tests {
     }
 
     #[test]
-    fn read_capped_drains_to_eof_but_keeps_only_cap() {
-        // The drain-vs-keep contract in isolation: given more bytes than the cap,
-        // we consume all of them (Cursor reaches EOF) but retain exactly `cap`.
-        let data = vec![b'z'; 100_000];
-        let kept = read_capped(std::io::Cursor::new(data), MAX_STDERR_BYTES);
-        assert_eq!(kept.bytes.len(), MAX_STDERR_BYTES);
-        assert!(kept.bytes.iter().all(|&b| b == b'z'));
-        assert!(kept.truncated);
-        // Fewer bytes than the cap: keep them all.
-        let kept = read_capped(std::io::Cursor::new(vec![b'q'; 10]), MAX_STDERR_BYTES);
-        assert_eq!(kept.bytes.len(), 10);
-        assert!(!kept.truncated);
-        // Exactly the cap is still complete, not truncated.
-        let kept = read_capped(
-            std::io::Cursor::new(vec![b'x'; MAX_STDERR_BYTES]),
-            MAX_STDERR_BYTES,
-        );
-        assert_eq!(kept.bytes.len(), MAX_STDERR_BYTES);
-        assert!(!kept.truncated);
-    }
-
-    #[test]
     fn timeout_still_reported_for_a_hung_child() {
         // A genuine non-terminating program must still yield `Timeout` (and the
-        // reader threads must be joined, not leaked). We exec `sleep` directly
+        // drains must be collected, not left running). We exec `sleep` directly
         // (not via `sh -c`): the harness always runs a single-process compiled
-        // binary, so killing the child closes every pipe write-end, the readers
-        // hit EOF, and the post-kill join returns at once. `sleep` writes
+        // binary, so killing the child closes every pipe write-end, the drains
+        // hit EOF, and collection returns at once. `sleep` writes
         // nothing, so this is the honest timeout path, distinct from the false
         // one the large-output tests guard against.
         let mut cmd = Command::new("sleep");
@@ -1955,7 +1849,7 @@ mod tests {
         let result = run_with_timeout(cmd, Duration::from_millis(200)).expect("spawn");
         assert!(
             start.elapsed() < Duration::from_secs(5),
-            "kill-then-join must return promptly, not block on the child's full runtime"
+            "the kill and the collection after it must return promptly, not block on the child's full runtime"
         );
         assert!(
             matches!(result, Compiled::Timeout),
