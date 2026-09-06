@@ -894,7 +894,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
                 ctx,
             )?;
-            let call_name = self.intern_body_symbol(&self.method_symbol(struct_id, "len", true))?;
+            let call_name = self.method_symbol_handle(struct_id, "len", true)?;
             let call_ref = air.add_call(
                 None,
                 call_name,

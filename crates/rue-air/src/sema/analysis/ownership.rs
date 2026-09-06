@@ -1020,9 +1020,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             self.record_body_method_dependency((struct_id, len_method))?;
         }
         let (receiver, prefix) = self.materialize_borrow_argument(air, value, ty, span, ctx)?;
-        let ptr_call_name =
-            self.intern_body_symbol(&self.method_symbol(struct_id, "as_ptr", true))?;
-        let len_call_name = self.intern_body_symbol(&self.method_symbol(struct_id, "len", true))?;
+        let ptr_call_name = self.method_symbol_handle(struct_id, "as_ptr", true)?;
+        let len_call_name = self.method_symbol_handle(struct_id, "len", true)?;
         let ptr_ref = air.add_call(
             None,
             ptr_call_name,
@@ -1552,8 +1551,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .call_method_info(struct_id, method)
             .expect("accessor expansion follows a successful method lookup");
         let method_name_str = self.body_interner().resolve(&method).to_string();
-        let call_name = self.method_symbol(struct_id, &method_name_str, true);
-        let call_name = self.intern_body_symbol(&call_name)?;
+        let call_name = self.method_symbol_handle(struct_id, &method_name_str, true)?;
         if self.function_identity(call_name).is_ok_and(|identity| {
             ctx.canonical_function_identity == crate::FunctionInstanceKey::Definition(identity)
         }) {
@@ -4492,8 +4490,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.record_body_method_dependency((struct_id, method))?;
         let (receiver, temp_scope) =
             self.materialize_borrow_argument(air, base_result.air_ref, base_result.ty, span, ctx)?;
-        let call_name =
-            self.intern_body_symbol(&self.method_symbol(struct_id, "byte_at_borrowed", false))?;
+        let call_name = self.method_symbol_handle(struct_id, "byte_at_borrowed", false)?;
         let receiver_mode = AirArgMode::Borrow;
         let call_ref = air.add_call(
             None,

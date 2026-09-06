@@ -141,6 +141,34 @@ pub(crate) trait BodyAuthority {
 
     fn body_type_pool(&self) -> &TypeInternPool;
 
+    /// The live symbol of a callable owned by `struct_id` — a method
+    /// (`P.get`), an associated function (`P::make`), or a destructor
+    /// (`P.__drop`).
+    ///
+    /// Definition sites and call sites are one spelling family: the host
+    /// renders both, so a second separator policy cannot appear on the call
+    /// side and unjoin a map keyed by a member callable symbol (RUE-1236).
+    fn body_member_callable_name(
+        &self,
+        struct_id: StructId,
+        method: &str,
+        has_self: bool,
+    ) -> String;
+
+    /// The interned handle for that spelling.
+    ///
+    /// Separate from rendering because a host may hold the generation's
+    /// derived-spelling memo: an owner and member the shared space already
+    /// issued handles for answer without rendering the join at all.
+    fn try_member_callable_symbol(
+        &self,
+        struct_id: StructId,
+        method: &str,
+        has_self: bool,
+    ) -> Result<Spur, lasso::LassoErrorKind> {
+        self.try_intern_body_symbol(self.body_member_callable_name(struct_id, method, has_self))
+    }
+
     fn body_rir_ref(&self) -> &Rir;
 
     /// Whole-arena census of inline type-constructor head shapes (RUE-596),
@@ -763,8 +791,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         let Some(info) = self.method_info(key) else {
             return Ok(());
         };
-        let symbol = self.method_symbol(key.0, self.body_interner().resolve(&key.1), info.has_self);
-        let symbol = self.intern_body_symbol(&symbol)?;
+        let symbol =
+            self.method_symbol_handle(key.0, self.body_interner().resolve(&key.1), info.has_self)?;
         self.record_body_callable_dependency(symbol);
         Ok(())
     }
@@ -1396,7 +1424,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             && fields
                 .iter()
                 .all(|field| field.ty.is_copy_in_pool(self.storage.body_type_pool()));
-        let destructor = has_destructor.then(|| Arc::from(format!("{name}.__drop").as_str()));
+        let destructor = has_destructor.then(|| {
+            Arc::from(crate::live_symbols::member_callable_name(&name, "__drop", true).as_str())
+        });
         let def = crate::types::StructDef {
             name: Arc::from(name.as_str()),
             fields: fields.to_vec(),
@@ -1629,21 +1659,23 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn has_method(&self, key: (StructId, Spur)) -> bool {
         self.method_info(key).is_some()
     }
-    pub(crate) fn symbol_type_name(&self, struct_id: StructId) -> String {
-        self.body_type_pool().struct_symbol_name(struct_id)
-    }
-    pub(crate) fn method_symbol(
+    /// The handle for a member callable's live symbol, taken through the host
+    /// that also names the definition — and through its derived-spelling memo
+    /// rather than by re-rendering and re-interning the join.
+    pub(crate) fn method_symbol_handle(
         &self,
         struct_id: StructId,
         method: &str,
         has_self: bool,
-    ) -> String {
-        let type_name = self.symbol_type_name(struct_id);
-        if has_self {
-            format!("{type_name}.{method}")
-        } else {
-            format!("{type_name}::{method}")
-        }
+    ) -> CompileResult<Spur> {
+        self.storage
+            .try_member_callable_symbol(struct_id, method, has_self)
+            .map_err(|kind| {
+                CompileError::without_span(rue_error::interner_error_kind(
+                    kind,
+                    "body symbol interning failed",
+                ))
+            })
     }
     pub(crate) fn is_type_copy(&self, ty: Type) -> bool {
         ty.is_copy_in_pool(self.body_type_pool())

@@ -304,43 +304,64 @@ pub(crate) fn anonymous_member_source_symbol_in(
     let TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(owner)) = owner.as_ref() else {
         return None;
     };
-    Some(format!(
-        "{}.{}",
-        anonymous_nominal_source_symbol_in(plan, owner),
-        member.name
+    // The member kind is the receiver: an anonymous nominal's associated
+    // function is spelled with `::` exactly as a named nominal's is, because
+    // the separator comes from the one renderer rather than from which
+    // vocabulary reached it.
+    Some(rue_air::live_symbols::member_callable_name(
+        &anonymous_nominal_source_symbol_in(plan, owner),
+        &member.name,
+        member.kind != AnonymousMemberKind::AssociatedFunction,
     ))
 }
 
-/// Spell a named nominal through the same unconditional module qualification
-/// used by AIR's type pool. Canonical language-item and reserved builtin types
-/// retain their bare ABI names.
+/// Spell a named nominal through `rue_air::live_symbols`, the one owner of
+/// live nominal spelling, so a durable identity and the AIR type pool cannot
+/// disagree about whether a nominal is module-qualified.
+///
+/// Only a type definition has a nominal symbol; every other definition kind
+/// answers `None` and its caller names it some other way.
 pub(crate) fn named_nominal_source_symbol(identity: &StableDefinitionKey) -> Option<String> {
-    match identity.kind() {
+    matches!(
+        identity.kind(),
+        crate::StableDefinitionKind::Struct | crate::StableDefinitionKind::Enum
+    )
+    .then(|| named_nominal_symbol(identity.kind(), identity.name(), identity.module()))
+}
+
+/// Spell the nominal a member callable belongs to.
+///
+/// The owner of a method, associated function, or destructor is always a type,
+/// so this is the same spelling as [`named_nominal_source_symbol`] without the
+/// kind test that key already answered.
+pub(crate) fn named_type_source_symbol(owner: &StableNamedTypeKey) -> String {
+    named_nominal_symbol(owner.kind(), owner.name(), owner.module())
+}
+
+/// The one place a durable identity decides whether its nominal is exempt from
+/// module qualification.
+///
+/// Both exemptions are registry membership, never a name table of this crate's
+/// own: a canonical standard-library nominal is recognized by the lang-item
+/// registry after its module crossed the trusted provenance boundary, and a
+/// reserved built-in enum by the builtin universe.
+fn named_nominal_symbol(
+    kind: crate::StableDefinitionKind,
+    name: &str,
+    module: &ModuleId,
+) -> String {
+    let keeps_bare_symbol = match kind {
         crate::StableDefinitionKind::Struct => {
-            if identity.module().is_trusted_standard_library()
-                && rue_air::LangItem::from_standard_library_nominal(
-                    identity.module().logical_path(),
-                    identity.name(),
-                )
-                .is_some()
-            {
-                return Some(identity.name().to_owned());
-            }
+            module.is_trusted_standard_library()
+                && rue_air::LangItem::from_standard_library_nominal(module.logical_path(), name)
+                    .is_some()
         }
-        crate::StableDefinitionKind::Enum => {
-            if rue_builtins::is_reserved_enum_name(identity.name()) {
-                return Some(identity.name().to_owned());
-            }
-        }
-        _ => return None,
-    }
-    Some(format!(
-        "{}${}",
-        identity.name(),
-        rue_air::mangle_symbol_component(&rue_air::normalize_module_path(
-            identity.module().logical_path()
-        ))
-    ))
+        crate::StableDefinitionKind::Enum => rue_air::live_symbols::enum_keeps_bare_symbol(name),
+        _ => false,
+    };
+    rue_air::live_symbols::named_nominal_symbol(name, keeps_bare_symbol, || {
+        rue_air::live_symbols::module_symbol_component(module.logical_path())
+    })
 }
 
 /// Relocate one durable semantic type into the type-instance vocabulary.

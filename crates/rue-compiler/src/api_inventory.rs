@@ -8484,6 +8484,67 @@ fn semantic_import_type_and_type_instance_convert_in_one_place() {
     }
 }
 
+/// Live symbol spelling belongs to `rue-air`, and this crate reaches it as an
+/// adapter over durable identities rather than as a second policy.
+///
+/// The two sides join for real: `durable_cfg` keys one body's symbol mappings
+/// on both, and drop glue defined under the rooted spelling is called under
+/// the pool's. A re-derived rule here spells a definition one way and its call
+/// the other.
+#[test]
+fn live_symbol_spelling_is_adapted_from_rue_air_not_re_derived() {
+    let identity = include_str!("semantic_identity.rs");
+    let materialization = include_str!("local_semantic_materialization.rs");
+
+    // One entry point per identity shape, both over one exemption rule.
+    for owner in [
+        "pub(crate) fn named_nominal_source_symbol(",
+        "pub(crate) fn named_type_source_symbol(",
+        "fn named_nominal_symbol(",
+    ] {
+        assert_eq!(
+            identity.matches(owner).count(),
+            1,
+            "semantic_identity must own exactly one {owner}"
+        );
+    }
+    assert!(identity.contains("rue_air::live_symbols::named_nominal_symbol("));
+    assert!(identity.contains("rue_air::live_symbols::enum_keeps_bare_symbol("));
+    assert!(identity.contains("rue_air::live_symbols::member_callable_name("));
+
+    // The drop-glue fragment grammar is rue-air's; this crate only relocates
+    // the instance and answers its own leaves.
+    assert_eq!(
+        materialization
+            .matches("rue_air::drop_glue_names::drop_glue_type_fragment(")
+            .count(),
+        1,
+        "durable drop-glue names must come from the rue-air grammar"
+    );
+    assert!(
+        materialization.contains("semantic_type_from_instance(ty)"),
+        "the durable adapter must reach the grammar through the conversion ladder"
+    );
+
+    // No module-qualification, member-separator, or drop-glue prefix rule of
+    // this crate's own.
+    for (module, source) in PRODUCTION_MODULES {
+        let code = rust_code_only(source);
+        assert!(
+            !code.contains("\"{}${}\""),
+            "{module} spells a qualified nominal instead of adapting rue-air's"
+        );
+        assert!(
+            !code.contains("__rue_drop_{"),
+            "{module} spells a drop-glue symbol instead of adapting rue-air's"
+        );
+    }
+    assert!(
+        !materialization.contains("fn named_type_live_symbol("),
+        "the retired second nominal spelling must not return"
+    );
+}
+
 #[test]
 fn durable_specialized_producer_issuance_has_one_ordered_kernel() {
     let durable = DURABLE_COMPTIME_LIFECYCLE_SOURCE;

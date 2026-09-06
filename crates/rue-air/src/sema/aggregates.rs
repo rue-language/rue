@@ -472,8 +472,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let struct_id = ty.as_struct().expect("StrBuf is a struct");
         let method = self.intern_body_symbol("equals_borrowed")?;
         ctx.referenced_methods.insert((struct_id, method));
-        let call_name =
-            self.intern_body_symbol(&self.method_symbol(struct_id, "equals_borrowed", false))?;
+        let call_name = self.method_symbol_handle(struct_id, "equals_borrowed", false)?;
         Ok(air.add_call(
             None,
             call_name,

@@ -25,6 +25,7 @@ pub mod integer_semantics;
 mod intern_pool;
 mod intrinsic;
 pub mod layout;
+pub mod live_symbols;
 pub mod lowered_signature;
 mod module_registry;
 mod param_arena;

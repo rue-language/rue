@@ -201,22 +201,6 @@ fn intern_synthetic_argument_name_in_space(
     space.try_intern(name).ok()
 }
 
-/// The one spelling of a member callable name, built from an already-rendered
-/// owner component.
-///
-/// Taking the owner by reference is what lets a caller that spells several
-/// members of the same owner render that owner once; the exact final capacity
-/// is reserved up front, so joining never reallocates the way appending onto an
-/// exactly-sized owner string did.
-fn member_callable_name_for_owner(owner: &str, method: &str, has_self: bool) -> String {
-    let separator = if has_self { "." } else { "::" };
-    let mut name = String::with_capacity(owner.len() + separator.len() + method.len());
-    name.push_str(owner);
-    name.push_str(separator);
-    name.push_str(method);
-    name
-}
-
 fn check_shared_interner(
     space: &rue_rir::SharedSymbolSpace,
     phase: &'static str,
@@ -435,35 +419,6 @@ mod type_syntax_provider_trace_tests {
         assert_eq!(result.unwrap(), None);
         assert_eq!(host.symbol_lookups, 0);
     }
-}
-
-#[cfg(test)]
-#[test]
-fn member_callable_names_extend_the_rendered_owner_spelling() {
-    assert_eq!(
-        member_callable_name_for_owner("Owner", "method", true),
-        "Owner.method"
-    );
-    assert_eq!(
-        member_callable_name_for_owner("Owner", "make", false),
-        "Owner::make"
-    );
-    // The anonymous owner spelling the installation loops hoist, with the
-    // three member shapes they install: method, associated function, and
-    // destructor. One rendered owner spells all of them.
-    let owner = "__anon_struct_0123456789abcdef0123456789abcdef";
-    assert_eq!(
-        member_callable_name_for_owner(owner, "len", true),
-        "__anon_struct_0123456789abcdef0123456789abcdef.len"
-    );
-    assert_eq!(
-        member_callable_name_for_owner(owner, "make", false),
-        "__anon_struct_0123456789abcdef0123456789abcdef::make"
-    );
-    assert_eq!(
-        member_callable_name_for_owner(owner, "__drop", true),
-        "__anon_struct_0123456789abcdef0123456789abcdef.__drop"
-    );
 }
 
 #[cfg(test)]
@@ -2027,10 +1982,15 @@ where
     /// analysis uses. Every map keyed by a member callable symbol
     /// (`anonymous_function_identities`, `function_tokens`) must write and
     /// read through the one spelling in
-    /// [`member_callable_name_for_owner`] (RUE-1236); a second renderer would
-    /// reintroduce a join that only holds while two policies agree.
+    /// [`crate::live_symbols::member_callable_name`] (RUE-1236); a second
+    /// renderer would reintroduce a join that only holds while two policies
+    /// agree.
     fn member_callable_name(&self, struct_id: StructId, method: &str, has_self: bool) -> String {
-        member_callable_name_for_owner(&self.member_callable_owner(struct_id), method, has_self)
+        crate::live_symbols::member_callable_name(
+            &self.member_callable_owner(struct_id),
+            method,
+            has_self,
+        )
     }
 
     /// The owner component every member callable symbol of `struct_id` shares.
@@ -2063,7 +2023,8 @@ where
         method: &str,
         has_self: bool,
     ) -> Option<Spur> {
-        self.intern_name(member_callable_name_for_owner(owner, method, has_self))
+        self.try_member_callable_symbol_for_issued_owner(None, owner, None, method, has_self)
+            .ok()
     }
 
     /// The handle for a member callable of an owner whose own spelling the
@@ -2076,13 +2037,6 @@ where
     /// spelling, the member spelling, and the separator, so the generation's
     /// derived-spelling memo holds that association and only the first body to
     /// spell a member renders it.
-    ///
-    /// `owner_symbol` and `method_symbol` are the handles the space already
-    /// issued for the two components. A caller without an owner handle falls
-    /// back to rendering, which is what
-    /// [`Self::member_callable_symbol_for_owner`] has always done — both arms
-    /// spell through [`member_callable_name_for_owner`], the one renderer
-    /// (RUE-1236).
     fn member_callable_symbol_for_issued_owner(
         &self,
         owner_symbol: Option<Spur>,
@@ -2091,15 +2045,40 @@ where
         method: &str,
         has_self: bool,
     ) -> Option<Spur> {
-        let Some(owner_symbol) = owner_symbol else {
-            return self.member_callable_symbol_for_owner(owner, method, has_self);
-        };
-        self.state
-            .symbol_space()
-            .try_derived_symbol(owner_symbol, method_symbol, u8::from(has_self), || {
-                member_callable_name_for_owner(owner, method, has_self)
-            })
-            .ok()
+        self.try_member_callable_symbol_for_issued_owner(
+            owner_symbol,
+            owner,
+            Some(method_symbol),
+            method,
+            has_self,
+        )
+        .ok()
+    }
+
+    /// The one memo policy for member callable handles.
+    ///
+    /// `owner_symbol` and `method_symbol` are the handles the shared space
+    /// already issued for the two components; a caller missing either falls
+    /// back to rendering the join and interning it. Both arms spell through
+    /// [`crate::live_symbols::member_callable_name`], the one renderer
+    /// (RUE-1236), so definition sites and call sites cannot disagree about a
+    /// spelling the memo then keys.
+    fn try_member_callable_symbol_for_issued_owner(
+        &self,
+        owner_symbol: Option<Spur>,
+        owner: &str,
+        method_symbol: Option<Spur>,
+        method: &str,
+        has_self: bool,
+    ) -> Result<Spur, lasso::LassoErrorKind> {
+        let render = || crate::live_symbols::member_callable_name(owner, method, has_self);
+        match (owner_symbol, method_symbol) {
+            (Some(owner_symbol), Some(method_symbol)) => self
+                .state
+                .symbol_space()
+                .try_derived_symbol(owner_symbol, method_symbol, u8::from(has_self), render),
+            _ => self.state.symbol_space().try_intern(render()),
+        }
     }
 
     /// The handle the shared space already holds for an owner's own spelling,
@@ -4459,6 +4438,34 @@ where
             .finalize_containment_metadata()
             .expect("provider type materialization must produce an acyclic containment graph");
         &self.type_pool
+    }
+
+    fn body_member_callable_name(
+        &self,
+        struct_id: StructId,
+        method: &str,
+        has_self: bool,
+    ) -> String {
+        self.member_callable_name(struct_id, method, has_self)
+    }
+
+    /// Call sites reach the same derived-spelling memo the installation loops
+    /// use, so a member named from a body the generation already spelled it in
+    /// costs a memo probe rather than a render and a hash of the join.
+    fn try_member_callable_symbol(
+        &self,
+        struct_id: StructId,
+        method: &str,
+        has_self: bool,
+    ) -> Result<Spur, lasso::LassoErrorKind> {
+        let owner = self.member_callable_owner(struct_id);
+        self.try_member_callable_symbol_for_issued_owner(
+            self.member_callable_owner_symbol(&owner),
+            &owner,
+            self.interner.get(method),
+            method,
+            has_self,
+        )
     }
 
     fn body_rir_ref(&self) -> &Rir {
