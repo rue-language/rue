@@ -456,26 +456,7 @@ impl<'a> CfgLower<'a> {
                             dst: Operand::Virtual(extended),
                             src: Operand::Virtual(value),
                         });
-                        let dst = Operand::Virtual(extended);
-                        let src = Operand::Virtual(extended);
-                        self.mir.push(match extension {
-                            crate::value_plan::IntegerExtension::Sign8 => {
-                                Aarch64Inst::Sxtb { dst, src }
-                            }
-                            crate::value_plan::IntegerExtension::Zero8 => {
-                                Aarch64Inst::Uxtb { dst, src }
-                            }
-                            crate::value_plan::IntegerExtension::Sign16 => {
-                                Aarch64Inst::Sxth { dst, src }
-                            }
-                            crate::value_plan::IntegerExtension::Zero16 => {
-                                Aarch64Inst::Uxth { dst, src }
-                            }
-                            crate::value_plan::IntegerExtension::Sign32 => {
-                                Aarch64Inst::Sxtw { dst, src }
-                            }
-                            crate::value_plan::IntegerExtension::None => unreachable!(),
-                        });
+                        self.emit_extension(extended, extended, extension);
                         Some(extended)
                     }
                 }
@@ -756,6 +737,7 @@ impl<'a> CfgLower<'a> {
         let overflow_call = plan.overflow_call;
         let div_by_zero_call = plan.div_by_zero_call;
         let wrap = plan.wrap;
+        let post_op = plan.post_op;
         let vreg = match plan.operation {
             ArithmeticOperation::FloatAdd { lhs, rhs, width }
             | ArithmeticOperation::FloatSub { lhs, rhs, width }
@@ -802,11 +784,7 @@ impl<'a> CfgLower<'a> {
                         src2: Operand::Virtual(rhs),
                     }
                 });
-                if wrap {
-                    self.emit_wrap_narrow_subword(width, vreg);
-                } else {
-                    self.emit_overflow_check_add(width, vreg, overflow_call.clone());
-                }
+                self.emit_post_op_add(post_op, vreg, overflow_call.clone());
                 vreg
             }
             ArithmeticOperation::Sub { lhs, rhs, width } => {
@@ -824,11 +802,7 @@ impl<'a> CfgLower<'a> {
                         src2: Operand::Virtual(rhs),
                     }
                 });
-                if wrap {
-                    self.emit_wrap_narrow_subword(width, vreg);
-                } else {
-                    self.emit_overflow_check_sub(width, vreg, overflow_call.clone());
-                }
+                self.emit_post_op_sub(post_op, vreg, overflow_call.clone());
                 vreg
             }
             ArithmeticOperation::Mul {
@@ -848,7 +822,7 @@ impl<'a> CfgLower<'a> {
                         src1: Operand::Virtual(lhs),
                         src2: Operand::Virtual(rhs),
                     });
-                    self.emit_wrap_narrow_mul(width, vreg);
+                    self.emit_wrap_narrow_mul(post_op, width, vreg);
                 } else if let Some((src, amount)) = shift.filter(|_| width.bits >= 32) {
                     self.mir.push(if width.bits == 64 {
                         Aarch64Inst::LslImm {
@@ -910,7 +884,14 @@ impl<'a> CfgLower<'a> {
                     let _ = self.lower_runtime_call(overflow_call.clone());
                     self.mir.push(Aarch64Inst::Label { id: ok });
                 } else {
-                    self.emit_overflow_check_mul(width, vreg, lhs, rhs, overflow_call.clone());
+                    self.emit_overflow_check_mul(
+                        post_op,
+                        width,
+                        vreg,
+                        lhs,
+                        rhs,
+                        overflow_call.clone(),
+                    );
                 }
                 vreg
             }
@@ -1025,7 +1006,7 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Virtual(value),
                     }
                 });
-                self.emit_overflow_check_neg(width, vreg, overflow_call.clone());
+                self.emit_post_op_neg(post_op, vreg, overflow_call.clone());
                 vreg
             }
         };
@@ -1448,7 +1429,7 @@ impl<'a> CfgLower<'a> {
                 });
                 dst
             }
-            ResidualValuePlan::BitNot { value } => {
+            ResidualValuePlan::BitNot { value, narrow } => {
                 let dst = self.mir.alloc_vreg();
                 self.mir.push(if width.is_some_and(|w| w.bits == 64) {
                     Aarch64Inst::MvnRR {
@@ -1461,7 +1442,7 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Virtual(value),
                     }
                 });
-                self.emit_subword_narrow(dst, ty);
+                self.emit_extension(dst, dst, narrow);
                 dst
             }
             ResidualValuePlan::Bitwise { op, lhs, rhs } => {
@@ -1490,6 +1471,7 @@ impl<'a> CfgLower<'a> {
                 lhs,
                 rhs,
                 constant,
+                narrow,
             } => {
                 let dst = self.mir.alloc_vreg();
                 let is64 = width.is_some_and(|w| w.bits == 64);
@@ -1567,7 +1549,7 @@ impl<'a> CfgLower<'a> {
                         },
                     });
                 }
-                self.emit_subword_narrow(dst, ty);
+                self.emit_extension(dst, dst, narrow);
                 dst
             }
             ResidualValuePlan::Comparison {
@@ -1980,6 +1962,8 @@ impl<'a> CfgLower<'a> {
             ResidualValuePlan::IntCast {
                 value,
                 from_width,
+                check,
+                widen,
                 trap_call,
             } => {
                 let dst = self.mir.alloc_vreg();
@@ -1987,17 +1971,8 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(dst),
                     src: Operand::Virtual(value),
                 });
-                let to_width = width.unwrap();
-                self.emit_int_cast_check(value, from_width, to_width, trap_call);
-                if from_width.signed && to_width.bits > from_width.bits {
-                    let src = Operand::Virtual(value);
-                    let dst = Operand::Virtual(dst);
-                    self.mir.push(match from_width.bits {
-                        8 => Aarch64Inst::Sxtb { dst, src },
-                        16 => Aarch64Inst::Sxth { dst, src },
-                        _ => Aarch64Inst::Sxtw { dst, src },
-                    });
-                }
+                self.emit_int_cast_check(value, from_width, check, trap_call);
+                self.emit_extension(dst, value, widen);
                 dst
             }
             ResidualValuePlan::Drop { actions } => {
@@ -2577,26 +2552,7 @@ impl<'a> CfgLower<'a> {
                             dst: Operand::Virtual(extended),
                             src: Operand::Virtual(offset),
                         });
-                        let dst = Operand::Virtual(extended);
-                        let src = Operand::Virtual(extended);
-                        match extension {
-                            crate::value_plan::IntegerExtension::Sign8 => {
-                                self.mir.push(Aarch64Inst::Sxtb { dst, src })
-                            }
-                            crate::value_plan::IntegerExtension::Zero8 => {
-                                self.mir.push(Aarch64Inst::Uxtb { dst, src })
-                            }
-                            crate::value_plan::IntegerExtension::Sign16 => {
-                                self.mir.push(Aarch64Inst::Sxth { dst, src })
-                            }
-                            crate::value_plan::IntegerExtension::Zero16 => {
-                                self.mir.push(Aarch64Inst::Uxth { dst, src })
-                            }
-                            crate::value_plan::IntegerExtension::Sign32 => {
-                                self.mir.push(Aarch64Inst::Sxtw { dst, src })
-                            }
-                            crate::value_plan::IntegerExtension::None => unreachable!(),
-                        }
+                        self.emit_extension(extended, extended, extension);
                         extended
                     }
                 };
@@ -2920,60 +2876,52 @@ impl<'a> CfgLower<'a> {
         crate::value_plan::MaterializedValue { primary, slots }
     }
 
-    /// Lower a CFG value (instruction).
-    /// Try to extract a power-of-two shift amount from a constant value.
+    /// Branch to `ok_label` when a sub-word result the machine computed at
+    /// W-register width is back inside its declared range.
     ///
-    /// Returns `Some(shift_amount)` if the value is a constant that is a power of 2
-    /// greater than 1, otherwise returns `None`.
-    ///
-    /// Used for strength reduction: `x * 2^n` can be lowered to `x << n`.
-    fn emit_subword_range_check(
+    /// Both comparisons run at 32-bit width. The sub-word arithmetic was
+    /// emitted as a 32-bit (W-register) op that zeroes bits 32-63, so a 64-bit
+    /// compare against the sign-extended byte/word would mismatch a
+    /// legitimately-negative in-range result and falsely trap (RUE-28 sub,
+    /// RUE-60 neg). Which test a width needs is decided by
+    /// [`crate::value_plan::post_op_policy`], not here.
+    fn emit_sub_word_check(
         &mut self,
-        width: crate::value_plan::IntegerWidth,
+        check: crate::value_plan::SubWordCheck,
         result_vreg: VReg,
         ok_label: LabelId,
     ) {
-        match (width.bits, width.signed) {
-            (8, false) => {
-                // Result must be <= 255
-                self.mir.push(Aarch64Inst::CmpImm {
-                    src: Operand::Virtual(result_vreg),
-                    imm: 255,
-                });
+        use crate::value_plan::SubWordCheck;
+        match check {
+            SubWordCheck::UpperBound { max } => {
+                // A byte bound fits the compare's 12-bit immediate; a wider
+                // bound is materialized first.
+                match i32::try_from(max).ok().filter(|bound| *bound < 4096) {
+                    Some(bound) => self.mir.push(Aarch64Inst::CmpImm {
+                        src: Operand::Virtual(result_vreg),
+                        imm: bound,
+                    }),
+                    None => {
+                        let max_vreg = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::MovImm {
+                            dst: Operand::Virtual(max_vreg),
+                            imm: i64::try_from(max).expect("sub-word upper bound"),
+                        });
+                        self.mir.push(Aarch64Inst::CmpRR {
+                            src1: Operand::Virtual(result_vreg),
+                            src2: Operand::Virtual(max_vreg),
+                        });
+                    }
+                }
                 // Branch if below or same (unsigned <=)
                 self.mir.push(Aarch64Inst::BCond {
                     cond: Cond::Ls,
                     label: ok_label,
                 });
             }
-            (16, false) => {
-                // Result must be <= 65535
-                let max_vreg = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::MovImm {
-                    dst: Operand::Virtual(max_vreg),
-                    imm: 65535,
-                });
-                self.mir.push(Aarch64Inst::CmpRR {
-                    src1: Operand::Virtual(result_vreg),
-                    src2: Operand::Virtual(max_vreg),
-                });
-                self.mir.push(Aarch64Inst::BCond {
-                    cond: Cond::Ls,
-                    label: ok_label,
-                });
-            }
-            (8, true) => {
-                // Sign-extend to 64-bit and compare with original
+            SubWordCheck::SignExtended { extension } => {
                 let sext_vreg = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::Sxtb {
-                    dst: Operand::Virtual(sext_vreg),
-                    src: Operand::Virtual(result_vreg),
-                });
-                // Compare at 32-bit width. The sub-word arithmetic was emitted
-                // as a 32-bit (W-register) op that zeroes bits 32-63, so a 64-bit
-                // compare against the sign-extended byte/word would mismatch a
-                // legitimately-negative in-range result and falsely trap
-                // (RUE-28 sub, RUE-60 neg). The low 32 bits must match.
+                self.emit_extension(sext_vreg, result_vreg, extension);
                 self.mir.push(Aarch64Inst::CmpRR {
                     src1: Operand::Virtual(result_vreg),
                     src2: Operand::Virtual(sext_vreg),
@@ -2982,61 +2930,63 @@ impl<'a> CfgLower<'a> {
                     cond: Cond::Eq,
                     label: ok_label,
                 });
-            }
-            (16, true) => {
-                // Sign-extend to 64-bit and compare with original
-                let sext_vreg = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::Sxth {
-                    dst: Operand::Virtual(sext_vreg),
-                    src: Operand::Virtual(result_vreg),
-                });
-                // Compare at 32-bit width. The sub-word arithmetic was emitted
-                // as a 32-bit (W-register) op that zeroes bits 32-63, so a 64-bit
-                // compare against the sign-extended byte/word would mismatch a
-                // legitimately-negative in-range result and falsely trap
-                // (RUE-28 sub, RUE-60 neg). The low 32 bits must match.
-                self.mir.push(Aarch64Inst::CmpRR {
-                    src1: Operand::Virtual(result_vreg),
-                    src2: Operand::Virtual(sext_vreg),
-                });
-                self.mir.push(Aarch64Inst::BCond {
-                    cond: Cond::Eq,
-                    label: ok_label,
-                });
-            }
-            _ => {
-                // Not a sub-word type, do nothing
             }
         }
     }
 
-    fn emit_overflow_check_add(
+    /// Emit the arms of [`crate::value_plan::PostOpPolicy`] that raise no trap:
+    /// the re-narrowing a wrapping result needs, and the empty policy. Returns
+    /// whether the policy was one of them, so the per-operation emitters below
+    /// allocate an ok-label only when a trap can actually be taken.
+    fn emit_untrapped_post_op(
         &mut self,
-        width: crate::value_plan::IntegerWidth,
+        policy: crate::value_plan::PostOpPolicy,
+        result_vreg: VReg,
+    ) -> bool {
+        use crate::value_plan::PostOpPolicy;
+        match policy {
+            PostOpPolicy::Narrow(extension) => {
+                self.emit_extension(result_vreg, result_vreg, extension);
+                true
+            }
+            PostOpPolicy::None => true,
+            PostOpPolicy::OverflowFlags { .. } | PostOpPolicy::RangeCheck(_) => false,
+        }
+    }
+
+    /// Emit the trap guarding a checked ADD.
+    ///
+    /// `ADDS` at a machine width leaves the overflow in the flags; a sub-word
+    /// result is tested against its range instead. Which of the two applies is
+    /// the shared plan's decision, not this backend's.
+    fn emit_post_op_add(
+        &mut self,
+        policy: crate::value_plan::PostOpPolicy,
         result_vreg: VReg,
         trap_call: crate::runtime_call_plan::RuntimeCallPlan,
     ) {
+        use crate::value_plan::PostOpPolicy;
+        if self.emit_untrapped_post_op(policy, result_vreg) {
+            return;
+        }
         let ok_label = self.mir.alloc_label();
 
-        match (width.bits, width.signed) {
-            // 32-bit and 64-bit unsigned: C=1 means overflow (carry out)
-            // Branch to ok if C=0 (no overflow)
-            (32 | 64, false) => {
+        match policy {
+            // Unsigned: C=1 means overflow (carry out), so ok when C=0.
+            PostOpPolicy::OverflowFlags { signed: false } => {
                 self.mir.push(Aarch64Inst::BCond {
                     cond: Cond::Lo, // Lo = C=0 (no carry)
                     label: ok_label,
                 });
             }
-            // 32-bit and 64-bit signed: V flag indicates overflow
-            (32 | 64, true) => {
+            // Signed: the V flag indicates overflow.
+            PostOpPolicy::OverflowFlags { signed: true } => {
                 self.mir.push(Aarch64Inst::Bvc { label: ok_label });
             }
-            // Sub-word types: check if result fits in type's range
-            (8 | 16, _) => {
-                self.emit_subword_range_check(width, result_vreg, ok_label);
+            PostOpPolicy::RangeCheck(check) => {
+                self.emit_sub_word_check(check, result_vreg, ok_label);
             }
-            // Other types don't have arithmetic
-            _ => return,
+            PostOpPolicy::None | PostOpPolicy::Narrow(_) => return,
         }
 
         // Overflow occurred - call panic handler
@@ -3044,62 +2994,71 @@ impl<'a> CfgLower<'a> {
         self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
-    /// Emit overflow check for SUB based on the type.
+    /// Emit the trap guarding a checked SUB.
     ///
-    /// For ARM64 SUBS:
-    /// - Signed: V flag indicates overflow
-    /// - Unsigned: C=0 means borrow (underflow), C=1 means no borrow
-    fn emit_overflow_check_sub(
+    /// For `SUBS`, C=0 means borrow (underflow) and the V flag indicates a
+    /// signed overflow; a sub-word result is tested against its range instead.
+    fn emit_post_op_sub(
         &mut self,
-        width: crate::value_plan::IntegerWidth,
+        policy: crate::value_plan::PostOpPolicy,
         result_vreg: VReg,
         trap_call: crate::runtime_call_plan::RuntimeCallPlan,
     ) {
+        use crate::value_plan::PostOpPolicy;
+        if self.emit_untrapped_post_op(policy, result_vreg) {
+            return;
+        }
         let ok_label = self.mir.alloc_label();
 
-        match (width.bits, width.signed) {
-            // 32-bit and 64-bit unsigned: C=0 means borrow (underflow)
-            // Branch to ok if C=1 (no underflow)
-            (32 | 64, false) => {
+        match policy {
+            // Unsigned: C=0 means borrow (underflow), so ok when C=1.
+            PostOpPolicy::OverflowFlags { signed: false } => {
                 self.mir.push(Aarch64Inst::BCond {
                     cond: Cond::Hs, // Hs = C=1 (no borrow)
                     label: ok_label,
                 });
             }
-            // 32-bit and 64-bit signed: V flag indicates overflow
-            (32 | 64, true) => {
+            // Signed: the V flag indicates overflow.
+            PostOpPolicy::OverflowFlags { signed: true } => {
                 self.mir.push(Aarch64Inst::Bvc { label: ok_label });
             }
-            // Sub-word types: check if result fits in type's range
-            (8 | 16, _) => {
-                self.emit_subword_range_check(width, result_vreg, ok_label);
+            PostOpPolicy::RangeCheck(check) => {
+                self.emit_sub_word_check(check, result_vreg, ok_label);
             }
-            // Other types don't have arithmetic
-            _ => return,
+            PostOpPolicy::None | PostOpPolicy::Narrow(_) => return,
         }
 
         let _ = self.lower_runtime_call(trap_call.clone());
         self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
-    /// Emit overflow check for MUL based on the type.
+    /// Emit the trap guarding a checked MUL.
     ///
-    /// For multiplication, we need different approaches for signed vs unsigned:
-    /// - Signed: Use SMULL (64-bit result), compare with sign-extended 32-bit
-    /// - Unsigned: Use UMULL (64-bit result), check if high bits are non-zero
+    /// A machine-width product is probed with a widening multiply — SMULL/UMULL
+    /// for 32 bits, SMULH/UMULH for 64 — while a sub-word product is computed
+    /// plainly and then tested against its range. The shared plan says which of
+    /// the two this width takes; the widening-multiply selection below is this
+    /// backend's own instruction choice.
     fn emit_overflow_check_mul(
         &mut self,
+        policy: crate::value_plan::PostOpPolicy,
         width: crate::value_plan::IntegerWidth,
         result_vreg: VReg,
         lhs_vreg: VReg,
         rhs_vreg: VReg,
         trap_call: crate::runtime_call_plan::RuntimeCallPlan,
     ) {
+        use crate::value_plan::PostOpPolicy;
         let ok_label = self.mir.alloc_label();
 
-        match (width.bits, width.signed) {
+        let check = match policy {
+            PostOpPolicy::OverflowFlags { .. } => None,
+            PostOpPolicy::RangeCheck(check) => Some(check),
+            PostOpPolicy::None | PostOpPolicy::Narrow(_) => return,
+        };
+        match (check, width.bits, width.signed) {
             // 32-bit signed: SMULL gives 64-bit result
-            (32, true) => {
+            (None, 32, true) => {
                 let smull_vreg = self.mir.alloc_vreg();
                 self.mir.push(Aarch64Inst::SmullRR {
                     dst: Operand::Virtual(smull_vreg),
@@ -3128,7 +3087,7 @@ impl<'a> CfgLower<'a> {
                 });
             }
             // 32-bit unsigned: UMULL gives 64-bit result
-            (32, false) => {
+            (None, 32, false) => {
                 let umull_vreg = self.mir.alloc_vreg();
                 self.mir.push(Aarch64Inst::UmullRR {
                     dst: Operand::Virtual(umull_vreg),
@@ -3153,7 +3112,7 @@ impl<'a> CfgLower<'a> {
                 });
             }
             // 64-bit signed: Use SMULH for high bits
-            (64, true) => {
+            (None, 64, true) => {
                 // Do the multiply first
                 self.mir.push(Aarch64Inst::MulRR {
                     dst: Operand::Virtual(result_vreg),
@@ -3185,7 +3144,7 @@ impl<'a> CfgLower<'a> {
                 });
             }
             // 64-bit unsigned: Use UMULH for high bits
-            (64, false) => {
+            (None, 64, false) => {
                 // Do the multiply first
                 self.mir.push(Aarch64Inst::MulRR {
                     dst: Operand::Virtual(result_vreg),
@@ -3205,17 +3164,16 @@ impl<'a> CfgLower<'a> {
                     label: ok_label,
                 });
             }
-            // Sub-word types: do the multiply, then check range
-            (8 | 16, _) => {
-                // For sub-word, just do the multiply and check range
+            // A sub-word product: multiply plainly, then check the range.
+            (Some(check), _, _) => {
                 self.mir.push(Aarch64Inst::MulRR {
                     dst: Operand::Virtual(result_vreg),
                     src1: Operand::Virtual(lhs_vreg),
                     src2: Operand::Virtual(rhs_vreg),
                 });
-                self.emit_subword_range_check(width, result_vreg, ok_label);
+                self.emit_sub_word_check(check, result_vreg, ok_label);
             }
-            _ => return,
+            (None, bits, _) => panic!("checked multiply at non-machine width {bits}"),
         }
 
         let _ = self.lower_runtime_call(trap_call.clone());
@@ -3291,45 +3249,49 @@ impl<'a> CfgLower<'a> {
         self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
-    /// Emit overflow check for NEG based on the type.
+    /// Emit the trap guarding a checked NEG.
     ///
-    /// For NEGS (0 - x):
-    /// - Signed: V flag indicates overflow (when negating MIN_VALUE)
-    /// - Unsigned: Any non-zero value causes overflow (since 0 - x wraps)
-    fn emit_overflow_check_neg(
+    /// For `NEGS` (0 - x) at a machine width the V flag indicates a signed
+    /// overflow (negating MIN) and C=0 marks any non-zero unsigned operand; a
+    /// sub-word result is tested against its range instead.
+    fn emit_post_op_neg(
         &mut self,
-        width: crate::value_plan::IntegerWidth,
+        policy: crate::value_plan::PostOpPolicy,
         result_vreg: VReg,
         trap_call: crate::runtime_call_plan::RuntimeCallPlan,
     ) {
+        use crate::value_plan::{PostOpPolicy, SubWordCheck};
+        if self.emit_untrapped_post_op(policy, result_vreg) {
+            return;
+        }
         let ok_label = self.mir.alloc_label();
 
-        match (width.bits, width.signed) {
+        match policy {
             // Unsigned: NEGS sets C=0 for non-zero operands (which is overflow)
             // Branch to ok if C=1 (meaning operand was 0, no overflow)
-            (32 | 64, false) => {
+            PostOpPolicy::OverflowFlags { signed: false } => {
                 self.mir.push(Aarch64Inst::BCond {
                     cond: Cond::Hs, // Hs = C=1
                     label: ok_label,
                 });
             }
             // Signed: V flag indicates overflow
-            (32 | 64, true) => {
+            PostOpPolicy::OverflowFlags { signed: true } => {
                 self.mir.push(Aarch64Inst::Bvc { label: ok_label });
             }
-            // Sub-word unsigned types: only 0 is valid (negating to 0)
-            (8 | 16, false) => {
-                // Result must be 0 for no overflow
+            // A sub-word unsigned negation leaves 0 - x at W-register width, far
+            // above the type's maximum for every non-zero operand, so the
+            // plan's upper bound is tested here as "the result is zero".
+            PostOpPolicy::RangeCheck(SubWordCheck::UpperBound { .. }) => {
                 self.mir.push(Aarch64Inst::Cbz {
                     src: Operand::Virtual(result_vreg),
                     label: ok_label,
                 });
             }
-            // Sub-word signed types: check if result fits in type's range
-            (8 | 16, true) => {
-                self.emit_subword_range_check(width, result_vreg, ok_label);
+            PostOpPolicy::RangeCheck(check) => {
+                self.emit_sub_word_check(check, result_vreg, ok_label);
             }
-            _ => return,
+            PostOpPolicy::None | PostOpPolicy::Narrow(_) => return,
         }
 
         let _ = self.lower_runtime_call(trap_call.clone());
@@ -3354,115 +3316,80 @@ impl<'a> CfgLower<'a> {
         }
     }
 
-    /// Emit an aborting call to `__rue_panic(ptr, len)` for `@panic("msg")` and
-    /// `@assert(cond, "msg")` (RUE-319). `msg_val` is the CFG value of the
-    /// message `String`; its fat pointer supplies the `ptr`/`len` arguments
-    /// (X0/X1). Never returns at runtime.
+    /// Emit the range check an `@intCast` needs before its result is used.
+    ///
+    /// Which bounds a cast is checked against is decided once, for both
+    /// targets, by [`crate::value_plan::int_cast_check_plan`]; this emits the
+    /// compare, the branch, and the trap call for the arm it is handed
+    /// (RUE-1982). What stays here is target work: the comparison width — a
+    /// 64-bit source must not be compared at 32 bits, or 2^32 would pass an i32
+    /// range check and silently truncate (RUE-31) — and the sign extension
+    /// below, which a W-register's zero-extension forces before a `>= 0` test.
     fn emit_int_cast_check(
         &mut self,
         src_vreg: VReg,
         from_width: crate::value_plan::IntegerWidth,
-        to_width: crate::value_plan::IntegerWidth,
+        check: crate::value_plan::IntCastCheckPlan,
         trap_call: crate::runtime_call_plan::RuntimeCallPlan,
     ) {
-        let from_signed = from_width.signed;
-        let to_signed = to_width.signed;
-        let from_bits = from_width.bits;
-        let to_bits = to_width.bits;
+        use crate::value_plan::IntCastCheckPlan;
 
-        // If casting to a larger or equal-sized type with compatible signedness,
-        // and source is unsigned or both are signed, no check needed
-        if to_bits >= from_bits {
-            // Widening or same-size cast
-            if from_signed == to_signed {
-                // Same signedness, widening - always safe
-                return;
-            }
-            if !from_signed && to_signed && to_bits > from_bits {
-                // Unsigned to larger signed - always safe
-                return;
-            }
-            // Signed to same-size unsigned needs check (negative values fail)
-            // Unsigned to same-size signed needs check (large values fail)
+        if check == IntCastCheckPlan::None {
+            return;
         }
-
+        let from_bits = from_width.bits;
         let ok_label = self.mir.alloc_label();
 
-        // Calculate the min and max values for the target type
-        let (min_val, max_val) = crate::value_plan::integer_range(to_width);
+        match check {
+            IntCastCheckPlan::None => unreachable!("handled above"),
+            IntCastCheckPlan::Range { min, max } => {
+                // Signed source, signed target: below MIN, then above MAX.
+                let min_vreg = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::MovImm {
+                    dst: Operand::Virtual(min_vreg),
+                    imm: min,
+                });
+                self.push_cmp_rr(src_vreg, min_vreg, from_bits);
+                self.mir.push(Aarch64Inst::BCond {
+                    cond: Cond::Ge,
+                    label: ok_label,
+                });
 
-        if from_signed {
-            // Source is signed - need to check both min and max
-            if to_signed {
-                // Signed to signed: check MIN <= value <= MAX
-                if to_bits < from_bits || (to_bits == from_bits && min_val != i64::MIN) {
-                    // Check lower bound
-                    let min_vreg = self.mir.alloc_vreg();
-                    self.mir.push(Aarch64Inst::MovImm {
-                        dst: Operand::Virtual(min_vreg),
-                        imm: min_val,
-                    });
-                    // A 64-bit source needs a 64-bit compare: the 32-bit CmpRR
-                    // only sees the low half, so e.g. 2^32 would pass an i32
-                    // range check and silently truncate (RUE-31).
-                    self.push_cmp_rr(src_vreg, min_vreg, from_bits);
-                    // For signed comparison, branch if greater or equal
-                    self.mir.push(Aarch64Inst::BCond {
-                        cond: Cond::Ge,
-                        label: ok_label,
-                    });
+                // Below min - panic
+                let _ = self.lower_runtime_call(trap_call.clone());
+                self.mir.push(Aarch64Inst::Label { id: ok_label });
 
-                    // Below min - panic
-                    let _ = self.lower_runtime_call(trap_call.clone());
-                    self.mir.push(Aarch64Inst::Label { id: ok_label });
+                let ok_label2 = self.mir.alloc_label();
+                let max_vreg = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::MovImm {
+                    dst: Operand::Virtual(max_vreg),
+                    imm: max,
+                });
+                self.push_cmp_rr(src_vreg, max_vreg, from_bits);
+                self.mir.push(Aarch64Inst::BCond {
+                    cond: Cond::Le,
+                    label: ok_label2,
+                });
 
-                    let ok_label2 = self.mir.alloc_label();
-                    // Check upper bound
-                    let max_vreg = self.mir.alloc_vreg();
-                    self.mir.push(Aarch64Inst::MovImm {
-                        dst: Operand::Virtual(max_vreg),
-                        imm: max_val,
-                    });
-                    self.push_cmp_rr(src_vreg, max_vreg, from_bits);
-                    // For signed comparison, branch if less or equal
-                    self.mir.push(Aarch64Inst::BCond {
-                        cond: Cond::Le,
-                        label: ok_label2,
-                    });
-
-                    // Above max - panic
-                    let _ = self.lower_runtime_call(trap_call.clone());
-                    self.mir.push(Aarch64Inst::Label { id: ok_label2 });
-                }
-            } else {
-                // Signed to unsigned: value must be >= 0 and <= max
-                // Check for negative
+                // Above max - panic
+                let _ = self.lower_runtime_call(trap_call.clone());
+                self.mir.push(Aarch64Inst::Label { id: ok_label2 });
+            }
+            IntCastCheckPlan::NonNegative { then_max } => {
+                // Signed source, unsigned target: negative first, then the
+                // upper bound when the target cannot hold every non-negative
+                // source value.
                 //
-                // For sub-64-bit types, we need to sign-extend first because
-                // ARM64 32-bit operations zero-extend to 64 bits, which would
-                // make -1 appear as a large positive number in 64-bit compare.
+                // A sub-64-bit source is sign-extended first: ARM64 32-bit
+                // operations zero-extend to 64 bits, which would make -1 look
+                // like a large positive value to the compare below.
                 let compare_vreg = if from_bits < 64 {
                     let sext_vreg = self.mir.alloc_vreg();
-                    match from_bits {
-                        8 => {
-                            self.mir.push(Aarch64Inst::Sxtb {
-                                dst: Operand::Virtual(sext_vreg),
-                                src: Operand::Virtual(src_vreg),
-                            });
-                        }
-                        16 => {
-                            self.mir.push(Aarch64Inst::Sxth {
-                                dst: Operand::Virtual(sext_vreg),
-                                src: Operand::Virtual(src_vreg),
-                            });
-                        }
-                        _ => {
-                            self.mir.push(Aarch64Inst::Sxtw {
-                                dst: Operand::Virtual(sext_vreg),
-                                src: Operand::Virtual(src_vreg),
-                            });
-                        }
-                    }
+                    self.emit_extension(
+                        sext_vreg,
+                        src_vreg,
+                        crate::value_plan::width_extension(from_width),
+                    );
                     sext_vreg
                 } else {
                     src_vreg
@@ -3481,16 +3408,15 @@ impl<'a> CfgLower<'a> {
                 let _ = self.lower_runtime_call(trap_call.clone());
                 self.mir.push(Aarch64Inst::Label { id: ok_label });
 
-                // Also check upper bound if narrowing
-                if to_bits < from_bits {
+                if let Some(max) = then_max {
                     let ok_label2 = self.mir.alloc_label();
                     let max_vreg = self.mir.alloc_vreg();
                     self.mir.push(Aarch64Inst::MovImm {
                         dst: Operand::Virtual(max_vreg),
-                        imm: max_val,
+                        imm: max,
                     });
                     self.push_cmp_rr(src_vreg, max_vreg, from_bits);
-                    // Unsigned comparison for upper bound check
+                    // Unsigned comparison for the upper bound
                     self.mir.push(Aarch64Inst::BCond {
                         cond: Cond::Ls, // Ls = unsigned less or same
                         label: ok_label2,
@@ -3501,18 +3427,14 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(Aarch64Inst::Label { id: ok_label2 });
                 }
             }
-        } else {
-            // Source is unsigned
-            if to_signed {
-                // Unsigned to signed: value must fit in positive range of target
-                // Check that value <= signed max
+            IntCastCheckPlan::Max(max) => {
+                // Unsigned source: one upper bound, compared as unsigned.
                 let max_vreg = self.mir.alloc_vreg();
                 self.mir.push(Aarch64Inst::MovImm {
                     dst: Operand::Virtual(max_vreg),
-                    imm: max_val,
+                    imm: max,
                 });
                 self.push_cmp_rr(src_vreg, max_vreg, from_bits);
-                // Unsigned comparison (Ls = below or same)
                 self.mir.push(Aarch64Inst::BCond {
                     cond: Cond::Ls,
                     label: ok_label,
@@ -3521,81 +3443,63 @@ impl<'a> CfgLower<'a> {
                 // Above max - panic
                 let _ = self.lower_runtime_call(trap_call.clone());
                 self.mir.push(Aarch64Inst::Label { id: ok_label });
+            }
+        }
+    }
+
+    /// Emit the one instruction a shared [`IntegerExtension`] names, or nothing
+    /// for [`IntegerExtension::None`].
+    ///
+    /// This is the backend's only integer-extension primitive: re-narrowing a
+    /// wrapping or sub-word result, widening a signed cast, and extending a
+    /// call argument or pointer offset all name the extension in the shared
+    /// plan and reach the machine through here (RUE-1982).
+    ///
+    /// [`IntegerExtension`]: crate::value_plan::IntegerExtension
+    /// [`IntegerExtension::None`]: crate::value_plan::IntegerExtension::None
+    fn emit_extension(
+        &mut self,
+        dst: VReg,
+        src: VReg,
+        extension: crate::value_plan::IntegerExtension,
+    ) {
+        use crate::value_plan::IntegerExtension;
+        let dst = Operand::Virtual(dst);
+        let src = Operand::Virtual(src);
+        self.mir.push(match extension {
+            IntegerExtension::None => return,
+            IntegerExtension::Sign8 => Aarch64Inst::Sxtb { dst, src },
+            IntegerExtension::Zero8 => Aarch64Inst::Uxtb { dst, src },
+            IntegerExtension::Sign16 => Aarch64Inst::Sxth { dst, src },
+            IntegerExtension::Zero16 => Aarch64Inst::Uxth { dst, src },
+            IntegerExtension::Sign32 => Aarch64Inst::Sxtw { dst, src },
+        });
+    }
+
+    /// Re-narrow a wrapping multiply result to its declared width (RUE-647).
+    ///
+    /// `MUL` is a 64-bit operation whose upper bits carry the high half of the
+    /// product, unlike the flag-setting 32-bit `Adds`/`Subs` a wrapping add or
+    /// subtract leaves an already-zeroed upper half behind. That is a fact about
+    /// this instruction, so the 32-bit repair lives here; every other width
+    /// takes the extension the shared plan decided.
+    fn emit_wrap_narrow_mul(
+        &mut self,
+        policy: crate::value_plan::PostOpPolicy,
+        width: crate::value_plan::IntegerWidth,
+        vreg: VReg,
+    ) {
+        let crate::value_plan::PostOpPolicy::Narrow(extension) = policy else {
+            panic!("a wrapping multiply must carry a narrowing policy: {policy:?}");
+        };
+        if width.bits == 32 {
+            let dst = Operand::Virtual(vreg);
+            let src = Operand::Virtual(vreg);
+            if width.signed {
+                self.mir.push(Aarch64Inst::Sxtw { dst, src });
             } else {
-                // Unsigned to unsigned: narrowing check
-                if to_bits < from_bits {
-                    let max_vreg = self.mir.alloc_vreg();
-                    self.mir.push(Aarch64Inst::MovImm {
-                        dst: Operand::Virtual(max_vreg),
-                        imm: max_val,
-                    });
-                    self.push_cmp_rr(src_vreg, max_vreg, from_bits);
-                    self.mir.push(Aarch64Inst::BCond {
-                        cond: Cond::Ls,
-                        label: ok_label,
-                    });
-
-                    // Above max - panic
-                    let _ = self.lower_runtime_call(trap_call.clone());
-                    self.mir.push(Aarch64Inst::Label { id: ok_label });
-                }
-            }
-        }
-    }
-
-    /// Get the min and max values for an integer type.
-    /// Materialize the shift count masked to the operand's bit width into a
-    /// fresh vreg (so a sub-word variable count >= the width wraps per spec).
-    /// For 32/64-bit operands the hardware mask already matches.
-    fn emit_subword_narrow(&mut self, vreg: VReg, ty: Type) {
-        let dst = Operand::Virtual(vreg);
-        let src = Operand::Virtual(vreg);
-        match crate::value_plan::type_bits(ty) {
-            8 if crate::value_plan::type_is_signed(ty) => {
-                self.mir.push(Aarch64Inst::Sxtb { dst, src })
-            }
-            8 => self.mir.push(Aarch64Inst::Uxtb { dst, src }),
-            16 if crate::value_plan::type_is_signed(ty) => {
-                self.mir.push(Aarch64Inst::Sxth { dst, src })
-            }
-            16 => self.mir.push(Aarch64Inst::Uxth { dst, src }),
-            _ => {}
-        }
-    }
-
-    /// Re-narrow a sub-word wrapping `Add`/`Sub` result to its declared width
-    /// (RUE-647). The flag-setting `Adds`/`Subs` are 32-bit ops that zero bits
-    /// 32..63, so 32- and 64-bit results are already canonical; only 8/16-bit
-    /// results need the low byte/halfword re-extended to match the canonical
-    /// sign/zero extension of an in-range value.
-    fn emit_wrap_narrow_subword(&mut self, width: crate::value_plan::IntegerWidth, vreg: VReg) {
-        let dst = Operand::Virtual(vreg);
-        let src = Operand::Virtual(vreg);
-        match (width.bits, width.signed) {
-            (8, true) => self.mir.push(Aarch64Inst::Sxtb { dst, src }),
-            (8, false) => self.mir.push(Aarch64Inst::Uxtb { dst, src }),
-            (16, true) => self.mir.push(Aarch64Inst::Sxth { dst, src }),
-            (16, false) => self.mir.push(Aarch64Inst::Uxth { dst, src }),
-            _ => {}
-        }
-    }
-
-    /// Truncate a wrapping multiply result to its declared width (RUE-647).
-    /// `MUL` is a 64-bit op whose upper bits carry the high half of the product,
-    /// so every sub-64-bit width must be re-narrowed: 8/16-bit sign/zero-extend
-    /// the low byte/halfword; a 32-bit signed result sign-extends the low word,
-    /// and a 32-bit unsigned result zeroes the upper word (`lsl #32; lsr #32`)
-    /// so a later `u32 -> u64` widening sees the correct zero-extended value.
-    fn emit_wrap_narrow_mul(&mut self, width: crate::value_plan::IntegerWidth, vreg: VReg) {
-        let dst = Operand::Virtual(vreg);
-        let src = Operand::Virtual(vreg);
-        match (width.bits, width.signed) {
-            (8, true) => self.mir.push(Aarch64Inst::Sxtb { dst, src }),
-            (8, false) => self.mir.push(Aarch64Inst::Uxtb { dst, src }),
-            (16, true) => self.mir.push(Aarch64Inst::Sxth { dst, src }),
-            (16, false) => self.mir.push(Aarch64Inst::Uxth { dst, src }),
-            (32, true) => self.mir.push(Aarch64Inst::Sxtw { dst, src }),
-            (32, false) => {
+                // Zero the upper word so a later `u32 -> u64` widening sees the
+                // zero-extended value.
                 self.mir.push(Aarch64Inst::LslImm { dst, src, imm: 32 });
                 self.mir.push(Aarch64Inst::Lsr64Imm {
                     dst,
@@ -3603,8 +3507,9 @@ impl<'a> CfgLower<'a> {
                     imm: 32,
                 });
             }
-            _ => {}
+            return;
         }
+        self.emit_extension(vreg, vreg, extension);
     }
 
     /// Emit a comparison instruction.
