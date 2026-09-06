@@ -34,6 +34,14 @@
 //!   against native binaries compiled at O0, O1, O2, and O3. See [`fuzz`]. A `dump <seed>`
 //!   subcommand prints a generated program for inspection.
 //!
+//! Both corpus modes read their cases through `rue_test_runner`'s schemas —
+//! `cli_corpus` for rue-cli-tests, the spec runner's own types for rue-spec —
+//! so the case format cannot drift between a suite and this differential. The
+//! CLI schema denies unknown fields, and every case field this harness cannot
+//! reproduce is named as an explicit ineligibility rather than ignored, so a
+//! new corpus field cannot silently change what rue-cli-tests runs while the
+//! differential keeps reporting agreement (RUE-1987).
+//!
 //! Every mode exits non-zero if an eligible program is rejected by the front
 //! end, interpretation hits a resource limit or compiler/oracle contract
 //! violation, or the oracle disagrees with expected behavior. Only typed
@@ -60,8 +68,14 @@ use rue_oracle::{
     ModelGapKind, Outcome, RunSourceError, TrapKind, run_session_with_cfg_differential,
     run_source_with_cfg_differential,
 };
-use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap};
+// The rue-cli-tests corpus schema is owned by `rue_test_runner::cli_corpus`.
+// The differential reads the same authored files as the CLI suite, so it reads
+// them through the same `deny_unknown_fields` types: a field this harness
+// cannot honour is then a decision it makes explicitly (see
+// `unsupported_corpus_field`) instead of a semantic it silently dropped
+// (RUE-1987).
+use rue_test_runner::cli_corpus::{self, Case, TestFile, TimeoutProfile};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -70,88 +84,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[derive(Deserialize)]
-struct TestFile {
-    section: Section,
-    #[serde(default, rename = "timeout_profile")]
-    timeout_profiles: HashMap<String, HangTimeoutProfile>,
-    #[serde(default, rename = "case")]
-    cases: Vec<Case>,
-}
-
-/// The stable identity-bearing subset of a rue-cli-tests section. The
-/// differential schema remains permissive about every field it does not use.
-#[derive(Deserialize)]
-struct Section {
-    id: String,
-    #[serde(default)]
-    contract: Option<String>,
-}
-
-#[derive(Clone, Copy, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HangTimeoutProfile {
-    compile_hang_timeout_ms: u64,
-    runtime_hang_timeout_ms: u64,
-}
-
 #[derive(Clone, Copy)]
 struct CliExecutionTimeouts {
     compile: Duration,
     runtime: Duration,
-}
-
-/// A permissive subset of the rue-cli-tests case schema — only the fields the
-/// oracle can act on. Unknown fields (spec references, compiler diagnostics,
-/// …) are ignored.
-#[derive(Deserialize)]
-struct Case {
-    name: String,
-    #[serde(default)]
-    contract: Option<String>,
-    #[serde(default)]
-    files: Vec<SourceFile>,
-    #[serde(default)]
-    source_path: Option<String>,
-    #[serde(default)]
-    args: Option<Vec<String>>,
-    #[serde(default)]
-    stdin: Option<String>,
-    #[serde(default)]
-    env: HashMap<String, String>,
-    #[serde(default)]
-    program_args: Vec<String>,
-    #[serde(default)]
-    program_env: HashMap<String, String>,
-    #[serde(default)]
-    compile_fail: bool,
-    #[serde(default)]
-    compile_only: bool,
-    #[serde(default)]
-    watch: Option<serde::de::IgnoredAny>,
-    #[serde(default)]
-    stdout: Option<String>,
-    #[serde(default)]
-    stdout_contains: Vec<String>,
-    #[serde(default)]
-    runtime_error_contains: Vec<String>,
-    #[serde(default)]
-    exit_code: Option<i32>,
-    #[serde(default)]
-    known_bug: Option<String>,
-    #[serde(default)]
-    known_bug_on: Vec<String>,
-    #[serde(default)]
-    only_on: Vec<String>,
-    #[serde(default)]
-    skip: bool,
-}
-
-#[derive(Deserialize)]
-struct SourceFile {
-    #[allow(dead_code)]
-    path: String,
-    source: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -189,6 +125,10 @@ enum IneligibleReason {
     CompileOnly,
     ApplicableKnownBug,
     WatchOrchestration,
+    DriverInvocation,
+    StagedFixtures,
+    HostCapability,
+    ForeignArchive,
     StandardInput,
     CompilerEnvironment,
     RuntimeArguments,
@@ -215,6 +155,10 @@ impl fmt::Display for IneligibleReason {
             Self::CompileOnly => f.write_str("compile-only case"),
             Self::ApplicableKnownBug => f.write_str("applicable known bug"),
             Self::WatchOrchestration => f.write_str("watch orchestration"),
+            Self::DriverInvocation => f.write_str("driver-only invocation"),
+            Self::StagedFixtures => f.write_str("staged filesystem fixtures"),
+            Self::HostCapability => f.write_str("required host capability"),
+            Self::ForeignArchive => f.write_str("synthesized foreign archive"),
             Self::StandardInput => f.write_str("standard input required"),
             Self::CompilerEnvironment => f.write_str("compiler environment"),
             Self::RuntimeArguments => f.write_str("runtime command-line arguments"),
@@ -653,7 +597,11 @@ fn corpus_mode(raw_args: Vec<String>) -> ExitCode {
 fn cli_execution_timeouts(files: &[(&PathBuf, TestFile)]) -> Result<CliExecutionTimeouts, String> {
     let mut profiles = files
         .iter()
-        .filter_map(|(_, file)| file.timeout_profiles.get("ordinary").copied())
+        .filter_map(|(_, file)| {
+            file.timeout_profiles
+                .get(&TimeoutProfile::Ordinary)
+                .copied()
+        })
         .collect::<Vec<_>>();
     if profiles.is_empty() {
         // A partial focused run may not include execution_contracts.toml in
@@ -667,7 +615,7 @@ fn cli_execution_timeouts(files: &[(&PathBuf, TestFile)]) -> Result<CliExecution
         let authority = load_cli_test_file(&path).map_err(|error| {
             format!("cannot load authoritative CLI execution contracts: {error}")
         })?;
-        if let Some(profile) = authority.timeout_profiles.get("ordinary") {
+        if let Some(profile) = authority.timeout_profiles.get(&TimeoutProfile::Ordinary) {
             profiles.push(*profile);
         }
     }
@@ -1361,6 +1309,108 @@ fn check_case(path: &Path, case: &Case) -> CaseOutcome {
     check_case_with_native(path, case, None, None)
 }
 
+/// The differential's explicit projection of the shared corpus schema: the
+/// first authored field this harness cannot honour, if any.
+///
+/// The CLI corpus is authored for the CLI suite, and a case field can change
+/// what running that case *means* — a staged symlink the compile resolves, a
+/// synthesized archive an argument points at, a subcommand that produces no
+/// program at all. Before the schema was shared this harness deserialized a
+/// permissive subset and dropped every such field on the floor, so it reported
+/// agreement on semantics it had never applied (RUE-1987).
+///
+/// The destructuring below is exhaustive on purpose. Adding a field to
+/// [`rue_test_runner::cli_corpus::Case`] stops compiling here until this
+/// harness says whether it can honour it, which is the property the shared
+/// `deny_unknown_fields` schema exists to give.
+fn unsupported_corpus_field(case: &Case) -> Option<IneligibleReason> {
+    let Case {
+        // Handled by `check_case_with_native` itself, in the CLI runner's own
+        // wrapper order, so they classify with their established reasons.
+        name: _,
+        contract: _,
+        files: _,
+        source_path: _,
+        args: _,
+        watch: _,
+        env: _,
+        program_args: _,
+        program_env: _,
+        stdin: _,
+        compile_fail: _,
+        compile_only: _,
+        known_bug: _,
+        known_bug_on: _,
+        only_on: _,
+        skip: _,
+        runtime_error_contains: _,
+        exit_code: _,
+        stdout: _,
+        stdout_contains: _,
+
+        // Documentation and CLI-side assertions layered on a run whose
+        // *semantics* the oracle does model. The CLI suite owns checking them;
+        // ignoring them here narrows what this harness verifies without
+        // changing what the program is expected to do.
+        description: _,
+        output: _,
+        error_contains: _,
+        compile_stdout_contains: _,
+        compile_stdout_not_contains: _,
+        compile_stderr_contains: _,
+        compile_stderr_not_contains: _,
+        json_diagnostics: _,
+        json_diagnostic_order: _,
+        symbols_contain: _,
+        no_symbol_table: _,
+        // The CLI suite re-runs the case at every `-O` level; the differential
+        // already executes each eligible case at O1, O2, and O3 against the
+        // same pinned stdout and exit code, so this asks for nothing extra.
+        differential_opt: _,
+
+        // Fields that change what the case does, which this harness cannot
+        // reproduce.
+        symlinks,
+        hard_links,
+        requires_case_insensitive_fs,
+        ffi_answer_archive,
+        executable_target,
+        execute_if_native,
+        requires_system_linker,
+        driver_exit_code,
+    } = case;
+
+    // `driver_exit_code` declares a driver subcommand that never produces a
+    // program: there is no execution for the oracle to agree with.
+    if driver_exit_code.is_some() {
+        return Some(IneligibleReason::DriverInvocation);
+    }
+    // Links are staged into the compile's working directory before the case
+    // runs, and the in-process oracle has no such directory. A dangling or
+    // aliasing link is frequently the whole point of the case.
+    if !symlinks.is_empty() || !hard_links.is_empty() {
+        return Some(IneligibleReason::StagedFixtures);
+    }
+    // Capability-scoped cases are reported as ignored by the CLI suite on a
+    // host that lacks the capability. Running them here regardless would judge
+    // them under conditions their author excluded.
+    if *requires_case_insensitive_fs || *requires_system_linker {
+        return Some(IneligibleReason::HostCapability);
+    }
+    // The `${FFI_ARCHIVE}` token resolves to a machine-code archive built for a
+    // concrete target and linked into the program; the oracle links nothing.
+    if *ffi_answer_archive {
+        return Some(IneligibleReason::ForeignArchive);
+    }
+    // An explicit executable target makes the case's contract target-specific,
+    // the same way a spec case's `target` does. The oracle has no target
+    // context to reproduce it with.
+    if executable_target.is_some() || *execute_if_native {
+        return Some(IneligibleReason::TargetPinned);
+    }
+    None
+}
+
 fn check_case_with_native(
     path: &Path,
     case: &Case,
@@ -1400,6 +1450,9 @@ fn check_case_with_native(
     // can compare. The CLI harness owns this orchestration contract.
     if case.watch.is_some() {
         return CaseOutcome::Ineligible(IneligibleReason::WatchOrchestration);
+    }
+    if let Some(reason) = unsupported_corpus_field(case) {
+        return CaseOutcome::Ineligible(reason);
     }
     if case.stdin.is_some() {
         return CaseOutcome::Ineligible(IneligibleReason::StandardInput);
@@ -1715,21 +1768,27 @@ fn load_cli_test_file(path: &Path) -> Result<TestFile, String> {
 
     let mut platform_failures = Vec::new();
     for case in &file.cases {
-        let mut unknown: Vec<&str> = case
-            .only_on
-            .iter()
-            .map(String::as_str)
-            .filter(|platform| !rue_test_runner::KNOWN_TARGETS.contains(platform))
-            .collect();
-        unknown.sort_unstable();
-        unknown.dedup();
-        if !unknown.is_empty() {
-            platform_failures.push(format!(
-                "case {:?} has unknown only_on platform(s): {} (known: {})",
-                case.name,
-                unknown.join(", "),
-                rue_test_runner::KNOWN_TARGETS.join(", ")
-            ));
+        // The same validator the CLI suite runs, on the same schema: an
+        // unknown platform name can never equal a host, so a case carrying one
+        // would be skipped everywhere while still counting as corpus coverage.
+        for (axis, unknown) in [
+            ("only_on", cli_corpus::unknown_only_on_platforms(case)),
+            (
+                "known_bug_on",
+                cli_corpus::unknown_known_bug_on_platforms(case),
+            ),
+        ] {
+            let mut unknown = unknown;
+            unknown.sort_unstable();
+            unknown.dedup();
+            if !unknown.is_empty() {
+                platform_failures.push(format!(
+                    "case {:?} has unknown {axis} platform(s): {} (known: {})",
+                    case.name,
+                    unknown.join(", "),
+                    rue_test_runner::KNOWN_TARGETS.join(", ")
+                ));
+            }
         }
     }
     platform_failures.sort();
@@ -1771,6 +1830,9 @@ fn discover_toml(dirs: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rue_test_runner::cli_corpus::{
+        HardLinkFixture, SourceFile, SymlinkFixture, WatchScenario, WatchScenarioKind,
+    };
 
     #[test]
     fn nested_grid_row_and_arraybuf_accessors_agree_at_cfg_boundaries() {
@@ -1815,28 +1877,30 @@ mod tests {
     fn corpus_case(source: &str, compile_fail: bool) -> Case {
         Case {
             name: "classification probe".to_string(),
-            contract: None,
             files: vec![SourceFile {
                 path: "probe.rue".to_string(),
                 source: source.to_string(),
             }],
-            source_path: None,
-            args: None,
-            stdin: None,
-            env: HashMap::new(),
-            program_args: Vec::new(),
-            program_env: HashMap::new(),
             compile_fail,
-            compile_only: false,
-            watch: None,
-            stdout: None,
-            stdout_contains: Vec::new(),
-            runtime_error_contains: Vec::new(),
             exit_code: Some(0),
-            known_bug: None,
-            known_bug_on: Vec::new(),
-            only_on: Vec::new(),
-            skip: false,
+            ..Case::default()
+        }
+    }
+
+    /// The smallest watch scenario the shared schema accepts. Its content is
+    /// irrelevant here: the differential refuses every watch case on sight.
+    fn watch_scenario() -> WatchScenario {
+        WatchScenario {
+            kind: WatchScenarioKind::Edit,
+            error_format: None,
+            source_path: None,
+            compile_delay_ms: None,
+            boundary_delay_ms: None,
+            reobserve_delay_ms: None,
+            acquire_delay_ms: None,
+            edits: Vec::new(),
+            stderr_contains: Vec::new(),
+            expected_exit_codes: Vec::new(),
         }
     }
 
@@ -1854,6 +1918,7 @@ mod tests {
             r#"
             [section]
             id = "cli.execution_contracts"
+            name = "Execution contracts"
 
             [timeout_profile.ordinary]
             compile_hang_timeout_ms = 180000
@@ -1906,6 +1971,7 @@ mod tests {
                 r#"
 [section]
 id = "cli.fixture"
+name = "Fixture"
 
 [[case]]
 name = "{name}"
@@ -1986,6 +2052,7 @@ files = [{{ path = "probe.rue", source = "not Rue" }}]
             r#"
 [section]
 id = "cli.invalid_platform"
+name = "Invalid platform"
 
 [[case]]
 name = "misspelled platform"
@@ -2009,6 +2076,118 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
             corpus_mode(vec![temp.path().to_string_lossy().into_owned()]),
             ExitCode::FAILURE
         );
+    }
+
+    #[test]
+    fn unknown_known_bug_on_is_a_fatal_load_error() {
+        let temp = tempfile::tempdir().expect("create temporary cases root");
+        let invalid = temp.path().join("invalid-xfail-platform.toml");
+        std::fs::write(
+            &invalid,
+            r#"
+[section]
+id = "cli.invalid_xfail_platform"
+name = "Invalid xfail platform"
+
+[[case]]
+name = "misspelled xfail platform"
+known_bug = "RUE-1"
+known_bug_on = ["x86_64-linux"]
+files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
+"#,
+        )
+        .expect("write invalid known_bug_on fixture");
+
+        let failure = load_cli_test_file(&invalid)
+            .err()
+            .expect("an unknown known_bug_on platform must not load");
+        assert!(failure.contains("unknown known_bug_on platform(s): x86_64-linux"));
+        assert_eq!(
+            corpus_mode(vec![temp.path().to_string_lossy().into_owned()]),
+            ExitCode::FAILURE
+        );
+    }
+
+    #[test]
+    fn an_unknown_case_field_is_a_fatal_load_error() {
+        let temp = tempfile::tempdir().expect("create temporary cases root");
+        let invalid = temp.path().join("invented-field.toml");
+        std::fs::write(
+            &invalid,
+            r#"
+[section]
+id = "cli.invented_field"
+name = "Invented field"
+
+[[case]]
+name = "invented"
+invented_field = true
+files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
+"#,
+        )
+        .expect("write invented-field fixture");
+
+        // The whole point of sharing the CLI schema: a field this harness does
+        // not know cannot be a semantic it silently skipped (RUE-1987).
+        let failure = load_cli_test_file(&invalid)
+            .err()
+            .expect("an unknown case field must not load");
+        assert!(failure.contains("could not parse"), "{failure}");
+        assert!(failure.contains("invented_field"), "{failure}");
+    }
+
+    #[test]
+    fn corpus_fields_the_differential_cannot_honour_are_named_not_ignored() {
+        let base = corpus_case("fn main() -> i32 { 0 }", false);
+        assert_eq!(unsupported_corpus_field(&base), None);
+
+        let mut case = base.clone();
+        case.driver_exit_code = Some(3);
+        assert_eq!(
+            unsupported_corpus_field(&case),
+            Some(IneligibleReason::DriverInvocation)
+        );
+
+        let mut case = base.clone();
+        case.hard_links = vec![HardLinkFixture {
+            link: "alias.rue".to_string(),
+            target: "probe.rue".to_string(),
+        }];
+        assert_eq!(
+            unsupported_corpus_field(&case),
+            Some(IneligibleReason::StagedFixtures)
+        );
+
+        let mut case = base.clone();
+        case.requires_case_insensitive_fs = true;
+        assert_eq!(
+            unsupported_corpus_field(&case),
+            Some(IneligibleReason::HostCapability)
+        );
+
+        let mut case = base.clone();
+        case.ffi_answer_archive = true;
+        assert_eq!(
+            unsupported_corpus_field(&case),
+            Some(IneligibleReason::ForeignArchive)
+        );
+
+        let mut case = base.clone();
+        case.execute_if_native = true;
+        assert_eq!(
+            unsupported_corpus_field(&case),
+            Some(IneligibleReason::TargetPinned)
+        );
+
+        // Assertions the CLI suite layers on a run the oracle *does* model stay
+        // eligible: they narrow what this harness checks, not what the program
+        // is expected to do.
+        let mut case = base.clone();
+        case.differential_opt = true;
+        case.no_symbol_table = true;
+        case.json_diagnostics = true;
+        case.compile_stderr_not_contains = vec!["DEBUG:".to_string()];
+        assert_eq!(unsupported_corpus_field(&case), None);
     }
 
     #[test]
@@ -2099,9 +2278,11 @@ files = [{ path = "probe.rue", source = "not Rue" }]
             CaseOutcome::Agree
         ));
 
-        // Keep parity with rue-cli-tests: only `only_on` is validated. An
-        // unknown known_bug_on value does not match this host, so the case
-        // runs normally and can fail loudly instead of being silently xfailed.
+        // An unknown known_bug_on value does not match this host, so a case
+        // carrying one runs normally and can fail loudly rather than being
+        // silently xfailed. `load_cli_test_file` rejects it before that can
+        // happen (see `unknown_known_bug_on_is_a_fatal_load_error`); the
+        // classifier's own behavior is the safe one either way.
         case.known_bug_on = vec!["not-a-real-target".to_string()];
         assert!(matches!(
             check_case(Path::new("known-bug.toml"), &case),
@@ -2236,9 +2417,27 @@ files = [{ path = "probe.rue", source = "not Rue" }]
         case.compile_only = false;
         assert_cli_ineligible(&case, IneligibleReason::ApplicableKnownBug);
         case.known_bug = None;
-        case.watch = Some(serde::de::IgnoredAny);
+        case.watch = Some(watch_scenario());
         assert_cli_ineligible(&case, IneligibleReason::WatchOrchestration);
         case.watch = None;
+        case.driver_exit_code = Some(3);
+        assert_cli_ineligible(&case, IneligibleReason::DriverInvocation);
+        case.driver_exit_code = None;
+        case.symlinks = vec![SymlinkFixture {
+            link: "alias.rue".to_string(),
+            target: "probe.rue".to_string(),
+        }];
+        assert_cli_ineligible(&case, IneligibleReason::StagedFixtures);
+        case.symlinks.clear();
+        case.requires_system_linker = true;
+        assert_cli_ineligible(&case, IneligibleReason::HostCapability);
+        case.requires_system_linker = false;
+        case.ffi_answer_archive = true;
+        assert_cli_ineligible(&case, IneligibleReason::ForeignArchive);
+        case.ffi_answer_archive = false;
+        case.executable_target = Some("x86-64-linux".to_string());
+        assert_cli_ineligible(&case, IneligibleReason::TargetPinned);
+        case.executable_target = None;
         assert_cli_ineligible(&case, IneligibleReason::StandardInput);
         case.stdin = None;
         assert_cli_ineligible(&case, IneligibleReason::CompilerEnvironment);

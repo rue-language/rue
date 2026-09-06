@@ -3,11 +3,12 @@
 //! This crate provides common functionality for running compiler tests,
 //! including test case parsing, execution, and output comparison.
 
+pub mod cli_corpus;
 pub mod pipe_drain;
 pub mod supervise;
 
 use rue_error::{PreviewFeature, error_code_metadata};
-use rue_target::Target;
+use rue_target::HostPlatform;
 use serde::{Deserialize, Deserializer};
 use supervise::{CaptureStream, Outcome, OverflowPolicy, Supervisor};
 
@@ -582,46 +583,26 @@ pub fn classify_expected_failure(result: TestResult) -> ExpectedFailureOutcome {
 ///
 /// Returns strings like "x86-64-linux", "aarch64-linux", "aarch64-macos".
 pub fn get_host_target() -> &'static str {
-    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-    {
-        Target::X86_64Linux.name()
-    }
-    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-    {
-        Target::Aarch64Linux.name()
-    }
-    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-    {
-        Target::Aarch64Macos.name()
-    }
-    #[cfg(all(target_arch = "x86_64", target_os = "macos"))]
-    {
-        "x86-64-macos"
-    }
-    #[cfg(not(any(
-        all(target_arch = "x86_64", target_os = "linux"),
-        all(target_arch = "aarch64", target_os = "linux"),
-        all(target_arch = "aarch64", target_os = "macos"),
-        all(target_arch = "x86_64", target_os = "macos"),
-    )))]
-    {
-        "unknown"
-    }
+    HostPlatform::current().map_or(UNKNOWN_HOST_TARGET, HostPlatform::name)
 }
 
-/// Every platform name `only_on`/`known_bug_on` may legally name — the same
-/// set [`get_host_target`] can return. Case files are validated against this
-/// list at load time: a typo'd platform name would otherwise make the case
-/// silently run NOWHERE while still counting as spec coverage (the RUE-132
+/// What [`get_host_target`] reports on a host [`HostPlatform`] does not name.
+/// It is deliberately absent from [`KNOWN_TARGETS`], so a case scoped to any
+/// real platform is skipped there rather than silently matching.
+pub const UNKNOWN_HOST_TARGET: &str = "unknown";
+
+/// Every platform name `only_on`/`known_bug_on` may legally name — the names of
+/// [`HostPlatform::ALL`], which is also the set [`get_host_target`] can return
+/// on a recognized host. Case files are validated against this list at load
+/// time: a typo'd platform name would otherwise make the case silently run
+/// NOWHERE while still counting as spec coverage (the RUE-132
 /// skipped-test-counts-as-coverage class, via the platform axis).
-pub const KNOWN_TARGETS: &[&str] = &[
-    Target::X86_64Linux.name(),
-    Target::Aarch64Linux.name(),
-    Target::Aarch64Macos.name(),
-    // Host-only: Rue can run tests on Intel macOS, but does not currently have
-    // an x86-64 macOS compiler target.
-    "x86-64-macos",
-];
+///
+/// A name here says the harness knows the host, not that Rue can compile for
+/// it: `x86-64-macos` is a host platform with no compiler target
+/// ([`HostPlatform::compiler_target`] is `None`), which is why the two facts
+/// are one value rather than two lists.
+pub const KNOWN_TARGETS: &[&str] = HostPlatform::ALL_NAMES;
 
 /// Select which declarative platform cases a test harness registers.
 ///
@@ -682,11 +663,8 @@ pub const CI_EXECUTED_TARGETS: &[&str] = &["x86-64-linux", "aarch64-linux", "aar
 ///
 /// Returns `None` for a name that is not a known platform; callers reach this
 /// only after [`validate_only_on_targets`] has accepted the name.
-pub fn target_architecture(target: &str) -> Option<&str> {
-    if !KNOWN_TARGETS.contains(&target) {
-        return None;
-    }
-    target.rsplit_once('-').map(|(arch, _os)| arch)
+pub fn target_architecture(target: &str) -> Option<&'static str> {
+    HostPlatform::from_name(target).map(HostPlatform::architecture)
 }
 
 /// Whether a case scoped by `only_on` executes on at least one platform that
@@ -3379,6 +3357,7 @@ pub fn find_rue_binary() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rue_target::Target;
     use std::time::Instant;
 
     const VALID_TEST_FILE: &str = r#"
@@ -5332,6 +5311,32 @@ exit_code = 42
                 "compiler target {target} has no required CI lane executing its cases"
             );
         }
+    }
+
+    #[test]
+    fn every_ci_executed_platform_can_build_for_itself() {
+        // A required CI lane compiles and RUNS programs for its host, which is
+        // only possible where the host platform carries a compiler target.
+        // `x86-64-macos` is the counterexample the platform table exists to
+        // keep straight: a known host with no Rue target, and so not a lane.
+        for target in CI_EXECUTED_TARGETS {
+            let platform = HostPlatform::from_name(target)
+                .unwrap_or_else(|| panic!("CI-executed platform {target} is not a host platform"));
+            assert!(
+                platform.compiler_target().is_some(),
+                "CI lane {target} executes native programs, but Rue has no compiler target for it"
+            );
+        }
+    }
+
+    #[test]
+    fn the_host_target_name_is_known_or_explicitly_unknown() {
+        let host = get_host_target();
+        assert_eq!(
+            KNOWN_TARGETS.contains(&host),
+            host != UNKNOWN_HOST_TARGET,
+            "the host name must be a known platform, or the explicit unknown marker"
+        );
     }
 
     #[test]

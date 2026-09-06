@@ -26,7 +26,13 @@
 //!
 //! # Case format
 //!
-//! Cases live in `crates/rue-cli-tests/cases/*.toml`:
+//! Cases live in `crates/rue-cli-tests/cases/*.toml`. The schema itself —
+//! `TestFile`, `Section`, `Case`, and the fixture and contract types below —
+//! is owned by [`rue_test_runner::cli_corpus`], because `rue-oracle-diff`
+//! re-reads these same files and must see the identical field set; it denies
+//! unknown fields, so an authored field no reader knows is a load error rather
+//! than a silently skipped semantic (RUE-1987). What a field *means* when a
+//! case runs, and which combinations of fields are legal, stay here.
 //!
 //! ```toml
 //! [section]
@@ -185,13 +191,18 @@ use std::time::{Duration, Instant};
 
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_target::{Arch, Target};
+use rue_test_runner::cli_corpus::{
+    AutomaticExampleContract, Case, CliCaseTier, ExecutionClass, ExecutionContractDeclaration,
+    HangTimeoutProfile, Section, TestFile, TimeoutProfile, WatchEdit, WatchScenario,
+    WatchScenarioKind, unknown_known_bug_on_platforms, unknown_only_on_platforms,
+};
 use rue_test_runner::{
     ExpectedFailureOutcome, KNOWN_TARGETS, PlatformCaseSelection, ShardSelector, TestFailure,
     TestNameOrigin, TestResult, classify_expected_failure, compiler_command,
     configure_process_group, find_dir, find_rue_binary, ice_message, kill_process_group,
     run_with_timeout, validate_nonempty_case_corpus, validate_unique_test_names,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use sharding::CliShardPlan;
 
@@ -1138,58 +1149,6 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
     },
 ];
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TestFile {
-    section: Section,
-    /// Named execution contracts contributed by this file. Keeping these in
-    /// the same declarative corpus as cases lets automatic examples and TOML
-    /// cases share one scheduling and timeout policy.
-    #[serde(default, rename = "contract")]
-    contracts: HashMap<String, ExecutionContractDeclaration>,
-    /// The one declarative authority for correctness hang guards. Contracts
-    /// select a named profile instead of inventing raw deadlines.
-    #[serde(default, rename = "timeout_profile")]
-    timeout_profiles: HashMap<TimeoutProfile, HangTimeoutProfile>,
-    /// Parsed here so unknown policy fields fail closed. The CI wrapper owns
-    /// the whole-suite derivation from these values.
-    #[serde(default)]
-    timeout_policy: Option<TimeoutPolicy>,
-    /// Contracts and tiers for recursively discovered examples, keyed by the
-    /// path that also determines their `cli.examples::...` test name.
-    #[serde(default)]
-    automatic_example: Vec<AutomaticExampleContract>,
-    #[serde(default, rename = "case")]
-    cases: Vec<Case>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Section {
-    id: String,
-    #[allow(dead_code)]
-    name: String,
-    #[allow(dead_code)]
-    #[serde(default)]
-    description: Option<String>,
-    /// Default execution contract for every case in this section. Individual
-    /// cases may override it when only one scenario is heavyweight.
-    #[serde(default)]
-    contract: Option<String>,
-    /// Logical execution tier for this section's explicit cases. Automatic
-    /// examples declare their tier independently.
-    #[serde(default)]
-    tier: CliCaseTier,
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum CliCaseTier {
-    #[default]
-    Premerge,
-    Slow,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CliCaseTierSelection {
     All,
@@ -1226,45 +1185,6 @@ impl CliCaseTierSelection {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum ExecutionClass {
-    Ordinary,
-    Heavyweight,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Hash, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum TimeoutProfile {
-    Ordinary,
-    Slow,
-    Stress,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-struct HangTimeoutProfile {
-    compile_hang_timeout_ms: u64,
-    runtime_hang_timeout_ms: u64,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-struct TimeoutPolicy {
-    expected_cost_multiplier_percent: u64,
-    fixed_headroom_ms: u64,
-    minimum_shard_timeout_ms: u64,
-    minimum_monolith_timeout_ms: u64,
-    minimum_slow_suite_timeout_ms: u64,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-struct ExecutionContractDeclaration {
-    class: ExecutionClass,
-    timeout_profile: TimeoutProfile,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExecutionContract {
     class: ExecutionClass,
@@ -1286,15 +1206,6 @@ impl ExecutionContract {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-struct AutomaticExampleContract {
-    path: String,
-    contract: String,
-    #[serde(default)]
-    tier: CliCaseTier,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AutomaticExampleMetadata {
     contract: ExecutionContract,
@@ -1307,303 +1218,6 @@ struct LoadedCorpus {
     contracts: HashMap<String, ExecutionContractDeclaration>,
     timeout_profiles: HashMap<TimeoutProfile, HangTimeoutProfile>,
     automatic_examples: Vec<AutomaticExampleContract>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SourceFile {
-    path: String,
-    source: String,
-}
-
-/// A symbolic link staged in the temp directory before the case runs.
-///
-/// `target` is written verbatim and is deliberately not validated or resolved:
-/// a dangling link, a self-referential link, and a link whose target the
-/// compiled program creates at run time are all legitimate fixtures for
-/// filesystem-facing cases.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-struct SymlinkFixture {
-    link: String,
-    target: String,
-}
-
-/// A regular hard link staged after the source files. Hard-link support is a
-/// filesystem capability of the test host, so failure is reported rather than
-/// silently turning a regression case into an ordinary-file control.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-struct HardLinkFixture {
-    link: String,
-    target: String,
-}
-
-/// Imperative end-to-end watch scenario. These cases use the watch protocol
-/// seam in `rue` to synchronize edits and then terminate the watch process;
-/// ordinary CLI cases remain declarative and use the normal compile/run path.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WatchScenario {
-    kind: WatchScenarioKind,
-    /// Optional diagnostic format passed to the real watch process. JSON
-    /// scenarios additionally assert that every non-empty stderr line is a
-    /// non-empty diagnostic array.
-    #[serde(default)]
-    error_format: Option<String>,
-    #[serde(default)]
-    source_path: Option<String>,
-    #[serde(default)]
-    compile_delay_ms: Option<u64>,
-    /// Widen the gap between the watcher's change monitor stopping and its
-    /// trailing input check, so an edit can be made to land inside it on
-    /// purpose. That window is where RUE-1783 lived: a change discovered there
-    /// was acted on but never announced on the protocol.
-    #[serde(default)]
-    boundary_delay_ms: Option<u64>,
-    /// Hold retained re-observation inside its first physical-read boundary,
-    /// so an edit deterministically supersedes in-progress discovery.
-    #[serde(default)]
-    reobserve_delay_ms: Option<u64>,
-    /// Hold the watcher between re-observation and reached-toolchain
-    /// acquisition, so an edit can deterministically land while acquisition is
-    /// reading demanded modules or re-closing (RUE-1863).
-    #[serde(default)]
-    acquire_delay_ms: Option<u64>,
-    edits: Vec<WatchEdit>,
-    /// Substrings the watch process's stderr must contain. The milestone
-    /// protocol says which boundary a cycle reached; this pins what the cycle
-    /// told the user when it got there.
-    #[serde(default)]
-    stderr_contains: Vec<String>,
-    /// The exit status the published program has at each publication the
-    /// scenario waits for. An `initial_failure` scenario publishes only once,
-    /// so it declares one; every other kind declares two.
-    expected_exit_codes: Vec<i32>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum WatchScenarioKind {
-    Edit,
-    Cancel,
-    Delete,
-    SymlinkRetarget,
-    SupersedeReobserve,
-    SupersedeAcquire,
-    /// The FIRST cycle fails, so the watcher publishes nothing before the
-    /// edit repairs the program. Every other kind opens with a publication,
-    /// which is exactly what a first-cycle failure cannot produce.
-    InitialFailure,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WatchEdit {
-    path: String,
-    #[serde(default)]
-    source: Option<String>,
-    #[serde(default)]
-    delete: bool,
-    #[serde(default)]
-    symlink_target: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Case {
-    name: String,
-    /// Human-readable explanation of what this case pins and why. Not used by
-    /// the harness; it exists so case files can document intent inline.
-    #[allow(dead_code)]
-    #[serde(default)]
-    description: Option<String>,
-    /// Named execution contract. Overrides the section default.
-    #[serde(default)]
-    contract: Option<String>,
-    /// Files written to the temp directory before invoking the compiler.
-    #[serde(default)]
-    files: Vec<SourceFile>,
-    /// Symbolic links staged in the temp directory alongside `files`. A `files`
-    /// entry can only produce a regular file, so this is what lets a case pin
-    /// symlink behavior.
-    #[serde(default)]
-    symlinks: Vec<SymlinkFixture>,
-    /// Hard links staged in the temp directory alongside `files`.
-    #[serde(default)]
-    hard_links: Vec<HardLinkFixture>,
-    /// Run only when distinct path spellings differing by case resolve to one
-    /// file. Hosts without that filesystem capability report an explicit
-    /// ignored result rather than dropping the regression.
-    #[serde(default)]
-    requires_case_insensitive_fs: bool,
-    /// Repo-root-relative source file to compile directly instead of copying
-    /// inline source into the temp directory. Use this when a CLI case should
-    /// pin a checked-in example/program rather than duplicating its source.
-    #[serde(default)]
-    source_path: Option<String>,
-    /// Compiler arguments, relative to the temp dir (default: first file + `-o prog`).
-    #[serde(default)]
-    args: Option<Vec<String>>,
-    /// Synthesize a tiny C-free static archive exporting `answer() -> 42` as
-    /// pure machine code for the case's target, and substitute its path for the
-    /// `${FFI_ARCHIVE}` token in `args` (ADR-0064 C FFI P1 proof program). The
-    /// archive is produced with the compiler's own object machinery
-    /// (`rue_linker::ObjectBuilder`), mirroring how the runtime archive is
-    /// linked in — no C toolchain is required.
-    #[serde(default)]
-    ffi_answer_archive: bool,
-    /// Name of the executable the compiler is expected to produce.
-    #[serde(default)]
-    output: Option<String>,
-    /// A synchronized, imperative `--watch` integration scenario.
-    #[serde(default)]
-    watch: Option<WatchScenario>,
-    /// Extra environment variables for the compiler invocation.
-    #[serde(default)]
-    env: HashMap<String, String>,
-    /// Command-line arguments passed to the COMPILED PROGRAM when it runs
-    /// (RUE-935). These become `argv[1..]`; `argv[0]` is the program path the
-    /// harness invokes. Distinct from `args`, which are the compiler's flags.
-    #[serde(default)]
-    program_args: Vec<String>,
-    /// Extra environment variables for the COMPILED PROGRAM's run (RUE-935),
-    /// layered on top of the inherited environment. Distinct from `env`, which
-    /// applies to the compiler invocation.
-    #[serde(default)]
-    program_env: HashMap<String, String>,
-    /// Piped to the compiled program's stdin.
-    #[serde(default)]
-    stdin: Option<String>,
-    /// Expect compilation to fail.
-    #[serde(default)]
-    compile_fail: bool,
-    /// Substrings expected in the compiler's stderr when compilation fails.
-    #[serde(default)]
-    error_contains: Vec<String>,
-    /// Compile but don't run the produced binary.
-    #[serde(default)]
-    compile_only: bool,
-    /// Target whose executable structure must be validated after compilation.
-    #[serde(default)]
-    executable_target: Option<String>,
-    /// Run a structurally validated executable only when it is native to this
-    /// host. This lets one case cover every host-target compile pair without
-    /// attempting to execute foreign machine code.
-    #[serde(default)]
-    execute_if_native: bool,
-    /// Substrings expected in the compiler's stdout (e.g. `--emit` output).
-    #[serde(default)]
-    compile_stdout_contains: Vec<String>,
-    /// Substrings that must NOT appear in the compiler's stdout.
-    #[serde(default)]
-    compile_stdout_not_contains: Vec<String>,
-    /// Substrings that MUST appear in the compiler's stderr, regardless of
-    /// whether compilation succeeds or fails. Use for warnings that must
-    /// survive a successful compile (e.g. under `--emit`).
-    #[serde(default)]
-    compile_stderr_contains: Vec<String>,
-    /// Substrings that must NOT appear in the compiler's stderr, regardless of
-    /// whether compilation succeeds or fails. Use to guard against debug spew
-    /// or leaked internal diagnostics (e.g. raw `DEBUG:` eprintln lines).
-    #[serde(default)]
-    compile_stderr_not_contains: Vec<String>,
-    /// Validate the compiler's stderr as the `--error-format json` surface
-    /// (RUE-436): EVERY non-empty stderr line must parse as a JSON array of
-    /// diagnostic objects, and every object must carry the full documented
-    /// schema (see `docs/process/diagnostics.md`). Substring assertions cannot
-    /// catch malformed JSON, a dropped field, or a renamed key — this can, and
-    /// it fails the case when they happen. Under `--error-format json` stderr
-    /// carries diagnostics only (the `Compiled ... -> ...` banner is stdout),
-    /// so the "every line" rule is exact rather than a filter.
-    #[serde(default)]
-    json_diagnostics: bool,
-    /// Exact, ordered digest of the diagnostics `json_diagnostics` parsed, as
-    /// `"<severity> <code> <file>:<line>:<column>"` per diagnostic, flattened
-    /// across every stderr line in emission order. An absent field renders as
-    /// `-`: warnings are uncoded (`"warning - main.rue:2:5"`) and a diagnostic
-    /// with no span has no locator (`"error E1403 -"`). This pins diagnostic
-    /// ORDER, not merely presence: a case that lists the same diagnostics in a
-    /// different order fails. Requires `json_diagnostics`.
-    #[serde(default)]
-    json_diagnostic_order: Vec<String>,
-    /// Exact expected program stdout.
-    #[serde(default)]
-    stdout: Option<String>,
-    /// Substrings expected in the program's stdout.
-    #[serde(default)]
-    stdout_contains: Vec<String>,
-    /// Substrings expected in the program's stderr (runtime panics).
-    #[serde(default)]
-    runtime_error_contains: Vec<String>,
-    /// Expected program exit code (default 0).
-    #[serde(default)]
-    exit_code: Option<i32>,
-    /// Expected failure: reference to the Linear issue tracking the bug.
-    #[serde(default)]
-    known_bug: Option<String>,
-    /// Platforms the known_bug applies to (e.g. ["x86-64-linux"]). Empty
-    /// means all platforms. On other platforms the case runs as a normal
-    /// test. Useful for ABI bugs that manifest differently per target.
-    #[serde(default)]
-    known_bug_on: Vec<String>,
-    /// Platforms this case runs on (e.g. ["x86-64-linux"]); elsewhere it is
-    /// reported as ignored. Empty means all platforms. Use when the expected
-    /// behavior itself depends on the host (e.g. `--target X` is a
-    /// cross-compile on some hosts and a native compile on others).
-    #[serde(default)]
-    only_on: Vec<String>,
-    /// Skip this case entirely.
-    #[serde(default)]
-    skip: bool,
-    /// Opt-level differential test (RUE-236): compile+run this case once per
-    /// optimization level (`-O0`, `-O1`, `-O2`, `-O3`) and assert IDENTICAL
-    /// exit code AND stdout across all levels. A divergence fails the case,
-    /// naming the level that differs. This catches optimizer passes that break
-    /// semantics — the analogue, at the *program's* opt level, of the
-    /// release-mode CI job (RUE-45) that catches `cfg(debug_assertions)`
-    /// divergence in the *compiler*. `-O2`/`-O3` alias `-O1` today, so results
-    /// match now; the net is set so a future divergence is caught.
-    ///
-    /// Marked cases must be plain compile-and-run cases: `compile_fail`,
-    /// `compile_only`, and an explicit `-O` in `args` are rejected (the runner
-    /// drives the opt level itself). Give the case exact `stdout` and
-    /// `exit_code` so each level is also checked against the known-good result,
-    /// not merely against the other levels.
-    #[serde(default)]
-    differential_opt: bool,
-    /// Report the case as ignored when no system `cc` driver is on `PATH`.
-    /// For cases exercising the `--linker cc` symbolized profiling build
-    /// (RUE-1173): every supported CI host provides `cc`, but a minimal local
-    /// environment without a C toolchain should skip rather than fail.
-    #[serde(default)]
-    requires_system_linker: bool,
-    /// Substrings that must each match at least one defined symbol name in
-    /// the produced executable's symbol table (ELF `.symtab` / Mach-O
-    /// `LC_SYMTAB`). Verifies the symbolized profiling build keeps function
-    /// symbols (RUE-1173). Incompatible with `compile_fail`.
-    #[serde(default)]
-    symbols_contain: Vec<String>,
-    /// Assert the produced executable carries no symbol table entries. Pins
-    /// that default internal-linker output is unsymbolized — the documented
-    /// motivation for the `--linker cc` profiling workflow (RUE-1173).
-    /// Incompatible with `compile_fail` and `symbols_contain`.
-    #[serde(default)]
-    no_symbol_table: bool,
-    /// Exact expected exit status of the DRIVER invocation itself, for a
-    /// subcommand that neither compiles-and-runs nor fails to compile.
-    ///
-    /// `rue test` (ADR-0083) is the case this exists for: its exit status is a
-    /// documented four-way contract (0 passed / 1 failures / 2 runner error /
-    /// 3 empty selection) that agents branch on, and `compile_fail`'s
-    /// "nonzero" cannot tell 1 from 3. Setting it also declares that the
-    /// invocation produces no executable to run, so the case ends after the
-    /// compiler's own stdout, stderr, and status are checked — assert the
-    /// driver's output with `compile_stdout_contains` and
-    /// `compile_stderr_contains`. Incompatible with `compile_fail`, whose
-    /// contract is exactly the weaker one this replaces.
-    #[serde(default)]
-    driver_exit_code: Option<i32>,
 }
 
 /// What running one case produced: the compiled program's exit code and
@@ -3945,22 +3559,6 @@ fn invalid_symbol_expectations(case: &Case) -> Option<&'static str> {
     None
 }
 
-fn unknown_only_on_targets(case: &Case) -> Vec<&str> {
-    case.only_on
-        .iter()
-        .map(String::as_str)
-        .filter(|platform| !KNOWN_TARGETS.contains(platform))
-        .collect()
-}
-
-fn unknown_known_bug_on_targets(case: &Case) -> Vec<&str> {
-    case.known_bug_on
-        .iter()
-        .map(String::as_str)
-        .filter(|platform| !KNOWN_TARGETS.contains(platform))
-        .collect()
-}
-
 fn load_cases(cases_dir: &Path) -> LoadedCorpus {
     let toml_files = rue_test_runner::discover_files(cases_dir, "toml").unwrap_or_else(|error| {
         eprintln!(
@@ -4067,7 +3665,7 @@ fn load_cases(cases_dir: &Path) -> LoadedCorpus {
                         );
                         std::process::exit(1);
                     }
-                    let unknown_platforms = unknown_only_on_targets(case);
+                    let unknown_platforms = unknown_only_on_platforms(case);
                     if !unknown_platforms.is_empty() {
                         eprintln!(
                             "error: {}: case '{}' has unknown only_on platform(s): {} (known: {})",
@@ -4078,7 +3676,7 @@ fn load_cases(cases_dir: &Path) -> LoadedCorpus {
                         );
                         std::process::exit(1);
                     }
-                    let unknown_known_bug_platforms = unknown_known_bug_on_targets(case);
+                    let unknown_known_bug_platforms = unknown_known_bug_on_platforms(case);
                     if !unknown_known_bug_platforms.is_empty() {
                         eprintln!(
                             "error: {}: case '{}' has unknown known_bug_on platform(s): {} (known: {})",
@@ -4764,7 +4362,39 @@ fn emit_shard_loads(
         .map_err(|error| format!("cannot serialize shard loads: {error}"))
 }
 
+/// Report the harness's own view of the host platform and, with it, the
+/// vocabulary its corpus may name.
+///
+/// The shell gates around this harness (`scripts/test-cli-known-bug-markers.sh`,
+/// `scripts/test-harness-duplicate-names.sh`) write `only_on` / `known_bug_on`
+/// fixtures scoped to "this host" and "some other valid platform". They used to
+/// re-derive both from their own `uname` ladders, which could disagree with the
+/// harness they were driving — exactly the drift these gates exist to catch. A
+/// Buck `env` value is static and cannot detect a host, so the harness answers
+/// the question instead, and the scripts ask it.
+fn host_facts(query: &str) -> Option<String> {
+    match query {
+        "--print-host-target" => Some(rue_test_runner::get_host_target().to_string()),
+        "--print-known-targets" => Some(KNOWN_TARGETS.join("\n")),
+        _ => None,
+    }
+}
+
 fn main() {
+    // Answer host-platform queries before anything else: these run with no
+    // corpus, no compiler, and no libtest2 arguments.
+    let mut args = std::env::args().skip(1);
+    if let Some(first) = args.next()
+        && let Some(answer) = host_facts(&first)
+    {
+        if args.next().is_some() {
+            eprintln!("error: {first} takes no further arguments");
+            std::process::exit(2);
+        }
+        println!("{answer}");
+        return;
+    }
+
     // An optional `INDEX/COUNT` spec selects one cost-balanced slice of the
     // corpus so CI can fan the work across parallel runners. Unset (the
     // default, and every local/filtered run) means the whole corpus.
@@ -4964,6 +4594,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rue_test_runner::cli_corpus::SourceFile;
 
     #[cfg(unix)]
     fn fake_compiler(script: &str) -> (tempfile::TempDir, PathBuf) {
@@ -5861,7 +5492,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(unknown_only_on_targets(&case), vec!["x86_64-linux"]);
+        assert_eq!(unknown_only_on_platforms(&case), vec!["x86_64-linux"]);
     }
 
     #[test]
@@ -5872,7 +5503,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(unknown_known_bug_on_targets(&case), vec!["x86_64-linux"]);
+        assert_eq!(unknown_known_bug_on_platforms(&case), vec!["x86_64-linux"]);
     }
 
     #[test]
@@ -5906,7 +5537,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(unknown_only_on_targets(&case).is_empty());
+        assert!(unknown_only_on_platforms(&case).is_empty());
     }
 
     #[test]
@@ -5920,7 +5551,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(unknown_known_bug_on_targets(&case).is_empty());
+        assert!(unknown_known_bug_on_platforms(&case).is_empty());
     }
 
     #[test]
