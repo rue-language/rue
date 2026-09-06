@@ -145,8 +145,10 @@ pub(crate) enum Supersession {
 /// diagnostic stream; the report says what happened so the caller can pick an
 /// exit status or a progress line.
 pub(crate) enum CycleReport {
-    /// The executable reached the output path.
-    Published(PublishedExecutable),
+    /// The executable reached the output path. Boxed because the one-shot
+    /// metrics it carries dwarf every other outcome, and a report is built
+    /// once per cycle.
+    Published(Box<PublishedExecutable>),
     /// The program was rejected, or the destination or publication was
     /// refused.
     Failed,
@@ -246,7 +248,7 @@ pub(crate) fn drive_cycle(request: CycleRequest<'_, '_>) -> CycleReport {
     match publication.result {
         Ok(published) => {
             announce(announcement, source_path, output_path, options);
-            CycleReport::Published(published)
+            CycleReport::Published(Box::new(published))
         }
         Err(PublishError::InputsChanged) => CycleReport::Superseded(Supersession::AtPublication),
         Err(error) => {
