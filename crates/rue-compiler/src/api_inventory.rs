@@ -7554,9 +7554,10 @@ fn unstable_views_do_not_alias_query_engine_records() {
         reexports,
         [
             "pubusecrate::diagnostic::{ColorChoice,DiagnosticFormatter,JsonDiagnostic,JsonDiagnosticFormatter,JsonSpan,JsonSuggestion,MultiFileFormatter,MultiFileJsonFormatter,SourceInfo,};",
-            "pubusecrate::import_discovery::{AcceptedImportSource,DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportDiscoveryPlan,ImportDiscoveryRequest,ImportDiscoveryWave,ImportInputRevision,ImportObservation,ImportObservationLedger,ImportObservationStatus,};",
+            "pubusecrate::import_discovery::{AcceptedImportSource,DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportDiscoveryPlan,ImportDiscoveryRequest,ImportDiscoveryWave,ImportInputRevision,ImportObservation,ImportObservationLedger,ImportObservationStatus,requested_path_for_module,};",
             "pubusecrate::test_candidates::{TestCandidate,TestCandidateInventory,TestCandidateOutcome,UnimportedTestFile,};",
             "pubusecrate::warm_fresh_parity::ParityObservation;",
+            "pubuserue_air::normalize_module_path;",
             "pubuserue_span::Span;",
             "pubusecrate::session::{ClosedDiscoveryContinuation,RootedCfgOutput,RootedCfgUnit,RootedParkOutcome,RootedPreOptimizationCfgOutput,RootedPreOptimizationCfgUnit,TrustedSuccessorDelta,};",
         ],

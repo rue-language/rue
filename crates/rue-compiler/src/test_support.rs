@@ -358,6 +358,7 @@ impl TestDiscoveryHost {
         let context = ImportDiscoveryContext::new(
             1,
             FIXTURE_PROJECT_ROOT,
+            None,
             trusted.then_some(FIXTURE_STD_ROOT),
             "test-fixture-discovery",
         )

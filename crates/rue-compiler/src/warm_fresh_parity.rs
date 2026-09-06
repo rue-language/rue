@@ -13,7 +13,7 @@ fn close_fuzz_discovery(session: &mut CompilerSession, source: &SourceSnapshot, 
         publish_import_observation_batch, stage_import_input_request,
     };
 
-    let context = crate::ImportDiscoveryContext::new(epoch, "/p", None, "warm-session-fuzz")
+    let context = crate::ImportDiscoveryContext::new(epoch, "/p", None, None, "warm-session-fuzz")
         .expect("fuzz discovery context is valid");
     let root = source.metadata().root_file_id();
     let root_path = source

@@ -40,6 +40,22 @@ error_contains = ["Error reading ", "missing.rue:"]
 compile_stderr_not_contains = ['"code":"E1500"', '"severity":"error"']
 
 [[case]]
+name = "project_root_inside_std_is_compiler_input_json"
+description = "RUE-1979: the project-root/std-root overlap policy belongs to import discovery, so the driver reports its typed compiler input error (E1400) rather than a driver source-load classification."
+files = [{ path = "sdk/project/main.rue", source = "fn main() -> i32 { 0 }" }]
+env = { RUE_STD_PATH = "sdk" }
+args = ["--error-format", "json", "sdk/project/main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E1400 -"]
+error_contains = [
+  '"code":"E1400"',
+  "is inside the configured standard-library root",
+  '"spans":[]',
+]
+compile_stderr_not_contains = ['"code":"E1500"', "E9000", "internal compiler error"]
+
+[[case]]
 name = "missing_trusted_toolchain_input_is_json"
 description = "RUE-1323: a reached fallible intrinsic with a missing trusted std module is classified as toolchain integrity, not ordinary source load or an ICE."
 files = [{ path = "main.rue", source = 'fn main() -> i32 { let _ = @parse_i64("1"); 0 }' }]

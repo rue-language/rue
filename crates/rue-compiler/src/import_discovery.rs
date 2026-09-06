@@ -38,22 +38,43 @@ pub struct ImportDiscoveryContext {
 }
 
 impl ImportDiscoveryContext {
+    /// Capture one discovery epoch's invocation inputs, refusing a project
+    /// root that overlaps the configured standard-library root.
+    ///
+    /// `canonical_project_root` is the host's physically resolved spelling of
+    /// the same directory, when it has one. The overlap policy is one rule
+    /// applied to both spellings, because either one landing inside the std
+    /// root would let a project source mint trusted standard-library
+    /// identities: the lexical root catches a project literally nested under
+    /// the configured toolchain, and the canonical root catches one that
+    /// reaches it through a symlink. The canonical spelling is validated and
+    /// not retained — the retained project identity is the lexical root, which
+    /// is what durable caller identities are relative to.
     pub fn new(
         epoch: u64,
         project_root: impl AsRef<str>,
+        canonical_project_root: Option<&str>,
         std_root: Option<&str>,
         read_policy_revision: impl Into<Arc<str>>,
     ) -> CompileResult<Self> {
         let project_root = normalize_absolute(project_root.as_ref())?;
+        let canonical_project_root = canonical_project_root.map(normalize_absolute).transpose()?;
         let std_root = std_root.map(normalize_absolute).transpose()?.map(Arc::from);
-        if std_root
-            .as_deref()
-            .is_some_and(|std_root| Path::new(&project_root).starts_with(std_root))
-        {
-            return Err(invalid_input(format!(
-                "project root {:?} is inside the configured standard-library root",
-                project_root
-            )));
+        if let Some(std_root) = std_root.as_deref() {
+            for root in [
+                Some(project_root.as_str()),
+                canonical_project_root.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if Path::new(root).starts_with(std_root) {
+                    return Err(invalid_input(format!(
+                        "project root {:?} is inside the configured standard-library root",
+                        root
+                    )));
+                }
+            }
         }
         Ok(Self {
             epoch,
@@ -113,6 +134,22 @@ impl ImportDiscoveryContext {
     }
     pub fn std_root(&self) -> Option<&str> {
         self.std_root.as_deref()
+    }
+
+    /// The namespace boundary a requested path is spelled inside: the captured
+    /// std root when the path lies under it, the project root otherwise.
+    ///
+    /// This is the same lexical `strip_prefix(std_root)` classification
+    /// [`classify_module`] mints identities with, exported so a host walks a
+    /// requested spelling against exactly the boundary the compiler will
+    /// attribute it to. `classify_module` additionally refuses a relative part
+    /// that escapes the std root, because it is minting an identity; this
+    /// query only names which root a path is spelled under.
+    pub fn boundary_for_requested(&self, requested: &Path) -> &Path {
+        match self.std_root() {
+            Some(std_root) if requested.starts_with(std_root) => Path::new(std_root),
+            _ => Path::new(self.project_root()),
+        }
     }
     pub fn read_policy_revision(&self) -> &str {
         &self.read_policy_revision
@@ -1549,7 +1586,7 @@ pub(crate) fn escaping_import_candidate(
         context.project_root(),
         context.std_root(),
     );
-    let candidate = normalize_path(&groups[0][0]);
+    let candidate = normalize_module_path(&groups[0][0]);
     if Path::new(&candidate).starts_with(boundary_root) {
         Ok(None)
     } else {
@@ -1651,7 +1688,7 @@ pub(crate) fn discovery_groups_for_occurrence(
         context.project_root(),
         context.std_root(),
     );
-    let normalized_specifier = normalize_path(occurrence.specifier());
+    let normalized_specifier = normalize_module_path(occurrence.specifier());
     candidate_groups
         .into_iter()
         .enumerate()
@@ -1673,7 +1710,7 @@ pub(crate) fn discovery_groups_for_occurrence(
                         root_anchor: Arc::from(context.project_root()),
                         group: group_index,
                         position,
-                        requested_path: Arc::from(normalize_path(&candidate)),
+                        requested_path: Arc::from(normalize_module_path(&candidate)),
                         role: candidate_role(occurrence.specifier()),
                     }
                 })
@@ -3024,7 +3061,15 @@ fn discovery_candidate_groups(
     )]]
 }
 
-fn requested_path_for_module(
+/// The requested filesystem spelling discovery resolves `module` to: the
+/// captured std root joined with the trusted relative path for a standard-library
+/// module, the project root joined with the module identity otherwise.
+///
+/// This is the compiler's own derivation, exported through `unstable` so a host
+/// that must resolve a module outside the import frontier — the driver's
+/// trusted toolchain-module acquisition — asks for the path instead of
+/// re-deriving one that could disagree.
+pub fn requested_path_for_module(
     context: &ImportDiscoveryContext,
     module: &ModuleId,
 ) -> CompileResult<String> {
@@ -3035,11 +3080,11 @@ fn requested_path_for_module(
         let std_root = context
             .std_root()
             .ok_or_else(|| invalid_input("standard-library module has no captured std root"))?;
-        return Ok(normalize_path(
+        return Ok(normalize_module_path(
             &Path::new(std_root).join(relative).to_string_lossy(),
         ));
     }
-    Ok(normalize_path(
+    Ok(normalize_module_path(
         &Path::new(context.project_root())
             .join(module.as_str())
             .to_string_lossy(),
@@ -3134,28 +3179,13 @@ fn parent_dir(path: &str) -> String {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default()
 }
-fn normalize_path(path: &str) -> String {
-    let mut result = PathBuf::new();
-    let absolute = Path::new(path).is_absolute();
-    for component in Path::new(path).components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                let can_pop = result
-                    .components()
-                    .next_back()
-                    .is_some_and(|component| matches!(component, Component::Normal(_)));
-                if can_pop {
-                    result.pop();
-                } else if !absolute {
-                    result.push("..");
-                }
-            }
-            _ => result.push(component.as_os_str()),
-        }
-    }
-    result.to_string_lossy().into_owned()
-}
+/// An identity path in the discovery protocol's absolute spelling.
+///
+/// Discovery identities are absolute by construction: the host resolves every
+/// candidate against the project or std root before it can be observed. The
+/// reduction itself is [`normalize_module_path`]'s single policy, so a
+/// requested path, the physical spelling `SourceMetadata` keys collisions by,
+/// and the driver's manifest membership key are the same string.
 fn normalize_absolute(path: &str) -> CompileResult<String> {
     let path = Path::new(path);
     if !path.is_absolute() {
@@ -3163,7 +3193,7 @@ fn normalize_absolute(path: &str) -> CompileResult<String> {
             "discovery identity path {path:?} is not absolute"
         )));
     }
-    Ok(normalize_path(path.to_string_lossy().as_ref()))
+    Ok(normalize_module_path(path.to_string_lossy().as_ref()))
 }
 fn lexical_relative_path(base: &Path, target: &Path) -> Option<PathBuf> {
     let base: Vec<_> = base.components().collect();
@@ -3205,13 +3235,13 @@ mod tests {
     use super::*;
 
     fn context(epoch: u64) -> ImportDiscoveryContext {
-        ImportDiscoveryContext::new(epoch, "/project", Some("/sdk"), "all").unwrap()
+        ImportDiscoveryContext::new(epoch, "/project", None, Some("/sdk"), "all").unwrap()
     }
 
     #[test]
     fn project_root_inside_or_equal_to_std_root_is_rejected() {
         for (project, std_root) in [("/sdk/project", "/sdk"), ("/sdk", "/sdk")] {
-            let error = ImportDiscoveryContext::new(1, project, Some(std_root), "all")
+            let error = ImportDiscoveryContext::new(1, project, None, Some(std_root), "all")
                 .expect_err("a project rooted inside std must fail closed");
             assert!(
                 error
@@ -3222,14 +3252,62 @@ mod tests {
         // The supported layout remains valid: the captured std tree is a
         // child of the project, so project-relative and trusted identities have
         // disjoint roots.
-        ImportDiscoveryContext::new(1, "/project", Some("/project/std"), "all")
+        ImportDiscoveryContext::new(1, "/project", None, Some("/project/std"), "all")
             .expect("std nested inside the project is valid");
+    }
+
+    /// RUE-1979: one overlap rule covers both root spellings, so a project that
+    /// only reaches the toolchain physically (through a symlinked prefix) is
+    /// refused by the same typed error as a literally nested one.
+    #[test]
+    fn canonical_project_root_inside_std_root_is_rejected() {
+        let error =
+            ImportDiscoveryContext::new(1, "/project", Some("/sdk/project"), Some("/sdk"), "all")
+                .expect_err("a project physically inside std must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("\"/sdk/project\" is inside the configured standard-library root"),
+            "unexpected error: {error}"
+        );
+        ImportDiscoveryContext::new(
+            1,
+            "/project",
+            Some("/physical/project"),
+            Some("/sdk"),
+            "all",
+        )
+        .expect("a project outside std in both spellings is valid");
+    }
+
+    #[test]
+    fn boundary_for_requested_follows_the_classification_std_root() {
+        let context = context(1);
+        assert_eq!(
+            context.boundary_for_requested(Path::new("/sdk/math/float.rue")),
+            Path::new("/sdk")
+        );
+        assert_eq!(
+            context.boundary_for_requested(Path::new("/project/main.rue")),
+            Path::new("/project")
+        );
+        // A sibling directory whose name merely starts with the std root's is
+        // not inside it; `starts_with` compares whole components.
+        assert_eq!(
+            context.boundary_for_requested(Path::new("/sdk-vendor/main.rue")),
+            Path::new("/project")
+        );
+        let rootless = ImportDiscoveryContext::new(1, "/project", None, None, "all").unwrap();
+        assert_eq!(
+            rootless.boundary_for_requested(Path::new("/sdk/math/float.rue")),
+            Path::new("/project")
+        );
     }
 
     #[test]
     fn project_provenance_does_not_inherit_std_boundary_from_its_path() {
         let context =
-            ImportDiscoveryContext::new(1, "/project", Some("/project/std"), "all").unwrap();
+            ImportDiscoveryContext::new(1, "/project", None, Some("/project/std"), "all").unwrap();
         let importer = ModuleId::from_logical_path("std/main.rue").unwrap();
         // The spelling is beneath std, but the accepted module provenance is a
         // caller module. Its escape is measured against the project root.
@@ -3447,14 +3525,15 @@ mod tests {
     #[test]
     fn classify_module_keeps_project_identities_stable_across_relocation() {
         fn classify(context: &ImportDiscoveryContext, path: &Path) -> ModuleId {
-            let path = normalize_path(&path.to_string_lossy());
+            let path = normalize_module_path(&path.to_string_lossy());
             classify_module(context, &path, &path).unwrap()
         }
 
         fn identities(root: &Path) -> Vec<ModuleId> {
             let project = root.join("project");
             let context =
-                ImportDiscoveryContext::new(1, project.to_string_lossy(), None, "all").unwrap();
+                ImportDiscoveryContext::new(1, project.to_string_lossy(), None, None, "all")
+                    .unwrap();
             [
                 project.join("main.rue"),
                 // The production path normalizer resolves nested and parent-relative
@@ -3470,8 +3549,9 @@ mod tests {
         fn rejects_external_source(root: &Path) {
             let project = root.join("project");
             let context =
-                ImportDiscoveryContext::new(1, project.to_string_lossy(), None, "all").unwrap();
-            let path = normalize_path(&root.join("dep.rue").to_string_lossy());
+                ImportDiscoveryContext::new(1, project.to_string_lossy(), None, None, "all")
+                    .unwrap();
+            let path = normalize_module_path(&root.join("dep.rue").to_string_lossy());
             assert!(classify_module(&context, &path, &path).is_err());
         }
 
@@ -3502,7 +3582,7 @@ mod tests {
     #[test]
     fn classify_module_keeps_external_std_namespace_stable() {
         fn classify(context: &ImportDiscoveryContext, path: &Path) -> ModuleId {
-            let path = normalize_path(&path.to_string_lossy());
+            let path = normalize_module_path(&path.to_string_lossy());
             classify_module(context, &path, &path).unwrap()
         }
 
@@ -3510,6 +3590,7 @@ mod tests {
             let context = ImportDiscoveryContext::new(
                 1,
                 project.to_string_lossy(),
+                None,
                 Some(std_root.to_string_lossy().as_ref()),
                 "all",
             )
@@ -3555,7 +3636,7 @@ mod tests {
         } else {
             ("/rue-parity/project", "/rue-parity/toolchain/std")
         };
-        let context = ImportDiscoveryContext::new(1, project, Some(std_root), "all").unwrap();
+        let context = ImportDiscoveryContext::new(1, project, None, Some(std_root), "all").unwrap();
 
         // The attribution helper must publish exactly the identity spelling
         // classification mints for the same requested std path, including the
@@ -3578,7 +3659,7 @@ mod tests {
             trusted_logical_path_for_requested(&context, &outside.to_string_lossy()),
             None
         );
-        let rootless = ImportDiscoveryContext::new(1, project, None, "all").unwrap();
+        let rootless = ImportDiscoveryContext::new(1, project, None, None, "all").unwrap();
         let inside = Path::new(std_root).join("_std.rue");
         assert_eq!(
             trusted_logical_path_for_requested(&rootless, &inside.to_string_lossy()),
@@ -3589,7 +3670,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn classify_module_rejects_unnamed_cross_volume_source() {
-        let context = ImportDiscoveryContext::new(1, r"C:\project", None, "all").unwrap();
+        let context = ImportDiscoveryContext::new(1, r"C:\project", None, None, "all").unwrap();
         let error = classify_module(
             &context,
             r"D:\dependency\helper.rue",
@@ -3613,8 +3694,8 @@ mod tests {
 
     #[test]
     fn absolute_normalization_never_pops_above_root() {
-        assert_eq!(normalize_path("/project/../../../x"), "/x");
-        assert_eq!(normalize_path("/../../x"), "/x");
+        assert_eq!(normalize_module_path("/project/../../../x"), "/x");
+        assert_eq!(normalize_module_path("/../../x"), "/x");
         assert_eq!(normalize_absolute("/../../../x").unwrap(), "/x");
         assert!(
             AcceptedImportSource::new(
@@ -5745,8 +5826,14 @@ mod tests {
         let plan = session
             .stage_import_discovery(
                 &source,
-                crate::ImportDiscoveryContext::new(1, "/project", Some("/project/std"), "all")
-                    .unwrap(),
+                crate::ImportDiscoveryContext::new(
+                    1,
+                    "/project",
+                    None,
+                    Some("/project/std"),
+                    "all",
+                )
+                .unwrap(),
                 accepted_reads(&source),
                 ImportObservationLedger::default(),
             )

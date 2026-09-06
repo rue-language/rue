@@ -175,9 +175,19 @@ input errors (`E1400-E1499`) and internal compiler errors
 the normal compiler formatter, including their source spans and existing
 codes. Ordinary root/source manifest handling is not universally E1502: a root
 policy failure is ordinary source loading (E1500), while an import policy
-diagnostic with a source snapshot remains a compiler diagnostic. The one-shot
-and `--watch` source-load paths share one rendering helper, so a given
-`SourceLoadError` has identical JSON framing, code, and message in both modes.
+diagnostic with a source snapshot remains a compiler diagnostic.
+
+Policy the compiler owns keeps its compiler code even when the driver is what
+triggers it. Capturing an import-discovery context validates the project root
+against the configured standard-library root, so a project rooted inside the
+toolchain is `E1400` (invalid compiler input) with an empty `spans` array,
+rendered by the compiler formatter — the same code and message an embedder that
+captures its own context receives, rather than a driver classification the CLI
+alone would report.
+
+The one-shot and `--watch` source-load paths share one rendering helper, so a
+given `SourceLoadError` has identical JSON framing, code, and message in both
+modes.
 
 ## Testing the surface
 

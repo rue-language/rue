@@ -3597,7 +3597,7 @@ fn durable_named_value_projection_preserves_real_module_binding_identity() {
     };
 
     let context =
-        ImportDiscoveryContext::new(902, "/project", Some("/sdk"), "test-policy").unwrap();
+        ImportDiscoveryContext::new(902, "/project", None, Some("/sdk"), "test-policy").unwrap();
     let mut assembler = DiscoverySourceAssembler::new(
         context.clone(),
         "/project/main.rue",
@@ -3672,7 +3672,7 @@ fn durable_module_member_projection_preserves_order_types_and_dependencies() {
     };
 
     let context =
-        ImportDiscoveryContext::new(903, "/project", Some("/sdk"), "test-policy").unwrap();
+        ImportDiscoveryContext::new(903, "/project", None, Some("/sdk"), "test-policy").unwrap();
     let mut assembler = DiscoverySourceAssembler::new(
         context.clone(),
         "/project/main.rue",

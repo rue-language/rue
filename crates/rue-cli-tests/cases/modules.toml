@@ -120,6 +120,39 @@ pub fn triple(x: i32) -> i32 {
 args = ["--source-manifest", "sources.manifest", "main.rue", "-o", "prog"]
 stdout = "42\n"
 
+# The manifest membership key and the path import discovery requests are
+# reduced by the same normalizer, so a `.`/`..` spelling of a declared file
+# still declares it.
+[[case]]
+name = "source_manifest_entry_reduces_like_a_requested_path"
+description = "RUE-1979: manifest keys and discovery requested paths share one lexical normalizer, so `./nested/../utils.rue` declares the same file as `utils.rue`."
+files = [
+    { path = "sources.manifest", source = """
+./main.rue
+./nested/../utils.rue
+""" },
+    { path = "main.rue", source = """
+const utils = @import("nested/../utils.rue");
+
+fn main() -> i32 {
+    @dbg(utils.triple(14));
+    0
+}
+""" },
+    { path = "nested/keep.rue", source = """
+pub fn keep() -> i32 {
+    0
+}
+""" },
+    { path = "utils.rue", source = """
+pub fn triple(x: i32) -> i32 {
+    x * 3
+}
+""" },
+]
+args = ["--source-manifest", "sources.manifest", "main.rue", "-o", "prog"]
+stdout = "42\n"
+
 [[case]]
 name = "source_manifest_rejects_undeclared_root"
 description = "RUE-448: the root source itself must be listed in the build-system manifest."

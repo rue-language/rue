@@ -18,11 +18,20 @@ pub use crate::import_discovery::{
     AcceptedImportSource, DiscoverySourceAssembler, ImportDemandFrontier, ImportDemandMode,
     ImportDemandRoots, ImportDiscoveryPlan, ImportDiscoveryRequest, ImportDiscoveryWave,
     ImportInputRevision, ImportObservation, ImportObservationLedger, ImportObservationStatus,
+    requested_path_for_module,
 };
 pub use crate::test_candidates::{
     TestCandidate, TestCandidateInventory, TestCandidateOutcome, UnimportedTestFile,
 };
 pub use crate::warm_fresh_parity::ParityObservation;
+/// The one lexical source-path normalizer (`rue-air`'s `path_norm`).
+///
+/// Every source spelling the compiler keys an identity by passes through this
+/// function; a host that keeps its own path table — the driver's source-manifest
+/// membership set — reduces its keys with it too, so a spelling cannot be
+/// declared by one layer and denied by another (RUE-1979). It is purely
+/// lexical: anchoring a relative spelling is the host's own step.
+pub use rue_air::normalize_module_path;
 /// A diagnostic's source location, as the diagnostic types already hand it out.
 ///
 /// `CompileError::span` is public and returns one of these, so a consumer that

@@ -2908,7 +2908,7 @@ mod tests {
 
     #[test]
     fn canonical_std_strbuf_identity_survives_qualified_and_aliased_lookup() {
-        let context = ImportDiscoveryContext::new(1, "/project", Some("/sdk"), "test")
+        let context = ImportDiscoveryContext::new(1, "/project", None, Some("/sdk"), "test")
             .expect("discovery context should be valid");
         let mut assembler = DiscoverySourceAssembler::new(
             context,
@@ -3015,7 +3015,7 @@ mod tests {
 
     #[test]
     fn trusted_std_presence_does_not_create_a_bare_strbuf_prelude_name() {
-        let context = ImportDiscoveryContext::new(1, "/project", Some("/sdk"), "test")
+        let context = ImportDiscoveryContext::new(1, "/project", None, Some("/sdk"), "test")
             .expect("discovery context should be valid");
         let mut assembler = DiscoverySourceAssembler::new(
             context,
@@ -3967,7 +3967,7 @@ mod tests {
     #[test]
     #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
     fn platform_native_o3_retains_byref_call_after_view_storage_epoch_ends() {
-        let context = ImportDiscoveryContext::new(1, "/project", Some("/sdk"), "test")
+        let context = ImportDiscoveryContext::new(1, "/project", None, Some("/sdk"), "test")
             .expect("discovery context should be valid");
         let mut assembler = DiscoverySourceAssembler::new(
             context,

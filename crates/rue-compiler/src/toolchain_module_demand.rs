@@ -91,18 +91,12 @@ impl TrustedToolchainModuleDemand {
     /// The trusted `ModuleId` this demand resolves to once the host satisfies it.
     ///
     /// The returned identity carries the standard-library origin, so a snapshot
-    /// that contains it reports the module as trusted.
+    /// that contains it reports the module as trusted. It is also how a host
+    /// asks discovery where to read the module from: `requested_path_for_module`
+    /// resolves this identity against the captured std root, so the host never
+    /// derives a toolchain path of its own.
     pub fn trusted_module_id(&self) -> CompileResult<ModuleId> {
         ModuleId::from_trusted_standard_library_path(self.logical_path.as_ref())
-    }
-
-    /// The path fragment relative to the standard-library root (drops the
-    /// `\0rue-std/` namespace prefix), used by the host to resolve the module
-    /// against the toolchain's std path.
-    pub fn std_relative_path(&self) -> &str {
-        self.logical_path
-            .strip_prefix(crate::TRUSTED_STANDARD_LIBRARY_NAMESPACE)
-            .unwrap_or(&self.logical_path)
     }
 }
 

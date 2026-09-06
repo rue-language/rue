@@ -8,36 +8,61 @@
 //! `a/../std/opt.rue`. These must collapse to one key, or the file is
 //! double-registered and member access fails (E0707, RUE-317).
 //!
-//! [`normalize_module_path`] performs that collapse **lexically**: it drops `.`
-//! (current-dir) components and resolves `..` against the preceding *normal*
-//! component. It never touches the filesystem, so it does not follow symlinks;
-//! a leading `..` with nothing to cancel (or a `..` after the root) is
-//! preserved verbatim. Every module-registry / file-table key must pass through
-//! this one function so all spellings of a file agree.
+//! [`normalize_module_path`] is the one lexical normalizer behind every source
+//! spelling in the compiler and its driver: module-registry and file-table
+//! keys, the physical paths `SourceMetadata` compares for collision, the
+//! requested/canonical identity paths import discovery mints, and the driver's
+//! manifest membership keys. Because one function decides, a spelling cannot be
+//! declared by one layer and denied by another (RUE-1979).
+//!
+//! # Policy
+//!
+//! The reduction is purely lexical — it never touches the filesystem, so it
+//! never follows symlinks. `.` components are dropped and a `..` cancels the
+//! preceding *normal* component. A `..` with nothing to cancel is decided by
+//! whether the path is absolute:
+//!
+//! - **Absolute**: the root is its own parent, so an uncancelable `..` is
+//!   dropped (`/a/../..` and `/../../x` reduce to `/` and `/x`). This matches
+//!   POSIX path resolution at the root and `PathBuf::pop`, which is a no-op
+//!   there, so a normalized absolute path always stays under its own root and
+//!   the physical spelling a host observes agrees with the identity the
+//!   compiler mints for it.
+//! - **Relative**: a leading `..` is preserved verbatim (`../std/opt.rue`), as
+//!   there is no anchor to resolve it against. Callers that must refuse an
+//!   escape (a trusted std relative path, a test candidate) check for a
+//!   surviving `..` themselves; this function does not judge.
+//!
+//! The result is idempotent: normalizing a normalized path returns it
+//! unchanged.
 
 use std::path::{Component, Path, PathBuf};
 
-/// Lexically normalize a path for equivalence comparison: drop `.` components
-/// and collapse `..` against a preceding normal component. Purely lexical —
-/// never touches the filesystem (no symlink resolution).
+/// Lexically normalize a path for equivalence comparison, following the module
+/// policy above: drop `.`, cancel `..` against a preceding normal component,
+/// then drop an uncancelable `..` on an absolute path and keep one on a
+/// relative path. Purely lexical — never touches the filesystem (no symlink
+/// resolution).
 ///
 /// Examples (`/` shown for clarity; output uses the platform separator):
 /// - `./foo.rue` -> `foo.rue`
 /// - `sub/./foo.rue` -> `sub/foo.rue`
 /// - `a/../std/opt.rue` -> `std/opt.rue`
-/// - `../std/opt.rue` -> `../std/opt.rue` (leading `..` has nothing to cancel)
+/// - `../std/opt.rue` -> `../std/opt.rue` (relative: nothing to cancel)
+/// - `/../std/opt.rue` -> `/std/opt.rue` (absolute: the root is its own parent)
 pub fn normalize_module_path(path: &str) -> String {
+    let path = Path::new(path);
+    let absolute = path.is_absolute();
     let mut out: Vec<Component> = Vec::new();
-    for comp in Path::new(path).components() {
+    for comp in path.components() {
         match comp {
             Component::CurDir => {}
             Component::ParentDir => {
-                // Cancel a preceding *normal* component; otherwise (empty, a
-                // leading `..`, or a root/prefix) keep the `..` verbatim so the
-                // normalization stays purely lexical.
                 if matches!(out.last(), Some(Component::Normal(_))) {
                     out.pop();
-                } else {
+                } else if !absolute {
+                    // Relative: a leading `..` (or one behind another `..`)
+                    // has no anchor to resolve against, so it stays verbatim.
                     out.push(comp);
                 }
             }
@@ -89,10 +114,56 @@ mod tests {
     }
 
     #[test]
-    fn preserves_uncancelable_parent() {
-        // A leading `..` has no preceding normal component to cancel.
+    fn preserves_uncancelable_parent_on_relative_paths() {
+        // A leading `..` has no preceding normal component to cancel and no
+        // anchor to resolve against, so it survives.
         assert_eq!(n("../std/opt.rue"), "../std/opt.rue");
         assert_eq!(n("../../x.rue"), "../../x.rue");
+        assert_eq!(n("a/../../b"), "../b");
+    }
+
+    #[test]
+    fn drops_uncancelable_parent_on_absolute_paths() {
+        // The root is its own parent, so an absolute path can never normalize
+        // to a spelling above its own root. Discovery identities, physical
+        // collision keys and driver manifest keys all rely on this agreeing.
+        assert_eq!(n("/a/../.."), "/");
+        assert_eq!(n("/.."), "/");
+        assert_eq!(n("/../../x"), "/x");
+        assert_eq!(n("/a/b/../../../c"), "/c");
+    }
+
+    /// The complete policy table (RUE-1979): every shape the three former
+    /// normalizers disagreed on, decided once here.
+    #[test]
+    fn policy_table() {
+        let cases = [
+            // absolute: `..` cancels, and the root is its own parent
+            ("/a/../..", "/"),
+            ("/../../x", "/x"),
+            ("/a/../b", "/b"),
+            ("/a/b/../../../c", "/c"),
+            ("/..", "/"),
+            ("/", "/"),
+            // relative: an uncancelable `..` stays verbatim
+            ("../x", "../x"),
+            ("a/../../b", "../b"),
+            ("..", ".."),
+            // `.` components and separator noise vanish either way
+            ("a/./b", "a/b"),
+            ("a//b", "a/b"),
+            ("/a/./b/", "/a/b"),
+            ("/a/b/", "/a/b"),
+            ("x/", "x"),
+            ("./x", "x"),
+            // an empty identity stays empty; callers reject it by name
+            ("", ""),
+            (".", ""),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(n(input), expected, "normalizing {input:?}");
+            assert_eq!(n(expected), expected, "{input:?} normalizes idempotently");
+        }
     }
 
     #[test]
