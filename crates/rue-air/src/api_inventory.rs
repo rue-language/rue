@@ -1390,6 +1390,110 @@ fn integer_consumers_use_one_representation_independent_kernel() {
 }
 
 #[test]
+fn literal_materialization_has_one_owner_beside_the_integer_kernel() {
+    let types = include_str!("types.rs");
+    let owner = include_str!("sema/analyze_ops.rs");
+    let aggregates = include_str!("sema/aggregates.rs");
+    let ownership = include_str!("sema/analysis/ownership.rs");
+    let instructions = include_str!("sema/analysis/instructions.rs");
+    let pointers = include_str!("sema/analysis/pointers.rs");
+    let control_flow = include_str!("sema/control_flow.rs");
+    let comptime_adapter = include_str!("sema/comptime_eval.rs");
+
+    // One match turns a `Type` into the kernel's `IntegerType`, so every
+    // width and range decision in rue-air reaches the kernel through it and
+    // the next width the kernel learns reaches all of them at once.
+    assert!(types.contains("pub fn integer_semantics(&self) -> Option<IntegerType>"));
+    assert_eq!(types.matches("IntegerType::new(").count(), 1);
+    for (name, source) in [
+        ("the literal owner", owner),
+        ("struct initializers", aggregates),
+        ("named constant uses", ownership),
+        ("comptime block results", instructions),
+        ("pointer writes", pointers),
+        ("control flow", control_flow),
+        ("the comptime adapter", comptime_adapter),
+        (
+            "the comptime engine",
+            crate::sema::COMPTIME_PRODUCTION_SOURCE,
+        ),
+    ] {
+        assert!(
+            !source.contains("IntegerType::new("),
+            "{name} regained a private width table"
+        );
+    }
+
+    // The one place a constant becomes an AIR `Const`.
+    assert_eq!(
+        owner
+            .matches("pub(crate) fn materialize_int_const(")
+            .count(),
+        1
+    );
+    assert_eq!(
+        owner
+            .matches("pub(crate) fn materialize_float_const(")
+            .count(),
+        1
+    );
+
+    for (name, source) in [
+        ("struct initializers", aggregates),
+        ("named constant uses", ownership),
+        ("comptime block results", instructions),
+        ("pointer writes", pointers),
+    ] {
+        assert!(
+            source.contains("materialize_int_const(")
+                || source.contains("materialize_float_const("),
+            "{name} stopped materializing constants through the shared owner"
+        );
+        assert!(
+            !source.contains("ErrorKind::LiteralOutOfRange"),
+            "{name} regained a private out-of-range diagnostic"
+        );
+        assert!(
+            !source.contains("to_bits()"),
+            "{name} regained a private float-literal encoding"
+        );
+    }
+
+    // Retired range predicates: each was a second answer to "does this value
+    // fit", and `literal_fits` answered only for the positive half.
+    for retired in [
+        "fn literal_fits(",
+        "fn negated_literal_fits(",
+        "fn const_int_fits(",
+    ] {
+        for (name, source) in [
+            ("types", types),
+            ("literal owner", owner),
+            ("comptime adapter", comptime_adapter),
+        ] {
+            assert!(!source.contains(retired), "{name} regained {retired}");
+        }
+    }
+
+    // Negation of a literal is a kernel question, not a hand-written table of
+    // type minima or a wrapping trick.
+    for hand_rolled in [
+        "i8::MIN as i64",
+        "i16::MIN as i64",
+        "i32::MIN as i64",
+        "i64::MIN as u64",
+        "wrapping_neg()",
+    ] {
+        for (name, source) in [("literal owner", owner), ("control flow", control_flow)] {
+            assert!(
+                !source.contains(hand_rolled),
+                "{name} regained {hand_rolled}"
+            );
+        }
+    }
+}
+
+#[test]
 fn comptime_instdata_evaluation_has_one_production_authority() {
     let inference = include_str!("inference/generate.rs");
     let type_inference = include_str!("sema/analysis/type_inference.rs");

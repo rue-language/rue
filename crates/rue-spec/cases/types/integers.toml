@@ -628,6 +628,53 @@ error_contains = "out of range"
 # would fail during lexing, not during semantic analysis range checking.
 
 # =============================================================================
+# Out-of-range literals report one fact in every position (3.1:17, 3.1:18)
+# =============================================================================
+
+[[case]]
+name = "negated_literal_below_min_is_out_of_range"
+spec = ["3.1:18"]
+description = "A negated literal is judged by the value it denotes: -129 is outside i8, so it is an out-of-range literal (E0800), not a trapping negation."
+source = """
+fn main() -> i32 {
+    let x: i8 = -129;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0800", "-129", "i8"]
+
+[[case]]
+name = "out_of_range_literal_in_{position}_reports_one_code"
+spec = ["3.1:17"]
+description = "The range rule belongs to the literal and its target type, not to the position the literal is written in, so every position reports E0800."
+source = """
+{source}
+"""
+compile_fail = true
+error_contains = ["E0800", "out of range", "i8"]
+params = [
+  { position = "an_expression", source = """fn main() -> i32 {
+    let x: i8 = 200;
+    0
+}""" },
+  { position = "a_comptime_block", source = """fn main() -> i32 {
+    let x: i8 = comptime { 200 };
+    0
+}""" },
+  { position = "a_negated_comptime_block", source = """fn main() -> i32 {
+    let x: i8 = comptime { -129 };
+    0
+}""" },
+  { position = "a_constant_initializer", source = """const BAD: i8 = 200;
+
+fn main() -> i32 { 0 }""" },
+  { position = "a_negated_constant_initializer", source = """const BAD: i8 = -129;
+
+fn main() -> i32 { 0 }""" },
+]
+
+# =============================================================================
 # Valid Edge Cases (MIN values via negation)
 # =============================================================================
 

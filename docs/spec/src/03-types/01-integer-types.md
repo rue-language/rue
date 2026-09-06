@@ -137,11 +137,11 @@ fn main() -> i32 {
 
 {{ rule(id="3.1:17", cat="legality-rule") }}
 
-A compiler **MUST** reject programs where an integer literal value exceeds the representable range of its target type.
+A compiler **MUST** reject programs where an integer literal value exceeds the representable range of its target type. The rule is a property of the literal and its target type, not of where the literal is written: an ordinary expression, a `comptime` block (4.14), a struct-initializer field, and a constant initializer (6.5:5) all reject the same literal, with the same diagnostic.
 
 {{ rule(id="3.1:18", cat="normative") }}
 
-When an integer literal is the operand of a unary negation operator, and the negated value would be representable in the target signed integer type, the expression is valid even if the literal value itself exceeds the positive range of that type. This allows the minimum value of each signed integer type to be written as a negated literal.
+When an integer literal is the operand of a unary negation operator, and the negated value would be representable in the target signed integer type, the expression is valid even if the literal value itself exceeds the positive range of that type. This allows the minimum value of each signed integer type to be written as a negated literal. A negated literal is judged by the value it denotes: when that value is outside the target type's range the program is rejected under 3.1:17, as an out-of-range literal rather than as a trapping arithmetic operation (6.5:12).
 
 {{ rule(id="3.1:19") }}
 

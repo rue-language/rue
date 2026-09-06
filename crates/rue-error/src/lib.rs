@@ -3713,7 +3713,7 @@ pub enum ErrorKind {
 
     // Literal errors
     #[error("literal value {value} is out of range for type '{ty}'")]
-    LiteralOutOfRange { value: u64, ty: String },
+    LiteralOutOfRange { value: i128, ty: String },
 
     // Operator errors
     #[error("cannot apply unary operator `-` to type '{0}'")]

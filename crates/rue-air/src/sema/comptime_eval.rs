@@ -267,7 +267,10 @@ pub(super) fn validate_comptime_value_for_type_impl(
     if let ConstValue::Integer(integer) = value
         && expected.is_integer()
     {
-        if const_int_fits(integer, expected) {
+        if expected
+            .integer_semantics()
+            .is_some_and(|integer_type| integer_type.fits_i128(integer))
+        {
             return Ok(());
         }
         return Err(CompileError::new(
@@ -372,12 +375,6 @@ pub(crate) fn const_pattern_matches(
         },
         ComptimeMatchPattern::Path { .. } => None,
     }
-}
-
-/// Check whether `value` is representable in integer type `ty`.
-pub(crate) fn const_int_fits(value: i128, ty: Type) -> bool {
-    ty.integer_semantics()
-        .is_some_and(|integer| integer.fits_i128(value))
 }
 
 /// Build the E1200 error for a constant operation that would panic at runtime.
@@ -3013,7 +3010,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeRejections for OrdinaryBodyEngine<
     }
     fn literal_out_of_range(
         &self,
-        value: u64,
+        value: i128,
         ty: &Type,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Self::Failure {

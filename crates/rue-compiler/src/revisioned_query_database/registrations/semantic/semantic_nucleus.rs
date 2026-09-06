@@ -813,14 +813,13 @@ $runtime
                                                                         && matches!(value, crate::durable_semantics::DurableConstValue::Float(_)))
                                                             })
                                                                 && match (&ty, &value) {
-                                                                (crate::durable_semantics::DurableType::I8, crate::durable_semantics::DurableConstValue::Integer(value)) => i8::try_from(*value).is_ok(),
-                                                                (crate::durable_semantics::DurableType::I16, crate::durable_semantics::DurableConstValue::Integer(value)) => i16::try_from(*value).is_ok(),
-                                                                (crate::durable_semantics::DurableType::I32, crate::durable_semantics::DurableConstValue::Integer(value)) => i32::try_from(*value).is_ok(),
-                                                                (crate::durable_semantics::DurableType::I64, crate::durable_semantics::DurableConstValue::Integer(value)) => i64::try_from(*value).is_ok(),
-                                                                (crate::durable_semantics::DurableType::U8, crate::durable_semantics::DurableConstValue::Integer(value)) => u8::try_from(*value).is_ok(),
-                                                                (crate::durable_semantics::DurableType::U16, crate::durable_semantics::DurableConstValue::Integer(value)) => u16::try_from(*value).is_ok(),
-                                                                (crate::durable_semantics::DurableType::U32, crate::durable_semantics::DurableConstValue::Integer(value)) => u32::try_from(*value).is_ok(),
-                                                                (crate::durable_semantics::DurableType::U64, crate::durable_semantics::DurableConstValue::Integer(value)) => u64::try_from(*value).is_ok(),
+                                                                // Integer range is the kernel's to decide:
+                                                                // a width this table spelled itself would
+                                                                // silently disagree with the body path the
+                                                                // next time the kernel learns one.
+                                                                (_, crate::durable_semantics::DurableConstValue::Integer(_)) => {
+                                                                    crate::durable_comptime::durable_const_fits_type(&value, &ty)
+                                                                }
                                                                 (crate::durable_semantics::DurableType::Bool, crate::durable_semantics::DurableConstValue::Bool(_))
                                                                 | (crate::durable_semantics::DurableType::Unit, crate::durable_semantics::DurableConstValue::Unit)
                                                                 | (crate::durable_semantics::DurableType::ComptimeFloat, crate::durable_semantics::DurableConstValue::Float(_))
@@ -857,34 +856,15 @@ $runtime
                                                                 })
                                                             } else {
                                                                 let kind = match (&ty, &value) {
-                                                                    (crate::durable_semantics::DurableType::I8
-                                                                    | crate::durable_semantics::DurableType::I16
-                                                                    | crate::durable_semantics::DurableType::I32
-                                                                    | crate::durable_semantics::DurableType::I64
-                                                                    | crate::durable_semantics::DurableType::U8
-                                                                    | crate::durable_semantics::DurableType::U16
-                                                                    | crate::durable_semantics::DurableType::U32
-                                                                    | crate::durable_semantics::DurableType::U64,
-                                                                    crate::durable_semantics::DurableConstValue::Integer(value)) if *value >= 0 => {
+                                                                    // One code for "does not fit", whatever
+                                                                    // the sign: E0800, as spec 6.5:5 states
+                                                                    // and the body path reports.
+                                                                    (_, crate::durable_semantics::DurableConstValue::Integer(value))
+                                                                        if crate::durable_comptime::durable_int_width(&ty).is_some() =>
+                                                                    {
                                                                         rue_error::ErrorKind::LiteralOutOfRange {
-                                                                            value: *value as u64,
+                                                                            value: *value,
                                                                             ty: durable_type_diagnostic_name(&ty),
-                                                                        }
-                                                                    }
-                                                                    (crate::durable_semantics::DurableType::I8
-                                                                    | crate::durable_semantics::DurableType::I16
-                                                                    | crate::durable_semantics::DurableType::I32
-                                                                    | crate::durable_semantics::DurableType::I64
-                                                                    | crate::durable_semantics::DurableType::U8
-                                                                    | crate::durable_semantics::DurableType::U16
-                                                                    | crate::durable_semantics::DurableType::U32
-                                                                    | crate::durable_semantics::DurableType::U64,
-                                                                    crate::durable_semantics::DurableConstValue::Integer(value)) => {
-                                                                        rue_error::ErrorKind::ComptimeEvaluationFailed {
-                                                                            reason: format!(
-                                                                                "value {value} is out of range for type {}",
-                                                                                durable_type_diagnostic_name(&ty),
-                                                                            ),
                                                                         }
                                                                     }
                                                                     (crate::durable_semantics::DurableType::F32

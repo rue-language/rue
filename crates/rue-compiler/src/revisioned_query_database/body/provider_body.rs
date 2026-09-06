@@ -1795,17 +1795,7 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
                         });
                 }
                 if let Some(ty) = self.deferred_value_parameters.get(name) {
-                    if matches!(
-                        ty,
-                        crate::durable_semantics::DurableType::I8
-                            | crate::durable_semantics::DurableType::I16
-                            | crate::durable_semantics::DurableType::I32
-                            | crate::durable_semantics::DurableType::I64
-                            | crate::durable_semantics::DurableType::U8
-                            | crate::durable_semantics::DurableType::U16
-                            | crate::durable_semantics::DurableType::U32
-                            | crate::durable_semantics::DurableType::U64
-                    ) {
+                    if crate::durable_comptime::durable_int_width(ty).is_some() {
                         return Ok(None);
                     }
                     return Self::provider_domain_failure(
@@ -2029,15 +2019,10 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
             return Ok(V::Type(ty.clone()));
         }
         if let Some(ty) = self.deferred_value_parameters.get(syntax) {
+            if crate::durable_comptime::durable_int_width(ty).is_some() {
+                return Ok(V::Integer(0));
+            }
             return match ty {
-                crate::durable_semantics::DurableType::I8
-                | crate::durable_semantics::DurableType::I16
-                | crate::durable_semantics::DurableType::I32
-                | crate::durable_semantics::DurableType::I64
-                | crate::durable_semantics::DurableType::U8
-                | crate::durable_semantics::DurableType::U16
-                | crate::durable_semantics::DurableType::U32
-                | crate::durable_semantics::DurableType::U64 => Ok(V::Integer(0)),
                 crate::durable_semantics::DurableType::Bool => Ok(V::Bool(false)),
                 crate::durable_semantics::DurableType::Unit => Ok(V::Unit),
                 _ => Self::provider_failure(format!(

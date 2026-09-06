@@ -765,9 +765,12 @@ pub trait ComptimeRejections: ComptimeDomain {
         depth: usize,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Self::Failure;
+    /// Report an integer constant that is not representable in `ty`. `value`
+    /// is the mathematical value the source denotes, so a negated literal
+    /// reports `-129` rather than the magnitude its operand spells.
     fn literal_out_of_range(
         &self,
-        value: u64,
+        value: i128,
         ty: &Self::Type,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> Self::Failure;
@@ -2200,7 +2203,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         .is_some_and(|integer| integer.fits_i128(v))
                     {
                         return ComptimeOutcome::HostFailure(self.host.literal_out_of_range(
-                            *value,
+                            v,
                             ty,
                             &self.diagnostic_site(span),
                         ));
@@ -2247,13 +2250,30 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     // The literal path uses mathematical magnitude semantics:
                     // unlike an ordinary runtime value, `128` must not first
                     // canonicalize to -128 before becoming `-128`.
-                    let result = ty
+                    let integer = ty
                         .as_ref()
-                        .and_then(|ty| self.host.type_integer_semantics(ty))
-                        .map_or_else(
-                            || CheckedIntegerResult::from_raw((magnitude as i128).checked_neg()),
-                            |integer| integer.checked_neg_literal_report_i128(magnitude as i128),
-                        );
+                        .and_then(|ty| self.host.type_integer_semantics(ty));
+                    // A negated integer literal is one literal, not an
+                    // operation on one. When the value it denotes does not
+                    // fit its signed type, that is the literal out-of-range
+                    // fact (E0800, spec 6.5:5) the body path reports for the
+                    // same source text, not a trapping operation (6.5:12).
+                    if let (Some(integer), Some(literal_ty)) = (integer, ty.as_ref())
+                        && integer.is_signed()
+                        && integer
+                            .checked_neg_literal_i128(magnitude as i128)
+                            .is_none()
+                    {
+                        return ComptimeOutcome::HostFailure(self.host.literal_out_of_range(
+                            -(magnitude as i128),
+                            literal_ty,
+                            &self.diagnostic_site(span),
+                        ));
+                    }
+                    let result = integer.map_or_else(
+                        || CheckedIntegerResult::from_raw((magnitude as i128).checked_neg()),
+                        |integer| integer.checked_neg_literal_report_i128(magnitude as i128),
+                    );
                     self.finish_arith_value(result, ty, "negation", span)
                 } else {
                     match self.eval(*operand, env) {
