@@ -101,6 +101,7 @@ PUBLIC_TYPE_DECLARATION_ALLOWLIST = {
     ("rue-air", "semantic_type_resolution.rs", "ComptimeStructuredTypeJob"): "consuming structured-type resolver continuation",
     ("rue-air", "semantic_type_resolution.rs", "ComptimeStructuredTypePoll"): "structured-type resolver protocol state",
     ("rue-air", "semantic_identity.rs", "TypeInstanceKey"): "canonical cross-boundary type identity",
+    ("rue-air", "drop_glue_names.rs", "DropGlueTypeShape"): "drop-glue fragment grammar node over a vocabulary's own leaves, not a live type identity",
     ("rue-air", "sema/comptime/intrinsics.rs", "ComptimeTypeIntrinsic"): "finite comptime operation classification, not a live type identity",
     ("rue-air", "sema/comptime/model.rs", "ComptimeMethodType"): "engine-resolved anonymous-method type descriptor, not a live type identity",
     ("rue-air", "sema/comptime/structured_type.rs", "ComptimeStructuredTypeResolution"): "engine structured-type suspension protocol state",
