@@ -151,12 +151,11 @@ impl DurableComptimeFailure {
         ))
     }
 
-    /// The exact durable terminal used when a comptime match reaches no
-    /// selected arm. This remains a resolution failure, matching the
-    /// established declaration-time behavior.
-    /// evaluator's existing `comptime match has no selected arm` policy.
+    /// The durable terminal for a comptime match that reaches no selected
+    /// arm. It remains a resolution failure, and its wording is the one the
+    /// shared value policy gives both hosts (RUE-1968).
     pub(crate) fn comptime_match_no_selected_arm() -> Self {
-        Self::resolution("comptime match has no selected arm")
+        Self::resolution(rue_air::COMPTIME_MATCH_NO_SELECTED_ARM)
     }
 
     /// Map the AIR-owned semantic rejection vocabulary to the exact durable
@@ -288,15 +287,27 @@ impl DurableComptimeFailure {
         ))
     }
 
-    pub(crate) fn integer_literal_overflow(type_name: &str, value: i128) -> Self {
-        Self::comptime_failure(format!(
-            "integer overflow evaluating constant at type {type_name}: value {value} is out of range for type {type_name}; {value} does not fit in {type_name} (this operation would panic at runtime)"
+    /// An integer magnitude outside the range of the type an operation is
+    /// evaluated at. This is the out-of-range literal fact (E0800), the same
+    /// one the body type checker reports for the same source text (RUE-1968).
+    pub(crate) fn literal_out_of_range(type_name: &str, value: i128) -> Self {
+        Self::failure(SemanticNucleusFailure::Diagnostic(
+            rue_error::ErrorKind::LiteralOutOfRange {
+                value,
+                ty: type_name.to_owned(),
+            },
         ))
     }
 
-    pub(crate) fn arithmetic_overflow(type_name: &str, operation: &str, detail: &str) -> Self {
-        Self::comptime_failure(format!(
-            "integer overflow evaluating {operation} at type {type_name}: {detail} (this operation would panic at runtime)"
+    /// Declaration-time arithmetic overflow, worded by the one shared
+    /// value policy so `const` and `comptime {}` positions agree (RUE-1968).
+    pub(crate) fn arithmetic_overflow(
+        type_name: &str,
+        operation: &str,
+        result: rue_air::integer_semantics::CheckedIntegerResult,
+    ) -> Self {
+        Self::comptime_failure(rue_air::comptime_arithmetic_overflow_reason(
+            operation, type_name, result,
         ))
     }
 
@@ -665,24 +676,6 @@ pub(super) fn durable_host_error_outcome<T>(
     }
 }
 
-/// AIR supplies compact operator tokens; durable diagnostics use the
-/// operation names from established declaration-time semantics. Unary negation is
-/// passed as its own token by the canonical engine so it cannot be confused
-/// with subtraction.
-pub(super) fn durable_arithmetic_operation_name(operation: &str) -> &str {
-    match operation {
-        "+" => "addition",
-        "-" => "subtraction",
-        "*" => "multiplication",
-        "/" => "division",
-        "%" => "remainder",
-        "<<" => "left shift",
-        ">>" => "right shift",
-        "negation" => "negation",
-        other => other,
-    }
-}
-
 #[cfg(test)]
 mod terminal_adapter_tests {
     use super::*;
@@ -787,16 +780,12 @@ mod terminal_adapter_tests {
                 ),
             ),
             (
-                DurableComptimeFailure::integer_literal_overflow("i8", 128),
-                "integer overflow evaluating constant at type i8: value 128 is out of range for type i8; 128 does not fit in i8 (this operation would panic at runtime)".to_owned(),
-            ),
-            (
                 DurableComptimeFailure::arithmetic_overflow(
                     "i8",
-                    "addition",
-                    "value 128 is out of range for type i8; 128 does not fit in i8",
+                    "+",
+                    rue_air::integer_semantics::CheckedIntegerResult::from_raw(Some(128)),
                 ),
-                "integer overflow evaluating addition at type i8: value 128 is out of range for type i8; 128 does not fit in i8 (this operation would panic at runtime)".to_owned(),
+                "integer overflow evaluating addition at type i8: the result 128 does not fit in i8 (this operation would panic at runtime)".to_owned(),
             ),
         ];
         for (failure, expected) in cases {

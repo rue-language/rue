@@ -224,11 +224,18 @@ fn engine_decodes_match_patterns_lazily_per_active_program() {
 }
 
 #[test]
-fn match_without_a_selected_arm_uses_the_host_terminal_policy() {
-    let make_program = || {
+fn scalar_patterns_are_engine_decided_and_only_paths_reach_the_host() {
+    // RUE-1968: wildcard/bool/integer patterns are decided by the shared
+    // value policy inside the engine, so no host can answer them a second
+    // way. Only an enum-variant path reaches `match_path_pattern`, and the
+    // terminal `match_no_selected_arm` hook stays the host's.
+    let interner = lasso::ThreadedRodeo::new();
+    let type_name = interner.get_or_intern("Color");
+    let variant = interner.get_or_intern("Red");
+    let make_program = |scrutinee_data: InstData, pattern: rue_rir::RirPattern| {
         let mut editor = RirEditor::new();
         let scrutinee = editor.add_inst(Inst {
-            data: InstData::BoolConst(false),
+            data: scrutinee_data,
             span: Span::new(0, 1),
         });
         let body = editor.add_inst(Inst {
@@ -236,18 +243,28 @@ fn match_without_a_selected_arm_uses_the_host_terminal_policy() {
             span: Span::new(1, 2),
         });
         let root = editor
-            .add_match(
-                scrutinee,
-                &[(rue_rir::RirPattern::Bool(true, Span::new(0, 1)), body)],
-                Span::new(0, 2),
-            )
+            .add_match(scrutinee, &[(pattern, body)], Span::new(0, 2))
             .unwrap();
         (editor.finish(), root)
     };
-    let (program0, root0) = make_program();
-    let (program1, root1) = make_program();
+    let bool_pattern = || rue_rir::RirPattern::Bool(true, Span::new(0, 1));
+    let path_pattern = || rue_rir::RirPattern::Path {
+        module: None,
+        ctor_head: None,
+        type_name,
+        variant,
+        elements: Vec::new(),
+        span: Span::new(0, 1),
+    };
+    // Program 0 and 1: a bool pattern the engine decides against `false`.
+    let (program0, root0) = make_program(InstData::BoolConst(false), bool_pattern());
+    let (program1, root1) = make_program(InstData::BoolConst(false), bool_pattern());
+    // Program 2: an integer scrutinee under a bool pattern is undecidable.
+    let (program2, root2) = make_program(InstData::IntConst(7), bool_pattern());
+    // Program 3: an enum-variant path, the one form the host answers.
+    let (program3, root3) = make_program(InstData::BoolConst(false), path_pattern());
     let mut host = FakeHost {
-        programs: vec![program0, program1],
+        programs: vec![program0, program1, program2, program3],
         type_symbol: SymbolHandle::new(lasso::ThreadedRodeo::new().get_or_intern("T")),
         constant: None,
         dependencies: Vec::new(),
@@ -259,10 +276,13 @@ fn match_without_a_selected_arm_uses_the_host_terminal_policy() {
         float_evaluations: Cell::new(0),
     };
     let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
-    MATCH_PATTERN_MATCHES.with(|matches| matches.set(true));
-    MATCH_PATTERN_FORCE_FALSE.with(|force| force.set(true));
+
+    // The engine decides `Bool(true)` against `false` without consulting the
+    // host, and the declined arm set reaches the host's terminal policy.
+    MATCH_PATTERN_MATCHES.with(|matches| matches.set(false));
     MATCH_NO_SELECTED_FAILURE.with(|failure| failure.set(true));
     MATCH_NO_SELECTED_SITES.with(|sites| sites.borrow_mut().clear());
+    MATCH_PATTERN_EVENTS.with(|events| events.borrow_mut().clear());
     assert!(matches!(
         ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, root0), &mut env),
         ComptimeOutcome::HostFailure(FAKE_FAILURE)
@@ -274,6 +294,12 @@ fn match_without_a_selected_arm_uses_the_host_terminal_policy() {
     MATCH_NO_SELECTED_SITES.with(|sites| {
         assert_eq!(sites.borrow().as_slice(), &[(0, 0, 2), (1, 0, 2)]);
     });
+    MATCH_PATTERN_EVENTS.with(|events| {
+        assert!(
+            events.borrow().is_empty(),
+            "a scalar pattern must not reach the host"
+        );
+    });
 
     MATCH_NO_SELECTED_FAILURE.with(|failure| failure.set(false));
     assert!(matches!(
@@ -281,15 +307,40 @@ fn match_without_a_selected_arm_uses_the_host_terminal_policy() {
         ComptimeOutcome::RuntimeDependent
     ));
 
+    // A scrutinee outside the pattern's scalar domain is undecidable, so the
+    // terminal policy is never reached.
     MATCH_NO_SELECTED_FAILURE.with(|failure| failure.set(true));
     MATCH_NO_SELECTED_SITES.with(|sites| sites.borrow_mut().clear());
-    MATCH_PATTERN_MATCHES.with(|matches| matches.set(false));
     assert!(matches!(
-        ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(0, root0), &mut env),
+        ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(2, root2), &mut env),
         ComptimeOutcome::RuntimeDependent
     ));
     MATCH_NO_SELECTED_SITES.with(|sites| assert!(sites.borrow().is_empty()));
 
+    // A path pattern is the host's to answer: declining it undecidably keeps
+    // the whole match runtime-dependent.
+    assert!(matches!(
+        ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(3, root3), &mut env),
+        ComptimeOutcome::RuntimeDependent
+    ));
+    MATCH_NO_SELECTED_SITES.with(|sites| assert!(sites.borrow().is_empty()));
+
+    // ... and answering it selects the arm.
+    MATCH_PATTERN_MATCHES.with(|matches| matches.set(true));
+    MATCH_PATTERN_FORCE_FALSE.with(|force| force.set(false));
+    assert!(matches!(
+        ComptimeEngine::new(&mut host).evaluate(ComptimeFrame::expression(3, root3), &mut env),
+        ComptimeOutcome::Known(FakeValue::Unit)
+    ));
+    MATCH_PATTERN_EVENTS.with(|events| {
+        assert_eq!(events.borrow().len(), 1);
+        assert!(matches!(
+            events.borrow()[0],
+            ComptimeMatchPattern::Path { .. }
+        ));
+    });
+
+    MATCH_PATTERN_EVENTS.with(|events| events.borrow_mut().clear());
     MATCH_PATTERN_FORCE_FALSE.with(|force| force.set(false));
     MATCH_PATTERN_MATCHES.with(|matches| matches.set(false));
     MATCH_NO_SELECTED_FAILURE.with(|failure| failure.set(false));
@@ -1464,7 +1515,7 @@ impl ComptimeValueAlgebra for FakeHost {
             None => ComptimeNamedValueResolution::Missing,
         })
     }
-    fn match_pattern(
+    fn match_path_pattern(
         &self,
         pattern: &ComptimeMatchPattern<Self::Name>,
         _value: &Self::Value,

@@ -3476,3 +3476,66 @@ pub const strs = @import("strs.rue");
 pub const res = @import("res.rue");
 """, "strs.rue" = "pub struct Str { n: i32 }", "res.rue" = "pub fn Res(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }" }
 exit_code = 42
+
+# =============================================================================
+# One comptime-evaluable judgement, whichever position asks for it (RUE-1968)
+#
+# A `const` initializer must be comptime-evaluable by exactly the set that
+# governs a comptime block (6.5:2 refers to 4.14:26-29), so a fragment that
+# fails in one position must fail the same way in the other. Each case here is
+# the `comptime {}` half of a pair; the `const` half lives beside it in
+# items/constants.toml, and the diagnostics themselves are pinned in the
+# `diagnostics.comptime-position-agreement` UI section.
+# =============================================================================
+
+[[case]]
+name = "comptime_match_without_a_selected_arm_is_rejected"
+spec = ["4.14:19", "4.14:4"]
+description = "A comptime match selects from an exhaustive pattern set; when no reached arm matches, the block is rejected exactly as the same fragment is in const position"
+source = """
+fn main() -> i32 {
+    let x: i32 = comptime { match 3 { 1 => 10, 2 => 20 } };
+    x
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "comptime match has no selected arm"]
+
+[[case]]
+name = "comptime_match_selects_the_first_matching_arm"
+spec = ["4.14:19"]
+description = "The first arm whose pattern matches supplies the block's value"
+source = """
+fn main() -> i32 {
+    comptime { match 2 { 1 => 10, 2 => 42, _ => 0 } }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_unsigned_negation_is_a_legality_error"
+spec = ["4.2:14", "4.14:2"]
+description = "Unary `-` on an unsigned type is rejected as not negatable, not reported as an overflow, in comptime position as in const position (RUE-1968)"
+source = """
+fn main() -> i32 {
+    let k: u32 = comptime { -1 };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0801", "cannot apply unary operator `-` to type 'u32'"]
+
+[[case]]
+name = "comptime_overflow_names_the_operation_and_the_result"
+spec = ["4.14:4"]
+description = "The overflow diagnostic names the operation and the result that does not fit, identically to the same fragment in const position (RUE-1968)"
+source = """
+fn main() -> i32 {
+    let k: i32 = comptime { 2000000 * 2000 };
+    k
+}
+"""
+compile_fail = true
+error_contains = [
+    "integer overflow evaluating multiplication at type i32: the result 4000000000 does not fit in i32",
+]

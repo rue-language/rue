@@ -1,0 +1,201 @@
+[section]
+id = "diagnostics.comptime-position-agreement"
+name = "Comptime diagnostics agree in const and comptime position"
+description = """
+A const initializer is comptime-evaluable by exactly the set that governs a
+comptime block (6.5:2, 4.14:26-29), so the same fragment must be judged the
+same way in either position. Two ComptimeHosts implement that judgement --
+ordinary body evaluation and durable declaration-time evaluation -- and each
+case below pairs the two positions on one fragment so the hosts cannot drift
+apart again (RUE-1968).
+"""
+
+# =============================================================================
+# A comptime-known match that selects no arm (4.14:19)
+# =============================================================================
+
+[[case]]
+name = "match_no_selected_arm_in_const_position"
+source = """
+const X: i32 = match 3 { 1 => 10, 2 => 20 };
+
+fn main() -> i32 { X }
+"""
+compile_fail = true
+error_contains = [
+    "E1200",
+    "comptime match has no selected arm",
+]
+
+[[case]]
+name = "match_no_selected_arm_in_comptime_position"
+source = """
+fn main() -> i32 {
+    let x: i32 = comptime { match 3 { 1 => 10, 2 => 20 } };
+    x
+}
+"""
+compile_fail = true
+error_contains = [
+    "E1200",
+    "comptime match has no selected arm",
+]
+
+# =============================================================================
+# Arithmetic overflow wording (4.14:4, 6.5:12)
+# =============================================================================
+
+[[case]]
+name = "multiplication_overflow_in_const_position"
+source = """
+const K: i32 = 2000000 * 2000;
+
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = [
+    "E1200",
+    "integer overflow evaluating multiplication at type i32: the result 4000000000 does not fit in i32",
+    "this operation would panic at runtime",
+]
+
+[[case]]
+name = "multiplication_overflow_in_comptime_position"
+source = """
+fn main() -> i32 {
+    let k: i32 = comptime { 2000000 * 2000 };
+    k
+}
+"""
+compile_fail = true
+error_contains = [
+    "E1200",
+    "integer overflow evaluating multiplication at type i32: the result 4000000000 does not fit in i32",
+    "this operation would panic at runtime",
+]
+
+[[case]]
+name = "u8_intermediate_overflow_in_const_position"
+source = """
+const K: u8 = 200 + 100 - 100;
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "E1200",
+    "integer overflow evaluating addition at type u8: the result 300 does not fit in u8",
+]
+
+[[case]]
+name = "u8_intermediate_overflow_in_comptime_position"
+source = """
+fn main() -> i32 {
+    let k: u8 = comptime { 200 + 100 - 100 };
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E1200",
+    "integer overflow evaluating addition at type u8: the result 300 does not fit in u8",
+]
+
+# =============================================================================
+# An out-of-range operand magnitude is the literal fact, not a trap (3.1:17)
+# =============================================================================
+
+[[case]]
+name = "out_of_range_operand_in_const_position"
+source = """
+const K: i32 = 0 - 3000000000;
+
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = [
+    "E0800",
+    "literal value 3000000000 is out of range for type 'i32'",
+]
+
+[[case]]
+name = "out_of_range_operand_in_comptime_position"
+source = """
+fn main() -> i32 {
+    let k: i32 = comptime { 0 - 3000000000 };
+    k
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0800",
+    "literal value 3000000000 is out of range for type 'i32'",
+]
+
+# =============================================================================
+# Unsigned negation is a legality error, not an overflow (4.2:14)
+# =============================================================================
+
+[[case]]
+name = "unsigned_negation_in_const_position"
+source = """
+const K: u32 = -1;
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "E0801",
+    "cannot apply unary operator `-` to type 'u32'",
+]
+
+[[case]]
+name = "unsigned_negation_in_comptime_position"
+source = """
+fn main() -> i32 {
+    let k: u32 = comptime { -1 };
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0801",
+    "cannot apply unary operator `-` to type 'u32'",
+]
+
+[[case]]
+name = "unsigned_negation_of_a_constant_in_const_position"
+source = """
+const A: u32 = 1;
+const K: u32 = -A;
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "E0801",
+    "cannot apply unary operator `-` to type 'u32'",
+]
+
+# =============================================================================
+# Agreement is not only about failures: the same fragment reduces alike
+# =============================================================================
+
+[[case]]
+name = "signed_minimum_negation_in_const_position"
+source = """
+const K: i8 = -128;
+
+fn main() -> i32 { @intCast(K) + 170 }
+"""
+exit_code = 42
+
+[[case]]
+name = "signed_minimum_negation_in_comptime_position"
+source = """
+fn main() -> i32 {
+    let k: i8 = comptime { -128 };
+    @intCast(k) + 170
+}
+"""
+exit_code = 42

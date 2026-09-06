@@ -183,15 +183,15 @@ error_contains = "out of range"
 
 [[case]]
 name = "negative_value_out_of_unsigned_range"
-spec = ["6.5:5"]
-description = "A negative value cannot adopt an unsigned annotation"
+spec = ["6.5:5", "4.2:14"]
+description = "A negative value cannot adopt an unsigned annotation. The negation legality rule (4.2:14) is the stronger one and fires first, in const position exactly as in a function body (RUE-1968)"
 source = """
 const N: u8 = -5;
 
 fn main() -> i32 { 0 }
 """
 compile_fail = true
-error_contains = "out of range"
+error_contains = ["E0801", "cannot apply unary operator `-` to type 'u8'"]
 
 [[case]]
 name = "non_integer_annotation_must_match"
@@ -427,3 +427,56 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["comptime"]
+
+# =============================================================================
+# The const half of the comptime-position pairs (6.5:2, 6.5:12) — RUE-1968
+#
+# 6.5:2 defines a constant initializer as comptime-evaluable by the very set
+# that governs a `comptime` block, so the two positions must judge one fragment
+# alike. The comptime half of each pair lives in expressions/comptime.toml.
+# =============================================================================
+
+[[case]]
+name = "const_match_without_a_selected_arm_is_rejected"
+spec = ["6.5:2"]
+description = "A const initializer whose comptime match selects no arm is rejected exactly as the same fragment is inside a comptime block (RUE-1968)"
+source = """
+const X: i32 = match 3 { 1 => 10, 2 => 20 };
+fn main() -> i32 { X }
+"""
+compile_fail = true
+error_contains = ["E1200", "comptime match has no selected arm"]
+
+[[case]]
+name = "const_match_selects_the_first_matching_arm"
+spec = ["6.5:2"]
+description = "A comptime match in const position selects the first arm whose pattern matches"
+source = """
+const X: i32 = match 2 { 1 => 10, 2 => 42, _ => 0 };
+fn main() -> i32 { X }
+"""
+exit_code = 42
+
+[[case]]
+name = "const_unsigned_negation_is_a_legality_error"
+spec = ["6.5:2"]
+description = "Unary `-` on an unsigned type is rejected as not negatable (4.2:14) in const position too, rather than as an initializer overflow (RUE-1968)"
+source = """
+const K: u32 = -1;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0801", "cannot apply unary operator `-` to type 'u32'"]
+
+[[case]]
+name = "const_overflow_names_the_operation_and_the_result"
+spec = ["6.5:12"]
+description = "The initializer overflow diagnostic names the operation and the result that does not fit, identically to the same fragment inside a comptime block (RUE-1968)"
+source = """
+const K: i32 = 2000000 * 2000;
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = [
+    "integer overflow evaluating multiplication at type i32: the result 4000000000 does not fit in i32",
+]

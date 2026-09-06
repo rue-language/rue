@@ -8428,7 +8428,7 @@ fn durable_const_integer_semantics_use_the_shared_kernel() {
     for required in [
         "finish_arith",
         "DurableComptimeScalarPolicy::checked_integer_result",
-        "durable_arithmetic_operation_name",
+        "rue_air::comptime_arithmetic_overflow_reason",
         "checked_neg_literal_report_i128",
     ] {
         assert!(
@@ -8991,13 +8991,26 @@ fn durable_comptime_responsibilities_have_exact_module_owners() {
 #[test]
 fn match_patterns_have_one_air_decoder_and_one_durable_kernel() {
     let durable = DURABLE_COMPTIME_SOURCE;
+    // RUE-1968: the durable kernel decides the enum-variant path domain only.
+    // Wildcard, boolean, and integer patterns are decided for every host by
+    // the shared AIR policy, so a second scalar copy must not reappear here.
     assert_eq!(
         durable
-            .matches("pub(crate) fn durable_match_pattern_matches")
+            .matches("pub(crate) fn durable_target_path_pattern_matches")
             .count(),
         1
     );
     assert!(durable.contains("ComptimeMatchPattern::Path"));
+    for scalar in [
+        "ComptimeMatchPattern::Wildcard",
+        "ComptimeMatchPattern::Integer(pattern)",
+        "ComptimeMatchPattern::Bool(pattern)",
+    ] {
+        assert!(
+            !durable.contains(scalar),
+            "durable host re-decided a scalar pattern: {scalar}"
+        );
+    }
     for rejection in [
         "ConditionNotBoolean",
         "ArithmeticOperandNotInteger",
