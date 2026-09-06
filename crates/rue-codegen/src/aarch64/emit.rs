@@ -567,7 +567,7 @@ impl<'a> Emitter<'a> {
             (0..self.num_params)
                 .map(|slot| crate::codegen_pipeline::ParamHoming {
                     start_slot: slot,
-                    class: crate::call_plan::AbiSlotClass::Gp,
+                    class: crate::abi_slot_class::AbiSlotClass::Gp,
                     narrow_stack_load: None,
                     location: if slot < 8 {
                         crate::call_plan::AbiSlotLocation::GpReg(slot as usize)
@@ -952,7 +952,7 @@ impl<'a> Emitter<'a> {
 
             match (homing.class, homing.location) {
                 (
-                    crate::call_plan::AbiSlotClass::Gp,
+                    crate::abi_slot_class::AbiSlotClass::Gp,
                     crate::call_plan::AbiSlotLocation::GpReg(abi_index),
                 ) => {
                     self.begin_inst();
@@ -960,7 +960,7 @@ impl<'a> Emitter<'a> {
                     end_inst!(self, "str {}, [x29, #{}]", param_regs[abi_index], offset);
                 }
                 (
-                    crate::call_plan::AbiSlotClass::Fp(width),
+                    crate::abi_slot_class::AbiSlotClass::Fp(width),
                     crate::call_plan::AbiSlotLocation::FpReg(abi_index),
                 ) => {
                     self.begin_inst();
@@ -3629,7 +3629,7 @@ mod tests {
         let emitted = Emitter::new(&mir, 0, 0, 1, &[], &[])
             .with_param_homing(vec![crate::codegen_pipeline::ParamHoming {
                 start_slot: 0,
-                class: crate::call_plan::AbiSlotClass::Gp,
+                class: crate::abi_slot_class::AbiSlotClass::Gp,
                 narrow_stack_load: None,
                 location: crate::call_plan::AbiSlotLocation::stack_slot(0),
             }])
@@ -3653,7 +3653,7 @@ mod tests {
             let emitted = Emitter::new(&mir, 0, 0, 1, &[], &[])
                 .with_param_homing(vec![crate::codegen_pipeline::ParamHoming {
                     start_slot: 0,
-                    class: crate::call_plan::AbiSlotClass::Gp,
+                    class: crate::abi_slot_class::AbiSlotClass::Gp,
                     narrow_stack_load: Some(crate::types::NarrowScalar { width, signed }),
                     location: crate::call_plan::AbiSlotLocation::Stack {
                         offset: 0,

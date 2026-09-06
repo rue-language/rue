@@ -211,7 +211,7 @@ mod sharding;
 ///   echoes for the P2 round-trips. Each returns its argument in the low bits of
 ///   the result register **with the bits above 32 deliberately dirtied**, so the
 ///   round-trip is a genuine conformance probe: only a caller that applies the
-///   target-C narrow-integer extension (the `TargetCCallAbi` classifier) reads
+///   target-C narrow-integer extension the lowered signature carries reads
 ///   the right value back.
 /// - `ffi_bool_norm(int) -> _Bool` — a `_Bool` normalizer returning `x != 0` as a
 ///   1-byte 0/1 value, again with dirty high bits; the `false`/dirty case is the

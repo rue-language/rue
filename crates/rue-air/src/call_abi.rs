@@ -6,11 +6,10 @@
 //! convention description in `rue-target` (ADR-0064, ADR-0084). This module is
 //! the other half: the *facts* those functions classify. It projects a live
 //! type onto [`CAbiTypeFacts`] ([`c_abi_type_facts`], [`aggregate_leaves`]),
-//! answers the per-convention scalar extension questions a C crossing asks
-//! ([`TargetCCallAbi`], [`CAbiScalarKind`]), and keeps the native
-//! value-decomposition width the CFG parameter contract and the oracle's call
-//! contract track ([`NativeCallAbi::arg_slot_width`]) — a layout measure, not a
-//! placement.
+//! names the width-and-signedness class the extension table is keyed by
+//! ([`CAbiScalarKind`]), and keeps the native value-decomposition width the CFG
+//! parameter contract and the oracle's call contract track
+//! ([`NativeCallAbi::arg_slot_width`]) — a layout measure, not a placement.
 //!
 //! Which convention governs a boundary is named by exactly one value type,
 //! [`rue_target::CallingConvention`], whose rows are the native Rue convention
@@ -29,7 +28,7 @@
 
 use crate::lowered_signature::CAbiTypeFacts;
 use crate::{FrozenTypeInternPool, Type, TypeKind};
-use rue_target::{CConventionSpec, CRegisterClass, CallingConvention, StackedArgumentPacking};
+use rue_target::{CRegisterClass, CallingConvention};
 
 /// How an argument is presented at the source level, before ABI classification.
 ///
@@ -226,7 +225,7 @@ impl CAbiScalarKind {
 
     /// The scalar's own width in bytes: the footprint a stacked copy takes
     /// under a row that packs the outgoing argument area at natural size
-    /// ([`StackedArgumentPacking::NaturalSize`]).
+    /// ([`rue_target::StackedArgumentPacking::NaturalSize`]).
     pub const fn natural_bytes(self) -> u32 {
         match self {
             Self::I8 | Self::U8 | Self::Bool => 1,
@@ -258,8 +257,8 @@ impl CAbiScalarKind {
 /// target-C boundary (ADR-0064 P2). "Narrow" means any value smaller than the
 /// register: the sub-64-bit integers and `bool`. The extension is the same
 /// operation whether it is applied by the caller before an argument crosses or
-/// by the caller after a return crosses — see [`TargetCCallAbi`] for *who*
-/// applies it under each psABI.
+/// by the caller after a return crosses; [`c_abi_type_facts`] documents which
+/// side each row leaves owing it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarAbiExtension {
     /// The value already fills its 64-bit register (`i64`/`u64`/pointer): no
@@ -291,7 +290,7 @@ impl ScalarAbiExtension {
     /// is extended *from*, or the full 8-byte register for a register-width
     /// value. This is the size a stacked argument occupies under a psABI that
     /// packs the outgoing argument area at natural size
-    /// ([`StackedArgumentPacking::NaturalSize`]).
+    /// ([`rue_target::StackedArgumentPacking::NaturalSize`]).
     pub const fn natural_bytes(self) -> u32 {
         match self {
             Self::None => 8,
@@ -300,187 +299,29 @@ impl ScalarAbiExtension {
     }
 }
 
-/// The guaranteed target-C call-ABI classifier: the classifier for one C row of
-/// [`CallingConvention`] (ADR-0064).
-///
-/// This answers the per-convention *facts* a scalar crossing needs — the
-/// narrow-integer extension, the argument-register budget, the sret register and
-/// echo, the call-boundary alignment — each read from the convention's
-/// [`CConventionSpec`]. It is constructed from a convention, and a target
-/// reaches it through the one `"C"` alias table ([`Self::for_target`]), so the
-/// two AArch64 targets, which share an architecture, get their own rows.
-///
-/// *Where* a value crosses is not this type's answer: that is
-/// [`lower_c_signature`](crate::lower_c_signature), the one placement function
-/// every C crossing site consumes.
-///
-/// ## What P2 fixes, and why scalars need only the return re-extension
+/// The narrow-integer extension every C row asks for, and who owes it.
 ///
 /// Every supported scalar (`c_passable_by_value`: the full integer set, `bool`,
-/// pointers) occupies exactly one general-purpose integer register — the first
-/// six on SysV (`rdi, rsi, rdx, rcx, r8, r9`), the first eight on AAPCS64
-/// (`x0..x7`) — and spills to the outgoing argument area only once that budget
-/// is exhausted. Rue's
-/// internal scalar invariant already keeps a narrow value canonically extended
-/// in its 64-bit vreg (signed values sign-extended, unsigned/`bool`
-/// zero-extended), which is a *stronger* guarantee than either psABI asks of an
-/// argument, so **argument passing needs no boundary instruction**. The one
-/// direction that does is the **return**: a C callee leaves the bits above the
-/// result's declared width unspecified (SysV) — or extended only to 32 bits
-/// (AAPCS64) — so the caller must re-extend the returned scalar to Rue's
-/// canonical 64-bit form. [`Self::scalar_return_extension`] names that
-/// operation; applying it at the boundary is what preserves the program-wide
-/// scalar invariant across a foreign call.
+/// pointers) occupies exactly one general-purpose register, and Rue's internal
+/// invariant keeps a narrow value canonically 64-bit-extended in its vreg
+/// (signed sign-extended, unsigned and `bool` zero-extended). That is a
+/// *stronger* guarantee than any row asks of an argument, so **argument passing
+/// needs no boundary instruction** on any of them — including Apple's row,
+/// which makes the caller extend an argument narrower than 32 bits.
 ///
-/// ## Narrow-integer extension: who extends
-///
-/// - **SysV AMD64.** Arguments narrower than the register have unspecified high
-///   bits; a callee that needs a wider value re-extends. Rue over-satisfies the
-///   argument rule by always passing a canonically extended value. For a return,
-///   the bits above the type width are callee-visible garbage, so the **caller
-///   re-extends** (this classifier's return extension).
-/// - **AAPCS64.** A callee is required to extend a narrow return value to 32
-///   bits, but bits 32..63 stay unspecified, so re-extending from the value's
-///   *own* declared width is still correct (bits already agree up to 32). The
-///   caller therefore applies the same [`ScalarAbiExtension`].
-/// - **Apple arm64.** The *caller* must extend an argument narrower than 32
-///   bits. Rue's canonical 64-bit form already satisfies that, so the import
-///   side needs no extra instruction, and the export thunk re-extends on every
-///   row because the native body needs the stronger 64-bit form regardless.
-///
-/// ## `_Bool`
+/// The one direction that does need an instruction is the **return**: SysV
+/// AMD64 leaves the bits above a narrow result unspecified, and AAPCS64 defines
+/// only bits 0..31, so the caller re-extends the returned scalar to Rue's
+/// canonical form. That operation is the [`ScalarAbiExtension`] the lowered
+/// signature carries ([`LoweredReturn::Registers`](crate::LoweredReturn)), and
+/// applying it at the boundary is what preserves the program-wide scalar
+/// invariant across a C call.
 ///
 /// C `_Bool` is one byte whose only valid values are 0 and 1. Passing Rue's
 /// `bool` (a 0/1 word) satisfies that directly; a `_Bool` return is
 /// zero-extended from its low byte, materializing exactly 0/1
 /// ([`ScalarAbiExtension::Unsigned`] `{ from_bits: 8 }`).
-#[derive(Debug, Clone, Copy)]
-pub struct TargetCCallAbi {
-    convention: CallingConvention,
-}
-
-impl TargetCCallAbi {
-    /// Build the classifier for one platform C convention.
-    ///
-    /// `convention` must be a C row; [`CallingConvention::Rue`] is the native
-    /// convention and is classified by [`NativeCallAbi`] instead.
-    pub const fn new(convention: CallingConvention) -> Self {
-        assert!(
-            convention.is_c(),
-            "TargetCCallAbi classifies a C boundary; the native Rue convention \
-             is NativeCallAbi's authority"
-        );
-        Self { convention }
-    }
-
-    /// The classifier for the convention `target`'s `"C"` boundary follows.
-    pub const fn for_target(target: rue_target::Target) -> Self {
-        Self::new(CallingConvention::c_for_target(target))
-    }
-
-    /// The SysV AMD64 classifier (x86-64 Linux).
-    pub const fn sysv_amd64() -> Self {
-        Self::new(CallingConvention::X86_64SysV)
-    }
-
-    /// The AAPCS64 classifier (AArch64 Linux).
-    pub const fn aapcs64() -> Self {
-        Self::new(CallingConvention::Aarch64Aapcs)
-    }
-
-    /// The Apple arm64 classifier (AArch64 macOS): AAPCS64 with Apple's
-    /// amendments.
-    pub const fn aapcs64_darwin() -> Self {
-        Self::new(CallingConvention::Aarch64AapcsDarwin)
-    }
-
-    /// The convention this classifier implements.
-    pub const fn convention(&self) -> CallingConvention {
-        self.convention
-    }
-
-    /// How this psABI lays a stacked (byval / register-overflow) argument out in
-    /// the outgoing argument area. Every C row answers; the packing rule is the
-    /// convention's, so no backend needs an operating-system test.
-    pub const fn stacked_argument_packing(&self) -> StackedArgumentPacking {
-        self.convention.stacked_argument_packing()
-    }
-
-    /// This convention's complete psABI description, the one table every
-    /// predicate below reads.
-    pub const fn spec(&self) -> CConventionSpec {
-        self.convention.c_spec()
-    }
-
-    /// The number of general-purpose integer registers used for arguments
-    /// before the outgoing stack area begins: 6 on SysV (`rdi..r9`), 8 on
-    /// AAPCS64 (`x0..x7`).
-    pub const fn int_arg_register_budget(&self) -> u32 {
-        self.spec().gp_argument_registers
-    }
-
-    /// Whether the callee echoes the hidden sret pointer back in the primary
-    /// return register: SysV requires `rax` to hold the sret pointer on return;
-    /// AAPCS64 uses the dedicated indirect-result register `x8`, which is **not**
-    /// echoed. Reachable from P3: an aggregate return >16 bytes takes the sret
-    /// path; scalars in P2 never do.
-    pub const fn sret_pointer_echoed_in_result_register(&self) -> bool {
-        self.spec().sret_pointer_echoed_in_result_register
-    }
-
-    /// Whether the hidden sret pointer is passed in a **dedicated** indirect-
-    /// result register rather than the first ordinary integer argument register.
-    /// AAPCS64 uses the dedicated `x8` (§6.9), so the sret pointer does not
-    /// consume `x0` and the ordinary arguments still start at `x0`. SysV AMD64
-    /// passes the sret pointer as the hidden first argument in `rdi`, consuming
-    /// the first integer argument register. P3 aggregate returns exercise both.
-    pub const fn sret_pointer_in_dedicated_register(&self) -> bool {
-        !self.spec().sret_pointer_in_argument_register()
-    }
-
-    /// The stack alignment required at a `call` instruction on this psABI: 16
-    /// bytes on both SysV AMD64 and AAPCS64.
-    pub const fn call_stack_alignment(&self) -> u32 {
-        self.spec().call_stack_alignment
-    }
-
-    /// The extension a scalar *return* value needs to become Rue's canonical
-    /// 64-bit form after crossing back from C. `None` for register-width scalars
-    /// (`i64`/`u64`/pointer); a sign/zero extension for a narrow integer; a
-    /// zero-extend-from-8 for `bool`/`_Bool`.
-    ///
-    /// The argument-side extension is the same operation
-    /// ([`Self::scalar_arg_extension`]); the two are separated only so the
-    /// "who extends" documentation can differ per direction.
-    pub fn scalar_return_extension(&self, ty: Type) -> ScalarAbiExtension {
-        Self::canonical_extension(ty)
-    }
-
-    /// The extension a scalar *argument* value must already carry when it
-    /// crosses into C. Identical to [`Self::scalar_return_extension`]; Rue's
-    /// internal scalar invariant already satisfies it, so the caller emits no
-    /// extra instruction for arguments in P2.
-    pub fn scalar_arg_extension(&self, ty: Type) -> ScalarAbiExtension {
-        Self::canonical_extension(ty)
-    }
-
-    /// The live plane's projection of a supported target-C scalar onto its
-    /// width-and-signedness class; the extension operation itself lives on
-    /// [`CAbiScalarKind::extension`], shared with the stable query plane.
-    fn canonical_extension(ty: Type) -> ScalarAbiExtension {
-        CAbiScalarKind::for_live_type(ty)
-            .unwrap_or_else(|| {
-                panic!(
-                    "TargetCCallAbi scalar classification called on non-scalar type {:?}; \
-                     aggregates and unsupported types are gated by c_passable_by_value \
-                     before lowering",
-                    ty.kind()
-                )
-            })
-            .extension()
-    }
-}
-
+///
 /// The live plane's projection of `ty` onto the target-C classification facts
 /// [`lower_c_signature`](crate::lower_c_signature) consumes.
 ///
@@ -615,6 +456,7 @@ fn push_leaves(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rue_target::StackedArgumentPacking;
 
     // Behavioral coverage that exercises the classifier against a real type
     // pool lives with the backend ABI/oracle suites (which own program
@@ -696,49 +538,52 @@ mod tests {
         assert_eq!(leaves, crate::AggregateLeaves::all_integer(size));
     }
 
+    /// The extension a scalar crossing `convention` needs in each direction,
+    /// read out of the one lowering every C crossing consumes.
+    fn scalar_extensions(
+        convention: CallingConvention,
+        ty: Type,
+    ) -> (ScalarAbiExtension, ScalarAbiExtension) {
+        let pool = crate::TypeInternPool::new().freeze();
+        let facts = c_abi_type_facts(&pool, ty);
+        let lowered =
+            crate::lower_c_signature(convention, &[(facts, ArgConvention::ByValue)], facts);
+        let crate::LoweredReturn::Registers { extension, .. } = lowered.ret() else {
+            panic!("a C scalar comes back in a result register");
+        };
+        (lowered.arguments()[0].extension, extension)
+    }
+
     #[test]
     fn target_c_scalar_return_extension_table() {
-        let sysv = TargetCCallAbi::sysv_amd64();
+        let ret = |ty| scalar_extensions(CallingConvention::X86_64SysV, ty).1;
+        assert_eq!(ret(Type::I8), ScalarAbiExtension::Signed { from_bits: 8 });
+        assert_eq!(ret(Type::U8), ScalarAbiExtension::Unsigned { from_bits: 8 });
+        assert_eq!(ret(Type::I16), ScalarAbiExtension::Signed { from_bits: 16 });
         assert_eq!(
-            sysv.scalar_return_extension(Type::I8),
-            ScalarAbiExtension::Signed { from_bits: 8 }
-        );
-        assert_eq!(
-            sysv.scalar_return_extension(Type::U8),
-            ScalarAbiExtension::Unsigned { from_bits: 8 }
-        );
-        assert_eq!(
-            sysv.scalar_return_extension(Type::I16),
-            ScalarAbiExtension::Signed { from_bits: 16 }
-        );
-        assert_eq!(
-            sysv.scalar_return_extension(Type::U16),
+            ret(Type::U16),
             ScalarAbiExtension::Unsigned { from_bits: 16 }
         );
+        assert_eq!(ret(Type::I32), ScalarAbiExtension::Signed { from_bits: 32 });
         assert_eq!(
-            sysv.scalar_return_extension(Type::I32),
-            ScalarAbiExtension::Signed { from_bits: 32 }
-        );
-        assert_eq!(
-            sysv.scalar_return_extension(Type::U32),
+            ret(Type::U32),
             ScalarAbiExtension::Unsigned { from_bits: 32 }
         );
         // The 1-byte `_Bool` 0/1 contract: zero-extend from its byte.
         assert_eq!(
-            sysv.scalar_return_extension(Type::BOOL),
+            ret(Type::BOOL),
             ScalarAbiExtension::Unsigned { from_bits: 8 }
         );
         // Register-width scalars need no extension.
-        assert!(sysv.scalar_return_extension(Type::I64).is_noop());
-        assert!(sysv.scalar_return_extension(Type::U64).is_noop());
+        assert!(ret(Type::I64).is_noop());
+        assert!(ret(Type::U64).is_noop());
     }
 
     #[test]
-    fn both_flavors_agree_on_the_scalar_extension_operation() {
-        // The narrow-integer extension is the same operation on both psABIs; the
-        // flavors differ only in documented "who extends" / sret-echo details.
-        let sysv = TargetCCallAbi::sysv_amd64();
-        let aapcs = TargetCCallAbi::aapcs64();
+    fn every_row_agrees_on_the_scalar_extension_operation() {
+        // The narrow-integer extension is the same operation on every C row and
+        // in both directions; the rows differ only in documented "who extends"
+        // and sret-echo details, which the convention description carries.
         for ty in [
             Type::I8,
             Type::U8,
@@ -750,81 +595,78 @@ mod tests {
             Type::U64,
             Type::BOOL,
         ] {
+            let sysv = scalar_extensions(CallingConvention::X86_64SysV, ty);
             assert_eq!(
-                sysv.scalar_return_extension(ty),
-                aapcs.scalar_return_extension(ty),
-                "flavors must agree on the extension for {ty:?}"
-            );
-            assert_eq!(
-                sysv.scalar_arg_extension(ty),
-                sysv.scalar_return_extension(ty),
+                sysv.0, sysv.1,
                 "arg and return extension are the same operation for {ty:?}"
             );
+            for convention in [
+                CallingConvention::Aarch64Aapcs,
+                CallingConvention::Aarch64AapcsDarwin,
+            ] {
+                assert_eq!(
+                    scalar_extensions(convention, ty),
+                    sysv,
+                    "{convention} must agree with SysV on the extension for {ty:?}"
+                );
+            }
         }
     }
 
     #[test]
-    fn flavor_specific_register_and_sret_echo_facts() {
-        let sysv = TargetCCallAbi::sysv_amd64();
-        let aapcs = TargetCCallAbi::aapcs64();
-        assert_eq!(sysv.int_arg_register_budget(), 6);
-        assert_eq!(aapcs.int_arg_register_budget(), 8);
-        // SysV echoes the sret pointer in rax; AAPCS64's x8 is not echoed.
-        assert!(sysv.sret_pointer_echoed_in_result_register());
-        assert!(!aapcs.sret_pointer_echoed_in_result_register());
+    fn each_row_carries_its_own_register_budget_and_sret_rule() {
+        let sysv = CallingConvention::X86_64SysV.c_spec();
+        let aapcs = CallingConvention::Aarch64Aapcs.c_spec();
+        assert_eq!(sysv.gp_argument_registers, 6);
+        assert_eq!(aapcs.gp_argument_registers, 8);
+        // SysV passes the sret pointer as the hidden first argument in `rdi`
+        // and echoes it in `rax`; AAPCS64 uses the dedicated `x8`, unechoed.
+        assert!(sysv.sret_pointer_in_argument_register());
+        assert!(sysv.sret_pointer_echoed_in_result_register);
+        assert!(!aapcs.sret_pointer_in_argument_register());
+        assert!(!aapcs.sret_pointer_echoed_in_result_register);
         // 16-byte call alignment on both.
-        assert_eq!(sysv.call_stack_alignment(), 16);
-        assert_eq!(aapcs.call_stack_alignment(), 16);
-        assert_eq!(sysv.convention(), CallingConvention::X86_64SysV);
-        assert_eq!(aapcs.convention(), CallingConvention::Aarch64Aapcs);
+        assert_eq!(sysv.call_stack_alignment, 16);
+        assert_eq!(aapcs.call_stack_alignment, 16);
     }
 
     #[test]
-    fn sret_pointer_register_and_echo_diverge_by_psabi() {
-        let sysv = TargetCCallAbi::sysv_amd64();
-        let aapcs = TargetCCallAbi::aapcs64();
-        // SysV: sret pointer in rdi (first arg reg), echoed in rax.
-        assert!(!sysv.sret_pointer_in_dedicated_register());
-        assert!(sysv.sret_pointer_echoed_in_result_register());
-        // AAPCS64: dedicated x8, not echoed.
-        assert!(aapcs.sret_pointer_in_dedicated_register());
-        assert!(!aapcs.sret_pointer_echoed_in_result_register());
-    }
-
-    #[test]
-    fn the_classifier_follows_the_target_c_alias_not_the_architecture() {
+    fn the_row_follows_the_target_c_alias_not_the_architecture() {
         use rue_target::Target;
         assert_eq!(
-            TargetCCallAbi::for_target(Target::X86_64Linux).convention(),
+            CallingConvention::c_for_target(Target::X86_64Linux),
             CallingConvention::X86_64SysV
         );
         assert_eq!(
-            TargetCCallAbi::for_target(Target::Aarch64Linux).convention(),
+            CallingConvention::c_for_target(Target::Aarch64Linux),
             CallingConvention::Aarch64Aapcs
         );
         assert_eq!(
-            TargetCCallAbi::for_target(Target::Aarch64Macos).convention(),
+            CallingConvention::c_for_target(Target::Aarch64Macos),
             CallingConvention::Aarch64AapcsDarwin
         );
     }
 
     #[test]
     fn the_two_aapcs_rows_agree_except_on_stacked_argument_packing() {
-        let aapcs = TargetCCallAbi::aapcs64();
-        let darwin = TargetCCallAbi::aapcs64_darwin();
+        let aapcs = CallingConvention::Aarch64Aapcs;
+        let darwin = CallingConvention::Aarch64AapcsDarwin;
         assert_eq!(
-            aapcs.int_arg_register_budget(),
-            darwin.int_arg_register_budget()
+            aapcs.c_spec().gp_argument_registers,
+            darwin.c_spec().gp_argument_registers
         );
         assert_eq!(
-            aapcs.sret_pointer_in_dedicated_register(),
-            darwin.sret_pointer_in_dedicated_register()
+            aapcs.c_spec().sret_pointer_in_argument_register(),
+            darwin.c_spec().sret_pointer_in_argument_register()
         );
         assert_eq!(
-            aapcs.sret_pointer_echoed_in_result_register(),
-            darwin.sret_pointer_echoed_in_result_register()
+            aapcs.c_spec().sret_pointer_echoed_in_result_register,
+            darwin.c_spec().sret_pointer_echoed_in_result_register
         );
-        assert_eq!(aapcs.call_stack_alignment(), darwin.call_stack_alignment());
+        assert_eq!(
+            aapcs.c_spec().call_stack_alignment,
+            darwin.c_spec().call_stack_alignment
+        );
         // Apple's amendment: a stacked argument occupies its natural size at
         // its natural alignment rather than a whole 8-byte slot.
         assert_eq!(
@@ -836,41 +678,10 @@ mod tests {
             StackedArgumentPacking::NaturalSize
         );
         assert_eq!(
-            TargetCCallAbi::sysv_amd64().stacked_argument_packing(),
+            CallingConvention::X86_64SysV.stacked_argument_packing(),
             StackedArgumentPacking::EightByteSlots,
             "x86-64 is unaffected by the Apple amendment"
         );
-    }
-
-    #[test]
-    fn every_c_row_agrees_on_the_caller_side_narrow_extension() {
-        // Apple requires the caller to extend an argument narrower than 32 bits;
-        // Rue's canonical 64-bit-extension invariant already produces that, and
-        // every C row asks for the same operation, so the import side needs no
-        // Darwin-specific work.
-        for convention in [
-            CallingConvention::X86_64SysV,
-            CallingConvention::Aarch64Aapcs,
-            CallingConvention::Aarch64AapcsDarwin,
-        ] {
-            let abi = TargetCCallAbi::new(convention);
-            assert_eq!(
-                abi.scalar_arg_extension(Type::I8),
-                ScalarAbiExtension::Signed { from_bits: 8 },
-                "{convention} must sign-extend a narrow signed argument"
-            );
-            assert_eq!(
-                abi.scalar_arg_extension(Type::U16),
-                ScalarAbiExtension::Unsigned { from_bits: 16 },
-                "{convention} must zero-extend a narrow unsigned argument"
-            );
-            assert_eq!(
-                abi.scalar_arg_extension(Type::BOOL),
-                ScalarAbiExtension::Unsigned { from_bits: 8 },
-                "{convention} must materialize the 1-byte `_Bool` 0/1 contract"
-            );
-            assert!(abi.scalar_arg_extension(Type::I64).is_noop());
-        }
     }
 
     #[test]

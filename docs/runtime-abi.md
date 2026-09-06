@@ -19,9 +19,11 @@ target rules without duplicating that contract's helper table.
 
 Compiler phases carry `RuntimeHelperId` and typed runtime-call adaptations.
 AIR and CFG do not discover runtime behavior from symbol strings. Shared call
-planning validates the manifest signature before the x86-64 or AArch64 backend
-assigns physical registers and stack locations. A helper symbol is materialized
-only at presentation and MIR relocation boundaries.
+planning validates the manifest signature, and
+`runtime_call_plan::manifest_signature` lowers it through the same classifier
+every other crossing consumes, before the x86-64 or AArch64 backend maps a
+roster index to one of its own registers. A helper symbol is materialized only
+at presentation and MIR relocation boundaries.
 
 The runtime's exported wrappers and compile-time Rust function-type assertions
 are generated from the same manifest rows. The runtime implementation remains
@@ -53,7 +55,8 @@ classified by the same rules through `rue_air::lower_native_return`, read
 against the wider result roster `ConventionSpec::native` describes, and a result
 that does not fit that bank travels through the target row's own
 indirect-result register. The runtime helper boundary below is unaffected — its
-helpers are C calls and already follow the target's C row.
+helpers are C calls, so they follow the target's C row through the same
+classifier the native side now reads.
 
 Both boundaries name their convention with one value type,
 `rue_target::CallingConvention`, whose members are concrete conventions:
@@ -101,6 +104,15 @@ always knows the target — resolves the row through the same alias table. That
 keeps one mapping table for foreign calls, compiler-built memory routines, and
 runtime helpers alike.
 
+Because the row is resolved that way, "every helper is register-only" is a
+property *of the manifest*, not an assumption in a backend. It is tested where
+the manifest is: `every_helper_places_its_whole_signature_in_registers_on_every_target`
+lowers every `RuntimeHelperId` on every target and requires each argument in one
+general-purpose register, no outgoing argument area, and a result in registers
+rather than through the row's indirect-result pointer. A helper added past the
+budget fails that test rather than tripping an assertion inside a code
+generator.
+
 The [FFI ABI conformance audit](notes/ffi-abi-conformance-audit.md) records the
 native convention, compares both boundaries with System V AMD64, AAPCS64, and
 Apple's arm64 amendments, and defines the executable evidence required before
@@ -139,17 +151,24 @@ roster index, a byte offset and footprint in the outgoing argument area, or a
 pointer to a caller-owned copy) plus the narrow-integer extension its value
 carries, and gives the result registers, indirect caller storage, or nothing.
 
-Three sites consume that one answer, which is why an import, an export, and the
-query plane cannot disagree about a placement:
+Every C crossing consumes that one answer, which is why an import, an export, a
+runtime helper, and the query plane cannot disagree about a placement:
 
 - the `extern "C"` import planner, which writes the places and calls;
 - the `pub extern "C" fn` export entry, which reads the same places in the
   callee direction and adapts them to the native convention its body follows —
   itself placed by `lower_native_signature` against the same facts, so the two
   halves usually agree outright and the C symbol is emitted as an alias of the
-  native body rather than as a thunk (ADR-0084); and
+  native body rather than as a thunk (ADR-0084);
+- the runtime-helper boundary, whose type facts are the manifest's own
+  `AbiType`s and pointer modes (`runtime_call_plan::manifest_signature`), and
+  the compiler-built memory routines, which cross the same row; and
 - the stable query plane's `compiler.call-abi`, which projects the same facts
   from canonical layout values and revision-stable type keys.
+
+A Rue-to-Rue call reads the same walk under `ConventionSpec::native`
+(`lower_native_signature` / `lower_native_return`), so there is one classifier
+for every crossing in the compiler rather than a native one and a C one.
 
 The floating-point rosters and the classifier's SSE eightbyte class are reached
 by the *native* convention, which has floats to place; no `"C"` signature reaches

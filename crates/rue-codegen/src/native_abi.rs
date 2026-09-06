@@ -30,7 +30,7 @@ use rue_air::{
 };
 use rue_target::CRegisterClass;
 
-use crate::call_plan::AbiSlotClass;
+use crate::abi_slot_class::AbiSlotClass;
 use crate::frame_layout::checked_aligned_region_bytes;
 use crate::types::{self, DispatchImage, PhysicalEnumSlot};
 use crate::value_plan::FloatWidth;
@@ -139,48 +139,21 @@ pub enum NativeArg {
         /// The compact image.
         image: NativeImage,
     },
-    /// An already-flattened value crossing one register-width leaf at a time —
-    /// the cleanup convention destructors and drop glue are invoked under.
-    ///
-    /// A destructor and a drop glue body receive an aggregate's leaves
-    /// directly, in ascending order, because the caller has already
-    /// materialized them and the callee walks them as leaves rather than
-    /// reconstructing a value. Placement is still the convention's: each leaf
-    /// is one register-width value, so the leaves take consecutive argument
-    /// registers and then the argument area's own packing, exactly as that many
-    /// separate `i64` arguments would. Tracked for retirement with RUE-2039,
-    /// which collapses the remaining convention branches.
-    PerLeaf {
-        /// How many leaves cross.
-        count: u32,
-    },
 }
 
 impl NativeArg {
-    /// The classification facts this argument presents, one entry per value
-    /// the convention places.
+    /// The classification facts this argument presents.
     ///
-    /// Every shape but the cleanup convention's presents exactly one: a value
-    /// is placed as a whole. [`PerLeaf`](Self::PerLeaf) presents one
-    /// register-width entry per leaf, which is what makes its leaves take the
-    /// registers and stack slots that many separate scalars would.
-    pub fn facts(&self) -> Vec<CAbiTypeFacts> {
+    /// Exactly one value reaches the classifier per argument, whatever its
+    /// shape: the convention places a value as a whole.
+    pub fn facts(&self) -> CAbiTypeFacts {
         match self {
-            Self::Omitted => vec![CAbiTypeFacts::ZeroSized],
-            Self::Scalar { kind, .. } => vec![CAbiTypeFacts::Scalar {
+            Self::Omitted => CAbiTypeFacts::ZeroSized,
+            Self::Scalar { kind, .. } => CAbiTypeFacts::Scalar {
                 kind: *kind,
                 class: kind.register_class(),
-            }],
-            Self::Aggregate { image } => vec![image.facts()],
-            Self::PerLeaf { count } => {
-                vec![
-                    CAbiTypeFacts::Scalar {
-                        kind: CAbiScalarKind::RegisterWidth,
-                        class: CRegisterClass::Gp,
-                    };
-                    *count as usize
-                ]
-            }
+            },
+            Self::Aggregate { image } => image.facts(),
         }
     }
 
@@ -189,9 +162,7 @@ impl NativeArg {
     pub fn extension(&self) -> rue_air::ScalarAbiExtension {
         match self {
             Self::Scalar { kind, .. } => kind.extension(),
-            Self::Omitted | Self::Aggregate { .. } | Self::PerLeaf { .. } => {
-                rue_air::ScalarAbiExtension::None
-            }
+            Self::Omitted | Self::Aggregate { .. } => rue_air::ScalarAbiExtension::None,
         }
     }
 
@@ -254,9 +225,6 @@ impl NativeArg {
             },
             Self::Scalar { class, .. } => NativeArgMarshal::Direct {
                 classes: vec![*class],
-            },
-            Self::PerLeaf { count } => NativeArgMarshal::Direct {
-                classes: vec![AbiSlotClass::Gp; *count as usize],
             },
             Self::Aggregate { image } => match image.direct_leaves() {
                 Some(classes) => NativeArgMarshal::Direct { classes },
@@ -437,12 +405,7 @@ pub fn native_call_area_bytes(
     let parameters: Vec<(CAbiTypeFacts, ArgConvention)> = natives
         .iter()
         .zip(arguments)
-        .flat_map(|(native, (_, convention))| {
-            native
-                .facts()
-                .into_iter()
-                .map(move |facts| (facts, *convention))
-        })
+        .map(|(native, (_, convention))| (native.facts(), *convention))
         .collect();
     let ret = if sret_storage_bytes == 0 {
         rue_air::LoweredReturn::Void
@@ -455,13 +418,6 @@ pub fn native_call_area_bytes(
             align: 8,
         }
     };
-    assert_eq!(
-        parameters.len(),
-        natives.len(),
-        "an ordinary call places one value per argument; only the cleanup \
-         convention's already-flattened leaves place more, and it reaches no \
-         aggregate"
-    );
     let signature = rue_air::lower_native_signature(pairing, &parameters, ret);
     let mut indirect = 0u64;
     let mut scratch = 0u64;

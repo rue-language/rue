@@ -75,6 +75,36 @@ pub(super) const RET_REGS: [Reg; 8] = [
     Reg::X7,
 ];
 
+/// The general-purpose argument-roster index a lowered placement names.
+///
+/// Every value a runtime helper takes is one general-purpose register; that is
+/// the manifest's own property, tested where the manifest is.
+fn gp_argument_index(location: rue_air::ArgLocation) -> usize {
+    let rue_air::ArgLocation::Registers { pieces } = location else {
+        panic!("a runtime-helper argument is register-passed: {location:?}");
+    };
+    assert_eq!(pieces.len(), 1, "a runtime-helper argument is one register");
+    let piece = pieces.as_slice()[0];
+    assert_eq!(
+        piece.class,
+        rue_target::CRegisterClass::Gp,
+        "a runtime-helper argument is general-purpose"
+    );
+    piece.index as usize
+}
+
+/// The general-purpose result-roster index a lowered return names.
+fn gp_result_index(pieces: rue_air::RegisterPieces) -> usize {
+    assert_eq!(pieces.len(), 1, "a runtime-helper result is one register");
+    let piece = pieces.as_slice()[0];
+    assert_eq!(
+        piece.class,
+        rue_target::CRegisterClass::Gp,
+        "a runtime-helper result is general-purpose"
+    );
+    piece.index as usize
+}
+
 /// Floating-point return registers. A float-classed return slot travels in the
 /// same V bank a float argument does — `v0` is already the scalar float return
 /// register — so the two directions name one register file.
@@ -382,22 +412,14 @@ impl<'a> CfgLower<'a> {
         &mut self,
         plan: crate::runtime_call_plan::RuntimeCallPlan,
     ) -> crate::value_plan::MaterializedValue {
-        use crate::runtime_call_plan::{RuntimeCallArg, RuntimeCallPlan, RuntimeCallResult};
+        use crate::runtime_call_plan::{RuntimeCallArg, RuntimeCallResult};
 
-        assert!(
-            matches!(
-                RuntimeCallPlan::calling_convention(self.target),
-                rue_target::CallingConvention::Aarch64Aapcs
-                    | rue_target::CallingConvention::Aarch64AapcsDarwin
-            ),
-            "this lowering implements the AAPCS64 rows; the runtime-helper boundary on \
-             {} must resolve to one of them",
-            self.target
-        );
-        assert!(
-            plan.args().len() <= ARG_REGS.len(),
-            "runtime manifest exceeds the AArch64 target-C register budget"
-        );
+        // A helper boundary is a C call, so where its arguments and result
+        // travel is the one classifier's answer against the manifest signature
+        // (ADR-0055, ADR-0084). Nothing here assumes a register budget: the
+        // manifest's own test pins that every helper's signature places wholly
+        // in registers.
+        let signature = plan.lowered_signature(self.target);
 
         let out_shape = plan.out_shape();
         let out_bytes = out_shape
@@ -466,8 +488,13 @@ impl<'a> CfgLower<'a> {
             })
             .collect::<Vec<_>>();
 
-        for (index, (arg, value)) in plan.args().iter().zip(&materialized).enumerate() {
-            let dst = Operand::Physical(ARG_REGS[index]);
+        for ((arg, value), argument) in plan
+            .args()
+            .iter()
+            .zip(&materialized)
+            .zip(signature.arguments())
+        {
+            let dst = Operand::Physical(ARG_REGS[gp_argument_index(argument.location)]);
             match *arg {
                 RuntimeCallArg::Slot { .. }
                 | RuntimeCallArg::Scaled { .. }
@@ -526,11 +553,19 @@ impl<'a> CfgLower<'a> {
                 }
             }
             RuntimeCallResult::Scalar(_) => {
+                let rue_air::LoweredReturn::Registers { pieces, extension } = signature.ret()
+                else {
+                    panic!("a scalar runtime result comes back in result registers");
+                };
                 let primary = self.mir.alloc_vreg();
                 self.mir.push(Aarch64Inst::MovRR {
                     dst: Operand::Virtual(primary),
-                    src: Operand::Physical(Reg::X0),
+                    src: Operand::Physical(RET_REGS[gp_result_index(pieces)]),
                 });
+                // A C callee leaves the bits above a narrow result unspecified;
+                // Rue's canonical 64-bit form is restored here, by the same
+                // extension every other C return crossing applies.
+                self.emit_c_return_extension(primary, extension);
                 crate::value_plan::MaterializedValue {
                     primary,
                     slots: Vec::new(),
@@ -589,7 +624,7 @@ impl<'a> CfgLower<'a> {
         for (param_slot, class, location) in self.ctx.param_entry_copies() {
             let (vreg, copy) = match (class, location) {
                 (
-                    crate::call_plan::AbiSlotClass::Gp,
+                    crate::abi_slot_class::AbiSlotClass::Gp,
                     crate::call_plan::AbiSlotLocation::GpReg(class_index),
                 ) => {
                     let vreg = self.mir.alloc_vreg();
@@ -602,7 +637,7 @@ impl<'a> CfgLower<'a> {
                     )
                 }
                 (
-                    crate::call_plan::AbiSlotClass::Fp(width),
+                    crate::abi_slot_class::AbiSlotClass::Fp(width),
                     crate::call_plan::AbiSlotLocation::FpReg(class_index),
                 ) => {
                     let vreg = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
@@ -642,10 +677,6 @@ impl<'a> CfgLower<'a> {
             crate::call_plan::CallTarget::rue(symbol),
             arg_vregs,
             rue_target::ConventionSpec::native(self.target),
-            crate::call_plan::AbiRegisterBanks {
-                gp: ARG_REGS.len(),
-                fp: FP_ARG_REGS.len(),
-            },
             self.target.c_calling_convention(),
         );
         let _ = self.lower_call_plan(plan);
@@ -1067,7 +1098,7 @@ impl<'a> CfgLower<'a> {
             };
             let offset = checked_displacement_bytes(u64::from(*offset))
                 .expect("call stack slot offset must fit displacement");
-            if let crate::call_plan::AbiSlotClass::Fp(width) = class {
+            if let crate::abi_slot_class::AbiSlotClass::Fp(width) = class {
                 self.mir.push(Aarch64Inst::FloatStore {
                     src: Operand::Virtual(*arg),
                     base: Reg::Sp,
@@ -1090,7 +1121,7 @@ impl<'a> CfgLower<'a> {
         {
             match (class, location) {
                 (
-                    crate::call_plan::AbiSlotClass::Fp(width),
+                    crate::abi_slot_class::AbiSlotClass::Fp(width),
                     crate::call_plan::AbiSlotLocation::FpReg(index),
                 ) => self.mir.push(Aarch64Inst::FloatMov {
                     dst: Operand::Physical(FP_ARG_REGS[*index]),
@@ -1098,7 +1129,7 @@ impl<'a> CfgLower<'a> {
                     width: *width,
                 }),
                 (
-                    crate::call_plan::AbiSlotClass::Gp,
+                    crate::abi_slot_class::AbiSlotClass::Gp,
                     crate::call_plan::AbiSlotLocation::GpReg(index),
                 ) => self.mir.push(Aarch64Inst::MovRR {
                     dst: Operand::Physical(ARG_REGS[*index]),

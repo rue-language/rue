@@ -820,7 +820,7 @@ fn the_c_by_value_classifier_agrees_across_sites_shapes_and_planes() {
                 super::super::semantic::stable_c_abi_type_facts(canonical, stable_key);
             let live_facts =
                 rue_codegen::native_abi::native_arg(&pool, *live_ty, ArgConvention::ByValue)
-                    .facts()[0];
+                    .facts();
             // A discriminant-only enum is the one projection the two planes
             // spell differently — the live plane calls its single tag a scalar
             // — and no such shape is in this set, so the facts must agree.
@@ -1323,7 +1323,7 @@ fn live_native_placements(
         .iter()
         .map(|(convention, ty)| {
             (
-                rue_codegen::native_abi::native_arg(pool, *ty, *convention).facts()[0],
+                rue_codegen::native_abi::native_arg(pool, *ty, *convention).facts(),
                 *convention,
             )
         })
@@ -1344,7 +1344,7 @@ fn live_native_return(
 ) -> rue_air::LoweredReturn {
     rue_air::lower_native_return(
         rue_target::ConventionSpec::native(target),
-        rue_codegen::native_abi::native_by_value_arg(pool, result).facts()[0],
+        rue_codegen::native_abi::native_by_value_arg(pool, result).facts(),
     )
 }
 
@@ -1691,7 +1691,7 @@ fn call_abi_native_classification_matches_the_live_classifier_on_both_targets() 
 #[test]
 fn call_abi_target_c_classification_matches_the_live_classifier_on_both_targets() {
     use lasso::ThreadedRodeo;
-    use rue_air::{StructDef, StructField, TargetCCallAbi, Type, TypeInternPool};
+    use rue_air::{StructDef, StructField, Type, TypeInternPool};
     let source = source_snapshot(
         &[(
             1,
@@ -1760,20 +1760,35 @@ fn call_abi_target_c_classification_matches_the_live_classifier_on_both_targets(
     let ptr_mut_u8 = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::U8));
     let pool = pool.freeze();
 
+    // The stable plane's scalar extensions must be the ones the live plane's
+    // own signature lowering carries: one classifier, read from both planes.
     let assert_scalar_args = |facts: &crate::type_queries::CallAbiFacts,
-                              abi: &TargetCCallAbi,
+                              convention: rue_target::CallingConvention,
                               live_params: &[Type],
                               live_result: Type,
                               name: &str| {
         use crate::type_queries::{CallAbiArgumentClass as A, CallAbiReturnClass as R};
+        let parameters = live_params
+            .iter()
+            .map(|ty| {
+                (
+                    rue_air::c_abi_type_facts(&pool, *ty),
+                    rue_air::ArgConvention::ByValue,
+                )
+            })
+            .collect::<Vec<_>>();
+        let lowered = rue_air::lower_c_signature(
+            convention,
+            &parameters,
+            rue_air::c_abi_type_facts(&pool, live_result),
+        );
         assert_eq!(facts.arguments.len(), live_params.len(), "arity of {name}");
-        for (argument, live_ty) in facts.arguments.iter().zip(live_params) {
+        for (argument, lowered_argument) in facts.arguments.iter().zip(lowered.arguments()) {
             let A::ScalarRegister { extension } = argument.class else {
                 panic!("{name} argument is a target-C scalar: {:?}", argument.class);
             };
             assert_eq!(
-                extension,
-                abi.scalar_arg_extension(*live_ty),
+                extension, lowered_argument.extension,
                 "argument extension parity for {name}"
             );
         }
@@ -1783,9 +1798,15 @@ fn call_abi_target_c_classification_matches_the_live_classifier_on_both_targets(
                 facts.return_class
             );
         };
+        let rue_air::LoweredReturn::Registers {
+            extension: lowered_extension,
+            ..
+        } = lowered.ret()
+        else {
+            panic!("{name} returns a scalar in a result register");
+        };
         assert_eq!(
-            extension,
-            abi.scalar_return_extension(live_result),
+            extension, lowered_extension,
             "return extension parity for {name}"
         );
     };
@@ -1865,7 +1886,6 @@ fn call_abi_target_c_classification_matches_the_live_classifier_on_both_targets(
     let revision = revision_for(&mut database, &source);
     for target in [crate::Target::X86_64Linux, crate::Target::Aarch64Linux] {
         let convention = rue_target::CallingConvention::c_for_target(target);
-        let abi = TargetCCallAbi::new(convention);
         let request = |name: &str| {
             request_call_abi(
                 &database,
@@ -1879,21 +1899,21 @@ fn call_abi_target_c_classification_matches_the_live_classifier_on_both_targets(
         assert_eq!(signed.convention, convention);
         assert_scalar_args(
             &signed,
-            &abi,
+            convention,
             &[Type::I8, Type::I16, Type::I32, Type::I64],
             Type::I16,
             "c_signed",
         );
         assert_scalar_args(
             &request("c_unsigned"),
-            &abi,
+            convention,
             &[Type::U8, Type::U16, Type::U32, Type::U64, Type::BOOL],
             Type::U16,
             "c_unsigned",
         );
         assert_scalar_args(
             &request("c_pointers"),
-            &abi,
+            convention,
             &[ptr_const_u8, ptr_mut_u8],
             ptr_mut_u8,
             "c_pointers",

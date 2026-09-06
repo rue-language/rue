@@ -1117,9 +1117,9 @@ fn drop_plan<A: ValueLowerAdapter>(
             });
         }
         TypeKind::Enum(enum_id) => {
-            // Enum drop glue receives the enum's leaves already flattened, one
-            // register-width value each, under the cleanup convention
-            // (`CallPlan::from_slot_values`). A frame-resident aggregate ascends
+            // Enum drop glue's parameter list is the enum's leaves, one
+            // register-width parameter each, which is what
+            // `CallPlan::from_slot_values` hands over. A frame-resident aggregate ascends
             // in address with its logical slots while frame slot numbers descend
             // (ADR-0040), so handing the leaves over in reverse is what lands
             // them in the glue's own parameter area in logical order (RUE-998).

@@ -244,9 +244,13 @@ pub struct SourceParamAbi {
     /// Physical value-decomposition width: the frame slots the parameter's
     /// leaves occupy, equal to [`crate::NativeCallAbi::arg_slot_width`].
     pub slot_count: u32,
-    /// The parameter's source type, or `None` when the analyzed body recovered
-    /// none for it (a by-reference pointer, whose pointee the convention never
-    /// consults, and a slot no `Param` instruction or drop entry names).
+    /// The parameter's source type, or `None` when the parameter is one
+    /// register-width slot the convention needs no type for: a by-reference
+    /// pointer, whose pointee the convention never consults; a leaf of a
+    /// cleanup callee's flattened parameter list; or a slot no `Param`
+    /// instruction or drop entry names. A typeless descriptor always has
+    /// `slot_count == 1`, so every parameter is one value the convention places
+    /// as a whole.
     ///
     /// Where the parameter's incoming value travels is not recorded here: code
     /// generation recomputes it from this type through the one placement
@@ -418,7 +422,14 @@ pub enum AnalyzedCallableKind {
 }
 
 impl AnalyzedCallableKind {
-    pub fn uses_direct_slot_abi(self) -> bool {
+    /// Whether this callable's parameter list is the flattened decomposition of
+    /// one owner value rather than a list of source parameters.
+    ///
+    /// A destructor and a drop glue body address their owner's leaves by slot
+    /// index — the synthesized glue reads a field, an element, or a variant
+    /// payload straight out of a parameter slot — so each slot is its own
+    /// register-width parameter on both sides of the call.
+    pub fn has_flattened_leaf_parameters(self) -> bool {
         matches!(self, Self::Destructor | Self::DropGlue)
     }
 }

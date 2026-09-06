@@ -29,9 +29,9 @@ convention its signature follows and where each parameter and the result
 travels: a named register, a byte offset in the outgoing argument area, a
 pointer to a caller-owned copy, or nothing for a zero-sized value. It reads the
 artifacts code generation reads — `rue_air::lower_c_signature` for every C
-boundary, `NativeCallAbi` plus the shared slot plan for the native convention —
-and asks each backend for the name of a roster index, so it cannot describe a
-placement the compiler does not emit. `--target` selects the row, so a Darwin
+boundary, `rue_air::lower_native_signature` and `rue_air::lower_native_return`
+for the native one — and asks each backend for the name of a roster index, so it
+cannot describe a placement the compiler does not emit. `--target` selects the row, so a Darwin
 placement is readable on any host, and a `pub extern "C" fn` export prints both
 its C entry and the native body that entry names or forwards to. See
 `docs/notes/ffi-abi-conformance-audit.md`.
@@ -100,13 +100,23 @@ indirect-result pointer travels and whether it is echoed, stack alignment and
 shadow space, outgoing-argument packing, narrow-integer extension, and which
 aggregate rule applies. `rue_air::lower_c_signature` is the one function that
 reads that data against a type's facts and answers where every argument and the
-result of a `"C"` signature lives. All three C crossing sites consume its
+result of a `"C"` signature lives. Every C crossing site consumes its
 `LoweredSignature`: the `extern "C"` import planner (`foreign_call`), the
-`pub extern "C" fn` export entry (`export_thunk`), and the stable query plane's
-`compiler.call-abi`. The backends contribute only physical leaves — mapping a
-roster index to a register name, and emitting the loads, stores, and calls.
-Calls between Rue functions use the separate native convention, whose classifier
-is `rue_air::NativeCallAbi`.
+`pub extern "C" fn` export entry (`export_thunk`), the runtime-helper boundary
+and the compiler-built memory routines (`runtime_call_plan`, whose type facts
+are the manifest's own `AbiType`s and pointer modes), and the stable query
+plane's `compiler.call-abi`. The backends contribute only physical leaves —
+mapping a roster index to a register name, and emitting the loads, stores, and
+calls.
+
+Calls between Rue functions consume the same walk. The native convention is the
+compilation target's C row plus a wider return bank (ADR-0084), described by
+`ConventionSpec::native` and placed by `rue_air::lower_native_signature` and
+`rue_air::lower_native_return`. There is therefore one classifier in the
+compiler, not a native one beside a C one: a call, a return, an export, and a
+runtime helper all read placements out of one `LoweredSignature`, which is what
+makes a disagreement between two halves of a crossing impossible rather than
+merely fixed.
 
 The supported targets are:
 
