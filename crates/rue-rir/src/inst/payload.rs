@@ -518,6 +518,37 @@ impl RirDirectiveView<'_> {
             span: self.span,
         }
     }
+
+    /// Classify this directive against the directive vocabulary
+    /// (`rue_parser::directives`), the single owner of directive spellings.
+    ///
+    /// The RIR stores directive names and arguments as interned symbols, so
+    /// classification needs the interner that owns them; the vocabulary itself
+    /// is never restated here.
+    pub fn kind(&self, interner: &ThreadedRodeo) -> Option<DirectiveName> {
+        DirectiveName::from_source(interner.resolve(&self.name))
+    }
+
+    /// True when this directive is `@allow(<warning>)`.
+    pub fn allows(&self, interner: &ThreadedRodeo, warning: WarningName) -> bool {
+        self.kind(interner) == Some(DirectiveName::Allow)
+            && self
+                .args
+                .iter()
+                .any(|arg| WarningName::from_source(interner.resolve(&arg)) == Some(warning))
+    }
+}
+
+/// True when a declaration's directives carry `@allow(<warning>)`.
+///
+/// Every consumer that honors a warning suppression asks this one question, so
+/// the "directives contain `@allow(name)`" walk exists once.
+pub fn directives_allow<'r>(
+    interner: &ThreadedRodeo,
+    mut directives: impl Iterator<Item = RirDirectiveView<'r>>,
+    warning: WarningName,
+) -> bool {
+    directives.any(|directive| directive.allows(interner, warning))
 }
 
 /// Extra data marker types for type-safe storage in the extra array.

@@ -28,12 +28,17 @@ impl PayloadFallback for InstRef {
     }
 }
 
-/// A directive in the RIR (e.g., @allow(unused_variable))
+/// A directive in the RIR (e.g., @allow(unused_variable)).
+///
+/// Names and arguments are stored as interned symbols, like every other name
+/// in the RIR. Consumers classify them with [`RirDirectiveView::kind`] and
+/// [`crate::directives_allow`], which read the one directive vocabulary
+/// (`rue_parser::directives`) rather than restating any spelling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RirDirective {
-    /// Directive name (e.g., "allow")
+    /// Directive name, interned (e.g., `allow`)
     pub name: Spur,
-    /// Arguments (e.g., ["unused_variable"])
+    /// Arguments, interned (e.g., `unused_variable`)
     pub args: Vec<Spur>,
     /// Span covering the directive
     pub span: Span,

@@ -2840,14 +2840,10 @@ fn rooted_unused_function_warnings(
         let Some(function) = functions.get(&locator.declaration_span).copied() else {
             continue;
         };
-        let allows_unused = function.directives.iter().any(|directive| {
-            module.resolve_raw_symbol(directive.name.name) == "allow"
-                && directive.args.iter().any(|argument| match argument {
-                    rue_parser::ast::DirectiveArg::Ident(argument) => {
-                        module.resolve_raw_symbol(argument.name) == "unused_function"
-                    }
-                })
-        });
+        let allows_unused = rue_parser::ast::directives_allow(
+            &function.directives,
+            rue_parser::WarningName::UnusedFunction,
+        );
         if allows_unused {
             continue;
         }
@@ -3152,11 +3148,11 @@ fn semantic_nucleus_failure_diagnostics(
             rue_parser::ast::Item::Struct(structure)
                 if module.resolve_raw_symbol(structure.name.name) == type_name =>
             {
-                structure
-                    .directives
-                    .iter()
-                    .find(|directive| module.resolve_raw_symbol(directive.name.name) == "copy")
-                    .map(|directive| directive.span)
+                rue_parser::ast::find_directive(
+                    &structure.directives,
+                    rue_parser::DirectiveName::Copy,
+                )
+                .map(|directive| directive.span)
             }
             _ => None,
         });

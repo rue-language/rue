@@ -84,9 +84,7 @@ impl Shapes<'_> {
             node(
                 "directive",
                 "",
-                list(d.args.iter().map(|arg| match arg {
-                    DirectiveArg::Ident(_) => self.ident(),
-                })),
+                list(d.args.iter().map(|_| self.ident())),
                 "_".into(),
                 "_".into(),
                 "_".into(),

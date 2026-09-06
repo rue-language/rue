@@ -8,44 +8,23 @@
 //! accepted and ignored, turning typos like `@alllow(...)` into no-ops.
 //! Unknown directives are now a compile error naming the directive. (RUE-133)
 //!
+//! Every name and site rule this module enforces comes from
+//! [`crate::directives`], the vocabulary the parser already classified each
+//! directive against; nothing here re-spells a directive or warning name.
+//!
 //! Note this covers *directive* position only (before items and `let`
 //! statements). Expression-position `@name(...)` intrinsics (`@dbg`,
 //! `@syscall`, `@intCast`, ...) are validated by sema, which already rejects
 //! unknown intrinsics.
 
 use crate::ast::{Ast, Directive, Expr, IntrinsicArg, Item, Method, Statement, TypeExpr};
+use crate::directives::{
+    DirectiveArgValue, DirectiveArity, DirectiveName, DirectiveSite, ReprArg, directive_name_list,
+    repr_arg_list, site_list, warning_name_list,
+};
 use crate::parser_policy::diagnostics::ParserDiagnostics;
 use lasso::ThreadedRodeo;
 use rue_error::{CompileError, ErrorKind};
-
-/// Directive names the compiler understands.
-///
-/// This is the single source of truth for *directive* (item/statement
-/// position) names; keep it in sync with the consumers in sema:
-/// - `allow`  — suppresses lints, e.g. `@allow(unused_variable)` on `let`
-///   (see `has_allow_directive` in rue-air)
-/// - `copy`   — marks a struct as a copy type (see `has_copy_directive`)
-/// - `repr`   — the C representation guarantee marker `@repr(c)` on a struct
-///   (ADR-0064 Amendment 1; see `has_repr_c_directive` in rue-air)
-/// - `non_exhaustive` — opts a public enum into the source/API compatibility
-///   contract for matches in importing modules.
-pub const KNOWN_DIRECTIVES: &[&str] = &["allow", "copy", "repr", "non_exhaustive"];
-
-/// Representation arguments accepted by `@repr(...)`.
-///
-/// Only `c` is accepted in v0 (ADR-0064 Amendment 1). The parameterized grammar
-/// stays open for future `@repr(packed)` / `@repr(align(n))`; parsing validates
-/// the argument so `@repr(packed)` fails loudly with the accepted set named,
-/// rather than being silently ignored.
-pub const KNOWN_REPR_ARGS: &[&str] = &["c"];
-
-/// Warning names accepted by `@allow(...)`.
-///
-/// Parsing validates spelling so typos like `@allow(unused_variabl)` fail
-/// loudly; sema consumes these names when emitting and suppressing warnings
-/// (RUE-356).
-pub const KNOWN_WARNING_NAMES: &[&str] =
-    &["unused_variable", "unused_function", "unreachable_code"];
 
 /// Walk the AST and report directive-validation diagnostics through the same
 /// bounded per-file policy as grammar recovery.
@@ -65,154 +44,129 @@ struct Validator<'a> {
     errors: ParserDiagnostics,
 }
 
-#[derive(Clone, Copy)]
-enum DirectiveSite {
-    Function,
-    Struct,
-    Enum,
-    Method,
-    Const,
-    Let,
-    /// A `test "name" { .. }` declaration (ADR-0083 §1). Accepts exactly the
-    /// directives a function accepts.
-    Test,
-}
-
-impl DirectiveSite {
-    fn description(self) -> &'static str {
-        match self {
-            DirectiveSite::Function => "functions",
-            DirectiveSite::Struct => "structs",
-            DirectiveSite::Enum => "enums",
-            DirectiveSite::Method => "methods",
-            DirectiveSite::Const => "const declarations",
-            DirectiveSite::Let => "let statements",
-            DirectiveSite::Test => "test declarations",
-        }
-    }
-}
-
 impl Validator<'_> {
     fn check_directives(&mut self, directives: &[Directive], site: DirectiveSite) {
         for directive in directives {
-            let name = self.interner.resolve(&directive.name.name);
-            if !KNOWN_DIRECTIVES.contains(&name) {
+            let Some(kind) = directive.kind else {
                 self.errors.push(CompileError::new(
                     ErrorKind::ParseError(format!(
-                        "unknown directive '@{}'; known directives are @allow, @copy, @repr, and @non_exhaustive",
-                        name
+                        "unknown directive '@{}'; known directives are {}",
+                        self.interner.resolve(&directive.name.name),
+                        directive_name_list()
                     )),
                     directive.span,
                 ));
                 continue;
+            };
+
+            let placed = kind.accepts_site(site);
+            if !placed {
+                self.errors.push(CompileError::new(
+                    ErrorKind::ParseError(format!(
+                        "@{kind} can only be applied to {}, not {}",
+                        site_list(kind.allowed_sites()),
+                        site.description()
+                    )),
+                    directive.span,
+                ));
             }
 
-            match name {
-                "non_exhaustive" => {
-                    if !matches!(site, DirectiveSite::Enum) {
-                        self.errors.push(CompileError::new(
-                            ErrorKind::ParseError(format!(
-                                "@non_exhaustive can only be applied to enums, not {}",
-                                site.description()
-                            )),
-                            directive.span,
-                        ));
-                    } else if !directive.args.is_empty() {
-                        self.errors.push(CompileError::new(
-                            ErrorKind::ParseError("@non_exhaustive takes no arguments".to_string()),
-                            directive.span,
-                        ));
-                    }
-                }
-                "copy" => {
-                    if !matches!(site, DirectiveSite::Struct) {
-                        self.errors.push(CompileError::new(
-                            ErrorKind::ParseError(format!(
-                                "@copy can only be applied to structs, not {}",
-                                site.description()
-                            )),
-                            directive.span,
-                        ));
-                    } else if !directive.args.is_empty() {
-                        // Arity is per-directive: @copy takes no arguments
-                        // (spec 2.5), while @allow legitimately takes lint names.
-                        self.errors.push(CompileError::new(
-                            ErrorKind::ParseError("@copy takes no arguments".to_string()),
-                            directive.span,
-                        ));
-                    }
-                }
-                "repr" => {
-                    // `@repr(c)` is the C representation guarantee marker
-                    // (ADR-0064 Amendment 1). It applies only to structs, and
-                    // is parameterized: exactly one argument, `c` in v0. Unknown
-                    // arguments (e.g. `@repr(packed)`) fail loudly here naming
-                    // the accepted set, leaving the grammar open for future
-                    // packed/align representations.
-                    if !matches!(site, DirectiveSite::Struct) {
-                        self.errors.push(CompileError::new(
-                            ErrorKind::ParseError(format!(
-                                "@repr can only be applied to structs, not {}",
-                                site.description()
-                            )),
-                            directive.span,
-                        ));
-                    } else if directive.args.len() != 1 {
-                        self.errors.push(CompileError::new(
-                            ErrorKind::ParseError(format!(
-                                "@repr takes exactly one representation argument; \
-                                 accepted arguments are {}",
-                                KNOWN_REPR_ARGS.join(", ")
-                            )),
-                            directive.span,
-                        ));
-                    } else {
-                        let crate::ast::DirectiveArg::Ident(ident) = &directive.args[0];
-                        let arg = self.interner.resolve(&ident.name);
-                        if !KNOWN_REPR_ARGS.contains(&arg) {
+            // Arity and argument vocabulary are per-directive: `@copy` takes no
+            // arguments (spec 2.5:29) while `@allow` legitimately takes warning
+            // names (spec 2.5:12). A misplaced directive reports its placement
+            // only; its arguments are not the user's next problem.
+            if placed && self.check_arity(directive, kind) {
+                self.check_args(directive, kind, site);
+            }
+        }
+    }
+
+    /// Report a wrong argument count, and answer whether the count is right.
+    /// A wrong count already names what the directive accepts, so the
+    /// arguments themselves are not reported a second time.
+    fn check_arity(&mut self, directive: &Directive, kind: DirectiveName) -> bool {
+        match kind.arity() {
+            DirectiveArity::None if !directive.args.is_empty() => {
+                self.errors.push(CompileError::new(
+                    ErrorKind::ParseError(format!("@{kind} takes no arguments")),
+                    directive.span,
+                ));
+                false
+            }
+            DirectiveArity::ExactlyOne if directive.args.len() != 1 => {
+                self.errors.push(CompileError::new(
+                    ErrorKind::ParseError(format!(
+                        "@{kind} takes exactly one representation argument; \
+                         accepted arguments are {}",
+                        repr_arg_list()
+                    )),
+                    directive.span,
+                ));
+                false
+            }
+            DirectiveArity::None | DirectiveArity::ExactlyOne | DirectiveArity::Any => true,
+        }
+    }
+
+    /// Check each argument against the vocabulary its directive accepts, and —
+    /// for `@allow` — against the sites at which the named warning is actually
+    /// honored. A warning allowed at a site that never consults it would be
+    /// accepted and ignored, which is the failure this validator exists to
+    /// prevent (spec 2.5:40).
+    fn check_args(&mut self, directive: &Directive, kind: DirectiveName, site: DirectiveSite) {
+        match kind {
+            DirectiveName::Allow => {
+                for arg in &directive.args {
+                    match arg.value {
+                        DirectiveArgValue::Warning(warning) if warning.honored_at(site) => {}
+                        DirectiveArgValue::Warning(warning) => {
                             self.errors.push(CompileError::new(
                                 ErrorKind::ParseError(format!(
-                                    "unknown @repr argument '{arg}'; accepted arguments are {}",
-                                    KNOWN_REPR_ARGS.join(", ")
+                                    "@allow({warning}) is not honored on {}; \
+                                     {warning} can be allowed on {}",
+                                    site.description(),
+                                    site_list(warning.allowed_sites())
                                 )),
-                                ident.span,
+                                arg.ident.span,
+                            ));
+                        }
+                        DirectiveArgValue::Repr(_) | DirectiveArgValue::Unrecognized => {
+                            self.errors.push(CompileError::new(
+                                ErrorKind::ParseError(format!(
+                                    "unrecognized warning name '{}' in @allow; \
+                                     known warnings are {}",
+                                    self.interner.resolve(&arg.ident.name),
+                                    warning_name_list()
+                                )),
+                                arg.ident.span,
                             ));
                         }
                     }
                 }
-                "allow" => {
-                    if !matches!(
-                        site,
-                        DirectiveSite::Function
-                            | DirectiveSite::Method
-                            | DirectiveSite::Test
-                            | DirectiveSite::Let
-                    ) {
-                        self.errors.push(CompileError::new(
-                            ErrorKind::ParseError(format!(
-                                "@allow can only be applied to functions, methods, test declarations, or let statements, not {}",
-                                site.description()
-                            )),
-                            directive.span,
-                        ));
-                    }
-
-                    for arg in &directive.args {
-                        let crate::ast::DirectiveArg::Ident(ident) = arg;
-                        let warning = self.interner.resolve(&ident.name);
-                        if !KNOWN_WARNING_NAMES.contains(&warning) {
+            }
+            DirectiveName::Repr => {
+                // The parameterized grammar stays open for future
+                // `@repr(packed)` / `@repr(align(n))`: an unknown argument
+                // fails loudly here naming the accepted set rather than being
+                // silently ignored (ADR-0064 Amendment 1).
+                for arg in &directive.args {
+                    match arg.value {
+                        DirectiveArgValue::Repr(ReprArg::C) => {}
+                        DirectiveArgValue::Warning(_) | DirectiveArgValue::Unrecognized => {
                             self.errors.push(CompileError::new(
                                 ErrorKind::ParseError(format!(
-                                    "unrecognized warning name '{warning}' in @allow; known warnings are {}",
-                                    KNOWN_WARNING_NAMES.join(", ")
+                                    "unknown @repr argument '{}'; accepted arguments are {}",
+                                    self.interner.resolve(&arg.ident.name),
+                                    repr_arg_list()
                                 )),
-                                ident.span,
+                                arg.ident.span,
                             ));
                         }
                     }
                 }
-                _ => unreachable!("known directive list and validator are out of sync"),
             }
+            // Arity already rejected any argument these carry.
+            DirectiveName::Copy | DirectiveName::NonExhaustive => {}
         }
     }
 
@@ -231,9 +185,8 @@ impl Validator<'_> {
             Item::Enum(e) => {
                 self.check_directives(&e.directives, DirectiveSite::Enum);
                 if e.visibility != crate::ast::Visibility::Public
-                    && let Some(directive) = e.directives.iter().find(|directive| {
-                        self.interner.resolve(&directive.name.name) == "non_exhaustive"
-                    })
+                    && let Some(directive) =
+                        crate::ast::find_directive(&e.directives, DirectiveName::NonExhaustive)
                 {
                     self.errors.push(CompileError::new(
                         ErrorKind::ParseError(

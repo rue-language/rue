@@ -2,11 +2,12 @@
 #
 # Unknown @-directives in item/statement position used to be silently
 # accepted and ignored, so a typo like `@alllow(...)` was a no-op. They are
-# now a compile error naming the directive. The known set lives in
-# rue-parser's `validate::KNOWN_DIRECTIVES` (allow, copy, repr, non_exhaustive); the cases
-# below pin both the rejection and that every known directive still works.
-# (Expression-position intrinsics like @dbg/@intCast and the fused @import
-# token are separate mechanisms and unaffected.)
+# now a compile error naming the directive. The vocabulary — directive names,
+# argument names, and the sites each is accepted and honored at — lives in
+# rue-parser's `directives` module (allow, copy, repr, non_exhaustive); the
+# cases below pin both the rejection and that every known directive still
+# works. (Expression-position intrinsics like @dbg/@intCast and the fused
+# @import token are separate mechanisms and unaffected.)
 #
 # This file also covers parameter-modifier validation: `comptime comptime T`
 # used to be silently accepted via a vestigial is_comptime/ParamMode duality.
@@ -127,6 +128,86 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["@copy takes no arguments"]
+
+[[case]]
+name = "allow_unreachable_code_on_let_rejected"
+description = """
+RUE-1971: the validator accepted @allow(<any known warning>) on a let while
+sema honored only unused_variable there, so @allow(unreachable_code) on a let
+was accepted and the warning still fired. A warning may only be named at a
+site that honors it (spec 2.5:40).
+"""
+source = """
+fn main() -> i32 {
+    return 0;
+    @allow(unreachable_code)
+    let x = 42;
+    x
+}
+"""
+compile_fail = true
+error_contains = [
+    "@allow(unreachable_code) is not honored on let statements",
+    "unreachable_code can be allowed on functions, methods, and test declarations",
+]
+
+[[case]]
+name = "allow_unreachable_code_on_function_still_suppresses"
+description = "The same directive on the enclosing function is honored (spec 2.5:21)."
+source = """
+@allow(unreachable_code)
+fn main() -> i32 {
+    return 0;
+    let x = 42;
+    x
+}
+"""
+exit_code = 0
+no_warnings = true
+
+[[case]]
+name = "allow_unused_function_on_let_rejected"
+source = """
+fn main() -> i32 {
+    @allow(unused_function)
+    let x = 42;
+    x
+}
+"""
+compile_fail = true
+error_contains = ["@allow(unused_function) is not honored on let statements"]
+
+[[case]]
+name = "allow_on_struct_rejected"
+description = "@allow is a body/binding directive; a struct is not one of its sites."
+source = """
+@allow(unused_variable)
+struct P { x: i32 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "@allow can only be applied to functions, methods, test declarations, and let statements",
+    "not structs",
+]
+
+[[case]]
+name = "non_exhaustive_in_expression_position_rejected"
+description = """
+RUE-1971: the parser's expression-position rejection is driven by the same
+directive table as the validator, so every directive name — not just
+allow/copy/repr — reports its placement instead of reaching sema's unknown
+intrinsic path.
+"""
+source = """
+fn main() -> i32 {
+    let x = @non_exhaustive(1);
+    x
+}
+"""
+compile_fail = true
+error_contains = ["directive must precede a statement"]
 
 [[case]]
 name = "known_directive_copy_still_works"

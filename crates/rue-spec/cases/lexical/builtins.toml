@@ -189,11 +189,57 @@ exit_code = 0
 no_warnings = true
 
 [[case]]
-name = "allow_multiple_warnings"
-spec = ["2.5:23"]
+name = "allow_unreachable_code_on_let_rejected"
+spec = ["2.5:40"]
 source = """
 fn main() -> i32 {
-    @allow(unused_variable, unreachable_code)
+    return 0;
+    @allow(unreachable_code)
+    let x = 42;
+    x
+}
+"""
+compile_fail = true
+error_contains = "@allow(unreachable_code) is not honored on let statements"
+
+[[case]]
+name = "allow_unused_function_on_let_rejected"
+spec = ["2.5:40"]
+source = """
+fn main() -> i32 {
+    @allow(unused_function)
+    let x = 42;
+    x
+}
+"""
+compile_fail = true
+error_contains = "@allow(unused_function) is not honored on let statements"
+
+[[case]]
+name = "allow_unused_variable_on_let_still_honored"
+spec = ["2.5:40"]
+source = """
+fn main() -> i32 {
+    @allow(unused_variable)
+    let x = 42;
+    0
+}
+"""
+exit_code = 0
+no_warnings = true
+
+[[case]]
+name = "allow_multiple_warnings"
+spec = ["2.5:23"]
+description = """
+Both names are listed on the function, the site that honors each of them
+(spec 2.5:40); `unreachable_code` on the `let` names a warning that site never
+consults.
+"""
+source = """
+@allow(unused_variable, unreachable_code)
+fn main() -> i32 {
+    return 0;
     let x = 42;
     0
 }

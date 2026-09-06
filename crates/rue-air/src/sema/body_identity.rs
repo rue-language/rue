@@ -3225,6 +3225,7 @@ mod tests {
     use super::*;
     use crate::Node;
     use crate::semantic_identity::{AnonymousNominalKind, CanonicalArguments, StableProducerId};
+    use rue_rir::WarningName;
 
     type Key = u32;
     type Module = Arc<str>;
@@ -6466,15 +6467,10 @@ mod tests {
     /// the same read `binding_manifest.rs` performs when filling the handle.
     fn rir_has_allow<'r>(
         interner: &ThreadedRodeo,
-        mut directives: impl Iterator<Item = rue_rir::RirDirectiveView<'r>>,
-        warning_name: &str,
+        directives: impl Iterator<Item = rue_rir::RirDirectiveView<'r>>,
+        warning: WarningName,
     ) -> bool {
-        let allow_sym = interner.get("allow");
-        let warning_sym = interner.get(warning_name);
-        directives.any(|directive| {
-            Some(directive.name) == allow_sym
-                && directive.args.iter().any(|arg| Some(*arg) == warning_sym)
-        })
+        rue_rir::directives_allow(interner, directives, warning)
     }
 
     /// True when the return syntax names exactly `name`.
@@ -6523,9 +6519,21 @@ mod tests {
             returns_type: rir_type_named(rir, interner, *return_type, "type"),
             is_extern: *is_extern,
             is_c_export: *is_c_export,
-            allow_unused_function: rir_has_allow(interner, dirs.iter(), "unused_function"),
-            allow_unused_variable: rir_has_allow(interner, dirs.iter(), "unused_variable"),
-            allow_unreachable_code: rir_has_allow(interner, dirs.iter(), "unreachable_code"),
+            allow_unused_function: rir_has_allow(
+                interner,
+                dirs.iter(),
+                WarningName::UnusedFunction,
+            ),
+            allow_unused_variable: rir_has_allow(
+                interner,
+                dirs.iter(),
+                WarningName::UnusedVariable,
+            ),
+            allow_unreachable_code: rir_has_allow(
+                interner,
+                dirs.iter(),
+                WarningName::UnreachableCode,
+            ),
             file_id: inst.span.file_id,
         }
     }

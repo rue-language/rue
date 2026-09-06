@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use ahash::AHashMap;
 use lasso::Spur;
-use rue_rir::InstRef;
+use rue_rir::{InstRef, WarningName};
 use rue_span::FileId;
 
 use super::anon_structs::IssuedAnonymousNominalKey;
@@ -744,17 +744,12 @@ where
         else {
             return None;
         };
-        let allow = |warning_name: &str| {
-            let allow_sym = self.rir.rir_interner().get("allow");
-            let warning_sym = self.rir.rir_interner().get(warning_name);
-            self.rir
-                .rir()
-                .directives(directives)
-                .iter()
-                .any(|directive| {
-                    Some(directive.name) == allow_sym
-                        && directive.args.iter().any(|arg| Some(*arg) == warning_sym)
-                })
+        let allow = |warning| {
+            rue_rir::directives_allow(
+                self.rir.rir_interner(),
+                self.rir.rir().directives(directives).iter(),
+                warning,
+            )
         };
         self.identity
             .pool_mut()?
@@ -768,9 +763,9 @@ where
                     returns_type: false,
                     is_extern: false,
                     is_c_export: false,
-                    allow_unused_function: allow("unused_function"),
-                    allow_unused_variable: allow("unused_variable"),
-                    allow_unreachable_code: allow("unreachable_code"),
+                    allow_unused_function: allow(WarningName::UnusedFunction),
+                    allow_unused_variable: allow(WarningName::UnusedVariable),
+                    allow_unreachable_code: allow(WarningName::UnreachableCode),
                     file_id: inst.span.file_id,
                 },
             )
@@ -1074,17 +1069,12 @@ where
         else {
             return None;
         };
-        let allow = |warning_name: &str| {
-            let allow_sym = self.rir.rir_interner().get("allow");
-            let warning_sym = self.rir.rir_interner().get(warning_name);
-            self.rir
-                .rir()
-                .directives(directives)
-                .iter()
-                .any(|directive| {
-                    Some(directive.name) == allow_sym
-                        && directive.args.iter().any(|arg| Some(*arg) == warning_sym)
-                })
+        let allow = |warning| {
+            rue_rir::directives_allow(
+                self.rir.rir_interner(),
+                self.rir.rir().directives(directives).iter(),
+                warning,
+            )
         };
         self.identity
             .pool_mut()?
@@ -1109,9 +1099,9 @@ where
                         .is_some_and(|symbol| self.rir.rir_interner().resolve(symbol) == "type"),
                     is_extern: *is_extern,
                     is_c_export: *is_c_export,
-                    allow_unused_function: allow("unused_function"),
-                    allow_unused_variable: allow("unused_variable"),
-                    allow_unreachable_code: allow("unreachable_code"),
+                    allow_unused_function: allow(WarningName::UnusedFunction),
+                    allow_unused_variable: allow(WarningName::UnusedVariable),
+                    allow_unreachable_code: allow(WarningName::UnreachableCode),
                     file_id: inst.span.file_id,
                 },
             )

@@ -524,19 +524,15 @@ pub(crate) fn project_semantic_signature(
             Ok(ParsedSemanticSignature::Struct {
                 syntax: syntax.finish(),
                 fields: fields.into(),
-                is_copy: structure
+                is_copy: rue_parser::ast::has_directive(
+                    &structure.directives,
+                    rue_parser::DirectiveName::Copy,
+                ),
+                is_linear: structure.is_linear,
+                is_repr_c: structure
                     .directives
                     .iter()
-                    .any(|directive| resolve(directive.name.name) == "copy"),
-                is_linear: structure.is_linear,
-                is_repr_c: structure.directives.iter().any(|directive| {
-                    resolve(directive.name.name) == "repr"
-                        && directive.args.iter().any(|argument| match argument {
-                            rue_parser::ast::DirectiveArg::Ident(argument) => {
-                                resolve(argument.name) == "c"
-                            }
-                        })
-                }),
+                    .any(|directive| directive.repr_arg() == Some(rue_parser::ReprArg::C)),
             })
         }
         ParsedDeclarationAstRef::Enum(value) => {
@@ -572,21 +568,21 @@ pub(crate) fn project_semantic_signature(
                 syntax: syntax.finish(),
                 variants: variants.into(),
                 payloads: payloads.into(),
-                is_non_exhaustive: value
-                    .directives
-                    .iter()
-                    .any(|directive| resolve(directive.name.name) == "non_exhaustive"),
+                is_non_exhaustive: rue_parser::ast::has_directive(
+                    &value.directives,
+                    rue_parser::DirectiveName::NonExhaustive,
+                ),
                 is_public: value.visibility == rue_parser::ast::Visibility::Public,
-                non_exhaustive_range: value
-                    .directives
-                    .iter()
-                    .find(|directive| resolve(directive.name.name) == "non_exhaustive")
-                    .and_then(|directive| {
-                        Some((
-                            directive.span.start.checked_sub(value.span.start)?,
-                            directive.span.end.checked_sub(value.span.start)?,
-                        ))
-                    }),
+                non_exhaustive_range: rue_parser::ast::find_directive(
+                    &value.directives,
+                    rue_parser::DirectiveName::NonExhaustive,
+                )
+                .and_then(|directive| {
+                    Some((
+                        directive.span.start.checked_sub(value.span.start)?,
+                        directive.span.end.checked_sub(value.span.start)?,
+                    ))
+                }),
             })
         }
         // A test's signature is fixed by the grammar: no parameters, no

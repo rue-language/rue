@@ -596,10 +596,11 @@ impl Parser {
             }
         }
         self.expect(TokenKind::RParen)?;
-        if name.name == self.syms.allow_directive
-            || name.name == self.syms.copy_directive
-            || name.name == self.syms.repr_directive
-        {
+        // Every directive name is rejected here, driven by the same
+        // vocabulary the validator uses (`crate::directives`), so a directive
+        // written in expression position reports its placement rather than
+        // reaching sema as an unknown intrinsic.
+        if DirectiveName::from_source(self.interner.resolve(&name.name)).is_some() {
             self.error_at("directive must precede a statement", self.span_from(start));
             return Err(());
         }

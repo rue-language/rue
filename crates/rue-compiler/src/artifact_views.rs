@@ -693,14 +693,14 @@ fn directive_records<'a>(
         let children = directive
             .args
             .iter()
-            .map(|arg| match arg {
-                rue_parser::DirectiveArg::Ident(ident) => syntax_record(
+            .map(|arg| {
+                syntax_record(
                     "directive_argument",
-                    ident.span,
-                    Some(resolved_ident(owner, *ident)),
+                    arg.ident.span,
+                    Some(resolved_ident(owner, arg.ident)),
                     None,
                     Vec::new(),
-                ),
+                )
             })
             .collect();
         syntax_record(

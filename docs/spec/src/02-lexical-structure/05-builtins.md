@@ -159,6 +159,22 @@ fn example() -> i32 {
 }
 ```
 
+### Warning Names and Sites
+
+{{ rule(id="2.5:40", cat="legality-rule") }}
+
+A warning name in `@allow` **MUST** be one the annotated site honors. `unused_variable` may be named on a function, method, or test declaration (2.5:17) and on a let statement (2.5:15); every other warning name describes a property of a whole body and may be named only on a function, method, or test declaration (2.5:19, 2.5:21). Naming a warning on a site that does not honor it is a compile-time error, so a directive is never accepted and then silently ignored.
+
+{{ rule(id="2.5:41") }}
+
+```rue
+fn main() -> i32 {
+    @allow(unreachable_code)   // error: not honored on let statements
+    let x = 42;
+    x
+}
+```
+
 ### Multiple Warnings
 
 {{ rule(id="2.5:23", cat="normative") }}

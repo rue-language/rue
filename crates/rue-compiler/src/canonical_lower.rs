@@ -1811,7 +1811,9 @@ mod tests {
     fn canonical_merge_interning_exhaustion_is_a_resource_diagnostic() {
         // The bound is injected into the session-owned revision symbol space,
         // so canonical materialization and its worker queries observe it
-        // without process- or thread-local mutation.
+        // without process- or thread-local mutation. The limit is chosen just
+        // below what merging these two files needs, so it tracks the number of
+        // symbols the frontend interns for them.
         let snapshot = snapshot(
             &[
                 (1, "/first.rue", "first.rue", "fn first() {}"),
@@ -1819,7 +1821,7 @@ mod tests {
             ],
             1,
         );
-        let mut session = crate::CompilerSession::with_interner_limit(20);
+        let mut session = crate::CompilerSession::with_interner_limit(17);
         session.update(&snapshot).into_result().unwrap();
         let errors = session.canonical_rir().unwrap_err();
         assert!(
