@@ -211,6 +211,84 @@ fn value_planning_uses_the_air_integer_semantics_kernel() {
 }
 
 #[test]
+fn integer_cast_and_arithmetic_post_op_policy_live_only_in_the_value_plan() {
+    // A cast's range check and an arithmetic result's overflow/re-narrowing
+    // rule are language semantics, not target encodings. Each backend used to
+    // re-derive them from `(bits, signed)` — AArch64 in three copies — so a
+    // width fixed in one table and missed in another silently gave the two
+    // targets different arithmetic (RUE-31, RUE-647, RUE-1982).
+    let value_plan = include_str!("value_plan.rs");
+    for owner in [
+        "pub enum IntCastCheckPlan",
+        "pub fn int_cast_check_plan(",
+        "pub enum PostOpPolicy",
+        "pub enum SubWordCheck",
+        "pub fn post_op_policy(",
+        "pub fn width_extension(",
+        "pub fn narrowing_extension(",
+    ] {
+        assert!(
+            value_plan.contains(owner),
+            "integer policy owner lost {owner}"
+        );
+    }
+    // The plan asks AIR whether a value is representable rather than comparing
+    // bit counts, so the cast the backends compile is the cast semantic
+    // analysis and constant folding accept.
+    assert!(value_plan.contains("target.fits_i128(source.min_i128())"));
+
+    for (name, source) in [
+        ("x86_64/cfg_lower", include_str!("x86_64/cfg_lower.rs")),
+        ("aarch64/cfg_lower", include_str!("aarch64/cfg_lower.rs")),
+    ] {
+        let production = source
+            .split("\n#[cfg(test)]\nmod ")
+            .next()
+            .expect("codegen production prefix");
+        for removed in [
+            "fn emit_subword_narrow(",
+            "fn emit_wrap_narrow(",
+            "fn emit_wrap_narrow_subword(",
+            "fn emit_subword_range_check(",
+            "fn emit_overflow_check(",
+            "fn emit_overflow_check_add(",
+            "fn emit_overflow_check_sub(",
+            "fn emit_overflow_check_neg(",
+        ] {
+            assert!(
+                !production.contains(removed),
+                "backend {name} regained a per-target integer policy table: {removed}"
+            );
+        }
+        for forbidden in [
+            "type_bits",
+            "type_is_signed",
+            "from_signed",
+            "to_signed",
+            "to_width",
+            "65535",
+        ] {
+            assert!(
+                !production.contains(forbidden),
+                "backend {name} re-derives integer policy from the width: {forbidden}"
+            );
+        }
+        // One extension primitive per backend, and it is the only place an
+        // extension instruction is selected from the shared enum.
+        assert_eq!(
+            production.matches("fn emit_extension(").count(),
+            1,
+            "backend {name} must expose exactly one integer-extension primitive"
+        );
+        assert_eq!(
+            production.matches("IntegerExtension::Sign16").count(),
+            1,
+            "backend {name} selects an extension instruction outside emit_extension"
+        );
+    }
+}
+
+#[test]
 fn codegen_consults_air_for_aggregate_and_switch_compare_policy() {
     // The call planner and the value materializer must classify aggregates
     // identically, or a call passes a value in a shape the other side never

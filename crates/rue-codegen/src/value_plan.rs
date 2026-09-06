@@ -92,12 +92,20 @@ pub enum ResidualValuePlan {
         lhs: VReg,
         rhs: VReg,
         constant: Option<u64>,
+        /// The re-narrowing the result needs, decided by
+        /// [`narrowing_extension`]: a shift is emitted at the machine's width,
+        /// so a sub-word result's high bits are not the canonical extension of
+        /// its low bits until this is applied (RUE-29).
+        narrow: IntegerExtension,
     },
     Not {
         value: VReg,
     },
     BitNot {
         value: VReg,
+        /// The re-narrowing the result needs; see
+        /// [`ResidualValuePlan::Shift::narrow`].
+        narrow: IntegerExtension,
     },
     Alloc {
         slot: u32,
@@ -156,7 +164,18 @@ pub enum ResidualValuePlan {
     },
     IntCast {
         value: VReg,
+        /// The source width, which decides the width the bound comparisons run
+        /// at: a 64-bit source must not be compared at 32 bits (RUE-31).
         from_width: IntegerWidth,
+        /// The bounds this cast traps outside of, decided once from the source
+        /// and target integer semantics (RUE-1982). A backend emits the
+        /// compare/branch/trap sequence of the arm it is given; it never
+        /// re-derives which bounds a `(from, to)` pair needs.
+        check: IntCastCheckPlan,
+        /// The extension the result needs after the check, so a widening signed
+        /// cast carries the source's sign rather than its zero padding
+        /// (RUE-88). [`IntegerExtension::None`] for every other cast.
+        widen: IntegerExtension,
         trap_call: crate::runtime_call_plan::RuntimeCallPlan,
     },
     Drop {
@@ -225,9 +244,121 @@ pub struct ArithmeticPlan {
     pub div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan,
     /// When `true`, this is a wrapping `Add`/`Sub`/`Mul` (`@wrapping_*`,
     /// RUE-647): the backend emits the plain ALU op with NO overflow-check
-    /// branch, truncating sub-64-bit results to the declared width so the
-    /// two's-complement wrap is observable. Never set for `Div`/`Mod`/`Neg`.
+    /// branch. This selects the OPERATION; what follows it is
+    /// [`Self::post_op`]. Never set for `Div`/`Mod`/`Neg`.
     pub wrap: bool,
+    /// What follows the machine operation: an overflow trap read from the
+    /// target's flags, a sub-word range test, or the re-narrowing a wrapping
+    /// result needs (RUE-1982). Decided once by [`post_op_policy`]; a backend
+    /// emits the arm it is given and never re-derives it from the width.
+    pub post_op: PostOpPolicy,
+}
+
+impl ArithmeticPlan {
+    /// Build the plan for one arithmetic operation. The runtime entries and the
+    /// post-operation policy follow from the operation itself, so no caller
+    /// chooses them.
+    pub fn new(operation: ArithmeticOperation, wrap: bool) -> Self {
+        Self {
+            operation,
+            overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                RuntimeHelperId::Overflow,
+            ),
+            div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                RuntimeHelperId::DivByZero,
+            ),
+            wrap,
+            post_op: post_op_policy(operation, wrap),
+        }
+    }
+}
+
+/// What an integer arithmetic result needs after the machine operation has run.
+///
+/// Both backends compute a sub-64-bit result at a wider machine width, so the
+/// language-level question — is this result in its declared range, and does a
+/// wrapping result still have to be re-narrowed — has one answer per operation
+/// and width. That answer is decided here; a backend supplies the instructions
+/// for the arm it receives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostOpPolicy {
+    /// Nothing follows the operation: floating-point arithmetic, and division
+    /// and remainder, whose guards run before it.
+    None,
+    /// The result fills a whole machine width, so the target's own overflow
+    /// detection for that width decides the trap.
+    OverflowFlags { signed: bool },
+    /// The result is narrower than the width the machine computed it at: it is
+    /// in range exactly when this test says so, and traps otherwise.
+    RangeCheck(SubWordCheck),
+    /// A wrapping operation (`@wrapping_*`): never traps, but the result is
+    /// re-narrowed to its declared width so the two's-complement wrap is
+    /// observable (RUE-647).
+    Narrow(IntegerExtension),
+}
+
+/// How a sub-word result computed at a wider machine width is tested against
+/// its declared range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubWordCheck {
+    /// An unsigned width: the result is in range exactly when it is at most
+    /// `max`.
+    UpperBound { max: u64 },
+    /// A signed width: the result is in range exactly when re-extending its low
+    /// bits reproduces it.
+    SignExtended { extension: IntegerExtension },
+}
+
+/// Decide what follows an arithmetic operation of this shape.
+///
+/// Whether a result traps, and on what test, is language semantics, so it is
+/// decided here for both targets: a width answered by one backend's table and
+/// missed by another's would give the same program target-dependent overflow
+/// behavior (RUE-647, RUE-1982).
+pub fn post_op_policy(operation: ArithmeticOperation, wrap: bool) -> PostOpPolicy {
+    let width = match operation {
+        ArithmeticOperation::Add { width, .. }
+        | ArithmeticOperation::Sub { width, .. }
+        | ArithmeticOperation::Mul { width, .. }
+        | ArithmeticOperation::Neg { width, .. } => width,
+        // A divide's guards (zero divisor, MIN / -1) precede the operation, and
+        // float arithmetic neither traps nor re-narrows.
+        ArithmeticOperation::Div { .. }
+        | ArithmeticOperation::Mod { .. }
+        | ArithmeticOperation::FloatAdd { .. }
+        | ArithmeticOperation::FloatSub { .. }
+        | ArithmeticOperation::FloatMul { .. }
+        | ArithmeticOperation::FloatDiv { .. }
+        | ArithmeticOperation::FloatNeg { .. } => return PostOpPolicy::None,
+    };
+    if wrap {
+        return PostOpPolicy::Narrow(narrowing_extension(width));
+    }
+    match width.bits {
+        8 | 16 if width.signed => PostOpPolicy::RangeCheck(SubWordCheck::SignExtended {
+            extension: narrowing_extension(width),
+        }),
+        8 | 16 => PostOpPolicy::RangeCheck(SubWordCheck::UpperBound {
+            max: integer_type(width).max_i128() as u64,
+        }),
+        _ => PostOpPolicy::OverflowFlags {
+            signed: width.signed,
+        },
+    }
+}
+
+/// Select the re-narrowing a result of this width needs when the machine
+/// computed it at a wider width.
+///
+/// Only 8- and 16-bit results differ from the machine form both backends
+/// compute sub-64-bit arithmetic at, so this is [`width_extension`] with the
+/// 32-bit case dropped: a 32-bit ALU result is already canonical, while a
+/// 32-bit signed VALUE reaching a 64-bit leaf still needs the extension.
+pub fn narrowing_extension(width: IntegerWidth) -> IntegerExtension {
+    match width.bits {
+        8 | 16 => width_extension(width),
+        _ => IntegerExtension::None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1210,6 +1341,15 @@ enum ResidualInput {
     },
 }
 
+/// The re-narrowing a value's own result width needs after an operation both
+/// backends emit at the machine's width.
+fn result_narrowing(ctx: &CfgLowerContext<'_>, value: CfgValue) -> IntegerExtension {
+    let ty = ctx.cfg.get_inst(value).ty;
+    narrowing_extension(integer_width(ty).unwrap_or_else(|| {
+        panic!("narrowed operation on non-integer type: {ty:?}");
+    }))
+}
+
 fn residual_plan<A: ValueLowerAdapter>(
     ctx: &CfgLowerContext<'_>,
     adapter: &mut A,
@@ -1251,6 +1391,7 @@ fn residual_plan<A: ValueLowerAdapter>(
                 CfgInstData::Const(value) => Some(value),
                 _ => None,
             },
+            narrow: result_narrowing(ctx, value),
         },
         ResidualInput::Shr(lhs, rhs) => ResidualValuePlan::Shift {
             op: ShiftOp::Right,
@@ -1260,12 +1401,14 @@ fn residual_plan<A: ValueLowerAdapter>(
                 CfgInstData::Const(value) => Some(value),
                 _ => None,
             },
+            narrow: result_narrowing(ctx, value),
         },
         ResidualInput::Not(value) => ResidualValuePlan::Not {
             value: operand(ctx, adapter, value).primary,
         },
-        ResidualInput::BitNot(value) => ResidualValuePlan::BitNot {
-            value: operand(ctx, adapter, value).primary,
+        ResidualInput::BitNot(source) => ResidualValuePlan::BitNot {
+            value: operand(ctx, adapter, source).primary,
+            narrow: result_narrowing(ctx, value),
         },
         // Slot-addressed plans carry emitted-frame slot numbers: the CFG's
         // slot numbering assumes every parameter is homed, while the emitted
@@ -1394,13 +1537,30 @@ fn residual_plan<A: ValueLowerAdapter>(
                 ),
             }
         }
-        ResidualInput::IntCast { value, from_ty } => ResidualValuePlan::IntCast {
-            value: operand(ctx, adapter, value).primary,
-            from_width: integer_width(from_ty).expect("integer cast source width"),
-            trap_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                RuntimeHelperId::IntcastOverflow,
-            ),
-        },
+        ResidualInput::IntCast {
+            value: source,
+            from_ty,
+        } => {
+            let from_width = integer_width(from_ty).expect("integer cast source width");
+            let to_width =
+                integer_width(ctx.cfg.get_inst(value).ty).expect("integer cast target width");
+            ResidualValuePlan::IntCast {
+                value: operand(ctx, adapter, source).primary,
+                from_width,
+                check: int_cast_check_plan(from_width, to_width),
+                // A narrowing or same-width cast keeps the source's canonical
+                // form; only a widening signed source must re-extend, and the
+                // extension is the source width's, not the target's.
+                widen: if from_width.signed && to_width.bits > from_width.bits {
+                    integer_extension(from_ty)
+                } else {
+                    IntegerExtension::None
+                },
+                trap_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
+                    RuntimeHelperId::IntcastOverflow,
+                ),
+            }
+        }
         ResidualInput::Drop { value } => ResidualValuePlan::Drop {
             actions: drop_plan(ctx, adapter, value),
         },
@@ -1518,16 +1678,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     width: policy.integer_width.expect("add width"),
                 }
             };
-            let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
-                operation,
-                overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                    RuntimeHelperId::Overflow,
-                ),
-                div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                    RuntimeHelperId::DivByZero,
-                ),
-                wrap: false,
-            });
+            let result = adapter.emit_checked_arithmetic(ArithmeticPlan::new(operation, false));
             cache_result(adapter, value, result);
             Some(ValueKind::BinaryArithmetic)
         }
@@ -1543,16 +1694,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     width: policy.integer_width.expect("sub width"),
                 }
             };
-            let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
-                operation,
-                overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                    RuntimeHelperId::Overflow,
-                ),
-                div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                    RuntimeHelperId::DivByZero,
-                ),
-                wrap: false,
-            });
+            let result = adapter.emit_checked_arithmetic(ArithmeticPlan::new(operation, false));
             cache_result(adapter, value, result);
             Some(ValueKind::BinaryArithmetic)
         }
@@ -1560,20 +1702,14 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
             let lhs_result = operand(ctx, adapter, *lhs);
             let rhs_result = operand(ctx, adapter, *rhs);
             if let Some(width) = float_width(inst.ty) {
-                let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
-                    operation: ArithmeticOperation::FloatMul {
+                let result = adapter.emit_checked_arithmetic(ArithmeticPlan::new(
+                    ArithmeticOperation::FloatMul {
                         lhs: lhs_result.primary,
                         rhs: rhs_result.primary,
                         width,
                     },
-                    overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                        RuntimeHelperId::Overflow,
-                    ),
-                    div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                        RuntimeHelperId::DivByZero,
-                    ),
-                    wrap: false,
-                });
+                    false,
+                ));
                 cache_result(adapter, value, result);
                 return Some(ValueKind::BinaryArithmetic);
             }
@@ -1587,21 +1723,15 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
             } else {
                 None
             };
-            let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
-                operation: ArithmeticOperation::Mul {
+            let result = adapter.emit_checked_arithmetic(ArithmeticPlan::new(
+                ArithmeticOperation::Mul {
                     lhs: lhs_result.primary,
                     rhs: rhs_result.primary,
                     width,
                     shift,
                 },
-                overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                    RuntimeHelperId::Overflow,
-                ),
-                div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                    RuntimeHelperId::DivByZero,
-                ),
-                wrap: false,
-            });
+                false,
+            ));
             cache_result(adapter, value, result);
             Some(ValueKind::BinaryArithmetic)
         }
@@ -1609,16 +1739,10 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
             let width = policy.integer_width.expect("wrapping_add width");
             let lhs = operand(ctx, adapter, *lhs).primary;
             let rhs = operand(ctx, adapter, *rhs).primary;
-            let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
-                operation: ArithmeticOperation::Add { lhs, rhs, width },
-                overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                    RuntimeHelperId::Overflow,
-                ),
-                div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                    RuntimeHelperId::DivByZero,
-                ),
-                wrap: true,
-            });
+            let result = adapter.emit_checked_arithmetic(ArithmeticPlan::new(
+                ArithmeticOperation::Add { lhs, rhs, width },
+                true,
+            ));
             cache_result(adapter, value, result);
             Some(ValueKind::BinaryArithmetic)
         }
@@ -1626,16 +1750,10 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
             let width = policy.integer_width.expect("wrapping_sub width");
             let lhs = operand(ctx, adapter, *lhs).primary;
             let rhs = operand(ctx, adapter, *rhs).primary;
-            let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
-                operation: ArithmeticOperation::Sub { lhs, rhs, width },
-                overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                    RuntimeHelperId::Overflow,
-                ),
-                div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                    RuntimeHelperId::DivByZero,
-                ),
-                wrap: true,
-            });
+            let result = adapter.emit_checked_arithmetic(ArithmeticPlan::new(
+                ArithmeticOperation::Sub { lhs, rhs, width },
+                true,
+            ));
             cache_result(adapter, value, result);
             Some(ValueKind::BinaryArithmetic)
         }
@@ -1647,21 +1765,15 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
             // bits are identical for signed and unsigned two's-complement, so
             // no power-of-two strength reduction and no widening overflow probe
             // (RUE-647). `shift: None` forces the plain-multiply path.
-            let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
-                operation: ArithmeticOperation::Mul {
+            let result = adapter.emit_checked_arithmetic(ArithmeticPlan::new(
+                ArithmeticOperation::Mul {
                     lhs,
                     rhs,
                     width,
                     shift: None,
                 },
-                overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                    RuntimeHelperId::Overflow,
-                ),
-                div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                    RuntimeHelperId::DivByZero,
-                ),
-                wrap: true,
-            });
+                true,
+            ));
             cache_result(adapter, value, result);
             Some(ValueKind::BinaryArithmetic)
         }
@@ -1677,16 +1789,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     width: policy.integer_width.expect("div width"),
                 }
             };
-            let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
-                operation,
-                overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                    RuntimeHelperId::Overflow,
-                ),
-                div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                    RuntimeHelperId::DivByZero,
-                ),
-                wrap: false,
-            });
+            let result = adapter.emit_checked_arithmetic(ArithmeticPlan::new(operation, false));
             cache_result(adapter, value, result);
             Some(ValueKind::BinaryArithmetic)
         }
@@ -1694,16 +1797,10 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
             let width = policy.integer_width.expect("mod width");
             let lhs = operand(ctx, adapter, *lhs).primary;
             let rhs = operand(ctx, adapter, *rhs).primary;
-            let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
-                operation: ArithmeticOperation::Mod { lhs, rhs, width },
-                overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                    RuntimeHelperId::Overflow,
-                ),
-                div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                    RuntimeHelperId::DivByZero,
-                ),
-                wrap: false,
-            });
+            let result = adapter.emit_checked_arithmetic(ArithmeticPlan::new(
+                ArithmeticOperation::Mod { lhs, rhs, width },
+                false,
+            ));
             cache_result(adapter, value, result);
             Some(ValueKind::BinaryArithmetic)
         }
@@ -1720,16 +1817,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     width: policy.integer_width.expect("neg width"),
                 }
             };
-            let result = adapter.emit_checked_arithmetic(ArithmeticPlan {
-                operation,
-                overflow_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                    RuntimeHelperId::Overflow,
-                ),
-                div_by_zero_call: crate::runtime_call_plan::RuntimeCallPlan::no_args(
-                    RuntimeHelperId::DivByZero,
-                ),
-                wrap: false,
-            });
+            let result = adapter.emit_checked_arithmetic(ArithmeticPlan::new(operation, false));
             cache_result(adapter, value, result);
             Some(ValueKind::UnaryArithmetic)
         }
@@ -2367,29 +2455,24 @@ pub fn type_is_signed(ty: Type) -> bool {
 /// Select the extension needed before an integer becomes a 64-bit pointer
 /// offset. Values already represented at full width need no instruction.
 pub fn integer_extension(ty: Type) -> IntegerExtension {
-    match integer_width(ty) {
-        None => IntegerExtension::None,
-        Some(IntegerWidth {
-            bits: 8,
-            signed: true,
-        }) => IntegerExtension::Sign8,
-        Some(IntegerWidth {
-            bits: 8,
-            signed: false,
-        }) => IntegerExtension::Zero8,
-        Some(IntegerWidth {
-            bits: 16,
-            signed: true,
-        }) => IntegerExtension::Sign16,
-        Some(IntegerWidth {
-            bits: 16,
-            signed: false,
-        }) => IntegerExtension::Zero16,
-        Some(IntegerWidth {
-            bits: 32,
-            signed: true,
-        }) => IntegerExtension::Sign32,
-        Some(_) => IntegerExtension::None,
+    integer_width(ty).map_or(IntegerExtension::None, width_extension)
+}
+
+/// The instruction-free description of the canonical 64-bit form of a value of
+/// this width: what a register holding only the low bits must be extended by to
+/// reach it. Every extension either backend emits is named here, so a width is
+/// described once whether it is reached through a [`Type`] or an
+/// [`IntegerWidth`] (RUE-1982).
+pub fn width_extension(width: IntegerWidth) -> IntegerExtension {
+    match width.bits {
+        8 if width.signed => IntegerExtension::Sign8,
+        8 => IntegerExtension::Zero8,
+        16 if width.signed => IntegerExtension::Sign16,
+        16 => IntegerExtension::Zero16,
+        // An unsigned 32-bit value is canonical once bits 32-63 are zero, which
+        // every 32-bit machine operation already leaves them.
+        32 if width.signed => IntegerExtension::Sign32,
+        _ => IntegerExtension::None,
     }
 }
 
@@ -2438,15 +2521,72 @@ pub fn type_range(ty: Type) -> (i64, i64) {
 }
 
 /// Return the representable range selected by a shared integer-width plan.
+///
+/// The upper bound is clamped to `i64::MAX` so it fits the immediate both
+/// backends materialize it into. Only `u64` is clamped, and no check ever
+/// compares against a `u64` upper bound: every value of every source type is
+/// representable in `u64` except a negative one, which the non-negative test
+/// already rejects.
 pub fn integer_range(width: IntegerWidth) -> (i64, i64) {
-    let integer = u8::try_from(width.bits)
-        .ok()
-        .and_then(|bits| IntegerType::new(bits, width.signed))
-        .expect("invalid integer width");
+    let integer = integer_type(width);
     (
         integer.min_i128() as i64,
         integer.max_i128().min(i128::from(i64::MAX)) as i64,
     )
+}
+
+/// The AIR integer kernel behind a shared width plan. Widths reach codegen from
+/// [`IntegerType`] itself, so an unsupported one is a malformed plan.
+fn integer_type(width: IntegerWidth) -> IntegerType {
+    u8::try_from(width.bits)
+        .ok()
+        .and_then(|bits| IntegerType::new(bits, width.signed))
+        .expect("invalid integer width")
+}
+
+/// The bounds an `@intCast` traps outside of.
+///
+/// These are the four shapes the `(source signedness, target signedness)`
+/// quadrants need once the always-representable pairs are removed: a signed
+/// target needs both bounds, an unsigned target needs a non-negative test and
+/// then an upper bound only when it cannot hold every non-negative source
+/// value, and an unsigned source needs an upper bound alone. Both backends
+/// consume this decision and choose only the comparison width and the branch
+/// encoding (RUE-1982).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntCastCheckPlan {
+    /// Every value of the source type is representable in the target type.
+    None,
+    /// Signed source, signed target: trap below `min`, then trap above `max`,
+    /// both as signed comparisons.
+    Range { min: i64, max: i64 },
+    /// Signed source, unsigned target: trap when the source is negative, then
+    /// trap above `then_max` as an unsigned comparison when the target cannot
+    /// hold every non-negative source value.
+    NonNegative { then_max: Option<i64> },
+    /// Unsigned source: trap above `max` as an unsigned comparison.
+    Max(i64),
+}
+
+/// Decide the range check an `@intCast` from `from` to `to` needs.
+///
+/// Representability is asked of the AIR integer kernel rather than re-derived
+/// from bit counts and signedness, so the cast the backends compile is the cast
+/// constant folding and semantic analysis accept.
+pub fn int_cast_check_plan(from: IntegerWidth, to: IntegerWidth) -> IntCastCheckPlan {
+    let source = integer_type(from);
+    let target = integer_type(to);
+    if target.fits_i128(source.min_i128()) && target.fits_i128(source.max_i128()) {
+        return IntCastCheckPlan::None;
+    }
+    let (min, max) = integer_range(to);
+    match (from.signed, to.signed) {
+        (true, true) => IntCastCheckPlan::Range { min, max },
+        (true, false) => IntCastCheckPlan::NonNegative {
+            then_max: (target.max_i128() < source.max_i128()).then_some(max),
+        },
+        (false, _) => IntCastCheckPlan::Max(max),
+    }
 }
 
 /// Return the by-reference parameter slots that must be preloaded before the
@@ -2487,6 +2627,219 @@ pub fn assert_slot_policy(plan: ValuePlan, actual: usize) {
         plan.assert_complete_slots(actual);
     } else if actual > 1 {
         panic!("scalar value plan unexpectedly has {actual} materialized slots");
+    }
+}
+
+#[cfg(test)]
+mod integer_policy_tests {
+    use super::*;
+
+    const WIDTHS: [IntegerWidth; 8] = [
+        IntegerWidth {
+            bits: 8,
+            signed: true,
+        },
+        IntegerWidth {
+            bits: 16,
+            signed: true,
+        },
+        IntegerWidth {
+            bits: 32,
+            signed: true,
+        },
+        IntegerWidth {
+            bits: 64,
+            signed: true,
+        },
+        IntegerWidth {
+            bits: 8,
+            signed: false,
+        },
+        IntegerWidth {
+            bits: 16,
+            signed: false,
+        },
+        IntegerWidth {
+            bits: 32,
+            signed: false,
+        },
+        IntegerWidth {
+            bits: 64,
+            signed: false,
+        },
+    ];
+
+    /// Every value a backend could be handed at a boundary of any integer type.
+    fn probe_values() -> Vec<i128> {
+        let mut values = vec![0, -1, 1];
+        for width in WIDTHS {
+            let integer = integer_type(width);
+            for value in [
+                integer.min_i128() - 1,
+                integer.min_i128(),
+                integer.min_i128() + 1,
+                integer.max_i128() - 1,
+                integer.max_i128(),
+                integer.max_i128() + 1,
+            ] {
+                values.push(value);
+            }
+        }
+        values.sort_unstable();
+        values.dedup();
+        values
+    }
+
+    /// Whether the emitted arms of a check plan trap on `value`. Both backends
+    /// emit exactly these comparisons; the upper bounds are compared as
+    /// unsigned, but every bound and every value reaching one is non-negative,
+    /// so one signed comparison models both.
+    fn traps(plan: IntCastCheckPlan, value: i128) -> bool {
+        match plan {
+            IntCastCheckPlan::None => false,
+            IntCastCheckPlan::Range { min, max } => {
+                value < i128::from(min) || value > i128::from(max)
+            }
+            IntCastCheckPlan::NonNegative { then_max } => {
+                value < 0 || then_max.is_some_and(|max| value > i128::from(max))
+            }
+            IntCastCheckPlan::Max(max) => value > i128::from(max),
+        }
+    }
+
+    #[test]
+    fn every_integer_cast_pair_traps_exactly_on_the_unrepresentable() {
+        let values = probe_values();
+        for from in WIDTHS {
+            for to in WIDTHS {
+                let source = integer_type(from);
+                let target = integer_type(to);
+                let plan = int_cast_check_plan(from, to);
+                for &value in &values {
+                    if !source.fits_i128(value) {
+                        continue;
+                    }
+                    assert_eq!(
+                        traps(plan, value),
+                        !target.fits_i128(value),
+                        "cast {from:?} -> {to:?} of {value} disagrees with {plan:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_cast_plan_carries_no_bound_a_comparison_cannot_hold() {
+        for from in WIDTHS {
+            for to in WIDTHS {
+                let bounds = match int_cast_check_plan(from, to) {
+                    IntCastCheckPlan::None => vec![],
+                    IntCastCheckPlan::Range { min, max } => vec![min, max],
+                    IntCastCheckPlan::NonNegative { then_max } => then_max.into_iter().collect(),
+                    IntCastCheckPlan::Max(max) => vec![max],
+                };
+                for bound in bounds {
+                    assert!(
+                        integer_type(to).fits_i128(i128::from(bound)),
+                        "cast {from:?} -> {to:?} names a bound outside the target"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_arithmetic_shape_has_one_post_operation_policy() {
+        for width in WIDTHS {
+            let lhs = VReg::new(0);
+            let rhs = VReg::new(1);
+            let checked = [
+                ArithmeticOperation::Add { lhs, rhs, width },
+                ArithmeticOperation::Sub { lhs, rhs, width },
+                ArithmeticOperation::Mul {
+                    lhs,
+                    rhs,
+                    width,
+                    shift: None,
+                },
+                ArithmeticOperation::Neg { value: lhs, width },
+            ];
+            for operation in checked {
+                match post_op_policy(operation, false) {
+                    PostOpPolicy::OverflowFlags { signed } => {
+                        assert!(width.bits >= 32, "{width:?} is not a machine width");
+                        assert_eq!(signed, width.signed);
+                    }
+                    PostOpPolicy::RangeCheck(SubWordCheck::UpperBound { max }) => {
+                        assert!(width.bits < 32 && !width.signed);
+                        assert_eq!(i128::from(max), integer_type(width).max_i128());
+                    }
+                    PostOpPolicy::RangeCheck(SubWordCheck::SignExtended { extension }) => {
+                        assert!(width.bits < 32 && width.signed);
+                        assert_eq!(extension, width_extension(width));
+                    }
+                    other => panic!("checked {width:?} arithmetic planned {other:?}"),
+                }
+            }
+
+            let wrapping = [
+                ArithmeticOperation::Add { lhs, rhs, width },
+                ArithmeticOperation::Sub { lhs, rhs, width },
+                ArithmeticOperation::Mul {
+                    lhs,
+                    rhs,
+                    width,
+                    shift: None,
+                },
+            ];
+            for operation in wrapping {
+                assert_eq!(
+                    post_op_policy(operation, true),
+                    PostOpPolicy::Narrow(narrowing_extension(width)),
+                    "wrapping {width:?} arithmetic must only re-narrow"
+                );
+            }
+
+            for operation in [
+                ArithmeticOperation::Div { lhs, rhs, width },
+                ArithmeticOperation::Mod { lhs, rhs, width },
+            ] {
+                assert_eq!(post_op_policy(operation, false), PostOpPolicy::None);
+            }
+        }
+    }
+
+    #[test]
+    fn narrowing_is_the_width_extension_of_a_sub_word_result() {
+        for width in WIDTHS {
+            let narrowing = narrowing_extension(width);
+            if width.bits < 32 {
+                assert_eq!(narrowing, width_extension(width));
+                assert_ne!(narrowing, IntegerExtension::None);
+            } else {
+                // A 32- or 64-bit result of an operation at its own width is
+                // already canonical, so nothing follows it.
+                assert_eq!(narrowing, IntegerExtension::None);
+            }
+        }
+    }
+
+    #[test]
+    fn one_extension_table_answers_both_the_type_and_the_width() {
+        for (ty, width) in [
+            (Type::I8, WIDTHS[0]),
+            (Type::I16, WIDTHS[1]),
+            (Type::I32, WIDTHS[2]),
+            (Type::I64, WIDTHS[3]),
+            (Type::U8, WIDTHS[4]),
+            (Type::U16, WIDTHS[5]),
+            (Type::U32, WIDTHS[6]),
+            (Type::U64, WIDTHS[7]),
+        ] {
+            assert_eq!(integer_extension(ty), width_extension(width));
+            assert_eq!(integer_width(ty), Some(width));
+        }
     }
 }
 
