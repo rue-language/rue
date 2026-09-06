@@ -1,0 +1,103 @@
+# A zero-sized local shares its frame slot index with the local that reuses it
+# (RUE-2086), and what consumes the wrongly forwarded value is not limited to
+# `@ptr_write`.
+#
+# `reserve_frame_slots` advances the frame watermark by `abi_slot_count(ty)`, so
+# a zero-sized local reserves nothing and the next local receives the same `$n`.
+# Value forwarding's tables are keyed by that index alone, so at `-O2` it handed
+# one local's stored value to the other local's `Load`. The resulting CFG is
+# ill-typed, and every consumer that reads an operand's type or its materialized
+# slot count then plans the wrong machine code.
+#
+# `cli.zero_sized_place_address` covers the `@ptr_write` consumer the issue
+# reported. Those cases are all reached through `@raw`/`@raw_mut` of a
+# zero-sized place, which has two consequences: each is also closed by the
+# `@ptr_write` guard on its own, and the differential oracle classifies them as
+# an unmodeled gap before executing anything, so oracle-diff can neither
+# confirm nor refute the bug through them.
+#
+# The cases here are the ones that pin the forwarder's type guard by itself.
+# None of them is a pointer operation, so the `@ptr_write` guard is provably
+# inert for all three and only the forwarder fix makes them pass. None forms a
+# zero-sized address either, so the oracle models them and runs them for real:
+# before the fix it reports them as disagreements between its own evaluation and
+# the compiled program.
+#
+# The consumer here is the ordinary call ABI, which counts a `()` argument as
+# zero slots. Forwarding the sized neighbour's value into that argument gave it
+# a slot and shifted every argument after it into the wrong register.
+#
+# `differential_opt` compiles and runs each at `-O0`/`-O1`/`-O2`/`-O3` and
+# requires one answer across all four, which is the shape of this bug: the
+# unoptimized levels were always right.
+
+[section]
+id = "cli.zero_sized_slot_sharing"
+name = "Zero-sized locals sharing a frame slot"
+description = "A zero-sized local's slot index is reused by the next local; a value must never be forwarded between the two, whatever consumes the result (RUE-2086)."
+
+[[case]]
+name = "zero_sized_call_argument_does_not_shift_later_arguments"
+description = "RUE-2086: a `()` argument sharing its slot with a sized local must keep its zero-slot ABI, or the arguments after it are placed in the wrong registers."
+files = [{ path = "main.rue", source = """
+fn take(u: (), v: i64) -> i64 { v }
+fn main() -> i32 {
+    let e: () = ();
+    let y: i64 = 5;
+    let r: i64 = take(e, 9);
+    @dbg(r);
+    @dbg(y);
+    0
+}
+""" }]
+stdout = "9\n5\n"
+exit_code = 0
+differential_opt = true
+
+# Inlining splices the callee's body and reoptimizes it, so the shared slot is
+# reached through a second path into the same pass.
+[[case]]
+name = "zero_sized_call_argument_survives_inlining"
+description = "RUE-2086: the shared-slot argument shape stays correct when the enclosing function is inlined and reoptimized."
+files = [{ path = "main.rue", source = """
+fn take(u: (), v: i64) -> i64 { v }
+fn inner(v: i64) -> i64 {
+    let e: () = ();
+    let y: i64 = v;
+    let r: i64 = take(e, 9);
+    r + y
+}
+fn main() -> i32 {
+    @dbg(inner(5));
+    @dbg(inner(6));
+    0
+}
+""" }]
+stdout = "14\n15\n"
+exit_code = 0
+differential_opt = true
+
+# `-O3` unrolls the loop and specializes the induction variable's slot, which
+# puts a differently typed store ahead of the `()` load. This one is correct at
+# `-O2` and wrong only at `-O3`, which is why the level sweep matters.
+[[case]]
+name = "zero_sized_call_argument_survives_unrolling"
+description = "RUE-2086: the shared-slot argument shape stays correct through `-O3` loop unrolling, which specializes slots in the unrolled body."
+files = [{ path = "main.rue", source = """
+fn take(u: (), v: i64) -> i64 { v }
+fn main() -> i32 {
+    let mut i: i64 = 0;
+    let e: () = ();
+    let mut acc: i64 = 0;
+    while i < 3 {
+        let y: i64 = i + 100;
+        acc = acc + take(e, y);
+        i = i + 1;
+    }
+    @dbg(acc);
+    0
+}
+""" }]
+stdout = "303\n"
+exit_code = 0
+differential_opt = true

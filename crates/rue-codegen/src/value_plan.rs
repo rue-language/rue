@@ -570,6 +570,19 @@ pub struct IntrinsicPlan {
     /// initialized. Empty for every other operation, a padding-free pointee, and
     /// gate-off, so no zeroing is emitted there.
     pub image_padding: Vec<rue_air::layout::PaddingRange>,
+    /// For a `@ptr_write`/`@ptr_write_unaligned`, whether the pointer operand's
+    /// *declared* pointee is zero-sized. `false` for every other operation and
+    /// whenever the pointer operand is not a `ptr mut` (a diverging operand).
+    ///
+    /// A write through `ptr mut ()` moves no bytes, and that is a property of
+    /// the pointer's type alone. The materialized value operand cannot be
+    /// trusted to say so: an optimizer defect that substitutes a differently
+    /// typed value into the value operand turns the operand's slot count into
+    /// a store through a zero-sized type's sentinel address (RUE-2086). The
+    /// backends refuse the store when either this flag or the materialized
+    /// slot count says there are no bytes, so the two answers only ever
+    /// subtract stores, never add one.
+    pub zero_sized_pointee_write: bool,
 }
 
 /// Place with every dynamic index already materialized. The plan contains no
@@ -2228,6 +2241,19 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                         .compact_image_padding_ranges(access.pointee_ty),
                     _ => Vec::new(),
                 };
+                // The declared pointee, read off the pointer operand's type,
+                // is the authority on whether a write moves any bytes
+                // (RUE-2086).
+                let zero_sized_pointee_write = matches!(
+                    operation,
+                    IntrinsicOperation::PtrWrite | IntrinsicOperation::PtrWriteUnaligned
+                ) && args
+                    .first()
+                    .and_then(|arg| match ctx.cfg.get_inst(*arg).ty.kind() {
+                        TypeKind::PtrMut(id) => Some(ctx.type_pool.ptr_mut_def(id)),
+                        _ => None,
+                    })
+                    .is_some_and(|pointee| ctx.type_slot_count(pointee) == 0);
                 let result = adapter.emit_intrinsic(IntrinsicPlan {
                     operation,
                     runtime_call,
@@ -2241,6 +2267,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     physical_slots,
                     dispatch_image,
                     image_padding,
+                    zero_sized_pointee_write,
                 });
                 cache_result(adapter, value, result);
                 Some(ValueKind::Intrinsic)
