@@ -477,7 +477,6 @@ pub(crate) trait ForeignCallLoweringBackend {
     /// [`foreign_emit_stack_args`](Self::foreign_emit_stack_args).
     fn foreign_cleanup_stack(&mut self, stack: &ForeignStackArea);
     fn foreign_cleanup_byref(&mut self, byref_bytes: u32);
-    fn foreign_zero_result(&mut self, primary: VReg);
     /// Take the scalar result out of the primary result register of `class`'s
     /// bank and re-extend it (a C callee leaves a narrow integer's high bits
     /// unspecified; a float fills its register and needs nothing).
@@ -654,15 +653,11 @@ pub(crate) fn lower_foreign_call<B: ForeignCallLoweringBackend>(
     backend.foreign_cleanup_byref(byref_bytes);
 
     let slots = match (&inputs.ret, plan.signature().ret()) {
-        // The Rue-side value has no ABI slots, so `primary` is the never-read
+        // No result register to read. A `Void` lowering is only ever produced
+        // for a zero-sized Rue value (a `()` or a `@repr(c)` aggregate whose
+        // only fields are zero-length arrays), so `primary` is the never-read
         // placeholder such a value carries and nothing defines it (RUE-2048).
-        (ForeignReturn::ZeroSized, _) => Vec::new(),
-        // A value the Rue side still reads whose lowered C signature returns
-        // nothing: it has no result register to read, so it takes a zero.
-        (_, LoweredReturn::Void) => {
-            backend.foreign_zero_result(primary);
-            Vec::new()
-        }
+        (ForeignReturn::ZeroSized, _) | (_, LoweredReturn::Void) => Vec::new(),
         (ForeignReturn::Scalar, LoweredReturn::Registers { extension, .. }) => {
             backend.foreign_scalar_result(primary, inputs.return_class(), extension);
             Vec::new()
@@ -1215,10 +1210,6 @@ mod tests {
 
         fn foreign_cleanup_byref(&mut self, byref_bytes: u32) {
             self.record(format!("cleanup_byref:{byref_bytes}"));
-        }
-
-        fn foreign_zero_result(&mut self, _primary: VReg) {
-            self.record("zero_result");
         }
 
         fn foreign_scalar_result(

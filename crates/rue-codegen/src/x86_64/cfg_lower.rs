@@ -4407,13 +4407,6 @@ impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
 
     fn foreign_cleanup_byref(&mut self, _byref_bytes: u32) {}
 
-    fn foreign_zero_result(&mut self, primary: VReg) {
-        self.mir.push(X86Inst::MovRI32 {
-            dst: Operand::Virtual(primary),
-            imm: 0,
-        });
-    }
-
     fn foreign_scalar_result(
         &mut self,
         primary: VReg,
