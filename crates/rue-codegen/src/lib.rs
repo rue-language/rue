@@ -726,6 +726,7 @@ mod tests {
             &interner,
             false,
             rue_air::AnalyzedCallableKind::Ordinary,
+            None,
         );
         (cfg_output.cfg.unwrap(), type_pool, interner)
     }
@@ -761,6 +762,7 @@ mod tests {
             &interner,
             false,
             rue_air::AnalyzedCallableKind::Ordinary,
+            None,
         );
         (cfg_output.cfg.unwrap(), type_pool, interner)
     }
@@ -796,6 +798,7 @@ mod tests {
             &interner,
             false,
             rue_air::AnalyzedCallableKind::Ordinary,
+            None,
         );
         (cfg_output.cfg.unwrap(), type_pool, interner)
     }

@@ -733,6 +733,10 @@ pub struct CfgBuilder<'a> {
     implicit_destructor_types: AHashSet<Type>,
     anonymous_destructor_dependency_incomplete: bool,
     callable_kind: AnalyzedCallableKind,
+    /// For a cleanup callee — a destructor or a drop-glue body — the owner type
+    /// its whole parameter list is: one by-value parameter of that type
+    /// (RUE-2074). `None` for every other body, whose parameters the AIR names.
+    cleanup_owner: Option<Type>,
     /// For an accessor body, the AIR values on the spine from `Ret` down to
     /// the `PlaceRead` that lowered the trailing `yield`.
     ///
@@ -792,6 +796,13 @@ fn accessor_yield_spine(
 /// a fresh analysis and a durable/imported body, since both rebuild from the
 /// same AIR.
 ///
+/// A cleanup callee — a destructor or a drop-glue body — is the one shape whose
+/// parameter the AIR cannot always name: a destructor that never mentions
+/// `self` records no parameter type, and glue reads its owner's leaves at their
+/// field types. Its owner therefore travels beside `num_param_slots` and is the
+/// whole parameter list: one by-value parameter of the owner's type, classified
+/// and placed exactly as a user function taking that type by value (RUE-2074).
+///
 /// The descriptor says *what* each parameter is, never where it arrives: code
 /// generation asks `rue_air::lower_native_signature` where the incoming value
 /// travels, so the callee's prologue and its callers read one placement
@@ -802,14 +813,32 @@ fn derive_source_param_abi(builder: &CfgBuilder<'_>) -> Vec<SourceParamAbi> {
     let num_params = builder.cfg.num_params();
     let by_ref: Vec<bool> = builder.cfg.param_modes().to_vec();
 
-    // A cleanup callee — a destructor or a drop glue body — addresses its
-    // owner's decomposition one slot at a time (RUE-998 / RUE-311), so its
-    // parameter list *is* those leaves: one register-width parameter per slot,
-    // which is exactly what its caller `CallPlan::from_slot_values` hands over.
-    // These synthetic symbols are compiler-reserved (`__rue_drop_*` glue,
-    // `<Type>.__drop` destructors), the same identity code generation already
-    // resolves them by.
-    let flattened_leaf_parameters = builder.callable_kind.has_flattened_leaf_parameters();
+    assert_eq!(
+        builder.cleanup_owner.is_some(),
+        matches!(
+            builder.callable_kind,
+            AnalyzedCallableKind::Destructor | AnalyzedCallableKind::DropGlue
+        ),
+        "a cleanup callee carries its owner type and nothing else does; without \
+         it the callee would rebuild a parameter list its callers do not hand \
+         over"
+    );
+    if let Some(owner) = builder.cleanup_owner {
+        let slot_count = type_pool.abi_slot_count(owner);
+        assert_eq!(
+            slot_count, num_params,
+            "a cleanup callee's parameter list is its owner: the owner's ABI \
+             slot count must be the body's parameter slot count"
+        );
+        if slot_count == 0 {
+            return Vec::new();
+        }
+        return vec![SourceParamAbi {
+            start_slot: 0,
+            slot_count,
+            ty: Some(owner),
+        }];
+    }
 
     // Slot -> source type. A parameter's own extent is what groups the slots,
     // so every by-value parameter needs one: the drop schedule and the body's
@@ -838,7 +867,7 @@ fn derive_source_param_abi(builder: &CfgBuilder<'_>) -> Vec<SourceParamAbi> {
         // so the split leaves every later parameter's placement unchanged. A
         // typeless descriptor therefore always spans exactly one slot, which is
         // what lets code generation place every parameter as a single value.
-        let (slot_count, ty) = match (is_by_ref || flattened_leaf_parameters, ty_at.get(&slot)) {
+        let (slot_count, ty) = match (is_by_ref, ty_at.get(&slot)) {
             (false, Some(&ty)) => (type_pool.abi_slot_count(ty).max(1), Some(ty)),
             _ => (1, None),
         };
@@ -921,6 +950,7 @@ impl<'a> CfgBuilder<'a> {
         interner: &'a ThreadedRodeo,
         allow_unreachable_code: bool,
         callable_kind: AnalyzedCallableKind,
+        cleanup_owner: Option<Type>,
     ) -> CfgOutput {
         Self::build_with_symbol_resolver(
             air,
@@ -932,6 +962,7 @@ impl<'a> CfgBuilder<'a> {
             interner,
             allow_unreachable_code,
             callable_kind,
+            cleanup_owner,
             |name| Some(interner.get_or_intern(name)),
         )
     }
@@ -946,6 +977,7 @@ impl<'a> CfgBuilder<'a> {
         _interner: &'a ThreadedRodeo,
         allow_unreachable_code: bool,
         callable_kind: AnalyzedCallableKind,
+        cleanup_owner: Option<Type>,
         source_symbol_resolver: impl Fn(&str) -> Option<Spur> + 'a,
     ) -> CfgOutput {
         let mut builder = CfgBuilder {
@@ -986,6 +1018,7 @@ impl<'a> CfgBuilder<'a> {
             implicit_destructor_types: AHashSet::new(),
             anonymous_destructor_dependency_incomplete: false,
             callable_kind,
+            cleanup_owner,
             accessor_yield_spine: AHashSet::new(),
         };
 
@@ -4737,6 +4770,7 @@ mod tests {
             interner,
             false,
             AnalyzedCallableKind::Ordinary,
+            None,
         )
         .cfg
         .unwrap()
@@ -4923,6 +4957,7 @@ mod tests {
                 borrow_slots: Arc::new([]),
                 num_locals: self.num_locals,
                 num_param_slots: self.num_param_slots,
+                cleanup_owner: None,
                 param_by_ref: self.param_by_ref.into(),
                 param_writable: self.param_writable.into(),
                 allow_unreachable_code: false,
@@ -4947,6 +4982,7 @@ mod tests {
                 &materialized.interner,
                 materialized.allow_unreachable_code,
                 materialized.callable_kind,
+                materialized.cleanup_owner,
             )
             .cfg
             .unwrap()
@@ -6858,6 +6894,7 @@ mod tests {
                 interner,
                 false,
                 AnalyzedCallableKind::Ordinary,
+                None,
             )
             .cfg
             .unwrap()
@@ -7855,6 +7892,7 @@ mod tests {
                 &interner,
                 false,
                 AnalyzedCallableKind::Ordinary,
+                None,
             )
             .cfg
             .unwrap();
@@ -7933,6 +7971,7 @@ mod tests {
             &interner,
             false,
             AnalyzedCallableKind::Ordinary,
+            None,
         );
 
         assert!(

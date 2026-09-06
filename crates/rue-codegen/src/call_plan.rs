@@ -804,8 +804,9 @@ fn place_argument<M: CallMaterializer>(
     (UserArgMode::Value, values, classes, locations)
 }
 
-/// One already-materialized leaf of a cleanup callee's flattened parameter
-/// list: a register-width general-purpose scalar.
+/// A value the convention needs no type for: one register-width
+/// general-purpose scalar. A by-reference parameter's incoming pointer, and a
+/// by-value parameter slot whose type the AIR never named.
 pub(crate) const fn register_width_leaf() -> NativeArg {
     NativeArg::Scalar {
         kind: rue_air::CAbiScalarKind::RegisterWidth,
@@ -990,57 +991,6 @@ impl CallPlan {
             stack_slot_count,
             stack_bytes: signature.stack_bytes(),
             caller_indirect_bytes,
-        }
-    }
-
-    /// Build the same normalized shape for a cleanup call — a destructor or a
-    /// drop glue body — whose slots have already been materialized by the
-    /// canonical aggregate leaves.
-    ///
-    /// A cleanup callee's parameters *are* those leaves: the synthesized body
-    /// addresses an owner's decomposition one slot at a time, so its signature
-    /// is one register-width scalar per leaf. That signature goes through the
-    /// same lowering every other call uses, and the callee's own parameter plan
-    /// reads the same per-slot descriptors, so the two ends cannot disagree.
-    pub fn from_slot_values(
-        target: CallTarget,
-        slots: &[VReg],
-        native_convention: ConventionSpec,
-        c_convention: CallingConvention,
-    ) -> Self {
-        let parameters = vec![(register_width_leaf().facts(), ArgConvention::ByValue); slots.len()];
-        let signature = lower_native_signature(native_convention, &parameters, LoweredReturn::Void);
-        let abi_classes = vec![AbiSlotClass::Gp; slots.len()];
-        let abi_locations = signature
-            .arguments()
-            .iter()
-            .map(|argument| scalar_location(argument.location))
-            .collect::<Vec<_>>();
-        let stack_slot_count = abi_locations
-            .iter()
-            .filter(|location| matches!(location, AbiSlotLocation::Stack { .. }))
-            .count();
-        Self {
-            callee_convention: callee_pairing(&target, native_convention, c_convention)
-                .convention(),
-            target,
-            hidden_sret: None,
-            user_args: vec![UserArgPlan {
-                mode: UserArgMode::Value,
-                slots: slots.to_vec(),
-            }],
-            abi_slots: slots.to_vec(),
-            abi_classes,
-            abi_locations,
-            return_plan: ReturnPlan::ZeroSized,
-            return_registers: None,
-            compact_return_image: None,
-            compact_return_dispatch: None,
-            result: None,
-            result_float_width: None,
-            stack_slot_count,
-            stack_bytes: signature.stack_bytes(),
-            caller_indirect_bytes: 0,
         }
     }
 }
@@ -1245,60 +1195,6 @@ mod tests {
             )
             .is_err()
         );
-    }
-
-    #[test]
-    fn slot_call_plan_counts_aligned_stack_slots() {
-        let slots: Vec<_> = (0..9).map(VReg::new).collect();
-        let plan = CallPlan::from_slot_values(
-            CallTarget::rue("drop"),
-            &slots,
-            ConventionSpec::native(rue_target::Target::X86_64Linux),
-            CallingConvention::X86_64SysV,
-        );
-
-        assert_eq!(plan.abi_slots, slots);
-        assert_eq!(plan.stack_slot_count, 3);
-        assert_eq!(plan.stack_bytes, 32);
-        assert_eq!(plan.return_plan, ReturnPlan::ZeroSized);
-    }
-
-    #[test]
-    fn every_row_places_a_cleanup_leaf_in_a_whole_ascending_eightbyte() {
-        // A cleanup callee (a destructor, a drop glue body) takes an
-        // aggregate's leaves as one register-width parameter per
-        // leaf, each carrying a canonically 64-bit-extended value, so a leaf the
-        // roster cannot hold claims one whole eightbyte from its convention's
-        // argument area — under Apple's natural-size packing as much as under
-        // the eight-byte slot rows, because eight bytes is a register-width
-        // value's natural size.
-        let slots: Vec<_> = (0..10).map(VReg::new).collect();
-        for target in rue_target::Target::all() {
-            let plan = CallPlan::from_slot_values(
-                CallTarget::rue("drop"),
-                &slots,
-                ConventionSpec::native(*target),
-                target.c_calling_convention(),
-            );
-            let registers =
-                usize::try_from(ConventionSpec::native(*target).spec().gp_argument_registers)
-                    .expect("a roster size fits usize");
-            let stacked = &plan.abi_locations[registers..];
-            assert_eq!(
-                stacked,
-                (0..stacked.len())
-                    .map(AbiSlotLocation::stack_slot)
-                    .collect::<Vec<_>>(),
-                "{target:?}: cleanup leaves stack in whole ascending eightbytes"
-            );
-            assert_eq!(
-                &plan.abi_locations[..registers],
-                (0..registers)
-                    .map(AbiSlotLocation::GpReg)
-                    .collect::<Vec<_>>(),
-                "{target:?}: cleanup leaves take the roster in order"
-            );
-        }
     }
 
     #[test]

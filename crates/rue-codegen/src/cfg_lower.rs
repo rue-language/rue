@@ -547,4 +547,43 @@ impl<'a> CfgLowerContext<'a> {
         };
         self.frame_local_slots() + area_slot
     }
+
+    /// The emitted frame slot holding logical slot 0 — the low end in address —
+    /// of the `slot_count`-slot value that begins at parameter ABI slot `index`.
+    ///
+    /// A homed parameter is one contiguous frame image laid out ascending in
+    /// address with its logical slots while frame slot numbers descend
+    /// (ADR-0040), so the parameter's own slot 0 is its *last* frame slot and
+    /// slot `k` is one slot back from slot `k - 1`. A `Param { index }` naming a
+    /// slot inside a wider parameter — the leaf a cleanup body reads out of its
+    /// owner (RUE-2074) — is therefore a projection into that image, addressed
+    /// exactly as a place projection at the same slot offset would be, not a
+    /// parameter of its own.
+    ///
+    /// With no grouped descriptors (a synthetic CFG) every slot is its own
+    /// homed parameter, which is the same answer for `index` naming a whole
+    /// parameter.
+    pub fn param_value_low_slot(&self, index: u32, slot_count: u32) -> u32 {
+        let group = self
+            .cfg
+            .source_param_abi()
+            .iter()
+            .find(|descriptor| {
+                descriptor.start_slot <= index
+                    && index < descriptor.start_slot + descriptor.slot_count
+            })
+            .map(|descriptor| (descriptor.start_slot, descriptor.slot_count));
+        match group {
+            Some((start_slot, group_slots)) => {
+                let offset = index - start_slot;
+                assert!(
+                    offset + slot_count <= group_slots,
+                    "a {slot_count}-slot value at offset {offset} runs past the \
+                     {group_slots}-slot parameter that starts at slot {start_slot}"
+                );
+                self.param_frame_slot(start_slot) + group_slots - 1 - offset
+            }
+            None => self.param_frame_slot(index) + slot_count.saturating_sub(1),
+        }
+    }
 }

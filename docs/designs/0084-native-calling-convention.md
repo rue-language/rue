@@ -383,13 +383,10 @@ moves in the same change as the convention it models, never in a follow-up.
   (`runtime_call_plan::manifest_signature`) and the backends read placements out
   of it; the registers-only guard is now a manifest property test. `AbiSlotClass`
   is a codegen-internal register-bank-and-width selector with one owner
-  (`rue-codegen`'s `abi_slot_class`). One thing the phase did not do: a cleanup
-  entry point still crosses as one register-width scalar per leaf rather than as
-  its owner's aggregate image, because the synthesized drop-glue body addresses
-  its owner's leaves as individual parameter slots. Giving it a single aggregate
-  parameter means re-authoring the glue AIR and its frame-image indexing, which
-  is a separate slice; what retired here is the *convention* branch, not the
-  flattened glue signature.
+  (`rue-codegen`'s `abi_slot_class`). RUE-2074 then closed the last exception:
+  a cleanup entry point — a destructor or a synthesized drop-glue body — takes
+  its owner as one by-value parameter of the owner's type, classified and placed
+  by this same walk.
 
 ## Consequences
 

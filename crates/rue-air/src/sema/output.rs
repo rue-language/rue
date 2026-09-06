@@ -246,11 +246,10 @@ pub struct SourceParamAbi {
     pub slot_count: u32,
     /// The parameter's source type, or `None` when the parameter is one
     /// register-width slot the convention needs no type for: a by-reference
-    /// pointer, whose pointee the convention never consults; a leaf of a
-    /// cleanup callee's flattened parameter list; or a slot no `Param`
-    /// instruction or drop entry names. A typeless descriptor always has
-    /// `slot_count == 1`, so every parameter is one value the convention places
-    /// as a whole.
+    /// pointer, whose pointee the convention never consults; or a slot no
+    /// `Param` instruction or drop entry names. A typeless descriptor always
+    /// has `slot_count == 1`, so every parameter is one value the convention
+    /// places as a whole.
     ///
     /// Where the parameter's incoming value travels is not recorded here: code
     /// generation recomputes it from this type through the one placement
@@ -404,6 +403,15 @@ pub struct AnalyzedFunction {
     /// For scalar types (i32, bool), each parameter uses 1 slot.
     /// For struct types, each field uses 1 slot (flattened ABI).
     pub num_param_slots: u32,
+    /// For a cleanup callable — a destructor or a drop-glue body — the type of
+    /// the owner it takes as its single by-value parameter. `None` for every
+    /// other callable, whose parameters the AIR names one by one.
+    ///
+    /// A cleanup body's own AIR cannot always name it: a destructor that never
+    /// mentions `self` records no parameter type at all, and glue reads its
+    /// owner's leaves at field types. The owner travels beside
+    /// `num_param_slots`, which is that owner's ABI slot count.
+    pub cleanup_owner: Option<crate::Type>,
     /// Physical by-reference and logical writability modes for every ABI slot.
     /// Length matches `num_param_slots`; flattened parameters repeat their
     /// source parameter's mode for each occupied slot.
@@ -419,19 +427,6 @@ pub enum AnalyzedCallableKind {
     Accessor,
     Destructor,
     DropGlue,
-}
-
-impl AnalyzedCallableKind {
-    /// Whether this callable's parameter list is the flattened decomposition of
-    /// one owner value rather than a list of source parameters.
-    ///
-    /// A destructor and a drop glue body address their owner's leaves by slot
-    /// index — the synthesized glue reads a field, an element, or a variant
-    /// payload straight out of a parameter slot — so each slot is its own
-    /// register-width parameter on both sides of the call.
-    pub fn has_flattened_leaf_parameters(self) -> bool {
-        matches!(self, Self::Destructor | Self::DropGlue)
-    }
 }
 
 /// Value-only workload counters for demand-driven body dispatch.

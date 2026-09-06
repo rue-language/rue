@@ -1921,6 +1921,14 @@ pub(crate) fn select_materialization_facts(
         require_type(ty);
         selection.semantic_type(ty);
     }
+    // A cleanup callee's whole parameter list is its owner, which the body's
+    // own instructions need never mention — a destructor that ignores `self`,
+    // glue that reads only its owner's leaves — so the owner is required here
+    // to reach the CFG's parameter layout (RUE-2074).
+    if let Some(owner) = body.cleanup_owner.as_ref() {
+        require_type(owner);
+        selection.semantic_type(owner);
+    }
     for reference in body.method_references.iter() {
         selection.nominal(&reference.receiver);
     }
@@ -2006,6 +2014,7 @@ pub(crate) fn select_drop_glue_materialization_facts(
         borrow_slots: Arc::new([]),
         num_locals: 0,
         num_param_slots: 0,
+        cleanup_owner: None,
         param_by_ref: Arc::new([]),
         param_writable: Arc::new([]),
         allow_unreachable_code: false,
@@ -2532,6 +2541,7 @@ mod tests {
             borrow_slots: Arc::new([]),
             num_locals: 0,
             num_param_slots: 0,
+            cleanup_owner: None,
             param_by_ref: Arc::new([]),
             param_writable: Arc::new([]),
             allow_unreachable_code: false,

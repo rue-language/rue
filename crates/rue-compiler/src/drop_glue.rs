@@ -13,12 +13,18 @@
 //! ```
 //!
 //! We generate a function `__rue_drop_Container` that:
-//! 1. Receives the struct's flattened fields as parameters
+//! 1. Receives the owner as one by-value parameter of the owner's type, placed
+//!    exactly as a user function taking `Container` by value would place it
 //! 2. Drops each field that needs dropping (in declaration order)
 //!
 //! For arrays like `[String; 3]`, we generate a function `__rue_drop_array_String_3` that:
-//! 1. Receives all element slots as parameters (flattened)
+//! 1. Receives the array as that same single by-value parameter
 //! 2. Drops each element in index order (element 0 first, then 1, etc.)
+//!
+//! A glue body reads its owner's leaves with `Param { index }`, where `index` is
+//! a slot of the owner's canonical flattened layout — field 0 first, element 0
+//! first, an enum's discriminant at slot 0 with the payload union overlaying
+//! slots 1.. (RUE-2074).
 
 #[cfg(test)]
 use ahash::AHashMap;
@@ -113,12 +119,11 @@ pub(crate) fn synthesize_canonical_drop_glue(
             } else {
                 Ty::U64
             };
-            let disc = add(
-                SemanticBodyInstData::Param {
-                    index: num_param_slots.saturating_sub(1),
-                },
-                disc_ty.clone(),
-            );
+            // The owner arrives as one by-value parameter of its own type, so a
+            // `Param { index }` names slot `index` of the enum's canonical
+            // flattened layout: the discriminant is logical slot 0 and the
+            // union payload overlays slots 1.. (RUE-2074).
+            let disc = add(SemanticBodyInstData::Param { index: 0 }, disc_ty.clone());
             let unit = add(SemanticBodyInstData::UnitConst, Ty::Unit);
             let mut arms = Vec::new();
             for (variant_index, variant) in variants.iter().enumerate() {
@@ -132,10 +137,7 @@ pub(crate) fn synthesize_canonical_drop_glue(
                     if field.drop {
                         let ty = crate::semantic_identity::semantic_type_from_instance(&field.ty);
                         let param = add(
-                            SemanticBodyInstData::Param {
-                                index: num_param_slots
-                                    .saturating_sub(field_slot.saturating_add(width)),
-                            },
+                            SemanticBodyInstData::Param { index: field_slot },
                             ty.clone(),
                         );
                         drops.push(add(SemanticBodyInstData::Drop { value: param }, ty));
@@ -192,6 +194,10 @@ pub(crate) fn synthesize_canonical_drop_glue(
         borrow_slots: Arc::new([]),
         num_locals: 0,
         num_param_slots,
+        // The glue's whole parameter list is its owner, taken by value; the
+        // body reads the owner's leaves at their own field types, so the owner
+        // itself is named only here (RUE-2074).
+        cleanup_owner: Some(crate::semantic_identity::semantic_type_from_instance(owner)),
         param_by_ref: vec![false; num_param_slots as usize].into(),
         param_writable: vec![false; num_param_slots as usize].into(),
         allow_unreachable_code: false,
@@ -384,6 +390,7 @@ fn create_struct_drop_glue_function(
         local_atoms: Vec::new(),
         num_locals: 0,
         num_param_slots,
+        cleanup_owner: Some(Type::new_struct(struct_id)),
         param_modes: ParamSlotModes::new(param_modes.clone(), vec![false; param_modes.len()]),
         allow_unreachable_code: false,
     })
@@ -441,12 +448,10 @@ fn create_array_drop_glue_function(
     // For each element, emit a Drop instruction, in ASCENDING index order
     // (element 0 dropped first — the language-visible order the oracle checks).
     //
-    // The flattened parameter slots are in LOGICAL order (ADR-0040 / RUE-311):
-    // element 0 occupies the first element-chunk, element N-1 the last. So
-    // iterate chunks front-to-back to drop in ascending index order. Each chunk
-    // is read back as one aggregate `Param`, which the codegen `Drop` lowering
-    // hands over in the reversed by-value ABI order, so the drop caller reverses
-    // each element's own slots to compensate (see the array `Drop` handler).
+    // A `Param { index }` names slot `index` of the owner's canonical flattened
+    // layout, so element 0 occupies the first element-chunk and element N-1 the
+    // last: iterating chunks front-to-back drops in ascending index order, and
+    // each chunk is read back whole as one aggregate `Param`.
     // Type::Struct handles both user-defined structs and builtin String.
     for phys_chunk in 0..length {
         let current_param_slot = phys_chunk as u32 * element_slot_count;
@@ -507,6 +512,7 @@ fn create_array_drop_glue_function(
         local_atoms: Vec::new(),
         num_locals: 0,
         num_param_slots,
+        cleanup_owner: Some(Type::new_array(array_id)),
         param_modes: ParamSlotModes::new(param_modes.clone(), vec![false; param_modes.len()]),
         allow_unreachable_code: false,
     })
@@ -514,14 +520,13 @@ fn create_array_drop_glue_function(
 
 /// Create a drop glue function for a payload-carrying enum type (RUE-221).
 ///
-/// The function receives the enum's flattened slots as one ordinary Rue
-/// by-value argument. The ABI reverses that complete slot vector: the final
-/// parameter slot is the discriminant and the preceding slots are the reversed
-/// payload union. It switches on the discriminant and, for the active variant,
-/// drops each droppable payload field in declaration order. Variants whose
-/// payload needs no drop (and discriminant-only variants) fall through to a
-/// no-op wildcard default arm, so exactly the active variant's payload is
-/// dropped.
+/// The function receives the enum as one ordinary Rue by-value argument of the
+/// enum's own type, whose canonical flattened layout puts the discriminant at
+/// slot 0 and overlays the payload union on slots 1.. It switches on the
+/// discriminant and, for the active variant, drops each droppable payload field
+/// in declaration order. Variants whose payload needs no drop (and
+/// discriminant-only variants) fall through to a no-op wildcard default arm, so
+/// exactly the active variant's payload is dropped.
 #[cfg(test)]
 fn create_enum_drop_glue_function(
     enum_id: EnumId,
@@ -564,10 +569,11 @@ fn create_enum_drop_glue_function(
     // Total ABI slots: discriminant (slot 0) + payload area (largest variant).
     let num_param_slots = type_pool.abi_slot_count(Type::new_enum(enum_id));
 
-    // A whole enum is one multi-slot by-value argument, so its ABI slot vector
-    // is reversed. The logical slot-0 discriminant is therefore last.
+    // The owner arrives as one by-value parameter of its own type, so a `Param`
+    // names a slot of the enum's canonical flattened layout: the discriminant
+    // is logical slot 0 (RUE-2074).
     let disc_ty = enum_def.discriminant_type();
-    let disc_param = air.add_param(num_param_slots - 1, disc_ty, span);
+    let disc_param = air.add_param(0, disc_ty, span);
 
     // A single shared unit value for every arm body and the outer block.
     let unit_const = air.add_unit(span);
@@ -602,12 +608,9 @@ fn create_enum_drop_glue_function(
             let field_slots = type_pool.abi_slot_count(field_ty);
             let should_drop = planned_fields[field_index].drop;
             if should_drop {
-                // The logical half-open range [field_slot, field_slot +
-                // field_slots) becomes the reversed ABI range beginning here.
-                // Reading an aggregate Param reverses that range once more,
-                // reconstructing the field in logical order (RUE-998).
-                let abi_field_slot = num_param_slots - (field_slot + field_slots);
-                let param_ref = air.add_param(abi_field_slot, field_ty, span);
+                // The payload overlays the union at logical slot 1, so field j
+                // begins at the canonical slot the running total names.
+                let param_ref = air.add_param(field_slot, field_ty, span);
                 let drop_ref = air.add_drop(param_ref, span);
                 drop_stmts.push(drop_ref);
             }
@@ -658,6 +661,7 @@ fn create_enum_drop_glue_function(
         local_atoms: Vec::new(),
         num_locals: 0,
         num_param_slots,
+        cleanup_owner: Some(Type::new_enum(enum_id)),
         param_modes: ParamSlotModes::new(param_modes.clone(), vec![false; param_modes.len()]),
         allow_unreachable_code: false,
     })
@@ -706,6 +710,14 @@ mod tests {
         let body = synthesize_canonical_drop_glue(&owner, &facts, &slots).unwrap();
         assert_eq!(body.num_param_slots, 6);
         assert_eq!(body.param_by_ref.as_ref(), &[false; 6]);
+        // The glue's whole parameter list is its owner, taken by value; the
+        // owner reaches the CFG's parameter layout only through this field.
+        assert_eq!(
+            body.cleanup_owner,
+            Some(crate::semantic_identity::semantic_type_from_instance(
+                &owner
+            ))
+        );
         let params = body
             .instructions
             .iter()
@@ -1052,7 +1064,11 @@ mod tests {
         .unwrap();
         assert_eq!(outer.num_param_slots, type_pool.abi_slot_count(outer_ty));
         assert_eq!(outer.num_param_slots, 27);
+        // Canonical flattened order: a field begins at the running total of the
+        // widths of the fields declared before it, zero-sized fields included at
+        // width zero. The last four fields are the droppable ones.
         assert_eq!(param_indices(&outer), [19, 20, 22, 24]);
+        assert_eq!(outer.cleanup_owner, Some(outer_ty));
 
         let array_facts = test_facts(crate::type_queries::DropGluePlan::Array {
             element: test_type_identity(drop_ty, &type_pool),
@@ -1071,7 +1087,9 @@ mod tests {
             array.num_param_slots,
             type_pool.abi_slot_count(drop_array_ty)
         );
+        // Element `i` of a 2-slot-per-element array begins at slot `i * width`.
         assert_eq!(param_indices(&array), [0, 1]);
+        assert_eq!(array.cleanup_owner, Some(drop_array_ty));
 
         let enum_facts = test_facts(crate::type_queries::DropGluePlan::Enum {
             variants: type_pool
@@ -1105,7 +1123,13 @@ mod tests {
             enum_glue.num_param_slots,
             type_pool.abi_slot_count(drop_enum_ty)
         );
-        assert_eq!(param_indices(&enum_glue), [2, 1, 0, 0]);
+        // An enum's canonical layout puts the discriminant at slot 0 and
+        // overlays the payload union on slots 1.. — so the discriminant `Param`
+        // comes first, then variant 0's two droppable fields at slots 1 and 2,
+        // then variant 1's single droppable field, which follows an `i32` and so
+        // also lands at slot 2.
+        assert_eq!(param_indices(&enum_glue), [0, 1, 2, 2]);
+        assert_eq!(enum_glue.cleanup_owner, Some(drop_enum_ty));
     }
 
     #[test]

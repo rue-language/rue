@@ -671,23 +671,6 @@ impl<'a> CfgLower<'a> {
         }
     }
 
-    /// Emit a target-local cleanup call using the normalized slot vector.
-    fn emit_slot_call(&mut self, arg_vregs: &[VReg], symbol: &str) {
-        let plan = crate::call_plan::CallPlan::from_slot_values(
-            crate::call_plan::CallTarget::rue(symbol),
-            arg_vregs,
-            rue_target::ConventionSpec::native(self.target),
-            self.target.c_calling_convention(),
-        );
-        let _ = self.lower_call_plan(plan);
-    }
-
-    /// Call `symbol` passing `arg_vregs` as flattened by-value slot arguments
-    /// per the standard convention: the first slots in ARG_REGS, the rest
-    /// stored to a 16-byte-aligned stack area released after the call — the
-    /// same shape as generic `Call` lowering. Drop and drop-glue calls use this
-    /// path so every slot beyond the eight register arguments is passed on the
-    /// stack (RUE-193).
     fn block_label(&self, block_id: BlockId) -> LabelId {
         Aarch64Mir::block_label(block_id.as_u32())
     }
@@ -1062,7 +1045,17 @@ impl<'a> CfgLower<'a> {
         actions: Vec<crate::value_plan::DropAction>,
     ) -> crate::value_plan::ValueResult {
         for action in actions {
-            self.emit_slot_call(&action.slots, &action.symbol);
+            // One cleanup call at a time: building the plan emits the
+            // argument's marshaling, and a caller-owned indirect copy must stay
+            // live until the call it belongs to has returned.
+            let plan = crate::call_plan::CallPlan::from_inputs(
+                crate::call_plan::CallTarget::rue(action.symbol),
+                crate::call_plan::ReturnPlan::ZeroSized,
+                std::slice::from_ref(&action.argument),
+                std::slice::from_ref(&action.native),
+                self,
+            );
+            let _ = self.lower_call_plan(plan);
         }
 
         let primary = self.mir.alloc_vreg();
@@ -2037,7 +2030,13 @@ impl<'a> CfgLower<'a> {
         ty: Type,
         policy: crate::value_plan::ValuePlan,
     ) -> (VReg, Vec<VReg>) {
-        let float_width = crate::value_plan::float_width(ty);
+        // A slot's register class follows its LEAF, not the type wrapped around
+        // it (RUE-2001): a `struct Q { f: f64 }` and a bare `f64` hold the same
+        // thing in the same one slot, so reading the width off the parameter's
+        // own type would load a float-carrying wrapper with an integer load into
+        // a general-purpose register and hand it to a float-typed consumer.
+        let leaf_types = crate::types::aggregate_leaf_types(self.ctx.type_pool, ty);
+        let float_width = crate::value_plan::primary_slot_float_width(&leaf_types);
         let dst = self.mir.alloc_vreg_in(if float_width.is_some() {
             crate::reg_class::RegClass::Fp
         } else {
@@ -2082,7 +2081,6 @@ impl<'a> CfgLower<'a> {
                 });
             }
         } else if count > 1 {
-            let leaf_types = crate::types::aggregate_leaf_types(self.ctx.type_pool, ty);
             let slots: Vec<_> = (0..count)
                 .map(|slot| {
                     let width = crate::value_plan::float_width(leaf_types[slot as usize]);
@@ -2091,7 +2089,7 @@ impl<'a> CfgLower<'a> {
                     } else {
                         crate::reg_class::RegClass::Gp
                     });
-                    let frame_slot = self.ctx.param_frame_slot(index) + count - 1 - slot;
+                    let frame_slot = self.ctx.param_value_low_slot(index, count) - slot;
                     if let Some(width) = width {
                         <Self as crate::place_lower::PlaceLowerBackend>::emit_float_load_slot(
                             self, v, frame_slot, width,
@@ -2115,14 +2113,16 @@ impl<'a> CfgLower<'a> {
             <Self as crate::place_lower::PlaceLowerBackend>::emit_float_load_slot(
                 self,
                 dst,
-                self.ctx.param_frame_slot(index),
+                self.ctx.param_value_low_slot(index, 1),
                 width,
             );
         } else {
             self.mir.push(Aarch64Inst::Ldr {
                 dst: Operand::Virtual(dst),
                 base: Reg::Fp,
-                offset: self.ctx.local_offset(self.ctx.param_frame_slot(index)),
+                offset: self
+                    .ctx
+                    .local_offset(self.ctx.param_value_low_slot(index, 1)),
             });
         }
         (dst, Vec::new())

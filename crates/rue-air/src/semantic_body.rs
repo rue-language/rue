@@ -997,6 +997,14 @@ pub struct SemanticBody<K, M> {
     pub borrow_slots: Arc<[u32]>,
     pub num_locals: u32,
     pub num_param_slots: u32,
+    /// For a cleanup callee — a destructor or a drop-glue body — the owner type
+    /// its single by-value parameter is; `None` for every other body, whose
+    /// parameters the instructions and drop entries name one by one.
+    ///
+    /// `num_param_slots` is this owner's ABI slot count, and the two travel
+    /// together so a fresh analysis and an imported body describe the same
+    /// parameter list.
+    pub cleanup_owner: Option<SemanticImportType<K, M>>,
     pub param_by_ref: Arc<[bool]>,
     pub param_writable: Arc<[bool]>,
     pub allow_unreachable_code: bool,
@@ -1101,6 +1109,11 @@ impl<K, M> SemanticBody<K, M> {
             borrow_slots: self.borrow_slots.clone(),
             num_locals: self.num_locals,
             num_param_slots: self.num_param_slots,
+            cleanup_owner: self
+                .cleanup_owner
+                .as_ref()
+                .map(|ty| ty.try_map_identities(key, module))
+                .transpose()?,
             param_by_ref: self.param_by_ref.clone(),
             param_writable: self.param_writable.clone(),
             allow_unreachable_code: self.allow_unreachable_code,
