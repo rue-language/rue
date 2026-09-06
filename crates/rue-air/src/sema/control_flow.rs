@@ -2230,7 +2230,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             span,
         });
 
-        // Failure arm: build the early `return`.
+        // Failure arm: build the early `return`. Only a genuine side effect
+        // belongs in the block's statement list: a block statement's own result
+        // is a temporary the block drops at the end of the statement (RUE-65,
+        // RUE-66), so naming a value there that the return expression still
+        // consumes would drop it and then hand the dropped value to the
+        // constructor (RUE-2051).
         let (fail_stmt, fail_ret_value) = match fail_err_ty {
             None => {
                 // Option `None`: drop the scrutinee (nullary variant, no-op glue)
@@ -2242,7 +2247,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 });
                 let none_ctor =
                     air.add_enum_variant(ret_enum_id, ret_fail_idx, &[], return_type, span)?;
-                (drop_scrutinee, none_ctor)
+                (Some(drop_scrutinee), none_ctor)
             }
             Some(err_ty) => {
                 // Result `Err(e)`: move the error payload out of the scrutinee
@@ -2259,7 +2264,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 });
                 let err_ctor =
                     air.add_enum_variant(ret_enum_id, ret_fail_idx, &[err_val], return_type, span)?;
-                (err_val, err_ctor)
+                // `err_val` is the constructor's operand, not a statement: the
+                // `Err` it builds owns the payload and carries it out of the
+                // function.
+                (None, err_ctor)
             }
         };
         let ret = air.add_inst(AirInst {
@@ -2267,7 +2275,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty: Type::NEVER,
             span,
         });
-        let fail_body = air.add_block(&[fail_stmt], ret, Type::NEVER, span)?;
+        let fail_body = air.add_block(fail_stmt.as_slice(), ret, Type::NEVER, span)?;
 
         // Encode the two arms and emit the dispatching match. Its value type is
         // the success payload (the failure arm diverges).

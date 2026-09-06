@@ -129,8 +129,6 @@ when the limitation is lifted and update the chapter that mentions it.
 - A qualified enum path cannot appear inside another variant's payload
   pattern (`R.Err(E.A(x))` does not parse, RUE-2053); the examples use a
   nested `match`.
-- `?` inside a function returning `Result(T, StrBuf)` hits an internal
-  compiler error (RUE-2051); the examples use enum error types.
 - An immutable `let` binding is accepted as an `inout` argument to a free
   function (RUE-2054); the ownership chapter says the caller "declares" the
   binding `let mut` rather than "must" until that is enforced.

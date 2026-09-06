@@ -433,3 +433,110 @@ fn main() -> i32 {
 """
 real_std = true
 exit_code = 42
+
+# =============================================================================
+# `?` on a `Result` whose error type owns a destructor, in an ORDINARY function
+# (not a test body). The failure arm moves the error payload out of the operand
+# and hands it to the `Err` of the enclosing function's own return type
+# (4.15:4); that constructor is the payload's new owner, so the payload is
+# neither dropped at the `?` site nor dropped twice (3.9:2). Before RUE-2051 the
+# error payload was named as a statement of the failure arm's block as well as
+# an operand of that constructor, so a payload with drop glue was dropped at the
+# `?` site and then handed to the constructor already dropped.
+# =============================================================================
+
+[[case]]
+# The success path of a `Result(i64, StrBuf)` `?`: the droppable error type
+# plays no part, and `?` evaluates to the `Ok` payload.
+name = "try_result_ok_path_with_droppable_error_type"
+spec = ["4.15:1", "4.15:3", "4.15:4", "4.15:5"]
+description = "`?` on `Result(i64, StrBuf)` in an ordinary function unwraps `Ok` and continues; the droppable error type is untouched."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const R = std.result.Result(i64, StrBuf);
+fn parse(n: i64) -> R {
+    if n < 0 { R.Err("negative") } else { R.Ok(n) }
+}
+fn compute(a: i64, b: i64) -> R {
+    let x = parse(a)?;
+    R.Ok(x + b)
+}
+fn main() -> i32 {
+    match compute(1, 2) {
+        R.Ok(v) => @intCast(v),
+        R.Err(_) => 1,
+    }
+}
+"""
+real_std = true
+exit_code = 3
+
+[[case]]
+# The failure path of the same `?`: the `StrBuf` error payload moves out of the
+# operand and into the enclosing function's `Err`, which carries it to the
+# caller intact.
+name = "try_result_err_path_propagates_droppable_payload"
+spec = ["4.15:3", "4.15:4"]
+description = "The `?` failure arm moves a `StrBuf` error payload into the enclosing function's `Err` and early-returns it to the caller."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const R = std.result.Result(i64, StrBuf);
+fn parse(n: i64) -> R {
+    if n < 0 { R.Err("negative") } else { R.Ok(n) }
+}
+fn compute(a: i64, b: i64) -> R {
+    let x = parse(a)?;
+    R.Ok(x + b)
+}
+fn main() -> i32 {
+    match compute(0 - 1, 2) {
+        R.Ok(v) => @intCast(v),
+        R.Err(e) => {
+            println(e);
+            9
+        },
+    }
+}
+"""
+real_std = true
+expected_stdout = "negative\n"
+exit_code = 9
+
+[[case]]
+# An error type with a destructor counts the drops. The propagated payload is
+# dropped exactly once, where the caller's binding for it goes out of scope; the
+# success path constructs no error and drops nothing.
+name = "try_result_err_payload_drops_exactly_once"
+spec = ["4.15:4", "3.9:2"]
+description = "A `?`-propagated error payload whose type has a destructor is dropped exactly once, at its final owner."
+source = """
+const std = @import("std");
+struct Failure { code: i32 }
+drop fn Failure(self) {
+    @dbg(self.code);
+}
+const R = std.result.Result(i64, Failure);
+fn parse(n: i64) -> R {
+    if n < 0 { R.Err(Failure { code: 5 }) } else { R.Ok(n) }
+}
+fn compute(a: i64, b: i64) -> R {
+    let x = parse(a)?;
+    R.Ok(x + b)
+}
+fn run(a: i64) -> i32 {
+    match compute(a, 2) {
+        R.Ok(v) => @intCast(v),
+        R.Err(_e) => 0 - 1,
+    }
+}
+fn main() -> i32 {
+    @dbg(run(1));
+    @dbg(run(0 - 1));
+    0
+}
+"""
+real_std = true
+expected_stdout = "3\n5\n-1\n"
+exit_code = 0
