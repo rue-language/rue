@@ -2495,12 +2495,42 @@ impl CompilerSession {
         &mut self,
         options: &CompileOptions,
     ) -> Result<TestClosureAnalysis, CompileErrors> {
-        let attempt = self
-            .rooted_body_graph_attempt(options, rue_query::CancellationToken::new())
-            .map_err(|control| semantic_control_errors("rooted test closure analysis", control))?;
+        match self.cancellable_test_closure_analysis(options, rue_query::CancellationToken::new()) {
+            TestClosureAnalysisOutcome::Analyzed(analysis) => Ok(analysis),
+            TestClosureAnalysisOutcome::Errors(errors) => Err(errors),
+            // The token this passed can never be canceled: nobody else holds it.
+            TestClosureAnalysisOutcome::Canceled => {
+                unreachable!("an uncancelled test analysis cannot report cancellation")
+            }
+        }
+    }
+
+    /// [`Self::rooted_test_closure_analysis`] under a caller's cancellation
+    /// token, for the retained watch host's test cycle (RUE-2023).
+    ///
+    /// Cancellation is an outcome rather than an error because it is not a
+    /// fact about the program: the source revision this analyzed has been
+    /// replaced, so its diagnostics describe bytes the user no longer has.
+    pub(crate) fn cancellable_test_closure_analysis(
+        &mut self,
+        options: &CompileOptions,
+        cancellation: rue_query::CancellationToken,
+    ) -> TestClosureAnalysisOutcome {
+        let attempt = match self.rooted_body_graph_attempt(options, cancellation) {
+            Ok(attempt) => attempt,
+            Err(SemanticRequestControl::Abort(rue_query::QueryAbort::Canceled)) => {
+                return TestClosureAnalysisOutcome::Canceled;
+            }
+            Err(control) => {
+                return TestClosureAnalysisOutcome::Errors(semantic_control_errors(
+                    "rooted test closure analysis",
+                    control,
+                ));
+            }
+        };
         let rejection = match attempt {
             RootedBodyGraphAttempt::Graph(graph) => {
-                return Ok(TestClosureAnalysis {
+                return TestClosureAnalysisOutcome::Analyzed(TestClosureAnalysis {
                     inventory: Arc::clone(&graph.test_inventory),
                     failed: Vec::new(),
                     diagnostics: CompileErrors::default(),
@@ -2509,7 +2539,7 @@ impl CompilerSession {
             RootedBodyGraphAttempt::Rejected(rejection) => rejection,
         };
         if rejection.global {
-            return Err(rejection.into_errors());
+            return TestClosureAnalysisOutcome::Errors(rejection.into_errors());
         }
         let per_body = rejection.per_body();
         let edges = rejection.call_edges();
@@ -2549,7 +2579,7 @@ impl CompilerSession {
                 // to attribute, not one nobody owns: the closure was built from
                 // the test roots, so every body in it is reachable from one.
                 // Reporting the whole run is the honest answer.
-                return Err(rejection.into_errors());
+                return TestClosureAnalysisOutcome::Errors(rejection.into_errors());
             }
             for ordinal in reaching {
                 failed_tests
@@ -2573,7 +2603,7 @@ impl CompilerSession {
                 errors: errors.into(),
             })
             .collect();
-        Ok(TestClosureAnalysis {
+        TestClosureAnalysisOutcome::Analyzed(TestClosureAnalysis {
             inventory: Arc::clone(&rejection.test_inventory),
             // The union, once each: a helper several tests reach fails each of
             // them, and stderr must still show its diagnostic one time.
@@ -3500,6 +3530,18 @@ pub(crate) struct TestClosureAnalysis {
     /// reach it. This is what stderr publishes; the copies attached to each
     /// failed test are the attribution convenience (ADR-0083 §3).
     pub(crate) diagnostics: CompileErrors,
+}
+
+/// What a cancellable test-closure analysis answered (RUE-2023).
+pub(crate) enum TestClosureAnalysisOutcome {
+    Analyzed(TestClosureAnalysis),
+    /// The request failed outside every test closure, so the whole request
+    /// fails. Per-test failures are inside [`TestClosureAnalysis::failed`]
+    /// instead; they are verdicts, not a failed request.
+    Errors(CompileErrors),
+    /// A newer source revision arrived. Nothing is reported: the diagnostics
+    /// this would have carried describe source that no longer exists.
+    Canceled,
 }
 
 /// Render a semantic control answer on the uncancellable error surface.

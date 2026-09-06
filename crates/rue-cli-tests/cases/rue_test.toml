@@ -1471,7 +1471,14 @@ driver_exit_code = 2
 compile_stderr_contains = ["`rue test` cannot be combined with -o/--output"]
 
 [[case]]
-name = "test_mode_refuses_watch_and_the_timing_surfaces"
+name = "test_mode_refuses_the_timing_surfaces"
+description = """
+`--benchmark-json` and `--time-passes` both write into stdout, which is the
+event stream's. `--watch` is NOT among these: a watcher and a run share the
+process's lifetime rather than compete for it, and running each cycle on one
+retained compiler is what removes the per-run recompile (RUE-2023). It is
+covered by `cli.watch_test`.
+"""
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
@@ -1479,9 +1486,47 @@ fn main() -> i32 {
 }
 """ },
 ]
-args = ["test", "main.rue", "--watch"]
+args = ["test", "main.rue", "--benchmark-json"]
 driver_exit_code = 2
-compile_stderr_contains = ["`rue test` cannot be combined with --watch"]
+compile_stderr_contains = ["`rue test` cannot be combined with --benchmark-json"]
+
+[[case]]
+name = "test_mode_watch_refuses_a_listing"
+description = """
+A listing is an inventory of one revision and a watcher has no one revision, so
+it is the single test-mode flag `--watch` excludes (RUE-2023). The status is the
+runner-error `2`, like every other refused `rue test` invocation.
+"""
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+""" },
+]
+args = ["test", "main.rue", "--watch", "--list"]
+driver_exit_code = 2
+compile_stderr_contains = ["`rue test --watch` cannot be combined with --list"]
+
+[[case]]
+name = "test_mode_watch_still_refuses_the_output_modes"
+description = """
+`--watch` combines with every test-mode flag, but the modes compile mode already
+refuses with it stay refused — and in test mode they report the runner-error
+status rather than compile mode's argument status.
+"""
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    0
+}
+""" },
+]
+args = ["test", "main.rue", "--watch", "--emit", "air"]
+driver_exit_code = 2
+compile_stderr_contains = [
+    "--watch cannot be combined with --emit, --benchmark-json, or --time-passes",
+]
 
 [[case]]
 name = "a_test_only_flag_outside_test_mode_is_refused_by_name"

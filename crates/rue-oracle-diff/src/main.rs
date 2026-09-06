@@ -1333,6 +1333,7 @@ fn unsupported_corpus_field(case: &Case) -> Option<IneligibleReason> {
         source_path: _,
         args: _,
         watch: _,
+        watch_test: _,
         env: _,
         program_args: _,
         program_env: _,
@@ -1448,8 +1449,11 @@ fn check_case_with_native(
     }
     // A watch case is an imperative sequence of filesystem edits and driver
     // publications, not one concrete source execution the in-process oracle
-    // can compare. The CLI harness owns this orchestration contract.
-    if case.watch.is_some() {
+    // can compare. The CLI harness owns this orchestration contract. A
+    // `watch_test` case is the same thing for `rue test --watch`, and doubly
+    // so: what it asserts on is an event stream across several revisions, and
+    // the sources it starts with are only the first of them (RUE-2023).
+    if case.watch.is_some() || case.watch_test.is_some() {
         return CaseOutcome::Ineligible(IneligibleReason::WatchOrchestration);
     }
     if let Some(reason) = unsupported_corpus_field(case) {
@@ -1833,6 +1837,7 @@ mod tests {
     use super::*;
     use rue_test_runner::cli_corpus::{
         HardLinkFixture, SourceFile, SymlinkFixture, WatchScenario, WatchScenarioKind,
+        WatchTestScenario, WatchTestScenarioKind,
     };
 
     #[test]
@@ -1902,6 +1907,20 @@ mod tests {
             edits: Vec::new(),
             stderr_contains: Vec::new(),
             expected_exit_codes: Vec::new(),
+        }
+    }
+
+    fn watch_test_scenario() -> WatchTestScenario {
+        WatchTestScenario {
+            kind: WatchTestScenarioKind::Edit,
+            format: None,
+            timeout_ms: None,
+            args: Vec::new(),
+            edits: Vec::new(),
+            stdout_contains: Vec::new(),
+            stdout_not_contains: Vec::new(),
+            stderr_contains: Vec::new(),
+            expected_exit: 0,
         }
     }
 
@@ -2422,6 +2441,12 @@ files = [{ path = "probe.rue", source = "not Rue" }]
         case.watch = Some(watch_scenario());
         assert_cli_ineligible(&case, IneligibleReason::WatchOrchestration);
         case.watch = None;
+        // `rue test --watch` is the same orchestration contract: several source
+        // revisions, an event stream rather than one program's output, and a
+        // starting fixture set that is only the first of them (RUE-2023).
+        case.watch_test = Some(watch_test_scenario());
+        assert_cli_ineligible(&case, IneligibleReason::WatchOrchestration);
+        case.watch_test = None;
         case.driver_exit_code = Some(3);
         assert_cli_ineligible(&case, IneligibleReason::DriverInvocation);
         case.driver_exit_code = None;

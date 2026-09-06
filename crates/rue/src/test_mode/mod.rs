@@ -25,7 +25,7 @@ pub(crate) mod selection;
 pub(crate) mod verdict;
 
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -42,6 +42,13 @@ use events::{
 use exec::{DEFAULT_STREAM_BUDGET, Dispatch};
 use selection::Shard;
 use verdict::{FailureKind, Verdict};
+
+// What the watch loop drives a test cycle with. Test mode owns the run; the
+// loop owns the process's lifetime, the change monitor, and the signals
+// (RUE-2023).
+pub(crate) use exec::{
+    RunCancellation, install_watch_signal_exit, reserve_channel_descriptor, set_watch_exit_status,
+};
 
 /// The default per-test wall-clock budget, matching `rue-test-runner`'s
 /// (ADR-0083 §3).
@@ -150,7 +157,7 @@ pub(crate) struct TestRequest<'a, 'diagnostics> {
 /// library exposes without a dependency. The value is published in
 /// `run_started` and repeated in every repro argv, so a shuffle that surfaced a
 /// bug is re-runnable.
-fn fresh_seed() -> u64 {
+pub(crate) fn fresh_seed() -> u64 {
     use std::hash::{BuildHasher, Hasher};
     std::collections::hash_map::RandomState::new()
         .build_hasher()
@@ -239,23 +246,134 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
         return list(host, &compile_options, &options, diagnostics, &reporter);
     }
 
+    match run_cycle(CycleRequest {
+        host,
+        compile_options: &compile_options,
+        options: &options,
+        diagnostics,
+        root: &root,
+        repro_flags: &repro_flags,
+        repro_env: &repro_env,
+        jobs,
+        target,
+        opt_level,
+        candidates: candidates.as_ref(),
+        seed,
+        cycle: None,
+        cancellation: None,
+        observation: crate::compile::CycleObservation::OneShot,
+    }) {
+        CycleOutcome::Finished(exit) => exit,
+        // A one-shot cycle observes nothing that could supersede it and holds
+        // no cancellation anyone else can trip; those outcomes belong to the
+        // watch loop alone (RUE-2023).
+        CycleOutcome::Canceled | CycleOutcome::Superseded(_) => TestExitCode::RunnerError,
+    }
+}
+
+/// Everything one test cycle needs.
+///
+/// One-shot mode drives exactly one of these; `rue test --watch` drives one per
+/// accepted source revision on the retained host, which is what removes the
+/// per-run recompile (RUE-2023). Everything that differs between the two is a
+/// field here — the cycle number, the run cancellation, and how the image is
+/// observed — so there is one cycle body rather than a batch one and a watch
+/// one that drift.
+pub(crate) struct CycleRequest<'a, 'diagnostics> {
+    pub(crate) host: &'a mut FilesystemCompilerHost,
+    pub(crate) compile_options: &'a CompileOptions,
+    pub(crate) options: &'a TestOptions,
+    pub(crate) diagnostics: &'a crate::DiagnosticOutput<'diagnostics>,
+    pub(crate) root: &'a str,
+    pub(crate) repro_flags: &'a [String],
+    pub(crate) repro_env: &'a [(String, String)],
+    pub(crate) jobs: usize,
+    pub(crate) target: Target,
+    pub(crate) opt_level: OptLevel,
+    /// Re-acquired per cycle under `--watch`: `--test-candidates` names files
+    /// on disk, and the answer to "what does this target own" changes with the
+    /// same edits everything else here does.
+    pub(crate) candidates: Option<&'a TestCandidateInventory>,
+    /// Fixed for the life of the process unless `--seed` was given, so
+    /// consecutive cycles shuffle the same way and a difference between two of
+    /// them is attributable to the edit rather than to the order.
+    pub(crate) seed: u64,
+    /// The 1-based watch cycle number, or `None` for a one-shot run.
+    pub(crate) cycle: Option<u64>,
+    /// The watch loop's authority to end this cycle's execution phase.
+    pub(crate) cancellation: Option<&'a exec::RunCancellation>,
+    pub(crate) observation: crate::compile::CycleObservation<'a>,
+}
+
+/// How a cycle ended.
+pub(crate) enum CycleOutcome {
+    /// The cycle published `run_finished` (or failed before any event could be
+    /// published) and this is the status a one-shot run would exit with.
+    Finished(TestExitCode),
+    /// The cycle was abandoned. If it had reached the run, `run_canceled` says
+    /// so on the event stream; if it was still building the image, nothing was
+    /// published at all, because no `run_started` had opened the cycle.
+    Canceled,
+    /// A newer source revision arrived before the image could be published.
+    Superseded(crate::compile::Supersession),
+}
+
+/// Build the image for one revision and run the plan over it.
+pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
+    let CycleRequest {
+        host,
+        compile_options,
+        options,
+        diagnostics,
+        root,
+        repro_flags,
+        repro_env,
+        jobs,
+        target,
+        opt_level,
+        candidates,
+        seed,
+        cycle,
+        cancellation,
+        observation,
+    } = request;
+
+    // One private directory per cycle, so a failing test's retained scratch
+    // directory from cycle N survives cycle N+1 (RUE-2023).
+    let run_root = exec::run_root(seed, cycle);
+    if let Err(error) = std::fs::create_dir_all(&run_root) {
+        eprintln!("error: could not create the test run directory: {error}");
+        return CycleOutcome::Finished(TestExitCode::RunnerError);
+    }
+    let image_path = run_root.join("rue-test-image");
+
     // Nothing is published before the image exists: a compile failure outside
     // every test closure is diagnostics on stderr and exit 2, with an empty
     // event stream. A failure INSIDE one is not that failure — the image still
-    // exists, built from the tests that did analyze (ADR-0083 §3).
-    let image = match host.test_image_in_compile_scope(&compile_options) {
-        Ok(image) => image,
-        Err(errors) => {
-            diagnostics.print_errors(&errors);
-            return TestExitCode::RunnerError;
+    // exists, built from the tests that did analyze (ADR-0083 §3). The cycle
+    // that decides all of that is `compile`'s, shared with the executable
+    // build and with executable watch (RUE-1969, RUE-2023).
+    let image = match crate::compile::drive_test_cycle(crate::compile::TestCycleRequest {
+        host: &mut *host,
+        options: compile_options,
+        diagnostics,
+        image_path: &image_path,
+        observation,
+    }) {
+        crate::compile::TestCycleReport::Published(image) => *image,
+        crate::compile::TestCycleReport::Failed => {
+            discard_run_root(&image_path, &run_root);
+            return CycleOutcome::Finished(TestExitCode::RunnerError);
+        }
+        crate::compile::TestCycleReport::Canceled => {
+            discard_run_root(&image_path, &run_root);
+            return CycleOutcome::Canceled;
+        }
+        crate::compile::TestCycleReport::Superseded(boundary) => {
+            discard_run_root(&image_path, &run_root);
+            return CycleOutcome::Superseded(boundary);
         }
     };
-    let rue_compiler::unstable::TestImage {
-        output: image,
-        inventory,
-        compile_failures,
-        failure_diagnostics,
-    } = image;
     // Built here rather than above because the closure is only published once
     // the image is: nothing before this point could answer how many modules the
     // program has.
@@ -265,26 +383,19 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
             multi_module_closure: host.published_user_module_count() > 1,
         },
     );
-    diagnostics.print_warnings(&image.warnings);
-    // stderr is the authoritative diagnostic stream and carries these exactly
-    // as a whole-run failure would have: once, in the run's own
-    // `--error-format`, before any event. The copies inside the events are the
-    // attribution (ADR-0083 §3). They are printed whatever the selection is,
-    // because the closure that produced them is the whole closure: a filter
-    // narrows the run set, never the analysis root set, and a filtered run that
-    // silently swallowed a broken test file would be the papercut the
-    // unimported-test-file warning exists to prevent.
-    if !failure_diagnostics.is_empty() {
-        diagnostics.print_errors(&failure_diagnostics);
-    }
-    let compile_errors = CompileErrorVerdicts::new(&compile_failures, diagnostics);
+    let compile_errors = CompileErrorVerdicts::new(&image.compile_failures, diagnostics);
 
-    let total = inventory.entries.len();
-    let plan = selection::plan(&inventory.entries, &options.filters, options.shard, seed);
+    let total = image.inventory.entries.len();
+    let plan = selection::plan(
+        &image.inventory.entries,
+        &options.filters,
+        options.shard,
+        seed,
+    );
     let started = Instant::now();
 
     reporter.emit(&Event::RunStarted {
-        root: root.clone(),
+        root: root.to_owned(),
         target: target.to_string(),
         opt_level: opt_level_digit(opt_level),
         seed,
@@ -292,12 +403,15 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
         shard: options.shard.map(|shard| shard.to_string()),
         selected: plan.len(),
         total,
+        cycle,
     });
+    watch_milestone("run-started");
 
     if plan.is_empty() {
-        let unimported = report_unimported(host, candidates.as_ref(), diagnostics);
+        discard_run_root(&image_path, &run_root);
+        let unimported = report_unimported(host, candidates, diagnostics);
         let Ok(unimported) = unimported else {
-            return TestExitCode::RunnerError;
+            return CycleOutcome::Finished(TestExitCode::RunnerError);
         };
         // Said before the terminal event, so a reader of an interleaved
         // terminal sees the reason ahead of the vacuous "0 passed" summary.
@@ -310,25 +424,17 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
             compile_error: 0,
             wall_ms: elapsed_ms(started),
             unimported_test_files: unimported,
-            test_candidates: candidate_source(candidates.as_ref()),
+            test_candidates: candidate_source(candidates),
         });
-        return TestExitCode::EmptySelection;
+        watch_milestone("run-finished");
+        return CycleOutcome::Finished(TestExitCode::EmptySelection);
     }
-
-    let run_root = exec::run_root(seed);
-    let image_path = match publish_image(&image.elf, target, &run_root) {
-        Ok(path) => path,
-        Err(message) => {
-            eprintln!("{message}");
-            return TestExitCode::RunnerError;
-        }
-    };
 
     // A repro is pasted into some other shell, from some other directory, so it
     // names the compiler and the root by absolute path rather than by whatever
     // spelling this invocation happened to use (RUE-2020).
     let repro_program = repro_program();
-    let repro_root = absolute_spelling(Path::new(&root));
+    let repro_root = absolute_spelling(Path::new(root));
 
     let outcome = execute_plan(ExecutionRequest {
         plan: &plan,
@@ -340,23 +446,40 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
         jobs,
         repro_program: &repro_program,
         repro_root: &repro_root,
-        repro_flags: &repro_flags,
-        repro_env: &repro_env,
+        repro_flags,
+        repro_env,
         reporter: &reporter,
+        cancellation,
     });
     // The image is the runner's own artifact and is never retained; the run
     // root goes with it unless a failing test left a scratch directory behind,
     // in which case the non-recursive removal fails and the evidence survives.
-    let _ = std::fs::remove_file(&image_path);
-    let _ = std::fs::remove_dir(&run_root);
+    discard_run_root(&image_path, &run_root);
+
+    // An edit that landed mid-run killed the tests that were still going, so
+    // the counts describe neither the whole plan nor the verdicts that would
+    // have followed. The cycle says it was abandoned and says how far it got;
+    // it does not publish a `run_finished` (RUE-2023).
+    if outcome.canceled {
+        reporter.emit(&Event::RunCanceled {
+            // A run is only cancellable through a watch cycle's own
+            // cancellation, and a watch cycle always has a number.
+            cycle: cycle.unwrap_or(0),
+            reported: outcome.reported(),
+            selected: plan.len(),
+            wall_ms: elapsed_ms(started),
+        });
+        watch_milestone("run-canceled");
+        return CycleOutcome::Canceled;
+    }
 
     if let Some(error) = outcome.runner_error {
         eprintln!("error: {error}");
-        return TestExitCode::RunnerError;
+        return CycleOutcome::Finished(TestExitCode::RunnerError);
     }
 
-    let Ok(unimported) = report_unimported(host, candidates.as_ref(), diagnostics) else {
-        return TestExitCode::RunnerError;
+    let Ok(unimported) = report_unimported(host, candidates, diagnostics) else {
+        return CycleOutcome::Finished(TestExitCode::RunnerError);
     };
     reporter.emit(&Event::RunFinished {
         passed: outcome.passed,
@@ -366,17 +489,40 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
         compile_error: outcome.compile_error,
         wall_ms: elapsed_ms(started),
         unimported_test_files: unimported,
-        test_candidates: candidate_source(candidates.as_ref()),
+        test_candidates: candidate_source(candidates),
     });
+    watch_milestone("run-finished");
 
     // A `compile_error` test is a failed test, not a failed run: exit 1 with
     // the other tests' verdicts, never the 2 that says nothing ran
     // (ADR-0083 §3).
-    if outcome.failed + outcome.timeout + outcome.crash + outcome.compile_error > 0 {
-        TestExitCode::Failures
-    } else {
-        TestExitCode::AllPassed
-    }
+    CycleOutcome::Finished(
+        if outcome.failed + outcome.timeout + outcome.crash + outcome.compile_error > 0 {
+            TestExitCode::Failures
+        } else {
+            TestExitCode::AllPassed
+        },
+    )
+}
+
+/// Remove the cycle's image and, if nothing retained a scratch directory
+/// inside it, the run root itself.
+///
+/// The removal is deliberately non-recursive: a failing test's scratch
+/// directory is evidence, and the directory that holds it survives with it
+/// (ADR-0083 §5.4).
+fn discard_run_root(image_path: &Path, run_root: &Path) {
+    let _ = std::fs::remove_file(image_path);
+    let _ = std::fs::remove_dir(run_root);
+}
+
+/// Report a run milestone on the watch loop's test protocol.
+///
+/// Dormant unless `RUE_WATCH_TEST_PROTOCOL` names a file, exactly like every
+/// other milestone: this is the seam that lets a watch-mode CLI case wait for
+/// a cycle's run to start, finish, or be abandoned instead of sleeping.
+fn watch_milestone(event: &str) {
+    crate::watch::test_event(event);
 }
 
 /// The `compile_error` verdicts a run publishes, keyed by ordinal.
@@ -564,40 +710,6 @@ fn list(
     TestExitCode::AllPassed
 }
 
-/// Write the linked image where it can be executed.
-///
-/// This goes through the driver's ordinary publication path rather than a bare
-/// `fs::write`, because publication is where target-specific finalization
-/// happens — notably ad-hoc Mach-O signing, without which the image would not
-/// run at all on Apple silicon.
-fn publish_image(
-    elf: &[u8],
-    target: Target,
-    run_root: &std::path::Path,
-) -> Result<PathBuf, String> {
-    std::fs::create_dir_all(run_root)
-        .map_err(|error| format!("error: could not create the test run directory: {error}"))?;
-    let path = run_root.join("rue-test-image");
-    let destination = crate::output::preflight_destination(&path, std::iter::empty())
-        .map_err(|error| publish_failure("stage", error))?;
-    crate::output::publish_executable(crate::output::PublishRequest {
-        destination,
-        bytes: elf,
-        target,
-    })
-    .map_err(|error| publish_failure("publish", error))?;
-    Ok(path)
-}
-
-/// A staging failure, rendered through the same message a publication failure
-/// carries on the compile path.
-fn publish_failure(verb: &str, error: crate::output::PublishError) -> String {
-    format!(
-        "error: could not {verb} the test image: {}",
-        error.into_compile_error().kind
-    )
-}
-
 struct ExecutionRequest<'a> {
     plan: &'a [TestInventoryEntry],
     /// The verdicts the compiler already decided, by ordinal. A plan entry
@@ -614,6 +726,9 @@ struct ExecutionRequest<'a> {
     repro_flags: &'a [String],
     repro_env: &'a [(String, String)],
     reporter: &'a Reporter,
+    /// A watch cycle's authority to abandon this run. `None` for a one-shot
+    /// run, which nothing outside itself can end (RUE-2023).
+    cancellation: Option<&'a exec::RunCancellation>,
 }
 
 #[derive(Default)]
@@ -624,6 +739,17 @@ struct ExecutionOutcome {
     crash: usize,
     compile_error: usize,
     runner_error: Option<String>,
+    /// An edit landed while the plan was running, so the run stopped short of
+    /// it (RUE-2023).
+    canceled: bool,
+}
+
+impl ExecutionOutcome {
+    /// Verdicts this run actually published, which is what a canceled cycle
+    /// reports in place of counts by class.
+    fn reported(&self) -> usize {
+        self.passed + self.failed + self.timeout + self.crash + self.compile_error
+    }
 }
 
 /// Run the plan across a bounded pool of workers.
@@ -664,6 +790,11 @@ fn execute_plan(request: ExecutionRequest<'_>) -> ExecutionOutcome {
                     {
                         return;
                     }
+                    // Read before anything is published, so an abandoned cycle
+                    // never opens a `test_started` it can only leave dangling.
+                    if canceled(request.cancellation) {
+                        return;
+                    }
                     request.reporter.emit(&Event::TestStarted {
                         id: entry.id.clone(),
                     });
@@ -685,6 +816,7 @@ fn execute_plan(request: ExecutionRequest<'_>) -> ExecutionOutcome {
                         ));
                         continue;
                     }
+                    crate::watch::test_event("test-spawned");
                     let execution = exec::run_one(Dispatch {
                         image: request.image,
                         run_root: request.run_root,
@@ -692,7 +824,30 @@ fn execute_plan(request: ExecutionRequest<'_>) -> ExecutionOutcome {
                         seed: request.seed,
                         timeout: request.timeout,
                         stream_budget: DEFAULT_STREAM_BUDGET,
+                        cancellation: request.cancellation,
                     });
+                    // The cancellation killed this test's process group, so
+                    // whatever it reported is an artifact of the kill rather
+                    // than a verdict about the program. The `test_started`
+                    // above stands unfinished, and `run_canceled` is what
+                    // tells a consumer why (RUE-2023).
+                    if canceled(request.cancellation) {
+                        // This one directory goes with the verdict that was
+                        // never published. Retention is for evidence a reader
+                        // was pointed at (ADR-0083 §5.4), and no event names
+                        // this path; the abort-only runtime left nothing in it
+                        // to inspect either, because the process was SIGKILLed.
+                        // Only this ordinal's directory: a sibling test's
+                        // retained scratch in the same run root belongs to a
+                        // verdict that WAS published, which is why the run root
+                        // itself is still removed non-recursively.
+                        let _ = std::fs::remove_dir_all(exec::scratch_path(
+                            request.run_root,
+                            request.seed,
+                            entry.ordinal,
+                        ));
+                        return;
+                    }
                     let execution = match execution {
                         Ok(execution) => execution,
                         Err(error) => {
@@ -743,7 +898,13 @@ fn execute_plan(request: ExecutionRequest<'_>) -> ExecutionOutcome {
         runner_error: runner_error
             .into_inner()
             .unwrap_or_else(|error| error.into_inner()),
+        canceled: canceled(request.cancellation),
     }
+}
+
+/// Whether a watch cycle has abandoned the run this worker is serving.
+fn canceled(cancellation: Option<&exec::RunCancellation>) -> bool {
+    cancellation.is_some_and(exec::RunCancellation::is_canceled)
 }
 
 /// Turn one finished process into its `test_finished` event.

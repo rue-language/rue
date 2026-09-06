@@ -2,9 +2,10 @@ use std::path::Path;
 
 use rue_compiler::unstable::TestCandidateInventory;
 use rue_compiler::unstable::{
-    CancellableCompileOutcome, CodegenReady, CompilationCancellation, ObjectsReady,
-    PresentationOutput, PresentationRequest, TestImage, TestListing, UnimportedTestFile,
-    cancellable_executable_in_compile_scope, codegen_ready, executable_in_compile_scope,
+    CancellableCompileOutcome, CancellableTestImageOutcome, CodegenReady, CompilationCancellation,
+    ObjectsReady, PresentationOutput, PresentationRequest, TestImage, TestListing,
+    UnimportedTestFile, cancellable_executable_in_compile_scope,
+    cancellable_test_image_in_compile_scope, codegen_ready, executable_in_compile_scope,
     objects_ready, runnable_ready, test_image_in_compile_scope, test_inventory,
     unimported_test_files,
 };
@@ -231,6 +232,24 @@ impl FilesystemCompilerHost {
     ) -> MultiErrorResult<TestImage> {
         self.closed_discovery()?;
         test_image_in_compile_scope(&mut self.state.session, options)
+    }
+
+    /// Link the test image like [`Self::test_image_in_compile_scope`], under a
+    /// caller's cancellation token (RUE-2023).
+    ///
+    /// This is what makes a `rue test --watch` cycle abandonable: an edit
+    /// landing while the image is being analyzed or linked cancels it, and the
+    /// cycle reports nothing rather than diagnostics about source the user has
+    /// already replaced.
+    pub fn cancellable_test_image_in_compile_scope(
+        &mut self,
+        options: &CompileOptions,
+        cancellation: CompilationCancellation,
+    ) -> CancellableTestImageOutcome {
+        if let Err(errors) = self.closed_discovery() {
+            return CancellableTestImageOutcome::Errors(errors);
+        }
+        cancellable_test_image_in_compile_scope(&mut self.state.session, options, cancellation)
     }
 
     /// Report the declared candidates the compiled closure does not contain

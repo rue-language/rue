@@ -292,10 +292,16 @@ Commands:
   --test-candidates <path>
                        Report declared test files nothing imports
   Test mode reuses --target, -O<n>, --preview, --jobs, --source-manifest,
-  --link-archive, --error-format, and the logging options. There --jobs bounds
-  concurrent test processes only; compilation uses auto-detected parallelism.
-  It cannot be combined with --emit, --watch, --benchmark-json, --time-passes,
-  or -o.
+  --link-archive, --error-format, --watch, and the logging options. There
+  --jobs bounds concurrent test processes only; compilation uses auto-detected
+  parallelism. It cannot be combined with --emit, --benchmark-json,
+  --time-passes, or -o; --watch additionally excludes --list.
+  With --watch, one test cycle runs per accepted source revision on one
+  retained compiler, so a cycle pays for what the edit changed rather than for
+  a whole recompile. Each cycle publishes its own run_started/run_finished
+  pair; an edit landing mid-run kills the tests and ends the cycle with
+  run_canceled. The exit status is produced only on SIGINT/SIGTERM and is the
+  last COMPLETED cycle's: 0 all passed, 1 otherwise, 2 if none completed.
   Exit codes: 0 all passed, 1 failures, 2 compilation or runner error,
   3 empty selection.
   A root module actually named `test` is spelled `./test`.
@@ -340,6 +346,7 @@ Options:
   --time-passes        Show timing for each compilation pass
   --benchmark-json     Output timing as JSON (for benchmarking)
   --watch              Recompile when the accepted source closure changes
+                       With `rue test`, re-run the tests instead
   --version            Show version information
   --help               Show this help message",
         targets = Target::all_names(),
@@ -990,10 +997,13 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
 ///
 /// Test mode joins the same validation path `--watch` uses (ADR-0083 §2). Each
 /// refusal is a real conflict over one resource rather than a taste: `--emit`
-/// and `--benchmark-json` own stdout, which is the event stream's; `--watch`
-/// owns the process's lifetime, which the run does; `-o` names an executable
-/// destination a test run never publishes to; and `--time-passes` writes an
-/// unstructured timing report into the same stream.
+/// and `--benchmark-json` own stdout, which is the event stream's; `-o` names
+/// an executable destination a test run never publishes to; and
+/// `--time-passes` writes an unstructured timing report into the same stream.
+/// `--watch` is not among them: a watcher and a run share the process's
+/// lifetime rather than compete for it, and running the cycle on the retained
+/// host is what removes the per-run recompile (RUE-2023). Only `--list` is
+/// refused with it, because a listing is an inventory of one revision.
 ///
 /// The reverse direction matters just as much: a test-only flag in compile
 /// mode is refused by name. Silently ignoring `rue --filter x main.rue` would
@@ -1007,10 +1017,14 @@ fn validate_mode_combinations(options: &Options) -> Result<(), String> {
         }
         return Ok(());
     }
+    if options.watch && options.test.list {
+        // A listing is an inventory of one revision, and a watcher has no one
+        // revision. There is no useful "watch the listing" behavior to define
+        // and every other test-mode flag combines with `--watch` (RUE-2023).
+        return Err("Error: `rue test --watch` cannot be combined with --list".to_owned());
+    }
     let conflict = if !options.emit_stages.is_empty() {
         Some("--emit")
-    } else if options.watch {
-        Some("--watch")
     } else if options.benchmark_json {
         Some("--benchmark-json")
     } else if options.time_passes {
@@ -2454,7 +2468,9 @@ fn main() {
     }
     if let Err(message) = validate_watch_modes(&options) {
         eprintln!("{message}");
-        std::process::exit(1);
+        // A refused `rue test --watch` combination is still "the run did not
+        // happen", which is the status an agent branches on (ADR-0083 §2).
+        std::process::exit(driver_failure_exit_code(&options.mode));
     }
     // A `rue test` invocation that cannot run reports the runner-error status
     // rather than the compile-mode argument status, so an agent branching on
@@ -2574,12 +2590,34 @@ fn main() {
     }
 
     if options.watch {
+        // Both watch modes drive the same loop over the same retained host;
+        // only the cycle body differs (RUE-2023). Test mode's per-cycle
+        // configuration is assembled here, where the parsed options still
+        // exist, because the loop never returns.
+        let mode = match options.mode {
+            DriverMode::Test => watch::WatchMode::Test(Box::new(watch::TestWatch {
+                repro_flags: test_repro_flags(&options),
+                repro_env: test_repro_env(captured_std_root.as_deref()),
+                jobs: test_mode_jobs(options.jobs),
+                target: options.target,
+                opt_level: options.opt_level,
+                test_candidates_path: options.test_candidates_path.clone(),
+                // Derived once for the process: consecutive cycles then
+                // shuffle the same way, and a difference between two of them
+                // is attributable to the edit rather than to the order.
+                seed: options.test.seed.unwrap_or_else(test_mode::fresh_seed),
+                options: options.test.clone(),
+            })),
+            DriverMode::Compile => watch::WatchMode::Executable {
+                output_path: options.output_path,
+            },
+        };
         watch::run(watch::WatchRequest {
             host: compiler_host,
             compile_options,
             source_path: options.source_path,
-            output_path: options.output_path,
             error_format: options.error_format,
+            mode,
         });
     }
 
@@ -3550,7 +3588,6 @@ mod tests {
     fn test_mode_refuses_every_incompatible_flag() {
         let conflicts: &[(&[&str], &str)] = &[
             (&["test", "main.rue", "--emit", "ast"], "--emit"),
-            (&["test", "main.rue", "--watch"], "--watch"),
             (
                 &["test", "main.rue", "--benchmark-json"],
                 "--benchmark-json",
@@ -3558,6 +3595,10 @@ mod tests {
             (&["test", "main.rue", "--time-passes"], "--time-passes"),
             (&["test", "main.rue", "-o", "prog"], "-o/--output"),
             (&["test", "main.rue", "--output", "prog"], "-o/--output"),
+            // `--watch` is not one of them, but a listing is: an inventory is
+            // an inventory of one revision, and a watcher has no one revision
+            // (RUE-2023).
+            (&["test", "main.rue", "--watch", "--list"], "--list"),
         ];
         for (args, flag) in conflicts {
             let options = unwrap_options(parse_args_from(args));
@@ -3565,6 +3606,33 @@ mod tests {
                 .expect_err(&format!("{flag} must conflict with `rue test`"));
             assert!(error.contains(flag), "{error}");
         }
+    }
+
+    /// `rue test --watch` is the whole point of RUE-2023: one retained
+    /// compiler running one cycle per accepted source revision, rather than a
+    /// combination the driver refuses.
+    #[test]
+    fn test_mode_accepts_watch_with_every_other_test_flag() {
+        let options = unwrap_options(parse_args_from(&[
+            "test",
+            "main.rue",
+            "--watch",
+            "--filter",
+            "x",
+            "--format",
+            "json",
+            "--timeout-ms",
+            "10",
+            "--shard",
+            "1/2",
+            "--seed",
+            "1",
+            "-j2",
+        ]));
+        assert!(options.watch);
+        assert_eq!(options.mode, DriverMode::Test);
+        assert!(validate_mode_combinations(&options).is_ok());
+        assert!(validate_watch_modes(&options).is_ok());
     }
 
     /// The reverse direction: a test-only flag outside test mode is refused by

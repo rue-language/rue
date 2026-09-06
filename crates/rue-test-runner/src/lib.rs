@@ -2654,6 +2654,28 @@ pub fn configure_process_group(cmd: &mut Command) {
 #[cfg(not(unix))]
 pub fn configure_process_group(_cmd: &mut Command) {}
 
+/// Ask a child's whole process group to stop, the way a terminal's Ctrl-C
+/// would, and leave it to exit on its own terms.
+///
+/// The counterpart of [`kill_process_group`] for a child whose REACTION to
+/// being interrupted is the thing under test — `rue test --watch` reports the
+/// last completed cycle's status on SIGINT rather than dying of the signal, and
+/// a SIGKILL would prove nothing about that.
+#[cfg(unix)]
+pub fn interrupt_process_group(child: &mut std::process::Child) {
+    let pid = child.id() as i32;
+    // SAFETY: a negative pid names the group led by `pid`, which
+    // `configure_process_group` made this child the leader of.
+    unsafe {
+        libc::kill(-pid, libc::SIGINT);
+    }
+}
+
+#[cfg(not(unix))]
+pub fn interrupt_process_group(child: &mut std::process::Child) {
+    let _ = child.kill();
+}
+
 /// Kill the timed-out child and everything in its process group, then reap it.
 #[cfg(unix)]
 pub fn kill_process_group(child: &mut std::process::Child) {

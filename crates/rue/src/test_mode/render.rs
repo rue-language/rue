@@ -68,7 +68,28 @@ pub(crate) fn render(event: &Event) -> Option<String> {
             compile_error: *compile_error,
             wall_ms: *wall_ms,
         })),
+        Event::RunCanceled {
+            reported,
+            selected,
+            wall_ms,
+            // The cycle number is for a consumer grouping a tailed stream; a
+            // person reading a terminal is already inside the cycle.
+            cycle: _,
+        } => Some(canceled(*reported, *selected, *wall_ms)),
     }
+}
+
+/// `canceled after 3 of 9 tests (0.4s); a newer source revision is available`.
+///
+/// The two counts are the honest report a `run_finished` could not make: the
+/// verdicts this cycle published, and the plan it was working through when the
+/// edit landed (RUE-2023).
+fn canceled(reported: usize, selected: usize, wall_ms: u64) -> String {
+    format!(
+        "canceled after {reported} of {selected} test{} ({}); a newer source revision is available",
+        if selected == 1 { "" } else { "s" },
+        seconds(wall_ms)
+    )
 }
 
 /// The runner's own notice for this event, or `None` when a run is owed none.
@@ -564,9 +585,36 @@ mod tests {
                 shard: None,
                 selected: 1,
                 total: 1,
+                cycle: None,
             })
             .is_none()
         );
+    }
+
+    /// A canceled cycle is the one thing a watch consumer must not read as a
+    /// silent end, so it prints in place of the summary it replaces
+    /// (RUE-2023).
+    #[test]
+    fn a_canceled_cycle_reports_what_it_managed() {
+        let rendered = super::render(&Event::RunCanceled {
+            cycle: 2,
+            reported: 3,
+            selected: 9,
+            wall_ms: 400,
+        })
+        .expect("a canceled cycle is never silent");
+        assert_eq!(
+            rendered,
+            "canceled after 3 of 9 tests (0.4s); a newer source revision is available"
+        );
+        let single = super::render(&Event::RunCanceled {
+            cycle: 1,
+            reported: 0,
+            selected: 1,
+            wall_ms: 0,
+        })
+        .expect("a canceled cycle is never silent");
+        assert!(single.contains("0 of 1 test ("), "{single}");
     }
 
     #[test]

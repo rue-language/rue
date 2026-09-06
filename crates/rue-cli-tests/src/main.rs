@@ -197,13 +197,15 @@ use rue_target::{Arch, Target};
 use rue_test_runner::cli_corpus::{
     AutomaticExampleContract, Case, CliCaseTier, ExecutionClass, ExecutionContractDeclaration,
     HangTimeoutProfile, Section, TestFile, TimeoutProfile, WatchEdit, WatchScenario,
-    WatchScenarioKind, unknown_known_bug_on_platforms, unknown_only_on_platforms,
+    WatchScenarioKind, WatchTestScenario, WatchTestScenarioKind, unknown_known_bug_on_platforms,
+    unknown_only_on_platforms,
 };
 use rue_test_runner::{
     ExpectedFailureOutcome, KNOWN_TARGETS, PlatformCaseSelection, ShardSelector, TestFailure,
     TestNameOrigin, TestResult, classify_expected_failure, compiler_command,
-    configure_process_group, find_dir, find_rue_binary, ice_message, kill_process_group,
-    run_with_timeout, validate_nonempty_case_corpus, validate_unique_test_names,
+    configure_process_group, find_dir, find_rue_binary, ice_message, interrupt_process_group,
+    kill_process_group, run_with_timeout, validate_nonempty_case_corpus,
+    validate_unique_test_names,
 };
 use serde::Serialize;
 
@@ -1992,6 +1994,7 @@ fn case_runs_prebuilt_program(case: &Case) -> bool {
         args: None,
         output: None,
         watch: None,
+        watch_test: None,
         env,
         executable_target: None,
         compile_fail: false,
@@ -2922,6 +2925,207 @@ fn run_watch_case(
     })
 }
 
+/// Drive a real `rue test --watch` process through the milestone protocol,
+/// editing its sources between cycles, and assert on the event stream it
+/// publishes (RUE-2023).
+///
+/// It never runs a produced program: a test watcher publishes no executable, so
+/// what it owes a consumer is the stream and the exit status it reports when it
+/// is asked to stop. Both are checked here.
+fn run_watch_test_case(
+    case: &Case,
+    scenario: &WatchTestScenario,
+    contract: &ExecutionContract,
+    rue_binary: &Path,
+    real_std: &Path,
+) -> TestResult {
+    let required_edits = match scenario.kind {
+        WatchTestScenarioKind::Edit | WatchTestScenarioKind::Cancel => 1,
+        WatchTestScenarioKind::CompileError => 2,
+    };
+    if scenario.edits.len() != required_edits {
+        return Err(TestFailure::assertion(format!(
+            "a {:?} watch-test scenario requires exactly {required_edits} edit(s)",
+            scenario.kind
+        )));
+    }
+
+    let temp_dir = tempfile::tempdir().map_err(|error| {
+        TestFailure::fatal(format!("failed to create watch-test temp dir: {error}"))
+    })?;
+    let dir = temp_dir.path();
+    for file in &case.files {
+        let path = dir.join(&file.path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                TestFailure::fatal(format!(
+                    "failed to create watch-test fixture directory: {error}"
+                ))
+            })?;
+        }
+        std::fs::write(&path, &file.source).map_err(|error| {
+            TestFailure::fatal(format!(
+                "failed to write watch-test fixture {}: {error}",
+                file.path
+            ))
+        })?;
+    }
+
+    let source = case
+        .files
+        .first()
+        .map(|file| file.path.as_str())
+        .ok_or_else(|| TestFailure::assertion("watch-test scenario has no root source"))?;
+    let protocol = dir.join("watch.protocol");
+    let mut compiler_args = vec![
+        "test".to_owned(),
+        source.to_owned(),
+        "--watch".to_owned(),
+        // The event stream promises the content of each line, not an order
+        // across concurrent tests, so a case that asserts on it runs one test
+        // at a time. The seed is explicit for the same reason it is in
+        // `cli.rue_test`: a pinned plan is a comparable one.
+        "-j1".to_owned(),
+        "--seed".to_owned(),
+        "1".to_owned(),
+        "--format".to_owned(),
+        scenario.format.clone().unwrap_or_else(|| "json".to_owned()),
+    ];
+    if let Some(timeout) = scenario.timeout_ms {
+        compiler_args.push("--timeout-ms".to_owned());
+        compiler_args.push(timeout.to_string());
+    }
+    compiler_args.extend(scenario.args.iter().cloned());
+
+    let mut command = case_compiler_command(rue_binary, &compiler_args, dir, &case.env, real_std);
+    command
+        .env("RUE_WATCH_TEST_PROTOCOL", &protocol)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_process_group(&mut command);
+    let mut child = command.spawn().map_err(|error| {
+        TestFailure::fatal(format!("failed to spawn watch-test process: {error}"))
+    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| TestFailure::fatal("watch-test process stdout pipe was unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| TestFailure::fatal("watch-test process stderr pipe was unavailable"))?;
+    let stdout = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = std::io::BufReader::new(stdout).read_to_end(&mut bytes);
+        bytes
+    });
+    let stderr = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = std::io::BufReader::new(stderr).read_to_end(&mut bytes);
+        bytes
+    });
+
+    let deadline = Instant::now() + contract.runtime_timeout().min(Duration::from_secs(60));
+    let mut interrupted = None;
+    let result = (|| -> Result<(), String> {
+        wait_for_watch_event(&mut child, &protocol, "ready", 1, deadline)?;
+        match scenario.kind {
+            WatchTestScenarioKind::Edit => {
+                wait_for_watch_event(&mut child, &protocol, "run-finished", 1, deadline)?;
+                write_watch_edit(dir, &scenario.edits[0])?;
+                wait_for_watch_event(&mut child, &protocol, "run-finished", 2, deadline)?;
+            }
+            WatchTestScenarioKind::CompileError => {
+                wait_for_watch_event(&mut child, &protocol, "run-finished", 1, deadline)?;
+                write_watch_edit(dir, &scenario.edits[0])?;
+                wait_for_watch_event(&mut child, &protocol, "compile-error", 1, deadline)?;
+                // A failed cycle publishes no events at all: the head event is
+                // owed only to a run that began (test-events.md, "Streams").
+                if watch_event_count(&protocol, "run-started") != 1 {
+                    return Err(format!(
+                        "a failed watch cycle opened a run: {:?}",
+                        watch_events(&protocol)
+                    ));
+                }
+                write_watch_edit(dir, &scenario.edits[1])?;
+                wait_for_watch_event(&mut child, &protocol, "run-finished", 2, deadline)?;
+            }
+            WatchTestScenarioKind::Cancel => {
+                // Wait for a test process to actually exist before editing:
+                // the point of the case is the kill landing on a live group.
+                wait_for_watch_event(&mut child, &protocol, "test-spawned", 1, deadline)?;
+                write_watch_edit(dir, &scenario.edits[0])?;
+                wait_for_watch_event(&mut child, &protocol, "run-canceled", 1, deadline)?;
+                // The abandoned cycle published no `run_finished`, so the one
+                // this waits for is the NEXT cycle's.
+                wait_for_watch_event(&mut child, &protocol, "run-finished", 1, deadline)?;
+            }
+        }
+        // A watcher produces an exit status only when it is asked to stop, and
+        // that status is the last completed cycle's (ADR-0083 §2).
+        interrupt_process_group(&mut child);
+        let status = wait_for_watch_exit(&mut child, deadline)?;
+        interrupted = Some(status);
+        Ok(())
+    })();
+
+    let (status, stdout_bytes, stderr_bytes) = finish_watch_child(child, stdout, stderr, true);
+    let result = result.and_then(|()| {
+        let exit = interrupted
+            .and_then(|status| status.code())
+            .ok_or_else(|| "watch-test process did not exit with a status".to_string())?;
+        if exit != scenario.expected_exit {
+            return Err(format!(
+                "watch-test exit mismatch: expected {}, actual {exit}",
+                scenario.expected_exit
+            ));
+        }
+        let out = String::from_utf8_lossy(&stdout_bytes);
+        for expected in &scenario.stdout_contains {
+            if !out.contains(expected.as_str()) {
+                return Err(format!("watch-test stdout did not contain {expected:?}"));
+            }
+        }
+        for unexpected in &scenario.stdout_not_contains {
+            if out.contains(unexpected.as_str()) {
+                return Err(format!("watch-test stdout contained {unexpected:?}"));
+            }
+        }
+        let err = String::from_utf8_lossy(&stderr_bytes);
+        for expected in &scenario.stderr_contains {
+            if !err.contains(expected.as_str()) {
+                return Err(format!("watch-test stderr did not contain {expected:?}"));
+            }
+        }
+        Ok(())
+    });
+    result.map_err(|error| {
+        TestFailure::assertion(format!(
+            "{error}\nwatch-test process status: {status:?}\nwatch-test protocol: {:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            watch_events(&protocol),
+            String::from_utf8_lossy(&stdout_bytes),
+            String::from_utf8_lossy(&stderr_bytes),
+        ))
+    })
+}
+
+/// Wait for an interrupted watcher to exit, without consuming the suite's hang
+/// guard if it never does.
+fn wait_for_watch_exit(
+    child: &mut std::process::Child,
+    deadline: Instant,
+) -> Result<std::process::ExitStatus, String> {
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Err(error) => return Err(format!("failed waiting for watch-test process: {error}")),
+        }
+    }
+    Err("timed out waiting for the interrupted watch-test process to exit".to_string())
+}
+
 /// Run the case's program from its temp directory and check every runtime
 /// expectation.
 ///
@@ -3144,6 +3348,8 @@ fn run_case_wrapper(
 
     let result = if let Some(scenario) = &case.watch {
         run_watch_case(case, scenario, contract, rue_binary, real_std)
+    } else if let Some(scenario) = &case.watch_test {
+        run_watch_test_case(case, scenario, contract, rue_binary, real_std)
     } else if case.differential_opt {
         run_case_differential(case, contract, rue_binary, real_std, repo_root)
     } else {
