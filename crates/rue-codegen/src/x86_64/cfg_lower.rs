@@ -2162,8 +2162,9 @@ impl<'a> CfgLower<'a> {
                 }
                 // The primary vreg mirrors logical slot 0, so it takes that
                 // slot's register class and is written with that class's move.
-                // An aggregate with no slot 0 to mirror gets the never-read
-                // placeholder instead, which nothing defines.
+                // An array (`AggregatePrimary::Zero`) or an aggregate with no
+                // slot 0 to mirror gets the never-read placeholder instead, which
+                // nothing defines: every aggregate consumer reads the slot vector.
                 match (
                     plan.policy.aggregate_primary,
                     slots.first().copied(),
