@@ -560,7 +560,7 @@ fn capture_operands(cfg: &Cfg, data: &CfgInstData) -> SourceOperands {
         CfgInstData::AccessorCall { args, .. } => operands.call_args = cfg.call_args(args).to_vec(),
         CfgInstData::Intrinsic { .. } => operands.values = cfg.get_intrinsic_args(data).to_vec(),
         CfgInstData::StructInit { .. } => operands.values = cfg.get_struct_fields(data).to_vec(),
-        CfgInstData::ArrayInit { elements } => {
+        CfgInstData::ArrayInit { elements, .. } => {
             operands.values = cfg.array_elements(elements).to_vec();
         }
         CfgInstData::EnumVariant { payload, .. } => {
@@ -838,8 +838,9 @@ fn remap_data(
             struct_id: *struct_id,
             fields: cfg.push_struct_fields(operands.values.iter().map(|v| m(*v)))?,
         },
-        CfgInstData::ArrayInit { .. } => CfgInstData::ArrayInit {
+        CfgInstData::ArrayInit { shape, .. } => CfgInstData::ArrayInit {
             elements: cfg.push_array_elements(operands.values.iter().map(|v| m(*v)))?,
+            shape: *shape,
         },
         CfgInstData::EnumVariant {
             enum_id,

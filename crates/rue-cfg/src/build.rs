@@ -2608,7 +2608,11 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
-            AirInstData::ArrayInit { elements } => {
+            // The payload is carried across as it stands: the repeat shape's
+            // single element stands for every element of the array type, and
+            // code generation fills the region from it (RUE-2069).
+            AirInstData::ArrayInit { elements, shape } => {
+                let shape = *shape;
                 let mut element_vals = Vec::new();
                 for elem in self.air.get_array_elements(elements) {
                     let Some(val) = self.lower_value(elem) else {
@@ -2619,7 +2623,7 @@ impl<'a> CfgBuilder<'a> {
                 // Store elements in extra array
                 let elements_result = self.cfg.push_array_elements(element_vals);
                 let elements = self.payload_or(elements_result, CfgArrayElements::EMPTY, span);
-                let value = self.emit(CfgInstData::ArrayInit { elements }, ty, span);
+                let value = self.emit(CfgInstData::ArrayInit { elements, shape }, ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
                     value: Some(value),

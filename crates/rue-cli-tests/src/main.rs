@@ -134,6 +134,9 @@
 //! - `no_symbol_table = true`: assert the produced executable carries no
 //!   symbol table entries, pinning that default internal-linker output is
 //!   unsymbolized (the documented motivation for the profiling workflow)
+//! - `max_executable_bytes`: upper bound on the produced executable's size in
+//!   bytes. For cases whose point is that emitted code does NOT scale with a
+//!   compile-time constant in the source (RUE-2069).
 //!
 //! # Execution modes
 //!
@@ -2001,6 +2004,7 @@ fn case_runs_prebuilt_program(case: &Case) -> bool {
         ffi_answer_archive: false,
         json_diagnostics: false,
         no_symbol_table: false,
+        max_executable_bytes: None,
         requires_system_linker: false,
         // Compile-time assertions, checked below: a staged case must make none.
         error_contains,
@@ -2354,6 +2358,22 @@ fn run_case(
         .map_err(|error| TestFailure::assertion(error.to_string()))?;
     if let Some(target) = executable_target {
         validate_executable(&program, target)?;
+    }
+
+    // Artifact-size bound (RUE-2069): the point of some cases is that emitted
+    // code does not grow with a count written in the source, which only a
+    // measurement of the produced artifact can pin.
+    if let Some(limit) = case.max_executable_bytes {
+        let size = std::fs::metadata(&program)
+            .map_err(|error| {
+                TestFailure::assertion(format!("cannot size {}: {error}", program.display()))
+            })?
+            .len();
+        if size > limit {
+            return Err(TestFailure::assertion(format!(
+                "executable is {size} bytes, over the case's {limit}-byte bound"
+            )));
+        }
     }
 
     // Symbol-table expectations (RUE-1173). The format is the case's declared
@@ -3542,6 +3562,15 @@ fn is_canonical_known_bug_marker(marker: &str) -> bool {
         && bytes[1..].iter().all(u8::is_ascii_digit)
 }
 
+/// `max_executable_bytes` measures a produced executable, so it cannot
+/// accompany `compile_fail` (RUE-2069). Returns the load-time error, if any.
+fn invalid_executable_size_bound(case: &Case) -> Option<&'static str> {
+    (case.compile_fail && case.max_executable_bytes.is_some()).then_some(
+        "`max_executable_bytes` inspects a produced executable and is \
+         incompatible with `compile_fail`",
+    )
+}
+
 /// Symbol-table expectations require a produced executable, so they cannot
 /// accompany `compile_fail`, and asserting an empty table contradicts
 /// asserting its contents (RUE-1173). Returns the load-time error, if any.
@@ -3657,6 +3686,15 @@ fn load_cases(cases_dir: &Path) -> LoadedCorpus {
                         std::process::exit(1);
                     }
                     if let Some(reason) = invalid_symbol_expectations(case) {
+                        eprintln!(
+                            "error: {}: case '{}': {}",
+                            path.display(),
+                            case.name,
+                            reason
+                        );
+                        std::process::exit(1);
+                    }
+                    if let Some(reason) = invalid_executable_size_bound(case) {
                         eprintln!(
                             "error: {}: case '{}': {}",
                             path.display(),
@@ -5382,7 +5420,7 @@ mod tests {
         // the compiler's environment, or asserts something about a compile the
         // staged path never runs. ADR-0070 keeps every one of these cases
         // compile-in-harness.
-        let overrides: [(&str, fn(&mut Case)); 17] = [
+        let overrides: [(&str, fn(&mut Case)); 18] = [
             // The one differential_opt calculator case: four compiles by
             // design, at opt levels the runner drives.
             ("differential_opt", |case| case.differential_opt = true),
@@ -5406,6 +5444,9 @@ mod tests {
             ("ffi_answer_archive", |case| case.ffi_answer_archive = true),
             ("json_diagnostics", |case| case.json_diagnostics = true),
             ("no_symbol_table", |case| case.no_symbol_table = true),
+            ("max_executable_bytes", |case| {
+                case.max_executable_bytes = Some(1 << 20)
+            }),
             ("requires_system_linker", |case| {
                 case.requires_system_linker = true
             }),
@@ -5733,6 +5774,31 @@ mod tests {
             ..Default::default()
         };
         assert!(invalid_symbol_expectations(&unsymbolized).is_none());
+    }
+
+    /// An artifact-size bound measures a produced executable, so a case that
+    /// expects no executable cannot carry one (RUE-2069).
+    #[test]
+    fn executable_size_bound_requires_a_produced_executable() {
+        let with_compile_fail = Case {
+            compile_fail: true,
+            max_executable_bytes: Some(1 << 20),
+            ..Default::default()
+        };
+        assert!(invalid_executable_size_bound(&with_compile_fail).is_some());
+
+        let bounded = Case {
+            compile_only: true,
+            max_executable_bytes: Some(1 << 20),
+            ..Default::default()
+        };
+        assert!(invalid_executable_size_bound(&bounded).is_none());
+
+        let unbounded = Case {
+            compile_fail: true,
+            ..Default::default()
+        };
+        assert!(invalid_executable_size_bound(&unbounded).is_none());
     }
 
     #[test]

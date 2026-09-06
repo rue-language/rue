@@ -217,3 +217,246 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["E0903", "type annotation required for empty array"]
+
+# --- filled repeats (RUE-2069) -----------------------------------------------
+#
+# A repeat is carried symbolically — one evaluated element plus the array
+# type's own length — from semantic analysis through the CFG into both
+# backends, which fill the region with a counted loop above
+# `value_plan::REPEAT_FILL_MIN_SLOTS` and keep the unrolled store per slot
+# below it. Every case below fills a region well above that threshold and pins
+# the CONTENTS, because a fill that walks the wrong direction, drops the last
+# element, or mis-strides a multi-slot element still produces a program that
+# runs. Each is pinned on both backends: the loop is built from each backend's
+# own instructions.
+
+[[case]]
+name = "x86_64_linux_filled_repeats_write_every_element"
+description = "Above the fill threshold, a non-zero scalar, a multi-slot Copy struct, a nested repeat and a zero fill each write every element on x86-64 (RUE-2069)."
+files = [{ path = "main.rue", source = """
+@copy
+struct Pair { a: i32, b: i64 }
+
+fn main() -> i32 {
+    let xs: [i32; 100] = [5; 100];
+    let mut sum: i32 = 0;
+    for x in xs {
+        sum = sum + x;
+    }
+    @dbg(sum);
+
+    let ps: [Pair; 40] = [Pair { a: 3, b: 4 }; 40];
+    let mut acc: i64 = 0;
+    for p in ps {
+        acc = acc + p.b;
+    }
+    @dbg(acc);
+    @dbg(ps[0].a + ps[39].a);
+
+    let zs: [[i32; 8]; 8] = [[9; 8]; 8];
+    @dbg(zs[0][0] + zs[7][7]);
+
+    let ws: [[i32; 64]; 4] = [[6; 64]; 4];
+    @dbg(ws[0][0] + ws[3][63] + ws[2][17]);
+
+    let big: [i64; 4096] = [0; 4096];
+    @dbg(big[0] + big[4095]);
+    0
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = """
+500
+160
+6
+18
+18
+0
+"""
+
+[[case]]
+name = "aarch64_linux_filled_repeats_write_every_element"
+description = "The same filled repeats on AArch64, whose fill loop is built from its own instructions (RUE-2069)."
+files = [{ path = "main.rue", source = """
+@copy
+struct Pair { a: i32, b: i64 }
+
+fn main() -> i32 {
+    let xs: [i32; 100] = [5; 100];
+    let mut sum: i32 = 0;
+    for x in xs {
+        sum = sum + x;
+    }
+    @dbg(sum);
+
+    let ps: [Pair; 40] = [Pair { a: 3, b: 4 }; 40];
+    let mut acc: i64 = 0;
+    for p in ps {
+        acc = acc + p.b;
+    }
+    @dbg(acc);
+    @dbg(ps[0].a + ps[39].a);
+
+    let zs: [[i32; 8]; 8] = [[9; 8]; 8];
+    @dbg(zs[0][0] + zs[7][7]);
+
+    let ws: [[i32; 64]; 4] = [[6; 64]; 4];
+    @dbg(ws[0][0] + ws[3][63] + ws[2][17]);
+
+    let big: [i64; 4096] = [0; 4096];
+    @dbg(big[0] + big[4095]);
+    0
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = """
+500
+160
+6
+18
+18
+0
+"""
+
+[[case]]
+name = "x86_64_linux_filled_repeat_evaluates_its_value_once"
+description = "A filled repeat evaluates the repeated value exactly once (spec 7.1:39) though the fill writes it 64 times, as a binding's initializer and as an assignment, on x86-64 (RUE-2069)."
+files = [{ path = "main.rue", source = """
+fn bump(inout counter: i32) -> i32 {
+    counter = counter + 1;
+    7
+}
+
+fn main() -> i32 {
+    let mut calls: i32 = 0;
+    let ys: [i32; 64] = [bump(inout calls); 64];
+    @dbg(calls);
+    @dbg(ys[0] + ys[63]);
+    let mut assigned: [i32; 64] = [0; 64];
+    assigned = [bump(inout calls); 64];
+    @dbg(calls);
+    @dbg(assigned[0] + assigned[63]);
+    0
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = """
+1
+14
+2
+14
+"""
+
+[[case]]
+name = "aarch64_linux_filled_repeat_evaluates_its_value_once"
+description = "The same evaluation-once contract through the AArch64 fill (RUE-2069)."
+files = [{ path = "main.rue", source = """
+fn bump(inout counter: i32) -> i32 {
+    counter = counter + 1;
+    7
+}
+
+fn main() -> i32 {
+    let mut calls: i32 = 0;
+    let ys: [i32; 64] = [bump(inout calls); 64];
+    @dbg(calls);
+    @dbg(ys[0] + ys[63]);
+    let mut assigned: [i32; 64] = [0; 64];
+    assigned = [bump(inout calls); 64];
+    @dbg(calls);
+    @dbg(assigned[0] + assigned[63]);
+    0
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = """
+1
+14
+2
+14
+"""
+
+# A hundred million elements is a valid local inside the frame budget, and it
+# used to be uncompilable: the repeat expanded to one element reference per
+# element in AIR and one machine store per element after it, which was 13 GB of
+# compiler memory and seven bytes of code per element (RUE-2069). The emitted
+# MIR is the whole proof — a counted loop naming the count as its trip count,
+# with no store at a per-element frame offset — and stopping at `--emit mir`
+# keeps the case off an 800 MB stack frame at run time.
+
+[[case]]
+name = "x86_64_linux_hundred_million_element_repeat_is_one_fill"
+description = "A hundred-million-element repeat emits x86-64's counted fill loop, not a store per element (RUE-2069)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let xs: [i8; 100000000] = [0; 100000000];
+    @dbg(xs[0]);
+    0
+}
+""" }]
+args = ["--target", "x86-64-linux", "--emit", "mir", "main.rue"]
+compile_only = true
+# Vreg numbers are not the contract; the shape is: the count appears as a
+# loop trip count, the element is stored through a cursor register, and no
+# store names a per-element frame offset.
+compile_stdout_contains = ["100000000", "jnz .L", "mov [v"]
+compile_stdout_not_contains = ["mov [rbp-"]
+
+[[case]]
+name = "aarch64_linux_hundred_million_element_repeat_is_one_fill"
+description = "The same repeat emits AArch64's counted fill loop (RUE-2069)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let xs: [i8; 100000000] = [0; 100000000];
+    @dbg(xs[0]);
+    0
+}
+""" }]
+args = ["--target", "aarch64-linux", "--emit", "mir", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["#100000000", "cbnz v", ", [v"]
+compile_stdout_not_contains = ["str v0, [fp"]
+
+# The fill is the whole point only if the ARTIFACT stops growing too: the
+# expanded form emitted seven bytes of machine code per element on x86-64, so
+# `[0; 100000000]` linked to roughly 700 MB. `max_executable_bytes` measures
+# the produced executable, which `--emit mir` above cannot. The program is
+# never run: its frame is 800 MB.
+
+[[case]]
+name = "x86_64_linux_hundred_million_element_repeat_object_stays_small"
+description = "A hundred-million-element repeat links to a small x86-64 executable: emitted code does not scale with the count (RUE-2069)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let xs: [i8; 100000000] = [0; 100000000];
+    @dbg(xs[0]);
+    0
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+compile_only = true
+max_executable_bytes = 1048576
+
+[[case]]
+name = "aarch64_linux_hundred_million_element_repeat_object_stays_small"
+description = "The same repeat links to a small AArch64 executable (RUE-2069)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let xs: [i8; 100000000] = [0; 100000000];
+    @dbg(xs[0]);
+    0
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+compile_only = true
+max_executable_bytes = 1048576

@@ -25,7 +25,7 @@ impl Cfg {
                 CfgInstData::StructInit { fields, .. } => {
                     account(1, fields.extent(), std::mem::size_of::<CfgValue>())
                 }
-                CfgInstData::ArrayInit { elements } => {
+                CfgInstData::ArrayInit { elements, .. } => {
                     account(2, elements.extent(), std::mem::size_of::<CfgValue>())
                 }
                 CfgInstData::EnumVariant { payload, .. } => {

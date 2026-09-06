@@ -456,6 +456,9 @@ pub enum ContractViolationKind {
     NonIntegerOperationType,
     UnsupportedDebugType,
     UnsplicedAccessor,
+    /// An array construction whose result type is not an array, or a repeat
+    /// whose count the host cannot represent (RUE-2069).
+    ArrayConstructionShape,
 }
 
 /// The closed, machine-readable cause of an oracle execution failure.
@@ -3947,10 +3950,34 @@ impl<'a> Interp<'a> {
                 let fields = cfg.get_struct_fields(&inst.data).to_vec();
                 Value::Aggregate(self.eval_all(cfg, frame, &fields)?)
             }
-            CfgInstData::ArrayInit { .. } => {
-                let elems = cfg.get_array_elements(&inst.data).to_vec();
-                Value::Aggregate(self.eval_all(cfg, frame, &elems)?)
-            }
+            // A repeat names its element once and takes its count from the
+            // array type, exactly as the CFG carries it (RUE-2069). The
+            // element is evaluated once and copied, which is what the fill
+            // both backends emit does.
+            CfgInstData::ArrayInit { .. } => match cfg.array_init_repeat(&inst.data) {
+                Some(element) => {
+                    let count = inst
+                        .ty
+                        .as_array()
+                        .and_then(|id| self.type_pool().try_array_def(id))
+                        .map(|(_, count)| count)
+                        .and_then(|count| usize::try_from(count).ok())
+                        .ok_or_else(|| {
+                            unsupported(
+                                UnsupportedKind::ContractViolation(
+                                    ContractViolationKind::ArrayConstructionShape,
+                                ),
+                                format!("array repeat with result type {:?}", inst.ty),
+                            )
+                        })?;
+                    let value = self.eval(cfg, frame, element)?;
+                    Value::Aggregate(vec![value; count])
+                }
+                None => {
+                    let elems = cfg.get_array_elements(&inst.data).to_vec();
+                    Value::Aggregate(self.eval_all(cfg, frame, &elems)?)
+                }
+            },
             // A discriminant-only variant is its tag (an `Int`); a payload-
             // carrying variant is an `Aggregate` whose element 0 is the tag and
             // the rest are the payload fields, in declaration order (RUE-285).

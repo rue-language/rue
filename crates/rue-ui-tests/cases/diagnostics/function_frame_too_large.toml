@@ -13,9 +13,13 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-# This deliberately huge frame can contend with the other premerge corpus
-# actions on shared Linux runners. Keep the timeout a hang detector rather than
-# a load-sensitive latency gate.
+# The first array fits the frame budget on its own, so it is analyzed before
+# the second one blows the budget. That analysis used to expand the repeat into
+# 134 million element references — ~7s and ~1.6GB for a diagnostic decided by
+# the layout — and now carries the repeat symbolically, costing tens of
+# milliseconds (RUE-2069). The timeout stays a hang detector with orders of
+# magnitude of headroom rather than a load-sensitive latency gate: this suite
+# contends with the other premerge corpus actions on shared Linux runners.
 timeout_ms = 30000
 error_contains = ["[E0907]", "function stack frame or outgoing call area", "2147483632"]
 

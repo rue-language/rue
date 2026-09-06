@@ -404,6 +404,16 @@ pub struct Case {
     /// Incompatible with `compile_fail` and `symbols_contain`.
     #[serde(default)]
     pub no_symbol_table: bool,
+    /// Upper bound, in bytes, on the produced executable's size.
+    ///
+    /// A case whose point is that emitted machine code does not grow with a
+    /// count written in the source needs the artifact measured, not merely
+    /// produced: `[0; 100000000]` once emitted seven bytes of code per element
+    /// (RUE-2069), which is a correct program and a 700 MB executable.
+    /// Inspects a produced executable, so it is incompatible with
+    /// `compile_fail`.
+    #[serde(default)]
+    pub max_executable_bytes: Option<u64>,
     /// Exact expected exit status of the DRIVER invocation itself, for a
     /// subcommand that neither compiles-and-runs nor fails to compile.
     ///

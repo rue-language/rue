@@ -347,6 +347,9 @@ pub enum SemanticBodyInstData<K, M> {
     },
     ArrayInit {
         elements: Arc<[SemanticBodyRef]>,
+        /// Elementwise, or the repeat form whose single element stands for
+        /// every element of the array type (RUE-2069).
+        shape: crate::ArrayInitShape,
     },
     PlaceRead {
         place: SemanticBodyPlaceRef,
@@ -704,8 +707,9 @@ impl<K, M> SemanticBodyInstData<K, M> {
                 fields: fields.clone(),
                 source_order: source_order.clone(),
             },
-            D::ArrayInit { elements } => D::ArrayInit {
+            D::ArrayInit { elements, shape } => D::ArrayInit {
                 elements: elements.clone(),
+                shape: *shape,
             },
             D::PlaceRead { place } => D::PlaceRead { place: *place },
             D::PlaceWrite { place, value } => D::PlaceWrite {
@@ -914,7 +918,7 @@ impl<K, M> SemanticBodyInstData<K, M> {
                     inst(visitor, *field);
                 }
             }
-            D::ArrayInit { elements } => {
+            D::ArrayInit { elements, .. } => {
                 for element in elements.iter() {
                     inst(visitor, *element);
                 }
@@ -1346,6 +1350,7 @@ mod schema_tests {
             },
             D::ArrayInit {
                 elements: vec![1, 2].into(),
+                shape: crate::ArrayInitShape::Elementwise,
             },
             D::PlaceRead { place: 4 },
             D::PlaceWrite { place: 4, value: 1 },

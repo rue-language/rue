@@ -34,7 +34,7 @@ const _: () = assert!(std::mem::size_of::<CfgInstData>() <= 32);
 
 use ahash::AHashSet;
 use lasso::{Key, Spur, ThreadedRodeo};
-use rue_air::{EnumId, ParamSlotModes, StructId, Type};
+use rue_air::{ArrayInitShape, EnumId, ParamSlotModes, StructId, Type};
 use rue_span::Span;
 
 use crate::payload::{
@@ -221,8 +221,9 @@ impl CfgInstData {
                 struct_id: *struct_id,
                 fields: fields.duplicate(),
             },
-            Self::ArrayInit { elements } => Self::ArrayInit {
+            Self::ArrayInit { elements, shape } => Self::ArrayInit {
                 elements: elements.duplicate(),
+                shape: *shape,
             },
             Self::EnumVariant {
                 enum_id,
@@ -556,11 +557,15 @@ pub enum CfgInstData {
         fields: CfgStructFields,
     },
     // Array operations
-    /// Array initialization. Element values use the array-element family.
+    /// Array construction. Element values use the array-element family.
     /// The array type is stored in `CfgInst.ty`.
     ArrayInit {
-        /// Start index into Cfg's extra array
+        /// Start index into Cfg's extra array. The repeat shape stores
+        /// exactly one element, standing for every element of the array.
         elements: CfgArrayElements,
+        /// Elementwise, or the repeat form of `[value; count]` whose count is
+        /// the array type's own length (RUE-2069).
+        shape: ArrayInitShape,
     },
     // Enum operations
     /// Create an enum variant value: the discriminant plus (for tuple
@@ -1309,10 +1314,11 @@ impl Cfg {
                         .push_struct_fields(self.struct_fields(fields).iter().copied())
                         .map_err(CfgRemapError::Edit)?,
                 },
-                ArrayInit { elements } => ArrayInit {
+                ArrayInit { elements, shape } => ArrayInit {
                     elements: cfg
                         .push_array_elements(self.array_elements(elements).iter().copied())
                         .map_err(CfgRemapError::Edit)?,
+                    shape: *shape,
                 },
                 EnumVariant {
                     enum_id,
@@ -1850,10 +1856,28 @@ impl Cfg {
         }
     }
 
+    /// The array-element payload of an `ArrayInit`, as stored: one entry per
+    /// element for the elementwise shape, and the single repeated value for
+    /// the repeat shape. A consumer that needs one entry per element asks
+    /// [`Self::array_init_repeat`] first and expands the repeat itself
+    /// (RUE-2069).
     pub fn get_array_elements<'a>(&'a self, data: &CfgInstData) -> &'a [CfgValue] {
         match data {
-            CfgInstData::ArrayInit { elements } => self.array_elements(elements),
+            CfgInstData::ArrayInit { elements, .. } => self.array_elements(elements),
             _ => panic!("get_array_elements called on non-ArrayInit instruction"),
+        }
+    }
+
+    /// The repeated value of an array construction in the repeat shape, whose
+    /// count is the instruction's own array-type length; `None` for the
+    /// elementwise shape and for every other instruction (RUE-2069).
+    pub fn array_init_repeat(&self, data: &CfgInstData) -> Option<CfgValue> {
+        match data {
+            CfgInstData::ArrayInit {
+                elements,
+                shape: ArrayInitShape::Repeat,
+            } => Some(self.array_elements(elements)[0]),
+            _ => None,
         }
     }
 
@@ -1984,26 +2008,35 @@ impl Cfg {
         Ok(())
     }
 
-    /// Replace an array initializer's elements atomically.
+    /// Replace an array initializer's elements atomically. The payload keeps
+    /// the instruction's shape, so a repeat still names exactly one element.
     pub fn replace_array_elements(
         &mut self,
         value: CfgValue,
         values: impl IntoIterator<Item = CfgValue>,
     ) -> Result<(), CfgEditError> {
         const OP: &str = "array elements";
-        if !matches!(
-            self.values.get(value.0 as usize).map(|inst| &inst.data),
-            Some(CfgInstData::ArrayInit { .. })
-        ) {
+        let shape = match self.values.get(value.0 as usize).map(|inst| &inst.data) {
+            Some(CfgInstData::ArrayInit { shape, .. }) => *shape,
+            _ => {
+                return Err(Self::invalid_edit(
+                    OP,
+                    "target is not an ArrayInit instruction",
+                ));
+            }
+        };
+        let staged = Self::stage_edit(OP, values)?;
+        if matches!(shape, ArrayInitShape::Repeat) && staged.len() != 1 {
             return Err(Self::invalid_edit(
                 OP,
-                "target is not an ArrayInit instruction",
+                "an array repeat carries exactly one element",
             ));
         }
-        let staged = Self::stage_edit(OP, values)?;
         self.validate_value_refs(OP, staged.iter(), |value| *value)?;
         let elements = payload::push_array_elements(&mut self.extra, staged)?;
-        let CfgInstData::ArrayInit { elements: stored } = &mut self.values[value.0 as usize].data
+        let CfgInstData::ArrayInit {
+            elements: stored, ..
+        } = &mut self.values[value.0 as usize].data
         else {
             return Err(Self::invalid_edit(OP, "target changed during replacement"));
         };
@@ -2412,11 +2445,34 @@ impl Cfg {
         ))
     }
 
-    /// Append an array initializer owned by this CFG.
+    /// Append an elementwise array initializer owned by this CFG.
     pub fn append_array_init(
         &mut self,
         block: BlockId,
         elements: impl IntoIterator<Item = CfgValue>,
+        ty: Type,
+        span: Span,
+    ) -> Result<CfgValue, CfgEditError> {
+        self.append_array_init_shaped(block, elements, ArrayInitShape::Elementwise, ty, span)
+    }
+
+    /// Append the repeat form `[value; count]`, whose count is `ty`'s own
+    /// array length (RUE-2069).
+    pub fn append_array_repeat(
+        &mut self,
+        block: BlockId,
+        value: CfgValue,
+        ty: Type,
+        span: Span,
+    ) -> Result<CfgValue, CfgEditError> {
+        self.append_array_init_shaped(block, [value], ArrayInitShape::Repeat, ty, span)
+    }
+
+    fn append_array_init_shaped(
+        &mut self,
+        block: BlockId,
+        elements: impl IntoIterator<Item = CfgValue>,
+        shape: ArrayInitShape,
         ty: Type,
         span: Span,
     ) -> Result<CfgValue, CfgEditError> {
@@ -2428,7 +2484,7 @@ impl Cfg {
         Ok(self.add_inst_to_block(
             block,
             CfgInst {
-                data: CfgInstData::ArrayInit { elements },
+                data: CfgInstData::ArrayInit { elements, shape },
                 ty,
                 span,
             },
@@ -3002,7 +3058,7 @@ impl Cfg {
                             .map(&map),
                     )?;
                 }
-                ArrayInit { elements } => {
+                ArrayInit { elements, .. } => {
                     before_payload(payload::CfgArrayElements::FAMILY)?;
                     *elements = payload::push_array_elements(
                         &mut self.extra,
@@ -3471,7 +3527,10 @@ impl Cfg {
                 }
                 write!(f, "}}")
             }
-            CfgInstData::ArrayInit { elements } => {
+            CfgInstData::ArrayInit {
+                elements,
+                shape: ArrayInitShape::Elementwise,
+            } => {
                 write!(f, "array_init [")?;
                 for (i, elem) in self.array_elements(elements).iter().enumerate() {
                     if i > 0 {
@@ -3480,6 +3539,14 @@ impl Cfg {
                     write!(f, "{}", elem)?;
                 }
                 write!(f, "]")
+            }
+            CfgInstData::ArrayInit {
+                elements,
+                shape: ArrayInitShape::Repeat,
+            } => {
+                // The repeat count is the array type's length; this printer
+                // has no type pool to resolve it.
+                write!(f, "array_repeat [{}]", self.array_elements(elements)[0])
             }
             CfgInstData::EnumVariant {
                 enum_id,
