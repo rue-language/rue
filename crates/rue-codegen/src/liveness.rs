@@ -35,6 +35,27 @@ use crate::vreg::{LabelId, VReg};
 #[cfg(test)]
 thread_local! {
     static DATAFLOW_CALLS: Cell<usize> = const { Cell::new(0) };
+    /// Full-width bitset words the liveness dataflow touches.
+    ///
+    /// The solve and the range construction both work at block granularity, so
+    /// this total is proportional to blocks x register-set width plus the
+    /// instruction count — never to instructions x width. A scaling test reads
+    /// it at two problem sizes, which is what makes a reintroduced
+    /// per-instruction table fail rather than merely slow the compiler down
+    /// (RUE-1545).
+    static DATAFLOW_BITSET_WORDS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Record `times` full-width passes over a `words`-word bitset.
+///
+/// Compiles to nothing outside tests; the counter exists only so the scaling
+/// test can assert the shape of the work rather than its wall time.
+#[inline]
+fn note_bitset_words(_words: usize, _times: usize) {
+    #[cfg(test)]
+    DATAFLOW_BITSET_WORDS.with(|counter| {
+        counter.set(counter.get() + (_words as u64) * (_times as u64));
+    });
 }
 
 /// A fixed-capacity, inline list for bounded machine-instruction facts.
@@ -558,70 +579,58 @@ where
     let inst_uses: Vec<VRegList> = instructions.iter().map(&get_uses).collect();
     let inst_defs: Vec<VRegList> = instructions.iter().map(&get_defs).collect();
 
-    // Step 4: Backward dataflow analysis to compute live sets. Without a back
-    // edge, reverse instruction order is already a topological order and one
-    // sweep computes the fixed point exactly. Production range construction
-    // does not consume those sets in this case, so leave the dataflow storage
-    // and walk out of the normal loop-free path. Debug output still materializes
-    // the sets, and cyclic production analysis still needs them for ranges.
+    // Step 4: Backward dataflow analysis, at block granularity. The solve keeps
+    // one live-in bitset per *basic block* rather than per instruction, which
+    // is what keeps the pass proportional to blocks x register-set width
+    // instead of instructions x width (RUE-1545). Without a back edge, reverse
+    // block order is already a topological order and one sweep computes the
+    // fixed point exactly; production range construction does not consume the
+    // sets at all in that case (RUE-302), so the loop-free path skips the solve
+    // entirely. Debug output still asks for the sets, because its projection is
+    // per instruction by definition.
     let has_back_edge = has_back_edge(&successors);
-    let dataflow = (collect_debug || has_back_edge).then(|| {
-        compute_dataflow(
-            num_insts,
+    let block_liveness = (collect_debug || has_back_edge).then(|| {
+        let blocks = partition_blocks(num_insts, &successors);
+        let live_in = solve_block_liveness(
             vreg_count,
             &successors,
             &inst_uses,
             &inst_defs,
+            &blocks,
             has_back_edge,
         )
-        .0
+        .0;
+        BlockLiveness { blocks, live_in }
     });
-    let acyclic_live_out = match &dataflow {
-        Some(DataflowSets::Acyclic { live_in }) if collect_debug => Some(materialize_live_out(
-            live_in,
-            &successors,
-            vreg_count as usize,
-        )),
-        _ => None,
-    };
-    let (live_in, live_out, has_back_edge) = match dataflow.as_ref() {
-        Some(DataflowSets::Acyclic { live_in }) => (
-            live_in.as_slice(),
-            acyclic_live_out.as_deref().unwrap_or(&[]),
-            false,
-        ),
-        Some(DataflowSets::Cyclic { live_in, live_out }) => {
-            (live_in.as_slice(), live_out.as_slice(), true)
-        }
-        None => (&[][..], &[][..], false),
-    };
 
-    // Step 5: Build live ranges from dataflow results
+    // Step 5: Build live ranges. The loop-free path reads the def/use facts
+    // alone; the cyclic path additionally reads each block's boundary sets.
     let ranges = build_live_ranges(
         num_insts,
         vreg_count,
         &inst_uses,
         &inst_defs,
         &successors,
-        live_in,
-        has_back_edge,
+        if has_back_edge {
+            block_liveness.as_ref()
+        } else {
+            None
+        },
     );
 
     let debug = collect_debug.then(|| {
-        let bitset_to_hashset = |bs: &FixedBitSet| -> AHashSet<VReg> {
-            bs.ones().map(|idx| VReg::new(idx as u32)).collect()
-        };
-        let instruction_liveness = (0..num_insts)
-            .map(|idx| InstructionLiveness {
-                index: idx,
-                live_in: bitset_to_hashset(&live_in[idx]),
-                live_out: bitset_to_hashset(&live_out[idx]),
-                defs: inst_defs[idx].to_vec(),
-                uses: inst_uses[idx].to_vec(),
-            })
-            .collect();
+        let block_liveness = block_liveness
+            .as_ref()
+            .expect("the debug projection requests the block sets it re-derives from");
         LivenessDebugInfo {
-            instructions: instruction_liveness,
+            instructions: instruction_liveness_rows(
+                num_insts,
+                vreg_count,
+                &successors,
+                &inst_uses,
+                &inst_defs,
+                block_liveness,
+            ),
             live_ranges: ranges.clone(),
             vreg_count,
         }
@@ -714,91 +723,227 @@ fn has_back_edge(successors: &[SuccessorList]) -> bool {
         .any(|(from, succs)| succs.iter().any(|&to| to <= from))
 }
 
-/// Perform backward dataflow analysis to compute live-in and live-out sets.
+/// A partition of the instruction stream into basic blocks.
 ///
-/// Uses the standard dataflow equations:
-/// - live_out[i] = union of live_in[s] for all successors s of i
-/// - live_in[i] = uses[i] ∪ (live_out[i] - defs[i])
-#[cfg(test)]
-type DataflowRowVisitCount = usize;
-#[cfg(not(test))]
-type DataflowRowVisitCount = ();
-
-enum DataflowSets {
-    Acyclic {
-        live_in: Vec<FixedBitSet>,
-    },
-    Cyclic {
-        live_in: Vec<FixedBitSet>,
-        live_out: Vec<FixedBitSet>,
-    },
+/// Liveness is a backward analysis, so what matters about a block is that the
+/// transfer function inside it is a straight composition: every instruction
+/// before the block's last one has exactly one successor, the next
+/// instruction, and nothing branches into the middle of the run. Blocks are
+/// therefore delimited by leaders — instruction 0, any branch target, and the
+/// instruction after any row that is not a plain fallthrough.
+///
+/// Both consequences this module relies on follow from that shape:
+///
+/// * the dataflow fixed point can be solved with one live-in set per block
+///   instead of one per instruction, and
+/// * inside a block a vreg's live-in membership changes only at that vreg's own
+///   defs and uses, so live ranges need the block's two boundary sets and
+///   nothing in between.
+struct BlockPartition {
+    /// Instruction index each block starts at, with a terminating `num_insts`,
+    /// so block `b` covers `starts[b]..starts[b + 1]`.
+    starts: Vec<usize>,
+    /// Block owning each instruction.
+    block_of: Vec<u32>,
 }
 
-fn compute_dataflow(
-    num_insts: usize,
+impl BlockPartition {
+    fn len(&self) -> usize {
+        self.starts.len() - 1
+    }
+
+    /// First and last instruction index of `block`, both inclusive.
+    fn span(&self, block: usize) -> (usize, usize) {
+        (self.starts[block], self.starts[block + 1] - 1)
+    }
+
+    fn of(&self, inst: usize) -> usize {
+        self.block_of[inst] as usize
+    }
+}
+
+/// The block-granular liveness solution the cyclic paths consume.
+struct BlockLiveness {
+    blocks: BlockPartition,
+    /// Virtual registers live before each block's first instruction.
+    live_in: Vec<FixedBitSet>,
+}
+
+impl BlockLiveness {
+    /// This block's live-out set, written into `out`.
+    fn live_out_into(&self, block: usize, successors: &[SuccessorList], out: &mut FixedBitSet) {
+        collect_block_live_out(block, &self.blocks, successors, &self.live_in, out);
+    }
+}
+
+/// Write `block`'s live-out set into `out`.
+///
+/// A block's live-out set is the union of the live-in sets of the blocks its
+/// terminator can reach. Successor instruction indices are always leaders, so
+/// every one of them names a block start. This is the one place the block-level
+/// meet is computed, for the solve and for both of its readers.
+fn collect_block_live_out(
+    block: usize,
+    blocks: &BlockPartition,
+    successors: &[SuccessorList],
+    live_in: &[FixedBitSet],
+    out: &mut FixedBitSet,
+) {
+    let (_, end) = blocks.span(block);
+    out.clear();
+    note_bitset_words(out.as_slice().len(), 1 + successors[end].len());
+    for &successor in &successors[end] {
+        out.union_with(&live_in[blocks.of(successor)]);
+    }
+}
+
+/// Split the instruction stream into basic blocks.
+///
+/// A malformed successor table indexes past the instruction stream here, which
+/// is the same loud failure the per-instruction dataflow gave when it indexed
+/// its rows: a backend that reports an unreachable target has a bug, and
+/// quietly dropping the edge would silently shorten live ranges.
+fn partition_blocks(num_insts: usize, successors: &[SuccessorList]) -> BlockPartition {
+    assert!(num_insts > 0, "an empty MIR has no blocks to partition");
+    assert!(
+        u32::try_from(num_insts).is_ok(),
+        "instruction indices are recorded as u32 block ownership entries"
+    );
+
+    let mut is_leader = vec![false; num_insts];
+    is_leader[0] = true;
+    for (idx, succs) in successors.iter().enumerate() {
+        let falls_through = succs.len() == 1 && succs[0] == idx + 1;
+        if !falls_through && idx + 1 < num_insts {
+            is_leader[idx + 1] = true;
+        }
+        for &successor in succs {
+            if successor != idx + 1 {
+                is_leader[successor] = true;
+            }
+        }
+    }
+
+    let mut starts = Vec::new();
+    let mut block_of = vec![0u32; num_insts];
+    for (idx, &leader) in is_leader.iter().enumerate() {
+        if leader {
+            starts.push(idx);
+        }
+        block_of[idx] = (starts.len() - 1) as u32;
+    }
+    starts.push(num_insts);
+    BlockPartition { starts, block_of }
+}
+
+/// Apply one block's backward transfer function into `scratch`.
+///
+/// `scratch` receives the block's live-out set and then the block's
+/// instructions in reverse, each applied with point operations. A visit
+/// therefore costs the block's length plus one full-width union per successor,
+/// not the block's length times the register-set width.
+fn transfer_block(
+    block: usize,
+    blocks: &BlockPartition,
+    successors: &[SuccessorList],
+    inst_uses: &[VRegList],
+    inst_defs: &[VRegList],
+    live_in: &[FixedBitSet],
+    scratch: &mut FixedBitSet,
+) {
+    let (start, end) = blocks.span(block);
+    collect_block_live_out(block, blocks, successors, live_in, scratch);
+    for idx in (start..=end).rev() {
+        for vreg in &inst_defs[idx] {
+            scratch.set(vreg.index() as usize, false);
+        }
+        for vreg in &inst_uses[idx] {
+            scratch.insert(vreg.index() as usize);
+        }
+    }
+}
+
+#[cfg(test)]
+type BlockVisitCount = usize;
+#[cfg(not(test))]
+type BlockVisitCount = ();
+
+/// Solve backward liveness for every block.
+///
+/// The equations are the textbook ones, read at block boundaries:
+/// - live_out[b] = union of live_in[s] over the successor blocks of b
+/// - live_in[b]  = the block's instructions applied backward to live_out[b]
+///
+/// Storage is one bitset per block plus one scratch set, so the solve is
+/// proportional to blocks x width and never to instructions x width. The
+/// solution agrees with a per-instruction fixed point at every block start,
+/// because a block's interior rows are exactly the composition this transfer
+/// function performs, and both start from the empty set and only add.
+fn solve_block_liveness(
     vreg_count: u32,
     successors: &[SuccessorList],
     inst_uses: &[VRegList],
     inst_defs: &[VRegList],
+    blocks: &BlockPartition,
     has_back_edge: bool,
-) -> (DataflowSets, DataflowRowVisitCount) {
-    let vreg_count_usize = vreg_count as usize;
+) -> (Vec<FixedBitSet>, BlockVisitCount) {
+    let width = vreg_count as usize;
+    let block_count = blocks.len();
 
     #[cfg(test)]
     DATAFLOW_CALLS.with(|calls| calls.set(calls.get() + 1));
 
-    let mut live_in: Vec<FixedBitSet> =
-        vec![FixedBitSet::with_capacity(vreg_count_usize); num_insts];
-    // The transfer function needs one temporary set regardless of instruction
-    // count or convergence rounds. Build live-out directly in that set, then
-    // apply defs and uses in place to obtain live-in. Reusing one backing store
-    // avoids both a full-width scratch allocation and one full-width clone for
-    // every row on every pass.
-    let mut new_live_in = FixedBitSet::with_capacity(vreg_count_usize);
+    let mut live_in: Vec<FixedBitSet> = vec![FixedBitSet::with_capacity(width); block_count];
+    let mut scratch = FixedBitSet::with_capacity(width);
+    let words = scratch.as_slice().len();
+    note_bitset_words(words, block_count + 1);
     #[cfg(test)]
-    let mut row_visits = 0;
+    let mut block_visits = 0;
 
     if has_back_edge {
-        // Cyclic CFGs need repeated propagation, but rescanning every row on
-        // every round revisits rows that have no changed successor. Seed a
-        // deterministic descending worklist, then requeue only predecessors
-        // of rows whose live-in set changed. The flat CSR representation keeps
-        // the transient predecessor index bounded without one Vec header per
-        // instruction; each predecessor slice is descending because rows are
-        // inserted from high to low indices.
-        let (predecessor_offsets, predecessors) = build_predecessor_csr(successors);
-        let mut queue = VecDeque::with_capacity(num_insts);
-        let mut queued = vec![false; num_insts];
-        for idx in (0..num_insts).rev() {
-            queue.push_back(idx);
-            queued[idx] = true;
+        // Cyclic control flow needs repeated propagation, and rescanning every
+        // block on every round revisits blocks whose successors did not move.
+        // Seed a deterministic descending worklist over block successors, then
+        // requeue only the predecessors of a block whose live-in set changed.
+        let block_successors: Vec<SuccessorList> = (0..block_count)
+            .map(|block| {
+                let (_, end) = blocks.span(block);
+                successors[end]
+                    .iter()
+                    .map(|&successor| blocks.of(successor))
+                    .collect()
+            })
+            .collect();
+        let (predecessor_offsets, predecessors) = build_predecessor_csr(&block_successors);
+        let mut queue = VecDeque::with_capacity(block_count);
+        let mut queued = vec![false; block_count];
+        for block in (0..block_count).rev() {
+            queue.push_back(block);
+            queued[block] = true;
         }
 
-        while let Some(idx) = queue.pop_front() {
-            queued[idx] = false;
+        while let Some(block) = queue.pop_front() {
+            queued[block] = false;
             #[cfg(test)]
             {
-                row_visits += 1;
+                block_visits += 1;
             }
 
-            // Compute live_out as union of live-in of all successors.
-            new_live_in.clear();
-            for &succ in &successors[idx] {
-                new_live_in.union_with(&live_in[succ]);
-            }
-
-            // Compute live_in = uses ∪ (live_out - defs).
-            for vreg in &inst_defs[idx] {
-                new_live_in.set(vreg.index() as usize, false);
-            }
-            for vreg in &inst_uses[idx] {
-                new_live_in.insert(vreg.index() as usize);
-            }
-
-            if new_live_in != live_in[idx] {
-                live_in[idx].clone_from(&new_live_in);
+            transfer_block(
+                block,
+                blocks,
+                successors,
+                inst_uses,
+                inst_defs,
+                &live_in,
+                &mut scratch,
+            );
+            note_bitset_words(words, 1);
+            if scratch != live_in[block] {
+                note_bitset_words(words, 1);
+                live_in[block].clone_from(&scratch);
                 for &predecessor in
-                    &predecessors[predecessor_offsets[idx]..predecessor_offsets[idx + 1]]
+                    &predecessors[predecessor_offsets[block]..predecessor_offsets[block + 1]]
                 {
                     if !queued[predecessor] {
                         queued[predecessor] = true;
@@ -808,43 +953,34 @@ fn compute_dataflow(
             }
         }
     } else {
-        // Acyclic CFGs retain the exact one-pass reverse sweep: every
-        // successor has a greater instruction index, so successors are solved
-        // before their predecessors and no worklist is needed.
-        for idx in (0..num_insts).rev() {
+        // Loop-free control flow keeps every successor at a higher instruction
+        // index, so every successor block has a higher block index and reverse
+        // block order is a topological order: one sweep is the fixed point.
+        for block in (0..block_count).rev() {
             #[cfg(test)]
             {
-                row_visits += 1;
+                block_visits += 1;
             }
 
-            new_live_in.clear();
-            for &succ in &successors[idx] {
-                new_live_in.union_with(&live_in[succ]);
-            }
-            for vreg in &inst_defs[idx] {
-                new_live_in.set(vreg.index() as usize, false);
-            }
-            for vreg in &inst_uses[idx] {
-                new_live_in.insert(vreg.index() as usize);
-            }
-
-            if new_live_in != live_in[idx] {
-                live_in[idx].clone_from(&new_live_in);
-            }
+            transfer_block(
+                block,
+                blocks,
+                successors,
+                inst_uses,
+                inst_defs,
+                &live_in,
+                &mut scratch,
+            );
+            note_bitset_words(words, 2);
+            live_in[block].clone_from(&scratch);
         }
     }
 
     #[cfg(test)]
-    let row_visit_count = row_visits;
+    let block_visit_count = block_visits;
     #[cfg(not(test))]
-    let row_visit_count = ();
-    let sets = if has_back_edge {
-        let live_out = materialize_live_out(&live_in, successors, vreg_count_usize);
-        DataflowSets::Cyclic { live_in, live_out }
-    } else {
-        DataflowSets::Acyclic { live_in }
-    };
-    (sets, row_visit_count)
+    let block_visit_count = ();
+    (live_in, block_visit_count)
 }
 
 /// Build a flat CSR predecessor index for a successor table.
@@ -885,24 +1021,64 @@ fn build_predecessor_csr(successors: &[SuccessorList]) -> (Vec<usize>, Vec<usize
     (offsets, predecessors)
 }
 
-fn materialize_live_out(
-    live_in: &[FixedBitSet],
+/// Re-derive the per-instruction live-in and live-out sets `--emit liveness`
+/// prints.
+///
+/// This is the only consumer that genuinely wants a row per instruction, and
+/// it is asked for only when the diagnostic projection is requested, so the
+/// production path never pays for the table (RUE-1545). Each block is swept
+/// backward once from its live-out set, which reproduces exactly the rows a
+/// per-instruction fixed point would have left behind.
+fn instruction_liveness_rows(
+    num_insts: usize,
+    vreg_count: u32,
     successors: &[SuccessorList],
-    vreg_count: usize,
-) -> Vec<FixedBitSet> {
-    successors
-        .iter()
-        .map(|successors| {
-            let mut live_out = FixedBitSet::with_capacity(vreg_count);
-            for &successor in successors {
-                live_out.union_with(&live_in[successor]);
+    inst_uses: &[VRegList],
+    inst_defs: &[VRegList],
+    block_liveness: &BlockLiveness,
+) -> Vec<InstructionLiveness> {
+    let to_set = |set: &FixedBitSet| -> AHashSet<VReg> {
+        set.ones().map(|idx| VReg::new(idx as u32)).collect()
+    };
+
+    let mut rows = Vec::with_capacity(num_insts);
+    let mut block_rows = Vec::new();
+    let mut scratch = FixedBitSet::with_capacity(vreg_count as usize);
+    for block in 0..block_liveness.blocks.len() {
+        let (start, end) = block_liveness.blocks.span(block);
+        block_liveness.live_out_into(block, successors, &mut scratch);
+        for idx in (start..=end).rev() {
+            // Sweeping backward, `scratch` holds live-out of the row about to
+            // be transferred, and holds its live-in once the row's defs and
+            // uses have been applied.
+            let live_out = to_set(&scratch);
+            for vreg in &inst_defs[idx] {
+                scratch.set(vreg.index() as usize, false);
             }
-            live_out
-        })
-        .collect()
+            for vreg in &inst_uses[idx] {
+                scratch.insert(vreg.index() as usize);
+            }
+            note_bitset_words(scratch.as_slice().len(), 2);
+            block_rows.push(InstructionLiveness {
+                index: idx,
+                live_in: to_set(&scratch),
+                live_out,
+                defs: inst_defs[idx].to_vec(),
+                uses: inst_uses[idx].to_vec(),
+            });
+        }
+        block_rows.reverse();
+        rows.append(&mut block_rows);
+    }
+    assert_eq!(
+        rows.len(),
+        num_insts,
+        "the block partition must cover every instruction exactly once"
+    );
+    rows
 }
 
-/// Build live ranges from dataflow results.
+/// Build live ranges without ever materializing a per-instruction live set.
 ///
 /// A range is derived from three sources, none of which walks the live set of
 /// an instruction:
@@ -914,39 +1090,42 @@ fn materialize_live_out(
 ///   instruction that is neither a def nor a use of it if that instruction sits
 ///   *between* a def and a later use (already inside the def/use span) or across
 ///   a back-edge. Without back-edges the def/use pass is therefore the whole
-///   answer, and the dataflow sets are not even computed (RUE-302).
-/// * **Back-edges extend it, at the boundaries only.** With loops a value is
-///   live past its textual last use, so the live-in sets have to be consulted.
-///   They are consulted at the *ends of each live run* rather than at every
-///   instruction: the set of indices where a vreg is live-in is a union of
-///   maximal runs of consecutive indices, and a range only needs each run's two
-///   endpoints. A run boundary is a row where `live_in[idx]` and
-///   `live_in[idx + 1]` disagree about the vreg, so only rows whose membership
-///   can differ from the next row's are examined (RUE-2011).
+///   answer, and the dataflow is not even solved (RUE-302).
+/// * **Back-edges extend it, at block boundaries only.** With loops a value is
+///   live past its textual last use, so liveness has to be consulted — but only
+///   at each block's two boundaries, which is all the block-granular solve
+///   keeps (RUE-1545).
 ///
-/// # Which rows can differ from the next row
+/// # Why the two boundary sets of each block are enough
 ///
-/// For an instruction whose only successor is `idx + 1`, the transfer function
-/// is `live_in[idx] = uses[idx] ∪ (live_in[idx + 1] - defs[idx])`, so the two
-/// rows can only disagree about a vreg in `uses[idx] ∪ defs[idx]`, and such a
-/// disagreement is already inside the def/use extent:
+/// Inside a block every row but the last has exactly one successor, the next
+/// row, so the transfer function is
+/// `live_in[idx] = uses[idx] ∪ (live_in[idx + 1] - defs[idx])`. A vreg that the
+/// row neither uses nor defines therefore has the same membership at `idx` as
+/// at `idx + 1`: within a block, membership changes only at that vreg's own
+/// defs and uses.
 ///
-/// * live at `idx` but not at `idx + 1` forces the vreg into `uses[idx]`, so
-///   `idx` is a use index;
-/// * live at `idx + 1` but not at `idx` forces it into `defs[idx]`, so `idx` is
-///   a def index and the range already covers `idx < idx + 1`. That run's upper
-///   end is found at its own boundary row.
+/// Take any index `idx` where a vreg is live-in but which is neither a def nor
+/// a use of it, and walk outwards inside its block:
 ///
-/// A straight-line row therefore contributes nothing, and only branch, jump,
-/// and return rows — plus the first and last rows, which have no neighbour on
-/// one side — are inspected. Each inspection is a word-level XOR of the two
-/// rows, so its cost is the row width plus the number of vregs that actually
-/// change, not the number that are live.
+/// * downwards, membership persists until the nearest lower def or use of the
+///   vreg — already in the def/use extent — or, if there is none, all the way
+///   to the block's first instruction, where the vreg is in `live_in[b]`;
+/// * upwards, membership persists until the nearest higher def or use — again
+///   in the extent — or to the block's last instruction, whose live-out set is
+///   `live_out[b]`.
 ///
-/// The result is identical to scanning `live_in` at every instruction, which is
-/// what `live_in_scan_reference` asserts. Scanning `live_out` too would be
-/// redundant either way: `live_in = uses ∪ (live_out - defs)`, so every live-out
-/// value is already either live-in or defined at that instruction.
+/// So `idx` always lies between two contributed indices and is covered by the
+/// resulting interval. Every contributed index is itself a point where the vreg
+/// is live or defined, so nothing over-extends either: a value in `live_out[b]`
+/// that is not live-in at the block's last instruction was defined there, and
+/// that index is in the def/use extent regardless. The endpoints therefore
+/// match a scan of every instruction's live-in set exactly, which is what
+/// `live_in_scan_reference` asserts.
+///
+/// Scanning live-out at every instruction would be redundant either way:
+/// `live_in = uses ∪ (live_out - defs)`, so every live-out value is already
+/// either live-in or defined at that instruction.
 ///
 /// # A range is a textual interval, not liveness
 ///
@@ -979,8 +1158,7 @@ fn build_live_ranges(
     inst_uses: &[VRegList],
     inst_defs: &[VRegList],
     successors: &[SuccessorList],
-    live_in: &[FixedBitSet],
-    has_back_edge: bool,
+    cyclic: Option<&BlockLiveness>,
 ) -> IndexMap<VReg, Option<LiveRange>> {
     let mut ranges: IndexMap<VReg, Option<LiveRange>> =
         IndexMap::with_capacity(vreg_count as usize);
@@ -1007,74 +1185,25 @@ fn build_live_ranges(
         }
     }
 
-    if !has_back_edge {
-        return ranges;
-    }
-
-    // The first and last rows have no neighbour below and above them, so every
-    // value live-in there ends a run at that row.
-    let (Some(first_row), Some(last_row)) = (live_in.first(), live_in.last()) else {
+    let Some(block_liveness) = cyclic else {
         return ranges;
     };
-    for vreg_idx in first_row.ones() {
-        extend(VReg::new(vreg_idx as u32), 0);
-    }
-    for vreg_idx in last_row.ones() {
-        extend(VReg::new(vreg_idx as u32), num_insts - 1);
-    }
 
-    for idx in 0..num_insts - 1 {
-        let row_successors: &[usize] = &successors[idx];
-        if *row_successors == [idx + 1] {
-            // Straight-line row: any disagreement with the next row is a def or
-            // a use here, and the def/use pass has already covered it.
-            continue;
+    let mut live_out = FixedBitSet::with_capacity(vreg_count as usize);
+    note_bitset_words(live_out.as_slice().len(), 1);
+    for block in 0..block_liveness.blocks.len() {
+        let (start, end) = block_liveness.blocks.span(block);
+        note_bitset_words(live_out.as_slice().len(), 2);
+        for vreg_idx in block_liveness.live_in[block].ones() {
+            extend(VReg::new(vreg_idx as u32), start);
         }
-        for_each_live_in_transition(&live_in[idx], &live_in[idx + 1], |vreg, live_here| {
-            extend(vreg, if live_here { idx } else { idx + 1 });
-        });
+        block_liveness.live_out_into(block, successors, &mut live_out);
+        for vreg_idx in live_out.ones() {
+            extend(VReg::new(vreg_idx as u32), end);
+        }
     }
 
     ranges
-}
-
-/// Visit every vreg whose live-in membership differs between two adjacent rows.
-///
-/// `live_here` reports which side the vreg is on: `true` when it is live in
-/// `row` and not in `next`, which ends a run at `row`; `false` when it is live
-/// in `next` only, which starts one at the following index.
-///
-/// The comparison is a word-level XOR, so it costs one pass over the row width
-/// plus one step per differing vreg. Iterating either row's set bits instead
-/// would reintroduce the per-instruction live-set walk this construction exists
-/// to avoid.
-fn for_each_live_in_transition(
-    row: &FixedBitSet,
-    next: &FixedBitSet,
-    mut visit: impl FnMut(VReg, bool),
-) {
-    const BLOCK_BITS: usize = usize::BITS as usize;
-    let row_blocks = row.as_slice();
-    let next_blocks = next.as_slice();
-    // One length compare per inspected row, against the word scan below: the
-    // XOR walk would silently miss transitions past the shorter row, and a
-    // missed transition is a range that ends too early, so this stays on in
-    // release builds (the codegen crate keeps no debug-only assertions).
-    assert_eq!(
-        row_blocks.len(),
-        next_blocks.len(),
-        "dataflow rows are allocated at one width"
-    );
-
-    for (block_idx, (&row_block, &next_block)) in row_blocks.iter().zip(next_blocks).enumerate() {
-        let mut changed = row_block ^ next_block;
-        while changed != 0 {
-            let bit = changed.trailing_zeros() as usize;
-            changed &= changed - 1;
-            let vreg = VReg::new((block_idx * BLOCK_BITS + bit) as u32);
-            visit(vreg, row_block & (1 << bit) != 0);
-        }
-    }
 }
 
 // ============================================================================
@@ -1336,8 +1465,59 @@ mod tests {
                 break;
             }
         }
-        let live_out = materialize_live_out(&live_in, successors, vreg_count as usize);
+        let live_out = live_in
+            .iter()
+            .enumerate()
+            .map(|(idx, _)| {
+                let mut set = FixedBitSet::with_capacity(vreg_count as usize);
+                for &successor in &successors[idx] {
+                    set.union_with(&live_in[successor]);
+                }
+                set
+            })
+            .collect();
         (live_in, live_out)
+    }
+
+    /// Solve liveness at block granularity, then re-derive the per-instruction
+    /// rows, so a block-level fixed point can be compared against a
+    /// per-instruction one row for row.
+    fn solved_liveness(
+        num_insts: usize,
+        vreg_count: u32,
+        successors: &[SuccessorList],
+        inst_uses: &[VRegList],
+        inst_defs: &[VRegList],
+    ) -> (BlockLiveness, Vec<FixedBitSet>, Vec<FixedBitSet>) {
+        let blocks = partition_blocks(num_insts, successors);
+        let live_in = solve_block_liveness(
+            vreg_count,
+            successors,
+            inst_uses,
+            inst_defs,
+            &blocks,
+            has_back_edge(successors),
+        )
+        .0;
+        let block_liveness = BlockLiveness { blocks, live_in };
+        let rows = instruction_liveness_rows(
+            num_insts,
+            vreg_count,
+            successors,
+            inst_uses,
+            inst_defs,
+            &block_liveness,
+        );
+        let to_bitset = |set: &AHashSet<VReg>| {
+            let mut bits = FixedBitSet::with_capacity(vreg_count as usize);
+            for vreg in set {
+                bits.insert(vreg.index() as usize);
+            }
+            bits
+        };
+        let row_live_in = rows.iter().map(|row| to_bitset(&row.live_in)).collect();
+        let row_live_out = rows.iter().map(|row| to_bitset(&row.live_out)).collect();
+        (block_liveness, row_live_in, row_live_out)
     }
 
     fn assert_worklist_matches_reference(
@@ -1350,12 +1530,8 @@ mod tests {
         assert!(has_back_edge(successors));
         let (expected_in, expected_out) =
             reference_dataflow(num_insts, vreg_count, successors, inst_uses, inst_defs);
-        let (sets, _) = compute_dataflow(
-            num_insts, vreg_count, successors, inst_uses, inst_defs, true,
-        );
-        let DataflowSets::Cyclic { live_in, live_out } = sets else {
-            panic!("the back-edge must select cyclic dataflow storage");
-        };
+        let (_, live_in, live_out) =
+            solved_liveness(num_insts, vreg_count, successors, inst_uses, inst_defs);
         assert_eq!(live_in, expected_in);
         assert_eq!(live_out, expected_out);
     }
@@ -1472,26 +1648,28 @@ mod tests {
         inst_defs: &[VRegList],
     ) {
         // Both constructions are compared on the path that consumes the
-        // dataflow sets, so the solver and the range builder are asked for the
-        // cyclic treatment even when the generated graph happens to be
-        // loop-free. The loop-free production path is a separate, deliberate
-        // approximation that never reads `live_in` at all (RUE-302), so it is
-        // not what this equivalence is about.
-        let (sets, _) = compute_dataflow(
-            num_insts, vreg_count, successors, inst_uses, inst_defs, true,
-        );
-        let DataflowSets::Cyclic { live_in, .. } = &sets else {
-            panic!("cyclic dataflow storage was requested");
-        };
+        // dataflow, so the range builder is asked for the cyclic treatment even
+        // when the generated graph happens to be loop-free. The loop-free
+        // production path is a separate, deliberate approximation that never
+        // reads liveness at all (RUE-302), so it is not what this equivalence
+        // is about.
+        let (block_liveness, live_in, _) =
+            solved_liveness(num_insts, vreg_count, successors, inst_uses, inst_defs);
 
         let built = build_live_ranges(
-            num_insts, vreg_count, inst_uses, inst_defs, successors, live_in, true,
+            num_insts,
+            vreg_count,
+            inst_uses,
+            inst_defs,
+            successors,
+            Some(&block_liveness),
         );
-        let expected = live_in_scan_reference(num_insts, vreg_count, inst_uses, inst_defs, live_in);
+        let expected =
+            live_in_scan_reference(num_insts, vreg_count, inst_uses, inst_defs, &live_in);
         assert_eq!(
             built.iter().collect::<Vec<_>>(),
             expected.iter().collect::<Vec<_>>(),
-            "{label}: boundary-driven ranges disagree with the live-in scan"
+            "{label}: block-boundary ranges disagree with the live-in scan"
         );
     }
 
@@ -1728,9 +1906,7 @@ mod tests {
     #[should_panic]
     fn malformed_successor_target_still_panics() {
         let successors: Vec<SuccessorList> = [[0, 99].into_iter().collect()].into();
-        let uses = vec![VRegList::new()];
-        let defs = vec![VRegList::new()];
-        let _ = compute_dataflow(1, 1, &successors, &uses, &defs, true);
+        let _ = partition_blocks(1, &successors);
     }
 
     #[test]
@@ -1917,7 +2093,7 @@ mod tests {
     }
 
     #[test]
-    fn dataflow_scratch_is_cleared_across_rows_and_fixed_point_rounds() {
+    fn dataflow_scratch_is_cleared_across_blocks_and_fixed_point_rounds() {
         let successors: Vec<SuccessorList> = [
             SuccessorList::new(),
             [2].into_iter().collect(),
@@ -1934,16 +2110,32 @@ mod tests {
         .into();
         let defs = vec![VRegList::new(); successors.len()];
 
-        // The use at instruction 1 reaches instruction 2 only through the
-        // back-edge, so convergence requires another reverse pass. Instruction
-        // 0 is processed after those live rows but remains empty, proving one
-        // row's scratch bits do not leak to the next row or the next round.
-        let (sets, row_visits) =
-            compute_dataflow(4, 1, &successors, &uses, &defs, has_back_edge(&successors));
-        let DataflowSets::Cyclic { live_in, live_out } = sets else {
-            panic!("the back-edge must select cyclic dataflow storage");
-        };
+        // Instructions 1 and 2 form one block, and the use at instruction 1
+        // reaches instruction 2 only through the back-edge, so convergence
+        // requires revisiting that block. Instruction 0 is a block of its own,
+        // processed after the live one, and remains empty — proof that one
+        // block's scratch bits leak neither into the next block nor into the
+        // next round.
+        let blocks = partition_blocks(4, &successors);
+        assert_eq!(blocks.starts, vec![0, 1, 3, 4]);
+        let (block_live_in, block_visits) = solve_block_liveness(
+            1,
+            &successors,
+            &uses,
+            &defs,
+            &blocks,
+            has_back_edge(&successors),
+        );
+        assert_eq!(
+            block_visits, 4,
+            "the worklist must revisit the block whose successors changed"
+        );
+
+        let (_, live_in, live_out) = solved_liveness(4, 1, &successors, &uses, &defs);
         let ones = |set: &FixedBitSet| set.ones().collect::<Vec<_>>();
+        assert!(block_live_in[0].is_clear());
+        assert_eq!(ones(&block_live_in[1]), vec![0]);
+        assert!(block_live_in[2].is_clear());
         assert!(live_in[0].is_clear());
         assert_eq!(ones(&live_in[1]), vec![0]);
         assert_eq!(ones(&live_in[2]), vec![0]);
@@ -1952,10 +2144,6 @@ mod tests {
         assert_eq!(ones(&live_out[1]), vec![0]);
         assert_eq!(ones(&live_out[2]), vec![0]);
         assert!(live_out[3].is_clear());
-        assert_eq!(
-            row_visits, 6,
-            "the worklist must revisit changed predecessors"
-        );
     }
 
     #[test]
@@ -1974,21 +2162,116 @@ mod tests {
         .into();
         let defs = vec![VRegList::new(); successors.len()];
 
-        let (sets, row_visits) =
-            compute_dataflow(3, 1, &successors, &uses, &defs, has_back_edge(&successors));
-        let DataflowSets::Acyclic { live_in } = sets else {
-            panic!("forward-only control flow must select acyclic storage");
-        };
-        let live_out = materialize_live_out(&live_in, &successors, 1);
-        let ones = |set: &FixedBitSet| set.ones().collect::<Vec<_>>();
+        // Straight-line control flow is one block, so the sweep is one visit
+        // whatever the instruction count.
+        let blocks = partition_blocks(3, &successors);
+        assert_eq!(blocks.starts, vec![0, 3]);
+        let (_, block_visits) = solve_block_liveness(
+            1,
+            &successors,
+            &uses,
+            &defs,
+            &blocks,
+            has_back_edge(&successors),
+        );
+        assert_eq!(
+            block_visits, 1,
+            "forward-only dataflow visits each block once"
+        );
 
+        let (_, live_in, live_out) = solved_liveness(3, 1, &successors, &uses, &defs);
+        let ones = |set: &FixedBitSet| set.ones().collect::<Vec<_>>();
         assert_eq!(ones(&live_in[0]), vec![0]);
         assert_eq!(ones(&live_in[1]), vec![0]);
         assert_eq!(ones(&live_in[2]), vec![0]);
         assert_eq!(ones(&live_out[0]), vec![0]);
         assert_eq!(ones(&live_out[1]), vec![0]);
         assert!(live_out[2].is_clear());
-        assert_eq!(row_visits, 3, "forward-only dataflow visits each row once");
+    }
+
+    #[test]
+    fn blocks_split_at_branch_targets_and_at_every_non_fallthrough_row() {
+        // 0 falls through; 1 branches to 4 or falls through; 2 and 3 fall
+        // through; 4 returns. Instruction 2 leads a block because instruction 1
+        // is not a plain fallthrough, and instruction 4 leads one because it is
+        // a branch target even though instruction 3 falls into it.
+        let successors: Vec<SuccessorList> = [
+            [1].into_iter().collect(),
+            [2, 4].into_iter().collect(),
+            [3].into_iter().collect(),
+            [4].into_iter().collect(),
+            SuccessorList::new(),
+        ]
+        .into();
+        let blocks = partition_blocks(5, &successors);
+        assert_eq!(blocks.starts, vec![0, 2, 4, 5]);
+        assert_eq!(blocks.span(0), (0, 1));
+        assert_eq!(blocks.span(1), (2, 3));
+        assert_eq!(blocks.span(2), (4, 4));
+        assert_eq!(
+            (0..5).map(|idx| blocks.of(idx)).collect::<Vec<_>>(),
+            vec![0, 0, 1, 1, 2]
+        );
+    }
+
+    #[test]
+    fn cyclic_dataflow_work_stays_proportional_to_blocks_not_instructions() {
+        // A loop whose body is `size` instructions over `size` virtual
+        // registers: the synthetic instructions x vregs shape RUE-1545 is
+        // about. A per-instruction live-in table costs at least one full-width
+        // pass per instruction to build and another to read; the block-granular
+        // solve costs a handful of passes per *block*. So doubling the size
+        // roughly doubles the counted bitset work, and would roughly quadruple
+        // it if a dense table came back.
+        //
+        // The counter is maintained by `note_bitset_words`, which every
+        // full-width operation in the solve, the range construction, and the
+        // debug projection reports through. New dataflow storage has to report
+        // through it too, or this test is measuring something other than the
+        // work that was added.
+        fn dataflow_words(size: u32) -> (u64, usize) {
+            let count = size as usize + 2;
+            let mut successors = vec![SuccessorList::new(); count];
+            let mut uses = vec![VRegList::new(); count];
+            let mut defs = vec![VRegList::new(); count];
+            for idx in 0..count - 2 {
+                successors[idx] = [idx + 1].into_iter().collect();
+                defs[idx].push(VReg::new(idx as u32 % size));
+                uses[idx].push(VReg::new((idx as u32 + 1) % size));
+            }
+            // The back-edge closes the loop; the exit row keeps the body from
+            // being the whole function.
+            successors[count - 2] = [count - 1, 0].into_iter().collect();
+
+            DATAFLOW_BITSET_WORDS.with(|counter| counter.set(0));
+            let blocks = partition_blocks(count, &successors);
+            let live_in = solve_block_liveness(size, &successors, &uses, &defs, &blocks, true).0;
+            let block_liveness = BlockLiveness { blocks, live_in };
+            let ranges = build_live_ranges(
+                count,
+                size,
+                &uses,
+                &defs,
+                &successors,
+                Some(&block_liveness),
+            );
+            assert_eq!(ranges.len(), size as usize);
+            (DATAFLOW_BITSET_WORDS.with(Cell::get), count)
+        }
+
+        let (small, small_insts) = dataflow_words(512);
+        let (large, large_insts) = dataflow_words(1024);
+        assert!(
+            small < small_insts as u64 && large < large_insts as u64,
+            "a per-instruction table costs at least one word per instruction: \
+             {small} words for {small_insts} instructions, \
+             {large} for {large_insts}"
+        );
+        assert!(
+            large < small * 3,
+            "doubling the loop body must not multiply dataflow bitset work by four: \
+             {small} words at 512, {large} at 1024"
+        );
     }
 
     // ========================================
