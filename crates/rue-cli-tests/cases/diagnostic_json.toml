@@ -414,3 +414,42 @@ compile_stderr_not_contains = [
   '"severity":"error"',
   '"primary":true',
 ]
+
+[[case]]
+name = "element_gate_relocation_keeps_gate_as_secondary_span"
+description = """
+RUE-2026: the element-type gate (E0711) is stated inside `std/arraybuf.rue`,
+but the diagnostic is anchored at the earliest call, in source order, that
+demanded that body, so `spans[0]` is the programmer's own `a.get(0)` and the
+gate line survives as a labelled non-primary span. The consumer-visible shape is
+two spans, not one: this pins that a JSON consumer keeps a primary in the user's
+file and gains exactly one labelled secondary. The library span's `file`,
+`line`, `start` and `end` are deliberately unasserted — the std path is absolute
+and its line numbers move with unrelated library edits — so the secondary is
+matched by its `"primary":false` flag and its label text instead.
+"""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let A = std.arraybuf.ArrayBuf(StrBuf);
+    let mut a = A.new();
+    let _ = a.get(0);
+    0
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E0711 main.rue:7:13"]
+compile_stderr_contains = [
+  '"code":"E0711"',
+  # spans[0]: the demanding call in the programmer's own file, primary.
+  '''"spans":[{"column":13,"end":170,"file":"main.rue","label":null,"line":7,"primary":true,"start":162},{''',
+  # spans[1]: the gate inside the standard library, secondary and labelled.
+  '"primary":false',
+  '"label":"the element type is required to be trivially droppable here"',
+]
+compile_stderr_not_contains = ["error: [E0711]", " --> "]

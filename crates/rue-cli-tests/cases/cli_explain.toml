@@ -661,8 +661,14 @@ name = "nontrivial_container_element_code_is_explained"
 files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
 args = ["explain", "E0711"]
 compile_only = true
-compile_stdout_contains = ["E0711: Container element not trivially droppable", "Copy an element that has drop glue:", "Copy a trivially droppable element:", "duplicates one value into every cell of a new container", "docs/spec/src/03-types/09-destructors.md (spec rule 3.9:7)"]
-compile_stdout_not_contains = ["Compiled"]
+# Explanations carry at most two worked examples, so the worked pair is the
+# duplication shape and its trivially-droppable control; the prose is what
+# covers all three messages, and these entries pin a clause of each (RUE-2070).
+compile_stdout_contains = ["E0711: Container element not trivially droppable", "Copy an element in place:", "Copy a trivially droppable element:", "duplicates one value into every cell of a new container", "a by-copy read such as `Stack(T)::peek` on a container with no `get_ref`/`pop` pair", "Read the element in place through `get_ref`, or transfer its ownership with `pop` or `pop_or`", "hold the owning values in an `ArrayBuf` and store an index instead", "docs/spec/src/03-types/09-destructors.md (spec rule 3.9:7)"]
+# "Compiled" would mean the driver ran a build instead of the explainer. The
+# second entry is a wording pin: a borrowed value cannot be stored in a struct
+# field (spec 6.1:140), so the construction remedy must not offer one.
+compile_stdout_not_contains = ["Compiled", "store an index or a borrow instead"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
 [[case]]
