@@ -4,28 +4,81 @@ name = "Trivially-droppable element-type gate (E0711)"
 description = """
 `@require_trivially_droppable(T)` (E0711, RUE-651) rejects an element type that
 owns resources, because duplicating such an element leaves the copy and the
-original both running drop glue at scope exit — a double-free. One code, two
-messages, chosen by the shape of the callable that states the gate. A body with a
-`self` receiver is reading a stored element by copy (`ArrayBuf(T)::get`/`get_or`
-copy it out with `@ptr_read` while the slot stays live), so the message offers
-`get_ref` for an in-place read and `pop` to move it out, leaving one owner. An
-associated function or a `-> type` producer has no stored element to borrow and is
-duplicating one value into a container's cells (`Grid2D(T)::new`), so the message
-says only a trivially droppable element type will do. Because the gate lives in a
-method body, demand-driven analysis (ADR-0045) fires it only when that method is
-actually called — storing/pushing/popping/dropping a drop-glue element stays legal
-(RUE-646). The rejected body belongs to the library, not the caller, so the
-diagnostic is anchored at the call that demanded it and keeps the gate line as a
-labelled secondary span (RUE-2026). Mirrors Swift's rule that a non-copyable
-element cannot use a by-value `get` subscript. Most cases here use a self-contained
-minimal container so the gate is tested independent of the std `ArrayBuf` source;
-the `real_std` cases at the end pin the same gate where `std/grid.rue` states it
-for a whole element type.
+original both running drop glue at scope exit — a double-free. One code, three
+messages, chosen by the declared shape of the callable that states the gate. A
+`self` receiver whose return type is the element (`get_or -> T`) or an option of
+it (`get -> Option(T)`) hands one stored element back by copy; that message names
+`get_ref` and `pop`/`pop_or` as the ways out, so it is used only when the
+receiver really has them. An associated function, a free function or a `-> type`
+producer has no stored element to borrow and is building a value out of copies
+(`Grid2D(T)::new`), so the message says only a trivially droppable element type
+will do. Everything else that duplicates an element — a callable that returns
+nothing (`ArrayBuf(T)::extend_from`, a heap sift, a sort), and a by-copy read on
+a container with no `get_ref`/`pop` pair to name — gets neutral wording that
+describes the copy and prescribes nothing, because naming a method the container
+does not have is worse than naming none. Because the gate lives in a method
+body, demand-driven analysis (ADR-0045) fires it only when that method is
+actually called — storing/pushing/popping/dropping a drop-glue element stays
+legal (RUE-646). The rejected body belongs to the library, not the caller, so the
+diagnostic is anchored at the earliest call, in source order, that demanded that
+body and keeps the gate line as a labelled secondary span (RUE-2026); one library
+accessor can be demanded through several wrappers, and the climb out of the
+library is breadth-first across all of them and runs to the hop cap rather than
+stopping at the first hop that reaches user code, so the earliest demand wins
+whether it is reached through the wrapper that sorts first or through a longer
+chain than a later demand (RUE-2070). Mirrors Swift's rule
+that a non-copyable element cannot use a by-value `get` subscript. Most cases
+here use a self-contained minimal container so the gate is tested independent of
+the std `ArrayBuf` source; the `real_std` cases at the end pin the same gate
+where `std/grid.rue` and `std/arraybuf.rue` state it.
 """
 
+# A by-copy read on a container that has both remedies the read message names.
+# `Slot` really does offer `get_ref` (a `-> borrow` accessor) and a `pop` that
+# moves the resource out, so E0711 names them.
 [[case]]
 name = "e0711_drop_glue_element_read_rejected"
-description = "Calling a by-copy read whose element type has drop glue is rejected with E0711 at the call, pointed at `get_ref` or `pop`, with the gate line labelled."
+description = "Calling a by-copy read whose element type has drop glue is rejected with E0711 at the call, pointed at the `get_ref` and `pop` the receiver actually has, with the gate line labelled."
+source = """
+struct D { v: i32 }
+drop fn D(self) {}
+struct Slot {
+    item: D,
+    fn get_ref(borrow self) -> borrow D {
+        yield self.item;
+    }
+    fn pop(self) -> D {
+        self.item
+    }
+    fn get(borrow self) -> D {
+        @require_trivially_droppable(D);
+        self.item
+    }
+}
+fn main() -> i32 {
+    let slot = Slot { item: D { v: 5 } };
+    let copy = slot.get();
+    copy.v
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0711",
+    "cannot read an element of type `D` by copy",
+    "use `get_ref` for an in-place read, or move it out with `pop`/`pop_or`",
+    # The primary span is `slot.get()`, not the gate inside `Slot::get`.
+    "test.rue:18:",
+    "the element type is required to be trivially droppable here",
+]
+
+# The same by-copy read on a container that offers neither remedy. `Reader` has
+# no `get_ref` and no `pop`, so the read message's advice would name methods
+# that do not exist; the neutral wording describes the copy and prescribes
+# nothing instead. This is what `Stack(T)::peek` and `BinaryHeap(T)::peek` get
+# from the real std, where the in-place read is spelled `peek_ref` or missing.
+[[case]]
+name = "e0711_read_without_remedies_uses_neutral_wording"
+description = "A by-copy read whose receiver has no `get_ref`/`pop` pair renders the neutral copy wording rather than prescribing accessors the container does not have."
 source = """
 struct D { v: i32 }
 drop fn D(self) {}
@@ -48,8 +101,9 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = [
     "E0711",
-    "cannot read an element of type `D` by copy",
-    "use `get_ref` for an in-place read, or move it out with `pop`/`pop_or`",
+    "cannot copy an element of type `D` here",
+    "this operation duplicates elements while the originals stay live",
+    "the element type must be trivially droppable",
     # The primary span is `r.first()`, not the gate inside `Reader`.
     "test.rue:15:",
     "the element type is required to be trivially droppable here",
@@ -443,3 +497,183 @@ fn main() -> i32 {
 compile_fail = false
 real_std = true
 exit_code = 3
+
+# `Grid2D(T)::get` reads a cell through `ArrayBuf(T)::get`, and it states the
+# gate itself rather than inheriting the one underneath. The inherited message
+# would name `get_ref` and `pop`/`pop_or` on a grid that has `get_ref` and no
+# `pop` at all, because the remedy probe answers for the receiver of the body
+# that states the gate while the diagnostic is anchored at the caller's own
+# wrapper (RUE-2070). Stating the gate here classifies the grid on itself: a
+# by-copy read whose receiver cannot offer both remedies, so the neutral copy
+# wording.
+[[case]]
+name = "e0711_grid2d_owning_element_read_uses_neutral_wording"
+description = "`Grid2D(StrBuf)::get` states its own gate, so E0711 lands on the caller's `g.get(0, 0)` with the neutral copy wording rather than the inherited `ArrayBuf` wording naming a `pop` the grid does not have."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let G = std.grid.Grid2D(StrBuf);
+    let g = G.new(1, 1, "x");
+    let _ = g.get(0, 0);
+    0
+}
+"""
+compile_fail = true
+real_std = true
+# Two E0711s, one per gate, so the case pins both messages rather than
+# asserting a single diagnostic.
+error_contains = [
+    "E0711",
+    "cannot copy an element of type `StrBuf` here",
+    "this operation duplicates elements while the originals stay live",
+    "test.rue:7:",
+    "the element type is required to be trivially droppable here",
+    # `Grid2D(T)::new` states its own gate, so the construction is a separate
+    # diagnostic at its own demanding call and keeps the construction wording.
+    "cannot use an element of type `StrBuf` here",
+    "test.rue:6:",
+]
+
+# Two wrappers over one accessor. `ArrayBuf(T)::first` and `ArrayBuf(T)::last`
+# both read through `ArrayBuf(T)::get`, which is where the gate is stated, so
+# one gate is demanded by two calls in this program. `first` is written above
+# `last` in `arraybuf.rue`, so a climb that followed a single chain would leave
+# the library through `first` and report `a.first()` on line 10 — the LATER of
+# the two demands. The climb is breadth-first over every library caller at each
+# hop, so both wrappers are expanded together and the earlier demand,
+# `a.last()` on line 8, wins.
+[[case]]
+name = "e0711_shared_accessor_reports_earliest_demand"
+description = "When two std wrappers demand one by-copy accessor, E0711 is anchored at the earliest demanding call in source order (`a.last()` on line 8), not at the later one reached through the library caller that sorts first."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let A = std.arraybuf.ArrayBuf(StrBuf);
+    let a = A.new();
+
+    let _ = a.last();
+
+    let _ = a.first();
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "cannot read an element of type `StrBuf` by copy",
+    "test.rue:8:",
+    "the element type is required to be trivially droppable here",
+]
+
+# The same gate demanded at two different depths. `a.first()` on line 8 reaches
+# `ArrayBuf(T)::get` through one library frame; `a.get(0)` on line 10 calls the
+# gated body directly, one hop nearer. A walk that answered at the first hop
+# reaching user code would report the nearer, later call. Every hop up to the
+# cap is walked instead and all the candidates compete on source position, so
+# the earlier call wins however many library frames stand behind it.
+[[case]]
+name = "e0711_earlier_demand_wins_over_nearer_later_one"
+description = "A demand one library frame deep on line 8 outranks a direct demand on line 10: the climb collects candidates from every hop and anchors E0711 at the earliest in source order, not at the nearest."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let A = std.arraybuf.ArrayBuf(StrBuf);
+    let a = A.new();
+
+    let _ = a.first();
+
+    let _ = a.get(0);
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "cannot read an element of type `StrBuf` by copy",
+    "test.rue:8:",
+    "the element type is required to be trivially droppable here",
+]
+
+# `extend_from` copies a run of elements from one container into another and
+# hands none of them back. `get_ref` has nothing to borrow here and `pop` would
+# not make the copy sound, so the message states the requirement and offers
+# neither remedy.
+[[case]]
+name = "e0711_bulk_copy_gate_uses_neutral_wording"
+description = "`ArrayBuf(StrBuf)::extend_from` returns nothing, so E0711 renders the neutral bulk-copy message rather than the by-copy-read one that would prescribe `get_ref`/`pop`."
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let A = std.arraybuf.ArrayBuf(StrBuf);
+    let mut a = A.new();
+    let b = A.new();
+    a.extend_from(borrow b);
+    0
+}
+"""
+compile_fail = true
+real_std = true
+expected_error_code = "E0711"
+error_contains = [
+    "E0711",
+    "cannot copy an element of type `StrBuf` here",
+    "this operation duplicates elements while the originals stay live",
+    "the element type must be trivially droppable",
+    "test.rue:8:",
+    "the element type is required to be trivially droppable here",
+]
+
+[[case]]
+name = "arraybuf_extend_from_copy_element_compiles"
+description = "The same bulk copy compiles and runs for a trivially-droppable element type."
+source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let A = std.arraybuf.ArrayBuf(i64);
+    let mut a = A.new();
+    a.push(1);
+    let mut b = A.new();
+    b.push(2);
+    b.push(4);
+    a.extend_from(borrow b);
+    let OI = std.option.Option(i64);
+    match a.get(2) { OI.Some(v) => @intCast(v + @intCast(a.len())), OI.None => 0 }
+}
+"""
+compile_fail = false
+real_std = true
+exit_code = 7
+
+[[case]]
+name = "grid2d_copy_element_delegated_read_compiles"
+description = "`Grid2D(i64)::get` states its own gate and delegates to `ArrayBuf(i64)::get`, and both the in-bounds and out-of-bounds reads pass both gates for a trivially-droppable element type."
+source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let OI = std.option.Option(i64);
+    let G = std.grid.Grid2D(i64);
+    let mut g = G.new(2, 3, 5);
+    g.set(0, 0, 11);
+    let a = match g.get(0, 0) { OI.Some(v) => v, OI.None => 0 };
+    let b = match g.get(1, 2) { OI.Some(v) => v, OI.None => 0 };
+    let c = match g.get(9, 9) { OI.Some(v) => v, OI.None => 100 };
+    @intCast(a + b + c)
+}
+"""
+compile_fail = false
+real_std = true
+exit_code = 116

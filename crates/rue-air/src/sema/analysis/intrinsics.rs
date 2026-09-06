@@ -60,6 +60,127 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
     }
 
+    /// Which of E0711's three messages fits the callable that states an
+    /// element-type gate on `element` ([`rue_error::ElementGateShape`]).
+    ///
+    /// The gate is one intrinsic written at many entry points, and the way out
+    /// differs by what the entry point does with the element. Nothing in the
+    /// source says which, so this reads the callable's own declared signature —
+    /// receiver, return type, and, for the one message that names methods, the
+    /// receiver's method set:
+    ///
+    /// * A callable that returns nothing cannot be handing an element back, so
+    ///   whatever it duplicates it duplicates internally: `extend_from` copying
+    ///   one container's cells into another, a `RawBuf` range copy, a heap
+    ///   `push` sifting by copy, a sort shifting elements past one another.
+    ///   There is no accessor to redirect the programmer to, so the neutral
+    ///   `Duplicate` wording offers no remedy.
+    /// * A `self` receiver whose declared return type is the element itself
+    ///   (`get_or -> T`) or an option of it (`get -> Option(T)`) hands one
+    ///   stored element back by copy. The `Read` message names `get_ref` and
+    ///   `pop`/`pop_or` as the ways out, so it is used only for a receiver that
+    ///   actually has them: `Stack::peek`, `Queue::peek`/`dequeue` and
+    ///   `BinaryHeap::peek`/`pop` share this signature while spelling the
+    ///   in-place read differently (`peek_ref`) or not offering one at all, and
+    ///   naming a method the container does not have is worse than naming none.
+    ///   Those fall to `Duplicate`, which describes the copy without
+    ///   prescribing a cure.
+    /// * Anything else — an associated function, a free function, or a `-> type`
+    ///   producer — has no stored element to borrow and is building a value out
+    ///   of copies, so only a trivially droppable element type will do.
+    ///
+    /// The receiver probed is the one belonging to the body that states the
+    /// gate, and that is the type whose methods the message names, while the
+    /// diagnostic itself is anchored at the caller. A wrapper that delegates to
+    /// a gated body therefore inherits that body's wording, so a wrapper whose
+    /// own type cannot offer the remedies states its own gate instead of
+    /// inheriting them (`Grid2D::get` and `Stack::peek` both read through
+    /// `ArrayBuf::get`, and both classify on themselves).
+    fn element_gate_shape(
+        &self,
+        element: Type,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<rue_error::ElementGateShape> {
+        use rue_error::ElementGateShape;
+
+        if ctx.return_type == Type::UNIT {
+            return Ok(ElementGateShape::Duplicate);
+        }
+        // `self` is a keyword, so the receiver is the only parameter that can
+        // carry it.
+        let receiver_name = self.intern_body_symbol("self")?;
+        let receiver = ctx
+            .params
+            .first()
+            .filter(|param| param.name == receiver_name);
+        let Some(receiver) = receiver else {
+            return Ok(ElementGateShape::Construction);
+        };
+        if ctx.return_type != element && !self.is_option_of_element(ctx.return_type, element) {
+            return Ok(ElementGateShape::Construction);
+        }
+        Ok(if self.offers_by_copy_read_remedies(receiver.ty)? {
+            ElementGateShape::Read
+        } else {
+            ElementGateShape::Duplicate
+        })
+    }
+
+    /// Whether `receiver` has the two members E0711's by-copy-read message
+    /// tells the programmer to use: `get_ref` for an in-place read, and `pop`
+    /// or `pop_or` to move the element out instead of copying it.
+    ///
+    /// This matches members on the receiver type by name alone; it does not
+    /// check that they have the signatures the message implies. Those names are
+    /// conventional across the standard library's containers, and a user type
+    /// that spells an unrelated `get_ref`/`pop` pair is told to use them — a
+    /// worse message than the neutral one, not an unsound one, and cheaper than
+    /// a signature probe.
+    ///
+    /// The names are interned rather than looked up: the shared symbol space is
+    /// append-only and its handles are equality-only, so interning a name the
+    /// body has not mentioned costs one entry and changes nothing observable,
+    /// while a lookup would answer "absent" for a member of a named struct
+    /// whose spelling this body has had no other reason to intern.
+    fn offers_by_copy_read_remedies(&self, receiver: Type) -> CompileResult<bool> {
+        let Some(struct_id) = receiver.as_struct() else {
+            return Ok(false);
+        };
+        let has_member = |name: &str| -> CompileResult<bool> {
+            Ok(self.has_method((struct_id, self.intern_body_symbol(name)?)))
+        };
+        Ok(has_member("get_ref")? && (has_member("pop")? || has_member("pop_or")?))
+    }
+
+    /// Whether `ty` is an option carrying exactly `element`.
+    ///
+    /// The element-type gate classifies its enclosing callable from that
+    /// callable's declared return type, and a by-copy read states its result as
+    /// `Option(T)` (`ArrayBuf(T)::get`) as readily as `T` (`get_or`). The shape
+    /// is read structurally — a two-variant `Some`/`None` enum whose `Some`
+    /// carries the element alone — rather than through the well-known-`Option`
+    /// registry, which is populated only for the payloads the fallible
+    /// intrinsics demanded and would answer `None` for an ordinary container
+    /// element type.
+    fn is_option_of_element(&self, ty: Type, element: Type) -> bool {
+        let Some(enum_id) = ty.as_enum() else {
+            return false;
+        };
+        let Some(def) = self.body_type_pool().try_enum_def(enum_id) else {
+            return false;
+        };
+        if def.variant_count() != 2 {
+            return false;
+        }
+        let Some(some_index) = def.variants.iter().position(|name| &**name == "Some") else {
+            return false;
+        };
+        if !def.variants.iter().any(|name| &**name == "None") {
+            return false;
+        }
+        def.variant_payload(some_index) == [element]
+    }
+
     /// Analyze a type intrinsic (@size_of, @align_of, @require_droppable,
     /// @require_trivially_droppable). Resolves the type argument through the
     /// current analysis context so a type parameter (`T` in a monomorphized
@@ -94,32 +215,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // `@require_trivially_droppable(T)` is the element-type gate (RUE-651).
         // Unlike `@require_droppable`, this one normally *does* reach runtime
-        // analysis: it lives in `ArrayBuf(T)`'s `get`/`get_or` method bodies and
-        // in `Grid2D(T)`'s `new`, and demand-driven analysis (ADR-0045)
-        // monomorphizes those bodies with the concrete element type only when a
-        // program actually calls one. If that `T` has drop glue, duplicating it
-        // would alias its owned resources (double-free), so reject it (E0711).
-        // It has no runtime value and evaluates to unit.
-        //
-        // Which of E0711's two messages is right depends on what the enclosing
-        // callable does with `T`, and its receiver says which: a body with a
-        // `self` receiver reads an element already stored in that receiver, so
-        // `get_ref`/`pop` are real alternatives; an associated function has no
-        // stored element to borrow and is building a container out of copies,
-        // so only a trivially droppable element type will do. `self` is a
-        // keyword, so the receiver is the only parameter that can carry it.
+        // analysis: it is stated at the entry point of every standard-library
+        // operation that duplicates an element — `ArrayBuf(T)`'s
+        // `get`/`get_or`/`extend_from`/`index_of`/`contains`, the sifting and
+        // scanning entry points of `binary_heap` and `sort`, the
+        // filler-duplicating constructors (`Grid2D`, `Deque`, `IntMap`,
+        // `StrMap`), the by-copy readers on `Stack` and `Queue`, and the
+        // directory-private `rawbuf.copy_rawbuf_range(_within)` shims — and
+        // demand-driven analysis (ADR-0045) monomorphizes those bodies with the
+        // concrete element type only when a program actually calls one. If that
+        // `T` has drop glue, duplicating it would alias its owned resources
+        // (double-free), so reject it (E0711). It has no runtime value and
+        // evaluates to unit.
         if intrinsic_name == "require_trivially_droppable" {
-            let receiver = self.intern_body_symbol("self")?;
-            let shape = if ctx
-                .params
-                .first()
-                .is_some_and(|param| param.name == receiver)
-            {
-                rue_error::ElementGateShape::Read
-            } else {
-                rue_error::ElementGateShape::Construction
-            };
-            self.check_trivially_droppable(ty, span, shape)?;
+            // The shape decides only which message a rejection renders, so it
+            // is classified in the failure arm; a passing gate pays nothing for
+            // it.
+            self.check_trivially_droppable(ty, span, |engine| engine.element_gate_shape(ty, ctx))?;
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::Const(0),
                 ty: Type::UNIT,

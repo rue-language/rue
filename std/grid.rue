@@ -26,8 +26,10 @@
 // a `new_with(rows, cols, f)` that computes each cell instead needs function
 // values (RUE-643).
 //
-// `get` reads a cell by copy and `set` overwrites one; `get_ref` borrows a
-// cell in place.
+// `get` reads a cell by copy and states the same gate for the same reason, so
+// an owning `T` is named against the grid rather than against the ArrayBuf
+// accessor underneath it; `set` overwrites a cell and `get_ref` borrows one in
+// place.
 //
 //     const std = @import("std");
 //     let G = std.grid.Grid2D(i64);
@@ -84,8 +86,12 @@ pub fn Grid2D(comptime T: type) -> type {
             r < self.rows && c < self.cols
         }
 
-        // Cell `(r, c)` by copy, or `None` when out of bounds.
+        // Cell `(r, c)` by copy, or `None` when out of bounds. COPY-`T` ONLY
+        // (RUE-651); the gate is stated first so an owning `T` is named here
+        // rather than inside `ArrayBuf.get`, whose own wording offers a `pop`
+        // this grid does not have (RUE-2070). `get_ref` reads a cell in place.
         fn get(borrow self, r: u64, c: u64) -> option.Option(T) {
+            @require_trivially_droppable(T);
             let O = option.Option(T);
             if r < self.rows && c < self.cols {
                 self.cells.get(r * self.cols + c)

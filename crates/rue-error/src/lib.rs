@@ -1845,10 +1845,10 @@ define_error_codes! {
         ],
     };
     CONTAINER_ELEMENT_NOT_TRIVIALLY_DROPPABLE = 711 => {
-        explanation: "`@require_trivially_droppable(T)` rejects an element type that owns resources. Duplicating such an element leaves two values cleaning up the same owned buffer, a double-free, so the gate rejects the duplication before it happens. It guards two shapes and the message says which. A by-copy read (`ArrayBuf(T)::get`, `get_or`) duplicates one stored element while the slot stays live; a construction (`Grid2D(T)::new`, or a `-> type` producer that gates its element type) duplicates one value into every cell of a new container.",
-        likely_cause: "For a read: a by-copy accessor such as `get` or `get_or` was called on a container whose element type has a destructor or nested drop glue. Read the element in place through `get_ref`, or transfer its ownership with `pop` or `pop_or`. For a construction: the container stores its cells by copy and has no by-reference form to offer, so the element type itself must be trivially droppable — hold the owning values in an `ArrayBuf` and store an index or a borrow instead. The diagnostic points at the call that demanded the container, with the gate itself labelled in the library that states it.",
+        explanation: "`@require_trivially_droppable(T)` rejects an element type that owns resources. Duplicating such an element leaves two values cleaning up the same owned buffer, a double-free, so the gate rejects the duplication before it happens. It guards three shapes and the message says which. A by-copy read on a container that offers alternatives (`ArrayBuf(T)::get`, `get_or`) duplicates one stored element while the slot stays live; a construction (`Grid2D(T)::new`, or a `-> type` producer that gates its element type) duplicates one value into every cell of a new container; every other duplicating operation — `ArrayBuf(T)::extend_from` copying a run of elements from one container into another, a `BinaryHeap(T)` sift, a `std.sort` pass, or a by-copy read such as `Stack(T)::peek` on a container with no `get_ref`/`pop` pair — copies elements while the originals stay live and has no accessor to redirect you to.",
+        likely_cause: "For a read: a by-copy accessor such as `get` or `get_or` was called on a container whose element type has a destructor or nested drop glue. Read the element in place through `get_ref`, or transfer its ownership with `pop` or `pop_or`. For a construction: the container stores its cells by copy and has no by-reference form to offer, so the element type itself must be trivially droppable — hold the owning values in an `ArrayBuf` and store an index instead. For any other duplicating operation: there is no by-reference or move form of it to fall back to, so either use an element type without drop glue, or move the elements yourself (`pop` from the source, `push` onto the destination), which empties the source instead of copying it; where the container does have an in-place reader under another name, such as `Stack(T)::peek_ref` or `Queue(T)::peek_ref`, that reader is ungated and stays available. The diagnostic points at the earliest call, in source order, that demanded the gated body, with the gate itself labelled in the library that states it.",
         examples: [
-            ErrorCodeExample { title: "Copy an element that has drop glue", source: "struct Resource { value: i32 }\ndrop fn Resource(self) {}\nfn Reader(comptime T: type) -> type {\n    struct {\n        value: T,\n        fn first(borrow self) -> T {\n            @require_trivially_droppable(T);\n            self.value\n        }\n    }\n}\nfn main() -> i32 {\n    let R = Reader(Resource);\n    let reader = R { value: Resource { value: 42 } };\n    let value = reader.first();\n    value.value\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Copy an element in place", source: "struct Resource { value: i32 }\ndrop fn Resource(self) {}\nfn Cells(comptime T: type) -> type {\n    struct {\n        first: T,\n        second: T,\n        fn copy_first_into_second(inout self) {\n            @require_trivially_droppable(T);\n            self.second = self.first;\n        }\n    }\n}\nfn main() -> i32 {\n    let C = Cells(Resource);\n    let mut cells = C { first: Resource { value: 1 }, second: Resource { value: 2 } };\n    cells.copy_first_into_second();\n    0\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
             ErrorCodeExample { title: "Copy a trivially droppable element", source: "fn Reader(comptime T: type) -> type {\n    struct {\n        value: T,\n        fn first(borrow self) -> T {\n            @require_trivially_droppable(T);\n            self.value\n        }\n    }\n}\nfn main() -> i32 {\n    let R = Reader(i32);\n    let reader = R { value: 42 };\n    reader.first()\n}", outcome: ErrorCodeExampleOutcome::Compiles },
         ],
         references: [
@@ -3048,21 +3048,42 @@ pub struct PrivateUnqualifiedAccessData {
 
 /// What an `@require_trivially_droppable(T)` gate is guarding.
 ///
-/// The gate is one intrinsic with one error code, but it is written in two
-/// kinds of callable and the way out differs. Classification is the shape of
-/// the callable that states it: a gate in a body with a `self` receiver guards
-/// a by-copy read of a stored element, and a gate in an associated function or
-/// a `-> type` producer guards a container whose representation duplicates the
-/// element itself.
+/// The gate is one intrinsic with one error code, stated at entry points that
+/// duplicate an element for different reasons, and the way out differs. The
+/// classifier reads the declared shape of the callable that states the gate:
+/// a callable returning nothing duplicates elements without handing one back,
+/// a `self` receiver returning the element (or an option of it) hands one
+/// stored element back by copy, and anything else is building a value out of
+/// copies.
+///
+/// Only one of the three messages names a method to use instead, and naming a
+/// method the container does not have is worse than naming none. So [`Read`]
+/// is reserved for a receiver that really offers `get_ref` and `pop`/`pop_or`,
+/// and a by-copy read on a container that spells them differently — or has no
+/// in-place read at all — falls to the neutral [`Duplicate`] wording.
+///
+/// [`Read`]: ElementGateShape::Read
+/// [`Duplicate`]: ElementGateShape::Duplicate
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElementGateShape {
-    /// A by-copy read of a stored element, e.g. `ArrayBuf(T)::get`. `get_ref`
-    /// reads it in place and `pop` moves it out.
+    /// A by-copy read of one stored element handed back to the caller by a
+    /// container that offers both remedies this message names:
+    /// `ArrayBuf(T)::get` (`-> Option(T)`) and `get_or` (`-> T`), whose
+    /// receiver has `get_ref` for an in-place read and `pop`/`pop_or` to move
+    /// the element out.
     Read,
-    /// A container whose cells are duplicated from one element, e.g.
-    /// `Grid2D(T)::new`, or a `-> type` producer that gates its element type
-    /// outright. There is no by-reference alternative to offer.
+    /// A value built out of copies of the element, e.g. `Grid2D(T)::new`
+    /// duplicating one `fill` into every cell, or a `-> type` producer that
+    /// gates its element type outright. There is no by-reference alternative to
+    /// offer, so only a trivially droppable element type will do.
     Construction,
+    /// An operation that duplicates elements with no accessor to redirect the
+    /// programmer to: `ArrayBuf(T)::extend_from` and the `RawBuf(T)` range
+    /// copies underneath it, a heap `push` or a sort sifting elements past one
+    /// another, and a by-copy read whose container has no `get_ref`/`pop` pair
+    /// to name (`Stack(T)::peek`, `BinaryHeap(T)::pop`). The message describes
+    /// the copy and states the requirement without prescribing a cure.
+    Duplicate,
 }
 
 /// The rendered message for an element-type gate rejection (E0711).
@@ -3073,6 +3094,9 @@ fn element_gate_message(ty: &str, shape: ElementGateShape) -> String {
         ),
         ElementGateShape::Construction => format!(
             "cannot use an element of type `{ty}` here: elements are duplicated by copy, so the element type must be trivially droppable, and `{ty}` owns resources (has drop glue) — use an element type without drop glue (RUE-651)"
+        ),
+        ElementGateShape::Duplicate => format!(
+            "cannot copy an element of type `{ty}` here: this operation duplicates elements while the originals stay live, and `{ty}` owns resources (has drop glue), so the copy would alias the owned value and double-free it at scope exit — the element type must be trivially droppable (RUE-651)"
         ),
     }
 }
@@ -3414,15 +3438,19 @@ pub enum ErrorKind {
     /// still-live original both pointing at the same owned buffer, so both run
     /// drop glue at scope exit: a double-free (RUE-651).
     ///
-    /// One code, two situations, because the gate guards two shapes and the
-    /// remedies differ ([`ElementGateShape`]). A by-copy *read*
-    /// (`ArrayBuf(T)::get`/`get_or`) has an in-place alternative: `get_ref`
-    /// borrows the element, and `pop`/`pop_or` moves it out, leaving one owner.
-    /// Mirrors Swift's rule that a non-copyable element cannot use a by-value
-    /// `get` subscript. A *construction* (`Grid2D(T)::new`, or a `-> type`
-    /// producer that gates its whole element type) has neither: the container
-    /// duplicates the element into every cell, so nothing short of a
-    /// trivially droppable element type will do.
+    /// One code, three situations, because the gate guards three shapes and the
+    /// remedies differ ([`ElementGateShape`]). A by-copy *read* on a container
+    /// that offers the alternatives (`ArrayBuf(T)::get`/`get_or`) is told about
+    /// them: `get_ref` borrows the element, and `pop`/`pop_or` moves it out,
+    /// leaving one owner. Mirrors Swift's rule that a non-copyable element
+    /// cannot use a by-value `get` subscript. A *construction*
+    /// (`Grid2D(T)::new`, or a `-> type` producer that gates its whole element
+    /// type) has neither: the value duplicates the element into every cell, so
+    /// nothing short of a trivially droppable element type will do. Everything
+    /// else that duplicates an element — `ArrayBuf(T)::extend_from` and the
+    /// `RawBuf(T)` range copies, a sifting heap operation, a sort, and a
+    /// by-copy read whose container has no `get_ref`/`pop` pair to name —
+    /// states the requirement and suggests nothing.
     #[error("{}", element_gate_message(ty, *shape))]
     ContainerElementNotTriviallyDroppable { ty: String, shape: ElementGateShape },
     /// Inout argument is not an lvalue (variable, field, or array element)

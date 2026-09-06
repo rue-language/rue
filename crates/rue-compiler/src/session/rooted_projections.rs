@@ -30,12 +30,24 @@ impl CompilerSession {
     /// order, that names the failing instance. Source positions therefore never
     /// enter query identity (ADR-0063); they are read back out of it.
     ///
-    /// A container that delegates (`Grid2D::get` reading through
+    /// A method that delegates (`ArrayBuf::first` reading through
     /// `ArrayBuf::get`) puts one or more standard-library frames between the
-    /// gate and the programmer, so the walk climbs until it reaches a call
-    /// written outside the trusted standard library. It reports nothing rather
-    /// than a guess when the chain runs out, which leaves the gate's own span
-    /// primary exactly as before.
+    /// gate and the programmer, so the walk climbs until it reaches calls
+    /// written outside the trusted standard library. The climb is
+    /// breadth-first over *every* standard-library caller at each hop, not one
+    /// of them: several wrappers reach one accessor (`ArrayBuf::first` and
+    /// `ArrayBuf::last` both read through `ArrayBuf::get`), and following only
+    /// the caller that sorts first would report whichever demand that one
+    /// wrapper leads to rather than the earliest the programmer wrote.
+    ///
+    /// Every hop up to the cap is walked and every user-side call found along
+    /// the way is a candidate, so the answer does not depend on how many
+    /// library frames a demand happens to sit behind: a direct `a.get(0)` does
+    /// not outrank an earlier `a.first()` merely for being one hop nearer. The
+    /// winner is the earliest candidate in source order — by file path, then by
+    /// offset — which is the same path-then-offset rule the driver already
+    /// sorts a diagnostic batch by. It reports nothing rather than a guess when
+    /// the chain runs out, which leaves the gate's own span primary.
     fn element_gate_demand_site(
         &self,
         revision: rue_query::Revision,
@@ -44,88 +56,106 @@ impl CompilerSession {
         trusted_files: &ahash::AHashSet<rue_span::FileId>,
         cancellation: &rue_query::CancellationToken,
     ) -> Result<Option<rue_span::Span>, SemanticRequestControl> {
-        /// Delegation depth the walk will cross. Standard-library containers
-        /// wrap one another a few layers deep at most; the bound keeps a
-        /// pathological or cyclic graph from turning a diagnostic into a scan.
+        /// Hops out of the gated body the walk takes. The eighth is the last
+        /// one examined, so at most seven standard-library frames stand between
+        /// the gate and a call the walk can report; past that it answers
+        /// nothing and the gate's own span stays primary. Standard-library
+        /// containers wrap one another a few layers deep at most, and the bound
+        /// keeps a pathological or cyclic graph from turning a diagnostic into
+        /// a scan.
         const MAX_DEMAND_HOPS: usize = 8;
 
-        let mut callee = failing.instance.clone();
-        let mut visited = BTreeSet::new();
+        // The frontier is a `BTreeSet` and every answer is chosen by a total
+        // source-identity order, so nothing about the result depends on the
+        // closure's reachability order or on any hash iteration.
+        let mut visited = BTreeSet::from([failing.instance.clone()]);
+        let mut frontier = visited.clone();
+        let mut demands = Vec::new();
         for _ in 0..MAX_DEMAND_HOPS {
-            if !visited.insert(callee.clone()) {
+            if frontier.is_empty() {
                 break;
             }
-            let mut candidates = Vec::new();
-            for caller in closure.bodies.iter() {
-                if caller.key.instance == callee {
-                    continue;
-                }
-                let rue_query::QueryOutcome::Success(bundle) = caller.bundle.outcome() else {
-                    continue;
-                };
-                let crate::body_query::BodyTransaction::Success { body, .. } = &bundle.transaction
-                else {
-                    continue;
-                };
-                // Instruction anchors are relative to the body an export was
-                // taken from. An ordinary or specialized body starts at its
-                // locator's body span; an anonymous member's body is a fragment
-                // inside the producer the locator describes, so its own anchor
-                // is the extra offset.
-                let (semantic, anchor_base) = match body.as_ref() {
-                    crate::body_query::CanonicalBody::Ordinary { body, .. } => (body, 0),
-                    crate::body_query::CanonicalBody::Anonymous {
-                        body, body_anchor, ..
-                    } => (body, body_anchor.start),
-                    crate::body_query::CanonicalBody::Specialization { body, .. } => (body, 0),
-                };
-                let Some(anchor) = earliest_call_anchor(semantic, &callee) else {
-                    continue;
-                };
-                let locator = self
-                    .queries
-                    .revisioned
-                    .body_source_basis_projection(
-                        revision,
-                        caller.key.clone(),
-                        cancellation.clone(),
-                    )
-                    .map_err(SemanticRequestControl::Abort)?;
-                let rue_query::QueryOutcome::Success(locator) = locator.outcome() else {
-                    unreachable!("BodySourceLocator publishes typed values")
-                };
-                let Some(locator) = locator.as_ref() else {
-                    continue;
-                };
-                let start = locator.body_start + anchor_base;
-                candidates.push((
-                    locator.physical_path.clone(),
-                    rue_span::Span::with_file(
+            let mut next_frontier = BTreeSet::new();
+            for callee in frontier.iter() {
+                for caller in closure.bodies.iter() {
+                    if caller.key.instance == *callee {
+                        continue;
+                    }
+                    let rue_query::QueryOutcome::Success(bundle) = caller.bundle.outcome() else {
+                        continue;
+                    };
+                    let crate::body_query::BodyTransaction::Success { body, .. } =
+                        &bundle.transaction
+                    else {
+                        continue;
+                    };
+                    // Instruction anchors are relative to the body an export was
+                    // taken from. An ordinary or specialized body starts at its
+                    // locator's body span; an anonymous member's body is a
+                    // fragment inside the producer the locator describes, so its
+                    // own anchor is the extra offset.
+                    let (semantic, anchor_base) = match body.as_ref() {
+                        crate::body_query::CanonicalBody::Ordinary { body, .. } => (body, 0),
+                        crate::body_query::CanonicalBody::Anonymous {
+                            body, body_anchor, ..
+                        } => (body, body_anchor.start),
+                        crate::body_query::CanonicalBody::Specialization { body, .. } => (body, 0),
+                    };
+                    let Some(anchor) = earliest_call_anchor(semantic, callee) else {
+                        continue;
+                    };
+                    let locator = self
+                        .queries
+                        .revisioned
+                        .body_source_basis_projection(
+                            revision,
+                            caller.key.clone(),
+                            cancellation.clone(),
+                        )
+                        .map_err(SemanticRequestControl::Abort)?;
+                    let rue_query::QueryOutcome::Success(locator) = locator.outcome() else {
+                        unreachable!("BodySourceLocator publishes typed values")
+                    };
+                    let Some(locator) = locator.as_ref() else {
+                        continue;
+                    };
+                    let start = locator.body_start + anchor_base;
+                    let span = rue_span::Span::with_file(
                         locator.file_id,
                         start + anchor.start,
                         start + anchor.end,
-                    ),
-                    caller.key.instance.clone(),
-                ));
+                    );
+                    if trusted_files.contains(&span.file_id) {
+                        // Another library frame between the gate and the
+                        // programmer. Keep it for the next hop; the visited
+                        // guard makes a shared or cyclic wrapper cost one
+                        // expansion rather than one per path into it.
+                        if visited.insert(caller.key.instance.clone()) {
+                            next_frontier.insert(caller.key.instance.clone());
+                        }
+                        continue;
+                    }
+                    demands.push((
+                        locator.physical_path.clone(),
+                        span,
+                        caller.key.instance.clone(),
+                    ));
+                }
             }
-            // Reachability order is a scheduling artifact, so the winner is
-            // chosen by source identity — the same path-then-offset rule the
-            // driver already sorts a diagnostic batch by.
-            candidates.sort_by(|left, right| {
-                (&left.0, left.1.start, &left.2).cmp(&(&right.0, right.1.start, &right.2))
-            });
-            if let Some((_, span, _)) = candidates
-                .iter()
-                .find(|(_, span, _)| !trusted_files.contains(&span.file_id))
-            {
-                return Ok(Some(*span));
-            }
-            let Some((_, _, next)) = candidates.into_iter().next() else {
-                break;
-            };
-            callee = next;
+            frontier = next_frontier;
         }
-        Ok(None)
+        // Every candidate the whole walk found competes, so a demand written
+        // earlier is not beaten by a later one that happens to be fewer hops
+        // away. Reachability order is a scheduling artifact, so the winner is
+        // chosen by source identity — the same path-then-offset rule the driver
+        // already sorts a diagnostic batch by — with the body instance breaking
+        // a tie between two calls at one position.
+        Ok(demands
+            .iter()
+            .min_by(|left, right| {
+                (&left.0, left.1.start, &left.2).cmp(&(&right.0, right.1.start, &right.2))
+            })
+            .map(|(_, span, _)| *span))
     }
 
     fn rooted_body_graph_attempt(

@@ -1254,13 +1254,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// and the still-live original both run drop glue at scope exit — a
     /// double-free. E0711 rejects the duplication.
     ///
-    /// Two shapes state the gate and both reach here. A by-copy *read*
+    /// Three shapes state the gate and all of them reach here. A by-copy *read*
     /// (`ArrayBuf(T)`'s `get`/`get_or` copy the element out with `@ptr_read`
     /// while the slot stays live) has `get_ref` for an in-place read and
     /// `pop`/`pop_or` to *move* it out. A *construction* (`Grid2D(T)::new` fills
     /// every cell from one `fill`) has neither, so only a trivially droppable
-    /// element type will do. Mirrors Swift's rule that a non-copyable element
-    /// cannot use a by-value `get` subscript.
+    /// element type will do. Every other *duplication* — `ArrayBuf(T)`'s
+    /// `extend_from` and the `RawBuf(T)` range copies underneath it, a
+    /// `BinaryHeap(T)` sift, a `std.sort` pass, and a by-copy read on a
+    /// container with no `get_ref`/`pop` pair to name (`Stack(T)::peek`) —
+    /// has no accessor to redirect the programmer to, so it names the
+    /// requirement and offers no remedy. Mirrors Swift's rule that a
+    /// non-copyable element cannot use a by-value `get` subscript.
     ///
     /// The gate is deliberately placed in method bodies rather than the
     /// constructor, so demand-driven analysis (ADR-0045) fires it only when a
@@ -1273,19 +1278,25 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// A `linear` `T` never reaches here: `@require_droppable` already rejects it
     /// at instantiation, so `ArrayBuf(linear)` cannot be constructed to be read.
     ///
-    /// `shape` is what the gate guards, and it decides which of E0711's two
-    /// messages is rendered: the caller classifies it from the shape of the
-    /// callable stating the gate (a `self` receiver reads a stored element;
-    /// anything else duplicates the element into a container).
+    /// `shape` classifies what the gate guards, and it decides which of E0711's
+    /// three messages is rendered. It is a thunk because classifying costs
+    /// interned lookups over the receiver's method set while the overwhelming
+    /// majority of gate evaluations pass: only a rejection asks for it. The
+    /// caller classifies from the declared shape of the callable stating the
+    /// gate — see `OrdinaryBodyEngine::element_gate_shape` for the rule and
+    /// [`ElementGateShape`] for what each message commits to.
     pub(crate) fn check_trivially_droppable(
         &mut self,
         ty: Type,
         span: Span,
-        shape: ElementGateShape,
+        shape: impl FnOnce(&Self) -> CompileResult<ElementGateShape>,
     ) -> CompileResult<()> {
         if self.declaration_binding_active() {
             match self.known_drop_glue_during_binding(ty) {
-                Some(true) => return Err(self.trivially_droppable_error(ty, span, shape)),
+                Some(true) => {
+                    let shape = shape(self)?;
+                    return Err(self.trivially_droppable_error(ty, span, shape));
+                }
                 Some(false) => return Ok(()),
                 None => {
                     self.defer_ownership_gate(
@@ -1304,9 +1315,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         &self,
         ty: Type,
         span: Span,
-        shape: ElementGateShape,
+        shape: impl FnOnce(&Self) -> CompileResult<ElementGateShape>,
     ) -> CompileResult<()> {
         if self.type_has_drop_glue(ty) {
+            let shape = shape(self)?;
             return Err(self.trivially_droppable_error(ty, span, shape));
         }
         Ok(())
@@ -2523,12 +2535,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
     ) -> ComptimeHostResult<(), Self::Failure> {
         // A comptime type-constructor body has no receiver: a gate reduced here
         // guards the element type of the container being produced.
-        OrdinaryBodyEngine::check_trivially_droppable(
-            self,
-            ty,
-            site.span(),
-            ElementGateShape::Construction,
-        )
+        OrdinaryBodyEngine::check_trivially_droppable(self, ty, site.span(), |_| {
+            Ok(ElementGateShape::Construction)
+        })
         .map_err(Into::into)
     }
     fn type_name(&self, ty: &Type) -> String {
