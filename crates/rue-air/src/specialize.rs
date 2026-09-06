@@ -512,6 +512,7 @@ where
             local_atoms,
             num_locals,
             num_param_slots,
+            cleanup_owner: None,
             param_modes,
             allow_unreachable_code: base_info.allow_unreachable_code,
         },

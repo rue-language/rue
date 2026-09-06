@@ -45,9 +45,12 @@ pub(crate) fn lower_byref_arg_addr<B: PlaceLowerBackend + ?Sized>(
                 b.emit_reg_move(addr_vreg, ptr_vreg);
             } else {
                 // Addressing a by-value parameter requires its frame home;
-                // the storage plan homes every such parameter (RUE-1170).
-                let frame_slot = b.ctx().param_frame_slot(*slot);
-                b.emit_frame_addr(addr_vreg, frame_slot + low_shift);
+                // the storage plan homes every such parameter (RUE-1170). The
+                // address wanted is the value's low end, which for a slot
+                // inside a wider parameter is a projection into that
+                // parameter's frame image.
+                let low_slot = b.ctx().param_value_low_slot(*slot, low_shift + 1);
+                b.emit_frame_addr(addr_vreg, low_slot);
             }
             addr_vreg
         }

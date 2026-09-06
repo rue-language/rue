@@ -583,6 +583,9 @@ pub struct SemanticLocalMaterialization<K, M> {
     pub local_atoms: Vec<crate::LocalAtomRecord<K, M>>,
     pub num_locals: u32,
     pub num_param_slots: u32,
+    /// For a cleanup callee — a destructor or a drop-glue body — the live owner
+    /// type its single by-value parameter is. `None` for every other body.
+    pub cleanup_owner: Option<crate::Type>,
     pub param_modes: crate::ParamSlotModes,
     pub allow_unreachable_code: bool,
     pub type_pool: crate::FrozenTypeInternPool,
@@ -1695,6 +1698,12 @@ where
                 })
             },
         )?;
+        let cleanup_owner = body
+            .cleanup_owner
+            .as_ref()
+            .map(|ty| self.import_type_local(ty))
+            .transpose()
+            .map_err(SemanticBodyImportFailure::Semantic)?;
         let materialized_types = additional_types
             .iter()
             .map(|stable| {
@@ -1736,6 +1745,7 @@ where
             local_atoms,
             num_locals,
             num_param_slots,
+            cleanup_owner,
             param_modes,
             allow_unreachable_code,
             type_pool: self.type_pool.freeze(),
@@ -3209,6 +3219,7 @@ mod tests {
             borrow_slots: Arc::new([]),
             num_locals: 0,
             num_param_slots: 0,
+            cleanup_owner: None,
             param_by_ref: Arc::new([]),
             param_writable: Arc::new([]),
             allow_unreachable_code: false,

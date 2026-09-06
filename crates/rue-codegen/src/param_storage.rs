@@ -135,12 +135,11 @@ fn incoming_return(pairing: ConventionSpec, has_sret: bool) -> LoweredReturn {
 /// The native description of one source parameter.
 ///
 /// A by-reference parameter is one pointer whatever it points at. A by-value
-/// parameter with no recovered type is one register-width slot — a leaf of a
-/// cleanup callee's flattened parameter list (a destructor or drop glue body,
-/// whose caller `CallPlan::from_slot_values` hands over one leaf per
-/// parameter), or a slot of a synthetic CFG without descriptors. The CFG
-/// derivation guarantees such a descriptor spans exactly one slot, which is
-/// what makes every parameter a single value the convention places as a whole.
+/// parameter with no recovered type is one register-width slot — the `str` view
+/// an unread `borrow str` parameter arrives as, or a slot of a synthetic CFG
+/// without descriptors. The CFG derivation guarantees such a descriptor spans
+/// exactly one slot, which is what makes every parameter a single value the
+/// convention places as a whole.
 fn parameter_native(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
@@ -526,9 +525,10 @@ struct ParamReferenceScan {
 /// A reference rooted at a parameter's first ABI slot can span the
 /// parameter's whole type — a multi-slot `Param` read, a place access, or a
 /// by-value `ParamStore` addresses `[index, index + slot_count)` as one
-/// contiguous frame region. A cleanup callee (a destructor or drop glue body)
-/// describes those same slots as *separate* single-slot parameters, so every
-/// mark covers the referenced type's full slot span, not just the base slot.
+/// contiguous frame region. The descriptors need not agree: a body whose
+/// parameter type was never recovered describes those same slots as *separate*
+/// single-slot parameters, so every mark covers the referenced type's full slot
+/// span, not just the base slot.
 fn scan_param_references(cfg: &Cfg, type_pool: &FrozenTypeInternPool) -> ParamReferenceScan {
     let num_params = cfg.num_params() as usize;
     let num_locals = cfg.num_locals();
@@ -994,7 +994,7 @@ mod tests {
         );
     }
 
-    /// A cleanup callee (a destructor, a drop glue body) describes one source
+    /// A body whose parameter type the AIR never named describes one source
     /// aggregate as SEPARATE single-slot parameters. A place or multi-slot
     /// `Param` reference rooted at the first slot addresses the whole
     /// contiguous region, so the scan must home the full type span —
@@ -1031,8 +1031,8 @@ mod tests {
         let pool = type_pool.freeze();
 
         let mut cfg = Cfg::new(Type::UNIT, 0, 2, "split".into(), vec![false, false]);
-        // Two single-slot descriptors for one two-slot source value: the
-        // shape a cleanup callee's flattened parameter list has.
+        // Two single-slot descriptors for one two-slot source value: the shape
+        // a parameter list with no recovered types has.
         cfg.set_source_param_abi(scalar_descriptors(2));
         let entry = cfg.new_block();
         cfg.entry = entry;

@@ -665,6 +665,7 @@ pub(crate) fn synthesize_error_printer(
         },
         num_locals: slot::PAYLOAD.saturating_add(payload_slots),
         num_param_slots,
+        cleanup_owner: None,
         param_by_ref: vec![false; num_param_slots as usize].into(),
         param_writable: vec![false; num_param_slots as usize].into(),
         allow_unreachable_code: false,

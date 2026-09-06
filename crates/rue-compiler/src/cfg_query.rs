@@ -1709,6 +1709,7 @@ fn build_cfg(
         &materialized.interner,
         materialized.allow_unreachable_code,
         materialized.callable_kind,
+        materialized.cleanup_owner,
         |name| materialized.interner.get(name),
     );
     let cfg_builder_ns = elapsed_ns(builder_started);

@@ -1,0 +1,454 @@
+# Cleanup entry points take their owner as one typed aggregate (RUE-2074).
+#
+# A destructor (`<Type>.__drop`) and a synthesized drop-glue body
+# (`__rue_drop_*`) are ordinary by-value functions of their owner's type: the
+# convention places and marshals the owner exactly as it places a user function
+# taking that type by value (ADR-0084), and the glue reads its owner's leaves at
+# slots of the owner's canonical flattened layout.
+#
+# The failure mode this file guards is direction: a frame-resident aggregate
+# ascends in address with its logical slots while frame slot numbers descend
+# (ADR-0040), so a cleanup body that addressed its owner from the wrong end
+# would still see plausible-looking values — the fields would be permuted, not
+# absent. Every case therefore drops a value whose parts are pairwise
+# distinguishable by both VALUE and TYPE (a `i32`/`i64`/`f64`/nested-struct
+# mixture), and each destructor prints what it actually saw.
+#
+# Each scenario runs on both rows, since the two conventions place the same
+# owner differently; the aarch64 half is executed only on a native aarch64 host.
+
+[section]
+id = "cli.cleanup_entry_point_abi"
+name = "Cleanup entry points receive their owner as one by-value aggregate"
+description = "A destructor and drop glue see every field of their owner, in order, on both backends (RUE-2074)."
+
+# =============================================================================
+# A struct owner: a user destructor reads every field of `self`, then the glue
+# hands the droppable field to that field's own destructor.
+# =============================================================================
+
+[[case]]
+name = "x86_64_struct_owner_reaches_its_destructor_and_glue_whole"
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+files = [{ path = "main.rue", source = """
+struct Inner { a: i64, b: i32 }
+
+drop fn Inner(self) {
+    @dbg(1000);
+    @dbg(self.a);
+    @dbg(self.b);
+}
+
+struct Rec { tag: i32, big: i64, f: f64, inner: Inner }
+
+drop fn Rec(self) {
+    @dbg(2000);
+    @dbg(self.tag);
+    @dbg(self.big);
+    @dbg(self.f);
+    @dbg(self.inner.a);
+    @dbg(self.inner.b);
+}
+
+fn main() -> i32 {
+    let r = Rec { tag: 7, big: 123456789, f: 2.5, inner: Inner { a: 42, b: 9 } };
+    @dbg(r.tag);
+    0
+}
+""" }]
+stdout = """
+7
+2000
+7
+123456789
+2.5
+42
+9
+1000
+42
+9
+"""
+
+[[case]]
+name = "aarch64_struct_owner_reaches_its_destructor_and_glue_whole"
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+files = [{ path = "main.rue", source = """
+struct Inner { a: i64, b: i32 }
+
+drop fn Inner(self) {
+    @dbg(1000);
+    @dbg(self.a);
+    @dbg(self.b);
+}
+
+struct Rec { tag: i32, big: i64, f: f64, inner: Inner }
+
+drop fn Rec(self) {
+    @dbg(2000);
+    @dbg(self.tag);
+    @dbg(self.big);
+    @dbg(self.f);
+    @dbg(self.inner.a);
+    @dbg(self.inner.b);
+}
+
+fn main() -> i32 {
+    let r = Rec { tag: 7, big: 123456789, f: 2.5, inner: Inner { a: 42, b: 9 } };
+    @dbg(r.tag);
+    0
+}
+""" }]
+stdout = """
+7
+2000
+7
+123456789
+2.5
+42
+9
+1000
+42
+9
+"""
+
+# =============================================================================
+# A struct owner over sixteen bytes, which AAPCS64 rule C.12 crosses BY
+# REFERENCE through a caller-owned copy while SysV stacks it. The destructor and
+# the glue are two cleanup calls on one value, so each must get its own copy that
+# stays live until its own call returns.
+# =============================================================================
+
+[[case]]
+name = "x86_64_wide_struct_owner_crosses_to_both_cleanup_calls"
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+files = [{ path = "main.rue", source = """
+struct Inner { a: i64, b: i32 }
+
+drop fn Inner(self) {
+    @dbg(1000);
+    @dbg(self.a);
+    @dbg(self.b);
+}
+
+struct Wide { p: i64, q: i64, r: i64, inner: Inner }
+
+drop fn Wide(self) {
+    @dbg(2000);
+    @dbg(self.p);
+    @dbg(self.q);
+    @dbg(self.r);
+    @dbg(self.inner.a);
+    @dbg(self.inner.b);
+}
+
+fn main() -> i32 {
+    let w = Wide { p: 1, q: 2, r: 3, inner: Inner { a: 42, b: 9 } };
+    @dbg(w.p);
+    0
+}
+""" }]
+stdout = """
+1
+2000
+1
+2
+3
+42
+9
+1000
+42
+9
+"""
+
+[[case]]
+name = "aarch64_wide_struct_owner_crosses_to_both_cleanup_calls"
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+files = [{ path = "main.rue", source = """
+struct Inner { a: i64, b: i32 }
+
+drop fn Inner(self) {
+    @dbg(1000);
+    @dbg(self.a);
+    @dbg(self.b);
+}
+
+struct Wide { p: i64, q: i64, r: i64, inner: Inner }
+
+drop fn Wide(self) {
+    @dbg(2000);
+    @dbg(self.p);
+    @dbg(self.q);
+    @dbg(self.r);
+    @dbg(self.inner.a);
+    @dbg(self.inner.b);
+}
+
+fn main() -> i32 {
+    let w = Wide { p: 1, q: 2, r: 3, inner: Inner { a: 42, b: 9 } };
+    @dbg(w.p);
+    0
+}
+""" }]
+stdout = """
+1
+2000
+1
+2
+3
+42
+9
+1000
+42
+9
+"""
+
+# =============================================================================
+# An array owner whose elements are themselves multi-slot: array glue drops
+# element 0 first, and each element arrives with its own two fields paired.
+# =============================================================================
+
+[[case]]
+name = "x86_64_array_owner_drops_multi_slot_elements_in_index_order"
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+files = [{ path = "main.rue", source = """
+struct Inner { a: i64, b: i32 }
+
+drop fn Inner(self) {
+    @dbg(1000);
+    @dbg(self.a);
+    @dbg(self.b);
+}
+
+fn main() -> i32 {
+    let row = [
+        Inner { a: 10, b: 11 },
+        Inner { a: 20, b: 21 },
+        Inner { a: 30, b: 31 },
+    ];
+    @dbg(row[1].b);
+    0
+}
+""" }]
+stdout = """
+21
+1000
+10
+11
+1000
+20
+21
+1000
+30
+31
+"""
+
+[[case]]
+name = "aarch64_array_owner_drops_multi_slot_elements_in_index_order"
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+files = [{ path = "main.rue", source = """
+struct Inner { a: i64, b: i32 }
+
+drop fn Inner(self) {
+    @dbg(1000);
+    @dbg(self.a);
+    @dbg(self.b);
+}
+
+fn main() -> i32 {
+    let row = [
+        Inner { a: 10, b: 11 },
+        Inner { a: 20, b: 21 },
+        Inner { a: 30, b: 31 },
+    ];
+    @dbg(row[1].b);
+    0
+}
+""" }]
+stdout = """
+21
+1000
+10
+11
+1000
+20
+21
+1000
+30
+31
+"""
+
+# =============================================================================
+# An enum owner with two payload variants of different shapes. Enum glue reads
+# the discriminant at the owner's canonical slot 0 and each variant's payload
+# from the union overlaying slots 1.., so it must select the ACTIVE variant's
+# fields — a `Flt` whose only leaf is a float and a two-slot `Inner` — and leave
+# the other variant's overlapping payload alone. Locals drop LIFO.
+# =============================================================================
+
+[[case]]
+name = "x86_64_enum_owner_drops_the_active_variant_payload"
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+files = [{ path = "main.rue", source = """
+struct Inner { a: i64, b: i32 }
+
+drop fn Inner(self) {
+    @dbg(1000);
+    @dbg(self.a);
+    @dbg(self.b);
+}
+
+struct Flt { v: f64 }
+
+drop fn Flt(self) {
+    @dbg(3000);
+    @dbg(self.v);
+}
+
+enum Shape {
+    Small(Inner),
+    Big(i32, Flt, Inner),
+    Nothing,
+}
+
+fn main() -> i32 {
+    let _s = Shape.Small(Inner { a: 51, b: 52 });
+    let _b = Shape.Big(11, Flt { v: 4.5 }, Inner { a: 61, b: 62 });
+    let _n = Shape.Nothing;
+    @dbg(900);
+    0
+}
+""" }]
+stdout = """
+900
+3000
+4.5
+1000
+61
+62
+1000
+51
+52
+"""
+
+[[case]]
+name = "aarch64_enum_owner_drops_the_active_variant_payload"
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+files = [{ path = "main.rue", source = """
+struct Inner { a: i64, b: i32 }
+
+drop fn Inner(self) {
+    @dbg(1000);
+    @dbg(self.a);
+    @dbg(self.b);
+}
+
+struct Flt { v: f64 }
+
+drop fn Flt(self) {
+    @dbg(3000);
+    @dbg(self.v);
+}
+
+enum Shape {
+    Small(Inner),
+    Big(i32, Flt, Inner),
+    Nothing,
+}
+
+fn main() -> i32 {
+    let _s = Shape.Small(Inner { a: 51, b: 52 });
+    let _b = Shape.Big(11, Flt { v: 4.5 }, Inner { a: 61, b: 62 });
+    let _n = Shape.Nothing;
+    @dbg(900);
+    0
+}
+""" }]
+stdout = """
+900
+3000
+4.5
+1000
+61
+62
+1000
+51
+52
+"""
+
+# =============================================================================
+# A frame-homed parameter whose single slot carries a FLOAT leaf under a struct
+# wrapper. The slot's register class follows its leaf (RUE-2001), so reading the
+# wrapper must load it in the floating-point class — the same rule the cleanup
+# path now depends on when it hands a float-leaf field to that field's own
+# destructor.
+# =============================================================================
+
+[[case]]
+name = "x86_64_homed_float_wrapper_parameter_reads_in_the_float_class"
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+files = [{ path = "main.rue", source = """
+struct Q { f: f64 }
+
+fn peek(borrow q: Q) -> f64 { q.f }
+
+fn id(q: Q) -> Q {
+    @dbg(peek(borrow q));
+    q
+}
+
+fn main() -> i32 {
+    let a = Q { f: 2.5 };
+    let b = id(a);
+    @dbg(b.f);
+    0
+}
+""" }]
+stdout = """
+2.5
+2.5
+"""
+
+[[case]]
+name = "aarch64_homed_float_wrapper_parameter_reads_in_the_float_class"
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+files = [{ path = "main.rue", source = """
+struct Q { f: f64 }
+
+fn peek(borrow q: Q) -> f64 { q.f }
+
+fn id(q: Q) -> Q {
+    @dbg(peek(borrow q));
+    q
+}
+
+fn main() -> i32 {
+    let a = Q { f: 2.5 };
+    let b = id(a);
+    @dbg(b.f);
+    0
+}
+""" }]
+stdout = """
+2.5
+2.5
+"""

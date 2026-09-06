@@ -958,6 +958,7 @@ mod tests {
             &fixture.interner,
             false,
             rue_air::AnalyzedCallableKind::Ordinary,
+            None,
         );
         output.cfg.expect("test CFG must build")
     }

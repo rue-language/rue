@@ -1888,6 +1888,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 local_atoms,
                 num_locals,
                 num_param_slots,
+                cleanup_owner: None,
                 param_modes,
                 allow_unreachable_code,
             },
@@ -2042,6 +2043,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 local_atoms,
                 num_locals,
                 num_param_slots,
+                // A destructor's parameter list is its owner, taken by value;
+                // the body may never mention `self`, so the type travels here.
+                cleanup_owner: is_destructor.then_some(struct_type),
                 param_modes,
                 allow_unreachable_code: false,
             },
@@ -2125,6 +2129,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 local_atoms,
                 num_locals,
                 num_param_slots,
+                // A destructor's parameter list is its owner, taken by value;
+                // the body may never mention `self`, so the type travels here.
+                cleanup_owner: Some(struct_type),
                 param_modes,
                 allow_unreachable_code: false,
             },

@@ -145,22 +145,28 @@ is the one predicate that chooses between the two, consulted from both ends.
 
 ### Cleanup entry points
 
-A destructor and a drop glue body address their owner's decomposition one slot
-at a time: the synthesized glue reads a field, an array element, or a variant
-payload straight out of a parameter slot, and the destructor's `self` spans the
-whole run. Their *signature* is therefore one register-width scalar per leaf,
-and the convention places that signature exactly as it places any other list of
-register-width scalars — the roster in order, then the row's own argument-area
-packing. There is no cleanup arm in the classifier: `CallPlan::from_slot_values`
-at the caller and `ParamStoragePlan` at the callee both present one
-register-width value per leaf to `lower_native_signature`, and the CFG's own
-parameter descriptors say the same thing, one slot each.
+A cleanup callee — a destructor (`<Type>.__drop`) or a synthesized drop-glue
+body (`__rue_drop_*`) — is an ordinary by-value function of its owner's type. It
+takes **one** parameter, the owner, classified and placed exactly as a user
+function taking that type by value: the same `lower_native_signature` answer
+against the same `CAbiTypeFacts`, through the same compact image when the
+owner's leaves are not its eightbytes, and by reference when the row's composite
+rule says so. There is no cleanup arm anywhere in the classifier or in the
+caller: a `Drop` builds the ordinary one-argument `CallPlan`, and the callee's
+`ParamStoragePlan` reads the single typed descriptor the CFG derived from the
+owner type its body carries.
+
+Inside a glue body a leaf is reached as `Param { index }` naming slot `index` of
+the owner's *canonical* flattened layout — field 0 first, element 0 first, an
+enum's discriminant at slot 0 with the payload union overlaying slots 1.. — which
+addresses the owner's homed frame image exactly as a place projection at the same
+slot offset does. No slot vector is reversed on either side.
 
 Every by-value parameter the CFG describes with a type is placed by that type
 (`SourceParamAbi::ty`); a descriptor with no type is exactly one register-width
-slot — a by-reference pointer, a cleanup leaf, or a slot no instruction names —
-which is asserted where code generation reads it. Nothing reaches placement as a
-run of untyped slots.
+slot — a by-reference pointer, the `str` view an unread `borrow str` parameter
+arrives as, or a slot no instruction names — which is asserted where code
+generation reads it. Nothing reaches placement as a run of untyped slots.
 
 ### Returns
 

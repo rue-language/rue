@@ -567,6 +567,10 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
             borrow_slots: Arc::from(borrow_slots),
             num_locals: analyzed.num_locals,
             num_param_slots: analyzed.num_param_slots,
+            cleanup_owner: analyzed
+                .cleanup_owner
+                .map(|ty| host.export_body_type(ty))
+                .transpose()?,
             param_by_ref: Arc::from(analyzed.param_modes.by_ref()),
             param_writable: Arc::from(analyzed.param_modes.writable()),
             allow_unreachable_code: analyzed.allow_unreachable_code,

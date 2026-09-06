@@ -196,13 +196,26 @@ pub enum StoreDestination {
     ByRefParam(u32),
 }
 
-/// One already-decided cleanup call. The shared planner chooses the symbol,
-/// action order, and logical ABI slot order; adapters only marshal these slots
-/// using their target call convention.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One already-decided cleanup call: a destructor or a drop-glue body handed
+/// its owner as ONE by-value argument of the owner's type.
+///
+/// A cleanup entry point is an ordinary one-argument Rue function, so the
+/// shared planner decides only the symbol, the action order, and the argument's
+/// classification; the adapter then places and marshals it through the same
+/// [`CallPlan::from_inputs`](crate::call_plan::CallPlan::from_inputs) path
+/// every other call uses (ADR-0084, RUE-2074). The plan is built by the adapter
+/// rather than here because building it emits the argument's marshaling, which
+/// must sit immediately before its own call: a caller-owned indirect copy lives
+/// on the stack until the call it belongs to returns.
+#[derive(Debug, Clone)]
 pub struct DropAction {
+    /// The cleanup entry point's machine symbol.
     pub symbol: String,
-    pub slots: Vec<VReg>,
+    /// The owner value and the type the convention classifies it by.
+    pub argument: crate::call_plan::CallArgInput,
+    /// That type's native description: the facts it is classified by and the
+    /// marshaling that reaches its placement.
+    pub native: crate::native_abi::NativeArg,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1049,92 +1062,68 @@ fn place_from_value<A: ValueLowerAdapter>(
     })
 }
 
+/// The cleanup calls one `Drop` runs, in spec-3.9 order: the type's own
+/// destructor, then the glue that drops its parts.
+///
+/// Each callee takes the dropped value as one by-value parameter of its own
+/// type, so every action names the same argument and differs only in symbol.
 fn drop_plan<A: ValueLowerAdapter>(
     ctx: &CfgLowerContext<'_>,
     adapter: &mut A,
     value: CfgValue,
 ) -> Vec<DropAction> {
-    let result = operand(ctx, adapter, value);
-    let shape = ValuePlan::for_value(ctx, value).shape;
-    let mut slots = if shape.slot_count() == 0 {
-        Vec::new()
-    } else if result.slots.is_empty() {
-        vec![result.primary]
-    } else {
-        result.slots
-    };
     let dropped_ty = ctx.cfg.get_inst(value).ty;
-    let mut actions = Vec::new();
+    let mut symbols = Vec::new();
 
     match dropped_ty.kind() {
         TypeKind::Struct(struct_id) => {
             let struct_def = ctx.type_pool.struct_def(struct_id);
-            if struct_def.is_builtin {
-                if let Some(destructor) = &struct_def.destructor {
-                    actions.push(DropAction {
-                        symbol: adapter.resolve_named_symbol(destructor),
-                        slots,
-                    });
-                }
-            } else {
-                if let Some(destructor) = &struct_def.destructor {
-                    let mut destructor_slots = slots.clone();
-                    destructor_slots.reverse();
-                    actions.push(DropAction {
-                        symbol: adapter.resolve_named_symbol(destructor),
-                        slots: destructor_slots,
-                    });
-                }
-                let mut glue_slots = slots;
-                let mut offset = 0usize;
-                for field in &struct_def.fields {
-                    let count = ctx.type_slot_count(field.ty) as usize;
-                    if count > 1 && offset + count <= glue_slots.len() {
-                        glue_slots[offset..offset + count].reverse();
-                    }
-                    offset += count;
-                }
-                actions.push(DropAction {
-                    symbol: adapter.resolve_named_symbol(
-                        &rue_air::drop_glue_names::struct_drop_glue_name(struct_id, ctx.type_pool),
-                    ),
-                    slots: glue_slots,
-                });
+            if let Some(destructor) = &struct_def.destructor {
+                symbols.push(adapter.resolve_named_symbol(destructor));
+            }
+            // A builtin type's destructor is its entire cleanup; a user struct
+            // then runs the glue that drops its fields.
+            if !struct_def.is_builtin {
+                symbols.push(adapter.resolve_named_symbol(
+                    &rue_air::drop_glue_names::struct_drop_glue_name(struct_id, ctx.type_pool),
+                ));
             }
         }
         TypeKind::Array(array_id) => {
-            let element_slots = ctx.array_element_slot_count(dropped_ty) as usize;
-            if element_slots > 1 {
-                for chunk in slots.chunks_mut(element_slots) {
-                    chunk.reverse();
-                }
-            }
-            actions.push(DropAction {
-                symbol: adapter.resolve_named_symbol(
-                    &rue_air::drop_glue_names::array_drop_glue_name(array_id, ctx.type_pool),
-                ),
-                slots,
-            });
+            symbols.push(adapter.resolve_named_symbol(
+                &rue_air::drop_glue_names::array_drop_glue_name(array_id, ctx.type_pool),
+            ));
         }
         TypeKind::Enum(enum_id) => {
-            // Enum drop glue's parameter list is the enum's leaves, one
-            // register-width parameter each, which is what
-            // `CallPlan::from_slot_values` hands over. A frame-resident aggregate ascends
-            // in address with its logical slots while frame slot numbers descend
-            // (ADR-0040), so handing the leaves over in reverse is what lands
-            // them in the glue's own parameter area in logical order (RUE-998).
-            slots.reverse();
-            actions.push(DropAction {
-                symbol: adapter.resolve_named_symbol(
-                    &rue_air::drop_glue_names::enum_drop_glue_name(enum_id, ctx.type_pool),
-                ),
-                slots,
-            });
+            symbols.push(adapter.resolve_named_symbol(
+                &rue_air::drop_glue_names::enum_drop_glue_name(enum_id, ctx.type_pool),
+            ));
         }
         _ => unreachable!("Drop instruction reached codegen for unexpected type: {dropped_ty:?}"),
     }
 
-    actions
+    let aggregate = ctx.is_multislot_aggregate(dropped_ty);
+    let argument = crate::call_plan::CallArgInput::Value {
+        value,
+        ty: dropped_ty,
+        slot_count: ctx.type_slot_count(dropped_ty),
+        is_multislot_aggregate: aggregate,
+        slot_types: if aggregate {
+            crate::types::aggregate_leaf_types(ctx.type_pool, dropped_ty)
+        } else {
+            vec![dropped_ty]
+        },
+    };
+    let native =
+        crate::native_abi::native_arg(ctx.type_pool, dropped_ty, rue_air::ArgConvention::ByValue);
+    symbols
+        .into_iter()
+        .map(|symbol| DropAction {
+            symbol,
+            argument: argument.clone(),
+            native: native.clone(),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3465,8 +3454,11 @@ mod tests {
         );
     }
 
+    /// A cleanup entry point takes its owner as ONE by-value argument of the
+    /// owner's type, on both adapters (RUE-2074): the action names the callee
+    /// and the whole dropped value, never a per-leaf slot vector.
     #[test]
-    fn builtin_aggregate_drop_preserves_legacy_slots_on_both_adapters() {
+    fn builtin_aggregate_drop_hands_its_owner_over_as_one_by_value_argument() {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::new();
         let name = interner.get_or_intern("DropAggregate");
@@ -3529,7 +3521,7 @@ mod tests {
         assert_eq!(x86_value.slots.len(), 3);
         assert_eq!(x86_actions.len(), 1);
         assert_eq!(x86_actions[0].symbol, "DropAggregate::__drop");
-        assert_eq!(x86_actions[0].slots, x86_value.slots);
+        assert_owner_argument(&x86_actions[0], value, aggregate_ty);
 
         let arm_ctx = crate::cfg_lower::CfgLowerContext::new(&cfg, &pool);
         let mut arm = Aarch64CfgLower::new_unchecked(&cfg, &pool, &interner, Target::Aarch64Linux);
@@ -3538,7 +3530,30 @@ mod tests {
         assert_eq!(arm_value.slots.len(), 3);
         assert_eq!(arm_actions.len(), 1);
         assert_eq!(arm_actions[0].symbol, "DropAggregate::__drop");
-        assert_eq!(arm_actions[0].slots, arm_value.slots);
+        assert_owner_argument(&arm_actions[0], value, aggregate_ty);
+    }
+
+    /// One cleanup action carries the dropped value itself, classified by its
+    /// own type, and nothing else.
+    fn assert_owner_argument(action: &super::DropAction, owner: CfgValue, owner_ty: Type) {
+        let crate::call_plan::CallArgInput::Value {
+            value,
+            ty,
+            slot_count,
+            is_multislot_aggregate,
+            ..
+        } = &action.argument
+        else {
+            panic!("a cleanup argument is always by value");
+        };
+        assert_eq!(*value, owner);
+        assert_eq!(*ty, owner_ty);
+        assert_eq!(*slot_count, 3);
+        assert!(is_multislot_aggregate);
+        assert!(matches!(
+            action.native,
+            crate::native_abi::NativeArg::Aggregate { .. }
+        ));
     }
 
     /// A float leaf reached through an aggregate is compared the way a
