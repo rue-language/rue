@@ -12,9 +12,13 @@
 //! consumption deterministic when the deferred verdict cache (§6) needs it.
 //!
 //! The supervision mechanics — the process group, the SIGKILL on expiry, the
-//! bounded concurrent drains, the post-exit group kill — are `rue-test-runner`'s
-//! and are used from there rather than reimplemented, so the harness and the
-//! product runner cannot drift on the deadlock class RUE-338 closed.
+//! bounded concurrent drains, the post-exit group kill — are
+//! `rue_test_runner::supervise`'s and are driven from there rather than
+//! reimplemented, so the harnesses and the product runner cannot drift on the
+//! deadlock class RUE-338 closed. This module supplies the policy that is this
+//! runner's own: the failure channel as an extra capture, a flood as a verdict
+//! rather than a runner error, and the live-group registry the signal handler
+//! walks.
 
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -22,10 +26,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use rue_test_runner::pipe_drain::{PIPE_DRAIN_FINISH_TIMEOUT, PipeDrain, spawn_pipe_drain};
-use rue_test_runner::{configure_process_group, kill_process_group};
+use rue_test_runner::supervise::{
+    GroupObserver, Outcome, OverflowPolicy, SupervisionError, Supervisor,
+};
 
 use super::verdict::{
     CaptureStream, ChannelFrames, Classification, Observation, Overflow, Supervision, classify,
@@ -329,107 +334,63 @@ pub(crate) fn run_one(dispatch: Dispatch<'_>) -> io::Result<Execution> {
             command.pre_exec(move || install_channel(channel_write_fd, channel_read_fd));
         }
     }
-    configure_process_group(&mut command);
 
-    let start = Instant::now();
-    let mut child = command.spawn()?;
-    // The parent's copy of the write end must go now: while it is open, the
-    // reader below can never see end of stream.
-    drop(channel_write);
-    let pid = child.id() as i32;
-    // The child leads its own group, so its pid is its pgid. Registered before
-    // anything can block, so a signal arriving during the drain below still
-    // finds this test.
-    let group_slot = register_group(pid);
-
-    let mut stdout_drain = spawn_pipe_drain(child.stdout.take(), Some(dispatch.stream_budget));
-    let mut stderr_drain = spawn_pipe_drain(child.stderr.take(), Some(dispatch.stream_budget));
-    // Ownership of the read end moves to the drain thread, which closes it at
-    // end of stream. The runner holds it open until then on purpose: a test
-    // writing to a channel whose reader had closed would die of SIGPIPE.
-    let mut channel_drain = spawn_pipe_drain(
-        Some(std::fs::File::from(channel_read)),
-        Some(CHANNEL_BUDGET),
-    );
-
-    let mut supervision = Supervision::Exited;
-    let status = loop {
-        stdout_drain.poll();
-        stderr_drain.poll();
-        channel_drain.poll();
-
-        if let Some(overflow) = overflowed(
-            &stdout_drain,
-            &stderr_drain,
-            &channel_drain,
-            dispatch.stream_budget,
-        ) {
-            supervision = Supervision::OutputOverflow(overflow);
-            kill_process_group(&mut child);
-            break None;
-        }
-
-        match child.try_wait()? {
-            Some(status) => break Some(status),
-            None => {
-                if start.elapsed() > dispatch.timeout {
-                    supervision = Supervision::TimedOut;
-                    kill_process_group(&mut child);
-                    break None;
-                }
-                std::thread::sleep(POLL_INTERVAL);
-            }
-        }
+    let mut live = LiveGroup {
+        channel_write: Some(channel_write),
+        slot: None,
     };
-    let duration = start.elapsed();
+    let run = Supervisor::new(command, dispatch.timeout)
+        .stream_budget(dispatch.stream_budget)
+        // The failure channel is drained on the same terms as the streams and
+        // against its own budget, so a test that floods stdout cannot truncate
+        // its own failure record (ADR-0083 §2). Budgeting it here rather than
+        // leaving it to the frame parser (RUE-2025) is what makes a flooded
+        // channel report as a flood instead of as an unreadable frame.
+        //
+        // Ownership of the read end moves to the drain thread, which closes it
+        // at end of stream. It stays open until then on purpose: a test writing
+        // to a channel whose reader had closed would die of SIGPIPE.
+        .extra_capture(std::fs::File::from(channel_read), CHANNEL_BUDGET)
+        // A capture past its budget is this test's verdict, not a runner
+        // failure: the run continues and the flood is reported.
+        .overflow_policy(OverflowPolicy::Verdict)
+        .poll_interval(POLL_INTERVAL)
+        // Post-exit group SIGKILL for stragglers: hygiene, not containment
+        // (ADR-0083 §3).
+        .reap_group(true)
+        .observer(&mut live)
+        .run()
+        .map_err(SupervisionError::into_io)?;
 
-    // Post-exit group SIGKILL for stragglers: hygiene, not containment
-    // (ADR-0083 §3). A descendant that outlived its parent would otherwise keep
-    // a pipe open and stall the bounded finish below for no useful reason.
-    reap_process_group(pid);
-    if let Some(slot) = group_slot {
-        unregister_group(slot, pid);
-    }
-
-    finish(&mut stdout_drain);
-    finish(&mut stderr_drain);
-    finish(&mut channel_drain);
-
-    // The budget is enforced by the drain threads, which hand their verdict
-    // over a channel — so a test that floods its stdout and then exits
-    // immediately can be reaped before the overflow message arrives. Reading
-    // the flag again after the bounded finish is what keeps such a test from
-    // reporting as a pass whose digest silently covers a truncated prefix.
-    if supervision == Supervision::Exited
-        && let Some(overflow) = overflowed(
-            &stdout_drain,
-            &stderr_drain,
-            &channel_drain,
-            dispatch.stream_budget,
-        )
-    {
-        supervision = Supervision::OutputOverflow(overflow);
-    }
-
-    let (exit_code, signal) = match &status {
+    let supervision = match run.outcome {
+        Outcome::Exited => Supervision::Exited,
+        Outcome::TimedOut => Supervision::TimedOut,
+        Outcome::Overflowed(record) => Supervision::OutputOverflow(overflow(record)),
+    };
+    let (exit_code, signal) = match &run.status {
         Some(status) => {
             use std::os::unix::process::ExitStatusExt;
             (status.code(), status.signal())
         }
+        // The runner killed the group, so there is no self-reported status.
         None => (None, None),
     };
-    let frames = super::verdict::parse_channel(channel_drain.bytes());
+    let channel = run
+        .extra
+        .into_iter()
+        .next()
+        .expect("the failure channel is always captured");
+    let frames = super::verdict::parse_channel(&channel.bytes);
     let status_for_classification = match (exit_code, signal) {
         (Some(code), _) => Ok(code),
         (None, Some(signal)) => Err(signal),
-        // The runner killed the group, so there is no self-reported status.
         // Supervision decides these, ahead of the status, in `classify`.
         (None, None) => Err(libc::SIGKILL),
     };
     let classification = classify(Observation {
         supervision,
         status: status_for_classification,
-        stderr: stderr_drain.bytes(),
+        stderr: &run.stderr.bytes,
         frames: &frames,
     });
 
@@ -438,41 +399,64 @@ pub(crate) fn run_one(dispatch: Dispatch<'_>) -> io::Result<Execution> {
         exit_code,
         signal,
         frames,
-        stdout_total: stdout_drain.bytes_total(),
-        stderr_total: stderr_drain.bytes_total(),
-        stdout: stdout_drain.into_bytes(),
-        stderr: stderr_drain.into_bytes(),
-        duration,
+        stdout_total: run.stdout.total,
+        stderr_total: run.stderr.total,
+        stdout: run.stdout.bytes,
+        stderr: run.stderr.bytes,
+        duration: run.duration,
         scratch_dir: scratch,
     })
 }
 
-fn finish(drain: &mut PipeDrain) {
-    drain.finish(PIPE_DRAIN_FINISH_TIMEOUT);
+/// The runner's stake in one live test process.
+///
+/// Both halves exist only while the child does: the parent's copy of the
+/// channel's write end, which must be released the moment the child owns its
+/// own, and the registry slot the signal handler walks.
+struct LiveGroup {
+    channel_write: Option<OwnedFd>,
+    slot: Option<usize>,
 }
 
-/// The first capture to outgrow its budget, if any.
+impl GroupObserver for LiveGroup {
+    fn spawned(&mut self, pgid: i32) {
+        // While the parent's write end is open, the channel's reader can never
+        // see end of stream.
+        self.channel_write = None;
+        // Published before anything can block, so a signal arriving during the
+        // drain still finds this test.
+        self.slot = register_group(pgid);
+    }
+
+    fn reaped(&mut self, pgid: i32) {
+        // A pid is reusable the moment its group is empty, so a stale entry
+        // would aim a SIGKILL at whatever unrelated process inherited the
+        // number. Withdraw it as soon as the group is gone.
+        if let Some(slot) = self.slot.take() {
+            unregister_group(slot, pgid);
+        }
+    }
+}
+
+/// Name the capture that flooded in the runner's own vocabulary.
 ///
-/// The channel is checked with the streams rather than left to the frame parser
-/// (RUE-2025): a channel truncated mid-line surfaces as a malformed frame, which
-/// reports the test as a bare `exit` with a runner note about an unreadable
-/// channel — a description of the symptom, not of the test writing a quarter of
-/// a megabyte of failure records.
-fn overflowed(
-    stdout: &PipeDrain,
-    stderr: &PipeDrain,
-    channel: &PipeDrain,
-    stream_budget: usize,
-) -> Option<Overflow> {
-    let candidates = [
-        (stdout, CaptureStream::Stdout, stream_budget),
-        (stderr, CaptureStream::Stderr, stream_budget),
-        (channel, CaptureStream::Channel, CHANNEL_BUDGET),
-    ];
-    candidates
-        .into_iter()
-        .find(|(drain, _, _)| drain.overflowed())
-        .map(|(_, stream, budget)| Overflow { stream, budget })
+/// The supervisor knows the failure channel as the first extra capture; the
+/// event stream knows it as the channel, because that is what a reader of a
+/// verdict needs told.
+fn overflow(record: rue_test_runner::supervise::Overflow) -> Overflow {
+    use rue_test_runner::supervise::CaptureStream as Captured;
+    let stream = match record.stream {
+        Captured::Stdout => CaptureStream::Stdout,
+        Captured::Stderr => CaptureStream::Stderr,
+        Captured::Extra(0) => CaptureStream::Channel,
+        Captured::Extra(index) => {
+            unreachable!("a test process has one extra capture, not {}", index + 1)
+        }
+    };
+    Overflow {
+        stream,
+        budget: record.budget,
+    }
 }
 
 /// A fresh pipe for one test's failure channel.
@@ -567,18 +551,10 @@ fn install_channel(write_fd: i32, read_fd: i32) -> io::Result<()> {
     Ok(())
 }
 
-/// Best-effort teardown of anything the test left running in its group.
-fn reap_process_group(pid: i32) {
-    // SAFETY: a negative pid names the process group led by `pid`. Failure
-    // (an already-empty group) is the ordinary case and carries no obligation.
-    unsafe {
-        libc::kill(-pid, libc::SIGKILL);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     /// The dispatcher parses a fixed-width, lowercase, sixteen-digit selector
     /// and rejects everything else, so this rendering is contract.
@@ -639,38 +615,36 @@ mod tests {
         assert_ne!(DEFAULT_STREAM_BUDGET, CHANNEL_BUDGET);
     }
 
-    fn drained(bytes: usize, budget: usize) -> PipeDrain {
-        let mut drain =
-            spawn_pipe_drain(Some(std::io::Cursor::new(vec![b'x'; bytes])), Some(budget));
-        drain.finish(Duration::from_secs(5));
-        drain
-    }
-
     /// A channel past its budget is the same supervision outcome as a flooded
     /// stream, and names its own budget: before RUE-2025 it was not checked at
     /// all, so it surfaced as a truncated frame and a bare `exit`.
     #[test]
     fn a_channel_past_its_budget_overflows_naming_the_channel() {
-        let quiet = drained(16, DEFAULT_STREAM_BUDGET);
-        let flooded = drained(CHANNEL_BUDGET + 1, CHANNEL_BUDGET);
-        let overflow = overflowed(&quiet, &quiet, &flooded, DEFAULT_STREAM_BUDGET)
-            .expect("a channel past its budget is an overflow");
-        assert_eq!(overflow.stream, CaptureStream::Channel);
-        assert_eq!(overflow.budget, CHANNEL_BUDGET);
+        let reported = overflow(rue_test_runner::supervise::Overflow {
+            stream: rue_test_runner::supervise::CaptureStream::Extra(0),
+            budget: CHANNEL_BUDGET,
+        });
+        assert_eq!(reported.stream, CaptureStream::Channel);
+        assert_eq!(reported.budget, CHANNEL_BUDGET);
     }
 
     /// Each capture reports its own budget, which is the whole reason the
     /// overflow carries one: the channel's is a quarter of a stream's.
     #[test]
     fn an_overflowing_stream_reports_the_budget_it_exceeded() {
-        let quiet = drained(16, 64);
-        let flooded = drained(128, 64);
-        let stdout = overflowed(&flooded, &quiet, &quiet, 64).expect("stdout overflowed");
-        assert_eq!(stdout.stream, CaptureStream::Stdout);
-        assert_eq!(stdout.budget, 64);
-        let stderr = overflowed(&quiet, &flooded, &quiet, 64).expect("stderr overflowed");
-        assert_eq!(stderr.stream, CaptureStream::Stderr);
-        assert!(overflowed(&quiet, &quiet, &quiet, 64).is_none());
+        use rue_test_runner::supervise::CaptureStream as Captured;
+
+        for (captured, expected) in [
+            (Captured::Stdout, CaptureStream::Stdout),
+            (Captured::Stderr, CaptureStream::Stderr),
+        ] {
+            let reported = overflow(rue_test_runner::supervise::Overflow {
+                stream: captured,
+                budget: DEFAULT_STREAM_BUDGET,
+            });
+            assert_eq!(reported.stream, expected);
+            assert_eq!(reported.budget, DEFAULT_STREAM_BUDGET);
+        }
     }
 
     /// A pipe both of whose ends leaked into an unrelated concurrent spawn
