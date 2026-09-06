@@ -2400,11 +2400,6 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
                 self.visit_expr(&value.base)?;
                 self.visit_expr(&value.index)?;
             }
-            Expr::Path(value) => {
-                if let Some(base) = &value.base {
-                    self.visit_expr(base)?;
-                }
-            }
             Expr::Comptime(value) => self.visit_expr(&value.expr)?,
             Expr::Checked(value) => self.visit_expr(&value.expr)?,
         }

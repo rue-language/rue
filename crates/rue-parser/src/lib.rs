@@ -59,7 +59,6 @@ pub use ast::{
     Param,
     ParamMode,
     ParenExpr,
-    PathExpr,
     PathPattern,
     Pattern,
     PatternElement,

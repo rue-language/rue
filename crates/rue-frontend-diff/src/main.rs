@@ -668,22 +668,6 @@ impl Shapes<'_> {
                 "_".into(),
                 "_".into(),
             ),
-            Expr::Path(v) => {
-                let base = v.base.as_ref().map_or_else(
-                    || self.ident(),
-                    |e| {
-                        node(
-                            "field",
-                            "",
-                            self.expr(e),
-                            "_".into(),
-                            "_".into(),
-                            "_".into(),
-                        )
-                    },
-                );
-                node("field", "", base, "_".into(), "_".into(), "_".into())
-            }
             Expr::Comptime(v) => node(
                 "comptime",
                 "",

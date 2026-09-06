@@ -951,6 +951,41 @@ impl<'a> AstGen<'a> {
         }
     }
 
+    /// Lower the inline type-constructor call of a path head (RUE-596): the
+    /// `F(args)` of `F(args) { .. }` and of `F(args).Variant(..)`.
+    ///
+    /// The constructor becomes its own instruction, which sema reduces to the
+    /// type at comptime. A module-qualified head (`std.tuple.Pair(i64, i32)`,
+    /// RUE-951; `std.result.Result(i32, i32)`, RUE-947) reaches the constructor
+    /// through its module base, so it lowers to a method call on that base; a
+    /// bare call would fail to resolve the name in local scope. Struct-literal
+    /// heads and pattern heads are the same syntax (the parser gives them one
+    /// shape), so they get one lowering.
+    fn gen_ctor_head(
+        &mut self,
+        module: Option<InstRef>,
+        name: Spur,
+        args: &[CallArg],
+        span: rue_span::Span,
+    ) -> InstRef {
+        let arg_refs: Vec<_> = args
+            .iter()
+            .enumerate()
+            .map(|(index, arg)| {
+                self.with_structural_segment(
+                    crate::RirStructuralPathSegment::Operand(index as u32 + 1),
+                    |this| this.convert_call_arg(arg),
+                )
+            })
+            .collect();
+        let name = self.symbol(name);
+        match module {
+            Some(base) => self.rir.add_method_call(base, name, &arg_refs, span),
+            None => self.rir.add_call(name, &arg_refs, span),
+        }
+        .record_failure(&mut self.payload_error)
+    }
+
     fn gen_function(&mut self, func: &Function) -> InstRef {
         self.with_producer_root(&func.body, |this| this.gen_function_body(func))
     }
@@ -1352,33 +1387,8 @@ impl<'a> AstGen<'a> {
                     self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), base_expr)
                 });
 
-                // Inline type-constructor struct-literal head `F(args) { ... }`
-                // (RUE-596): generate the constructor call `F(args)` as its own
-                // instruction; sema reduces it to the struct type at comptime. When
-                // the head is module-qualified (`std.tuple.Pair(i64, i32) { ... }`,
-                // RUE-951) the constructor is reached through the module base, so
-                // emit a method call on it exactly as the pattern ctor head does
-                // (RUE-947); a bare call would fail to resolve `Pair` locally.
                 let ctor_head = struct_lit.ctor_args.as_ref().map(|args| {
-                    let arg_refs: Vec<_> = args
-                        .iter()
-                        .enumerate()
-                        .map(|(index, arg)| {
-                            self.with_structural_segment(
-                                crate::RirStructuralPathSegment::Operand(index as u32 + 1),
-                                |this| this.convert_call_arg(arg),
-                            )
-                        })
-                        .collect();
-                    let name = self.symbol(struct_lit.name.name);
-                    match module {
-                        Some(base) => {
-                            self.rir
-                                .add_method_call(base, name, &arg_refs, struct_lit.span)
-                        }
-                        None => self.rir.add_call(name, &arg_refs, struct_lit.span),
-                    }
-                    .record_failure(&mut self.payload_error)
+                    self.gen_ctor_head(module, struct_lit.name.name, args, struct_lit.span)
                 });
 
                 let fields: Vec<_> = struct_lit
@@ -1556,21 +1566,6 @@ impl<'a> AstGen<'a> {
                 self.rir.add_inst(Inst {
                     data: InstData::IndexGet { base, index },
                     span: index_expr.span,
-                })
-            }
-            Expr::Path(path_expr) => {
-                // Generate module reference if this is a qualified path
-                let module = path_expr.base.as_ref().map(|base_expr| {
-                    self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), base_expr)
-                });
-
-                self.rir.add_inst(Inst {
-                    data: InstData::EnumVariant {
-                        module,
-                        type_name: self.symbol(path_expr.type_name.name),
-                        variant: self.symbol(path_expr.variant.name),
-                    },
-                    span: path_expr.span,
                 })
             }
             Expr::MethodCall(method_call) => {
@@ -1783,69 +1778,43 @@ impl<'a> AstGen<'a> {
     /// slot, numbered after the head's module operand and constructor
     /// arguments so the two can never collide.
     fn gen_path_pattern(&mut self, path: &rue_parser::PathPattern) -> RirPattern {
-        {
-            {
-                // If there's a base expression (module reference), generate it first
-                let module = path.base.as_ref().map(|base| {
-                    self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), base)
-                });
-                // Inline type-constructor pattern head `F(args).Variant(..)`
-                // (RUE-596): generate the constructor call `F(args)` as its own
-                // instruction; sema reduces it to the enum type at comptime. When
-                // the head is module-qualified (`std.result.Result(i32, i32).Ok`,
-                // RUE-947) the constructor is reached through the module base, so
-                // emit a method call on it exactly as the construction head does;
-                // a bare call would fail to resolve `Result` in local scope.
-                let ctor_head = path.ctor_args.as_ref().map(|args| {
-                    let arg_refs: Vec<_> = args
-                        .iter()
-                        .enumerate()
-                        .map(|(index, arg)| {
-                            self.with_structural_segment(
-                                crate::RirStructuralPathSegment::Operand(index as u32 + 1),
-                                |this| this.convert_call_arg(arg),
-                            )
-                        })
-                        .collect();
-                    let name = self.symbol(path.type_name.name);
-                    match module {
-                        Some(base) => self.rir.add_method_call(base, name, &arg_refs, path.span),
-                        None => self.rir.add_call(name, &arg_refs, path.span),
-                    }
-                    .record_failure(&mut self.payload_error)
-                });
-                // Payload positions of a tuple-variant pattern (RUE-221): a
-                // binder, or a nested variant pattern (RUE-2053).
-                let ctor_arity = path.ctor_args.as_ref().map_or(0, |args| args.len());
-                let elements: Vec<RirPatternElement> = path
-                    .elements
-                    .iter()
-                    .enumerate()
-                    .map(|(position, element)| match element {
-                        rue_parser::PatternElement::Binding(name) => {
-                            RirPatternElement::Binding(self.symbol(name.name))
-                        }
-                        rue_parser::PatternElement::Nested(nested) => {
-                            let segment = crate::RirStructuralPathSegment::Operand(
-                                (1 + ctor_arity + position) as u32,
-                            );
-                            RirPatternElement::Nested(
-                                self.with_structural_segment(segment, |this| {
-                                    this.gen_path_pattern(nested)
-                                }),
-                            )
-                        }
-                    })
-                    .collect();
-                RirPattern::Path {
-                    module,
-                    ctor_head,
-                    type_name: self.symbol(path.type_name.name),
-                    variant: self.symbol(path.variant.name),
-                    elements,
-                    span: path.span,
+        // The module reference the head is qualified by, if any.
+        let module = path
+            .base
+            .as_ref()
+            .map(|base| self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), base));
+        let ctor_head = path
+            .ctor_args
+            .as_ref()
+            .map(|args| self.gen_ctor_head(module, path.type_name.name, args, path.span));
+        // Payload positions of a tuple-variant pattern (RUE-221): a
+        // binder, or a nested variant pattern (RUE-2053).
+        let ctor_arity = path.ctor_args.as_ref().map_or(0, |args| args.len());
+        let elements: Vec<RirPatternElement> = path
+            .elements
+            .iter()
+            .enumerate()
+            .map(|(position, element)| match element {
+                rue_parser::PatternElement::Binding(name) => {
+                    RirPatternElement::Binding(self.symbol(name.name))
                 }
-            }
+                rue_parser::PatternElement::Nested(nested) => {
+                    let segment = crate::RirStructuralPathSegment::Operand(
+                        (1 + ctor_arity + position) as u32,
+                    );
+                    RirPatternElement::Nested(
+                        self.with_structural_segment(segment, |this| this.gen_path_pattern(nested)),
+                    )
+                }
+            })
+            .collect();
+        RirPattern::Path {
+            module,
+            ctor_head,
+            type_name: self.symbol(path.type_name.name),
+            variant: self.symbol(path.variant.name),
+            elements,
+            span: path.span,
         }
     }
 
@@ -2945,13 +2914,6 @@ impl SiteWalker {
             Expr::MethodCall(method_call) => {
                 self.operand(0, |this| this.walk_expr(&method_call.receiver));
                 self.walk_call_args(&method_call.args, 1);
-            }
-            Expr::Path(path) => {
-                // A path expression carries only an optional module base; inline
-                // type-constructor heads are a pattern-only form (`walk_pattern`).
-                if let Some(base) = &path.base {
-                    self.operand(0, |this| this.walk_expr(base));
-                }
             }
             Expr::IntrinsicCall(intrinsic) => {
                 // `gen_expr` enumerates every argument to keep operand indices

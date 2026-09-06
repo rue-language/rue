@@ -118,13 +118,7 @@ impl Parser {
                     let fields = self.field_inits()?;
                     let span = self.span_from(start);
                     name.span = span;
-                    Ok(Expr::StructLit(StructLitExpr {
-                        base: None,
-                        name,
-                        ctor_args: None,
-                        fields,
-                        span,
-                    }))
+                    Ok(PathHead::local(name, None).into_struct_lit(fields, span))
                 } else {
                     Ok(Expr::Ident(name))
                 }
@@ -247,13 +241,10 @@ impl Parser {
             let args = self.call_args()?;
             if self.at(TokenKind::LBrace) && self.looks_like_fields() {
                 let fields = self.field_inits()?;
-                Ok(Expr::StructLit(StructLitExpr {
-                    base: None,
-                    name,
-                    ctor_args: Some(args),
-                    fields,
-                    span: self.span_from(start),
-                }))
+                Ok(
+                    PathHead::local(name, Some(args))
+                        .into_struct_lit(fields, self.span_from(start)),
+                )
             } else {
                 Ok(Expr::Call(CallExpr {
                     name,
@@ -263,16 +254,89 @@ impl Parser {
             }
         } else if self.at(TokenKind::LBrace) && self.looks_like_fields() {
             let fields = self.field_inits()?;
-            Ok(Expr::StructLit(StructLitExpr {
-                base: None,
-                name,
-                ctor_args: None,
-                fields,
-                span: self.span_from(start),
-            }))
+            Ok(PathHead::local(name, None).into_struct_lit(fields, self.span_from(start)))
         } else {
             Ok(Expr::Ident(name))
         }
+    }
+
+    /// Parse a path head and the `.` IDENT that closes it: the
+    /// `pattern_head "." IDENT` prefix of an enum-variant pattern (spec 4.7:2).
+    ///
+    /// This is the grammar's one path-head parser, and it lives beside the
+    /// expression path machinery it mirrors. It walks the forms `ident_expr`
+    /// and `postfix` accept — a name, an inline type-constructor call on it
+    /// (`Result(i32, i32)`, RUE-596), and `.`-separated module segments
+    /// (`std.result.Result`, RUE-947) — and folds the leading segments into the
+    /// same [`Expr::Field`] chain `postfix` builds, so the head a pattern
+    /// carries and the head a struct literal carries are one [`PathHead`]. The
+    /// trailing name is returned separately: only the caller knows whether it
+    /// is an enum variant or a field.
+    ///
+    /// A `(...)` group attached to a segment is the constructor call, not a
+    /// payload list, whenever a `.` follows it. The first segment needs no such
+    /// lookahead: no variant has been named yet, so a group there can only be a
+    /// constructor call, and consuming it reports a missing `.` at the token
+    /// that actually ends the head rather than at the group.
+    pub(super) fn path_head(&mut self) -> PResult<(PathHead, Ident)> {
+        let mut head = PathHead::local(self.ident()?, None);
+        if self.at(TokenKind::LParen) {
+            head.ctor_args = Some(self.call_args()?);
+        }
+        loop {
+            self.expect(TokenKind::Dot)?;
+            let name = self.ident()?;
+            let ctor_args = if self.at(TokenKind::LParen) && self.ctor_group_precedes_dot() {
+                Some(self.call_args()?)
+            } else {
+                None
+            };
+            if ctor_args.is_none() && !self.at(TokenKind::Dot) {
+                return Ok((head, name));
+            }
+            // `name` continues the path, so the segment before it was a module
+            // segment. Constructor arguments attach to the last segment of the
+            // head only; anything earlier is rejected rather than silently
+            // moved onto the type name.
+            if head.ctor_args.is_some() {
+                self.error(
+                    "type-constructor arguments in a pattern must follow the final type path \
+                     segment",
+                );
+                return Err(());
+            }
+            head = PathHead {
+                base: Some(Box::new(head.into_qualifier())),
+                name,
+                ctor_args,
+            };
+        }
+    }
+
+    /// With the cursor at a `(`, scan to the matching `)` and report whether
+    /// the token immediately after it is a `.`. This distinguishes an inline
+    /// type-constructor call on a path head (`Result(i32, i32).Ok`, the group
+    /// precedes a dot) from a variant's payload bindings (`Ok(v)`, the group is
+    /// terminal) during a single left-to-right pass (RUE-947).
+    fn ctor_group_precedes_dot(&self) -> bool {
+        debug_assert!(self.at(TokenKind::LParen));
+        let mut cursor = self.cursor;
+        let mut depth = 0usize;
+        while let Some(token) = self.tokens.get(cursor) {
+            match token.kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return self.tokens.get(cursor + 1).map(|t| t.kind) == Some(TokenKind::Dot);
+                    }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            cursor += 1;
+        }
+        false
     }
 
     /// Reject a trailing-dot float literal (`5.`) before it is mistaken for a
@@ -342,13 +406,8 @@ impl Parser {
                         if self.at(TokenKind::LBrace) && self.looks_like_fields() {
                             let fields = self.field_inits()?;
                             let span = base.span().extend_to(self.previous_end());
-                            base = Expr::StructLit(StructLitExpr {
-                                base: Some(Box::new(base)),
-                                name: field,
-                                ctor_args: Some(args),
-                                fields,
-                                span,
-                            });
+                            base = PathHead::qualified(base, field, Some(args))
+                                .into_struct_lit(fields, span);
                         } else {
                             let span = base.span().extend_to(self.previous_end());
                             base = Expr::MethodCall(MethodCallExpr {
@@ -361,13 +420,7 @@ impl Parser {
                     } else if self.at(TokenKind::LBrace) && self.looks_like_fields() {
                         let fields = self.field_inits()?;
                         let span = base.span().extend_to(self.previous_end());
-                        base = Expr::StructLit(StructLitExpr {
-                            base: Some(Box::new(base)),
-                            name: field,
-                            ctor_args: None,
-                            fields,
-                            span,
-                        });
+                        base = PathHead::qualified(base, field, None).into_struct_lit(fields, span);
                     } else {
                         let span = base.span().extend_to(field.span.end);
                         base = Expr::Field(FieldExpr {
@@ -679,6 +732,72 @@ impl Parser {
             }
         }
         false
+    }
+}
+
+/// The head shared by a struct literal and an enum-variant pattern: an
+/// optional module prefix, the type name, and the inline type-constructor call
+/// attached to that name (spec 4.7:2 `pattern_head`; RUE-596, RUE-947,
+/// RUE-951).
+///
+/// The prefix is the `.`-separated module segments already folded into the
+/// [`Expr::Field`] chain the module-qualified lowering reads, so a head parsed
+/// for a pattern and a head parsed for a struct literal are indistinguishable
+/// downstream.
+pub(super) struct PathHead {
+    pub(super) base: Option<Box<Expr>>,
+    pub(super) name: Ident,
+    pub(super) ctor_args: Option<Vec<CallArg>>,
+}
+
+impl PathHead {
+    /// A head with no module prefix (`Color`, `Result(i32, i32)`).
+    fn local(name: Ident, ctor_args: Option<Vec<CallArg>>) -> Self {
+        Self {
+            base: None,
+            name,
+            ctor_args,
+        }
+    }
+
+    /// A head with a module prefix (`std.result.Result`).
+    pub(super) fn qualified(base: Expr, name: Ident, ctor_args: Option<Vec<CallArg>>) -> Self {
+        Self {
+            base: Some(Box::new(base)),
+            name,
+            ctor_args,
+        }
+    }
+
+    /// Fold a completed head back into the field chain a module prefix is
+    /// spelled as, once a further segment proves it was one (`std.result` in
+    /// `std.result.Result.Ok`).
+    /// A constructor call ends a head, so `path_head` rejects a further
+    /// segment before it gets here and there is never a call to carry over.
+    fn into_qualifier(self) -> Expr {
+        match self.base {
+            Some(base) => {
+                let span = base.span().extend_to(self.name.span.end);
+                Expr::Field(FieldExpr {
+                    base,
+                    field: self.name,
+                    span,
+                })
+            }
+            None => Expr::Ident(self.name),
+        }
+    }
+
+    /// A struct literal is a path head followed by its field list
+    /// (`P { .. }`, `P(args) { .. }`, `m.P(args) { .. }`).
+    fn into_struct_lit(self, fields: Vec<FieldInit>, span: Span) -> Expr {
+        Expr::StructLit(StructLitExpr {
+            base: self.base,
+            name: self.name,
+            ctor_args: self.ctor_args,
+            fields,
+            span,
+        })
     }
 }
 

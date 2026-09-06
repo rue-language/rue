@@ -343,11 +343,6 @@ impl Validator<'_> {
                 self.check_expr(&i.base);
                 self.check_expr(&i.index);
             }
-            Expr::Path(p) => {
-                if let Some(base) = &p.base {
-                    self.check_expr(base);
-                }
-            }
             Expr::Comptime(c) => self.check_expr(&c.expr),
             Expr::Checked(c) => self.check_expr(&c.expr),
             Expr::TypeLit(t) => self.check_type_expr(&t.type_expr),
