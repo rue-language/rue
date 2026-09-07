@@ -1368,6 +1368,15 @@ struct Frame {
     /// occupies one pointer slot. The whole semantic value is kept at its base
     /// slot; extra by-value slots are `None` (they are only reached through the
     /// base via a projection, never directly).
+    ///
+    /// A zero-sized by-value parameter has **no entry at all**: it occupies
+    /// zero slots, so its `Param { index }` / `PlaceBase::Param(slot)` names
+    /// the slot the *next* parameter received. Reach parameter storage only
+    /// through [`Interp::zero_sized_param`], which decides that question from
+    /// the accessed type — the same "a slot index is not a storage name"
+    /// rule [`Frame::locals`] states as a `(slot, Type)` key (RUE-2095),
+    /// in the form the one table whose zero-sized rows do not exist can state
+    /// it (RUE-2101).
     params: Vec<Option<Value>>,
     /// Local storage keyed by `(slot, Type)`, never by the slot index alone.
     ///
@@ -3361,7 +3370,13 @@ impl<'a> Interp<'a> {
                     // address, its canonical bytes (rather than the copy-in
                     // snapshot) are authoritative for that writeback.
                     for (&key, &alloc) in &frame.promoted {
+                        // A zero-sized parameter's promoted allocation names
+                        // the slot its sized neighbour owns (RUE-2101), and
+                        // that slot's copy-out value is the neighbour's. Its
+                        // own value is fixed by its type, so there is nothing
+                        // to write back for it.
                         if let Some(slot) = key.param_slot()
+                            && !self.is_zero_sized(key.ty)
                             && let Some(value) = final_params.get_mut(slot)
                         {
                             *value = Some(self.promoted_slot_value(alloc)?);
@@ -3861,6 +3876,29 @@ impl<'a> Interp<'a> {
         }
     }
 
+    /// The value of a zero-sized parameter, whose storage `Frame::params`,
+    /// `Frame::param_places` and `Frame::promoted` never hold.
+    ///
+    /// `call_arg_slot_width` gives a by-value zero-sized argument a width of
+    /// zero, so `call_inner_with_places` never pushes it and its
+    /// `PlaceBase::Param(slot)` names the slot the NEXT parameter occupies.
+    /// Every slot-indexed parameter table therefore answers with the
+    /// neighbour's storage, which is a wrong value for a scalar neighbour and
+    /// a contract violation for an aggregate one (RUE-2101). Materialize the
+    /// unique value of the type instead, exactly as the `CfgInstData::Param`
+    /// read already does.
+    ///
+    /// A *by-reference* zero-sized parameter does own its one pointer slot, so
+    /// this is not the same "no storage" statement for it — but every value of
+    /// a zero-sized type is the same value, so answering from the type is
+    /// still exact, and the caller's copy-out observes an identical value.
+    /// Distinguishing the two modes would buy nothing and would need the
+    /// callee's `is_param_by_ref` at every access.
+    fn zero_sized_param(&self, base: PlaceBase, ty: Type) -> Option<Value> {
+        (matches!(base, PlaceBase::Param(_)) && self.is_zero_sized(ty))
+            .then(|| self.zero_sized_value(ty))
+    }
+
     fn eval_all(&mut self, cfg: &'a Cfg, frame: &mut Frame, vs: &[CfgValue]) -> Step<Vec<Value>> {
         vs.iter().map(|v| self.eval(cfg, frame, *v)).collect()
     }
@@ -3912,13 +3950,13 @@ impl<'a> Interp<'a> {
                 self.string_literal_value(text, ty)?
             }
             CfgInstData::Param { index } => {
-                if self.is_zero_sized(ty) {
-                    // A zero-sized parameter occupies NO slot (abi_slot_count
-                    // = 0), but the CFG still emits a Param read for it —
-                    // sharing its `index` with the NEXT parameter's slot. Do
-                    // not read the slot (that would grab the next parameter's
-                    // value); materialize the unique ZST value instead.
-                    self.zero_sized_value(ty)
+                // A zero-sized parameter occupies NO slot (abi_slot_count = 0),
+                // but the CFG still emits a Param read for it — sharing its
+                // `index` with the NEXT parameter's slot. Reading the slot
+                // would grab the next parameter's value, so this and every
+                // other parameter-storage path asks `zero_sized_param` first.
+                if let Some(value) = self.zero_sized_param(PlaceBase::Param(*index), ty) {
+                    value
                 } else if let Some(target) = frame.param_places.get(index).cloned() {
                     // Raw accessor execution redirects by-reference parameter
                     // slots to their caller places, matching canonical
@@ -4948,6 +4986,11 @@ impl<'a> Interp<'a> {
         path: &[(usize, Projection)],
     ) -> Step<Option<PtrTarget>> {
         let target = match base {
+            // A by-reference binding at a zero-sized parameter's index belongs
+            // to the parameter that actually owns the slot; leave the place
+            // unbound so the read materializes the zero-sized value instead
+            // (see `zero_sized_param`).
+            PlaceBase::Param(_) if self.is_zero_sized(base_type) => None,
             PlaceBase::Param(slot) => frame.param_places.get(&slot).cloned(),
             PlaceBase::Accessor(call) => match self.eval(cfg, frame, call)? {
                 Value::Ptr(target) => target,
@@ -5204,9 +5247,18 @@ impl<'a> Interp<'a> {
                 )
                 .map_err(Flow::from);
         }
+        // A zero-sized parameter owns no slot storage (see `zero_sized_param`),
+        // so neither its neighbour's promoted allocation nor its neighbour's
+        // `Frame::params` entry may receive the write. Route it into a scratch
+        // copy of the unique zero-sized value: every value of a zero-sized type
+        // is that value, so nothing observable is lost, while the projection
+        // walk below still reports an out-of-range or non-aggregate path.
+        let mut zero_sized_scratch = self.zero_sized_param(base, place.base_type);
         // A promoted base writes through the canonical byte allocation. The
         // unpromoted path can still mutate the frame's logical value directly.
-        if let Some(&a) = frame.promoted.get(&promotion_key(base, place.base_type)) {
+        if zero_sized_scratch.is_none()
+            && let Some(&a) = frame.promoted.get(&promotion_key(base, place.base_type))
+        {
             let (byte_offset, pointee) = self
                 .projection_offset(place.base_type, &path)
                 .ok_or_else(|| {
@@ -5235,11 +5287,15 @@ impl<'a> Interp<'a> {
                 .entry((slot, place.base_type))
                 .or_insert(Value::Unit),
             PlaceBase::Param(slot) => {
-                let slot = slot as usize;
-                if slot >= frame.params.len() {
-                    frame.params.resize(slot + 1, None);
+                if let Some(value) = zero_sized_scratch.as_mut() {
+                    value
+                } else {
+                    let slot = slot as usize;
+                    if slot >= frame.params.len() {
+                        frame.params.resize(slot + 1, None);
+                    }
+                    frame.params[slot].get_or_insert(Value::Unit)
                 }
-                frame.params[slot].get_or_insert(Value::Unit)
             }
             PlaceBase::Accessor(_) => {
                 return Err(unsupported(
@@ -5381,6 +5437,13 @@ impl<'a> Interp<'a> {
         }
     }
 
+    /// Store a callee-side `inout` parameter write into its slot.
+    ///
+    /// This is the one parameter-storage path that stays purely slot-indexed,
+    /// and deliberately: `ParamStore` names a writable by-reference parameter,
+    /// which occupies one pointer slot whatever its type, so a zero-sized
+    /// `inout` parameter really does own the slot it names and
+    /// `zero_sized_param`'s "no storage" rule does not apply to it (RUE-2101).
     fn set_param(frame: &mut Frame, slot: u32, val: Value) {
         let s = slot as usize;
         if s >= frame.params.len() {
@@ -5395,6 +5458,12 @@ impl<'a> Interp<'a> {
     /// (address-taken) slot's heap allocation so a pointer write is observed by
     /// a later direct read of the same slot.
     fn base_value_of(&self, frame: &Frame, base: PlaceBase, base_type: Type) -> Step<Value> {
+        // A zero-sized parameter has no slot of its own; answer from the type
+        // ahead of every slot-indexed table, which is the order the
+        // `CfgInstData::Param` read uses for the same reason.
+        if let Some(value) = self.zero_sized_param(base, base_type) {
+            return Ok(value);
+        }
         if let Some(&a) = frame.promoted.get(&promotion_key(base, base_type)) {
             return self.promoted_slot_value(a);
         }
