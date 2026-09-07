@@ -12,11 +12,12 @@ pub(super) struct FrontendQueryDatabase {
     pub(super) revisioned: crate::revisioned_query_database::RevisionedQueryDatabase,
 }
 
-impl Default for FrontendQueryDatabase {
-    fn default() -> Self {
+impl FrontendQueryDatabase {
+    pub(super) fn new(configuration: crate::CompilerSessionConfig) -> Self {
         Self {
             revisioned: crate::revisioned_query_database::RevisionedQueryDatabase::new(
                 RevisionedQueryDatabaseConstructionToken::new(),
+                configuration,
             ),
         }
     }

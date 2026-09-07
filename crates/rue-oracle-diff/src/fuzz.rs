@@ -23,9 +23,10 @@
 //! `test.sh`, and Buck test targets set from `scripts/rue-bin`.
 
 use crate::{generator, trap::native_runtime_trap_kind};
+use rue_compiler::CompilerSessionConfig;
 use rue_oracle::{
     MAX_STDERR_BYTES, MAX_STDOUT_BYTES, RunSourceError, TrapKind, Unsupported, UnsupportedKind,
-    run_source_cfg_differential,
+    run_source_with_cfg_differential_with_configuration,
 };
 use rue_test_runner::supervise::{
     Outcome as SupervisedOutcome, OverflowPolicy, SupervisionError, Supervisor,
@@ -282,7 +283,7 @@ fn find_rue_binary() -> Result<PathBuf, String> {
     )
 }
 
-pub fn run(args: &[String]) -> ExitCode {
+pub fn run(args: &[String], configuration: CompilerSessionConfig) -> ExitCode {
     let cfg = match parse_args(args) {
         Ok(c) => c,
         Err(e) => {
@@ -338,7 +339,11 @@ pub fn run(args: &[String]) -> ExitCode {
     for seed in cfg.start..seed_end {
         let source = generator::generate(seed);
 
-        let oracle = match run_source_cfg_differential(&source) {
+        let oracle = match run_source_with_cfg_differential_with_configuration(
+            &source,
+            &rue_error::PreviewFeatures::new(),
+            configuration,
+        ) {
             Err(error) => {
                 // Unlike corpus mode, generated mode has a strong input
                 // contract: every program must compile and remain within the

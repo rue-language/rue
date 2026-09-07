@@ -262,9 +262,10 @@ impl CompilerSessionUpdate {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CompilerSession {
     identity: Arc<()>,
+    configuration: crate::CompilerSessionConfig,
     /// Test-only injection for the canonical compilation-owned symbol bound.
     /// Production leaves this unset and uses the published u32 ceiling.
     #[cfg(test)]
@@ -335,6 +336,12 @@ pub struct CompilerSession {
     definition_shard_baseline: Option<crate::DefinitionSnapshot>,
     metrics: CompilerSessionMetrics,
     diagnostics: DiagnosticAttemptStore,
+}
+
+impl Default for CompilerSession {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Debug)]

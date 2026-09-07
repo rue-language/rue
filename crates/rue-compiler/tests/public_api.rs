@@ -13,6 +13,77 @@ use rue_compiler::{
 };
 use rue_error::ErrorKind;
 
+#[test]
+fn independently_configured_sessions_preserve_artifacts_and_diagnostics() {
+    use rue_compiler::CompilerSessionConfig;
+    use rue_compiler::unstable::oracle_executable;
+    use std::sync::Barrier;
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum Observation {
+        Executable(Vec<u8>, String),
+        Diagnostics(String),
+    }
+
+    let configurations = [
+        CompilerSessionConfig::with_workers_and_retention(1, 0, 0).unwrap(),
+        CompilerSessionConfig::with_workers_and_retention(3, 8 * 1024 * 1024, 16_384).unwrap(),
+    ];
+    let start = Arc::new(Barrier::new(configurations.len()));
+    let runs = configurations.map(|configuration| {
+        let start = start.clone();
+        std::thread::spawn(move || {
+            let mut session = CompilerSession::with_configuration(configuration);
+            // Both sessions exist before either begins work. Revisions then
+            // exercise success, failure, recovery and a reverted body under
+            // different worker limits and retention pressure.
+            start.wait();
+            let observations = [
+                "fn helper(x: i32) -> i32 { x + 1 } fn main() -> i32 { helper(4) }",
+                "fn helper(x: i32) -> i32 { x + 2 } fn main() -> i32 { helper(4) }",
+                "fn helper(x: i32) -> i32 { true } fn main() -> i32 { helper(4) }",
+                "fn helper(x: i32) -> i32 { x + 1 } fn main() -> i32 { helper(4) }",
+            ]
+            .map(|source| {
+                let snapshot = SourceSnapshot::single("main.rue", source).unwrap();
+                session.update(&snapshot).into_result().unwrap();
+                let observation =
+                    match oracle_executable(&mut session, &snapshot, &CompileOptions::default()) {
+                        Ok(output) => {
+                            assert!(!output.elf.is_empty());
+                            Observation::Executable(output.elf, format!("{:?}", output.warnings))
+                        }
+                        Err(errors) => Observation::Diagnostics(format!("{errors:?}")),
+                    };
+                assert_eq!(session.configuration(), &configuration);
+                let metrics = session.unstable_metrics();
+                let retention = metrics.retention();
+                // These gauges come from the query runtime, so they detect a
+                // constructor that stores a policy but fails to install it.
+                assert_eq!(
+                    retention.retained_byte_budget as u64,
+                    configuration.retained_byte_budget(),
+                );
+                assert_eq!(
+                    retention.dependency_pin_budget as u64,
+                    configuration.dependency_pin_budget(),
+                );
+                assert!(
+                    metrics.query_runtime().peak_query_workers <= configuration.workers() as u64
+                );
+                observation
+            });
+            assert!(matches!(observations[0], Observation::Executable(..)));
+            assert!(matches!(observations[1], Observation::Executable(..)));
+            assert!(matches!(observations[2], Observation::Diagnostics(..)));
+            assert_eq!(observations[0], observations[3]);
+            observations
+        })
+    });
+    let [serial, parallel] = runs.map(|run| run.join().expect("configuration parity worker"));
+    assert_eq!(serial, parallel);
+}
+
 type PublicStructuredJob =
     ComptimeStructuredTypeJob<u8, u16, u32, u64, u128, u128, Arc<str>, Arc<str>, Arc<[Arc<str>]>>;
 type PublicStructuredAuthority =

@@ -33,10 +33,10 @@ use rue_compiler::unstable::{
 use rue_compiler::unstable::{frontend_query_invalidations, rooted_cfg};
 use rue_compiler::unstable::{normalize_module_path, requested_path_for_module};
 use rue_compiler::{
-    AcceptedReadManifest, CompileErrors, CompileOptions, CompilerSession, DependencyEnvelope,
-    FileId, FileMetadataFingerprint, ImportDiscoveryContext, ImportDiscoveryStatus,
-    ImportDiscoveryView, PhysicalFileIdentity, SourceMetadata, SourceSnapshot,
-    TrustedToolchainModuleDemand, trusted_logical_path_for_requested,
+    AcceptedReadManifest, CompileErrors, CompileOptions, CompilerSession, CompilerSessionConfig,
+    DependencyEnvelope, FileId, FileMetadataFingerprint, ImportDiscoveryContext,
+    ImportDiscoveryStatus, ImportDiscoveryView, PhysicalFileIdentity, SourceMetadata,
+    SourceSnapshot, TrustedToolchainModuleDemand, trusted_logical_path_for_requested,
 };
 
 /// The content fingerprint used by the long-lived filesystem observer.
@@ -805,6 +805,7 @@ pub(crate) struct SourceLoadRequest<'a> {
     pub(crate) root_source: &'a str,
     pub(crate) source_manifest_path: Option<&'a str>,
     pub(crate) std_root: Option<&'a Path>,
+    pub(crate) compiler_config: CompilerSessionConfig,
 }
 
 #[derive(Debug)]
@@ -937,7 +938,12 @@ pub(crate) fn load(
             .map_err(SourceLoadError::Message)?;
         manifest
     };
-    discover_and_load_imports(request.root_source, manifest, request.std_root)
+    discover_and_load_imports_with_configuration(
+        request.root_source,
+        manifest,
+        request.std_root,
+        request.compiler_config,
+    )
 }
 
 #[derive(Debug)]
@@ -1794,10 +1800,25 @@ fn drive_import_discovery_to_close(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn discover_and_load_imports(
     root_source: &str,
     source_manifest: Option<SourceManifest>,
     std_root: Option<&Path>,
+) -> Result<ImportDiscoveryResult, SourceLoadError> {
+    discover_and_load_imports_with_configuration(
+        root_source,
+        source_manifest,
+        std_root,
+        CompilerSessionConfig::default(),
+    )
+}
+
+fn discover_and_load_imports_with_configuration(
+    root_source: &str,
+    source_manifest: Option<SourceManifest>,
+    std_root: Option<&Path>,
+    compiler_config: CompilerSessionConfig,
 ) -> Result<ImportDiscoveryResult, SourceLoadError> {
     // Validate the root source's span representability before discovery aliases
     // physical identities. With a single positional source there are no
@@ -1897,7 +1918,7 @@ pub(crate) fn discover_and_load_imports(
     )
     .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
 
-    let mut staging = CompilerSession::new();
+    let mut staging = CompilerSession::with_configuration(compiler_config);
     // Reach the parser-owned import fixed point and close. Trusted
     // toolchain-module acquisition (the compiler-rooted std `Option`/`StrBuf` a
     // reached fallible intrinsic needs but no `@import` pulls) is NOT done here:
@@ -4206,10 +4227,15 @@ mod tests {
     #[test]
     fn wave_ledger_order_and_contents_are_independent_of_worker_count() {
         fn discover(dir: &TestDir, jobs: usize) -> (String, Vec<String>, u64) {
-            rue_compiler::configure_thread_pool(jobs);
-            let result =
-                discover_and_load_imports(dir.path.join("main.rue").to_str().unwrap(), None, None)
-                    .unwrap();
+            let configuration = rue_compiler::CompilerSessionConfig::with_workers(jobs)
+                .expect("worker determinism test must use a valid configuration");
+            let result = discover_and_load_imports_with_configuration(
+                dir.path.join("main.rue").to_str().unwrap(),
+                None,
+                None,
+                configuration,
+            )
+            .unwrap();
             let modules = result
                 .source_snapshot
                 .source_revision()
@@ -4250,7 +4276,6 @@ mod tests {
         let single = discover(&dir, 1);
         let repeat = discover(&dir, 1);
         let parallel = discover(&dir, 4);
-        rue_compiler::configure_thread_pool(0);
 
         assert_eq!(single, repeat, "discovery must be reproducible run to run");
         assert_eq!(

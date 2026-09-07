@@ -50,8 +50,9 @@ linking, and editor protocols are independent extensions.
 
 ### What already exists
 
-The following findings were checked against source and tests at
-`b90243c49` on 2026-09-07. Tests cited here were read as evidence of existing
+The initial findings were checked against source and tests at
+`b90243c49` on 2026-09-07; implementation updates are noted below. Tests cited
+here were read as evidence of existing
 coverage; this research did not run a daemon prototype or measure a speedup.
 
 | Current source | Implication for a daemon |
@@ -84,15 +85,16 @@ lose more to communication than they gain from reuse.
 
 Several relevant issues are present in current source:
 
-- `configure_thread_pool` writes a process-global worker setting that new
-  sessions snapshot. Each session has its own runtime budget. This is the
-  unresolved configuration work tracked by RUE-1811, not a daemon-wide resource
-  scheduler.
+- [`CompilerSessionConfig`](../../crates/rue-compiler/src/configuration.rs)
+  now gives each session immutable worker and retention settings (RUE-1811).
+  CLI, benchmark, and oracle callers pass their policy explicitly. This supplies
+  per-session control; daemon-wide resource admission remains to be built.
 - [`retention.rs`](../../crates/rue-query/src/retention.rs) defaults to 8 GiB
   of retained artifact charge and four million dependency/input observations
   **per runtime**. These are soft accounting limits; protected results can
-  exceed them. The filesystem host exposes metrics but no production budget
-  configuration or trim operation. Multiplying these defaults across roots
+  exceed them. The filesystem host accepts configuration at construction and
+  exposes metrics, but has no production trim operation. Multiplying the
+  established defaults across roots
   would be an unsuitable implicit daemon policy.
 - [`source_loader::reload_from_filesystem`](../../crates/rue/src/source_loader.rs)
   re-observes the accepted closure and drives import discovery to a coherent

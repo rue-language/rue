@@ -350,12 +350,13 @@ the waiting worker to ready dependency work. It must make progress with a budget
 of one and under adversarial claim, join, and dependency schedules; cross-task
 cycle detection alone is not a progress guarantee.
 
-Rue's existing process-global Rayon configuration and the CFG, optimization,
-and backend `par_iter` paths are part of this migration. Before query-level
-parallelism is enabled, they must execute through the same structured budget or
-be serial inside a query. `configure_thread_pool` remains a supported facade
-operation under ADR-0061, but its implementation becomes configuration of this
-shared budget rather than authorization for an independent nested pool.
+`CompilerSessionConfig` supplies immutable worker and soft retention budgets to
+the session's canonical runtime (ADR-0061, RUE-1811). Automatic worker selection
+is resolved at configuration construction. CFG, optimization, backend, and
+query-level parallel work share that runtime's structured budget. There is no
+mutable process-global compiler concurrency setting. Co-resident sessions may
+have different policies; a daemon must additionally bound their aggregate
+resource use (ADR-0085).
 
 ### 5. Stable identity and canonical artifacts are the interchange format
 

@@ -10,8 +10,9 @@ use rue_compiler::unstable::{
     unimported_test_files,
 };
 use rue_compiler::{
-    AcceptedReadManifest, CompileErrors, CompileOptions, CompileOutput, ImportDiscoveryContext,
-    ImportDiscoveryStatus, ImportDiscoveryView, MultiErrorResult, RirView, SourceSnapshot,
+    AcceptedReadManifest, CompileErrors, CompileOptions, CompileOutput, CompilerSessionConfig,
+    ImportDiscoveryContext, ImportDiscoveryStatus, ImportDiscoveryView, MultiErrorResult, RirView,
+    SourceSnapshot,
 };
 
 use crate::source_loader::{
@@ -25,6 +26,7 @@ pub struct HostOpenRequest<'a> {
     pub root_source: &'a str,
     pub source_manifest_path: Option<&'a str>,
     pub std_root: Option<&'a Path>,
+    pub compiler_config: CompilerSessionConfig,
 }
 
 /// One canonical filesystem observer and retained compiler session.
@@ -39,6 +41,7 @@ impl FilesystemCompilerHost {
             root_source: request.root_source,
             source_manifest_path: request.source_manifest_path,
             std_root: request.std_root,
+            compiler_config: request.compiler_config,
         })
         .map(|state| Self { state })
     }
@@ -85,6 +88,11 @@ impl FilesystemCompilerHost {
 
     pub fn source_snapshot(&self) -> &SourceSnapshot {
         &self.state.source_snapshot
+    }
+
+    /// The immutable compiler resources captured when this host was opened.
+    pub fn compiler_configuration(&self) -> &CompilerSessionConfig {
+        self.state.session.configuration()
     }
 
     pub fn discovery_revision(&self) -> &ImportDiscoveryView {
@@ -345,6 +353,7 @@ mod tests {
                 root_source: root.to_str().unwrap(),
                 source_manifest_path: None,
                 std_root: None,
+                compiler_config: CompilerSessionConfig::default(),
             })
             .unwrap()
         }
@@ -445,6 +454,7 @@ mod tests {
             root_source: main.to_str().unwrap(),
             source_manifest_path: Some(manifest.to_str().unwrap()),
             std_root: None,
+            compiler_config: CompilerSessionConfig::default(),
         })
         .unwrap();
 
@@ -476,6 +486,7 @@ mod tests {
             root_source: main.to_str().unwrap(),
             source_manifest_path: None,
             std_root: Some(&std_root),
+            compiler_config: CompilerSessionConfig::default(),
         })
         .unwrap();
 
@@ -624,6 +635,7 @@ mod test_candidate_acquisition_tests {
             root_source: root.to_str().unwrap(),
             source_manifest_path: Some(manifest.to_str().unwrap()),
             std_root: None,
+            compiler_config: CompilerSessionConfig::default(),
         })
         .unwrap();
         let inventory = host.acquire_test_candidates(&declared).unwrap();
@@ -670,6 +682,7 @@ mod test_candidate_acquisition_tests {
             root_source: root.to_str().unwrap(),
             source_manifest_path: None,
             std_root: None,
+            compiler_config: CompilerSessionConfig::default(),
         })
         .unwrap();
         let inventory = host

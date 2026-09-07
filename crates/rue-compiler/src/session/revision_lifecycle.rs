@@ -68,12 +68,10 @@ impl CompilerSession {
 
     #[cfg(test)]
     pub(crate) fn with_query_concurrency(workers: usize) -> Self {
-        let mut session = Self::default();
-        session.queries.revisioned =
-            crate::revisioned_query_database::RevisionedQueryDatabase::with_query_concurrency(
-                workers,
-            );
-        session
+        Self::with_configuration(
+            crate::CompilerSessionConfig::with_workers(workers)
+                .expect("test query concurrency must be valid"),
+        )
     }
 
     /// Construct a canonical session with a bounded shared symbol space for
@@ -82,7 +80,10 @@ impl CompilerSession {
     /// canonical materialization.
     #[cfg(test)]
     pub(crate) fn with_interner_limit(max_entries: usize) -> Self {
-        let mut session = Self::default();
+        let mut session = Self::with_configuration(
+            crate::CompilerSessionConfig::with_workers(1)
+                .expect("test query concurrency must be valid"),
+        );
         session.interner_limit = Some(max_entries);
         session.queries.revisioned =
             crate::revisioned_query_database::RevisionedQueryDatabase::with_interner_limit(
@@ -280,8 +281,55 @@ impl CompilerSession {
         }
     }
 
+    /// The validated resources selected when this session was constructed.
+    pub fn configuration(&self) -> &crate::CompilerSessionConfig {
+        &self.configuration
+    }
+
     pub fn new() -> Self {
-        <Self as ::core::default::Default>::default()
+        Self::with_configuration(crate::CompilerSessionConfig::default())
+    }
+
+    /// Construct a session with validated, immutable resource configuration.
+    pub fn with_configuration(configuration: crate::CompilerSessionConfig) -> Self {
+        Self {
+            identity: Arc::new(()),
+            configuration,
+            #[cfg(test)]
+            interner_limit: None,
+            #[cfg(test)]
+            cfg_interner_limit: None,
+            #[cfg(test)]
+            cfg_accessor_failure: false,
+            oracle_fault: None,
+            excluded_test_roots: Arc::from([]),
+            imports: super::ImportDiscoveryOwner::default(),
+            parse_sources_materialized: 0,
+            parse_key_entries_compared: 0,
+            parse_modules_dispatched: 0,
+            parse_invalidation_entries_compared: 0,
+            queries: super::FrontendQueryDatabase::new(configuration),
+            #[cfg(test)]
+            rooted_cfg_executions: Vec::new(),
+            #[cfg(test)]
+            warning_reference_executions: Vec::new(),
+            #[cfg(test)]
+            codegen_executions: Vec::new(),
+            #[cfg(test)]
+            codegen_attempt_work: Vec::new(),
+            #[cfg(test)]
+            codegen_collections: 0,
+            #[cfg(test)]
+            object_projection_executions: Vec::new(),
+            #[cfg(test)]
+            object_projection_collections: 0,
+            published: None,
+            published_snapshot: None,
+            batch_diagnostic_order: None,
+            definition_shard_baseline: None,
+            metrics: super::CompilerSessionMetrics::default(),
+            diagnostics: super::DiagnosticAttemptStore::default(),
+        }
     }
 
     pub(super) fn resume_canceled_query(
