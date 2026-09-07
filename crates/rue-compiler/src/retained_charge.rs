@@ -1375,7 +1375,6 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::LinearStructCopy(value)
             | E::UnknownEnumType(value)
             | E::InvalidMatchType(value)
-            | E::NestedPatternPositionConflict { variant: value }
             | E::UnknownIntrinsic(value)
             | E::CannotInferCastTarget(value)
             | E::CannotInferPointeeType(value)

@@ -1,8 +1,8 @@
-# Nested variant patterns (RUE-2053, spec 4.7:37-4.7:41). A payload position may
-# hold another variant pattern, so one match discriminates several levels of a
-# sum type. These cases drive the real compiler on both backends: the CFG tests
-# the outer discriminant, extracts the payload, tests the inner discriminant on
-# it, and only then binds.
+# Nested variant patterns (RUE-2053, RUE-2080, spec 4.7:37-4.7:41). A payload
+# position may hold another variant pattern, in any number of positions, so one
+# match discriminates several levels of a sum type. These cases drive the real
+# compiler on both backends: the CFG tests the outer discriminant, extracts the
+# payloads it must discriminate, tests them one at a time, and only then binds.
 
 [section]
 id = "cli.nested_variant_patterns"
@@ -357,3 +357,144 @@ args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
 executable_target = "aarch64-linux"
 execute_if_native = true
 exit_code = 44
+
+# Two payload positions of one pattern are discriminated at once (RUE-2080):
+# the decision tree tests one extracted payload at a time and the arms dispatch
+# on the combination. 7 + 23 + 0 + 0 = 30.
+
+[[case]]
+name = "x86_64_linux_two_nested_positions"
+description = "Nested patterns in both payload positions of one variant dispatch on the combination, on x86-64: 7 + 23 = 30."
+files = [{ path = "main.rue", source = """
+enum Inner { A(i32), B }
+enum Outer { Pair(Inner, Inner) }
+
+fn classify(o: Outer) -> i32 {
+    match o {
+        Outer.Pair(Inner.A(v), Inner.B) => v,
+        Outer.Pair(Inner.B, Inner.A(w)) => w + 20,
+        Outer.Pair(_, _) => 0,
+    }
+}
+
+fn main() -> i32 {
+    classify(Outer.Pair(Inner.A(7), Inner.B))
+        + classify(Outer.Pair(Inner.B, Inner.A(3)))
+        + classify(Outer.Pair(Inner.A(7), Inner.A(1)))
+        + classify(Outer.Pair(Inner.B, Inner.B))
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 30
+
+[[case]]
+name = "aarch64_linux_two_nested_positions"
+description = "The same two-position dispatch on AArch64: 30."
+files = [{ path = "main.rue", source = """
+enum Inner { A(i32), B }
+enum Outer { Pair(Inner, Inner) }
+
+fn classify(o: Outer) -> i32 {
+    match o {
+        Outer.Pair(Inner.A(v), Inner.B) => v,
+        Outer.Pair(Inner.B, Inner.A(w)) => w + 20,
+        Outer.Pair(_, _) => 0,
+    }
+}
+
+fn main() -> i32 {
+    classify(Outer.Pair(Inner.A(7), Inner.B))
+        + classify(Outer.Pair(Inner.B, Inner.A(3)))
+        + classify(Outer.Pair(Inner.A(7), Inner.A(1)))
+        + classify(Outer.Pair(Inner.B, Inner.B))
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 30
+
+# Multi-position dispatch keeps the drop accounting: each bound position is
+# dropped once at the end of its arm (in reverse declaration order), and the
+# value that fails every nested test reaches the catch-all arm, whose
+# whole-scrutinee drop runs exactly once (RUE-238).
+
+[[case]]
+name = "x86_64_linux_two_nested_positions_drop_once"
+description = "Two-position dispatch drops each payload exactly once, including through the catch-all arm, on x86-64: prints 4, 3, -1, 5, -2, 6; exit 9."
+files = [{ path = "main.rue", source = """
+struct Res { id: i32 }
+drop fn Res(self) { @dbg(self.id); }
+enum Inner { Full(Res), Nothing }
+enum Outer { Pair(Inner, Inner), One(Inner), Empty }
+
+fn take(o: Outer) -> i32 {
+    match o {
+        Outer.Pair(Inner.Full(r), Inner.Nothing) => r.id,
+        Outer.Pair(_, _) => 1,
+        _ => 2,
+    }
+}
+
+fn main() -> i32 {
+    let a = take(Outer.Pair(Inner.Full(Res { id: 3 }), Inner.Full(Res { id: 4 })));
+    @dbg(-1);
+    let b = take(Outer.One(Inner.Full(Res { id: 5 })));
+    @dbg(-2);
+    let c = take(Outer.Pair(Inner.Full(Res { id: 6 }), Inner.Nothing));
+    a + b + c
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = """
+4
+3
+-1
+5
+-2
+6
+"""
+exit_code = 9
+
+[[case]]
+name = "aarch64_linux_two_nested_positions_drop_once"
+description = "The same multi-position drop accounting on AArch64."
+files = [{ path = "main.rue", source = """
+struct Res { id: i32 }
+drop fn Res(self) { @dbg(self.id); }
+enum Inner { Full(Res), Nothing }
+enum Outer { Pair(Inner, Inner), One(Inner), Empty }
+
+fn take(o: Outer) -> i32 {
+    match o {
+        Outer.Pair(Inner.Full(r), Inner.Nothing) => r.id,
+        Outer.Pair(_, _) => 1,
+        _ => 2,
+    }
+}
+
+fn main() -> i32 {
+    let a = take(Outer.Pair(Inner.Full(Res { id: 3 }), Inner.Full(Res { id: 4 })));
+    @dbg(-1);
+    let b = take(Outer.One(Inner.Full(Res { id: 5 })));
+    @dbg(-2);
+    let c = take(Outer.Pair(Inner.Full(Res { id: 6 }), Inner.Nothing));
+    a + b + c
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = """
+4
+3
+-1
+5
+-2
+6
+"""
+exit_code = 9
