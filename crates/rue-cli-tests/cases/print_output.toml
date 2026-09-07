@@ -97,3 +97,86 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 42
+
+[[case]]
+name = "eprint_routes_bytes_to_stderr"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    eprint("hello");
+    eprint(" world");
+    0
+}
+""" }]
+stdout = ""
+runtime_error_contains = ["hello world"]
+
+[[case]]
+name = "eprintln_routes_newline_to_stderr"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    eprintln("");
+    eprintln("done");
+    0
+}
+""" }]
+stdout = ""
+runtime_error_contains = ["done"]
+
+[[case]]
+name = "eprint_borrows_strbuf_and_temporary"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    let mut value = StrBuf.new();
+    value.push_str("owned ");
+    value.push_str("value");
+    eprint(value);
+    eprint(value);
+    eprintln("temporary " + @to_string(7));
+    eprint(value);
+    0
+}
+""" }]
+stdout = ""
+runtime_error_contains = ["owned valueowned value", "temporary 7", "owned value"]
+
+[[case]]
+name = "eprintln_accepts_a_borrowed_str_view"
+files = [{ path = "main.rue", source = """
+fn emit(borrow value: str) {
+    eprintln(value);
+}
+
+fn main() -> i32 {
+    emit(borrow "view");
+    0
+}
+""" }]
+stdout = ""
+runtime_error_contains = ["view"]
+
+[[case]]
+name = "user_defined_eprint_and_eprintln_shadow_builtins"
+files = [{ path = "main.rue", source = """
+fn eprint(value: i32) -> i32 { value + 1 }
+fn eprintln(value: i32) -> i32 { value + 2 }
+
+fn main() -> i32 {
+    eprint(40) + eprintln(1)
+}
+""" }]
+stdout = ""
+exit_code = 44
+
+[[case]]
+name = "eprint_preserves_utf8_and_nul_bytes"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    eprint("café\\0tail");
+    0
+}
+""" }]
+stdout = ""
+runtime_error_contains = ["café\u0000tail"]

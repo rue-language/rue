@@ -1268,3 +1268,132 @@ fn main() -> i32 {
 """
 exit_code = 0
 expected_stdout = "reusedreused6\n"
+
+[[case]]
+name = "eprint_writes_stderr_without_stdout"
+spec = ["3.7:61", "3.7:63"]
+source = """
+fn main() -> i32 {
+    eprint("hello");
+    eprint(" world");
+    0
+}
+"""
+exit_code = 0
+expected_stdout = ""
+stderr_contains = "hello world"
+
+[[case]]
+name = "eprintln_adds_one_stderr_newline_and_empty_is_newline"
+opt_level = 2
+spec = ["3.7:62", "3.7:63"]
+source = """
+fn main() -> i32 {
+    eprintln("");
+    eprintln("done");
+    0
+}
+"""
+exit_code = 0
+expected_stdout = ""
+stderr_contains = "\ndone\n"
+
+[[case]]
+name = "eprint_borrows_argument_string"
+spec = ["3.7:61"]
+source = """
+fn main() -> i32 {
+    let s = "reused";
+    eprint(s);
+    eprint(s);
+    @dbg(s.len());
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "6\n"
+stderr_contains = "reusedreused"
+
+[[case]]
+name = "eprint_borrows_strbuf_and_temporary"
+spec = ["3.7:61", "3.7:62", "3.7:63"]
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    let mut value = StrBuf.new();
+    value.push_str("owned ");
+    value.push_str("value");
+    eprint(value);
+    eprintln("temporary " + @to_string(7));
+    eprint(value);
+    @dbg(value.len());
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "11\n"
+stderr_contains = "owned valuetemporary 7\nowned value"
+
+[[case]]
+name = "eprintln_accepts_a_borrowed_str_view"
+spec = ["3.7:62", "3.7:63"]
+source = """
+fn emit(borrow value: str) {
+    eprintln(value);
+}
+
+fn main() -> i32 {
+    emit(borrow "view");
+    0
+}
+"""
+exit_code = 0
+expected_stdout = ""
+stderr_contains = "view\n"
+
+[[case]]
+name = "user_defined_eprint_and_eprintln_shadow_builtins"
+source = """
+fn eprint(value: i32) -> i32 { value + 1 }
+fn eprintln(value: i32) -> i32 { value + 2 }
+
+fn main() -> i32 {
+    eprint(40) + eprintln(1)
+}
+"""
+exit_code = 44
+
+[[case]]
+name = "eprint_requires_one_text_argument"
+source = """
+fn main() -> i32 {
+    eprint();
+    0
+}
+"""
+compile_fail = true
+error_contains = "takes exactly one text argument"
+
+[[case]]
+name = "eprint_rejects_non_text_argument"
+source = """
+fn main() -> i32 {
+    eprint(42);
+    0
+}
+"""
+compile_fail = true
+error_contains = "takes StrBuf, str, or Str(N) text"
+
+[[case]]
+name = "eprint_rejects_explicit_borrow_mode"
+source = """
+fn main() -> i32 {
+    eprint(borrow "hello");
+    0
+}
+"""
+compile_fail = true
+error_contains = "unexpected `borrow` argument"

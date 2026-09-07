@@ -341,6 +341,24 @@ fn main() -> i32 {
 }
 ```
 
+{{ rule(id="3.7:61", cat="normative") }}
+
+The free function `eprint(s)` takes any text rung and writes its raw bytes to
+standard error, adding nothing. Its argument is borrowed, so the source value
+remains usable after the call.
+
+{{ rule(id="3.7:62", cat="normative") }}
+
+The free function `eprintln(s)` takes any text rung and writes its raw bytes to
+standard error followed by one newline (`U+000A`). Its argument is borrowed,
+and an empty text value therefore writes only the newline.
+
+{{ rule(id="3.7:63", cat="dynamic-semantics") }}
+
+`eprint` and `eprintln` preserve the text bytes exactly and write only to
+standard error; they do not add bytes to standard output. The `eprintln`
+newline is the sole difference between the two functions.
+
 ## Search
 
 {{ rule(id="3.7:28", cat="normative") }}

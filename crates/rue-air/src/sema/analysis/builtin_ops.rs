@@ -144,10 +144,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ))
     }
 
-    /// Analyze the `print(s)` / `println(s)` builtin free functions (RUE-1).
+    /// Analyze the text output builtin free functions (RUE-1, RUE-2024).
     ///
-    /// Both take a single `String` and return unit: `print` writes its raw
-    /// bytes to stdout with nothing added, `println` appends a single `\n`.
+    /// Each borrows one `StrBuf`, `str`, or `Str(N)` value and returns unit.
+    /// `print` and `println` write to stdout; `eprint` and `eprintln` write to
+    /// stderr. The `ln` variants append a single `\n` to the raw text bytes.
     /// Formatting and interpolation are deliberately out of scope — callers
     /// compose with `@to_string` and `+` (e.g. `println("n=" + @to_string(n))`).
     ///
@@ -166,10 +167,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let fn_name = if name == self.known_symbols().println {
-            "println"
+        let (fn_name, operation) = if name == self.known_symbols().println {
+            ("println", rue_builtins::TextBuiltinOperation::PrintlnView)
+        } else if name == self.known_symbols().eprint {
+            ("eprint", rue_builtins::TextBuiltinOperation::EprintView)
+        } else if name == self.known_symbols().eprintln {
+            ("eprintln", rue_builtins::TextBuiltinOperation::EprintlnView)
         } else {
-            "print"
+            ("print", rue_builtins::TextBuiltinOperation::PrintView)
         };
 
         let args = self.body_rir_ref().call_args(args).to_vec();
@@ -211,11 +216,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         });
         let shared_text = source_strbuf || self.is_str_like(arg_result.ty);
         debug_assert!(shared_text || arg_result.ty.is_error());
-        let operation = if name == self.known_symbols().println {
-            rue_builtins::TextBuiltinOperation::PrintlnView
-        } else {
-            rue_builtins::TextBuiltinOperation::PrintView
-        };
         let runtime_helper = operation
             .runtime_helper()
             .expect("print builtin must map to a runtime helper");
@@ -252,16 +252,32 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
         let (extra_data, temp_scope) = extra_data;
         let call_ref = air.add_call(
-            Some(if name == self.known_symbols().println {
-                if source_strbuf {
+            Some(match (operation, source_strbuf) {
+                (rue_builtins::TextBuiltinOperation::PrintView, true) => {
+                    crate::RuntimeCallKind::StrPrintProjected
+                }
+                (rue_builtins::TextBuiltinOperation::PrintView, false) => {
+                    crate::RuntimeCallKind::StrPrintAggregate
+                }
+                (rue_builtins::TextBuiltinOperation::PrintlnView, true) => {
                     crate::RuntimeCallKind::StrPrintlnProjected
-                } else {
+                }
+                (rue_builtins::TextBuiltinOperation::PrintlnView, false) => {
                     crate::RuntimeCallKind::StrPrintlnAggregate
                 }
-            } else if source_strbuf {
-                crate::RuntimeCallKind::StrPrintProjected
-            } else {
-                crate::RuntimeCallKind::StrPrintAggregate
+                (rue_builtins::TextBuiltinOperation::EprintView, true) => {
+                    crate::RuntimeCallKind::StrEprintProjected
+                }
+                (rue_builtins::TextBuiltinOperation::EprintView, false) => {
+                    crate::RuntimeCallKind::StrEprintAggregate
+                }
+                (rue_builtins::TextBuiltinOperation::EprintlnView, true) => {
+                    crate::RuntimeCallKind::StrEprintlnProjected
+                }
+                (rue_builtins::TextBuiltinOperation::EprintlnView, false) => {
+                    crate::RuntimeCallKind::StrEprintlnAggregate
+                }
+                _ => unreachable!("text output operation must select a text runtime call"),
             }),
             call_name,
             &extra_data,

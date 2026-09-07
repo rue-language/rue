@@ -41,6 +41,8 @@ fn contract_interp(state: &CompileState) -> Interp<'_> {
         stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_trace: Vec::new(),
+        stderr_bytes: 0,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
@@ -82,13 +84,17 @@ fn stable_text_runtime_calls_require_exact_metadata() {
     use SemanticGapKind as Semantic;
     use UnsupportedRuntimeCallKind as RuntimeCall;
 
-    let state = query_cfg_state("fn main() -> i32 { print(\"x\"); println(\"y\"); 0 }")
-        .expect("stable text print probes must compile");
+    let state = query_cfg_state(
+        "fn main() -> i32 { print(\"x\"); println(\"y\"); eprint(\"z\"); eprintln(\"w\"); 0 }",
+    )
+    .expect("stable text print probes must compile");
     let interp = Interp {
         state: &state,
         stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_trace: Vec::new(),
+        stderr_bytes: 0,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
@@ -99,6 +105,8 @@ fn stable_text_runtime_calls_require_exact_metadata() {
     for (runtime, kind) in [
         (RuntimeCallKind::StrPrintAggregate, RuntimeCall::Print),
         (RuntimeCallKind::StrPrintlnAggregate, RuntimeCall::Println),
+        (RuntimeCallKind::StrEprintAggregate, RuntimeCall::Eprint),
+        (RuntimeCallKind::StrEprintlnAggregate, RuntimeCall::Eprintln),
     ] {
         let name = runtime.helper().symbol();
         let (types, modes, result) = find_call_metadata(&state, name);
@@ -184,7 +192,7 @@ fn text_output_routes_reject_cross_abi_shapes() {
         }
         drop fn StrBuf(self) { }"#;
     let state = query_cfg_state_with_trusted_std(
-        "const strbuf = @import(\"std/strbuf.rue\"); const StrBuf = strbuf.StrBuf; fn main() -> i32 { let s: StrBuf = \"x\"; print(s); 0 }",
+        "const strbuf = @import(\"std/strbuf.rue\"); const StrBuf = strbuf.StrBuf; fn main() -> i32 { let s: StrBuf = \"x\"; print(s); eprint(s); 0 }",
         &[(2, "/project/std/strbuf.rue", strbuf)],
     )
         .expect("text output probe must compile");
@@ -193,6 +201,8 @@ fn text_output_routes_reject_cross_abi_shapes() {
         stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_trace: Vec::new(),
+        stderr_bytes: 0,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
@@ -224,6 +234,21 @@ fn text_output_routes_reject_cross_abi_shapes() {
         ),
         UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature)
     );
+
+    let (eprint_types, eprint_modes, eprint_result) =
+        find_call_metadata(&state, "__rue_str_eprint");
+    assert_eq!(
+        interp.classify_unsupported_runtime_call(
+            RuntimeCallKind::StrEprintProjected,
+            &[Value::Ptr(None), Value::Int(0)],
+            &eprint_types,
+            &eprint_modes,
+            eprint_result,
+        ),
+        UnsupportedKind::SemanticGap(SemanticGapKind::RuntimeCall(
+            UnsupportedRuntimeCallKind::Eprint,
+        ))
+    );
 }
 
 #[test]
@@ -235,6 +260,8 @@ fn modeled_text_runtime_routes_share_the_ordered_trace() {
         stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_trace: Vec::new(),
+        stderr_bytes: 0,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
@@ -261,7 +288,15 @@ fn modeled_text_runtime_routes_share_the_ordered_trace() {
         &[Type::U64, Type::U64],
     ));
 
+    let stderr_target = interp.test_alloc_str_ptr(b"err");
+    expect_modeled_unit(interp.eval_runtime_output_call(
+        RuntimeCallKind::StrEprintProjected,
+        &[stderr_target, Value::Int(3)],
+        &[Type::U64, Type::U64],
+    ));
+
     assert_eq!(interp.stdout_trace, "hé!\n".as_bytes());
+    assert_eq!(interp.stderr_trace, b"err");
 }
 
 #[test]
@@ -273,6 +308,8 @@ fn output_routes_bound_claimed_lengths_before_reading() {
         stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_trace: Vec::new(),
+        stderr_bytes: 0,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
@@ -336,6 +373,8 @@ fn text_dbg_preserves_invalid_bytes_in_the_raw_trace() {
         stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_trace: Vec::new(),
+        stderr_bytes: 0,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
@@ -363,6 +402,8 @@ fn random_intrinsic_requires_exact_arity_and_result_type() {
         stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_trace: Vec::new(),
+        stderr_bytes: 0,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
@@ -489,6 +530,8 @@ fn shared_str_character_builtins_require_and_model_ptr_len_offset() {
         stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_trace: Vec::new(),
+        stderr_bytes: 0,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
@@ -598,6 +641,8 @@ fn panic_never_signature_is_an_oracle_contract_for_both_arities() {
         stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_trace: Vec::new(),
+        stderr_bytes: 0,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
@@ -854,6 +899,8 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
             stdout_trace: Vec::new(),
             stdout_bytes: 0,
             stdout_cap: MAX_STDOUT_BYTES,
+            stderr_trace: Vec::new(),
+            stderr_bytes: 0,
             stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
@@ -897,6 +944,8 @@ fn abort_intrinsics_require_exact_runtime_value_shapes() {
             stdout_trace: Vec::new(),
             stdout_bytes: 0,
             stdout_cap: MAX_STDOUT_BYTES,
+            stderr_trace: Vec::new(),
+            stderr_bytes: 0,
             stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
@@ -929,6 +978,8 @@ fn abort_intrinsics_require_exact_runtime_value_shapes() {
         stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_trace: Vec::new(),
+        stderr_bytes: 0,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
@@ -1157,6 +1208,8 @@ fn validated_cfg_rejects_out_of_bounds_field_pointer_projection_metadata() {
             stdout_trace: Vec::new(),
             stdout_bytes: 0,
             stdout_cap: MAX_STDOUT_BYTES,
+            stderr_trace: Vec::new(),
+            stderr_bytes: 0,
             stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
@@ -1512,6 +1565,8 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
         stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_trace: Vec::new(),
+        stderr_bytes: 0,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
@@ -1599,6 +1654,8 @@ fn read_line_requires_trusted_source_strbuf_payload_metadata() {
         stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_trace: Vec::new(),
+        stderr_bytes: 0,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,

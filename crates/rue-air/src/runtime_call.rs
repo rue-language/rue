@@ -119,6 +119,10 @@ pub enum RuntimeCallKind {
     StrPrintProjected,
     StrPrintlnAggregate,
     StrPrintlnProjected,
+    StrEprintAggregate,
+    StrEprintProjected,
+    StrEprintlnAggregate,
+    StrEprintlnProjected,
     DebugI64,
     DebugU64,
     DebugBool,
@@ -376,7 +380,7 @@ const TEST_FAIL: &[RuntimeOperandOrigin] = &[
 ];
 
 impl RuntimeCallKind {
-    pub const ALL: [Self; 49] = [
+    pub const ALL: [Self; 53] = [
         Self::StrByteAt,
         Self::StrCharScalar,
         Self::StrCharNext,
@@ -389,6 +393,10 @@ impl RuntimeCallKind {
         Self::StrPrintProjected,
         Self::StrPrintlnAggregate,
         Self::StrPrintlnProjected,
+        Self::StrEprintAggregate,
+        Self::StrEprintProjected,
+        Self::StrEprintlnAggregate,
+        Self::StrEprintlnProjected,
         Self::DebugI64,
         Self::DebugU64,
         Self::DebugBool,
@@ -440,6 +448,8 @@ impl RuntimeCallKind {
             Self::ToStringFloat => RuntimeHelperId::ToStringFloat,
             Self::StrPrintAggregate | Self::StrPrintProjected => RuntimeHelperId::StrPrint,
             Self::StrPrintlnAggregate | Self::StrPrintlnProjected => RuntimeHelperId::StrPrintln,
+            Self::StrEprintAggregate | Self::StrEprintProjected => RuntimeHelperId::StrEprint,
+            Self::StrEprintlnAggregate | Self::StrEprintlnProjected => RuntimeHelperId::StrEprintln,
             Self::DebugI64 => RuntimeHelperId::DebugI64,
             Self::DebugU64 => RuntimeHelperId::DebugU64,
             Self::DebugBool => RuntimeHelperId::DebugBool,
@@ -490,10 +500,16 @@ impl RuntimeCallKind {
             Self::ToString => FORMAT_SIGNED,
             Self::ToStringUnsigned => FORMAT_UNSIGNED,
             Self::ToStringFloat => FORMAT_FLOAT,
-            Self::StrPrintAggregate | Self::StrPrintlnAggregate | Self::DebugStr | Self::Panic => {
-                TEXT
-            }
-            Self::StrPrintProjected | Self::StrPrintlnProjected => PROJECTED_TEXT,
+            Self::StrPrintAggregate
+            | Self::StrPrintlnAggregate
+            | Self::StrEprintAggregate
+            | Self::StrEprintlnAggregate
+            | Self::DebugStr
+            | Self::Panic => TEXT,
+            Self::StrPrintProjected
+            | Self::StrPrintlnProjected
+            | Self::StrEprintProjected
+            | Self::StrEprintlnProjected => PROJECTED_TEXT,
             Self::DebugI64 => SIGNED_SCALAR,
             Self::DebugU64 => UNSIGNED_SCALAR,
             Self::DebugBool => BOOL_SCALAR,

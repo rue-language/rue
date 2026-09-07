@@ -192,6 +192,8 @@ macro_rules! call_runtime_helper_implementation {
     (__rue_println($($argument:expr),*)) => { crate::io::__rue_println($($argument),*) };
     (__rue_str_print($($argument:expr),*)) => { crate::io::__rue_str_print($($argument),*) };
     (__rue_str_println($($argument:expr),*)) => { crate::io::__rue_str_println($($argument),*) };
+    (__rue_str_eprint($($argument:expr),*)) => { crate::io::__rue_str_eprint($($argument),*) };
+    (__rue_str_eprintln($($argument:expr),*)) => { crate::io::__rue_str_eprintln($($argument),*) };
     (__rue_read_line($($argument:expr),*)) => { crate::io::__rue_read_line($($argument),*) };
     (__rue_parse_i32($($argument:expr),*)) => { crate::parse::__rue_parse_i32($($argument),*) };
     (__rue_parse_i64($($argument:expr),*)) => { crate::parse::__rue_parse_i64($($argument),*) };
@@ -529,6 +531,8 @@ mod boundary_tests {
             crate::debug::__rue_dbg_str(null, 0);
             crate::io::__rue_print(null, 0, 0);
             crate::io::__rue_println(null, 0, 0);
+            crate::io::__rue_str_eprint(null, 0);
+            crate::io::__rue_str_eprintln(null, 0);
             assert!(crate::memory::memcpy(core::ptr::null_mut(), null, 0).is_null());
             assert!(crate::memory::memmove(core::ptr::null_mut(), null, 0).is_null());
             assert!(crate::memory::memset(core::ptr::null_mut(), 0, 0).is_null());

@@ -1194,6 +1194,8 @@ fn probe_chars() -> u32 {
 fn probe_prints() {
     println("literal");
     println("value " + @to_string(1));
+    eprint("error");
+    eprintln("error " + @to_string(2));
 }
 
 fn main() -> i32 {
@@ -1242,6 +1244,10 @@ drop fn StrBuf(self) { }
                         | rue_air::RuntimeCallKind::StrPrintlnProjected
                         | rue_air::RuntimeCallKind::StrPrintAggregate
                         | rue_air::RuntimeCallKind::StrPrintlnAggregate
+                        | rue_air::RuntimeCallKind::StrEprintProjected
+                        | rue_air::RuntimeCallKind::StrEprintlnProjected
+                        | rue_air::RuntimeCallKind::StrEprintAggregate
+                        | rue_air::RuntimeCallKind::StrEprintlnAggregate
                 )
             };
             let expected = vec![
@@ -1249,6 +1255,8 @@ drop fn StrBuf(self) { }
                 (rue_air::RuntimeCallKind::StrCharNext, 3),
                 (rue_air::RuntimeCallKind::StrPrintlnAggregate, 1),
                 (rue_air::RuntimeCallKind::StrPrintlnProjected, 2),
+                (rue_air::RuntimeCallKind::StrEprintAggregate, 1),
+                (rue_air::RuntimeCallKind::StrEprintlnProjected, 2),
             ];
 
             let mut air_shapes = semantic

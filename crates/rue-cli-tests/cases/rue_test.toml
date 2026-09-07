@@ -48,6 +48,31 @@ compile_stdout_contains = ["2 passed ("]
 compile_stdout_not_contains = ["FAIL", "PASS "]
 
 [[case]]
+name = "a_passing_test_captures_eprint_on_stderr_and_keeps_stdout_empty"
+description = "The test event's stderr capture records eprint bytes separately from stdout."
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "stderr output" {
+    eprint("raw");
+    eprintln(" bytes");
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 0
+compile_stdout_contains = [
+    '"stderr":{"bytes_total":10,"digest":"sha256:a5cf8aefeee5127b4782d1f5e9df62d8ad976df8249c6dca5aaec94a26dd313d","encoding":"utf8"}',
+    '"stdout":{"bytes_total":0,"digest":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","encoding":"utf8"}',
+]
+
+[[case]]
 name = "a_failed_assert_is_kind_assert_and_exits_one"
 description = """
 `@assert` writes its own `failure` frame on the §5.1 channel (RUE-1953), so the

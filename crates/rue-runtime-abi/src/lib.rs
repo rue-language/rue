@@ -789,6 +789,20 @@ macro_rules! for_each_runtime_helper {
             safety: READABLE,
             returns: RETURNS
         },
+        StrEprint => unsafe __rue_str_eprint(ptr: *const u8, len: u64) {
+            symbol: "__rue_str_eprint",
+            parameters: params![BYTE_VIEW, U64_VALUE],
+            result: VOID,
+            safety: READABLE,
+            returns: RETURNS
+        },
+        StrEprintln => unsafe __rue_str_eprintln(ptr: *const u8, len: u64) {
+            symbol: "__rue_str_eprintln",
+            parameters: params![BYTE_VIEW, U64_VALUE],
+            result: VOID,
+            safety: READABLE,
+            returns: RETURNS
+        },
         ReadLine => unsafe __rue_read_line(
             out: *mut $crate::OptionStrBufResult,
             some_disc: u64,
@@ -1510,7 +1524,7 @@ mod tests {
     #[test]
     fn manifest_is_const_valid_and_exhaustive() {
         assert_eq!(validate_manifest(), Ok(()));
-        assert_eq!(RuntimeHelperId::ALL.len(), 55);
+        assert_eq!(RuntimeHelperId::ALL.len(), 57);
         assert_eq!(RuntimeHelperId::ALL.len(), RUNTIME_HELPERS.len());
         for (index, id) in RuntimeHelperId::ALL.iter().copied().enumerate() {
             assert_eq!(id as usize, index);
@@ -1563,6 +1577,8 @@ mod tests {
             "__rue_println",
             "__rue_str_print",
             "__rue_str_println",
+            "__rue_str_eprint",
+            "__rue_str_eprintln",
             "__rue_read_line",
             "__rue_parse_i32",
             "__rue_parse_i64",
@@ -1598,7 +1614,7 @@ mod tests {
     #[test]
     fn every_helper_has_the_exact_accepted_signature_and_contract() {
         fn check(
-            visited: &mut [bool; 55],
+            visited: &mut [bool; 57],
             ids: &[RuntimeHelperId],
             parameters: &[AbiParameter],
             result: AbiResult,
@@ -1619,7 +1635,7 @@ mod tests {
             }
         }
 
-        let mut visited = [false; 55];
+        let mut visited = [false; 57];
         check(
             &mut visited,
             &[RuntimeHelperId::Exit],
@@ -1781,6 +1797,14 @@ mod tests {
         check(
             &mut visited,
             &[RuntimeHelperId::StrPrint, RuntimeHelperId::StrPrintln],
+            &[BYTE_VIEW, U64_VALUE],
+            VOID,
+            READABLE,
+            RETURNS,
+        );
+        check(
+            &mut visited,
+            &[RuntimeHelperId::StrEprint, RuntimeHelperId::StrEprintln],
             &[BYTE_VIEW, U64_VALUE],
             VOID,
             READABLE,

@@ -61,6 +61,11 @@ pub struct KnownSymbols {
     /// The `println` builtin free function - writes a String plus a newline to
     /// stdout (RUE-1).
     pub println: Spur,
+    /// The `eprint` builtin free function - writes a String to stderr.
+    pub eprint: Spur,
+    /// The `eprintln` builtin free function - writes a String plus a newline
+    /// to stderr.
+    pub eprintln: Spur,
 }
 
 impl KnownSymbols {
@@ -125,6 +130,8 @@ impl KnownSymbols {
             by_symbol,
             print: intern("print")?,
             println: intern("println")?,
+            eprint: intern("eprint")?,
+            eprintln: intern("eprintln")?,
         })
     }
 }
@@ -145,6 +152,8 @@ mod tests {
         }
         assert_eq!(interner.resolve(&known.print), "print");
         assert_eq!(interner.resolve(&known.println), "println");
+        assert_eq!(interner.resolve(&known.eprint), "eprint");
+        assert_eq!(interner.resolve(&known.eprintln), "eprintln");
     }
 
     #[test]
@@ -152,7 +161,14 @@ mod tests {
         let interner = ThreadedRodeo::new();
         let known = KnownSymbols::new(&interner);
 
-        for spelling in ["print", "println", "not_an_intrinsic", "Point"] {
+        for spelling in [
+            "print",
+            "println",
+            "eprint",
+            "eprintln",
+            "not_an_intrinsic",
+            "Point",
+        ] {
             let symbol = interner.get_or_intern(spelling);
             assert_eq!(
                 known.classify_intrinsic(symbol),
