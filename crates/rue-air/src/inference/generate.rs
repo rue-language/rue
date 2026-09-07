@@ -7,6 +7,10 @@
 //! - Function/method signature types for type checking
 
 use super::constraint::Constraint;
+use super::intrinsic_signature::{
+    CommonVar, FixedType, IntrinsicShape, ParamConstraint, ParamShape, PointerSignature,
+    ResultShape, intrinsic_shape,
+};
 use super::types::{InferType, TypeVarAllocator, TypeVarId};
 use crate::Type;
 use crate::intern_pool::TypeInternPool;
@@ -2153,7 +2157,6 @@ impl<'a> ConstraintGenerator<'a> {
 
             // Intrinsic call
             InstData::Intrinsic { name, args } => {
-                let intrinsic_name = self.interner.resolve(name);
                 let args = self.rir.intrinsic_args(args);
                 let mut args_reachable = true;
                 macro_rules! generate_intrinsic_arg {
@@ -2176,555 +2179,257 @@ impl<'a> ConstraintGenerator<'a> {
                     }};
                 }
 
-                let intrinsic_ty = if intrinsic_name == "intCast"
-                    || intrinsic_name == "bitCast"
-                    || intrinsic_name == "cast"
-                {
-                    // @intCast: target type is inferred from context.
-                    // @bitCast: the same context-supplied target (RUE-952); sema
-                    // additionally requires the two widths to agree (E0950).
-                    // @cast: a fresh var here too, so sema can reject it with a
-                    // clean "use @intCast" diagnostic instead of inference
-                    // masking it with a type-mismatch error (RUE-319).
-                    // The argument must be an integer type.
-                    for arg_ref in args.iter() {
-                        // Process arguments for constraint generation; the
-                        // integer check happens in sema.
-                        let _ = generate_intrinsic_arg!(*arg_ref);
-                    }
-                    // Return type is inferred from context - create a fresh type variable
-                    let result_var = self.fresh_var();
-                    InferType::Var(result_var)
-                } else if intrinsic_name == "int_to_float" || intrinsic_name == "float_cast" {
-                    for arg_ref in args.iter() {
-                        let _ = generate_intrinsic_arg!(*arg_ref);
-                    }
-                    let result = self.fresh_var();
-                    self.float_literal_vars.push(result);
-                    InferType::Var(result)
-                } else if intrinsic_name == "float_to_int" {
-                    for arg_ref in args.iter() {
-                        let _ = generate_intrinsic_arg!(*arg_ref);
-                    }
-                    let result = self.fresh_var();
-                    self.int_literal_vars.push(result);
-                    InferType::Var(result)
-                } else if matches!(
-                    intrinsic_name,
-                    "sqrt" | "floor" | "ceil" | "trunc" | "round"
-                ) {
-                    // The unary float intrinsics return their operand's type;
-                    // an unconstrained literal operand takes the `f64` default.
-                    let common = self.fresh_var();
-                    self.float_literal_vars.push(common);
-                    let common = InferType::Var(common);
-                    for arg_ref in args.iter() {
-                        let info = generate_intrinsic_arg!(*arg_ref);
-                        self.add_constraint(Constraint::equal(info.ty, common.clone(), info.span));
-                    }
-                    common
-                } else if intrinsic_name == "total_cmp" {
-                    let common = self.fresh_var();
-                    self.float_literal_vars.push(common);
-                    let common = InferType::Var(common);
-                    for arg_ref in args.iter() {
-                        let info = generate_intrinsic_arg!(*arg_ref);
-                        self.add_constraint(Constraint::equal(info.ty, common.clone(), info.span));
-                    }
-                    InferType::Concrete(Type::I32)
-                } else if intrinsic_name == "panic" {
-                    continues = false;
-                    // `@panic` diverges: it aborts the process and never returns,
-                    // so its expression type is `!` (never), a control-transfer
-                    // form that participates in never coercion (spec 3.4:2,
-                    // 4.13:5c; formal core §5.7; RUE-512). Keeping it explicit
-                    // here — rather than leaning on the generic unit fallback —
-                    // stops HM and semantic analysis from drifting apart.
-                    for arg_ref in args.iter() {
-                        // Text-taking intrinsics accept every stable text view.
-                        // Leave literals unconstrained so they take the
-                        // canonical `str` default when std is not imported.
-                        generate_intrinsic_arg!(*arg_ref);
-                    }
-                    InferType::Concrete(Type::NEVER)
-                } else if intrinsic_name == "assert" {
-                    // `@assert` is NOT never-typed: on the success path it returns
-                    // and evaluates to `()`. It only aborts when the condition is
-                    // false, so its static type is unit on both paths (spec
-                    // 4.13:5d). Keep it explicit so HM and sema stay in lockstep.
-                    for arg_ref in args.iter() {
-                        // As with `@panic`, a literal message keeps the stable
-                        // `str` default instead of requiring imported StrBuf.
-                        generate_intrinsic_arg!(*arg_ref);
-                    }
-                    InferType::Concrete(Type::UNIT)
-                } else if intrinsic_name == "assert_eq" || intrinsic_name == "assert_ne" {
-                    // `@assert_eq(l, r)` / `@assert_ne(l, r)`: the two operands
-                    // share one type and the intrinsic evaluates to `()` on the
-                    // path that continues, exactly like `@assert` (spec
-                    // 4.13:5f). Unifying the operands here is what lets
-                    // `@assert_eq(port, 8080)` give the literal the other
-                    // side's type instead of the bare `i32` default; sema then
-                    // checks that type supports `==`.
-                    let operand_var = self.fresh_var();
-                    let operand_ty = InferType::Var(operand_var);
-                    for arg_ref in args.iter() {
-                        let info = generate_intrinsic_arg!(*arg_ref);
-                        self.add_constraint(Constraint::equal(
-                            info.ty,
-                            operand_ty.clone(),
-                            info.span,
-                        ));
-                    }
-                    InferType::Concrete(Type::UNIT)
-                } else if intrinsic_name == "read_line" {
-                    // @read_line: returns `Option(String)` (RUE-6, ADR-0038).
-                    // The concrete Option type comes from context (a `let`
-                    // annotation or the match arms the result feeds), so use a
-                    // fresh variable and let unification resolve it — mirroring
-                    // @intCast. Sema validates the resolved type is an
-                    // Option-shaped enum over String.
-                    let result_var = self.fresh_var();
-                    InferType::Var(result_var)
-                } else if intrinsic_name == "to_string" {
-                    // @to_string(n): takes any integer width, returns String
-                    // (RUE-17 Phase 1, ADR-0035; RUE-314). No i64 constraint is
-                    // added, so the argument keeps its own type; a bare integer
-                    // literal defaults to i32 like everywhere else. Sema checks
-                    // the resolved type is an integer and widens per signedness.
-                    for arg_ref in args.iter() {
-                        generate_intrinsic_arg!(*arg_ref);
-                    }
-                    self.string_infer_type()
-                } else if intrinsic_name == "parse_i32"
-                    || intrinsic_name == "parse_i64"
-                    || intrinsic_name == "parse_u32"
-                    || intrinsic_name == "parse_u64"
-                {
-                    // @parse_*: takes a String, returns `Option(int)` (RUE-6,
-                    // ADR-0038). The concrete Option type (and thus the payload
-                    // int type) is resolved from context, so use a fresh
-                    // variable and let sema validate the resolved Option shape.
-                    for arg_ref in args.iter() {
-                        let info = generate_intrinsic_arg!(*arg_ref);
-                        if self.is_string_literal_candidate(&info.ty) {
-                            self.add_constraint(Constraint::equal(
-                                info.ty,
-                                self.string_infer_type(),
-                                info.span,
-                            ));
+                // Classify the spelling once against the one intrinsic table
+                // and take the constraint shape its row declares. The shape
+                // table is exhaustive over that table, so an intrinsic can no
+                // longer type-check as "anything" by being absent from a chain
+                // of name comparisons.
+                //
+                // A spelling that is not a row at all is the unknown intrinsic
+                // semantic analysis rejects with E0700. It keeps a fresh
+                // variable so that diagnostic reaches the programmer unmasked,
+                // rather than inference failing it first against the context's
+                // expected type — the same treatment `@cast` gets (RUE-319,
+                // here RUE-1281).
+                let shape = rue_builtins::IntrinsicName::from_spelling(self.interner.resolve(name))
+                    .map(intrinsic_shape);
+
+                let intrinsic_ty = match shape {
+                    None => {
+                        for arg_ref in args.iter() {
+                            generate_intrinsic_arg!(*arg_ref);
                         }
+                        InferType::Var(self.fresh_var())
                     }
-                    let result_var = self.fresh_var();
-                    InferType::Var(result_var)
-                } else if intrinsic_name == "random_u32" {
-                    // @random_u32: no arguments, returns u32
-                    InferType::Concrete(Type::U32)
-                } else if intrinsic_name == "random_u64" {
-                    // @random_u64: no arguments, returns u64
-                    InferType::Concrete(Type::U64)
-                } else if intrinsic_name == "arg_count" || intrinsic_name == "env_count" {
-                    // @arg_count / @env_count: no arguments, returns u64
-                    // (RUE-935).
-                    InferType::Concrete(Type::U64)
-                } else if intrinsic_name == "arg_len" || intrinsic_name == "env_len" {
-                    // @arg_len(i) / @env_len(i): a single u64 index, returns u64
-                    // (RUE-935).
-                    for arg_ref in args.iter() {
-                        let info = generate_intrinsic_arg!(*arg_ref);
-                        self.add_constraint(Constraint::contextual(
-                            info.ty,
-                            InferType::Concrete(Type::U64),
-                            info.span,
-                        ));
-                    }
-                    InferType::Concrete(Type::U64)
-                } else if intrinsic_name == "arg_ptr" || intrinsic_name == "env_ptr" {
-                    // @arg_ptr(i) / @env_ptr(i): a single u64 index, returns
-                    // `ptr mut u8` (RUE-935).
-                    for arg_ref in args.iter() {
-                        let info = generate_intrinsic_arg!(*arg_ref);
-                        self.add_constraint(Constraint::equal(
-                            info.ty,
-                            InferType::Concrete(Type::U64),
-                            info.span,
-                        ));
-                    }
-                    InferType::Concrete(Type::new_ptr_mut(
-                        self.type_pool.intern_ptr_mut_from_type(Type::U8),
-                    ))
-                } else if intrinsic_name == "wrapping_add"
-                    || intrinsic_name == "wrapping_sub"
-                    || intrinsic_name == "wrapping_mul"
-                {
-                    // @wrapping_add/sub/mul(a, b): both operands and the result
-                    // share one integer type — the same equality-and-integer
-                    // constraints as checked `+`/`-`/`*` (see `generate_add`),
-                    // minus the String-concat overload. Sema re-emits the
-                    // resolved node without the overflow check (RUE-647).
-                    let result_var = self.fresh_var();
-                    let result_ty = InferType::Var(result_var);
-                    for arg_ref in args.iter() {
-                        let info = generate_intrinsic_arg!(*arg_ref);
-                        self.add_constraint(Constraint::equal(
-                            info.ty,
-                            result_ty.clone(),
-                            info.span,
-                        ));
-                    }
-                    self.add_constraint(Constraint::is_integer(result_ty.clone(), span));
-                    result_ty
-                } else if intrinsic_name == "syscall" {
-                    // @syscall: syscall_num and up to 6 args (all u64), returns i64.
-                    //
-                    // An integer-literal argument sees the declared u64
-                    // parameter type here (RUE-954), so `@syscall(32, 1)`
-                    // works without pre-binding `let fd: u64 = 1`. Only
-                    // literals are constrained: a wrongly-typed non-literal
-                    // argument keeps sema's targeted E0702 (`u64 for argument
-                    // {i}`) instead of a generic unification E0206.
-                    for arg_ref in args.iter() {
-                        let info = generate_intrinsic_arg!(*arg_ref);
-                        if matches!(self.rir.get(*arg_ref).data, InstData::IntConst(_)) {
-                            self.add_constraint(Constraint::equal(
-                                info.ty,
-                                InferType::Concrete(Type::U64),
-                                info.span,
-                            ));
-                        }
-                    }
-                    InferType::Concrete(Type::I64)
-                } else if intrinsic_name == "ptr_to_int" {
-                    // @ptr_to_int: takes a pointer, returns u64
-                    for arg_ref in args.iter() {
-                        generate_intrinsic_arg!(*arg_ref);
-                    }
-                    InferType::Concrete(Type::U64)
-                } else if intrinsic_name == "ptr_write" || intrinsic_name == "ptr_write_unaligned" {
-                    // @ptr_write / @ptr_write_unaligned: takes a pointer and
-                    // value, returns unit (ADR-0059 Phase 4, RUE-978).
-                    //
-                    // When the pointer operand is already concrete in this pass
-                    // (an annotated binding, a parameter, anything whose type
-                    // does not depend on later unification), the pointee is the
-                    // value operand's expectation — the same contextual channel
-                    // `@intCast` reads out of HM. Without it `@ptr_write(p,
-                    // @intCast(x))` left the cast's target variable free and
-                    // sema reported E0709 (RUE-1341). The constraint mirrors
-                    // sema's own `types_compatible` check exactly: `never` and
-                    // `<error>` still coerce in `Unifier::unify`.
-                    //
-                    // If the pointer's type is not yet resolved here (e.g. it
-                    // came from `@raw`/`@ptr_offset`, which are themselves
-                    // fresh variables), nothing is added and the value operand
-                    // stays exactly as free as before — sema keeps its own
-                    // pointee reconciliation and its diagnostics are unchanged.
-                    //
-                    // Only a well-formed two-operand call is typed here; a
-                    // wrong-arity call keeps generating its arguments
-                    // unconstrained so sema still owns the arity diagnostic.
-                    let typed_shape = args.len() == 2;
-                    let mut pointee = None;
-                    for (index, arg_ref) in args.iter().enumerate() {
-                        let info = generate_intrinsic_arg!(*arg_ref);
-                        if !typed_shape {
-                            continue;
-                        }
-                        match index {
-                            0 => pointee = self.concrete_pointee_type(&info.ty),
-                            1 => {
-                                // A `str`/`Str(N)`/slice pointee accepts its
-                                // operand by coercion, so it takes the same
-                                // strict-equality exemption as a call argument
-                                // (see `is_slice_struct_type`); sema still
-                                // materializes and checks it.
-                                if let Some(pointee) = pointee
-                                    && !self.is_slice_struct_type(InferType::Concrete(pointee))
-                                {
-                                    self.add_constraint(Constraint::contextual(
-                                        info.ty,
-                                        InferType::Concrete(pointee),
-                                        info.span,
-                                    ));
+
+                    Some(IntrinsicShape::Declared(signature)) => {
+                        let common = signature.common.map(|kind| {
+                            let var = self.fresh_var();
+                            if matches!(kind, CommonVar::FloatLiteral) {
+                                self.float_literal_vars.push(var);
+                            }
+                            InferType::Var(var)
+                        });
+                        if !matches!(signature.params, ParamShape::Ungenerated) {
+                            for (index, arg_ref) in args.iter().enumerate() {
+                                let info = generate_intrinsic_arg!(*arg_ref);
+                                match signature.params.at(index) {
+                                    ParamConstraint::Free => {}
+                                    ParamConstraint::Common => {
+                                        if let Some(common) = &common {
+                                            self.add_constraint(Constraint::equal(
+                                                info.ty,
+                                                common.clone(),
+                                                info.span,
+                                            ));
+                                        }
+                                    }
+                                    ParamConstraint::Equal(fixed) => {
+                                        let expected = self.fixed_infer_type(fixed);
+                                        self.add_constraint(Constraint::equal(
+                                            info.ty, expected, info.span,
+                                        ));
+                                    }
+                                    ParamConstraint::Contextual(fixed) => {
+                                        let expected = self.fixed_infer_type(fixed);
+                                        self.add_constraint(Constraint::contextual(
+                                            info.ty, expected, info.span,
+                                        ));
+                                    }
+                                    ParamConstraint::EqualIntLiteral(fixed) => {
+                                        if matches!(
+                                            self.rir.get(*arg_ref).data,
+                                            InstData::IntConst(_)
+                                        ) {
+                                            let expected = self.fixed_infer_type(fixed);
+                                            self.add_constraint(Constraint::equal(
+                                                info.ty, expected, info.span,
+                                            ));
+                                        }
+                                    }
+                                    ParamConstraint::EqualStringLiteral => {
+                                        if self.is_string_literal_candidate(&info.ty) {
+                                            self.add_constraint(Constraint::equal(
+                                                info.ty,
+                                                self.string_infer_type(),
+                                                info.span,
+                                            ));
+                                        }
+                                    }
                                 }
                             }
-                            _ => {}
                         }
-                    }
-                    InferType::Concrete(Type::UNIT)
-                } else if intrinsic_name == "ptr_read" || intrinsic_name == "ptr_read_unaligned" {
-                    // @ptr_read / @ptr_read_unaligned: takes ptr const T or ptr
-                    // mut T, returns T.
-                    //
-                    // The result is the pointee type. When the pointer operand
-                    // is already concrete in this pass, publish that pointee so
-                    // the read participates in inference like any other typed
-                    // expression: `@ptr_read(p) == 30` then unifies the literal
-                    // against the pointee instead of defaulting it to i32 and
-                    // failing E0206 in sema (RUE-1341).
-                    //
-                    // Otherwise fall back to a fresh variable, exactly as
-                    // before: the pointee is only known in sema, which fixes
-                    // the result type there and reconciles it against whatever
-                    // the annotation constrained the variable to (RUE-244).
-                    // A wrong-arity call stays on that fallback so sema still
-                    // owns the arity diagnostic.
-                    let typed_shape = args.len() == 1;
-                    let mut pointee = None;
-                    for (index, arg_ref) in args.iter().enumerate() {
-                        let info = generate_intrinsic_arg!(*arg_ref);
-                        if typed_shape && index == 0 {
-                            pointee = self.concrete_pointee_type(&info.ty);
+                        if signature.diverges {
+                            continues = false;
                         }
-                    }
-                    match pointee {
-                        Some(pointee) => InferType::Concrete(pointee),
-                        None => {
-                            let result_var = self.fresh_var();
-                            InferType::Var(result_var)
+                        let result = self.signature_result_type(signature.result, common);
+                        if signature.result_is_integer {
+                            self.add_constraint(Constraint::is_integer(result.clone(), span));
                         }
+                        result
                     }
-                } else if intrinsic_name == "ptr_offset" {
-                    // @ptr_offset: takes (ptr T, i64), returns ptr T
-                    // The return type is the same as the input pointer type.
-                    // Publish that identity when a well-formed call already
-                    // has a concrete pointer operand; unresolved pointers and
-                    // wrong-arity calls remain free so sema owns diagnostics.
-                    let typed_shape = args.len() == 2;
-                    let mut pointer_ty = None;
-                    let mut offset_is_integer = false;
-                    for (index, arg_ref) in args.iter().enumerate() {
-                        let info = generate_intrinsic_arg!(*arg_ref);
-                        if typed_shape {
+
+                    Some(IntrinsicShape::Pointer(PointerSignature::Write)) => {
+                        // @ptr_write / @ptr_write_unaligned: takes a pointer and
+                        // value, returns unit (ADR-0059 Phase 4, RUE-978).
+                        //
+                        // When the pointer operand is already concrete in this pass
+                        // (an annotated binding, a parameter, anything whose type
+                        // does not depend on later unification), the pointee is the
+                        // value operand's expectation — the same contextual channel
+                        // `@intCast` reads out of HM. Without it `@ptr_write(p,
+                        // @intCast(x))` left the cast's target variable free and
+                        // sema reported E0709 (RUE-1341). The constraint mirrors
+                        // sema's own `types_compatible` check exactly: `never` and
+                        // `<error>` still coerce in `Unifier::unify`.
+                        //
+                        // If the pointer's type is not yet resolved here (e.g. it
+                        // came from `@raw`/`@ptr_offset`, which are themselves
+                        // fresh variables), nothing is added and the value operand
+                        // stays exactly as free as before — sema keeps its own
+                        // pointee reconciliation and its diagnostics are unchanged.
+                        //
+                        // Only a well-formed two-operand call is typed here; a
+                        // wrong-arity call keeps generating its arguments
+                        // unconstrained so sema still owns the arity diagnostic.
+                        let typed_shape = args.len() == 2;
+                        let mut pointee = None;
+                        for (index, arg_ref) in args.iter().enumerate() {
+                            let info = generate_intrinsic_arg!(*arg_ref);
+                            if !typed_shape {
+                                continue;
+                            }
                             match index {
-                                0 => pointer_ty = self.concrete_type(&info.ty).filter(Type::is_ptr),
+                                0 => pointee = self.concrete_pointee_type(&info.ty),
                                 1 => {
-                                    offset_is_integer = match info.ty {
-                                        InferType::Concrete(ty) => ty.is_integer(),
-                                        InferType::Var(id) => self.int_literal_vars.contains(&id),
-                                        InferType::IntLiteral => true,
-                                        InferType::Array { .. } => false,
-                                    };
+                                    // A `str`/`Str(N)`/slice pointee accepts its
+                                    // operand by coercion, so it takes the same
+                                    // strict-equality exemption as a call argument
+                                    // (see `is_slice_struct_type`); sema still
+                                    // materializes and checks it.
+                                    if let Some(pointee) = pointee
+                                        && !self.is_slice_struct_type(InferType::Concrete(pointee))
+                                    {
+                                        self.add_constraint(Constraint::contextual(
+                                            info.ty,
+                                            InferType::Concrete(pointee),
+                                            info.span,
+                                        ));
+                                    }
                                 }
                                 _ => {}
                             }
                         }
+                        InferType::Concrete(Type::UNIT)
                     }
-                    if !offset_is_integer {
-                        pointer_ty = None;
-                    }
-                    pointer_ty.map_or_else(|| InferType::Var(self.fresh_var()), InferType::Concrete)
-                } else if intrinsic_name == "place" {
-                    // The trusted `@place(ptr)` bridge is represented as a
-                    // pointer-shaped expression until accessor-yield analysis
-                    // turns it into an indirect place.
-                    for arg_ref in args.iter() {
-                        generate_intrinsic_arg!(*arg_ref);
-                    }
-                    let result_var = self.fresh_var();
-                    InferType::Var(result_var)
-                } else if intrinsic_name == "raw"
-                    || intrinsic_name == "raw_mut"
-                    || intrinsic_name == "field_ptr"
-                {
-                    // @raw / @raw_mut / @field_ptr: takes a place, returns a
-                    // pointer to it (RUE-301). If the operand is a concrete
-                    // local/parameter place, publish the exact interned
-                    // pointee now. Computed and module/constant operands stay
-                    // free so sema retains ownership of its place diagnostic.
-                    let typed_shape = args.len() == 1;
-                    let mut pointee = None;
-                    for (index, arg_ref) in args.iter().enumerate() {
-                        let info = generate_intrinsic_arg!(*arg_ref);
-                        let is_field_place =
-                            matches!(self.rir.get(*arg_ref).data, InstData::FieldGet { .. });
-                        if typed_shape
-                            && index == 0
-                            && self.is_inference_place(*arg_ref, ctx)
-                            && (intrinsic_name != "field_ptr" || is_field_place)
-                        {
-                            pointee = self.concrete_type(&info.ty);
+
+                    Some(IntrinsicShape::Pointer(PointerSignature::Read)) => {
+                        // @ptr_read / @ptr_read_unaligned: takes ptr const T or ptr
+                        // mut T, returns T.
+                        //
+                        // The result is the pointee type. When the pointer operand
+                        // is already concrete in this pass, publish that pointee so
+                        // the read participates in inference like any other typed
+                        // expression: `@ptr_read(p) == 30` then unifies the literal
+                        // against the pointee instead of defaulting it to i32 and
+                        // failing E0206 in sema (RUE-1341).
+                        //
+                        // Otherwise fall back to a fresh variable, exactly as
+                        // before: the pointee is only known in sema, which fixes
+                        // the result type there and reconciles it against whatever
+                        // the annotation constrained the variable to (RUE-244).
+                        // A wrong-arity call stays on that fallback so sema still
+                        // owns the arity diagnostic.
+                        let typed_shape = args.len() == 1;
+                        let mut pointee = None;
+                        for (index, arg_ref) in args.iter().enumerate() {
+                            let info = generate_intrinsic_arg!(*arg_ref);
+                            if typed_shape && index == 0 {
+                                pointee = self.concrete_pointee_type(&info.ty);
+                            }
+                        }
+                        match pointee {
+                            Some(pointee) => InferType::Concrete(pointee),
+                            None => {
+                                let result_var = self.fresh_var();
+                                InferType::Var(result_var)
+                            }
                         }
                     }
-                    match pointee {
-                        Some(pointee) if intrinsic_name == "raw" => InferType::Concrete(
-                            Type::new_ptr_const(self.type_pool.intern_ptr_const_from_type(pointee)),
-                        ),
-                        Some(pointee) => InferType::Concrete(Type::new_ptr_mut(
-                            self.type_pool.intern_ptr_mut_from_type(pointee),
-                        )),
-                        None => InferType::Var(self.fresh_var()),
+
+                    Some(IntrinsicShape::Pointer(PointerSignature::Offset)) => {
+                        // @ptr_offset: takes (ptr T, i64), returns ptr T
+                        // The return type is the same as the input pointer type.
+                        // Publish that identity when a well-formed call already
+                        // has a concrete pointer operand; unresolved pointers and
+                        // wrong-arity calls remain free so sema owns diagnostics.
+                        let typed_shape = args.len() == 2;
+                        let mut pointer_ty = None;
+                        let mut offset_is_integer = false;
+                        for (index, arg_ref) in args.iter().enumerate() {
+                            let info = generate_intrinsic_arg!(*arg_ref);
+                            if typed_shape {
+                                match index {
+                                    0 => {
+                                        pointer_ty =
+                                            self.concrete_type(&info.ty).filter(Type::is_ptr);
+                                    }
+                                    1 => {
+                                        offset_is_integer = match info.ty {
+                                            InferType::Concrete(ty) => ty.is_integer(),
+                                            InferType::Var(id) => {
+                                                self.int_literal_vars.contains(&id)
+                                            }
+                                            InferType::IntLiteral => true,
+                                            InferType::Array { .. } => false,
+                                        };
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        if !offset_is_integer {
+                            pointer_ty = None;
+                        }
+                        pointer_ty
+                            .map_or_else(|| InferType::Var(self.fresh_var()), InferType::Concrete)
                     }
-                } else if intrinsic_name == "alloc" || intrinsic_name == "alloc_zeroed" {
-                    // @alloc(size: u64, align: u64) -> ptr mut u8 and its
-                    // zeroing twin (ADR-0059 Phase 3, RUE-961/RUE-968). Both
-                    // operands are physical byte counts, so both are u64 and
-                    // the result type is fixed rather than context-inferred.
-                    for arg_ref in args.iter() {
-                        let info = generate_intrinsic_arg!(*arg_ref);
-                        self.add_constraint(Constraint::equal(
-                            info.ty,
-                            InferType::Concrete(Type::U64),
-                            info.span,
-                        ));
-                    }
-                    InferType::Concrete(Type::new_ptr_mut(
-                        self.type_pool.intern_ptr_mut_from_type(Type::U8),
-                    ))
-                } else if intrinsic_name == "realloc" || intrinsic_name == "resize" {
-                    // @realloc(p, old_size, align, new_size) -> ptr mut u8 and
-                    // @resize(p, old_size, align, new_size) -> bool share one
-                    // operand shape: a `ptr mut u8` block plus three u64 byte
-                    // counts (ADR-0059 Phase 3, RUE-961/RUE-968).
-                    let ptr_ty =
-                        Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
-                    for (i, arg_ref) in args.iter().enumerate() {
-                        let info = generate_intrinsic_arg!(*arg_ref);
-                        let expected = if i == 0 { ptr_ty } else { Type::U64 };
-                        self.add_constraint(Constraint::equal(
-                            info.ty,
-                            InferType::Concrete(expected),
-                            info.span,
-                        ));
-                    }
-                    InferType::Concrete(if intrinsic_name == "resize" {
-                        Type::BOOL
-                    } else {
-                        ptr_ty
-                    })
-                } else if intrinsic_name == "free" {
-                    // @free(p: ptr mut u8, size: u64, align: u64) -> ().
-                    let ptr_ty =
-                        Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
-                    for (i, arg_ref) in args.iter().enumerate() {
-                        let info = generate_intrinsic_arg!(*arg_ref);
-                        let expected = if i == 0 { ptr_ty } else { Type::U64 };
-                        self.add_constraint(Constraint::equal(
-                            info.ty,
-                            InferType::Concrete(expected),
-                            info.span,
-                        ));
-                    }
-                    InferType::Concrete(Type::UNIT)
-                } else if intrinsic_name == "byte_copy" || intrinsic_name == "byte_move" {
-                    // @byte_copy/@byte_move(dst: ptr mut u8,
-                    // src: ptr const u8 | ptr mut u8, size: u64) -> (). Constrain
-                    // dst to `ptr mut u8` and size to u64; the source pointer may
-                    // be const or mut u8, so it is left to sema's
-                    // `require_u8_pointer` rather than pinned here. The two
-                    // differ only in their overlap contract (RUE-964), which
-                    // inference does not see.
-                    let ptr_ty =
-                        Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
-                    for (i, arg_ref) in args.iter().enumerate() {
-                        let info = generate_intrinsic_arg!(*arg_ref);
-                        let expected = match i {
-                            0 => Some(ptr_ty),
-                            2 => Some(Type::U64),
-                            _ => None,
-                        };
-                        if let Some(expected) = expected {
-                            self.add_constraint(Constraint::equal(
-                                info.ty,
-                                InferType::Concrete(expected),
-                                info.span,
-                            ));
+
+                    Some(IntrinsicShape::Pointer(
+                        pointer @ (PointerSignature::AddrOf { .. } | PointerSignature::FieldPtr),
+                    )) => {
+                        // @raw / @raw_mut / @field_ptr: takes a place, returns a
+                        // pointer to it (RUE-301). If the operand is a concrete
+                        // local/parameter place, publish the exact interned
+                        // pointee now. Computed and module/constant operands stay
+                        // free so sema retains ownership of its place diagnostic.
+                        let field_ptr = pointer == PointerSignature::FieldPtr;
+                        let typed_shape = args.len() == 1;
+                        let mut pointee = None;
+                        for (index, arg_ref) in args.iter().enumerate() {
+                            let info = generate_intrinsic_arg!(*arg_ref);
+                            let is_field_place =
+                                matches!(self.rir.get(*arg_ref).data, InstData::FieldGet { .. });
+                            if typed_shape
+                                && index == 0
+                                && self.is_inference_place(*arg_ref, ctx)
+                                && (!field_ptr || is_field_place)
+                            {
+                                pointee = self.concrete_type(&info.ty);
+                            }
+                        }
+                        let mutable =
+                            !matches!(pointer, PointerSignature::AddrOf { mutable: false });
+                        match pointee {
+                            Some(pointee) if !mutable => InferType::Concrete(Type::new_ptr_const(
+                                self.type_pool.intern_ptr_const_from_type(pointee),
+                            )),
+                            Some(pointee) => InferType::Concrete(Type::new_ptr_mut(
+                                self.type_pool.intern_ptr_mut_from_type(pointee),
+                            )),
+                            None => InferType::Var(self.fresh_var()),
                         }
                     }
-                    InferType::Concrete(Type::UNIT)
-                } else if intrinsic_name == "byte_set" {
-                    // @byte_set(dst: ptr mut u8, byte: u8, size: u64) -> ().
-                    let ptr_ty =
-                        Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
-                    for (i, arg_ref) in args.iter().enumerate() {
-                        let info = generate_intrinsic_arg!(*arg_ref);
-                        let expected = match i {
-                            0 => Some(ptr_ty),
-                            1 => Some(Type::U8),
-                            2 => Some(Type::U64),
-                            _ => None,
-                        };
-                        if let Some(expected) = expected {
-                            self.add_constraint(Constraint::equal(
-                                info.ty,
-                                InferType::Concrete(expected),
-                                info.span,
-                            ));
-                        }
-                    }
-                    InferType::Concrete(Type::UNIT)
-                } else if intrinsic_name == "int_to_ptr" {
-                    // @int_to_ptr: returns a pointer type inferred from context
-                    for arg_ref in args.iter() {
-                        generate_intrinsic_arg!(*arg_ref);
-                    }
-                    let result_var = self.fresh_var();
-                    InferType::Var(result_var)
-                } else if intrinsic_name == "target_arch" {
-                    // @target_arch: returns Arch enum
-                    if let Some(arch_spur) = self.interner.get("Arch") {
-                        if let Some(arch_ty) = self.builtin_enum_type(arch_spur) {
-                            InferType::Concrete(arch_ty)
-                        } else {
-                            InferType::Concrete(Type::ERROR)
-                        }
-                    } else {
-                        InferType::Concrete(Type::ERROR)
-                    }
-                } else if intrinsic_name == "target_os" {
-                    // @target_os: returns Os enum
-                    if let Some(os_spur) = self.interner.get("Os") {
-                        if let Some(os_ty) = self.builtin_enum_type(os_spur) {
-                            InferType::Concrete(os_ty)
-                        } else {
-                            InferType::Concrete(Type::ERROR)
-                        }
-                    } else {
-                        InferType::Concrete(Type::ERROR)
-                    }
-                } else if intrinsic_name == "target_data_model" {
-                    // @target_data_model: returns DataModel enum
-                    if let Some(dm_spur) = self.interner.get("DataModel") {
-                        if let Some(dm_ty) = self.builtin_enum_type(dm_spur) {
-                            InferType::Concrete(dm_ty)
-                        } else {
-                            InferType::Concrete(Type::ERROR)
-                        }
-                    } else {
-                        InferType::Concrete(Type::ERROR)
-                    }
-                } else if intrinsic_name == "import" {
-                    // @import("path"): a module value. Resolving the path to a
-                    // real ModuleId needs the registry, which inference doesn't
-                    // have, so use the documented sentinel id — inference only
-                    // needs module-ness; sema resolves the member with the
-                    // receiver's real module/file identity during analysis.
-                    // Returning Unit here (the old catch-all) made a member
-                    // call on the binding unresolvable (RUE-142) and let a
-                    // bare module expression coerce to `()` silently.
-                    for arg_ref in args.iter() {
-                        generate_intrinsic_arg!(*arg_ref);
-                    }
-                    InferType::Concrete(Type::new_module(crate::types::ModuleId::UNRESOLVED))
-                } else if intrinsic_name == "dbg"
-                    || intrinsic_name == "drop"
-                    || intrinsic_name == "test_preview_gate"
-                {
-                    // The remaining known intrinsics all return unit.
-                    for arg_ref in args.iter() {
-                        generate_intrinsic_arg!(*arg_ref);
-                    }
-                    InferType::Concrete(Type::UNIT)
-                } else {
-                    // Unknown intrinsic: a fresh var, so sema can reject it with
-                    // E0700 naming the bogus intrinsic instead of inference
-                    // masking it with a type-mismatch against the context's
-                    // expected type — the same treatment @cast gets (RUE-319,
-                    // here RUE-1281).
-                    for arg_ref in args.iter() {
-                        generate_intrinsic_arg!(*arg_ref);
-                    }
-                    InferType::Var(self.fresh_var())
                 };
                 // Every intrinsic evaluates its operands strictly in source
                 // order.  Keep that control fact separate from the intrinsic's
@@ -4225,6 +3930,63 @@ impl<'a> ConstraintGenerator<'a> {
     /// [`InferType::Concrete`], or `Concrete(ERROR)` when std is absent.
     fn string_infer_type(&self) -> InferType {
         InferType::Concrete(self.strbuf_type.unwrap_or(Type::ERROR))
+    }
+
+    /// The concrete type an intrinsic signature's [`FixedType`] names.
+    fn fixed_infer_type(&self, fixed: FixedType) -> InferType {
+        InferType::Concrete(match fixed {
+            FixedType::Unit => Type::UNIT,
+            FixedType::Never => Type::NEVER,
+            FixedType::Bool => Type::BOOL,
+            FixedType::U8 => Type::U8,
+            FixedType::U32 => Type::U32,
+            FixedType::U64 => Type::U64,
+            FixedType::I32 => Type::I32,
+            FixedType::I64 => Type::I64,
+            FixedType::MutBytePointer => {
+                Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8))
+            }
+        })
+    }
+
+    /// The type an intrinsic signature's [`ResultShape`] evaluates to.
+    ///
+    /// `common` is the signature's shared operand variable, already allocated
+    /// when the signature declares one.
+    fn signature_result_type(
+        &mut self,
+        result: ResultShape,
+        common: Option<InferType>,
+    ) -> InferType {
+        match result {
+            ResultShape::Fixed(fixed) => self.fixed_infer_type(fixed),
+            ResultShape::Text => self.string_infer_type(),
+            // A compiler-provided enum is only nameable once its definition is
+            // reachable; without it the expression is an error type rather
+            // than a fresh variable, so semantic analysis still reports the
+            // missing definition rather than a unification failure.
+            ResultShape::BuiltinEnum(spelling) => InferType::Concrete(
+                self.interner
+                    .get(spelling)
+                    .and_then(|symbol| self.builtin_enum_type(symbol))
+                    .unwrap_or(Type::ERROR),
+            ),
+            ResultShape::UnresolvedModule => {
+                InferType::Concrete(Type::new_module(crate::types::ModuleId::UNRESOLVED))
+            }
+            ResultShape::Common => common.unwrap_or_else(|| InferType::Var(self.fresh_var())),
+            ResultShape::Fresh => InferType::Var(self.fresh_var()),
+            ResultShape::FreshIntLiteral => {
+                let var = self.fresh_var();
+                self.int_literal_vars.push(var);
+                InferType::Var(var)
+            }
+            ResultShape::FreshFloatLiteral => {
+                let var = self.fresh_var();
+                self.float_literal_vars.push(var);
+                InferType::Var(var)
+            }
+        }
     }
 
     /// Whether `ty` is concretely the canonical StrBuf lang item.

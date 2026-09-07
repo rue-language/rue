@@ -5,6 +5,8 @@
 //! phases.  In particular, runtime helper identity is derived from this value
 //! rather than carried in a second optional channel.
 
+use rue_builtins::IntrinsicName;
+
 use crate::{
     Air, AirArgMode, AirInstData, AirProjection, AirRef, EnumDef, FrozenTypeInternPool,
     RuntimeAirArgument, RuntimeAirType, RuntimeCallKind, Type, TypeInternPool, TypeKind,
@@ -468,61 +470,69 @@ impl IntrinsicOperation {
         Self::FloatRound,
     ];
 
-    /// The canonical spelling used for diagnostics and display. This is not
-    /// used for semantic dispatch (several operations intentionally share a
-    /// spelling, such as the panic and debug families).
-    pub const fn expected_spelling(self) -> &'static str {
+    /// The intrinsic spelling this operation is written with, as a row of the
+    /// one intrinsic table. Several operations intentionally select the same
+    /// row (the panic and debug families), so this is a diagnostic and display
+    /// identity rather than a dispatch key.
+    pub const fn intrinsic_name(self) -> IntrinsicName {
         match self {
-            Self::PanicNoMessage | Self::Panic => "panic",
-            Self::AssertFailed | Self::BoundsCheck => "assert",
+            Self::PanicNoMessage | Self::Panic => IntrinsicName::Panic,
+            Self::AssertFailed | Self::BoundsCheck => IntrinsicName::Assert,
             Self::DebugI64
             | Self::DebugU64
             | Self::DebugBool
             | Self::DebugFloat
-            | Self::DebugStr => "dbg",
-            Self::ReadLine => "read_line",
-            Self::ParseI32 => "parse_i32",
-            Self::ParseI64 => "parse_i64",
-            Self::ParseU32 => "parse_u32",
-            Self::ParseU64 => "parse_u64",
-            Self::RandomU32 => "random_u32",
-            Self::RandomU64 => "random_u64",
-            Self::PtrToInt => "ptr_to_int",
-            Self::IntToPtr => "int_to_ptr",
-            Self::PtrRead => "ptr_read",
-            Self::PtrReadUnaligned => "ptr_read_unaligned",
-            Self::PtrWrite => "ptr_write",
-            Self::PtrWriteUnaligned => "ptr_write_unaligned",
-            Self::PtrOffset => "ptr_offset",
-            Self::Alloc => "alloc",
-            Self::AllocZeroed => "alloc_zeroed",
-            Self::Free => "free",
-            Self::Realloc => "realloc",
-            Self::Resize => "resize",
-            Self::ByteCopy => "byte_copy",
-            Self::ByteMove => "byte_move",
-            Self::ByteSet => "byte_set",
-            Self::ArgCount => "arg_count",
-            Self::ArgPtr => "arg_ptr",
-            Self::ArgLen => "arg_len",
-            Self::EnvCount => "env_count",
-            Self::EnvPtr => "env_ptr",
-            Self::EnvLen => "env_len",
-            Self::Raw => "raw",
-            Self::RawMut => "raw_mut",
-            Self::FieldPtr => "field_ptr",
-            Self::Syscall => "syscall",
-            Self::BitCast => "bitCast",
-            Self::IntToFloat => "int_to_float",
-            Self::FloatToInt => "float_to_int",
-            Self::FloatCast => "float_cast",
-            Self::TotalCmp => "total_cmp",
-            Self::FloatSqrt => "sqrt",
-            Self::FloatFloor => "floor",
-            Self::FloatCeil => "ceil",
-            Self::FloatTrunc => "trunc",
-            Self::FloatRound => "round",
+            | Self::DebugStr => IntrinsicName::Dbg,
+            Self::ReadLine => IntrinsicName::ReadLine,
+            Self::ParseI32 => IntrinsicName::ParseI32,
+            Self::ParseI64 => IntrinsicName::ParseI64,
+            Self::ParseU32 => IntrinsicName::ParseU32,
+            Self::ParseU64 => IntrinsicName::ParseU64,
+            Self::RandomU32 => IntrinsicName::RandomU32,
+            Self::RandomU64 => IntrinsicName::RandomU64,
+            Self::PtrToInt => IntrinsicName::PtrToInt,
+            Self::IntToPtr => IntrinsicName::IntToPtr,
+            Self::PtrRead => IntrinsicName::PtrRead,
+            Self::PtrReadUnaligned => IntrinsicName::PtrReadUnaligned,
+            Self::PtrWrite => IntrinsicName::PtrWrite,
+            Self::PtrWriteUnaligned => IntrinsicName::PtrWriteUnaligned,
+            Self::PtrOffset => IntrinsicName::PtrOffset,
+            Self::Alloc => IntrinsicName::Alloc,
+            Self::AllocZeroed => IntrinsicName::AllocZeroed,
+            Self::Free => IntrinsicName::Free,
+            Self::Realloc => IntrinsicName::Realloc,
+            Self::Resize => IntrinsicName::Resize,
+            Self::ByteCopy => IntrinsicName::ByteCopy,
+            Self::ByteMove => IntrinsicName::ByteMove,
+            Self::ByteSet => IntrinsicName::ByteSet,
+            Self::ArgCount => IntrinsicName::ArgCount,
+            Self::ArgPtr => IntrinsicName::ArgPtr,
+            Self::ArgLen => IntrinsicName::ArgLen,
+            Self::EnvCount => IntrinsicName::EnvCount,
+            Self::EnvPtr => IntrinsicName::EnvPtr,
+            Self::EnvLen => IntrinsicName::EnvLen,
+            Self::Raw => IntrinsicName::Raw,
+            Self::RawMut => IntrinsicName::RawMut,
+            Self::FieldPtr => IntrinsicName::FieldPtr,
+            Self::Syscall => IntrinsicName::Syscall,
+            Self::BitCast => IntrinsicName::BitCast,
+            Self::IntToFloat => IntrinsicName::IntToFloat,
+            Self::FloatToInt => IntrinsicName::FloatToInt,
+            Self::FloatCast => IntrinsicName::FloatCast,
+            Self::TotalCmp => IntrinsicName::TotalCmp,
+            Self::FloatSqrt => IntrinsicName::Sqrt,
+            Self::FloatFloor => IntrinsicName::Floor,
+            Self::FloatCeil => IntrinsicName::Ceil,
+            Self::FloatTrunc => IntrinsicName::Trunc,
+            Self::FloatRound => IntrinsicName::Round,
         }
+    }
+
+    /// The canonical spelling used for diagnostics and display, read from the
+    /// selected table row rather than restated here. This is not used for
+    /// semantic dispatch.
+    pub const fn expected_spelling(self) -> &'static str {
+        self.intrinsic_name().spelling()
     }
 
     /// Whether this is one of the unary float-to-same-float operations

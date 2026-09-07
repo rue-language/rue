@@ -13,6 +13,7 @@ use super::*;
 use crate::inst::AirPlaceRef;
 use crate::scope::ScopedContext;
 use ahash::AHashMap;
+use rue_builtins::IntrinsicName;
 use rue_rir::WarningName;
 
 /// The position into which a value is being placed when the ADR-0043 two-types
@@ -4693,7 +4694,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             });
             Some(air.add_intrinsic(
                 crate::IntrinsicOperation::BoundsCheck,
-                self.known_symbols().assert,
+                self.known_symbols().intrinsic(IntrinsicName::Assert),
                 &[lower_bound_ref],
                 Type::UNIT,
                 span,
@@ -4734,7 +4735,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         });
         let upper_check_ref = air.add_intrinsic(
             crate::IntrinsicOperation::BoundsCheck,
-            self.known_symbols().assert,
+            self.known_symbols().intrinsic(IntrinsicName::Assert),
             &[upper_bound_ref],
             Type::UNIT,
             span,
@@ -4743,14 +4744,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // element = @ptr_read(@ptr_offset(ptr, index)).
         let off_ref = air.add_intrinsic(
             crate::IntrinsicOperation::PtrOffset,
-            self.known_symbols().ptr_offset,
+            self.known_symbols().intrinsic(IntrinsicName::PtrOffset),
             &[ptr_ref, index_result.air_ref],
             ptr_ty,
             span,
         )?;
         let elem_ref = air.add_intrinsic(
             crate::IntrinsicOperation::PtrRead,
-            self.known_symbols().ptr_read,
+            self.known_symbols().intrinsic(IntrinsicName::PtrRead),
             &[off_ref],
             elem_ty,
             span,
@@ -7868,7 +7869,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             });
             air.add_intrinsic(
                 crate::IntrinsicOperation::Raw,
-                self.known_symbols().raw,
+                self.known_symbols().intrinsic(IntrinsicName::Raw),
                 &[elem0_read],
                 ptr_ty,
                 span,

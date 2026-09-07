@@ -15,6 +15,11 @@ use rue_span::{FileId, Span};
 
 use crate::{RirTypeSyntaxNode, RirTypeSyntaxRange, RirTypeSyntaxSymbol};
 
+/// One fallible source intrinsic whose result requires a trusted `Option`
+/// payload. Identity and payload are owned by the one intrinsic table; RIR
+/// only assigns each row a stable header bit.
+pub use rue_builtins::FallibleIntrinsic as RirFallibleIntrinsic;
+
 use super::*;
 
 const MAGIC: &[u8; 4] = b"RIRP";
@@ -24,45 +29,19 @@ const MAGIC: &[u8; 4] = b"RIRP";
 const VERSION: u8 = 6;
 const HEADER_LEN: usize = 64;
 
-/// One fallible source intrinsic whose result requires a trusted `Option`
-/// payload. Stable bit assignments are part of the packed-RIR wire format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum RirFallibleIntrinsic {
-    ParseI32,
-    ParseI64,
-    ParseU32,
-    ParseU64,
-    ReadLine,
-}
-
-impl RirFallibleIntrinsic {
-    const ALL: [Self; 5] = [
-        Self::ParseI32,
-        Self::ParseI64,
-        Self::ParseU32,
-        Self::ParseU64,
-        Self::ReadLine,
-    ];
-
-    const fn bit(self) -> u8 {
-        match self {
-            Self::ParseI32 => 1 << 0,
-            Self::ParseI64 => 1 << 1,
-            Self::ParseU32 => 1 << 2,
-            Self::ParseU64 => 1 << 3,
-            Self::ReadLine => 1 << 4,
-        }
-    }
-
-    fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "parse_i32" => Self::ParseI32,
-            "parse_i64" => Self::ParseI64,
-            "parse_u32" => Self::ParseU32,
-            "parse_u64" => Self::ParseU64,
-            "read_line" => Self::ReadLine,
-            _ => return None,
-        })
+/// The packed-RIR wire encoding of one fallible source intrinsic.
+///
+/// The intrinsic's identity, spelling and `Option` payload belong to the one
+/// intrinsic table in `rue-builtins`; only the stable bit assignment below is
+/// this format's own, and it is an exhaustive match so a new fallible
+/// intrinsic cannot be packed without being given a bit.
+const fn fallible_intrinsic_bit(intrinsic: RirFallibleIntrinsic) -> u8 {
+    match intrinsic {
+        RirFallibleIntrinsic::ParseI32 => 1 << 0,
+        RirFallibleIntrinsic::ParseI64 => 1 << 1,
+        RirFallibleIntrinsic::ParseU32 => 1 << 2,
+        RirFallibleIntrinsic::ParseU64 => 1 << 3,
+        RirFallibleIntrinsic::ReadLine => 1 << 4,
     }
 }
 
@@ -73,14 +52,24 @@ impl RirFallibleIntrinsic {
 pub struct RirFallibleIntrinsicSet(u8);
 
 impl RirFallibleIntrinsicSet {
-    const VALID_BITS: u8 = 0b1_1111;
+    /// The header bits the encoder can produce, derived from the one
+    /// fallible-intrinsic projection so a new row cannot decode as reserved.
+    const VALID_BITS: u8 = {
+        let mut bits = 0u8;
+        let mut index = 0;
+        while index < RirFallibleIntrinsic::ALL.len() {
+            bits |= fallible_intrinsic_bit(RirFallibleIntrinsic::ALL[index]);
+            index += 1;
+        }
+        bits
+    };
 
     fn insert(&mut self, intrinsic: RirFallibleIntrinsic) {
-        self.0 |= intrinsic.bit();
+        self.0 |= fallible_intrinsic_bit(intrinsic);
     }
 
     pub fn contains(self, intrinsic: RirFallibleIntrinsic) -> bool {
-        self.0 & intrinsic.bit() != 0
+        self.0 & fallible_intrinsic_bit(intrinsic) != 0
     }
 
     pub fn iter(self) -> impl Iterator<Item = RirFallibleIntrinsic> {
@@ -1633,7 +1622,10 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
             InstData::Intrinsic { name, args } => {
                 self.byte(36)?;
                 self.symbol(*name)?;
-                if let Some(intrinsic) = RirFallibleIntrinsic::from_name(symbols.resolve(name)) {
+                if let Some(intrinsic) =
+                    rue_builtins::IntrinsicName::from_spelling(symbols.resolve(name))
+                        .and_then(rue_builtins::IntrinsicName::fallible)
+                {
                     self.fallible_intrinsics.insert(intrinsic);
                 }
                 self.refs(rir.intrinsic_args(args))?;
@@ -4679,6 +4671,27 @@ mod tests {
             Err(PackedRirAppendError::Checkpoint(()))
         ));
         assert_eq!(decode_checkpoints, 8);
+    }
+
+    #[test]
+    fn every_fallible_row_has_a_distinct_header_bit_and_a_payload() {
+        let mut seen = 0u8;
+        for intrinsic in RirFallibleIntrinsic::ALL {
+            let bit = fallible_intrinsic_bit(intrinsic);
+            assert_eq!(bit.count_ones(), 1, "{intrinsic:?} needs one header bit");
+            assert_eq!(seen & bit, 0, "{intrinsic:?} shares a header bit");
+            seen |= bit;
+            // The `Option(payload)` prerequisite travels with the row, so
+            // packing a fallible intrinsic cannot publish a demand whose
+            // payload nothing knows.
+            assert_eq!(
+                rue_builtins::IntrinsicName::from_spelling(intrinsic.spelling())
+                    .and_then(rue_builtins::IntrinsicName::fallible)
+                    .map(rue_builtins::FallibleIntrinsic::payload),
+                Some(intrinsic.payload()),
+            );
+        }
+        assert_eq!(seen, RirFallibleIntrinsicSet::VALID_BITS);
     }
 
     #[test]

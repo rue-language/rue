@@ -1515,6 +1515,10 @@ const AIR_CRATE_SOURCES: &[(&str, &str)] = &[
         include_str!("inference/constraint.rs"),
     ),
     ("inference/generate", include_str!("inference/generate.rs")),
+    (
+        "inference/intrinsic_signature",
+        include_str!("inference/intrinsic_signature.rs"),
+    ),
     ("inference/mod", include_str!("inference/mod.rs")),
     ("inference/types", include_str!("inference/types.rs")),
     ("inference/unify", include_str!("inference/unify.rs")),
@@ -2513,13 +2517,30 @@ fn comptime_generic_contract_has_no_local_lexical_or_call_payloads() {
         .and_then(|source| source.split("\n}\n\n/// Structural facts").next())
         .expect("expression intrinsic classifier");
     assert_eq!(expression_classifier.matches("fn from_name(").count(), 1);
+    // The family is selected from rows of the one intrinsic table, never from
+    // spellings restated here.
+    for row in [
+        "IntrinsicName::Import",
+        "IntrinsicName::TargetArch",
+        "IntrinsicName::TargetOs",
+        "IntrinsicName::TargetDataModel",
+    ] {
+        assert!(expression_classifier.contains(row));
+    }
     for spelling in [
         "\"import\"",
         "\"target_arch\"",
         "\"target_os\"",
         "\"target_data_model\"",
+        "\"require_droppable\"",
+        "\"require_trivially_droppable\"",
+        "\"int_min\"",
+        "\"int_max\"",
     ] {
-        assert!(expression_classifier.contains(spelling));
+        assert!(
+            !classifier.contains(spelling) && !expression_classifier.contains(spelling),
+            "comptime classification must not restate {spelling}"
+        );
     }
     assert!(!comptime.contains("fn admit_comptime_intrinsic("));
     assert!(!comptime.contains("fn resolve_comptime_intrinsic("));
@@ -4282,6 +4303,97 @@ fn sema_diagnostics_use_the_friendly_type_display_authority() {
     );
 }
 
+/// The production span of `source` between two markers, so a test fixture that
+/// legitimately writes an intrinsic spelling cannot mask a dispatch that does.
+fn source_region<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+    let start = source
+        .find(start)
+        .unwrap_or_else(|| panic!("region start `{start}` is gone"));
+    let rest = &source[start..];
+    let length = rest
+        .find(end)
+        .unwrap_or_else(|| panic!("region end `{end}` is gone"));
+    &rest[..length]
+}
+
+#[test]
+fn intrinsic_spellings_are_compared_only_where_the_one_table_is_consulted() {
+    let analysis = include_str!("sema/analysis/intrinsics.rs");
+    let generate = include_str!("inference/generate.rs");
+    let signature = include_str!("inference/intrinsic_signature.rs");
+    let comptime = include_str!("sema/comptime/intrinsics.rs");
+    let known = include_str!("sema/known_symbols.rs");
+
+    // Every region below classifies or types an intrinsic. Each keys on the
+    // typed row `rue_builtins::IntrinsicName` selects, so none of them may
+    // restate a spelling: a second spelling table is exactly the drift this
+    // structure exists to prevent.
+    let regions = [
+        (
+            "value-intrinsic dispatch",
+            source_region(
+                analysis,
+                "    fn analyze_intrinsic_impl(",
+                "    /// Validate the trusted std pointer-to-place bridge.",
+            ),
+        ),
+        (
+            "type-intrinsic dispatch",
+            source_region(
+                analysis,
+                "    fn analyze_type_intrinsic(",
+                "    /// Analyze `@offset_of(T, field)`",
+            ),
+        ),
+        (
+            "constraint generation",
+            source_region(
+                generate,
+                "            InstData::Intrinsic { name, args } => {",
+                "            InstData::InternalIntrinsic { intrinsic, args } => {",
+            ),
+        ),
+        (
+            "intrinsic signatures",
+            source_region(signature, "//! The one HM constraint shape", "#[cfg(test)]"),
+        ),
+        // The comptime classification module has no test fixtures, so it is
+        // scanned whole.
+        ("comptime classification", comptime),
+        (
+            "known symbols",
+            source_region(
+                known,
+                "//! Pre-interned known symbols",
+                "#[cfg(test)]\nmod tests",
+            ),
+        ),
+    ];
+    for (what, region) in regions {
+        for name in rue_builtins::IntrinsicName::ALL {
+            let literal = format!("\"{}\"", name.spelling());
+            assert!(
+                !region.contains(&literal),
+                "{what} must take `{}` from the one intrinsic table, not restate {literal}",
+                name.spelling()
+            );
+        }
+    }
+
+    // Both comptime families reach their answer through the one classifier.
+    assert_eq!(comptime.matches("IntrinsicName::from_spelling(").count(), 2);
+
+    // The unchecked-operation gate names diagnostic families, not spellings,
+    // and reaches its answer by matching the typed row.
+    let unchecked = source_region(
+        analysis,
+        "const fn unchecked_operation_family(",
+        "\nimpl<H: OrdinaryBodyAnalysisHost>",
+    );
+    assert!(!unchecked.contains("name =="));
+    assert!(unchecked.contains("match intrinsic {"));
+}
+
 #[test]
 fn intrinsic_semantics_have_one_typed_authority_across_sema_and_durable_air() {
     let known = include_str!("sema/known_symbols.rs");
@@ -4294,21 +4406,23 @@ fn intrinsic_semantics_have_one_typed_authority_across_sema_and_durable_air() {
     let import = include_str!("semantic_import.rs");
 
     assert_eq!(
-        known
-            .matches("pub fn get_parse_intrinsic_operation(")
-            .count(),
+        known.matches("pub fn classify_intrinsic(").count(),
         1,
-        "parse intrinsic symbols must have one typed classifier"
+        "intrinsic symbols must have one typed classifier"
     );
     assert_eq!(
-        analysis
-            .matches("known.get_parse_intrinsic_operation(name)")
-            .count(),
+        analysis.matches("known.classify_intrinsic(name)").count(),
         1,
-        "sema must consume the one parse classifier exactly once"
+        "value-intrinsic dispatch must consume the one classifier exactly once"
     );
-    assert!(analysis.contains("\"arg_ptr\",\n                crate::IntrinsicOperation::ArgPtr"));
-    assert!(analysis.contains("\"env_ptr\",\n                crate::IntrinsicOperation::EnvPtr"));
+    assert!(
+        analysis.contains("I::ArgPtr => self.analyze_process_ptr_intrinsic("),
+        "process-pointer dispatch keys on the typed row"
+    );
+    assert!(
+        analysis.contains("I::EnvPtr => self.analyze_process_ptr_intrinsic("),
+        "process-pointer dispatch keys on the typed row"
+    );
 
     assert!(air.contains(
         "Intrinsic {\n        /// Typed intrinsic semantics selected by semantic analysis.\n        operation: crate::IntrinsicOperation,"

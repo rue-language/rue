@@ -9,6 +9,85 @@ use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine
 use super::*;
 use crate::sema::ownership_state::FieldPath;
 
+/// The unchecked-operation family an intrinsic belongs to, or `None` when it
+/// is an ordinary checked-language operation.
+///
+/// Raw-pointer, heap, and syscall intrinsics may only be written inside a
+/// `checked` block (spec 9.1:1, chapter 9), and the family name is the word
+/// the shared diagnostic uses. The match is exhaustive over the one intrinsic
+/// table, so a new intrinsic must state whether it is unchecked rather than
+/// defaulting into the checked language by omission.
+const fn unchecked_operation_family(
+    intrinsic: rue_builtins::IntrinsicName,
+) -> Option<&'static str> {
+    use rue_builtins::IntrinsicName as I;
+    match intrinsic {
+        I::Alloc | I::AllocZeroed | I::Free | I::Realloc | I::Resize => Some("heap"),
+        I::Syscall => Some("syscall"),
+        I::PtrRead
+        | I::PtrWrite
+        | I::PtrReadUnaligned
+        | I::PtrWriteUnaligned
+        | I::PtrOffset
+        | I::PtrToInt
+        | I::IntToPtr
+        | I::Raw
+        | I::RawMut
+        | I::FieldPtr
+        | I::Place
+        | I::ByteCopy
+        | I::ByteMove
+        | I::ByteSet
+        | I::ArgPtr
+        | I::EnvPtr => Some("raw-pointer"),
+        I::Dbg
+        | I::Drop
+        | I::IntCast
+        | I::BitCast
+        | I::Cast
+        | I::IntToFloat
+        | I::FloatToInt
+        | I::FloatCast
+        | I::TotalCmp
+        | I::Sqrt
+        | I::Floor
+        | I::Ceil
+        | I::Trunc
+        | I::Round
+        | I::Panic
+        | I::Assert
+        | I::AssertEq
+        | I::AssertNe
+        | I::ReadLine
+        | I::ToString
+        | I::ParseI32
+        | I::ParseI64
+        | I::ParseU32
+        | I::ParseU64
+        | I::TestPreviewGate
+        | I::Import
+        | I::RandomU32
+        | I::RandomU64
+        | I::ArgCount
+        | I::ArgLen
+        | I::EnvCount
+        | I::EnvLen
+        | I::WrappingAdd
+        | I::WrappingSub
+        | I::WrappingMul
+        | I::TargetArch
+        | I::TargetOs
+        | I::TargetDataModel
+        | I::SizeOf
+        | I::AlignOf
+        | I::RequireDroppable
+        | I::RequireTriviallyDroppable
+        | I::IntMax
+        | I::IntMin
+        | I::OffsetOf => None,
+    }
+}
+
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     // ========================================================================
     // Intrinsic operations: Intrinsic, TypeIntrinsic
@@ -194,108 +273,122 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let intrinsic_name = self.body_interner().resolve(&name).to_string();
+        use rue_builtins::IntrinsicName as I;
+
+        // Type-position intrinsics reach here as `TypeIntrinsic`, so classify
+        // the spelling once against the one intrinsic table and dispatch on
+        // the typed row instead of comparing strings per case.
+        let intrinsic = self.known_symbols().classify_intrinsic(name);
         let ty = self.resolve_rir_type_with_ctx(type_arg, span, ctx)?;
 
-        // `@require_droppable(T)` is the owning-container well-formedness gate
-        // (RUE-388): it has no runtime value and evaluates to unit. It is
-        // normally consumed at comptime while reducing a `-> type` constructor
-        // body (see the engine's `check_require_droppable`), but handle it here so
-        // that if it ever reaches runtime analysis it performs the same
-        // linear/destructor rejection instead of falling to E0700.
-        if intrinsic_name == "require_droppable" {
-            self.check_require_droppable(ty, span)?;
-            let air_ref = air.add_inst(AirInst {
-                data: AirInstData::Const(0),
-                ty: Type::UNIT,
-                span,
-            });
-            return Ok(AnalysisResult::new(air_ref, Type::UNIT));
-        }
-
-        // `@require_trivially_droppable(T)` is the element-type gate (RUE-651).
-        // Unlike `@require_droppable`, this one normally *does* reach runtime
-        // analysis: it is stated at the entry point of every standard-library
-        // operation that duplicates an element — `ArrayBuf(T)`'s
-        // `get`/`get_or`/`extend_from`/`index_of`/`contains`, the sifting and
-        // scanning entry points of `binary_heap` and `sort`, the
-        // filler-duplicating constructors (`Grid2D`, `Deque`, `IntMap`,
-        // `StrMap`), the by-copy readers on `Stack` and `Queue`, and the
-        // directory-private `rawbuf.copy_rawbuf_range(_within)` shims — and
-        // demand-driven analysis (ADR-0045) monomorphizes those bodies with the
-        // concrete element type only when a program actually calls one. If that
-        // `T` has drop glue, duplicating it would alias its owned resources
-        // (double-free), so reject it (E0711). It has no runtime value and
-        // evaluates to unit.
-        if intrinsic_name == "require_trivially_droppable" {
-            // The shape decides only which message a rejection renders, so it
-            // is classified in the failure arm; a passing gate pays nothing for
-            // it.
-            self.check_trivially_droppable(ty, span, |engine| engine.element_gate_shape(ty, ctx))?;
-            let air_ref = air.add_inst(AirInst {
-                data: AirInstData::Const(0),
-                ty: Type::UNIT,
-                span,
-            });
-            return Ok(AnalysisResult::new(air_ref, Type::UNIT));
-        }
-
-        // `@int_max(T)` / `@int_min(T)` (RUE-694): the largest/smallest value
-        // representable in integer type `T`, typed as `T` itself — the only
-        // result type that never truncates (`u64::MAX` doesn't fit any signed
-        // type; `i64::MIN` doesn't fit `u64`). The value folds to a `Const`
-        // here like `@size_of`; the u64 payload carries narrow signed minima
-        // sign-extended, matching how negative literals are emitted.
-        if intrinsic_name == "int_max" || intrinsic_name == "int_min" {
-            if ty.is_error() {
+        let value: u64 = match intrinsic {
+            // `@require_droppable(T)` is the owning-container well-formedness
+            // gate (RUE-388): it has no runtime value and evaluates to unit. It
+            // is normally consumed at comptime while reducing a `-> type`
+            // constructor body (see the engine's `check_require_droppable`),
+            // but handle it here so that if it ever reaches runtime analysis it
+            // performs the same linear/destructor rejection instead of falling
+            // to E0700.
+            Some(I::RequireDroppable) => {
+                self.check_require_droppable(ty, span)?;
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Const(0),
-                    ty: Type::ERROR,
+                    ty: Type::UNIT,
                     span,
                 });
-                return Ok(AnalysisResult::new(air_ref, Type::ERROR));
+                return Ok(AnalysisResult::new(air_ref, Type::UNIT));
             }
-            let bound = if intrinsic_name == "int_max" {
-                ty.int_max()
-            } else {
-                ty.int_min()
-            };
-            let Some(bound) = bound else {
-                return Err(CompileError::new(
-                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
-                        name: intrinsic_name,
-                        expected: "an integer type".to_string(),
-                        found: self.format_type_name(ty),
-                    })),
-                    span,
-                ));
-            };
-            let air_ref = air.add_inst(AirInst {
-                data: AirInstData::Const(bound as u64),
-                ty,
-                span,
-            });
-            return Ok(AnalysisResult::new(air_ref, ty));
-        }
 
-        // Calculate the value through the checked layout query. Oversized
-        // types produce E0906 rather than overflowing or truncating the slot
-        // count (RUE-561).
-        let value: u64 = match intrinsic_name.as_str() {
-            "size_of" => {
+            // `@require_trivially_droppable(T)` is the element-type gate
+            // (RUE-651). Unlike `@require_droppable`, this one normally *does*
+            // reach runtime analysis: it is stated at the entry point of every
+            // standard-library operation that duplicates an element —
+            // `ArrayBuf(T)`'s `get`/`get_or`/`extend_from`/`index_of`/
+            // `contains`, the sifting and scanning entry points of
+            // `binary_heap` and `sort`, the filler-duplicating constructors
+            // (`Grid2D`, `Deque`, `IntMap`, `StrMap`), the by-copy readers on
+            // `Stack` and `Queue`, and the directory-private
+            // `rawbuf.copy_rawbuf_range(_within)` shims — and demand-driven
+            // analysis (ADR-0045) monomorphizes those bodies with the concrete
+            // element type only when a program actually calls one. If that `T`
+            // has drop glue, duplicating it would alias its owned resources
+            // (double-free), so reject it (E0711). It has no runtime value and
+            // evaluates to unit.
+            Some(I::RequireTriviallyDroppable) => {
+                // The shape decides only which message a rejection renders, so
+                // it is classified in the failure arm; a passing gate pays
+                // nothing for it.
+                self.check_trivially_droppable(ty, span, |engine| {
+                    engine.element_gate_shape(ty, ctx)
+                })?;
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Const(0),
+                    ty: Type::UNIT,
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, Type::UNIT));
+            }
+
+            // `@int_max(T)` / `@int_min(T)` (RUE-694): the largest/smallest
+            // value representable in integer type `T`, typed as `T` itself —
+            // the only result type that never truncates (`u64::MAX` doesn't fit
+            // any signed type; `i64::MIN` doesn't fit `u64`). The value folds
+            // to a `Const` here like `@size_of`; the u64 payload carries narrow
+            // signed minima sign-extended, matching how negative literals are
+            // emitted.
+            Some(bound @ (I::IntMax | I::IntMin)) => {
+                if ty.is_error() {
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::Const(0),
+                        ty: Type::ERROR,
+                        span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, Type::ERROR));
+                }
+                let value = if bound == I::IntMax {
+                    ty.int_max()
+                } else {
+                    ty.int_min()
+                };
+                let Some(value) = value else {
+                    return Err(CompileError::new(
+                        ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                            name: bound.spelling().to_string(),
+                            expected: "an integer type".to_string(),
+                            found: self.format_type_name(ty),
+                        })),
+                        span,
+                    ));
+                };
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Const(value as u64),
+                    ty,
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, ty));
+            }
+
+            // Calculate the value through the checked layout query. Oversized
+            // types produce E0906 rather than overflowing or truncating the
+            // slot count (RUE-561).
+            Some(I::SizeOf) => {
                 // Reject oversized layouts (E0906) before observing the
                 // canonical layout authority, which owns the bytes-per-slot
                 // conversion.
                 self.require_layout_slots(ty, span)?;
                 self.body_type_pool().provisional_layout(ty).size
             }
-            "align_of" => {
+            Some(I::AlignOf) => {
                 self.require_layout_slots(ty, span)?;
                 self.body_type_pool().provisional_layout(ty).alignment
             }
-            _ => {
+            // Every other row is a value-position intrinsic; AstGen only builds
+            // `TypeIntrinsic` for the type-grammar rows, so reaching one here
+            // is the same unknown-intrinsic rejection an unrecognized spelling
+            // gets.
+            Some(_) | None => {
                 return Err(CompileError::new(
-                    ErrorKind::UnknownIntrinsic(intrinsic_name.to_string()),
+                    ErrorKind::UnknownIntrinsic(self.body_interner().resolve(&name).to_string()),
                     span,
                 ));
             }
@@ -414,52 +507,25 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 mode: RirArgMode::Normal,
             })
             .collect();
-        let known = &self.known_symbols();
+        let known = *self.known_symbols();
+        let Some(intrinsic) = known.classify_intrinsic(name) else {
+            // A spelling that is not a row of the one intrinsic table is the
+            // unknown intrinsic (E0700); classification is the only place a
+            // name is turned into semantics, so dispatch below is total.
+            return Err(CompileError::new(
+                ErrorKind::UnknownIntrinsic(self.body_interner().resolve(&name).to_string()),
+                span,
+            ));
+        };
 
         // Raw-pointer, heap, and syscall intrinsics are unchecked operations:
         // they may only be used inside a `checked` block (spec 9.1:1, chapter
         // 9). Gate them before the per-intrinsic dispatch so every one shares a
-        // single diagnostic. The set is @raw/@raw_mut/@field_ptr/@ptr_read/
-        // @ptr_write/@ptr_offset/@ptr_to_int/@int_to_ptr, the unified byte
-        // allocation family @alloc/@alloc_zeroed/@free/@realloc/@resize, and
-        // @syscall (RUE-1, RUE-301, RUE-1369, ADR-0059 Phase 3).
+        // single diagnostic (RUE-1, RUE-301, RUE-1369, ADR-0059 Phase 3).
         if ctx.checked_depth == 0
-            && (name == known.ptr_read
-                || name == known.ptr_write
-                || name == known.ptr_read_unaligned
-                || name == known.ptr_write_unaligned
-                || name == known.ptr_offset
-                || name == known.ptr_to_int
-                || name == known.int_to_ptr
-                || name == known.raw
-                || name == known.raw_mut
-                || name == known.field_ptr
-                || name == known.place
-                || name == known.alloc
-                || name == known.alloc_zeroed
-                || name == known.free
-                || name == known.realloc
-                || name == known.resize
-                || name == known.byte_copy
-                || name == known.byte_move
-                || name == known.byte_set
-                || name == known.arg_ptr
-                || name == known.env_ptr
-                || name == known.syscall)
+            && let Some(kind) = unchecked_operation_family(intrinsic)
         {
-            let intrinsic_name_str = self.body_interner().resolve(&name);
-            let kind = if name == known.alloc
-                || name == known.alloc_zeroed
-                || name == known.free
-                || name == known.realloc
-                || name == known.resize
-            {
-                "heap"
-            } else if name == known.syscall {
-                "syscall"
-            } else {
-                "raw-pointer"
-            };
+            let intrinsic_name_str = intrinsic.spelling();
             return Err(CompileError::new(
                 ErrorKind::UncheckedOpRequiresChecked {
                     what: format!("{kind} intrinsic `@{intrinsic_name_str}`"),
@@ -469,17 +535,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .with_help("wrap the operation in a `checked { ... }` block"));
         }
 
-        // Use pre-interned symbol comparison instead of string comparison
-        if name == known.dbg {
-            self.analyze_dbg_intrinsic(air, inst_ref, &args, span, ctx)
-        } else if name == known.drop {
-            self.analyze_drop_intrinsic(air, &args, span, ctx)
-        } else if name == known.int_cast {
-            self.analyze_intcast_intrinsic(air, inst_ref, &args, span, ctx)
-        } else if name == known.bit_cast {
-            self.analyze_bitcast_intrinsic(air, name, inst_ref, &args, span, ctx)
-        } else if name == known.int_to_float {
-            self.analyze_float_conversion_intrinsic(
+        // Dispatch on the typed row rather than on the symbol: an intrinsic
+        // added to the table without an analyzer is a non-exhaustive-match
+        // error here, not a program that silently reaches E0700.
+        use rue_builtins::IntrinsicName as I;
+        match intrinsic {
+            I::Dbg => self.analyze_dbg_intrinsic(air, inst_ref, &args, span, ctx),
+            I::Drop => self.analyze_drop_intrinsic(air, &args, span, ctx),
+            I::IntCast => self.analyze_intcast_intrinsic(air, inst_ref, &args, span, ctx),
+            I::BitCast => self.analyze_bitcast_intrinsic(air, name, inst_ref, &args, span, ctx),
+            I::IntToFloat => self.analyze_float_conversion_intrinsic(
                 air,
                 name,
                 inst_ref,
@@ -487,9 +552,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
                 ctx,
                 crate::IntrinsicOperation::IntToFloat,
-            )
-        } else if name == known.float_to_int {
-            self.analyze_float_conversion_intrinsic(
+            ),
+            I::FloatToInt => self.analyze_float_conversion_intrinsic(
                 air,
                 name,
                 inst_ref,
@@ -497,9 +561,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
                 ctx,
                 crate::IntrinsicOperation::FloatToInt,
-            )
-        } else if name == known.float_cast {
-            self.analyze_float_conversion_intrinsic(
+            ),
+            I::FloatCast => self.analyze_float_conversion_intrinsic(
                 air,
                 name,
                 inst_ref,
@@ -507,9 +570,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
                 ctx,
                 crate::IntrinsicOperation::FloatCast,
-            )
-        } else if name == known.total_cmp {
-            self.analyze_float_conversion_intrinsic(
+            ),
+            I::TotalCmp => self.analyze_float_conversion_intrinsic(
                 air,
                 name,
                 inst_ref,
@@ -517,158 +579,200 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
                 ctx,
                 crate::IntrinsicOperation::TotalCmp,
-            )
-        } else if let Some(operation) = known.get_float_unary_operation(name) {
-            self.analyze_float_unary_intrinsic(air, name, &args, span, ctx, operation)
-        } else if name == known.test_preview_gate {
-            self.analyze_test_preview_gate_intrinsic(air, &args, span)
-        } else if name == known.read_line {
-            self.analyze_read_line_intrinsic(air, name, inst_ref, &args, span, result_expected, ctx)
-        } else if name == known.to_string {
-            self.analyze_to_string_intrinsic(air, &args, span, ctx)
-        } else if let Some(operation) = known.get_parse_intrinsic_operation(name) {
-            let intrinsic_name_str = operation.expected_spelling();
-            self.analyze_parse_intrinsic(
+            ),
+            I::Sqrt => self.analyze_float_unary_intrinsic(
+                air,
+                name,
+                &args,
+                span,
+                ctx,
+                crate::IntrinsicOperation::FloatSqrt,
+            ),
+            I::Floor => self.analyze_float_unary_intrinsic(
+                air,
+                name,
+                &args,
+                span,
+                ctx,
+                crate::IntrinsicOperation::FloatFloor,
+            ),
+            I::Ceil => self.analyze_float_unary_intrinsic(
+                air,
+                name,
+                &args,
+                span,
+                ctx,
+                crate::IntrinsicOperation::FloatCeil,
+            ),
+            I::Trunc => self.analyze_float_unary_intrinsic(
+                air,
+                name,
+                &args,
+                span,
+                ctx,
+                crate::IntrinsicOperation::FloatTrunc,
+            ),
+            I::Round => self.analyze_float_unary_intrinsic(
+                air,
+                name,
+                &args,
+                span,
+                ctx,
+                crate::IntrinsicOperation::FloatRound,
+            ),
+            I::TestPreviewGate => self.analyze_test_preview_gate_intrinsic(air, &args, span),
+            I::ReadLine => self.analyze_read_line_intrinsic(
                 air,
                 name,
                 inst_ref,
-                operation,
-                intrinsic_name_str,
                 &args,
                 span,
                 result_expected,
                 ctx,
-            )
-        } else if name == known.cast {
-            self.analyze_cast_intrinsic(air, inst_ref, &args, span, ctx)
-        } else if name == known.panic {
-            self.analyze_panic_intrinsic(air, &args, span, ctx)
-        } else if name == known.assert {
-            self.analyze_assert_intrinsic(air, &args, span, ctx)
-        } else if name == known.assert_eq {
-            self.analyze_assert_comparison_intrinsic(air, "assert_eq", true, &args, span, ctx)
-        } else if name == known.assert_ne {
-            self.analyze_assert_comparison_intrinsic(air, "assert_ne", false, &args, span, ctx)
-        } else if name == known.import {
-            self.analyze_import_intrinsic(air, &args, span)
-        } else if name == known.random_u32 {
-            self.analyze_random_u32_intrinsic(air, name, &args, span)
-        } else if name == known.random_u64 {
-            self.analyze_random_u64_intrinsic(air, name, &args, span)
-        } else if name == known.arg_count {
-            self.analyze_process_count_intrinsic(
+            ),
+            I::ToString => self.analyze_to_string_intrinsic(air, &args, span, ctx),
+            I::ParseI32 | I::ParseI64 | I::ParseU32 | I::ParseU64 => {
+                let operation = match intrinsic {
+                    I::ParseI32 => crate::IntrinsicOperation::ParseI32,
+                    I::ParseI64 => crate::IntrinsicOperation::ParseI64,
+                    I::ParseU32 => crate::IntrinsicOperation::ParseU32,
+                    _ => crate::IntrinsicOperation::ParseU64,
+                };
+                let intrinsic_name_str = operation.expected_spelling();
+                self.analyze_parse_intrinsic(
+                    air,
+                    name,
+                    inst_ref,
+                    operation,
+                    intrinsic_name_str,
+                    &args,
+                    span,
+                    result_expected,
+                    ctx,
+                )
+            }
+            I::Cast => self.analyze_cast_intrinsic(air, inst_ref, &args, span, ctx),
+            I::Panic => self.analyze_panic_intrinsic(air, &args, span, ctx),
+            I::Assert => self.analyze_assert_intrinsic(air, &args, span, ctx),
+            I::AssertEq | I::AssertNe => self.analyze_assert_comparison_intrinsic(
+                air,
+                intrinsic.spelling(),
+                intrinsic == I::AssertEq,
+                &args,
+                span,
+                ctx,
+            ),
+            I::Import => self.analyze_import_intrinsic(air, &args, span),
+            I::RandomU32 => self.analyze_random_u32_intrinsic(air, name, &args, span),
+            I::RandomU64 => self.analyze_random_u64_intrinsic(air, name, &args, span),
+            I::ArgCount => self.analyze_process_count_intrinsic(
                 air,
                 name,
-                "arg_count",
+                intrinsic.spelling(),
                 crate::IntrinsicOperation::ArgCount,
                 &args,
                 span,
-            )
-        } else if name == known.env_count {
-            self.analyze_process_count_intrinsic(
+            ),
+            I::EnvCount => self.analyze_process_count_intrinsic(
                 air,
                 name,
-                "env_count",
+                intrinsic.spelling(),
                 crate::IntrinsicOperation::EnvCount,
                 &args,
                 span,
-            )
-        } else if name == known.arg_len {
-            self.analyze_process_len_intrinsic(
+            ),
+            I::ArgLen => self.analyze_process_len_intrinsic(
                 air,
                 name,
-                "arg_len",
+                intrinsic.spelling(),
                 crate::IntrinsicOperation::ArgLen,
                 &args,
                 span,
                 ctx,
-            )
-        } else if name == known.env_len {
-            self.analyze_process_len_intrinsic(
+            ),
+            I::EnvLen => self.analyze_process_len_intrinsic(
                 air,
                 name,
-                "env_len",
+                intrinsic.spelling(),
                 crate::IntrinsicOperation::EnvLen,
                 &args,
                 span,
                 ctx,
-            )
-        } else if name == known.arg_ptr {
-            self.analyze_process_ptr_intrinsic(
+            ),
+            I::ArgPtr => self.analyze_process_ptr_intrinsic(
                 air,
                 name,
-                "arg_ptr",
+                intrinsic.spelling(),
                 crate::IntrinsicOperation::ArgPtr,
                 inst_ref,
                 &args,
                 span,
                 ctx,
-            )
-        } else if name == known.env_ptr {
-            self.analyze_process_ptr_intrinsic(
+            ),
+            I::EnvPtr => self.analyze_process_ptr_intrinsic(
                 air,
                 name,
-                "env_ptr",
+                intrinsic.spelling(),
                 crate::IntrinsicOperation::EnvPtr,
                 inst_ref,
                 &args,
                 span,
                 ctx,
-            )
-        } else if name == known.wrapping_add
-            || name == known.wrapping_sub
-            || name == known.wrapping_mul
-        {
-            self.analyze_wrapping_arith_intrinsic(air, name, &args, span, ctx)
-        } else if name == known.ptr_read {
-            self.analyze_ptr_read_intrinsic(air, name, inst_ref, &args, span, ctx, false)
-        } else if name == known.ptr_write {
-            self.analyze_ptr_write_intrinsic(air, name, &args, span, ctx, false)
-        } else if name == known.ptr_read_unaligned {
-            self.analyze_ptr_read_intrinsic(air, name, inst_ref, &args, span, ctx, true)
-        } else if name == known.ptr_write_unaligned {
-            self.analyze_ptr_write_intrinsic(air, name, &args, span, ctx, true)
-        } else if name == known.ptr_offset {
-            self.analyze_ptr_offset_intrinsic(air, name, &args, span, ctx)
-        } else if name == known.ptr_to_int {
-            self.analyze_ptr_to_int_intrinsic(air, name, &args, span, ctx)
-        } else if name == known.int_to_ptr {
-            self.analyze_int_to_ptr_intrinsic(air, name, inst_ref, &args, span, ctx)
-        } else if name == known.alloc || name == known.alloc_zeroed {
-            self.analyze_alloc_intrinsic(air, name, inst_ref, &args, span, ctx)
-        } else if name == known.realloc {
-            self.analyze_realloc_intrinsic(air, name, &args, span, ctx)
-        } else if name == known.resize {
-            self.analyze_resize_intrinsic(air, name, &args, span, ctx)
-        } else if name == known.free {
-            self.analyze_free_intrinsic(air, name, &args, span, ctx)
-        } else if name == known.byte_copy || name == known.byte_move {
-            self.analyze_byte_copy_intrinsic(air, name, &args, span, ctx)
-        } else if name == known.byte_set {
-            self.analyze_byte_set_intrinsic(air, name, &args, span, ctx)
-        } else if name == known.raw {
-            let raw = self.known_symbols().raw;
-            self.analyze_addr_of_intrinsic(air, &args, span, ctx, false, raw, "addr_of")
-        } else if name == known.raw_mut {
-            let raw_mut = self.known_symbols().raw_mut;
-            self.analyze_addr_of_intrinsic(air, &args, span, ctx, true, raw_mut, "addr_of_mut")
-        } else if name == known.field_ptr {
-            self.analyze_field_ptr_intrinsic(air, &args, span, ctx)
-        } else if name == known.place {
-            self.analyze_place_intrinsic(air, inst_ref, &args, span, ctx)
-        } else if name == known.syscall {
-            self.analyze_syscall_intrinsic(air, name, &args, span, ctx)
-        } else if name == known.target_arch {
-            self.analyze_target_arch_intrinsic(air, &args, span)
-        } else if name == known.target_os {
-            self.analyze_target_os_intrinsic(air, &args, span)
-        } else if name == known.target_data_model {
-            self.analyze_target_data_model_intrinsic(air, &args, span)
-        } else {
-            Err(CompileError::new(
-                ErrorKind::UnknownIntrinsic(self.body_interner().resolve(&name).to_string()),
+            ),
+            I::WrappingAdd | I::WrappingSub | I::WrappingMul => {
+                self.analyze_wrapping_arith_intrinsic(air, name, &args, span, ctx)
+            }
+            I::PtrRead => {
+                self.analyze_ptr_read_intrinsic(air, name, inst_ref, &args, span, ctx, false)
+            }
+            I::PtrWrite => self.analyze_ptr_write_intrinsic(air, name, &args, span, ctx, false),
+            I::PtrReadUnaligned => {
+                self.analyze_ptr_read_intrinsic(air, name, inst_ref, &args, span, ctx, true)
+            }
+            I::PtrWriteUnaligned => {
+                self.analyze_ptr_write_intrinsic(air, name, &args, span, ctx, true)
+            }
+            I::PtrOffset => self.analyze_ptr_offset_intrinsic(air, name, &args, span, ctx),
+            I::PtrToInt => self.analyze_ptr_to_int_intrinsic(air, name, &args, span, ctx),
+            I::IntToPtr => self.analyze_int_to_ptr_intrinsic(air, name, inst_ref, &args, span, ctx),
+            I::Alloc | I::AllocZeroed => {
+                self.analyze_alloc_intrinsic(air, name, inst_ref, &args, span, ctx)
+            }
+            I::Realloc => self.analyze_realloc_intrinsic(air, name, &args, span, ctx),
+            I::Resize => self.analyze_resize_intrinsic(air, name, &args, span, ctx),
+            I::Free => self.analyze_free_intrinsic(air, name, &args, span, ctx),
+            I::ByteCopy | I::ByteMove => {
+                self.analyze_byte_copy_intrinsic(air, name, &args, span, ctx)
+            }
+            I::ByteSet => self.analyze_byte_set_intrinsic(air, name, &args, span, ctx),
+            I::Raw => {
+                let raw = known.intrinsic(I::Raw);
+                self.analyze_addr_of_intrinsic(air, &args, span, ctx, false, raw, "addr_of")
+            }
+            I::RawMut => {
+                let raw_mut = known.intrinsic(I::RawMut);
+                self.analyze_addr_of_intrinsic(air, &args, span, ctx, true, raw_mut, "addr_of_mut")
+            }
+            I::FieldPtr => self.analyze_field_ptr_intrinsic(air, &args, span, ctx),
+            I::Place => self.analyze_place_intrinsic(air, inst_ref, &args, span, ctx),
+            I::Syscall => self.analyze_syscall_intrinsic(air, name, &args, span, ctx),
+            I::TargetArch => self.analyze_target_arch_intrinsic(air, &args, span),
+            I::TargetOs => self.analyze_target_os_intrinsic(air, &args, span),
+            I::TargetDataModel => self.analyze_target_data_model_intrinsic(air, &args, span),
+            // The type-position intrinsics lower to `TypeIntrinsic`/`OffsetOf`
+            // at their documented argument shape (RUE-788). Reaching value
+            // dispatch means the shape was wrong, and the call is rejected as
+            // the unknown value intrinsic it is.
+            I::SizeOf
+            | I::AlignOf
+            | I::RequireDroppable
+            | I::RequireTriviallyDroppable
+            | I::IntMax
+            | I::IntMin
+            | I::OffsetOf => Err(CompileError::new(
+                ErrorKind::UnknownIntrinsic(intrinsic.spelling().to_string()),
                 span,
-            ))
+            )),
         }
     }
 
@@ -694,7 +798,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             InstData::Yield(operand) => match self.body_rir_ref().get(operand).data {
                 InstData::Checked { expr } => match self.body_rir_ref().get(expr).data {
                     InstData::Intrinsic { name, .. } => {
-                        name == self.known_symbols().place && expr == inst_ref
+                        name == self
+                            .known_symbols()
+                            .intrinsic(rue_builtins::IntrinsicName::Place)
+                            && expr == inst_ref
                     }
                     _ => false,
                 },
@@ -727,7 +834,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // storage while leaving the index expression to the reviewed std
         // accessor's bounds guard.
         let ptr_offset_base = match &self.body_rir_ref().get(args[0].value).data {
-            InstData::Intrinsic { name, args } if *name == self.known_symbols().ptr_offset => {
+            InstData::Intrinsic { name, args }
+                if *name
+                    == self
+                        .known_symbols()
+                        .intrinsic(rue_builtins::IntrinsicName::PtrOffset) =>
+            {
                 let pointer_args = self.body_rir_ref().intrinsic_args(args);
                 (pointer_args.len() == 2)
                     .then(|| pointer_args.values().next())
@@ -1118,7 +1230,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let width = self.float_width_discriminator(air, arg_type, span);
             let intrinsic_ref = air.add_intrinsic(
                 crate::IntrinsicOperation::DebugFloat,
-                self.known_symbols().dbg,
+                self.known_symbols()
+                    .intrinsic(rue_builtins::IntrinsicName::Dbg),
                 &[bits, width],
                 Type::UNIT,
                 span,
@@ -1148,7 +1261,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             } else {
                 crate::IntrinsicOperation::DebugU64
             },
-            self.known_symbols().dbg,
+            self.known_symbols()
+                .intrinsic(rue_builtins::IntrinsicName::Dbg),
             &[arg_ref],
             Type::UNIT,
             span,
@@ -1177,7 +1291,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
         let pattern = air.add_intrinsic(
             crate::IntrinsicOperation::BitCast,
-            self.known_symbols().bit_cast,
+            self.known_symbols()
+                .intrinsic(rue_builtins::IntrinsicName::BitCast),
             &[value],
             pattern_ty,
             span,
@@ -1403,7 +1518,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let site = self.stage_failure_site(air, ctx, str_ty, span)?;
             let panic_ref = air.add_intrinsic(
                 crate::IntrinsicOperation::PanicNoMessage,
-                self.known_symbols().panic,
+                self.known_symbols()
+                    .intrinsic(rue_builtins::IntrinsicName::Panic),
                 &[],
                 Type::NEVER,
                 span,
@@ -1441,7 +1557,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let site = self.stage_failure_site(air, ctx, str_ty, span)?;
         let intrinsic_ref = air.add_intrinsic(
             crate::IntrinsicOperation::Panic,
-            self.known_symbols().panic,
+            self.known_symbols()
+                .intrinsic(rue_builtins::IntrinsicName::Panic),
             &[arg_ref],
             Type::NEVER,
             span,
@@ -1741,7 +1858,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             });
             let assertion = air.add_intrinsic(
                 crate::IntrinsicOperation::AssertFailed,
-                self.known_symbols().assert,
+                self.known_symbols()
+                    .intrinsic(rue_builtins::IntrinsicName::Assert),
                 &[condition],
                 Type::UNIT,
                 span,
@@ -2903,9 +3021,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             Type::ERROR
         };
 
-        let data = if name == self.known_symbols().wrapping_add {
+        let data = if name
+            == self
+                .known_symbols()
+                .intrinsic(rue_builtins::IntrinsicName::WrappingAdd)
+        {
             AirInstData::WrappingAdd(lhs.air_ref, rhs.air_ref)
-        } else if name == self.known_symbols().wrapping_sub {
+        } else if name
+            == self
+                .known_symbols()
+                .intrinsic(rue_builtins::IntrinsicName::WrappingSub)
+        {
             AirInstData::WrappingSub(lhs.air_ref, rhs.air_ref)
         } else {
             AirInstData::WrappingMul(lhs.air_ref, rhs.air_ref)

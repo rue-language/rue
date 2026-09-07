@@ -27,39 +27,27 @@ pub(crate) struct ExactOptionPrerequisite {
 }
 
 /// One fallible-intrinsic payload demanded by a body.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum FalliblePayload {
-    I32,
-    I64,
-    U32,
-    U64,
-    StrBuf,
+///
+/// The payload belongs to the intrinsic's own row in the one intrinsic table,
+/// so this is that table's payload vocabulary rather than a second enum this
+/// crate keeps in step by hand.
+pub(crate) type FalliblePayload = rue_builtins::IntrinsicFalliblePayload;
+
+/// Map the canonical RIR artifact's typed intrinsic kind to its `Option`
+/// payload. The mapping is the fallible projection's own, so a fallible
+/// intrinsic cannot reach a body's toolchain demand without one.
+pub(crate) fn payload_of(intrinsic: rue_rir::RirFallibleIntrinsic) -> FalliblePayload {
+    intrinsic.payload()
 }
 
-impl FalliblePayload {
-    /// Map the canonical RIR artifact's typed intrinsic kind to its `Option`
-    /// payload.
-    pub(crate) fn from_rir(intrinsic: rue_rir::RirFallibleIntrinsic) -> Self {
-        match intrinsic {
-            rue_rir::RirFallibleIntrinsic::ParseI32 => Self::I32,
-            rue_rir::RirFallibleIntrinsic::ParseI64 => Self::I64,
-            rue_rir::RirFallibleIntrinsic::ParseU32 => Self::U32,
-            rue_rir::RirFallibleIntrinsic::ParseU64 => Self::U64,
-            rue_rir::RirFallibleIntrinsic::ReadLine => Self::StrBuf,
-        }
-    }
-
-    #[cfg(test)]
-    fn from_intrinsic_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "read_line" => Self::StrBuf,
-            "parse_i32" => Self::I32,
-            "parse_i64" => Self::I64,
-            "parse_u32" => Self::U32,
-            "parse_u64" => Self::U64,
-            _ => return None,
-        })
-    }
+/// The payload a spelling demands, if it names a fallible intrinsic.
+#[cfg(test)]
+fn payload_of_intrinsic_name(name: &str) -> Option<FalliblePayload> {
+    Some(
+        rue_builtins::IntrinsicName::from_spelling(name)?
+            .fallible()?
+            .payload(),
+    )
 }
 
 /// Test-only lexical oracle for the typed artifact projection.
@@ -78,7 +66,7 @@ pub(crate) fn scan_body_payload_kinds(body: &str) -> BTreeSet<FalliblePayload> {
             continue;
         }
         if let rue_lexer::TokenKind::Ident(symbol) = pair[1].kind
-            && let Some(payload) = FalliblePayload::from_intrinsic_name(interner.resolve(&symbol))
+            && let Some(payload) = payload_of_intrinsic_name(interner.resolve(&symbol))
         {
             payloads.insert(payload);
         }

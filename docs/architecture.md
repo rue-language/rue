@@ -138,6 +138,9 @@ run the resulting executable.
 - **`rue-builtins`** describes compiler-visible built-in types, enums,
   functions, methods, and operators. Built-in aggregate types are injected as
   synthetic declarations so they use ordinary semantic paths where possible.
+  It also owns the closed intrinsic inventory (`IntrinsicName`): because the
+  crate is a leaf, RIR packing and semantic analysis classify a spelling
+  through one table instead of keeping parallel ones.
 - **`rue-linker`** reads and writes ELF and Mach-O objects, archives,
   relocations, and symbols. Linux executables normally use the internal linker;
   the CLI can also delegate to a system linker.

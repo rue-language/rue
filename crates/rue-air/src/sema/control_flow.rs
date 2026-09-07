@@ -6,6 +6,7 @@
 
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use ahash::AHashMap;
+use rue_builtins::IntrinsicName;
 use std::sync::Arc;
 
 use lasso::Spur;
@@ -3154,7 +3155,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let bridge = match &self.body_rir_ref().get(operand).data {
             InstData::Checked { expr } => matches!(
                 &self.body_rir_ref().get(*expr).data,
-                InstData::Intrinsic { name, .. } if *name == self.known_symbols().place
+                InstData::Intrinsic { name, .. } if *name == self.known_symbols().intrinsic(IntrinsicName::Place)
             ),
             _ => false,
         };
