@@ -267,6 +267,15 @@ t_exit_124_is_not_timeout() {
 }
 
 # TERM-ignoring descendants must be killed with the harness process group.
+#
+# The timeout window has to outlast fork/exec scheduling for the harness's own
+# grandchild, not just the sleep loops it settles into: under host load (many
+# concurrent heavy builds), a 1s window left too little margin for the nested
+# subshells to actually run their `printf ... > "$GRANDCHILD_PID_FILE"` before
+# the timer fired, so the pid file could still be empty when this test read it
+# — a false failure with no real timeout-handling defect (RUE-2100). A few
+# seconds is enough headroom for that scheduling latency without materially
+# slowing the suite.
 t_timeout_kills_descendants() {
     local dir status group_pid child_pid grandchild_pid output diagnostic
     dir="$(sandbox)"
@@ -275,7 +284,7 @@ t_timeout_kills_descendants() {
     output="$(
         cd "$dir" &&
             GROUP_PID_FILE="$dir/group.pid" CHILD_PID_FILE="$dir/child.pid" \
-                GRANDCHILD_PID_FILE="$dir/grandchild.pid" RUE_CORPUS_TIMEOUT_SECONDS=1 \
+                GRANDCHILD_PID_FILE="$dir/grandchild.pid" RUE_CORPUS_TIMEOUT_SECONDS=4 \
                 "$CORPUS_ACTION" "$dir/stamp.txt" ./harness --timeout-runner "$TIMEOUT_RUNNER" -- 2>&1
     )" || status=$?
     status="${status:-0}"
@@ -291,7 +300,7 @@ t_timeout_kills_descendants() {
     check "TERM-ignoring process group is gone" "yes" \
         "$([ -n "$group_pid" ] && wait_pid_gone "$group_pid" && echo yes || echo no)"
     case "$output" in
-        *"corpus harness exceeded 1s"*) diagnostic=yes ;;
+        *"corpus harness exceeded 4s"*) diagnostic=yes ;;
         *) diagnostic=no ;;
     esac
     check "forced cleanup retains focused diagnostic" "yes" "$diagnostic"
