@@ -72,17 +72,27 @@ def terminate_group(process: subprocess.Popen, first_signal: int = signal.SIGTER
     signal_group(process_group, first_signal)
 
     deadline = time.monotonic() + TERM_GRACE_SECONDS
-    while time.monotonic() < deadline:
+    # Read the clock once for the sleep decision: a separate condition read
+    # can cross the deadline and turn the next sleep duration negative.
+    while True:
         if not group_exists(process_group):
             return
-        time.sleep(min(0.05, deadline - time.monotonic()))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.05, remaining))
 
     # Do not stop at the leader: a harness can leave descendants running after
     # it handles TERM, so the forced cleanup always addresses the whole group.
     signal_group(process_group, signal.SIGKILL)
     deadline = time.monotonic() + KILL_GRACE_SECONDS
-    while time.monotonic() < deadline and group_exists(process_group):
-        time.sleep(min(0.05, deadline - time.monotonic()))
+    while True:
+        if not group_exists(process_group):
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.05, remaining))
 
 
 def shell_status(returncode: int) -> int:

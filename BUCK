@@ -1474,6 +1474,7 @@ filegroup(
     srcs = [
         "scripts/corpus-action",
         "scripts/corpus-timeout.py",
+        "scripts/test-corpus-timeout.py",
         "scripts/corpus-stamp-check",
     ],
 )
