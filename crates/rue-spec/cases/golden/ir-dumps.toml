@@ -156,7 +156,7 @@ function main:
 [[case]]
 name = "storage_lowering_mir_x86_64"
 spec = ["5.2:1", "5.2:2", "5.2:3", "6.1:14", "6.1:18"]
-description = "Scalar allocation, local load/store, and inout ParamStore retain their exact x86-64 MIR sequence; the inout pointer is register-only (RUE-1170)."
+description = "Scalar allocation, local load/store, and inout ParamStore retain their exact x86-64 MIR sequence; the inout pointer is register-only (RUE-1170) and the argument's place is addressed without being read (RUE-2087)."
 source = """
 fn set(inout x: i32) { x = 42; }
 
@@ -180,21 +180,20 @@ function main:
     mov [rbp-8], v0
     mov v1, 1
     mov [rbp-8], v1
-    mov v2, [rbp-8]
-    lea v4, [rbp-8]
-    mov rax, v4
+    lea v3, [rbp-8]
+    mov rax, v3
     push rax
     pop rdi
     call __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s3_736574t0_
-    mov v5, [rbp-8]
-    mov rdi, v5
+    mov v4, [rbp-8]
+    mov rdi, v4
     call __rue_exit
 """
 
 [[case]]
 name = "storage_lowering_mir_aarch64"
 spec = ["5.2:1", "5.2:2", "5.2:3", "6.1:14", "6.1:18"]
-description = "Scalar allocation, local load/store, and inout ParamStore retain their exact AArch64 MIR sequence; the inout pointer is register-only (RUE-1170)."
+description = "Scalar allocation, local load/store, and inout ParamStore retain their exact AArch64 MIR sequence; the inout pointer is register-only (RUE-1170) and the argument's place is addressed without being read (RUE-2087)."
 source = """
 fn set(inout x: i32) { x = 42; }
 
@@ -218,12 +217,11 @@ function main:
     str v0, [fp, #-8]
     mov v1, #1
     str v1, [fp, #-8]
-    ldr v2, [fp, #-8]
-    add v4, fp, #-8
-    mov x0, v4
+    add v3, fp, #-8
+    mov x0, v3
     bl __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s3_736574t0_
-    ldr v5, [fp, #-8]
-    mov x0, v5
+    ldr v4, [fp, #-8]
+    mov x0, v4
     bl __rue_exit
 """
 

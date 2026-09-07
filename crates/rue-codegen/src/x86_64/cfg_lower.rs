@@ -7641,6 +7641,159 @@ mod tests {
         );
     }
 
+    /// RUE-2087: a by-reference argument hands the callee the parameter's
+    /// address, so the CFG read that supplies it is never materialized.
+    /// Lowering that read anyway left a load of the frame home whose value
+    /// nothing consumed:
+    ///
+    /// ```text
+    /// mov r11, [rbp-8]     <- dead
+    /// lea r11, [rbp-8]     <- the address `bump` actually receives
+    /// ```
+    #[test]
+    fn an_inout_argument_loads_no_value_before_taking_the_address() {
+        // `fn f(v: i64) -> i64 { bump(inout v); v }`
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::I64,
+            0,
+            "f",
+            ParamSlotModes::new(vec![false], vec![true]),
+            scalar_param_abi(1),
+            &pool,
+            &interner,
+        );
+        let value = fixture.param(0, Type::I64);
+        fixture.call(
+            "bump",
+            vec![CfgCallArg {
+                value,
+                mode: CfgArgMode::Inout,
+            }],
+            Type::UNIT,
+        );
+        let reload = fixture.param(0, Type::I64);
+        fixture.ret(Some(reload));
+        let mir = fixture.lower_with_plan();
+        let insts = mir.instructions();
+        let address = insts
+            .iter()
+            .position(|inst| matches!(inst, X86Inst::Lea { base: Reg::Rbp, .. }))
+            .unwrap_or_else(|| {
+                panic!("the by-ref argument forms a frame address: {insts:?}");
+            });
+        assert!(
+            !insts[..address]
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::MovRM { base: Reg::Rbp, .. })),
+            "nothing may read the frame home the by-ref argument only addresses: {insts:?}",
+        );
+        assert!(
+            insts[address..]
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::MovRM { base: Reg::Rbp, .. })),
+            "the parameter re-read after the call must still reload the home: {insts:?}",
+        );
+    }
+
+    /// RUE-2087 guard: the elision needs *every* use of a value to be a
+    /// by-reference argument, so one value handed to both a by-value and a
+    /// by-reference argument of the same call is still read before it.
+    ///
+    /// This is the shape that discriminates the rule. Today's frontend emits a
+    /// separate read per source read, so `both(v, inout v)` reaches codegen as
+    /// two distinct values and neither is mixed-use; the rule defends the
+    /// lowering against a neighbouring pass (a load-forwarding CSE, say) that
+    /// starts sharing one.
+    #[test]
+    fn a_value_used_by_value_and_by_reference_still_reads_the_home() {
+        // `fn f(v: i64) -> i64 { both(v, inout v); v }` with one shared read.
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::I64,
+            0,
+            "f",
+            ParamSlotModes::new(vec![false], vec![true]),
+            scalar_param_abi(1),
+            &pool,
+            &interner,
+        );
+        let shared = fixture.param(0, Type::I64);
+        fixture.call(
+            "both",
+            vec![
+                CfgCallArg {
+                    value: shared,
+                    mode: CfgArgMode::Normal,
+                },
+                CfgCallArg {
+                    value: shared,
+                    mode: CfgArgMode::Inout,
+                },
+            ],
+            Type::UNIT,
+        );
+        let reload = fixture.param(0, Type::I64);
+        fixture.ret(Some(reload));
+        let mir = fixture.lower_with_plan();
+        let insts = mir.instructions();
+        let call = insts
+            .iter()
+            .position(|inst| matches!(inst, X86Inst::CallRel { .. }))
+            .unwrap_or_else(|| panic!("the fixture calls `both`: {insts:?}"));
+        assert!(
+            insts[..call]
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::MovRM { base: Reg::Rbp, .. })),
+            "a value with a by-value use must read the home before the call: {insts:?}",
+        );
+    }
+
+    /// RUE-2087 guard, the miscompile shape: one value is passed by reference
+    /// and then *returned*. Skipping its materialization would leave the
+    /// return's `get_vreg` to lower it at the use — after the callee wrote the
+    /// home — so the function would answer with the callee's new value instead
+    /// of the old one. The always-on check in `lower_cfg` catches it.
+    #[test]
+    fn a_value_returned_after_a_by_reference_argument_is_read_before_the_call() {
+        // `fn f(v: i64) -> i64 { bump(inout v); v }` returning the same read.
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::I64,
+            0,
+            "f",
+            ParamSlotModes::new(vec![false], vec![true]),
+            scalar_param_abi(1),
+            &pool,
+            &interner,
+        );
+        let shared = fixture.param(0, Type::I64);
+        fixture.call(
+            "bump",
+            vec![CfgCallArg {
+                value: shared,
+                mode: CfgArgMode::Inout,
+            }],
+            Type::UNIT,
+        );
+        fixture.ret(Some(shared));
+        let mir = fixture.lower_with_plan();
+        let insts = mir.instructions();
+        let call = insts
+            .iter()
+            .position(|inst| matches!(inst, X86Inst::CallRel { .. }))
+            .unwrap_or_else(|| panic!("the fixture calls `bump`: {insts:?}"));
+        assert!(
+            insts[..call]
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::MovRM { base: Reg::Rbp, .. })),
+            "the returned value must be read before the callee writes it: {insts:?}",
+        );
+    }
+
     /// RUE-2048 guard: a zero that a consumer really reads is still emitted.
     /// Only a value with no ABI slots loses its materialization.
     #[test]

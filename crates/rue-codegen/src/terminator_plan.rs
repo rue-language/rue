@@ -551,6 +551,9 @@ pub(crate) fn lower_cfg<A: CfgLowerAdapter>(
 ) -> rue_error::CompileResult<()> {
     adapter.preload_by_ref_params();
     let order = BlockOrder::of(ctx);
+    // A read consumed only as a by-reference call argument hands the callee its
+    // place's address; the value it would load is never used (RUE-2087).
+    let elided = value_plan::address_only_reads(ctx);
 
     for block in ctx.cfg.blocks() {
         for (index, &(value, ty)) in block.params.iter().enumerate() {
@@ -587,6 +590,25 @@ pub(crate) fn lower_cfg<A: CfgLowerAdapter>(
         }
 
         for &value in &block.insts {
+            // `elided` is sized by `value_count()` and a block's instruction
+            // ids are dense within that domain, so this cannot be out of range.
+            if elided[value.as_u32() as usize] {
+                if let Some(info) = block_info.as_mut() {
+                    let inst = ctx.cfg.get_inst(value);
+                    info.instructions.push(crate::LoweringDecision {
+                        cfg_value: value,
+                        cfg_inst_desc: adapter.value_description(value),
+                        cfg_type: inst.ty.name().to_string(),
+                        mir_insts: Vec::new(),
+                        rationale: Some(
+                            "Not materialized: every use is a by-reference call argument, \
+                             which needs the place's address rather than its value"
+                                .to_string(),
+                        ),
+                    });
+                }
+                continue;
+            }
             if let Some(info) = block_info.as_mut() {
                 if adapter.value_is_lowered(value) {
                     continue;
@@ -625,6 +647,20 @@ pub(crate) fn lower_cfg<A: CfgLowerAdapter>(
         if let (Some(debug), Some(info)) = (debug_info.as_deref_mut(), block_info) {
             debug.blocks.push(info);
         }
+    }
+    // Nothing may reach an elided read on demand. `get_vreg` would lower it at
+    // its use instead, which for a by-reference argument is after the call it
+    // feeds — reading the place the callee has just written. The check is
+    // always on because the failure it catches is a silent miscompile, and it
+    // costs one map lookup per elided read.
+    if let Some((index, _)) = elided.iter().enumerate().find(|&(index, &elide)| {
+        elide && adapter.value_is_lowered(CfgValue::from_raw(index as u32))
+    }) {
+        panic!(
+            "{}: address-only read {} was materialized after all",
+            ctx.cfg.fn_name(),
+            CfgValue::from_raw(index as u32),
+        );
     }
     Ok(())
 }
