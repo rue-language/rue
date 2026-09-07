@@ -25,8 +25,9 @@
 //! its verdict: the runner kills the process group and publishes
 //! `output_overflow` in place of the class and the exit status the record was
 //! carrying. Stderr, which has no such role, still prints the message whole
-//! within its own retention budget — a message large enough to exhaust that
-//! budget too still overflows there.
+//! within its own retention budget — and a message large enough to exhaust
+//! that budget too still keeps its verdict, because the bounded record outranks
+//! a stream's flood (RUE-2083).
 //!
 //! Records reserved by §5.1 and §5.2 — `promotion` payloads and per-case
 //! `sub_result` identities — are named by the schema and produced by nothing in

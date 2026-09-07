@@ -330,6 +330,26 @@ pub(crate) struct Overflow {
     pub(crate) budget: usize,
 }
 
+impl Overflow {
+    /// The one sentence the runner publishes about a flood, whether as the
+    /// failure's message or as the note beside a frame that outranked it.
+    pub(crate) fn describe(self) -> String {
+        format!(
+            "{} exceeded its {}-byte retention budget; the process group was killed",
+            self.stream.name(),
+            self.budget
+        )
+    }
+
+    /// Whether a failure frame read from the channel can still be trusted
+    /// after this flood. A flooded stream says nothing about the channel; a
+    /// flooded channel was cut mid-record, so nothing read from it can vouch
+    /// for the test's own account of its failure.
+    fn leaves_channel_intact(self) -> bool {
+        self.stream != CaptureStream::Channel
+    }
+}
+
 /// How the runner's own supervision ended a test, before its exit status is
 /// consulted at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -370,6 +390,14 @@ pub(crate) struct Classification {
 /// pass or as a bare exit with no explanation. Only then is the process's own
 /// account of itself consulted — a failure frame ahead of the exit status,
 /// since the frame carries structure the status cannot.
+///
+/// One supervision outcome yields to that account: a flooded stdout or stderr
+/// beside a well-formed failure frame (RUE-2083). The frame already says why
+/// the test failed — a `@panic` whose message outgrew stderr's budget is
+/// still a `trap:panic` at a site with an exit status — and the flood is a
+/// fact about the capture, published as the record's `runner_note`, not a
+/// second classification of the same failure. A flooded channel gets no such
+/// deference: it was cut mid-record, so it cannot vouch for its own frames.
 pub(crate) fn classify(observation: Observation<'_>) -> Classification {
     let frames = observation.frames;
     match observation.supervision {
@@ -380,6 +408,14 @@ pub(crate) fn classify(observation: Observation<'_>) -> Classification {
             };
         }
         Supervision::OutputOverflow(overflow) => {
+            if overflow.leaves_channel_intact() && frames.malformed.is_none() {
+                if let Some(failure) = &frames.failure {
+                    return Classification {
+                        verdict: Verdict::Fail(FailureKind::reported(&failure.kind)),
+                        runner_note: Some(overflow.describe()),
+                    };
+                }
+            }
             return Classification {
                 verdict: Verdict::Fail(FailureKind::OutputOverflow(overflow)),
                 runner_note: None,
@@ -692,6 +728,89 @@ mod tests {
         assert_eq!(CaptureStream::Stdout.name(), "stdout");
         assert_eq!(CaptureStream::Stderr.name(), "stderr");
         assert_eq!(CaptureStream::Channel.name(), "the failure channel");
+    }
+
+    /// RUE-2083: a `@panic` whose message outgrows stderr's budget still wrote
+    /// a complete frame to the channel, and that frame is the failure. The
+    /// flood is published beside it as the runner's note rather than as a
+    /// second, disagreeing classification.
+    #[test]
+    fn a_flooded_stream_yields_to_a_complete_failure_frame() {
+        let overflow = Overflow {
+            stream: CaptureStream::Stderr,
+            budget: 1024 * 1024,
+        };
+        let frames = ChannelFrames {
+            failure: Some(FailureFrame {
+                kind: "trap:panic".to_owned(),
+                message: "panic: HEAD".to_owned(),
+                ..FailureFrame::default()
+            }),
+            ..ChannelFrames::default()
+        };
+        let classified = classify(Observation {
+            supervision: Supervision::OutputOverflow(overflow),
+            status: Ok(101),
+            stderr: b"panic: HEAD",
+            frames: &frames,
+        });
+        assert_eq!(
+            classified.verdict,
+            Verdict::Fail(FailureKind::Trap("panic"))
+        );
+        assert_eq!(
+            classified.runner_note.as_deref(),
+            Some("stderr exceeded its 1048576-byte retention budget; the process group was killed")
+        );
+    }
+
+    /// The deference is to a frame the runner can trust. A flooded channel was
+    /// cut mid-record, and a malformed channel could not be read at all, so
+    /// neither lets a frame outrank the overflow.
+    #[test]
+    fn a_flooded_or_unreadable_channel_still_reports_the_overflow() {
+        let frame = FailureFrame {
+            kind: "trap:panic".to_owned(),
+            ..FailureFrame::default()
+        };
+        let channel = Overflow {
+            stream: CaptureStream::Channel,
+            budget: 256 * 1024,
+        };
+        let flooded_channel = classify(Observation {
+            supervision: Supervision::OutputOverflow(channel),
+            status: Err(9),
+            stderr: b"",
+            frames: &ChannelFrames {
+                failure: Some(frame.clone()),
+                ..ChannelFrames::default()
+            },
+        });
+        assert_eq!(
+            flooded_channel.verdict,
+            Verdict::Fail(FailureKind::OutputOverflow(channel))
+        );
+        assert_eq!(flooded_channel.runner_note, None);
+
+        let stdout = Overflow {
+            stream: CaptureStream::Stdout,
+            budget: 1024 * 1024,
+        };
+        let malformed = classify(Observation {
+            supervision: Supervision::OutputOverflow(stdout),
+            status: Err(9),
+            stderr: b"",
+            frames: &ChannelFrames {
+                failure: Some(frame),
+                malformed: Some("not JSON".to_owned()),
+                ..ChannelFrames::default()
+            },
+        });
+        assert_eq!(
+            malformed.verdict,
+            Verdict::Fail(FailureKind::OutputOverflow(stdout))
+        );
+        assert_eq!(malformed.runner_note, None);
     }
 
     /// A channel the runner could not read is never silently ignored — least

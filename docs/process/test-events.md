@@ -131,9 +131,10 @@ answers an exhausted channel by killing the process group and publishing
 `output_overflow` — losing the class and the exit status the record was carrying
 (RUE-2064). Stderr has no such role and still prints the message whole within
 its own 1 MiB retention budget, so the two routes to a trap agree except on the
-tail of a message past the bound. The bound buys the verdict back only up to
-that budget: a message long enough to exhaust stderr's own retention still
-overflows there, and is still published as `output_overflow`.
+tail of a message past the bound. A message long enough to exhaust stderr's own
+retention still overflows there, but the bounded frame outranks that flood
+(RUE-2083): the verdict keeps its `trap:panic`, and the flood is the record's
+`runner_note`.
 
 **Every string field is JSON text.** A Rue string is an arbitrary byte sequence,
 so a `message`, a `payload`, or a rendered operand can carry bytes that are not
@@ -303,7 +304,7 @@ consumers already handle instead of adding one.
 | `right` | string | Its right operand, rendered. Present exactly when `left` is. |
 | `diff` | array | The runner's diff from `left` to `right`. Present exactly when `left` is. |
 | `diagnostics` | array | The compiler diagnostics behind a `compile_error`, each the object `--error-format json` publishes for it ([diagnostics.md](diagnostics.md)). **Absent** on every other failure. |
-| `runner_note` | string | The runner's own explanation. **Absent** unless the runner could not trust what it read. |
+| `runner_note` | string | The runner's own explanation. **Absent** unless the runner could not trust what it read, or killed the group for a stream flood that a failure frame outranked. |
 
 `line` and `column` are both 1-based, and `column` counts Unicode scalars rather
 than bytes — the same coordinate the compiler's own diagnostics print for the
@@ -425,6 +426,14 @@ mid-line would otherwise surface as an unreadable frame and a bare `exit`,
 describing the symptom rather than the flood. Reading continues past the budget
 so `bytes_total` is the true count.
 
+One flood is outranked. A test that floods stdout or stderr and also writes a
+well-formed `failure` frame — a `@panic` whose message outgrows stderr's budget
+is the ordinary way — keeps the frame's kind, exit status, and location, and the
+flood becomes the record's `runner_note` (RUE-2083): the frame already says why
+the test failed, and the flood is a fact about the capture rather than a second
+classification of the same failure. A flooded channel is never outranked; it was
+cut mid-record and cannot vouch for its own frames.
+
 That window is sized for a machine, so the human renderer bounds what it prints
 of it: at most 64 lines or 8 KiB per stream, as a 48-line head and a 16-line
 tail with one line naming the lines and bytes skipped between them. Lines are
@@ -537,7 +546,7 @@ it before the run began.
 | `fail` | `unhandled_error` | A `failure` frame with that kind — the test-body `?` failure arm. |
 | `fail` | *(verbatim)* | A `failure` frame with a kind the runner does not know (ADR-0083 §5.1). |
 | `fail` | `exit` | Any other nonzero exit. |
-| `fail` | `output_overflow` | A stream budget was exhausted; the group was killed. |
+| `fail` | `output_overflow` | A capture budget was exhausted and the group was killed, with no well-formed `failure` frame to outrank a stream's flood. |
 | `timeout` | `timeout` | The per-test budget expired; the group was killed. |
 | `crash` | `signal` | Killed by a signal, SIGPIPE included. The `signal` field carries the number. |
 | `compile_error` | `compile_error` | The test's closure failed to analyze, so it was excluded from the image and no process ran. See below. |
@@ -612,7 +621,9 @@ Precedence, in order:
 
 1. **The runner's own supervision** — a timeout or an output overflow — because
    the runner's kill is what produced the signal death that would otherwise read
-   as a crash.
+   as a crash. A flooded stdout or stderr beside a well-formed `failure` frame
+   is the one exception: the frame classifies the failure and the flood is its
+   `runner_note` (RUE-2083). A flooded channel stays `output_overflow`.
 2. **A malformed channel line.** An unreadable failure report is never silently
    ignored: the verdict is `fail` with kind `exit` and a `runner_note` saying so,
    even when the process otherwise looks like a pass.
