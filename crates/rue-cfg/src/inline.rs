@@ -741,11 +741,14 @@ pub fn splice_call_in_block_in_place(
         // Spans are copied verbatim so a future location-carrying trap
         // mechanism inherits the callee's real source position (ADR-0049 §7).
         let translated = splice.value(CfgValue::from_raw(index as u32));
-        dst.add_inst(CfgInst {
+        let translated_value = dst.add_inst(CfgInst {
             data,
             ty: source.ty,
             span: source.span,
         });
+        if let Some(contract) = callee.call_contract(CfgValue::from_raw(index as u32)) {
+            dst.set_call_contract(translated_value, contract.clone());
+        }
         // A callee may already be the result of an inline splice. Rebase its
         // per-value ownership facts through the same value map as its code;
         // otherwise a nested callee's protected transfer Load becomes an

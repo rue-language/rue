@@ -815,6 +815,7 @@ impl RetainedCharge for rue_cfg::ValidatedCfg {
             .saturating_add((self.value_count() * std::mem::size_of::<rue_cfg::CfgInst>()) as u64)
             .saturating_add(payload.value_store_logical_bytes as u64)
             .saturating_add(payload.call_store_logical_bytes as u64)
+            .saturating_add(self.call_contracts_storage_charge() as u64)
             .saturating_add(payload.switch_store_logical_bytes as u64)
             .saturating_add(payload.projection_store_logical_bytes as u64)
             .saturating_add(self.fn_name().len() as u64)

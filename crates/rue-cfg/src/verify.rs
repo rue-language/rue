@@ -1656,6 +1656,9 @@ impl<'a> Verifier<'a> {
             CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. } => {
                 self.verify_place(block, value, place)?
             }
+            CfgInstData::Call { .. } | CfgInstData::AccessorCall { .. } => {
+                self.verify_call_contract(block, value, inst.ty)?
+            }
             CfgInstData::Intrinsic {
                 operation, args, ..
             } => self.verify_intrinsic_operands(block, value, *operation, inst.ty, args)?,
@@ -1669,6 +1672,64 @@ impl<'a> Verifier<'a> {
             }
         });
         operand_result
+    }
+
+    /// Re-prove an ordinary or accessor call against the effective AIR
+    /// contract captured when this CFG value was built. Optimizations may
+    /// substitute operands, modes, or result metadata, but they must not
+    /// change the callee contract.
+    fn verify_call_contract(
+        &self,
+        block: BlockId,
+        value: CfgValue,
+        result_ty: Type,
+    ) -> Result<(), CfgVerificationError> {
+        let Some(contract) = self.cfg.call_contract(value) else {
+            return Err(self.semantic_error(
+                CfgVerificationLocation::Instruction { block, value },
+                format_args!(
+                    "call instruction {} in block {} has no established AIR call contract",
+                    value, block
+                ),
+            ));
+        };
+        let args = match &self.cfg.get_inst(value).data {
+            CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
+                self.cfg.call_args(args)
+            }
+            _ => unreachable!("call contract attached to a non-call instruction"),
+        };
+        if result_ty != contract.result {
+            return Err(self.semantic_error(
+                CfgVerificationLocation::Instruction { block, value },
+                format_args!(
+                    "call instruction {} in block {} no longer has its established result type {:?}; found {:?}",
+                    value, block, contract.result, result_ty
+                ),
+            ));
+        }
+        if args.len() != contract.arguments.len() {
+            return Err(self.semantic_error(
+                CfgVerificationLocation::Instruction { block, value },
+                format_args!(
+                    "call instruction {} in block {} no longer has its established argument count {}; found {}",
+                    value, block, contract.arguments.len(), args.len()
+                ),
+            ));
+        }
+        for (index, (arg, expected)) in args.iter().zip(contract.arguments.iter()).enumerate() {
+            let actual_ty = self.inst(arg.value, block, "call argument")?.ty;
+            if actual_ty != expected.ty || arg.mode != expected.mode {
+                return Err(self.semantic_error(
+                    CfgVerificationLocation::Instruction { block, value },
+                    format_args!(
+                        "call instruction {} in block {} argument {} no longer satisfies its established contract: expected {:?} with mode {:?}, found {:?} with mode {:?}",
+                        value, block, index, expected.ty, expected.mode, actual_ty, arg.mode
+                    ),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Re-prove an intrinsic's operand and result types against the single
@@ -2334,7 +2395,8 @@ impl<'a> Verifier<'a> {
 mod tests {
     use super::Verifier;
     use crate::inst::{
-        BlockId, Cfg, CfgInst, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator,
+        BlockId, Cfg, CfgArgMode, CfgCallArg, CfgCallContract, CfgCallContractArg, CfgInst,
+        CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator,
     };
     use crate::{CfgVerificationLocation, OptLevel, opt};
     use lasso::ThreadedRodeo;
@@ -4964,6 +5026,199 @@ mod tests {
     fn verify_accepts_a_well_typed_intrinsic_operand() {
         let (cfg, pool) = ptr_write_cfg(Type::I64);
         cfg.verify_with_type_pool(&pool).unwrap();
+    }
+
+    fn ordinary_call_cfg(
+        argument_ty: Type,
+        argument_mode: CfgArgMode,
+    ) -> (Cfg, FrozenTypeInternPool, CfgValue, CfgValue) {
+        let pool = TypeInternPool::new().freeze();
+        let mut cfg = Cfg::new(Type::I64, 0, 0, "ordinary_call".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let argument = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(7),
+                ty: argument_ty,
+                span: Span::new(0, 0),
+            },
+        );
+        let args = cfg
+            .push_call_args([CfgCallArg {
+                value: argument,
+                mode: argument_mode,
+            }])
+            .unwrap();
+        let call = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Call {
+                    runtime: None,
+                    name: ThreadedRodeo::default().get_or_intern("callee"),
+                    args,
+                },
+                ty: Type::I64,
+                span: Span::new(0, 0),
+            },
+        );
+        cfg.set_call_contract(
+            call,
+            crate::inst::CfgCallContract::new(
+                [crate::inst::CfgCallContractArg {
+                    ty: Type::I64,
+                    mode: CfgArgMode::Normal,
+                }],
+                Type::I64,
+            ),
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: Some(call) });
+        (cfg, pool, argument, call)
+    }
+
+    #[test]
+    #[should_panic(expected = "argument 0 no longer satisfies its established contract")]
+    fn verify_rejects_ordinary_call_operand_substitution() {
+        let (cfg, pool, _, _) = ordinary_call_cfg(Type::UNIT, CfgArgMode::Normal);
+        cfg.verify_with_type_pool(&pool).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "argument 0 no longer satisfies its established contract")]
+    fn verify_rejects_ordinary_call_mode_substitution() {
+        let (cfg, pool, _, _) = ordinary_call_cfg(Type::I64, CfgArgMode::Borrow);
+        cfg.verify_with_type_pool(&pool).unwrap();
+    }
+
+    #[test]
+    fn verify_rejects_ordinary_call_without_an_established_contract() {
+        let pool = TypeInternPool::new().freeze();
+        let interner = ThreadedRodeo::new();
+        let mut cfg = Cfg::new(Type::I64, 0, 0, "missing_contract".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let args = cfg.push_call_args([]).unwrap();
+        let call = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Call {
+                    runtime: None,
+                    name: interner.get_or_intern("callee"),
+                    args,
+                },
+                ty: Type::I64,
+                span: Span::new(0, 0),
+            },
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: Some(call) });
+
+        let error = cfg.verify_with_type_pool(&pool).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("has no established AIR call contract")
+        );
+    }
+
+    #[test]
+    fn verify_rejects_ordinary_call_argument_count_substitution() {
+        let pool = TypeInternPool::new().freeze();
+        let interner = ThreadedRodeo::new();
+        let mut cfg = Cfg::new(Type::I64, 0, 0, "call_arity".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let args = cfg.push_call_args([]).unwrap();
+        let call = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Call {
+                    runtime: None,
+                    name: interner.get_or_intern("callee"),
+                    args,
+                },
+                ty: Type::I64,
+                span: Span::new(0, 0),
+            },
+        );
+        cfg.set_call_contract(
+            call,
+            CfgCallContract::new(
+                [CfgCallContractArg {
+                    ty: Type::I64,
+                    mode: CfgArgMode::Normal,
+                }],
+                Type::I64,
+            ),
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: Some(call) });
+
+        let error = cfg.verify_with_type_pool(&pool).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("established argument count 1; found 0")
+        );
+    }
+
+    #[test]
+    fn verify_rejects_ordinary_call_result_substitution() {
+        let (mut cfg, pool, _, call) = ordinary_call_cfg(Type::I64, CfgArgMode::Normal);
+        cfg.replace_inst_type(call, Type::BOOL).unwrap();
+
+        let error = cfg.verify_with_type_pool(&pool).unwrap_err();
+        assert!(error.to_string().contains("established result type"));
+    }
+
+    #[test]
+    fn verify_rechecks_accessor_call_against_its_established_contract() {
+        let pool = TypeInternPool::new().freeze();
+        let interner = ThreadedRodeo::new();
+        let mut cfg = Cfg::new(Type::I64, 0, 0, "accessor_contract".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let argument = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(7),
+                ty: Type::I64,
+                span: Span::new(0, 0),
+            },
+        );
+        let args = cfg
+            .push_call_args([CfgCallArg {
+                value: argument,
+                mode: CfgArgMode::Borrow,
+            }])
+            .unwrap();
+        let call = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::AccessorCall {
+                    name: interner.get_or_intern("accessor"),
+                    args,
+                },
+                ty: Type::I64,
+                span: Span::new(0, 0),
+            },
+        );
+        cfg.set_call_contract(
+            call,
+            CfgCallContract::new(
+                [CfgCallContractArg {
+                    ty: Type::I64,
+                    mode: CfgArgMode::Normal,
+                }],
+                Type::I64,
+            ),
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: Some(call) });
+
+        let error = cfg.verify_with_type_pool(&pool).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("argument 0 no longer satisfies its established contract")
+        );
     }
 
     /// `@raw_mut` lowers by taking its operand's ADDRESS, so the operand has

@@ -12,7 +12,7 @@
 //! This design follows Rust MIR's proven approach and eliminates redundant
 //! Load instructions for nested access patterns like `arr[i].field`.
 
-use std::{fmt, sync::Arc};
+use std::{collections::BTreeMap, fmt, sync::Arc};
 
 #[cfg(test)]
 use std::cell::Cell;
@@ -337,7 +337,7 @@ impl fmt::Display for BlockId {
 }
 
 /// A reference to a value (instruction result) in the CFG.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CfgValue(u32);
 
 impl CfgValue {
@@ -406,6 +406,33 @@ pub struct CfgCallArg {
     pub value: CfgValue,
     /// The passing mode for this argument
     pub mode: CfgArgMode,
+}
+
+/// The effective AIR contract accepted during semantic analysis and carried
+/// through CFG transforms with a call value. CFG verification consumes this
+/// established contract instead of resolving or reconstructing a signature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CfgCallContract {
+    pub(crate) arguments: Arc<[CfgCallContractArg]>,
+    pub(crate) result: Type,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CfgCallContractArg {
+    pub(crate) ty: Type,
+    pub(crate) mode: CfgArgMode,
+}
+
+impl CfgCallContract {
+    pub(crate) fn new(
+        arguments: impl IntoIterator<Item = CfgCallContractArg>,
+        result: Type,
+    ) -> Self {
+        Self {
+            arguments: arguments.into_iter().collect::<Vec<_>>().into(),
+            result,
+        }
+    }
 }
 
 impl CfgCallArg {
@@ -758,6 +785,11 @@ pub struct Cfg {
     /// Extra storage for call arguments (CfgCallArg).
     /// Call instructions store (start, len) indices into this array.
     call_args: payload::CallArgs,
+    /// Effective AIR contracts for call values, indexed by CfgValue. This
+    /// metadata is populated at CFG construction and copied by transforms so
+    /// verification can check calls without a second signature table. Ordering
+    /// by value keeps CFG debug projections deterministic across workers.
+    call_contracts: BTreeMap<CfgValue, CfgCallContract>,
     /// Extra storage for switch cases (value, target block pairs).
     /// Switch terminators store (start, len) indices into this array.
     switch_cases: payload::SwitchCases,
@@ -1105,6 +1137,7 @@ impl Clone for Cfg {
                 .collect(),
             extra: self.extra.clone(),
             call_args: self.call_args.clone(),
+            call_contracts: self.call_contracts.clone(),
             switch_cases: self.switch_cases.clone(),
             projections: self.projections.clone(),
             num_locals: self.num_locals,
@@ -1356,11 +1389,28 @@ impl Cfg {
                     local_ty: domain!(ty(*local_ty)),
                 },
             };
-            cfg.add_inst(CfgInst {
+            let contract = self.call_contract(CfgValue::from_raw(cfg.values.len() as u32));
+            let value = cfg.add_inst(CfgInst {
                 data,
                 ty: domain!(ty(source.ty)),
                 span: domain!(span(source.span)),
             });
+            if let Some(contract) = contract {
+                let arguments = contract
+                    .arguments
+                    .iter()
+                    .map(|argument| {
+                        Ok(CfgCallContractArg {
+                            ty: ty(argument.ty).map_err(CfgRemapError::Domain)?,
+                            mode: argument.mode,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, CfgRemapError<E>>>()?;
+                cfg.set_call_contract(
+                    value,
+                    CfgCallContract::new(arguments, domain!(ty(contract.result))),
+                );
+            }
         }
 
         for source in &self.blocks {
@@ -1433,6 +1483,7 @@ impl Cfg {
             values: Vec::new(),
             extra: payload::Values::new(),
             call_args: payload::CallArgs::new(),
+            call_contracts: BTreeMap::new(),
             switch_cases: payload::SwitchCases::new(),
             projections: payload::Projections::new(),
             num_locals,
@@ -1673,6 +1724,26 @@ impl Cfg {
         let value = CfgValue::from_raw(index);
         self.values.push(inst);
         value
+    }
+
+    pub(crate) fn set_call_contract(&mut self, value: CfgValue, contract: CfgCallContract) {
+        self.call_contracts.insert(value, contract);
+    }
+
+    pub(crate) fn call_contract(&self, value: CfgValue) -> Option<&CfgCallContract> {
+        self.call_contracts.get(&value)
+    }
+
+    /// Estimated retained-storage charge for the sparse call-contract map.
+    pub fn call_contracts_storage_charge(&self) -> usize {
+        self.call_contracts.iter().fold(
+            self.call_contracts.len() * std::mem::size_of::<(CfgValue, CfgCallContract)>(),
+            |charge, (_, contract)| {
+                charge.saturating_add(
+                    contract.arguments.len() * std::mem::size_of::<CfgCallContractArg>(),
+                )
+            },
+        )
     }
 
     /// Get an instruction by value reference.
@@ -2392,8 +2463,20 @@ impl Cfg {
         let staged = Self::stage_edit(OP, args)?;
         self.validate_value_refs(OP, staged.iter(), |arg| arg.value)?;
         self.preflight_append(OP, block)?;
+        // `append_call` is the typed constructor used by CFG fixtures and
+        // other direct CFG clients. Capture its declared argument contract at
+        // construction time, before any later edit can mutate the operands.
+        // Compiler lowering uses the AIR-backed builder path and installs the
+        // same metadata explicitly from its canonical call arguments.
+        let contract = CfgCallContract::new(
+            staged.iter().map(|arg| CfgCallContractArg {
+                ty: self.get_inst(arg.value).ty,
+                mode: arg.mode,
+            }),
+            ty,
+        );
         let args = payload::push_call_args(&mut self.call_args, staged)?;
-        Ok(self.add_inst_to_block(
+        let value = self.add_inst_to_block(
             block,
             CfgInst {
                 data: CfgInstData::Call {
@@ -2404,7 +2487,9 @@ impl Cfg {
                 ty,
                 span,
             },
-        ))
+        );
+        self.set_call_contract(value, contract);
+        Ok(value)
     }
 
     pub fn append_intrinsic_operation(
@@ -4133,6 +4218,11 @@ mod tests {
         assert!(rewritten.is_ownership_boundary_value(replacement));
         assert_eq!(remapped.get_inst(call).span, Span::new(107, 108));
         assert_eq!(
+            remapped.call_contract(call),
+            cfg.call_contract(call),
+            "domain remapping must preserve the established call contract"
+        );
+        assert_eq!(
             remapped.get_array_elements(&remapped.get_inst(array).data),
             [old, replacement]
         );
@@ -4376,5 +4466,49 @@ mod tests {
             .unwrap();
         assert_eq!(visits.get(), USES);
         assert_eq!(Cfg::test_clone_count(), 1);
+    }
+
+    #[test]
+    fn remapping_retypes_the_established_call_contract_before_verification() {
+        let mut cfg = Cfg::new(Type::I32, 0, 0, "remap_call_contract".into(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let argument = cfg.append_inst(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(7),
+                ty: Type::I32,
+                span: Span::default(),
+            },
+        );
+        let call = cfg
+            .append_call(
+                entry,
+                None,
+                Spur::default(),
+                [CfgCallArg {
+                    value: argument,
+                    mode: CfgArgMode::Normal,
+                }],
+                Type::I32,
+                Span::default(),
+            )
+            .unwrap();
+        cfg.set_terminator(entry, Terminator::Return { value: Some(call) });
+
+        let remapped = cfg
+            .try_remap_domains::<()>(
+                |ty| Ok(if ty == Type::I32 { Type::I64 } else { ty }),
+                Ok,
+                Ok,
+                Ok,
+                Ok,
+                Ok,
+            )
+            .unwrap();
+        let contract = remapped.call_contract(call).unwrap();
+        assert_eq!(contract.arguments[0].ty, Type::I64);
+        assert_eq!(contract.result, Type::I64);
+        remapped.verify_with_fixture_pool().unwrap();
     }
 }
