@@ -275,9 +275,10 @@ other, even though they are distinct values with distinct sign bits.
 {{ rule(id="3.12:29", cat="dynamic-semantics") }}
 
 Structural equality on an aggregate (4.3:3b) applies these rules at each
-floating-point leaf. An array or struct holding a NaN is therefore not equal to
-itself, and two aggregates whose corresponding leaves are `-0.0` and `+0.0` are
-equal. A NaN is the value that makes Rue's structural `==` a partial
+floating-point leaf, at any depth. A struct, an array, or an enum payload
+holding a NaN is therefore not equal to itself, and neither is any aggregate
+enclosing one; two aggregates whose corresponding leaves are `-0.0` and `+0.0`
+are equal. A NaN is the value that makes Rue's structural `==` a partial
 equivalence rather than a total one (4.3:3g).
 
 {{ rule(id="3.12:30", cat="example") }}
