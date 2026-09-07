@@ -528,3 +528,45 @@ fn foreign_call_and_mir_state_have_one_shared_authority() {
         assert!(!mir.contains("next_vreg: u32"));
     }
 }
+
+/// The frame raw-pointer gate asks the same layout question the
+/// fixed-array-to-slice coercion's E0908 refusal asks, through the same
+/// canonical predicate (RUE-2097).
+///
+/// The coercion synthesizes `@raw(arr[0])` and hands the result to this gate,
+/// so a gate that judged element layout by its own rule would either reject
+/// what semantic analysis accepted — an internal error on a legal program — or
+/// pass what semantic analysis would have refused. `rue-air`'s inventory guards
+/// the other half (`slice_coercion_and_layout_predicates_come_from_one_walk`).
+#[test]
+fn frame_raw_aggregate_pointer_gate_uses_the_shared_stride_predicate() {
+    let types = include_str!("types.rs");
+    let gate = types
+        .split("fn frame_raw_aggregate_pointer_unsupported(")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect("the frame raw-pointer gate");
+    assert!(
+        gate.contains("compact_stride_matches_slot_stride(type_pool, ty)"),
+        "the frame raw-pointer gate must judge layout with the canonical \
+         stride predicate"
+    );
+    assert!(
+        !gate.contains("is_slot_identical_layout"),
+        "the frame raw-pointer gate must not fold the call-ABI access-kind \
+         question into its layout answer"
+    );
+    // The local name is a thin delegation to the one authority in `rue-air`,
+    // not a second judgment.
+    assert!(
+        types.contains("rue_air::compact_stride_matches_slot_stride(type_pool, ty)"),
+        "the codegen wrapper must delegate to the canonical layout authority"
+    );
+    assert_eq!(
+        types
+            .matches("pub(crate) fn compact_stride_matches_slot_stride")
+            .count(),
+        1,
+        "the codegen wrapper has exactly one definition"
+    );
+}

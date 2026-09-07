@@ -4646,3 +4646,60 @@ fn module_diagnostics_have_one_display_name() {
         );
     }
 }
+
+/// The fixed-array-to-slice coercion and code generation's raw-pointer gate ask
+/// one layout question, so they consult one predicate (RUE-2097).
+///
+/// The two used to share `is_slot_identical_layout`, which folds an *access
+/// kind* into a layout answer: a float leaf is never moved as an opaque slot, so
+/// that predicate calls `f64` non-identical even though its eight bytes sit
+/// exactly where the slot model puts them. Splitting the positional question out
+/// as `compact_stride_matches_slot_stride` let `[f64]` coerce; keeping both
+/// derived from one walk is what stops the E0908 refusal and the backend gate
+/// from drifting apart, in either direction.
+///
+/// The codegen half of the pair is guarded in `rue-codegen`'s own inventory
+/// (`frame_raw_aggregate_pointer_gate_uses_the_shared_stride_predicate`), which
+/// can read that crate's sources.
+#[test]
+fn slice_coercion_and_layout_predicates_come_from_one_walk() {
+    let call_abi = include_str!("call_abi.rs");
+    for predicate in [
+        "pub fn is_slot_identical_layout",
+        "pub fn compact_stride_matches_slot_stride",
+    ] {
+        assert_eq!(
+            call_abi.matches(predicate).count(),
+            1,
+            "{predicate} must have exactly one definition"
+        );
+    }
+    // Both public predicates are thin wrappers over one walk, so the leaf table
+    // and the aggregate recursion cannot fork.
+    assert_eq!(
+        call_abi.matches("fn slot_layout_agrees").count(),
+        1,
+        "the shared walk has exactly one definition"
+    );
+    for wrapper in [
+        "slot_layout_agrees(type_pool, ty, FloatLeaves::NotSlotShaped)",
+        "slot_layout_agrees(type_pool, ty, FloatLeaves::FillTheirSlot)",
+    ] {
+        assert!(
+            call_abi.contains(wrapper),
+            "a public layout predicate stopped delegating to the shared walk: {wrapper}"
+        );
+    }
+
+    // The coercion's E0908 site asks the positional question and only that one.
+    let ownership = include_str!("sema/analysis/ownership.rs");
+    assert!(
+        ownership.contains("crate::compact_stride_matches_slot_stride(self.body_type_pool()"),
+        "the slice coercion must refuse on the shared stride predicate"
+    );
+    assert!(
+        !ownership.contains("is_slot_identical_layout"),
+        "the slice coercion must not re-derive the layout answer from the \
+         call-ABI predicate"
+    );
+}

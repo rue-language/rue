@@ -100,14 +100,18 @@ and runs under the default layout.
 ## The one remaining refusal: raw pointers into frame aggregates
 
 One construct is refused rather than laid out. Taking a raw pointer with
-`@raw` / `@raw_mut` / `@field_ptr` into a **frame-resident** non-slot-identical
-aggregate — or indexing such a frame array through a place — is refused with a
-construct-level diagnostic. The stack frame stores an aggregate slot-shaped (one
-eight-byte slot per leaf, the unchanged value-decomposition model, RUE-975),
-while `@ptr_read` / `@ptr_write` / `@ptr_offset` address memory by its packed
-compact image, so a raw pointer into a frame aggregate would stride across
-mismatched field and element layouts. Allocate the aggregate on the heap with
-`@alloc`, whose storage *is* the compact image, to round-trip it through a raw
-pointer. That refusal is about the construct, not about any preview flag; a
-slot-identical aggregate (all eight-byte leaves) is unaffected because its frame
-and compact images coincide.
+`@raw` / `@raw_mut` / `@field_ptr` into a **frame-resident** aggregate whose
+compact image sits at different byte offsets than its slot image — or indexing
+such a frame array through a place — is refused with a construct-level
+diagnostic. The stack frame stores an aggregate slot-shaped (one eight-byte slot
+per leaf, the unchanged value-decomposition model, RUE-975), while `@ptr_read` /
+`@ptr_write` / `@ptr_offset` address memory by its packed compact image, so a raw
+pointer into such a frame aggregate would stride across mismatched field and
+element layouts. Allocate the aggregate on the heap with `@alloc`, whose storage
+*is* the compact image, to round-trip it through a raw pointer. That refusal is
+about the construct, not about any preview flag; an aggregate built only from
+slot-filling leaves is unaffected because its frame and compact images coincide.
+The leaves that fill a slot are `i64`, `u64`, pointers, and `f64` — a float is
+reached by a floating-point access rather than an opaque slot move, but an access
+kind relocates no byte, which is why `[f64]` views a frame array exactly
+(RUE-2097).

@@ -7,8 +7,8 @@
 # what the compiler does today, not what ADR-0043 eventually wants:
 #   * the exclusive `inout [T]` view is unimplemented, so an `inout [T]` (or
 #     unmarked `[T]`) parameter is uncallable — 7.2:10;
-#   * a non-empty frame array of a non-slot-width element cannot coerce —
-#     7.2:14 (E0908, RUE-1595).
+#   * a non-empty frame array whose element's own stride differs from the
+#     frame's slot stride cannot coerce — 7.2:14 (E0908, RUE-1595).
 # When either restriction lifts, these cases fail loudly and the rule they cite
 # is what must be re-decided.
 
@@ -73,7 +73,7 @@ fn main() -> i32 {
 exit_code = 44
 
 # The element type `T` is any type whose layout admits the coercion (7.2:14),
-# not just a scalar: a struct built from slot-width fields is a valid element,
+# not just a scalar: a struct built from slot-filling fields is a valid element,
 # and a body that only measures the view never names the element type itself.
 # That shape used to fail to compile — the element's nominal was not carried
 # into the callee's analysis (RUE-1610).
@@ -434,8 +434,8 @@ fn main() -> i32 {
 """
 
 # The restriction is about layout, not about being a scalar: a struct holding a
-# narrow field is not slot-identical either, and the diagnostic names the struct
-# as the element type.
+# narrow field strides narrower than the frame slot too, and the diagnostic names
+# the struct as the element type.
 [[case]]
 name = "slice_coercion_struct_element_with_narrow_field_rejected"
 spec = ["7.2:14"]
@@ -452,8 +452,9 @@ fn main() -> i32 {
 }
 """
 
-# A struct of slot-width fields is slot-identical however many fields it has,
-# so a multi-slot element coerces and the view strides by the whole element.
+# A struct of slot-filling fields strides at the frame's slot stride however many
+# fields it has, so a multi-slot element coerces and the view strides by the
+# whole element.
 [[case]]
 name = "slice_coercion_multi_slot_struct_element_strides_by_the_element"
 spec = ["7.2:14", "7.2:20"]
@@ -469,6 +470,98 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# An `f64` fills its eight-byte slot, so its own stride and the frame's slot
+# stride agree and the view is exact. That a float is reached by a
+# floating-point access rather than an opaque slot move relocates none of its
+# bytes, so `[f64]` is admitted on the same footing as `[i64]`.
+[[case]]
+name = "slice_coercion_float_element_is_admitted"
+spec = ["7.2:14"]
+source = """
+fn head(borrow s: [f64]) -> f64 {
+    s[0]
+}
+fn main() -> i32 {
+    let a: [f64; 3] = [1.5, 2.5, 3.5];
+    @float_to_int(head(borrow a) * 28.0)
+}
+"""
+exit_code = 42
+
+# Every position of a float view is read in order, at the element's own stride.
+[[case]]
+name = "slice_coercion_float_element_strides_by_the_element"
+spec = ["7.2:14", "7.2:20"]
+source = """
+fn fold(borrow s: [f64]) -> i32 {
+    let mut acc: f64 = 0.0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        acc = acc * 10.0 + s[i];
+        i = i + 1;
+    }
+    @float_to_int(acc)
+}
+fn main() -> i32 {
+    let a: [f64; 3] = [1.0, 2.0, 3.5];
+    fold(borrow a)
+}
+"""
+exit_code = 123
+
+# An element struct mixing a float with an integer fills both its slots, so it
+# coerces and the view strides by the whole element.
+[[case]]
+name = "slice_coercion_float_carrying_struct_element_is_admitted"
+spec = ["7.2:14", "7.2:20"]
+source = """
+struct Q { x: f64, n: i64 }
+fn last(borrow s: [Q]) -> i32 {
+    let e = s[2];
+    @intCast(e.n * 10) + @float_to_int(e.x)
+}
+fn main() -> i32 {
+    let a: [Q; 3] = [Q { x: 0.5, n: 1 }, Q { x: 1.5, n: 2 }, Q { x: 2.5, n: 4 }];
+    last(borrow a)
+}
+"""
+exit_code = 42
+
+# The admission is about stride, not about being a float: `f32` strides by four
+# bytes against an eight-byte frame slot and stays refused.
+[[case]]
+name = "slice_coercion_narrow_element_f32_rejected"
+spec = ["7.2:14"]
+compile_fail = true
+error_contains = ["E0908", "non-slot-width", "f32"]
+source = """
+fn head(borrow s: [f32]) -> f32 {
+    s[0]
+}
+fn main() -> i32 {
+    let a: [f32; 3] = [1.5, 2.5, 3.5];
+    if head(borrow a) == 1.5 { 0 } else { 1 }
+}
+"""
+
+# A struct mixing a slot-filling float with a narrow field is refused for the
+# narrow field, and the diagnostic names the struct.
+[[case]]
+name = "slice_coercion_float_carrying_struct_with_narrow_field_rejected"
+spec = ["7.2:14"]
+compile_fail = true
+error_contains = ["E0908", "non-slot-width", "M"]
+source = """
+struct M { x: f64, n: i32 }
+fn ln(borrow s: [M]) -> i32 {
+    @intCast(s.len())
+}
+fn main() -> i32 {
+    let a: [M; 2] = [M { x: 1.0, n: 1 }, M { x: 2.0, n: 2 }];
+    ln(borrow a)
+}
+"""
 
 # An EMPTY array is exempt from the narrow-element restriction: its pointer
 # word is never dereferenced, because every read is guarded by `i < len` and

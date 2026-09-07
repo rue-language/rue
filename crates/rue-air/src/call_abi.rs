@@ -99,16 +99,77 @@ pub fn is_multislot_aggregate(ty: Type, slot_count: u32) -> bool {
 }
 
 /// Whether the compact physical layout of `ty` is byte-for-byte identical to
-/// the flattened eight-byte slot layout, so slot-shaped marshaling is exactly
-/// correct for it (ADR-0052).
+/// the flattened eight-byte slot layout **and** every leaf may be moved as an
+/// opaque eight-byte slot, so slot-shaped marshaling is exactly correct for it
+/// (ADR-0052).
 ///
 /// True for eight-byte leaves (`i64`/`u64`/pointers, the recovery scalar) and
 /// zero-sized / compile-time-only types, and for aggregates built entirely from
 /// slot-identical leaves. Narrow scalars (one/two/four bytes) and enums (narrow
-/// tag) are not slot-identical. This is the single authority code generation's
-/// narrow-access refusal (RUE-974) consults, so no two sites disagree about
-/// which types the compact layout leaves unchanged.
+/// tag) are not slot-identical, and neither is a float leaf: it is read and
+/// written by a floating-point access at its own width, never as an opaque
+/// slot, even where its footprint is eight bytes. This is the single authority
+/// code generation's narrow-access refusal (RUE-974) consults, so no two sites
+/// disagree about which types the compact layout leaves unchanged.
+///
+/// The purely positional half of that question — do the compact and slot models
+/// put the same bytes at the same offsets — is
+/// [`compact_stride_matches_slot_stride`], which admits `f64`.
 pub fn is_slot_identical_layout<P: crate::FfiTypePool + ?Sized>(type_pool: &P, ty: Type) -> bool {
+    slot_layout_agrees(type_pool, ty, FloatLeaves::NotSlotShaped)
+}
+
+/// Whether `ty`'s compact stride and interior byte offsets equal its slot-model
+/// stride and offsets, so a compact-strided walk over frame-resident storage of
+/// `ty` addresses exactly the bytes the slot model put there (ADR-0052).
+///
+/// This is the pure *position* question, and it is the one the
+/// fixed-array-to-slice coercion asks: a view strides by the element's compact
+/// size while a frame array stores one eight-byte slot per leaf, so the view is
+/// exact precisely when those two strides — and, for an aggregate element, the
+/// field and element offsets inside it — agree.
+///
+/// True for every leaf whose compact footprint already fills a slot —
+/// `i64`/`u64`/pointers, the recovery scalar, **and `f64`** — for zero-sized and
+/// compile-time-only types, and for structs and arrays built entirely from such
+/// leaves. False for a narrow scalar (`bool`/`i8`/`u8`/`i16`/`u16`/`i32`/`u32`,
+/// and `f32`, whose compact stride is four bytes against an eight-byte slot),
+/// for an enum (its tag is narrowed), and for any aggregate holding one.
+///
+/// It differs from [`is_slot_identical_layout`] in exactly one place, `f64`.
+/// That predicate additionally demands that a leaf be movable as an opaque
+/// slot, which a float never is; but an access kind moves no bytes. An `f64`
+/// sits at its slot's base and fills the whole slot, so a compact walk and a
+/// slot walk visit identical addresses. Keeping the two questions apart is what
+/// lets `[f64]` coerce (RUE-2097) while `[i32]` stays refused (RUE-2055).
+pub fn compact_stride_matches_slot_stride<P: crate::FfiTypePool + ?Sized>(
+    type_pool: &P,
+    ty: Type,
+) -> bool {
+    slot_layout_agrees(type_pool, ty, FloatLeaves::FillTheirSlot)
+}
+
+/// How the one layout walk below treats a float leaf: the only place the two
+/// public predicates above differ.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FloatLeaves {
+    /// A float leaf is not slot-shaped, whatever its footprint: it is accessed
+    /// by a floating-point instruction at its own width rather than moved as an
+    /// opaque slot ([`is_slot_identical_layout`]).
+    NotSlotShaped,
+    /// A float leaf counts as slot-shaped when its compact footprint is a full
+    /// eight bytes, because the two models then place the same bytes at the
+    /// same offsets ([`compact_stride_matches_slot_stride`]).
+    FillTheirSlot,
+}
+
+/// The one walk both predicates above are thin wrappers over, so the set of
+/// leaf shapes and the aggregate recursion have a single home.
+fn slot_layout_agrees<P: crate::FfiTypePool + ?Sized>(
+    type_pool: &P,
+    ty: Type,
+    floats: FloatLeaves,
+) -> bool {
     match ty.kind() {
         // Eight-byte leaves and the recovery scalar: identical in both models.
         TypeKind::I64
@@ -122,10 +183,12 @@ pub fn is_slot_identical_layout<P: crate::FfiTypePool + ?Sized>(type_pool: &P, t
         | TypeKind::ComptimeType
         | TypeKind::ComptimeFloat
         | TypeKind::Module(_) => true,
-        // A float leaf is read and written by a floating-point access at its
-        // own width, never as an opaque slot, so it is not slot-identical even
-        // where its footprint is eight bytes.
-        TypeKind::F32 | TypeKind::F64 => false,
+        // An `f64` occupies its whole eight-byte slot, so the two models agree
+        // about where its bytes are; only the access kind differs.
+        TypeKind::F64 => floats == FloatLeaves::FillTheirSlot,
+        // An `f32` strides by four bytes against an eight-byte slot, so the two
+        // models disagree positionally as well.
+        TypeKind::F32 => false,
         // Narrow scalars: one/two/four bytes under the compact layout.
         TypeKind::I8
         | TypeKind::U8
@@ -137,10 +200,10 @@ pub fn is_slot_identical_layout<P: crate::FfiTypePool + ?Sized>(type_pool: &P, t
         TypeKind::Struct(id) => type_pool
             .ffi_struct_field_types(id)
             .into_iter()
-            .all(|field_ty| is_slot_identical_layout(type_pool, field_ty)),
+            .all(|field_ty| slot_layout_agrees(type_pool, field_ty, floats)),
         TypeKind::Array(id) => {
             let element = type_pool.ffi_array_element(id);
-            is_slot_identical_layout(type_pool, element)
+            slot_layout_agrees(type_pool, element, floats)
         }
         // Enums narrow their tag (u8/u16/u32 vs an eight-byte slot).
         TypeKind::Enum(_) => false,

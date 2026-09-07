@@ -821,7 +821,7 @@ name = "slice_frame_array_not_supported_code_is_explained"
 files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
 args = ["explain", "E0908"]
 compile_only = true
-compile_stdout_contains = ["E0908: Slice frame array not supported", "transitional limit", "RUE-1595", "Borrow a narrow-element frame array as a slice:", "Coerce a slot-width element type:", "docs/spec/src/07-arrays/02-slices.md (spec rule 7.2:14)", "docs/spec/src/07-arrays/02-slices.md (spec rule 7.2:12)", "docs/spec/src/07-arrays/02-slices.md (spec rule 7.2:13)", "docs/designs/0043-collection-string-type-trio.md"]
+compile_stdout_contains = ["E0908: Slice frame array not supported", "transitional limit", "RUE-1595", "Borrow a narrow-element frame array as a slice:", "Coerce a slot-filling element type:", "docs/spec/src/07-arrays/02-slices.md (spec rule 7.2:14)", "docs/spec/src/07-arrays/02-slices.md (spec rule 7.2:12)", "docs/spec/src/07-arrays/02-slices.md (spec rule 7.2:13)", "docs/designs/0043-collection-string-type-trio.md"]
 compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 

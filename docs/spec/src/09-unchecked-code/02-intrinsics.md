@@ -168,10 +168,11 @@ behavior (see ADR-0028).
 
 ```rue
 fn main() -> i32 {
-    // A slot-identical element type (i64: one eight-byte slot per element) so a
-    // raw pointer into the frame-resident array is supported; a non-slot-identical
-    // frame array (e.g. [i32; 3], which packs to four-byte strides while the frame
-    // stores eight-byte slots) is refused by the current implementation (ADR-0052).
+    // An element whose own stride is the frame's slot stride (i64: one
+    // eight-byte slot per element) so a raw pointer into the frame-resident
+    // array is supported; an element that packs narrower (e.g. [i32; 3], four
+    // bytes against an eight-byte slot) is refused by the current
+    // implementation (ADR-0052).
     let arr: [i64; 3] = [10, 20, 30];
     let v: i64 = checked {
         let base: ptr const i64 = @raw(arr[0]);

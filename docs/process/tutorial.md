@@ -122,6 +122,7 @@ future library ergonomics already exist.
 Recorded here so the next author does not rediscover them. Remove an entry
 when the limitation is lifted and update the chapter that mentions it.
 
-- `[T]` slice parameters accept only 64-bit element types (E0908, RUE-2055);
+- `[T]` slice parameters accept only elements whose every leaf is 64 bits wide
+  — `i64`, `u64`, `f64`, pointers, and aggregates of those (E0908, RUE-2055);
   the slice examples use `i64`.
 - `for` does not iterate `ArrayBuf`; the examples index over `len()`.

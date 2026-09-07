@@ -204,9 +204,9 @@ fn main() -> i32 {
 ```
 
 Slices are the newest rung of the ladder, and today they only work for
-elements that are 64 bits wide, such as `i64`, `u64`, and `f64`. A `[i32]`
-parameter is rejected with a diagnostic that says so. That restriction is
-expected to lift.
+elements whose every part is 64 bits wide: `i64`, `u64`, `f64`, a pointer, and
+structs built from those. A `[i32]` parameter is rejected with a diagnostic
+that says so. That restriction is expected to lift.
 
 A slice is a *view*: it does not own its elements, and it is only ever a
 parameter. You cannot return one, store one in a struct, or bind one to a

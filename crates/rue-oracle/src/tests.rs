@@ -1025,6 +1025,31 @@ fn aggregate_float_equality_is_ieee() {
 }
 
 #[test]
+fn float_values_round_trip_through_representation_bytes() {
+    // A float leaf reaches memory as its IEEE-754 bit pattern at its own width.
+    // Without that encoding the interpreter could evaluate float arithmetic but
+    // never place a float behind a pointer, so a `[f64]` view — whose `ptr` word
+    // is `@raw(a[0])` and whose element reads are `@ptr_read` — was unmodelable.
+    let outcome = run_source(
+        r#"fn fold(borrow s: [f64]) -> f64 {
+            let mut acc: f64 = 0.0;
+            let mut i: u64 = 0;
+            while i < s.len() {
+                acc = acc * 10.0 + s[i];
+                i = i + 1;
+            }
+            acc
+        }
+        fn main() -> i32 {
+            let a: [f64; 3] = [1.0, 2.0, 3.5];
+            @float_to_int(fold(borrow a))
+        }"#,
+    )
+    .expect("a float view's representation bytes are modeled");
+    assert_eq!(outcome.exit_code, 123);
+}
+
+#[test]
 fn float_conversions_rounding_and_total_order_are_modeled() {
     let outcome = run_source(
         r#"fn main() -> i32 {

@@ -2104,18 +2104,19 @@ define_error_codes! {
             ErrorCodeReference { title: "Implementation limits are diagnosed", path: "docs/spec/src/appendices/C-implementation-limits.md", rule: Some("C.1:2") },
         ],
     };
-    /// A frame array with non-slot-width elements cannot yet be borrowed as a
-    /// slice because slice pointer semantics use the compact element image
-    /// while frames keep a full-slot representation (RUE-1595).
+    /// A frame array whose element's compact stride differs from its slot
+    /// stride cannot yet be borrowed as a slice, because slice pointer
+    /// semantics stride by the compact element size while frames keep a
+    /// full-slot representation (RUE-1595).
     SLICE_FRAME_ARRAY_NOT_SUPPORTED = 908 => {
-        explanation: "The fixed-array-to-slice coercion materializes a two-word view — the address of element `0` and the length — and hands it to a `borrow [T]` parameter (7.2:12). A view strides by the element type's own size, while a frame-resident array still keeps one full 8-byte slot per element, so for an element whose compact image is not slot-identical the two strides disagree and the view would read the wrong addresses. E0908 refuses that coercion at the argument and names the element type (7.2:14). Non-slot-identical means an element narrower than a slot, such as `i32` or `u8`, or an aggregate holding such a field; an element built only from slot-width fields is slot-identical and coerces however many fields it has. An empty array is exempt, because a zero-length view's pointer word is never dereferenced. This is a transitional limit of the current implementation tracked by RUE-1595, not a property of the slice type: it is lifted when arrays adopt the compact element representation. An operand that is not a whole array place, or whose element type merely converts to the slice's, is a different failure — a type mismatch under 7.2:13.",
-        likely_cause: "A local array of a narrow element type was passed to a `borrow [T]` parameter, as in `head(borrow xs)` for `xs: [i32; 3]`. Until the restriction is lifted, either widen the element type to a slot-width one — `[i64; N]` coerces, and so does an element struct whose every field is slot-width — or take the fixed array itself as a `borrow [T; N]` parameter, which passes one pointer and needs no view. An empty array of any element type still coerces.",
+        explanation: "The fixed-array-to-slice coercion materializes a two-word view — the address of element `0` and the length — and hands it to a `borrow [T]` parameter (7.2:12). A view strides by the element type's own compact size, while a frame-resident array still keeps one full 8-byte slot per leaf, so the view is exact exactly when the element's compact stride equals its slot stride — and, inside an aggregate element, its field and element offsets agree too. E0908 refuses the coercion at the argument when they differ, naming the element type (7.2:14). They differ for an element with a leaf narrower than a slot — `bool`, `i8`/`u8`, `i16`/`u16`, `i32`/`u32`, and `f32`, whose compact stride is four bytes against an eight-byte slot — for an enum, whose tag is narrowed, and for any struct or array holding one of those. They agree for every leaf that fills its slot: `i64`, `u64`, pointers, and `f64`. A float is loaded and stored by a floating-point instruction rather than moved as an opaque slot, but an access kind moves no byte, so `[f64]` coerces like `[i64]` does; so does a struct or array built only from slot-filling leaves, however many fields it has. An empty array is exempt, because a zero-length view's pointer word is never dereferenced. This is a transitional limit of the current implementation tracked by RUE-1595, not a property of the slice type: it is lifted when arrays adopt the compact element representation. An operand that is not a whole array place, or whose element type merely converts to the slice's, is a different failure — a type mismatch under 7.2:13.",
+        likely_cause: "A local array whose element has a narrower-than-slot leaf was passed to a `borrow [T]` parameter, as in `head(borrow xs)` for `xs: [i32; 3]`. Until the restriction is lifted, either widen the element so every leaf fills its slot — `[i64; N]` and `[f64; N]` both coerce, and so does an element struct whose every field is slot-filling — or take the fixed array itself as a `borrow [T; N]` parameter, which passes one pointer and needs no view. An empty array of any element type still coerces.",
         examples: [
             ErrorCodeExample { title: "Borrow a narrow-element frame array as a slice", source: "fn head(borrow s: [i32]) -> i32 { s[0] }\n\nfn main() -> i32 {\n    let xs: [i32; 3] = [42, 1, 2];\n    head(borrow xs)\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
-            ErrorCodeExample { title: "Coerce a slot-width element type", source: "fn head(borrow s: [i64]) -> i32 { @intCast(s[0]) }\n\nfn main() -> i32 {\n    let xs: [i64; 3] = [42, 1, 2];\n    head(borrow xs)\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+            ErrorCodeExample { title: "Coerce a slot-filling element type", source: "fn head(borrow s: [i64]) -> i32 { @intCast(s[0]) }\n\nfn wide(borrow s: [f64]) -> i32 { @float_to_int(s[0] * 2.0) }\n\nfn main() -> i32 {\n    let xs: [i64; 3] = [42, 1, 2];\n    let ys: [f64; 3] = [1.5, 2.5, 3.5];\n    head(borrow xs) - wide(borrow ys)\n}", outcome: ErrorCodeExampleOutcome::Compiles },
         ],
         references: [
-            ErrorCodeReference { title: "Non-slot-width elements do not coerce", path: "docs/spec/src/07-arrays/02-slices.md", rule: Some("7.2:14") },
+            ErrorCodeReference { title: "Which element layouts coerce", path: "docs/spec/src/07-arrays/02-slices.md", rule: Some("7.2:14") },
             ErrorCodeReference { title: "Fixed-array-to-slice coercion", path: "docs/spec/src/07-arrays/02-slices.md", rule: Some("7.2:12") },
             ErrorCodeReference { title: "Coercion operand legality", path: "docs/spec/src/07-arrays/02-slices.md", rule: Some("7.2:13") },
             ErrorCodeReference { title: "The fixed/slice/growable type trio", path: "docs/designs/0043-collection-string-type-trio.md", rule: None },
@@ -3792,10 +3793,11 @@ pub enum ErrorKind {
          ({max_bytes} bytes)"
     )]
     FunctionFrameTooLarge { max_bytes: u64 },
-    /// A frame-resident array whose element's compact memory image differs from
-    /// its full-slot frame representation cannot yet be coerced to a borrowed
-    /// slice. The source-level coercion is rejected before it synthesizes a
-    /// pointer that would mix those representations (RUE-1595).
+    /// A frame-resident array whose element's compact stride differs from its
+    /// full-slot frame stride cannot yet be coerced to a borrowed slice. The
+    /// source-level coercion is rejected before it synthesizes a pointer that
+    /// would mix those representations (RUE-1595). An element whose every leaf
+    /// fills its slot — `i64`/`u64`, pointers, `f64` — does coerce.
     #[error(
         "a frame array with non-slot-width elements cannot yet coerce or borrow as a slice `[T]` (element type `{element_type}`)"
     )]

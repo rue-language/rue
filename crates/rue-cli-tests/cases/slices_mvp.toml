@@ -12,22 +12,27 @@
 # `inout [T]` write-slices, range slicing `x[a..b]`, ArrayBuf/Vec slices, and
 # returning/storing a slice (E0487-E0489 second-class enforcement).
 #
-# Under the default compact layout these cases view a slot-identical backing
-# element type (i64: one eight-byte slot per element). The view is materialized
-# as `{ptr: @raw(arr[0]), len: N}` and indexed by `@ptr_offset(ptr, i)`, which
-# strides by `size_of(T)`; for a slot-identical element that stride equals the
-# frame's slot stride, so a frame-array view is exact. A slice over a frame array
-# of a NON-slot-identical element (e.g. `[i32]`/`[u8]`, whose compact stride is
-# narrower than the 8-byte frame slot) would stride across mismatched storage and
-# is refused loudly (RUE-987 / RUE-1035 M2); `slice_param_narrow_frame_refused`
-# pins that. The slice runtime itself (len, bounds-checked indexing, forwarding,
-# methods) is element-width-independent and is exercised here on i64.
+# Under the default compact layout these cases view a backing element type whose
+# own stride equals the frame's slot stride (i64: one eight-byte slot per
+# element). The view is materialized as `{ptr: @raw(arr[0]), len: N}` and indexed
+# by `@ptr_offset(ptr, i)`, which strides by `size_of(T)`; where that stride
+# equals the frame's slot stride a frame-array view is exact. A slice over a
+# frame array whose element has a narrower-than-slot leaf (e.g. `[i32]`/`[u8]`,
+# whose compact stride is narrower than the 8-byte frame slot) would stride
+# across mismatched storage and is refused loudly (RUE-987 / RUE-1035 M2);
+# `slice_param_narrow_frame_refused` pins that. The slice runtime itself (len,
+# bounds-checked indexing, forwarding, methods) is element-width-independent and
+# is exercised here on i64.
 #
-# The element type does not have to be a scalar. A struct built from slot-width
-# fields is slot-identical too, so `[S]` and `[P]` views coerce and stride by
-# the element's whole size; the `struct_element_*` cases below cover that
+# The element type does not have to be a scalar, and does not have to be an
+# integer. A struct built from slot-filling fields strides by its own whole size,
+# so `[S]` and `[P]` views coerce; the `struct_element_*` cases below cover that
 # family, including the multi-slot stride and the aggregate form of the same
-# narrow-element refusal (RUE-1610).
+# narrow-element refusal (RUE-1610). An `f64` fills its slot too — a float is
+# reached by a floating-point access rather than an opaque slot move, and an
+# access kind relocates no byte — so `[f64]` and float-carrying element structs
+# coerce as well; the `float_element_*` cases below cover that family on both
+# backends (RUE-2097).
 
 [section]
 id = "cli.slices"
@@ -125,8 +130,9 @@ exit_code = 6
 # A narrow-element view over a frame array is refused at the source-level
 # coercion boundary: the compact element stride differs from the frame slot
 # stride. The stable diagnostic names the actual restriction and does not leak
-# the backend's raw-pointer implementation. A slot-identical element (see the
-# i64 cases above) is exact; a heap-backed narrow slice awaits compact frames
+# the backend's raw-pointer implementation. An element whose own stride is the
+# frame's slot stride (see the i64 cases above) is exact; a heap-backed narrow
+# slice awaits compact frames
 # (RUE-975) / a heap slice API.
 [[case]]
 name = "slice_param_narrow_frame_refused"
@@ -300,7 +306,7 @@ error_contains = ["type mismatch"]
 # --- Struct element types (RUE-1610) -----------------------------------------
 #
 # A slice element may be any type the coercion admits (7.2:2, 7.2:14), and a
-# struct built from slot-width fields qualifies. The failing shape was a callee
+# struct built from slot-filling fields qualifies. The failing shape was a callee
 # that measures the view without ever naming the element type: the element's
 # nominal reached the callee's CFG epoch only through the view's `ptr` field, a
 # route that carried no nominal at all, so the body failed to materialize with
@@ -364,8 +370,8 @@ fn main() -> i32 {
 args = ["main.rue", "-o", "prog"]
 exit_code = 101
 
-# A multi-slot element is the stride case: an element of two i64 fields is
-# slot-identical but sixteen bytes wide, so a view that strided by one slot
+# A multi-slot element is the stride case: an element of two i64 fields fills
+# both its slots but is sixteen bytes wide, so a view that strided by one slot
 # would read the wrong halves of the wrong elements. The discriminating value
 # depends on every element being read whole and in order.
 [[case]]
@@ -458,8 +464,8 @@ args = ["main.rue", "-o", "prog"]
 exit_code = 0
 
 # The layout restriction of `slice_param_narrow_frame_refused` applies to an
-# aggregate element too: a struct holding an i32 field is not slot-identical,
-# and the diagnostic names the struct.
+# aggregate element too: a struct holding an i32 field strides narrower than the
+# frame slot, and the diagnostic names the struct.
 [[case]]
 name = "struct_element_with_narrow_field_refused"
 description = "A struct element holding a narrow field is refused at the coercion boundary with E0908 naming the struct."
@@ -665,3 +671,218 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 101
+
+# --- float elements (RUE-2097) -----------------------------------------------
+#
+# `f64`'s compact size, alignment and stride are all eight, and a frame array
+# stores it one element per eight-byte slot, so a `[f64]` view's `@ptr_offset`
+# stride (8) is exactly the frame's slot stride (8). The coercion used to be
+# refused anyway, because the predicate it consulted folded in an access-kind
+# question — a float leaf is never *moved* as an opaque slot — that decides
+# nothing about where its bytes are. These cases run the whole slice runtime
+# over float elements on both backends: element reads reach the float register
+# class through `@ptr_read` on `ptr const f64`.
+
+[[case]]
+name = "float_element_slice_head_x86_64"
+description = "RUE-2097 repro: a `[f64]` view of a frame array reads element 0 through the float bank (x86-64)."
+files = [{ path = "main.rue", source = """
+fn head(borrow a: [f64]) -> f64 { a[0] }
+fn main() -> i32 { let a = [1.5, 2.5, 3.5]; if head(borrow a) == 1.5 { 0 } else { 1 } }
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 0
+compile_stderr_not_contains = ["E0908", "E9001", "internal codegen error"]
+
+[[case]]
+name = "float_element_slice_head_aarch64"
+description = "The same `[f64]` view on AArch64: both backends materialize and index the view."
+files = [{ path = "main.rue", source = """
+fn head(borrow a: [f64]) -> f64 { a[0] }
+fn main() -> i32 { let a = [1.5, 2.5, 3.5]; if head(borrow a) == 1.5 { 0 } else { 1 } }
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 0
+compile_stderr_not_contains = ["E0908", "E9001", "internal codegen error"]
+
+[[case]]
+name = "float_element_slice_sum_len_forward_x86_64"
+description = "Summing a `[f64]` view: every position is read in order, `len()` is the array length, and a forwarded view still describes the same storage (x86-64)."
+files = [{ path = "main.rue", source = """
+fn sum(borrow s: [f64]) -> f64 {
+    let mut t: f64 = 0.0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        t = t + s[i];
+        i = i + 1;
+    }
+    t
+}
+fn forward(borrow s: [f64]) -> f64 { sum(borrow s) }
+fn ln(borrow s: [f64]) -> u64 { s.len() }
+fn main() -> i32 {
+    let a: [f64; 4] = [1.5, 2.25, 3.0, 0.25];
+    @dbg(forward(borrow a));
+    @dbg(ln(borrow a));
+    @float_to_int(forward(borrow a) * 4.0)
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = """
+7.0
+4
+"""
+exit_code = 28
+
+[[case]]
+name = "float_element_slice_sum_len_forward_aarch64"
+description = "The same `[f64]` sum, length and forwarding on AArch64."
+files = [{ path = "main.rue", source = """
+fn sum(borrow s: [f64]) -> f64 {
+    let mut t: f64 = 0.0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        t = t + s[i];
+        i = i + 1;
+    }
+    t
+}
+fn forward(borrow s: [f64]) -> f64 { sum(borrow s) }
+fn ln(borrow s: [f64]) -> u64 { s.len() }
+fn main() -> i32 {
+    let a: [f64; 4] = [1.5, 2.25, 3.0, 0.25];
+    @dbg(forward(borrow a));
+    @dbg(ln(borrow a));
+    @float_to_int(forward(borrow a) * 4.0)
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = """
+7.0
+4
+"""
+exit_code = 28
+
+[[case]]
+name = "float_element_slice_index_out_of_bounds_traps"
+description = "The bounds check is element-type-independent: a `[f64]` view traps (exit 101) on an out-of-range index."
+files = [{ path = "main.rue", source = """
+fn get(borrow s: [f64], i: u64) -> i32 { @float_to_int(s[i]) }
+fn main() -> i32 {
+    let a: [f64; 3] = [1.0, 2.0, 3.0];
+    get(borrow a, 5)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+runtime_error_contains = ["index out of bounds"]
+
+[[case]]
+name = "float_element_struct_slice_multi_slot_stride_x86_64"
+description = "A `{f64, i64}` element fills both its slots, so the view strides by the whole sixteen-byte element and each half lands in its own register bank (x86-64)."
+files = [{ path = "main.rue", source = """
+struct Q { x: f64, n: i64 }
+fn total(borrow s: [Q]) -> i32 {
+    let mut acc: i64 = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        let e = s[i];
+        acc = acc * 10 + e.n + @float_to_int(e.x);
+        i = i + 1;
+    }
+    @intCast(acc)
+}
+fn main() -> i32 {
+    let a: [Q; 3] = [Q { x: 1.5, n: 0 }, Q { x: 2.5, n: 1 }, Q { x: 0.5, n: 3 }];
+    total(borrow a)
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 133
+
+[[case]]
+name = "float_element_struct_slice_multi_slot_stride_aarch64"
+description = "The same `{f64, i64}` element stride on AArch64."
+files = [{ path = "main.rue", source = """
+struct Q { x: f64, n: i64 }
+fn total(borrow s: [Q]) -> i32 {
+    let mut acc: i64 = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        let e = s[i];
+        acc = acc * 10 + e.n + @float_to_int(e.x);
+        i = i + 1;
+    }
+    @intCast(acc)
+}
+fn main() -> i32 {
+    let a: [Q; 3] = [Q { x: 1.5, n: 0 }, Q { x: 2.5, n: 1 }, Q { x: 0.5, n: 3 }];
+    total(borrow a)
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 133
+
+# The admission is about stride, not about being a float: `f32` strides by four
+# bytes against an eight-byte frame slot, so it stays refused with the same
+# diagnostic the narrow integers get.
+[[case]]
+name = "float_element_slice_f32_narrow_frame_refused"
+description = "`f32`'s four-byte stride still disagrees with the frame slot, so `[f32]` stays refused at the coercion boundary."
+files = [{ path = "main.rue", source = """
+fn head(borrow a: [f32]) -> f32 { a[0] }
+fn main() -> i32 {
+    let a: [f32; 3] = [1.5, 2.5, 3.5];
+    if head(borrow a) == 1.5 { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0908", "frame array", "non-slot-width", "coerce or borrow", "f32"]
+compile_stderr_not_contains = ["E9001", "@raw", "@ptr_offset", "@alloc", "heap"]
+
+# An element struct mixing a slot-filling float with a narrow integer is still
+# refused: the narrow field is what disagrees, and the diagnostic names the
+# struct.
+[[case]]
+name = "float_element_struct_with_narrow_field_refused"
+description = "A `{f64, i32}` element is refused because of its narrow field, and the diagnostic names the struct."
+files = [{ path = "main.rue", source = """
+struct M { x: f64, n: i32 }
+fn ln(borrow s: [M]) -> i32 { @intCast(s.len()) }
+fn main() -> i32 {
+    let a: [M; 2] = [M { x: 1.0, n: 1 }, M { x: 2.0, n: 2 }];
+    ln(borrow a)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0908", "non-slot-width", "coerce or borrow", "M"]
+compile_stderr_not_contains = ["E9000", "internal compiler error"]
+
+# An empty float array coerces like any other empty array: the pointer word is a
+# conventional null that no read reaches.
+[[case]]
+name = "float_element_slice_empty_view"
+description = "`[f64; 0]` coerces and measures zero, like every other empty array."
+files = [{ path = "main.rue", source = """
+fn ln(borrow s: [f64]) -> i32 { @intCast(s.len()) }
+fn main() -> i32 {
+    let a: [f64; 0] = [];
+    ln(borrow a)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 0

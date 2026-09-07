@@ -74,12 +74,6 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::PointerWrite),
         &[],
     ),
-    Entry::new(
-        "cli.float_codegen",
-        "native_float_pointer_widths_preserve_neighbor_bytes",
-        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
-        &[],
-    ),
     // std.fs File IO v0 (RUE-712, ADR-0057): pure-Rue fs over @syscall. The
     // oracle models the StrBuf/ArrayBuf and raw-pointer representation setup;
     // these cases remain debt because the host syscall effect is external.
@@ -401,6 +395,12 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.slices",
         "struct_element_slice_empty_view",
+        intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
+        &[],
+    ),
+    Entry::new(
+        "cli.slices",
+        "float_element_slice_empty_view",
         intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
         &[],
     ),
