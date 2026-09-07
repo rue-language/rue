@@ -266,42 +266,36 @@ impl<'a> FrameWriter<'a> {
     }
 }
 
-/// The width of the well-formed UTF-8 sequence `bytes` starts with, or `None`
-/// when it does not start with one.
+/// The width of the well-formed multi-byte UTF-8 sequence `bytes` starts with,
+/// or `None` when it does not start with one.
 ///
-/// The ranges are Unicode's own well-formed byte sequences (Table 3-7), which
-/// reject an overlong encoding, a surrogate, and a scalar above `U+10FFFF` as
-/// well as a truncated sequence — `serde_json` and every other reader applies
-/// the same table, so anything looser here would let a line through that a
-/// reader still rejects. Written out rather than delegated to
-/// `core::str::from_utf8` so the freestanding build's emitted code stays a
-/// handful of comparisons with no libcall in it.
+/// Well-formedness is [`crate::utf8`]'s table — Unicode's own Table 3-7, which
+/// rejects an overlong encoding, a surrogate, and a scalar above `U+10FFFF` as
+/// well as a truncated sequence. `serde_json` and every other reader applies
+/// that same table, so anything looser here would let a line through that a
+/// reader still rejects.
+///
+/// ASCII is not a case: `escaped` handles a byte below `0x80` on its own
+/// path and only consults this one for `byte >= 0x80`, so a lead the table has
+/// no row for — including an ASCII byte — is reported as `None` rather than as
+/// a one-byte sequence.
 fn utf8_sequence_width(bytes: &[u8]) -> Option<usize> {
-    let lead = *bytes.first()?;
-    let (width, first_continuation) = match lead {
-        0x00..=0x7f => return Some(1),
-        0xc2..=0xdf => (2, 0x80..=0xbf),
-        0xe0 => (3, 0xa0..=0xbf),
-        0xe1..=0xec | 0xee..=0xef => (3, 0x80..=0xbf),
-        0xed => (3, 0x80..=0x9f),
-        0xf0 => (4, 0x90..=0xbf),
-        0xf1..=0xf3 => (4, 0x80..=0xbf),
-        0xf4 => (4, 0x80..=0x8f),
-        _ => return None,
-    };
-    if bytes.len() < width || !first_continuation.contains(&bytes[1]) {
+    let lead = crate::utf8::lead(*bytes.first()?)?;
+    // `bytes[1]` is in bounds because the width check short-circuits first and
+    // every row is at least two bytes wide (`crate::utf8::Utf8Lead::width`).
+    if bytes.len() < lead.width || !lead.accepts_first_continuation(bytes[1]) {
         return None;
     }
-    // The lead byte's range already constrained the first continuation; the
-    // rest are unconstrained trail bytes.
+    // The lead byte's row already constrained the first continuation; the rest
+    // are unconstrained trail bytes.
     let mut index = 2;
-    while index < width {
-        if !(0x80..=0xbf).contains(&bytes[index]) {
+    while index < lead.width {
+        if !crate::utf8::is_continuation(bytes[index]) {
             return None;
         }
         index += 1;
     }
-    Some(width)
+    Some(lead.width)
 }
 
 /// Write the terminal completion frame.

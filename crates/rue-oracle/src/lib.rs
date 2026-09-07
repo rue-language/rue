@@ -7435,6 +7435,14 @@ fn promotion_key(base: PlaceBase) -> u64 {
 /// Returns `None` when `offset` is out of range or the byte sequence at that
 /// offset is invalid UTF-8; callers translate that to the runtime's
 /// `invalid UTF-8` trap.
+///
+/// The Unicode Table 3-7 ranges below are spelled out here on purpose, even
+/// though `rue_runtime::utf8` states the same table once for the runtime
+/// (RUE-2081). This is the oracle: its job is to disagree with the runtime
+/// whenever the runtime is wrong, and a model that imported the runtime's
+/// table would be comparing that table against itself, making the UTF-8 half
+/// of the differential vacuous. Independent derivation is the point, so do not
+/// "deduplicate" these into the shared table — fix them in place if they drift.
 fn char_at(bytes: &[u8], offset: i128) -> Option<(u32, u64)> {
     if offset < 0 || offset as u128 >= bytes.len() as u128 {
         return None;
@@ -7471,6 +7479,14 @@ fn char_at(bytes: &[u8], offset: i128) -> Option<(u32, u64)> {
 /// Leniently decode the UTF-8 scalar starting at byte `offset`, replacing
 /// invalid UTF-8 with U+FFFD and advancing by the runtime's maximal-subpart
 /// width. Backs the oracle's model of the lossy character runtime primitives.
+///
+/// The Unicode Table 3-7 ranges below are spelled out here on purpose, even
+/// though `rue_runtime::utf8` states the same table once for the runtime
+/// (RUE-2081). This is the oracle: its job is to disagree with the runtime
+/// whenever the runtime is wrong, and a model that imported the runtime's
+/// table would be comparing that table against itself, making the UTF-8 half
+/// of the differential vacuous. Independent derivation is the point, so do not
+/// "deduplicate" these into the shared table — fix them in place if they drift.
 fn char_at_lossy(bytes: &[u8], offset: i128) -> (u32, u64) {
     const FFFD: u32 = 0xFFFD;
     if offset < 0 || offset as u128 >= bytes.len() as u128 {

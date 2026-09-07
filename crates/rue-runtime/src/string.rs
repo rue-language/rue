@@ -333,45 +333,44 @@ unsafe fn __rue_decode_utf8_at(ptr: *const u8, len: u64, offset: u64) -> (u32, u
     if b0 < 0x80 {
         return (b0 as u32, 1);
     }
-    // Lead byte determines the sequence width, the minimum non-overlong code
-    // point, and the initial code-point bits. Leads 0xC0/0xC1 (always overlong)
-    // and 0x80..=0xBF (continuation) and 0xF5..=0xFF (> U+10FFFF) are invalid.
-    let width: usize;
-    let min: u32;
-    let mut cp: u32;
-    if (0xC2..=0xDF).contains(&b0) {
-        width = 2;
-        min = 0x80;
-        cp = (b0 as u32) & 0x1F;
-    } else if (0xE0..=0xEF).contains(&b0) {
-        width = 3;
-        min = 0x800;
-        cp = (b0 as u32) & 0x0F;
-    } else if (0xF0..=0xF4).contains(&b0) {
-        width = 4;
-        min = 0x10000;
-        cp = (b0 as u32) & 0x07;
-    } else {
+    // The lead byte's row in the shared table ([`crate::utf8`]) fixes the
+    // sequence width, the range its first continuation byte may take, and the
+    // scalar bits the lead itself contributes. A byte with no row can never
+    // begin a sequence: 0xC0/0xC1 (always overlong), 0x80..=0xBF (a
+    // continuation), and 0xF5..=0xFF (past U+10FFFF).
+    //
+    // Reading the table directly is what rejects an overlong encoding, a
+    // surrogate, and an out-of-range scalar here: those are precisely what the
+    // first-continuation range encodes, so this no longer decodes the scalar
+    // first and range-checks it afterwards against a second set of hand-written
+    // bounds.
+    let Some(lead) = crate::utf8::lead(b0) else {
+        crate::error::__rue_invalid_utf8();
+    };
+    if i + lead.width > len {
         crate::error::__rue_invalid_utf8();
     }
-    if i + width > len {
+    // SAFETY: `i + lead.width <= len` (checked above) and every row has
+    // `width >= 2`, so `i + 1` is in bounds.
+    let b1 = unsafe { *ptr.add(i + 1) };
+    if !lead.accepts_first_continuation(b1) {
         crate::error::__rue_invalid_utf8();
     }
-    let mut k = 1usize;
-    while k < width {
-        // SAFETY: `i + width <= len` (checked above), so `i + k` is in bounds.
+    let mut cp = (lead.scalar_prefix << 6) | ((b1 as u32) & 0x3F);
+    // The remaining bytes are unconstrained continuations; the lead's row
+    // already narrowed the only one that carries a well-formedness rule.
+    let mut k = 2usize;
+    while k < lead.width {
+        // SAFETY: `i + lead.width <= len` (checked above), so `i + k` is in
+        // bounds.
         let b = unsafe { *ptr.add(i + k) };
-        if b & 0xC0 != 0x80 {
+        if !crate::utf8::is_continuation(b) {
             crate::error::__rue_invalid_utf8();
         }
         cp = (cp << 6) | ((b as u32) & 0x3F);
         k += 1;
     }
-    // Reject overlong encodings, UTF-16 surrogates, and out-of-range scalars.
-    if cp < min || (0xD800..=0xDFFF).contains(&cp) || cp > 0x10FFFF {
-        crate::error::__rue_invalid_utf8();
-    }
-    (cp, width as u64)
+    (cp, lead.width as u64)
 }
 
 crate::define_runtime_implementation! {
@@ -430,36 +429,23 @@ unsafe fn __rue_decode_utf8_lossy_at(ptr: *const u8, len: u64, offset: u64) -> (
     if b0 < 0x80 {
         return (b0 as u32, 1);
     }
-    // The lead byte fixes the sequence width and the valid range of the FIRST
-    // continuation byte. That first-byte range is what enforces non-overlong
-    // (0xE0 needs >= 0xA0, 0xF0 needs >= 0x90), non-surrogate (0xED needs
-    // <= 0x9F), and in-range (0xF4 needs <= 0x8F) — so a full-width sequence
-    // that clears these checks is always a valid scalar. Leads 0x80..=0xC1 and
-    // 0xF5..=0xFF can never begin a sequence: substitute one U+FFFD, step 1.
-    let (width, second_lo, second_hi) = match b0 {
-        0xC2..=0xDF => (2usize, 0x80u8, 0xBFu8),
-        0xE0 => (3, 0xA0, 0xBF),
-        0xE1..=0xEC => (3, 0x80, 0xBF),
-        0xED => (3, 0x80, 0x9F),
-        0xEE..=0xEF => (3, 0x80, 0xBF),
-        0xF0 => (4, 0x90, 0xBF),
-        0xF1..=0xF3 => (4, 0x80, 0xBF),
-        0xF4 => (4, 0x80, 0x8F),
-        _ => return (FFFD, 1),
+    // The lead byte's row in the shared table ([`crate::utf8`]) fixes the
+    // sequence width and the valid range of the FIRST continuation byte. That
+    // first-byte range is what enforces non-overlong, non-surrogate, and
+    // in-range, so a full-width sequence that clears these checks is always a
+    // valid scalar. A byte with no row — 0x80..=0xC1 and 0xF5..=0xFF — can
+    // never begin a sequence: substitute one U+FFFD, step 1.
+    let Some(lead) = crate::utf8::lead(b0) else {
+        return (FFFD, 1);
     };
-    let mask = match width {
-        2 => 0x1F,
-        3 => 0x0F,
-        _ => 0x07,
-    };
-    let mut cp = (b0 as u32) & mask;
-    // First continuation: uses the width-specific range above.
+    let mut cp = lead.scalar_prefix;
+    // First continuation: uses the width-specific range from the row.
     if i + 1 >= len {
         return (FFFD, 1);
     }
     // SAFETY: `i + 1 < len`, in bounds.
     let b1 = unsafe { *ptr.add(i + 1) };
-    if b1 < second_lo || b1 > second_hi {
+    if !lead.accepts_first_continuation(b1) {
         return (FFFD, 1);
     }
     cp = (cp << 6) | ((b1 as u32) & 0x3F);
@@ -467,19 +453,19 @@ unsafe fn __rue_decode_utf8_lossy_at(ptr: *const u8, len: u64, offset: u64) -> (
     // 0x80..=0xBF range. On a break, the maximal subpart is everything
     // consumed so far.
     let mut consumed = 2usize;
-    while consumed < width {
+    while consumed < lead.width {
         if i + consumed >= len {
             return (FFFD, consumed as u64);
         }
         // SAFETY: `i + consumed < len`, in bounds.
         let b = unsafe { *ptr.add(i + consumed) };
-        if b & 0xC0 != 0x80 {
+        if !crate::utf8::is_continuation(b) {
             return (FFFD, consumed as u64);
         }
         cp = (cp << 6) | ((b as u32) & 0x3F);
         consumed += 1;
     }
-    (cp, width as u64)
+    (cp, lead.width as u64)
 }
 
 crate::define_runtime_implementation! {
