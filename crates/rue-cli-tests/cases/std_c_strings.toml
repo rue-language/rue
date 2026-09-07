@@ -30,7 +30,7 @@
 [section]
 id = "cli.std_c_strings"
 name = "std.c C-string export contract"
-description = "owned_c_string/free_c_string round-trips, and the interior-NUL rejection that keeps the free size equal to the allocated size (RUE-1710)."
+description = "owned_c_string/free_c_string round-trips, the interior-NUL rejection that keeps the free size equal to the allocated size (RUE-1710), and free_c_string's null no-op (RUE-1781)."
 
 # The repro, in the form it can still be observed in: an interior NUL now aborts
 # at the export instead of producing a buffer that will be freed under the wrong
@@ -224,5 +224,79 @@ stdout = """
 strlen: 11
 roundtrip equal: true
 reimported len: 11
+"""
+exit_code = 0
+
+# Freeing a null pointer is a no-op, on both targets (RUE-1781).
+#
+# `free_c_string` recovers the size by scanning to the terminator, so a null
+# argument used to start that scan at address 0 and fault before reaching
+# `@free`. Null tolerance is now part of the function's contract, matching C's
+# `free(NULL)` and the `@free` intrinsic underneath it (spec 9.2:11), so a
+# caller freeing a conditionally exported string needs no null test of its own.
+# The program frees a null pointer twice, then exports and frees a real string,
+# proving the early return did not disturb the ordinary path. Compiled for each
+# supported Linux target and run where that target is the host.
+[[case]]
+name = "c_free_c_string_null_is_a_noop_x86_64"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let zero: u64 = 0;
+    let empty: ptr mut u8 = checked { @int_to_ptr(zero) };
+    std.c.free_c_string(empty);
+    std.c.free_c_string(empty);
+    println("null free returned");
+
+    let text = "still works";
+    let sb = std.strbuf.StrBuf.from_str(borrow text);
+    let cstr = std.c.owned_c_string(borrow sb);
+    println("strlen: " + @to_string(std.c.c_strlen(cstr)));
+    std.c.free_c_string(cstr);
+    println("owned free returned");
+    0
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = """
+null free returned
+strlen: 11
+owned free returned
+"""
+exit_code = 0
+
+[[case]]
+name = "c_free_c_string_null_is_a_noop_aarch64"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let zero: u64 = 0;
+    let empty: ptr mut u8 = checked { @int_to_ptr(zero) };
+    std.c.free_c_string(empty);
+    std.c.free_c_string(empty);
+    println("null free returned");
+
+    let text = "still works";
+    let sb = std.strbuf.StrBuf.from_str(borrow text);
+    let cstr = std.c.owned_c_string(borrow sb);
+    println("strlen: " + @to_string(std.c.c_strlen(cstr)));
+    std.c.free_c_string(cstr);
+    println("owned free returned");
+    0
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = """
+null free returned
+strlen: 11
+owned free returned
 """
 exit_code = 0
