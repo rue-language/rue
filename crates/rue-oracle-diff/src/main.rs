@@ -1906,6 +1906,7 @@ mod tests {
             acquire_delay_ms: None,
             edits: Vec::new(),
             stderr_contains: Vec::new(),
+            stderr_occurrences: Vec::new(),
             expected_exit_codes: Vec::new(),
         }
     }
@@ -1920,6 +1921,7 @@ mod tests {
             stdout_contains: Vec::new(),
             stdout_not_contains: Vec::new(),
             stderr_contains: Vec::new(),
+            stderr_occurrences: Vec::new(),
             expected_exit: 0,
         }
     }
