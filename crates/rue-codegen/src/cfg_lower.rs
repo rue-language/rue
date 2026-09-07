@@ -1,21 +1,27 @@
-//! Shared types and utilities for CFG lowering across backends.
-//!
-//! This module contains types and helper functions used by both x86_64 and aarch64
-//! backends when lowering CFG to machine IR.
+//! Target-independent CFG lowering: context, drivers, and debug reporting.
 //!
 //! ## Architecture
 //!
-//! The CFG lowering is split into two parts:
+//! CFG lowering is split three ways:
 //!
-//! 1. **Shared context** ([`CfgLowerContext`]): Holds common data and implements
-//!    architecture-independent helper methods like type queries and chain tracing.
+//! 1. **Shared context** ([`CfgLowerContext`]): the CFG, the type pool, and the
+//!    frame-slot translation every addressed access passes through.
 //!
-//! 2. **Backend-specific lowering** (per-backend `CfgLower`): Each backend embeds
-//!    a `CfgLowerContext` and implements instruction-specific lowering that produces
-//!    its MIR type.
+//! 2. **Shared drivers** ([`LoweringDriverBackend`] and the functions below):
+//!    the parts that decide *what* a lowering does — how a terminator's edges
+//!    are ordered, where a parameter is read from, what the entry preamble
+//!    copies, which cleanup calls a drop plan makes. These read the shared
+//!    plans (`terminator_plan`, `value_plan`, `call_plan`) and reach the
+//!    machine through per-target leaves.
 //!
-//! This design eliminates significant code duplication while keeping the
-//! instruction-specific logic where it belongs.
+//! 3. **Backend-specific lowering** (per-backend `CfgLower`): the instruction
+//!    spellings, the register-class-specific sequences, and the arms that are
+//!    genuinely one target's (`@syscall`, division and overflow sequences).
+//!
+//! A driver written once cannot drift between the two backends. A driver
+//! written twice can, silently: the multi-eightbyte return order did exactly
+//! that, and the reason for it now travels with the plan rather than with one
+//! backend's comment (see [`crate::call_plan::return_register_write_order`]).
 
 use std::fmt;
 
@@ -24,6 +30,7 @@ use rue_air::{FrozenTypeInternPool, StructId, TypeKind};
 use rue_cfg::{BlockId, Cfg, CfgValue, Type};
 
 use crate::types;
+use crate::vreg::{LabelId, VReg};
 
 /// A single lowering decision: maps one CFG instruction to its MIR expansion.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -589,5 +596,576 @@ impl<'a> CfgLowerContext<'a> {
             }
             None => self.param_frame_slot(index) + slot_count.saturating_sub(1),
         }
+    }
+}
+
+/// The canonical-form extension a foreign scalar return needs (ADR-0064 P2).
+///
+/// The narrow value occupies the low bits of the target row's result register
+/// with unspecified high bits, so unlike a Rue-internal 32-bit unsigned value —
+/// which every 32-bit machine operation already leaves canonical — a foreign
+/// `unsigned int` return has to be zero-extended explicitly. Each backend
+/// spells the named extension through its one extension primitive.
+pub(crate) fn c_return_extension(
+    ext: rue_air::ScalarAbiExtension,
+) -> crate::value_plan::IntegerExtension {
+    use crate::value_plan::IntegerExtension;
+    use rue_air::ScalarAbiExtension;
+    match ext {
+        ScalarAbiExtension::None => IntegerExtension::None,
+        ScalarAbiExtension::Signed { from_bits: 8 } => IntegerExtension::Sign8,
+        ScalarAbiExtension::Signed { from_bits: 16 } => IntegerExtension::Sign16,
+        ScalarAbiExtension::Signed { from_bits: 32 } => IntegerExtension::Sign32,
+        ScalarAbiExtension::Unsigned { from_bits: 8 } => IntegerExtension::Zero8,
+        ScalarAbiExtension::Unsigned { from_bits: 16 } => IntegerExtension::Zero16,
+        ScalarAbiExtension::Unsigned { from_bits: 32 } => IntegerExtension::Zero32,
+        ScalarAbiExtension::Signed { from_bits } | ScalarAbiExtension::Unsigned { from_bits } => {
+            panic!("unexpected target-C scalar extension width {from_bits}")
+        }
+    }
+}
+
+// ============================================================================
+// Target-independent lowering drivers
+// ============================================================================
+
+/// The lowerer state and per-target instruction leaves the drivers below reach.
+///
+/// The drivers are the parts of CFG lowering that decide *what* happens rather
+/// than how it is spelled — cache a value's vreg, copy each register-only
+/// parameter out of its argument register, emit one move per edge slot, run a
+/// drop plan's cleanup calls. They were hand-mirrored between the two backends
+/// for as long as there were two of them; they live here once, and each
+/// backend's method delegates. Only operations whose spelling *is* an
+/// instruction, and the lowerer's own caches, are trait items.
+///
+/// The lifetime parameter carries the lowering context's own borrow of the CFG
+/// and type pool, which outlives any borrow of the lowerer, so a driver can
+/// hold the context while it emits.
+pub(crate) trait LoweringDriverBackend<'a>: crate::place_lower::PlaceLowerBackend {
+    /// The shared lowering context, by value.
+    fn lowering_context(&self) -> CfgLowerContext<'a>;
+
+    /// The primary vreg cache: one entry per lowered CFG value.
+    fn value_map(&mut self) -> &mut ahash::AHashMap<CfgValue, VReg>;
+
+    /// The vreg carrying each block parameter, by `(block, parameter index)`.
+    fn block_param_vregs(&mut self) -> &mut ahash::AHashMap<(BlockId, u32), VReg>;
+
+    /// The received by-reference parameter pointers, by parameter ABI slot.
+    fn by_ref_param_ptrs(&mut self) -> &mut ahash::AHashMap<u32, VReg>;
+
+    /// The vregs holding register-only parameters (RUE-1170), by ABI slot.
+    fn param_reg_vregs(&mut self) -> &mut ahash::AHashMap<u32, VReg>;
+
+    /// Emit a floating-point register-to-register move at `width`.
+    fn emit_float_reg_move(&mut self, dst: VReg, src: VReg, width: crate::value_plan::FloatWidth);
+
+    /// Copy incoming general-purpose argument register `index` into `dst`.
+    fn emit_gp_arg_register_copy(&mut self, dst: VReg, index: usize);
+
+    /// Copy incoming floating-point argument register `index` into `dst`.
+    fn emit_fp_arg_register_copy(
+        &mut self,
+        dst: VReg,
+        index: usize,
+        width: crate::value_plan::FloatWidth,
+    );
+
+    /// Lower one planned call and materialize its result.
+    fn lower_call_plan(
+        &mut self,
+        plan: crate::call_plan::CallPlan,
+    ) -> crate::value_plan::MaterializedValue;
+
+    /// Jump to `target`'s block label.
+    fn emit_jump_to_block(&mut self, target: BlockId);
+
+    /// Branch to `label` when `condition` is nonzero, comparing against zero
+    /// first on a target whose branches read a flags register.
+    fn emit_branch_if_nonzero(&mut self, condition: VReg, label: LabelId);
+
+    /// Branch to `label` when `condition` is zero, comparing against zero
+    /// first on a target whose branches read a flags register.
+    fn emit_branch_if_zero(&mut self, condition: VReg, label: LabelId);
+
+    /// Compare `scrutinee` against one switch case value at `width`.
+    fn emit_switch_case_compare(
+        &mut self,
+        scrutinee: VReg,
+        value: i64,
+        width: crate::value_plan::IntegerWidth,
+    );
+
+    /// Branch to `target`'s block label when the last comparison was equal.
+    fn emit_branch_if_equal(&mut self, target: BlockId);
+
+    /// Move a scalar return value into the result register of its own bank.
+    fn emit_scalar_return_move(
+        &mut self,
+        value: VReg,
+        float_width: Option<crate::value_plan::FloatWidth>,
+    );
+
+    /// Return from the function.
+    fn emit_return(&mut self);
+
+    /// Trap: control reached a terminator the CFG proved unreachable.
+    fn emit_unreachable(&mut self);
+
+    /// Write one register-returned value into the result registers the shared
+    /// lowering named for it, in
+    /// [`ReturnRegisters::write_order`](crate::call_plan::ReturnRegisters::write_order).
+    fn write_return_registers(
+        &mut self,
+        registers: &crate::call_plan::ReturnRegisters,
+        slots: &[VReg],
+    );
+
+    /// Lower one planned runtime-helper call.
+    fn lower_runtime_call(
+        &mut self,
+        plan: crate::runtime_call_plan::RuntimeCallPlan,
+    ) -> crate::value_plan::MaterializedValue;
+}
+
+/// The vreg carrying `value`, lowering the value first if it has not been
+/// reached yet.
+pub(crate) fn get_vreg<'a, B: LoweringDriverBackend<'a>>(b: &mut B, value: CfgValue) -> VReg {
+    if let Some(&vreg) = b.value_map().get(&value) {
+        return vreg;
+    }
+
+    // Not yet lowered - lower it now
+    let ctx = b.lowering_context();
+    crate::value_plan::lower_value(&ctx, b, value);
+
+    b.value_map()
+        .get(&value)
+        .copied()
+        .expect("value should have been lowered")
+}
+
+/// The vregs a CFG edge's argument arrives in, which
+/// [`prepare_block_param`] reserved before any block was lowered.
+pub(crate) fn materialize_block_param<'a, B: LoweringDriverBackend<'a>>(
+    b: &mut B,
+    target: BlockId,
+    param_index: u32,
+    value: CfgValue,
+    plan: crate::value_plan::ValuePlan,
+) -> crate::value_plan::MaterializedValue {
+    let primary = b.block_param_vregs()[&(target, param_index)];
+    let slots = if plan.shape.requires_complete_slots() {
+        let slots = b
+            .slot_cache()
+            .get(&value)
+            .cloned()
+            .expect("aggregate block parameter slots should be preallocated");
+        plan.assert_complete_slots(slots.len());
+        slots
+    } else {
+        Vec::new()
+    };
+    crate::value_plan::MaterializedValue { primary, slots }
+}
+
+/// Reserve the vregs one block parameter arrives in, in the register class its
+/// leaf names, before any block is lowered.
+pub(crate) fn prepare_block_param<'a, B: LoweringDriverBackend<'a>>(
+    b: &mut B,
+    block: BlockId,
+    index: u32,
+    value: CfgValue,
+    ty: Type,
+) {
+    let primary_ty = crate::types::aggregate_leaf_types(b.ctx().type_pool, ty)
+        .first()
+        .copied()
+        .unwrap_or(ty);
+    let vreg = if crate::value_plan::float_width(primary_ty).is_some() {
+        b.alloc_float_vreg()
+    } else {
+        b.alloc_vreg()
+    };
+    b.block_param_vregs().insert((block, index), vreg);
+    b.value_map().insert(value, vreg);
+    crate::agg_slots::preallocate_block_param_slots(b, value, ty, vreg);
+}
+
+/// The whole entry preamble: register-only parameter copies, by-reference
+/// parameter pointers, and the by-value aggregate parameters read back out of
+/// their compact images.
+pub(crate) fn preload_by_ref_params<'a, B: LoweringDriverBackend<'a>>(b: &mut B) {
+    preload_by_ref_param_ptrs(b);
+    // Read each by-value aggregate parameter whose leaves are not its
+    // eightbytes back out of the compact image the prologue laid down, so
+    // field projection and whole-value reads see the correct decomposition
+    // (ADR-0084).
+    let unmarshals = crate::value_plan::param_image_unmarshals(b.ctx());
+    for (base_slot, image_slot_offset, through_pointer, image) in unmarshals {
+        crate::agg_slots::unmarshal_param_image(
+            b,
+            base_slot,
+            image_slot_offset,
+            through_pointer,
+            &image,
+        );
+    }
+}
+
+/// Materialize every by-reference parameter pointer before CFG control flow
+/// begins, so the function-wide cache only contains definitions that dominate
+/// every block which may reuse them.
+pub(crate) fn preload_by_ref_param_ptrs<'a, B: LoweringDriverBackend<'a>>(b: &mut B) {
+    materialize_register_params(b);
+    let by_ref = crate::value_plan::by_ref_param_slots(b.ctx());
+    for param_slot in by_ref {
+        ensure_by_ref_param_ptr(b, param_slot);
+    }
+}
+
+/// Copy every register-only parameter (RUE-1170) out of its incoming argument
+/// register into a virtual register, before CFG control flow begins: the
+/// argument registers are caller-saved, so the copies must precede every call
+/// and dominate every use (including loop back-edges into the entry block). A
+/// register-only by-ref pointer seeds the by-ref cache directly.
+pub(crate) fn materialize_register_params<'a, B: LoweringDriverBackend<'a>>(b: &mut B) {
+    let entry_copies = b.ctx().param_entry_copies();
+    for (param_slot, class, location) in entry_copies {
+        let vreg = match (class, location) {
+            (
+                crate::abi_slot_class::AbiSlotClass::Gp,
+                crate::call_plan::AbiSlotLocation::GpReg(class_index),
+            ) => {
+                let vreg = b.alloc_vreg();
+                b.emit_gp_arg_register_copy(vreg, class_index);
+                vreg
+            }
+            (
+                crate::abi_slot_class::AbiSlotClass::Fp(width),
+                crate::call_plan::AbiSlotLocation::FpReg(class_index),
+            ) => {
+                let vreg = b.alloc_float_vreg();
+                b.emit_fp_arg_register_copy(vreg, class_index, width);
+                vreg
+            }
+            _ => unreachable!("register-only parameter class and ABI bank must agree"),
+        };
+        if b.ctx().cfg.is_param_by_ref(param_slot) {
+            b.by_ref_param_ptrs().insert(param_slot, vreg);
+        } else {
+            b.param_reg_vregs().insert(param_slot, vreg);
+        }
+    }
+}
+
+/// The pointer a by-reference parameter was received through, loaded from its
+/// frame home on first use and cached for the rest of the function.
+pub(crate) fn ensure_by_ref_param_ptr<'a, B: LoweringDriverBackend<'a>>(
+    b: &mut B,
+    param_slot: u32,
+) -> VReg {
+    if let Some(ptr_vreg) = b.by_ref_param_ptrs().get(&param_slot).copied() {
+        return ptr_vreg;
+    }
+
+    // Load the pointer from the param's frame home. A register-only
+    // by-ref pointer (RUE-1170) never reaches this load: the entry
+    // preamble copies it out of its argument register into the cache
+    // before any block is lowered, so the memoized hit above serves it.
+    // Stack-passed pointers stay homed by the prologue, so this load is
+    // uniform regardless of param count.
+    let ptr_vreg = b.alloc_vreg();
+    let slot = b.ctx().param_frame_slot(param_slot);
+    b.emit_load_slot(ptr_vreg, slot);
+
+    // Cache it for future use
+    b.by_ref_param_ptrs().insert(param_slot, ptr_vreg);
+    ptr_vreg
+}
+
+/// Emit one move per logical slot an edge carries into its target's block
+/// parameters.
+pub(crate) fn emit_edge_moves<'a, B: LoweringDriverBackend<'a>>(
+    b: &mut B,
+    edge: &crate::terminator_plan::EdgePlan,
+) {
+    for movement in &edge.moves {
+        match movement.float_width {
+            Some(width) => b.emit_float_reg_move(movement.destination, movement.source, width),
+            None => b.emit_reg_move(movement.destination, movement.source),
+        }
+    }
+}
+
+/// The vregs one `Param` value's slots arrive in.
+///
+/// A parameter reaches its reader in one of four shapes: through the pointer a
+/// by-reference parameter was received as, out of the frame image a homed
+/// parameter occupies, straight from the vreg the entry preamble copied a
+/// register-only parameter into (RUE-1170), or — for a zero-slot value — not
+/// at all.
+pub(crate) fn lower_param_value<'a, B: LoweringDriverBackend<'a>>(
+    b: &mut B,
+    index: u32,
+    ty: Type,
+    policy: crate::value_plan::ValuePlan,
+) -> (VReg, Vec<VReg>) {
+    // A slot's register class follows its LEAF, not the type wrapped around
+    // it (RUE-2001): a `struct Q { f: f64 }` and a bare `f64` hold the same
+    // thing in the same one slot, so reading the width off the parameter's
+    // own type would load a float-carrying wrapper with an integer load into
+    // a general-purpose register and hand it to a float-typed consumer.
+    let leaf_types = crate::types::aggregate_leaf_types(b.ctx().type_pool, ty);
+    let float_width = crate::value_plan::primary_slot_float_width(&leaf_types);
+    let dst = if float_width.is_some() {
+        b.alloc_float_vreg()
+    } else {
+        b.alloc_vreg()
+    };
+    let count = policy.shape.slot_count();
+    if count == 0 {
+        // No slot to load: `dst` stays the never-read placeholder.
+        return (dst, Vec::new());
+    }
+    if let crate::value_plan::StoragePolicy::ParameterSlot { by_ref: true, .. } = policy.storage {
+        let ptr = ensure_by_ref_param_ptr(b, index);
+        if count > 1 {
+            let slots: Vec<_> = (0..count)
+                .map(|slot| {
+                    let v = b.alloc_vreg();
+                    b.emit_load_through_ptr(
+                        v,
+                        ptr,
+                        crate::frame_layout::slot_byte_offset(slot as usize),
+                    );
+                    v
+                })
+                .collect();
+            return (slots[0], slots);
+        }
+        b.emit_load_ptr_base(dst, ptr, float_width);
+    } else if count > 1 {
+        let slots: Vec<_> = (0..count)
+            .map(|slot| {
+                let width = crate::value_plan::float_width(leaf_types[slot as usize]);
+                let v = if width.is_some() {
+                    b.alloc_float_vreg()
+                } else {
+                    b.alloc_vreg()
+                };
+                let frame_slot = b.ctx().param_value_low_slot(index, count) - slot;
+                match width {
+                    Some(width) => b.emit_float_load_slot(v, frame_slot, width),
+                    None => b.emit_load_slot(v, frame_slot),
+                }
+                v
+            })
+            .collect();
+        return (slots[0], slots);
+    } else if let Some(&vreg) = b.param_reg_vregs().get(&index) {
+        // Register-only scalar (RUE-1170): the entry preamble copied the
+        // argument register into one read-only vreg shared by every read.
+        return (vreg, Vec::new());
+    } else {
+        let frame_slot = b.ctx().param_value_low_slot(index, 1);
+        match float_width {
+            Some(width) => b.emit_float_load_slot(dst, frame_slot, width),
+            None => b.emit_load_slot(dst, frame_slot),
+        }
+    }
+    (dst, Vec::new())
+}
+
+/// Emit one block terminator from its target-neutral plan.
+///
+/// Every branch topology decision — which edge falls through, which one gets
+/// the setup label, which comparison the switch spends — is made here, once;
+/// the backends supply only the instruction spelling for each step.
+pub(crate) fn emit_terminator_plan<'a, B: LoweringDriverBackend<'a>>(
+    b: &mut B,
+    plan: crate::terminator_plan::TerminatorPlan,
+) {
+    use crate::terminator_plan::{ReturnMode, ReturnValuePlan, TerminatorPlan};
+
+    match plan {
+        TerminatorPlan::Goto { edge } => {
+            emit_edge_moves(b, &edge);
+            if !edge.fallthrough {
+                b.emit_jump_to_block(edge.target);
+            }
+        }
+        TerminatorPlan::Branch {
+            condition,
+            then_edge,
+            else_edge,
+        } => {
+            // The edge that falls through is emitted last, so the branch is
+            // spelled against the other one and the fall-through edge's moves
+            // land immediately before its target block.
+            if then_edge.fallthrough {
+                let then_setup_label = b.alloc_lowering_label();
+                b.emit_branch_if_nonzero(condition, then_setup_label);
+                emit_edge_moves(b, &else_edge);
+                if !else_edge.fallthrough {
+                    b.emit_jump_to_block(else_edge.target);
+                }
+                b.emit_lowering_label(then_setup_label);
+                emit_edge_moves(b, &then_edge);
+            } else {
+                let else_setup_label = b.alloc_lowering_label();
+                b.emit_branch_if_zero(condition, else_setup_label);
+                emit_edge_moves(b, &then_edge);
+                if !then_edge.fallthrough {
+                    b.emit_jump_to_block(then_edge.target);
+                }
+                b.emit_lowering_label(else_setup_label);
+                emit_edge_moves(b, &else_edge);
+                if !else_edge.fallthrough {
+                    b.emit_jump_to_block(else_edge.target);
+                }
+            }
+        }
+        TerminatorPlan::Switch {
+            scrutinee,
+            width,
+            cases,
+            default,
+        } => {
+            for case in cases {
+                b.emit_switch_case_compare(scrutinee, case.value, width);
+                b.emit_branch_if_equal(case.target);
+            }
+            b.emit_jump_to_block(default);
+        }
+        TerminatorPlan::Return { mode } => match mode {
+            ReturnMode::Exit { call } => {
+                let _ = b.lower_runtime_call(call);
+            }
+            ReturnMode::Function { value } => match value {
+                ReturnValuePlan::ZeroSized => b.emit_return(),
+                ReturnValuePlan::Scalar { value, float_width } => {
+                    b.emit_scalar_return_move(value, float_width);
+                    b.emit_return();
+                }
+                ReturnValuePlan::Aggregate {
+                    slots,
+                    return_plan,
+                    registers,
+                } => {
+                    if let crate::call_plan::ReturnPlan::Sret { echoed, .. } = return_plan {
+                        let return_ty = b.ctx().cfg.return_type();
+                        let slot_map =
+                            crate::types::aggregate_physical_slot_map(b.ctx().type_pool, return_ty);
+                        match slot_map {
+                            Some(map) => {
+                                // The sret image is written compact; its padding
+                                // is zeroed first (ADR-0052 ruling 5).
+                                let padding =
+                                    b.ctx().type_pool.compact_image_padding_ranges(return_ty);
+                                crate::agg_slots::store_slots_to_sret_compact(
+                                    b, &slots, &map, &padding,
+                                )
+                            }
+                            None => {
+                                let dispatch = crate::types::aggregate_dispatch_image(
+                                    b.ctx().type_pool,
+                                    return_ty,
+                                );
+                                match dispatch {
+                                    // Heterogeneous compact aggregate return (RUE-1037):
+                                    // write the sret image with a per-variant tag dispatch.
+                                    Some(image) => crate::agg_slots::store_dispatch_image_to_sret(
+                                        b, &slots, &image,
+                                    ),
+                                    None => crate::agg_slots::store_slots_to_sret(b, &slots),
+                                }
+                            }
+                        }
+                        // SysV AMD64 requires the callee to leave the
+                        // indirect-result pointer in `rax` on return; AAPCS64's
+                        // dedicated `x8` is not echoed. The row's own field is
+                        // read rather than assumed, so the two stay one rule.
+                        if echoed {
+                            crate::agg_slots::SlotBackend::emit_sret_pointer_echo(b);
+                        }
+                    } else {
+                        match registers.as_ref() {
+                            Some(registers) => b.write_return_registers(registers, &slots),
+                            // A zero-sized aggregate names no result
+                            // register because it has no bytes to carry.
+                            None => assert!(
+                                slots.is_empty(),
+                                "only a zero-sized aggregate return names no \
+                                 result register"
+                            ),
+                        }
+                    }
+                    b.emit_return();
+                }
+            },
+        },
+        TerminatorPlan::Unreachable => b.emit_unreachable(),
+    }
+}
+
+/// Emit a drop plan's cleanup calls.
+pub(crate) fn lower_drop_plan<'a, B: LoweringDriverBackend<'a>>(
+    b: &mut B,
+    actions: Vec<crate::value_plan::DropAction>,
+) -> crate::value_plan::ValueResult {
+    for action in actions {
+        // One cleanup call at a time: building the plan emits the
+        // argument's marshaling, and a caller-owned indirect copy must stay
+        // live until the call it belongs to has returned.
+        let plan = crate::call_plan::CallPlan::from_inputs(
+            crate::call_plan::CallTarget::rue(action.symbol),
+            crate::call_plan::ReturnPlan::ZeroSized,
+            std::slice::from_ref(&action.argument),
+            std::slice::from_ref(&action.native),
+            b,
+        );
+        let _ = b.lower_call_plan(plan);
+    }
+
+    crate::value_plan::ValueResult::SideEffect
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::value_plan::IntegerExtension;
+    use rue_air::ScalarAbiExtension;
+
+    #[test]
+    fn a_foreign_narrow_return_names_the_extension_its_signedness_asks_for() {
+        assert_eq!(
+            c_return_extension(ScalarAbiExtension::None),
+            IntegerExtension::None
+        );
+        for (bits, signed, expected) in [
+            (8, true, IntegerExtension::Sign8),
+            (16, true, IntegerExtension::Sign16),
+            (32, true, IntegerExtension::Sign32),
+            (8, false, IntegerExtension::Zero8),
+            (16, false, IntegerExtension::Zero16),
+            // A foreign `unsigned int` leaves bits 32-63 unspecified, unlike
+            // every Rue-internal 32-bit result, so this one is explicit.
+            (32, false, IntegerExtension::Zero32),
+        ] {
+            let ext = if signed {
+                ScalarAbiExtension::Signed { from_bits: bits }
+            } else {
+                ScalarAbiExtension::Unsigned { from_bits: bits }
+            };
+            assert_eq!(c_return_extension(ext), expected, "{ext:?}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "unexpected target-C scalar extension width")]
+    fn a_foreign_return_of_an_unclassified_width_is_rejected() {
+        c_return_extension(ScalarAbiExtension::Unsigned { from_bits: 7 });
     }
 }

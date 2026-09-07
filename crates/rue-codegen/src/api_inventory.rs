@@ -289,6 +289,105 @@ fn integer_cast_and_arithmetic_post_op_policy_live_only_in_the_value_plan() {
 }
 
 #[test]
+fn target_independent_lowering_drivers_live_only_in_the_shared_cfg_lowering() {
+    // The drivers over the shared plans — the terminator emitter, the parameter
+    // reader, the entry preamble, the block-parameter helpers, the edge moves,
+    // and the drop plan — decide *what* a lowering does; only the instruction
+    // spelling is per target. They were hand-mirrored between the two backends
+    // until RUE-1981, and a driver written twice is a driver that can differ
+    // twice: that is how a multi-slot register return came to be written in one
+    // order on x86-64 and the opposite order on AArch64 with nothing stating
+    // why.
+    let shared = include_str!("cfg_lower.rs");
+    let drivers = [
+        "emit_terminator_plan",
+        "lower_param_value",
+        "materialize_register_params",
+        "preload_by_ref_param_ptrs",
+        "preload_by_ref_params",
+        "ensure_by_ref_param_ptr",
+        "emit_edge_moves",
+        "lower_drop_plan",
+        "get_vreg",
+        "materialize_block_param",
+        "prepare_block_param",
+    ];
+    for driver in drivers {
+        assert!(
+            shared.contains(&format!("pub(crate) fn {driver}")),
+            "the shared CFG lowering lost the {driver} driver"
+        );
+    }
+
+    for (name, source) in [
+        ("x86_64/cfg_lower", include_str!("x86_64/cfg_lower.rs")),
+        ("aarch64/cfg_lower", include_str!("aarch64/cfg_lower.rs")),
+    ] {
+        let production = source
+            .split("\n#[cfg(test)]\nmod ")
+            .next()
+            .expect("codegen production prefix");
+        // Every driver a backend still names is reached through the shared
+        // module, never re-implemented beside it.
+        for driver in [
+            "emit_terminator_plan",
+            "lower_param_value",
+            "ensure_by_ref_param_ptr",
+            "lower_drop_plan",
+            "get_vreg",
+            "materialize_block_param",
+            "preload_by_ref_params",
+            "prepare_block_param",
+        ] {
+            assert_eq!(
+                production
+                    .matches(&format!("crate::cfg_lower::{driver}("))
+                    .count(),
+                1,
+                "backend {name} must reach the shared {driver} driver exactly once"
+            );
+        }
+        // The entry preamble and the edge moves have no backend spelling at
+        // all: the shared driver reaches the machine through the leaves.
+        for internal in [
+            "fn materialize_register_params(",
+            "fn preload_by_ref_param_ptrs(",
+            "fn emit_edge_moves(",
+        ] {
+            assert!(
+                !production.contains(internal),
+                "backend {name} regained a hand-mirrored {internal}"
+            );
+        }
+        // Inline labels come from the MIR's own allocator on both targets, so
+        // the two label namespaces cannot drift apart (RUE-1981).
+        assert!(
+            !production.contains("next_label"),
+            "backend {name} keeps a second inline-label counter beside the MIR's"
+        );
+        assert!(
+            production.contains("alloc_label()"),
+            "backend {name} must allocate inline labels through its MIR"
+        );
+        // The multi-eightbyte return order is a shared decision read from a
+        // per-target predicate, not a hand-placed `.rev()`.
+        assert!(
+            production.contains("RETURN_SCRATCH_OVERLAP"),
+            "backend {name} must name its scratch/result-register overlap"
+        );
+        assert!(
+            production.contains("registers.write_order(RETURN_SCRATCH_OVERLAP)"),
+            "backend {name} must spend its result registers in the shared order"
+        );
+    }
+
+    // The order itself, and the reason it exists, live with the return plan.
+    let call_plan = include_str!("call_plan.rs");
+    assert!(call_plan.contains("pub fn return_register_write_order("));
+    assert!(call_plan.contains("pub enum ScratchOverlap"));
+}
+
+#[test]
 fn codegen_consults_air_for_aggregate_and_switch_compare_policy() {
     // The call planner and the value materializer must classify aggregates
     // identically, or a call passes a value in a shape the other side never

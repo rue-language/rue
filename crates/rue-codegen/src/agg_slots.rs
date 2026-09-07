@@ -26,6 +26,7 @@ use rue_cfg::CfgValue;
 
 use crate::allocation::BoundsCheckBackend;
 use crate::cfg_lower::CfgLowerContext;
+use crate::frame_layout::slot_byte_offset;
 use crate::vreg::VReg;
 
 /// The per-backend leaf operations the shared slot logic needs.
@@ -593,11 +594,7 @@ pub(crate) fn store_slots_through_ptr<B: SlotBackend>(
     static_byte_offset: i32,
 ) {
     for (i, val) in vals.iter().enumerate() {
-        b.emit_store_through_ptr(
-            *val,
-            ptr,
-            static_byte_offset + (i as i32) * SLOT_BYTES as i32,
-        );
+        b.emit_store_through_ptr(*val, ptr, static_byte_offset + slot_byte_offset(i));
     }
 }
 
@@ -616,7 +613,7 @@ pub(crate) fn store_slots_through_ptr_typed<B: SlotBackend>(
 ) {
     assert_eq!(vals.len(), leaf_types.len());
     for (i, (val, ty)) in vals.iter().zip(leaf_types).enumerate() {
-        let byte_offset = static_byte_offset + (i as i32) * SLOT_BYTES as i32;
+        let byte_offset = static_byte_offset + slot_byte_offset(i);
         match crate::value_plan::float_width(*ty) {
             Some(width) => b.emit_float_store_through_ptr(*val, ptr, byte_offset, width),
             None => b.emit_store_through_ptr(*val, ptr, byte_offset),
@@ -636,7 +633,7 @@ pub(crate) fn store_slots_to_sret<B: SlotBackend>(b: &mut B, vals: &[VReg]) {
     let sret_slot = b.ctx().sret_ptr_slot();
     b.emit_load_slot(ptr, sret_slot);
     for (i, val) in vals.iter().enumerate() {
-        b.emit_store_through_ptr(*val, ptr, (i as i32) * SLOT_BYTES as i32);
+        b.emit_store_through_ptr(*val, ptr, slot_byte_offset(i));
     }
 }
 
@@ -943,7 +940,7 @@ pub(crate) fn load_slots_through_ptr_typed<B: SlotBackend>(
         .iter()
         .enumerate()
         .map(|(k, ty)| {
-            let byte_offset = (k as i32) * SLOT_BYTES as i32;
+            let byte_offset = slot_byte_offset(k);
             match crate::value_plan::float_width(*ty) {
                 Some(width) => {
                     let vreg = b.alloc_float_vreg();
@@ -997,7 +994,7 @@ fn load_through_ptr<B: SlotBackend>(b: &mut B, addr_vreg: VReg, count: u32) -> V
     let mut vregs = Vec::with_capacity(count as usize);
     for k in 0..count {
         let vreg = b.alloc_vreg();
-        b.emit_load_through_ptr(vreg, addr_vreg, (k as i32) * SLOT_BYTES as i32);
+        b.emit_load_through_ptr(vreg, addr_vreg, slot_byte_offset(k as usize));
         vregs.push(vreg);
     }
     vregs

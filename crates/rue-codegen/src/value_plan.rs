@@ -918,6 +918,12 @@ pub enum IntegerExtension {
     Sign16,
     Zero16,
     Sign32,
+    /// Zero the high 32 bits. No Rue-internal width asks for this — an
+    /// unsigned 32-bit value is already canonical, because every 32-bit
+    /// machine operation leaves bits 32-63 zero (see [`width_extension`]) —
+    /// but a foreign callee returning `unsigned int` leaves them unspecified,
+    /// so the `extern "C"` return path names it explicitly (ADR-0064 P2).
+    Zero32,
 }
 
 /// The language operation whose target adapter must emit instructions.

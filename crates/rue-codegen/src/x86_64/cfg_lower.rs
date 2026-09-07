@@ -2,28 +2,6 @@
 //!
 //! This module converts CFG (explicit control flow graph) to X86Mir
 //! (x86-64 instructions with virtual registers).
-//!
-//! # Label Namespace Separation
-//!
-//! During lowering, we need to generate labels for two distinct purposes:
-//!
-//! 1. **Block labels** - Each CFG basic block gets a label for control flow
-//!    (jumps, branches, etc.). These are derived deterministically from block IDs.
-//!
-//! 2. **Inline labels** - Generated during instruction lowering for things like
-//!    overflow checks, bounds checks, division-by-zero checks, and conditional
-//!    branches within a single CFG instruction.
-//!
-//! To prevent collisions, we partition the `u32` label ID space:
-//!
-//! - **Inline labels**: IDs `0` to `BLOCK_LABEL_BASE - 1` (allocated via [`CfgLower::new_label`])
-//! - **Block labels**: IDs `BLOCK_LABEL_BASE` to `u32::MAX` (computed via [`CfgLower::block_label`])
-//!
-//! See [`crate::vreg::BLOCK_LABEL_BASE`] for the constant definition.
-//!
-//! This gives each namespace ~2 billion IDs, which is more than sufficient for
-//! any realistic function. The separation is handled automatically by the
-//! respective methods.
 
 use ahash::AHashMap;
 use lasso::ThreadedRodeo;
@@ -39,7 +17,6 @@ use crate::frame_layout::{
     checked_aligned_cell_region_bytes, checked_cell_byte_offset, checked_cell_region_bytes,
     checked_displacement_bytes,
 };
-use crate::vreg::BLOCK_LABEL_BASE;
 
 /// Argument passing registers per System V AMD64 ABI. ABI arg slots beyond
 /// these are passed on the caller's stack (slot `k >= 6` at `[rbp+16+(k-6)*8]`
@@ -122,6 +99,34 @@ fn gp_result_index(pieces: rue_air::RegisterPieces) -> usize {
 /// return register — so the two directions name one register file.
 pub(super) const FP_RET_REGS: [Reg; 8] = FP_ARG_REGS;
 
+/// This target's answer to [`crate::call_plan::ScratchOverlap`], read off the
+/// rosters above rather than asserted: `rax` is `RET_REGS[0]` as well as the
+/// general-purpose reload scratch, and `xmm0` is `FP_RET_REGS[0]` as well as
+/// the floating-point one. A register return therefore writes its result
+/// registers in reverse, so a spilled later eightbyte's reload through a
+/// scratch register runs before that register receives its own result.
+pub(super) const RETURN_SCRATCH_OVERLAP: crate::call_plan::ScratchOverlap = {
+    let aliases = roster_contains(&RET_REGS, super::mir::SCRATCH_VALUE)
+        || roster_contains(&FP_RET_REGS, super::mir::SCRATCH_FP_VALUE);
+    if aliases {
+        crate::call_plan::ScratchOverlap::AliasesResultRegister
+    } else {
+        crate::call_plan::ScratchOverlap::Disjoint
+    }
+};
+
+/// Whether `roster` names `reg`.
+const fn roster_contains(roster: &[Reg], reg: Reg) -> bool {
+    let mut index = 0;
+    while index < roster.len() {
+        if roster[index] as u8 == reg as u8 {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
 // Call sequences and the prologue name these registers physically, and liveness
 // models neither those physical definitions nor their uses. So they must be off
 // limits to the allocator, not merely unlikely to collide (RUE-1146).
@@ -181,11 +186,6 @@ pub struct CfgLower<'a> {
     value_map: AHashMap<CfgValue, VReg>,
     /// Maps block parameters to vregs (block_id, param_index) -> vreg
     block_param_vregs: AHashMap<(BlockId, u32), VReg>,
-    /// Next inline label ID for generating unique labels.
-    ///
-    /// Inline labels (for overflow checks, bounds checks, etc.) use IDs from
-    /// the lower half of the `u32` space. See module docs for namespace details.
-    next_label: u32,
     /// Function name (needed to detect main function)
     fn_name: &'a str,
     /// Maps StructInit CFG values to their field vregs
@@ -395,7 +395,6 @@ impl<'a> CfgLower<'a> {
             mir: X86Mir::new(),
             value_map: AHashMap::with_capacity(num_values),
             block_param_vregs: AHashMap::with_capacity(estimated_block_params),
-            next_label: 0,
             fn_name: cfg.fn_name(),
             struct_slot_vregs: AHashMap::with_capacity(estimated_struct_inits),
             array_repeat_fills: AHashMap::new(),
@@ -583,87 +582,8 @@ impl<'a> CfgLower<'a> {
         });
     }
 
-    /// Recursively collect all scalar vregs from a struct value.
     fn ensure_by_ref_param_ptr(&mut self, param_slot: u32) -> VReg {
-        if let Some(ptr_vreg) = self.by_ref_param_ptrs.get(&param_slot).copied() {
-            return ptr_vreg;
-        }
-
-        // Load the pointer from the param's frame home. A register-only
-        // by-ref pointer (RUE-1170) never reaches this load: the entry
-        // preamble copies it out of its argument register into the cache
-        // before any block is lowered, so the memoized hit above serves it.
-        // Stack-passed pointers stay homed by the prologue, so this load is
-        // uniform regardless of param count.
-        let ptr_vreg = self.mir.alloc_vreg();
-        let slot = self.ctx.param_frame_slot(param_slot);
-        let offset = self.ctx.local_offset(slot);
-        self.mir.push(X86Inst::MovRM {
-            dst: Operand::Virtual(ptr_vreg),
-            base: Reg::Rbp,
-            offset,
-        });
-
-        // Cache it for future use
-        self.by_ref_param_ptrs.insert(param_slot, ptr_vreg);
-        ptr_vreg
-    }
-
-    /// Copy every register-only parameter (RUE-1170) out of its incoming
-    /// argument register into a virtual register, before CFG control flow
-    /// begins: the argument registers are caller-saved, so the copies must
-    /// precede every call and dominate every use (including loop back-edges
-    /// into the entry block). A register-only by-ref pointer seeds the
-    /// by-ref cache directly.
-    fn materialize_register_params(&mut self) {
-        for (param_slot, class, location) in self.ctx.param_entry_copies() {
-            let (vreg, copy) = match (class, location) {
-                (
-                    crate::abi_slot_class::AbiSlotClass::Gp,
-                    crate::call_plan::AbiSlotLocation::GpReg(class_index),
-                ) => {
-                    let vreg = self.mir.alloc_vreg();
-                    (
-                        vreg,
-                        X86Inst::MovRR {
-                            dst: Operand::Virtual(vreg),
-                            src: Operand::Physical(ARG_REGS[class_index]),
-                        },
-                    )
-                }
-                (
-                    crate::abi_slot_class::AbiSlotClass::Fp(width),
-                    crate::call_plan::AbiSlotLocation::FpReg(class_index),
-                ) => {
-                    let vreg = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
-                    (
-                        vreg,
-                        X86Inst::FloatMov {
-                            dst: Operand::Virtual(vreg),
-                            src: Operand::Physical(FP_ARG_REGS[class_index]),
-                            width,
-                        },
-                    )
-                }
-                _ => unreachable!("register-only parameter class and ABI bank must agree"),
-            };
-            self.mir.push(copy);
-            if self.ctx.cfg.is_param_by_ref(param_slot) {
-                self.by_ref_param_ptrs.insert(param_slot, vreg);
-            } else {
-                self.param_reg_vregs.insert(param_slot, vreg);
-            }
-        }
-    }
-
-    /// Materialize every by-reference parameter pointer before CFG control
-    /// flow begins, so the function-wide cache only contains definitions that
-    /// dominate every block which may reuse them.
-    fn preload_by_ref_param_ptrs(&mut self) {
-        self.materialize_register_params();
-        for param_slot in crate::value_plan::by_ref_param_slots(&self.ctx) {
-            self.ensure_by_ref_param_ptr(param_slot);
-        }
+        crate::cfg_lower::ensure_by_ref_param_ptr(self, param_slot)
     }
 
     fn emit_div_core(&mut self, is_64: bool, is_signed: bool, rhs_vreg: VReg) {
@@ -717,7 +637,7 @@ impl<'a> CfgLower<'a> {
         rhs_vreg: VReg,
         trap_call: crate::runtime_call_plan::RuntimeCallPlan,
     ) {
-        let ok_label = self.new_label();
+        let ok_label = self.mir.alloc_label();
         if width.bits == 64 {
             // divisor == -1?
             self.mir.push(X86Inst::Cmp64RI {
@@ -782,32 +702,12 @@ impl<'a> CfgLower<'a> {
             IntegerExtension::Sign16 => X86Inst::Movsx16To64 { dst, src },
             IntegerExtension::Zero16 => X86Inst::Movzx16To64 { dst, src },
             IntegerExtension::Sign32 => X86Inst::Movsx32To64 { dst, src },
+            IntegerExtension::Zero32 => X86Inst::Movzx32To64 { dst, src },
         });
     }
 
-    /// Allocate a new inline label ID.
-    ///
-    /// These labels are used for control flow within instruction lowering
-    /// (overflow checks, bounds checks, etc.). IDs are allocated starting
-    /// from 0 and incrementing, staying within the lower half of the ID space.
-    ///
-    /// See the module documentation for details on label namespace separation.
-    fn new_label(&mut self) -> LabelId {
-        let label = LabelId::new(self.next_label);
-        self.next_label += 1;
-        label
-    }
-
-    /// Get the label for a CFG basic block.
-    ///
-    /// Block labels use IDs in the upper half of the `u32` space (starting at
-    /// [`BLOCK_LABEL_BASE`]) to avoid collisions with inline labels allocated by
-    /// [`Self::new_label`]. The mapping is deterministic: `block_id` maps to
-    /// `BLOCK_LABEL_BASE + block_id`.
-    ///
-    /// See the module documentation for details on label namespace separation.
     fn block_label(&self, block_id: BlockId) -> LabelId {
-        LabelId::new(BLOCK_LABEL_BASE + block_id.as_u32())
+        X86Mir::block_label(block_id.as_u32())
     }
 
     /// Get or compute the slot vregs for a multi-slot aggregate value.
@@ -1074,7 +974,7 @@ impl<'a> CfgLower<'a> {
                             src2: Operand::Virtual(src),
                         }
                     });
-                    let ok = self.new_label();
+                    let ok = self.mir.alloc_label();
                     self.mir.push(X86Inst::Jz { label: ok });
                     let _ = self.lower_runtime_call(overflow_call.clone());
                     self.mir.push(X86Inst::Label { id: ok });
@@ -1119,7 +1019,7 @@ impl<'a> CfgLower<'a> {
             }
             ArithmeticOperation::Div { lhs, rhs, width } => {
                 let vreg = self.mir.alloc_vreg();
-                let ok = self.new_label();
+                let ok = self.mir.alloc_label();
                 self.mir.push(if width.bits == 64 {
                     X86Inst::Test64RR {
                         src1: Operand::Virtual(rhs),
@@ -1150,7 +1050,7 @@ impl<'a> CfgLower<'a> {
             }
             ArithmeticOperation::Mod { lhs, rhs, width } => {
                 let vreg = self.mir.alloc_vreg();
-                let ok = self.new_label();
+                let ok = self.mir.alloc_label();
                 self.mir.push(if width.bits == 64 {
                     X86Inst::Test64RR {
                         src1: Operand::Virtual(rhs),
@@ -1208,21 +1108,7 @@ impl<'a> CfgLower<'a> {
         &mut self,
         actions: Vec<crate::value_plan::DropAction>,
     ) -> crate::value_plan::ValueResult {
-        for action in actions {
-            // One cleanup call at a time: building the plan emits the
-            // argument's marshaling, and a caller-owned indirect copy must stay
-            // live until the call it belongs to has returned.
-            let plan = crate::call_plan::CallPlan::from_inputs(
-                crate::call_plan::CallTarget::rue(action.symbol),
-                crate::call_plan::ReturnPlan::ZeroSized,
-                std::slice::from_ref(&action.argument),
-                std::slice::from_ref(&action.native),
-                self,
-            );
-            let _ = self.lower_call_plan(plan);
-        }
-
-        crate::value_plan::ValueResult::SideEffect
+        crate::cfg_lower::lower_drop_plan(self, actions)
     }
 
     fn lower_call_plan(
@@ -1462,6 +1348,11 @@ impl<'a> CfgLower<'a> {
     /// its register; otherwise the leaves are marshaled through the value's
     /// compact image first, and a floating-point piece then carries an image
     /// lane whose bits move whole.
+    ///
+    /// The moves run in the order
+    /// [`ReturnRegisters::write_order`](crate::call_plan::ReturnRegisters::write_order)
+    /// gives for this target's [`RETURN_SCRATCH_OVERLAP`], which is a
+    /// correctness property of a multi-eightbyte return, not a preference.
     fn write_return_registers(
         &mut self,
         registers: &crate::call_plan::ReturnRegisters,
@@ -1477,7 +1368,8 @@ impl<'a> CfgLower<'a> {
             eightbytes.len(),
             "a register return names a result register for every eightbyte"
         );
-        for (reg, value) in registers.regs.iter().zip(&eightbytes).rev() {
+        for position in registers.write_order(RETURN_SCRATCH_OVERLAP) {
+            let (reg, value) = (&registers.regs[position], &eightbytes[position]);
             match *reg {
                 crate::call_plan::ReturnSlotReg::Gp(index) => self.mir.push(X86Inst::MovRR {
                     dst: Operand::Physical(RET_REGS[index]),
@@ -1552,38 +1444,10 @@ impl<'a> CfgLower<'a> {
     }
 
     /// Extend a foreign scalar return (in `vreg`) to its canonical 64-bit form
-    /// per the target-C classifier (ADR-0064 P2). The narrow value occupies the
-    /// low bits of the return register with unspecified high bits; this restores
-    /// the sign/zero extension Rue's scalar invariant relies on.
+    /// per the target-C classifier (ADR-0064 P2), through this backend's one
+    /// extension primitive.
     fn emit_c_return_extension(&mut self, vreg: VReg, ext: rue_air::ScalarAbiExtension) {
-        use rue_air::ScalarAbiExtension;
-        let dst = Operand::Virtual(vreg);
-        let src = Operand::Virtual(vreg);
-        match ext {
-            ScalarAbiExtension::None => {}
-            ScalarAbiExtension::Signed { from_bits: 8 } => {
-                self.mir.push(X86Inst::Movsx8To64 { dst, src })
-            }
-            ScalarAbiExtension::Signed { from_bits: 16 } => {
-                self.mir.push(X86Inst::Movsx16To64 { dst, src })
-            }
-            ScalarAbiExtension::Signed { from_bits: 32 } => {
-                self.mir.push(X86Inst::Movsx32To64 { dst, src })
-            }
-            ScalarAbiExtension::Unsigned { from_bits: 8 } => {
-                self.mir.push(X86Inst::Movzx8To64 { dst, src })
-            }
-            ScalarAbiExtension::Unsigned { from_bits: 16 } => {
-                self.mir.push(X86Inst::Movzx16To64 { dst, src })
-            }
-            ScalarAbiExtension::Unsigned { from_bits: 32 } => {
-                self.mir.push(X86Inst::Movzx32To64 { dst, src });
-            }
-            ScalarAbiExtension::Signed { from_bits }
-            | ScalarAbiExtension::Unsigned { from_bits } => {
-                panic!("unexpected target-C scalar extension width {from_bits}")
-            }
-        }
+        self.emit_extension(vreg, vreg, crate::cfg_lower::c_return_extension(ext));
     }
 
     /// Write the aggregate `value`'s leaves into the compact image at
@@ -2355,101 +2219,7 @@ impl<'a> CfgLower<'a> {
         ty: Type,
         policy: crate::value_plan::ValuePlan,
     ) -> (VReg, Vec<VReg>) {
-        // A slot's register class follows its LEAF, not the type wrapped around
-        // it (RUE-2001): a `struct Q { f: f64 }` and a bare `f64` hold the same
-        // thing in the same one slot, so reading the width off the parameter's
-        // own type would load a float-carrying wrapper with an integer load into
-        // a general-purpose register and hand it to a float-typed consumer.
-        let leaf_types = crate::types::aggregate_leaf_types(self.ctx.type_pool, ty);
-        let float_width = crate::value_plan::primary_slot_float_width(&leaf_types);
-        let dst = self.mir.alloc_vreg_in(if float_width.is_some() {
-            crate::reg_class::RegClass::Fp
-        } else {
-            crate::reg_class::RegClass::Gp
-        });
-        let count = policy.shape.slot_count();
-        if count == 0 {
-            // No slot to load: `dst` stays the never-read placeholder.
-            return (dst, Vec::new());
-        }
-        if let crate::value_plan::StoragePolicy::ParameterSlot { by_ref: true, .. } = policy.storage
-        {
-            let ptr = self.ensure_by_ref_param_ptr(index);
-            if count > 1 {
-                let slots: Vec<_> = (0..count)
-                    .map(|slot| {
-                        let v = self.mir.alloc_vreg();
-                        self.mir.push(X86Inst::MovRMIndexed {
-                            dst: Operand::Virtual(v),
-                            base: ptr,
-                            offset: (slot * 8) as i32,
-                        });
-                        v
-                    })
-                    .collect();
-                return (slots[0], slots);
-            }
-            if let Some(width) = float_width {
-                <Self as crate::place_lower::PlaceLowerBackend>::emit_load_ptr_base(
-                    self,
-                    dst,
-                    ptr,
-                    Some(width),
-                );
-            } else {
-                self.mir.push(X86Inst::MovRMIndexed {
-                    dst: Operand::Virtual(dst),
-                    base: ptr,
-                    offset: 0,
-                });
-            }
-        } else if count > 1 {
-            let slots: Vec<_> = (0..count)
-                .map(|slot| {
-                    let width = crate::value_plan::float_width(leaf_types[slot as usize]);
-                    let v = self.mir.alloc_vreg_in(if width.is_some() {
-                        crate::reg_class::RegClass::Fp
-                    } else {
-                        crate::reg_class::RegClass::Gp
-                    });
-                    let frame_slot = self.ctx.param_value_low_slot(index, count) - slot;
-                    if let Some(width) = width {
-                        <Self as crate::place_lower::PlaceLowerBackend>::emit_float_load_slot(
-                            self, v, frame_slot, width,
-                        );
-                    } else {
-                        self.mir.push(X86Inst::MovRM {
-                            dst: Operand::Virtual(v),
-                            base: Reg::Rbp,
-                            offset: self.ctx.local_offset(frame_slot),
-                        });
-                    }
-                    v
-                })
-                .collect();
-            return (slots[0], slots);
-        } else if let Some(&vreg) = self.param_reg_vregs.get(&index) {
-            // Register-only scalar (RUE-1170): the entry preamble copied the
-            // argument register into one read-only vreg shared by every read.
-            let _ = ty;
-            return (vreg, Vec::new());
-        } else if let Some(width) = float_width {
-            <Self as crate::place_lower::PlaceLowerBackend>::emit_float_load_slot(
-                self,
-                dst,
-                self.ctx.param_value_low_slot(index, 1),
-                width,
-            );
-        } else {
-            self.mir.push(X86Inst::MovRM {
-                dst: Operand::Virtual(dst),
-                base: Reg::Rbp,
-                offset: self
-                    .ctx
-                    .local_offset(self.ctx.param_value_low_slot(index, 1)),
-            });
-        }
-        (dst, Vec::new())
+        crate::cfg_lower::lower_param_value(self, index, ty, policy)
     }
 
     fn emit_masked_shift_count_vreg(&mut self, rhs: VReg, mask: u64) -> VReg {
@@ -2590,8 +2360,8 @@ impl<'a> CfgLower<'a> {
     /// bit folded into the new low bit (a sticky bit that keeps the single
     /// rounding correct), converted, and doubled exactly.
     fn lower_u64_to_float(&mut self, dst: VReg, src: VReg, width: FloatWidth) {
-        let non_negative = self.new_label();
-        let done = self.new_label();
+        let non_negative = self.mir.alloc_label();
+        let done = self.mir.alloc_label();
         self.mir.push(X86Inst::Cmp64RI {
             src: Operand::Virtual(src),
             imm: 0,
@@ -2654,8 +2424,8 @@ impl<'a> CfgLower<'a> {
     /// value is converted with `2^63` subtracted (exact, since both operands
     /// are at least `2^63`) and the bit put back on the integer side.
     fn lower_float_to_u64(&mut self, dst: VReg, src: VReg, width: FloatWidth) {
-        let small = self.new_label();
-        let done = self.new_label();
+        let small = self.mir.alloc_label();
+        let done = self.mir.alloc_label();
         let two63 = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
         self.mir.push(X86Inst::FloatConst {
             dst: Operand::Virtual(two63),
@@ -2803,8 +2573,8 @@ impl<'a> CfgLower<'a> {
             bits: crate::value_plan::float_const_bits(width, 0.5),
             width,
         });
-        let not_up = self.new_label();
-        let done = self.new_label();
+        let not_up = self.mir.alloc_label();
+        let done = self.mir.alloc_label();
         // fraction >= 0.5 (ordered): round up.
         self.mir.push(X86Inst::FloatCmp {
             lhs: Operand::Virtual(fraction),
@@ -2915,7 +2685,7 @@ impl<'a> CfgLower<'a> {
         match plan {
             crate::value_plan::TrapPlan::Panic { call } => self.lower_runtime_call(call),
             crate::value_plan::TrapPlan::Assert { condition, call } => {
-                let pass = self.new_label();
+                let pass = self.mir.alloc_label();
                 self.mir.push(X86Inst::CmpRI {
                     src: Operand::Virtual(condition),
                     imm: 0,
@@ -3361,7 +3131,7 @@ impl<'a> CfgLower<'a> {
                         rhs: Operand::Virtual(bound),
                         width,
                     });
-                    let ok = self.new_label();
+                    let ok = self.mir.alloc_label();
                     self.mir.push(match guard.success {
                         crate::value_plan::FloatToIntGuardRelation::OrderedGreaterEqual => {
                             X86Inst::Jae { label: ok }
@@ -3497,7 +3267,7 @@ impl<'a> CfgLower<'a> {
             PostOpPolicy::OverflowFlags { .. } | PostOpPolicy::RangeCheck(_) => {}
         }
 
-        let ok_label = self.new_label();
+        let ok_label = self.mir.alloc_label();
         match policy {
             // The ALU op the plan's width selected already set the flags: CF for
             // an unsigned carry or borrow, OF for a signed overflow.
@@ -3592,7 +3362,7 @@ impl<'a> CfgLower<'a> {
             return;
         }
         let wide = from_width.bits > 32;
-        let ok_label = self.new_label();
+        let ok_label = self.mir.alloc_label();
 
         match check {
             IntCastCheckPlan::None => unreachable!("handled above"),
@@ -3610,7 +3380,7 @@ impl<'a> CfgLower<'a> {
                 let _ = self.lower_runtime_call(trap_call.clone());
                 self.mir.push(X86Inst::Label { id: ok_label });
 
-                let ok_label2 = self.new_label();
+                let ok_label2 = self.mir.alloc_label();
                 let max_vreg = self.mir.alloc_vreg();
                 self.mir.push(X86Inst::MovRI64 {
                     dst: Operand::Virtual(max_vreg),
@@ -3645,7 +3415,7 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(X86Inst::Label { id: ok_label });
 
                 if let Some(max) = then_max {
-                    let ok_label2 = self.new_label();
+                    let ok_label2 = self.mir.alloc_label();
                     let max_vreg = self.mir.alloc_vreg();
                     self.mir.push(X86Inst::MovRI64 {
                         dst: Operand::Virtual(max_vreg),
@@ -3693,207 +3463,12 @@ impl<'a> CfgLower<'a> {
         });
     }
 
-    /// Emit a comparison instruction.
     fn emit_terminator_plan(&mut self, plan: crate::terminator_plan::TerminatorPlan) {
-        use crate::terminator_plan::{ReturnMode, ReturnValuePlan, TerminatorPlan};
-
-        match plan {
-            TerminatorPlan::Goto { edge } => {
-                self.emit_edge_moves(&edge);
-                if !edge.fallthrough {
-                    self.mir.push(X86Inst::Jmp {
-                        label: self.block_label(edge.target),
-                    });
-                }
-            }
-            TerminatorPlan::Branch {
-                condition,
-                then_edge,
-                else_edge,
-            } => {
-                self.mir.push(X86Inst::CmpRI {
-                    src: Operand::Virtual(condition),
-                    imm: 0,
-                });
-                if then_edge.fallthrough {
-                    let then_setup_label = self.new_label();
-                    self.mir.push(X86Inst::Jnz {
-                        label: then_setup_label,
-                    });
-                    self.emit_edge_moves(&else_edge);
-                    if !else_edge.fallthrough {
-                        self.mir.push(X86Inst::Jmp {
-                            label: self.block_label(else_edge.target),
-                        });
-                    }
-                    self.mir.push(X86Inst::Label {
-                        id: then_setup_label,
-                    });
-                    self.emit_edge_moves(&then_edge);
-                } else {
-                    let else_setup_label = self.new_label();
-                    self.mir.push(X86Inst::Jz {
-                        label: else_setup_label,
-                    });
-                    self.emit_edge_moves(&then_edge);
-                    if !then_edge.fallthrough {
-                        self.mir.push(X86Inst::Jmp {
-                            label: self.block_label(then_edge.target),
-                        });
-                    }
-                    self.mir.push(X86Inst::Label {
-                        id: else_setup_label,
-                    });
-                    self.emit_edge_moves(&else_edge);
-                    if !else_edge.fallthrough {
-                        self.mir.push(X86Inst::Jmp {
-                            label: self.block_label(else_edge.target),
-                        });
-                    }
-                }
-            }
-            TerminatorPlan::Switch {
-                scrutinee,
-                width,
-                cases,
-                default,
-            } => {
-                for case in cases {
-                    let case_vreg = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::MovRI64 {
-                        dst: Operand::Virtual(case_vreg),
-                        imm: case.value,
-                    });
-                    if width.bits == 64 {
-                        self.mir.push(X86Inst::Cmp64RR {
-                            src1: Operand::Virtual(scrutinee),
-                            src2: Operand::Virtual(case_vreg),
-                        });
-                    } else {
-                        self.mir.push(X86Inst::CmpRR {
-                            src1: Operand::Virtual(scrutinee),
-                            src2: Operand::Virtual(case_vreg),
-                        });
-                    }
-                    self.mir.push(X86Inst::Jz {
-                        label: self.block_label(case.target),
-                    });
-                }
-                self.mir.push(X86Inst::Jmp {
-                    label: self.block_label(default),
-                });
-            }
-            TerminatorPlan::Return { mode } => match mode {
-                ReturnMode::Exit { call } => {
-                    let _ = self.lower_runtime_call(call);
-                }
-                ReturnMode::Function { value } => match value {
-                    ReturnValuePlan::ZeroSized => self.mir.push(X86Inst::Ret),
-                    ReturnValuePlan::Scalar { value, float_width } => {
-                        self.mir.push(
-                            if self.mir.vreg_class(value) == crate::reg_class::RegClass::Fp {
-                                X86Inst::FloatMov {
-                                    dst: Operand::Physical(Reg::Xmm0),
-                                    src: Operand::Virtual(value),
-                                    width: float_width.expect("FP return width"),
-                                }
-                            } else {
-                                X86Inst::MovRR {
-                                    dst: Operand::Physical(Reg::Rax),
-                                    src: Operand::Virtual(value),
-                                }
-                            },
-                        );
-                        self.mir.push(X86Inst::Ret);
-                    }
-                    ReturnValuePlan::Aggregate {
-                        slots,
-                        return_plan,
-                        registers,
-                    } => {
-                        if let crate::call_plan::ReturnPlan::Sret { echoed, .. } = return_plan {
-                            let return_ty = self.ctx.cfg.return_type();
-                            match crate::types::aggregate_physical_slot_map(
-                                self.ctx.type_pool,
-                                return_ty,
-                            ) {
-                                Some(map) => {
-                                    // The sret image is written compact; its padding
-                                    // is zeroed first (ADR-0052 ruling 5).
-                                    let padding =
-                                        self.ctx.type_pool.compact_image_padding_ranges(return_ty);
-                                    crate::agg_slots::store_slots_to_sret_compact(
-                                        self, &slots, &map, &padding,
-                                    )
-                                }
-                                None => match crate::types::aggregate_dispatch_image(
-                                    self.ctx.type_pool,
-                                    return_ty,
-                                ) {
-                                    // Heterogeneous compact aggregate return (RUE-1037):
-                                    // write the sret image with a per-variant tag dispatch.
-                                    Some(image) => crate::agg_slots::store_dispatch_image_to_sret(
-                                        self, &slots, &image,
-                                    ),
-                                    None => crate::agg_slots::store_slots_to_sret(self, &slots),
-                                },
-                            }
-                            // SysV AMD64 requires the callee to leave the
-                            // indirect-result pointer in `rax` on return.
-                            if echoed {
-                                crate::agg_slots::SlotBackend::emit_sret_pointer_echo(self);
-                            }
-                        } else {
-                            match registers.as_ref() {
-                                Some(registers) => self.write_return_registers(registers, &slots),
-                                // A zero-sized aggregate names no result
-                                // register because it has no bytes to carry.
-                                None => assert!(
-                                    slots.is_empty(),
-                                    "only a zero-sized aggregate return names no \
-                                     result register"
-                                ),
-                            }
-                        }
-                        self.mir.push(X86Inst::Ret);
-                    }
-                },
-            },
-            TerminatorPlan::Unreachable => self.mir.push(X86Inst::Ud2),
-        }
+        crate::cfg_lower::emit_terminator_plan(self, plan)
     }
 
-    fn emit_edge_moves(&mut self, edge: &crate::terminator_plan::EdgePlan) {
-        for movement in &edge.moves {
-            self.mir.push(if let Some(width) = movement.float_width {
-                X86Inst::FloatMov {
-                    dst: Operand::Virtual(movement.destination),
-                    src: Operand::Virtual(movement.source),
-                    width,
-                }
-            } else {
-                X86Inst::MovRR {
-                    dst: Operand::Virtual(movement.destination),
-                    src: Operand::Virtual(movement.source),
-                }
-            });
-        }
-    }
-
-    /// Get the vreg for a CFG value.
     fn get_vreg(&mut self, value: CfgValue) -> VReg {
-        if let Some(&vreg) = self.value_map.get(&value) {
-            return vreg;
-        }
-
-        // Not yet lowered - lower it now
-        let ctx = self.ctx;
-        crate::value_plan::lower_value(&ctx, self, value);
-
-        self.value_map
-            .get(&value)
-            .copied()
-            .expect("value should have been lowered")
+        crate::cfg_lower::get_vreg(self, value)
     }
 }
 
@@ -3919,19 +3494,7 @@ impl crate::terminator_plan::TerminatorAdapter for CfgLower<'_> {
         value: CfgValue,
         plan: crate::value_plan::ValuePlan,
     ) -> crate::value_plan::MaterializedValue {
-        let primary = self.block_param_vregs[&(target, param_index)];
-        let slots = if plan.shape.requires_complete_slots() {
-            let slots = self
-                .struct_slot_vregs
-                .get(&value)
-                .cloned()
-                .expect("aggregate block parameter slots should be preallocated");
-            plan.assert_complete_slots(slots.len());
-            slots
-        } else {
-            Vec::new()
-        };
-        crate::value_plan::MaterializedValue { primary, slots }
+        crate::cfg_lower::materialize_block_param(self, target, param_index, value, plan)
     }
 
     fn emit_block_label(&mut self, block: BlockId) {
@@ -3947,39 +3510,11 @@ impl crate::terminator_plan::TerminatorAdapter for CfgLower<'_> {
 
 impl crate::terminator_plan::CfgLowerAdapter for CfgLower<'_> {
     fn preload_by_ref_params(&mut self) {
-        self.preload_by_ref_param_ptrs();
-        // Read each by-value aggregate parameter whose leaves are not its
-        // eightbytes back out of the compact image the prologue laid down, so
-        // field projection and whole-value reads see the correct decomposition
-        // (ADR-0084).
-        for (base_slot, image_slot_offset, through_pointer, image) in
-            crate::value_plan::param_image_unmarshals(&self.ctx)
-        {
-            crate::agg_slots::unmarshal_param_image(
-                self,
-                base_slot,
-                image_slot_offset,
-                through_pointer,
-                &image,
-            );
-        }
+        crate::cfg_lower::preload_by_ref_params(self)
     }
 
     fn prepare_block_param(&mut self, block: BlockId, index: u32, value: CfgValue, ty: Type) {
-        let primary_ty = crate::types::aggregate_leaf_types(self.ctx.type_pool, ty)
-            .first()
-            .copied()
-            .unwrap_or(ty);
-        let vreg =
-            self.mir
-                .alloc_vreg_in(if crate::value_plan::float_width(primary_ty).is_some() {
-                    crate::reg_class::RegClass::Fp
-                } else {
-                    crate::reg_class::RegClass::Gp
-                });
-        self.block_param_vregs.insert((block, index), vreg);
-        self.value_map.insert(value, vreg);
-        crate::agg_slots::preallocate_block_param_slots(self, value, ty, vreg);
+        crate::cfg_lower::prepare_block_param(self, block, index, value, ty)
     }
 
     fn value_description(&self, value: CfgValue) -> String {
@@ -4474,6 +4009,148 @@ impl CfgLower<'_> {
     }
 }
 
+impl<'a> crate::cfg_lower::LoweringDriverBackend<'a> for CfgLower<'a> {
+    fn lowering_context(&self) -> crate::cfg_lower::CfgLowerContext<'a> {
+        self.ctx
+    }
+
+    fn value_map(&mut self) -> &mut AHashMap<CfgValue, VReg> {
+        &mut self.value_map
+    }
+
+    fn block_param_vregs(&mut self) -> &mut AHashMap<(BlockId, u32), VReg> {
+        &mut self.block_param_vregs
+    }
+
+    fn by_ref_param_ptrs(&mut self) -> &mut AHashMap<u32, VReg> {
+        &mut self.by_ref_param_ptrs
+    }
+
+    fn param_reg_vregs(&mut self) -> &mut AHashMap<u32, VReg> {
+        &mut self.param_reg_vregs
+    }
+
+    fn emit_float_reg_move(&mut self, dst: VReg, src: VReg, width: FloatWidth) {
+        self.mir.push(X86Inst::FloatMov {
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(src),
+            width,
+        });
+    }
+
+    fn emit_gp_arg_register_copy(&mut self, dst: VReg, index: usize) {
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(dst),
+            src: Operand::Physical(ARG_REGS[index]),
+        });
+    }
+
+    fn emit_fp_arg_register_copy(&mut self, dst: VReg, index: usize, width: FloatWidth) {
+        self.mir.push(X86Inst::FloatMov {
+            dst: Operand::Virtual(dst),
+            src: Operand::Physical(FP_ARG_REGS[index]),
+            width,
+        });
+    }
+
+    fn lower_call_plan(
+        &mut self,
+        plan: crate::call_plan::CallPlan,
+    ) -> crate::value_plan::MaterializedValue {
+        CfgLower::lower_call_plan(self, plan)
+    }
+
+    fn emit_jump_to_block(&mut self, target: BlockId) {
+        let label = self.block_label(target);
+        self.mir.push(X86Inst::Jmp { label });
+    }
+
+    fn emit_branch_if_nonzero(&mut self, condition: VReg, label: LabelId) {
+        self.mir.push(X86Inst::CmpRI {
+            src: Operand::Virtual(condition),
+            imm: 0,
+        });
+        self.mir.push(X86Inst::Jnz { label });
+    }
+
+    fn emit_branch_if_zero(&mut self, condition: VReg, label: LabelId) {
+        self.mir.push(X86Inst::CmpRI {
+            src: Operand::Virtual(condition),
+            imm: 0,
+        });
+        self.mir.push(X86Inst::Jz { label });
+    }
+
+    fn emit_switch_case_compare(
+        &mut self,
+        scrutinee: VReg,
+        value: i64,
+        width: crate::value_plan::IntegerWidth,
+    ) {
+        let case_vreg = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRI64 {
+            dst: Operand::Virtual(case_vreg),
+            imm: value,
+        });
+        if width.bits == 64 {
+            self.mir.push(X86Inst::Cmp64RR {
+                src1: Operand::Virtual(scrutinee),
+                src2: Operand::Virtual(case_vreg),
+            });
+        } else {
+            self.mir.push(X86Inst::CmpRR {
+                src1: Operand::Virtual(scrutinee),
+                src2: Operand::Virtual(case_vreg),
+            });
+        }
+    }
+
+    fn emit_branch_if_equal(&mut self, target: BlockId) {
+        let label = self.block_label(target);
+        self.mir.push(X86Inst::Jz { label });
+    }
+
+    fn emit_scalar_return_move(&mut self, value: VReg, float_width: Option<FloatWidth>) {
+        self.mir.push(
+            if self.mir.vreg_class(value) == crate::reg_class::RegClass::Fp {
+                X86Inst::FloatMov {
+                    dst: Operand::Physical(Reg::Xmm0),
+                    src: Operand::Virtual(value),
+                    width: float_width.expect("FP return width"),
+                }
+            } else {
+                X86Inst::MovRR {
+                    dst: Operand::Physical(Reg::Rax),
+                    src: Operand::Virtual(value),
+                }
+            },
+        );
+    }
+
+    fn emit_return(&mut self) {
+        self.mir.push(X86Inst::Ret);
+    }
+
+    fn emit_unreachable(&mut self) {
+        self.mir.push(X86Inst::Ud2);
+    }
+
+    fn write_return_registers(
+        &mut self,
+        registers: &crate::call_plan::ReturnRegisters,
+        slots: &[VReg],
+    ) {
+        CfgLower::write_return_registers(self, registers, slots)
+    }
+
+    fn lower_runtime_call(
+        &mut self,
+        plan: crate::runtime_call_plan::RuntimeCallPlan,
+    ) -> crate::value_plan::MaterializedValue {
+        CfgLower::lower_runtime_call(self, plan)
+    }
+}
+
 impl crate::agg_slots::SlotBackend for CfgLower<'_> {
     fn ctx(&self) -> &crate::cfg_lower::CfgLowerContext<'_> {
         &self.ctx
@@ -4708,7 +4385,7 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
         });
     }
     fn alloc_lowering_label(&mut self) -> LabelId {
-        self.new_label()
+        self.mir.alloc_label()
     }
     fn emit_marshal_branch_if_tag_ne(&mut self, tag: VReg, discriminant: u64, label: LabelId) {
         let discriminant = compact_tag_discriminant(discriminant);
@@ -4845,7 +4522,7 @@ impl crate::allocation::BoundsCheckBackend for CfgLower<'_> {
     }
 
     fn alloc_bounds_label(&mut self) -> LabelId {
-        self.new_label()
+        self.mir.alloc_label()
     }
 
     fn emit_bounds_branch(
@@ -4984,7 +4661,7 @@ impl crate::allocation::ScaleBackend for CfgLower<'_> {
                         dst: Operand::Virtual(dst),
                         src: Operand::Physical(Reg::Rax),
                     });
-                    let ok_label = self.new_label();
+                    let ok_label = self.mir.alloc_label();
                     self.mir.push(X86Inst::Jae { label: ok_label });
                     let _ = self.lower_runtime_call(
                         crate::runtime_call_plan::RuntimeCallPlan::no_args(
@@ -5126,16 +4803,21 @@ mod tests {
     #[test]
     fn zero32_consumers_use_canonical_move_not_shift_pair() {
         let source = include_str!("cfg_lower.rs");
-        let foreign = source
-            .split("ScalarAbiExtension::Unsigned { from_bits: 32 } => {")
+        // The canonical zero-extension is selected once, in this
+        // backend's single extension primitive; the foreign `unsigned int`
+        // return reaches it through `cfg_lower::c_return_extension`.
+        let widen = source
+            .split("IntegerExtension::Zero32 =>")
             .nth(1)
-            .expect("foreign u32 return extension must remain present")
-            .split("ScalarAbiExtension::Signed { from_bits }")
+            .expect("the canonical 32-bit zero-extension arm must remain present")
+            .split('\n')
             .next()
-            .expect("foreign extension match arm must have a following arm");
-        assert!(foreign.contains("X86Inst::Movzx32To64"));
-        assert!(!foreign.contains("X86Inst::ShlRI"));
-        assert!(!foreign.contains("X86Inst::ShrRI"));
+            .expect("an extension arm is one line");
+        assert!(widen.contains("X86Inst::Movzx32To64"));
+        assert!(!widen.contains("ShlRI"));
+        assert!(!widen.contains("ShrRI"));
+        assert!(!widen.contains("Lsl"));
+        assert!(!widen.contains("Lsr"));
         let bitcast = source
             .split("BitCastForm::Zero32 => {")
             .nth(1)
@@ -6984,6 +6666,154 @@ mod tests {
                 }
             )
         }));
+    }
+
+    /// A six-eightbyte register return whose slots outnumber the allocatable
+    /// general-purpose class, so register allocation must spill one of them.
+    fn six_eightbyte_return_under_register_pressure(
+        pool: &FrozenTypeInternPool,
+        interner: &ThreadedRodeo,
+        six_id: StructId,
+    ) -> ValidatedCfg {
+        let six_ty = Type::new_struct(six_id);
+        let mut fixture = FixtureCfg::new(
+            six_ty,
+            0,
+            "six",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            pool,
+            interner,
+        );
+        let base = fixture.konst(7, Type::I64);
+        let fields: Vec<_> = (1..=6)
+            .map(|value| {
+                let literal = fixture.konst(value, Type::I64);
+                fixture.value(CfgInstData::BitXor(base, literal), Type::I64)
+            })
+            .collect();
+        let value = fixture.struct_init(six_id, &fields, six_ty);
+        fixture.ret(Some(value));
+        fixture.cfg.finish(pool).expect("test CFG must verify")
+    }
+
+    #[test]
+    fn a_multi_eightbyte_return_writes_its_result_registers_in_reverse() {
+        // `rax` is `RET_REGS[0]` and the allocator's reload scratch at once, so
+        // this backend's `RETURN_SCRATCH_OVERLAP` orders the return's moves from
+        // the last eightbyte down to the first. The order is the shared
+        // decision in `call_plan::return_register_write_order`; only the
+        // predicate is this target's.
+        assert_eq!(
+            RETURN_SCRATCH_OVERLAP,
+            crate::call_plan::ScratchOverlap::AliasesResultRegister
+        );
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let six_id = register_struct(
+            &pool,
+            &interner,
+            "Six",
+            &[
+                ("a", Type::I64),
+                ("b", Type::I64),
+                ("c", Type::I64),
+                ("d", Type::I64),
+                ("e", Type::I64),
+                ("f", Type::I64),
+            ],
+        );
+        let pool = pool.freeze();
+        let cfg = six_eightbyte_return_under_register_pressure(&pool, &interner, six_id);
+        let mir = CfgLower::new(&cfg, &pool, &interner)
+            .lower()
+            .expect("six-eightbyte return must lower");
+        let written: Vec<_> = mir
+            .instructions()
+            .iter()
+            .filter_map(|inst| match inst {
+                X86Inst::MovRR {
+                    dst: Operand::Physical(dst),
+                    src: Operand::Virtual(_),
+                } if RET_REGS.contains(dst) => Some(*dst),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            written,
+            vec![Reg::R10, Reg::R9, Reg::R8, Reg::Rcx, Reg::Rdx, Reg::Rax]
+        );
+    }
+
+    #[test]
+    fn a_spill_reload_never_lands_on_an_already_written_result_register() {
+        // The reverse order exists for this: a spilled return slot is reloaded
+        // through `rax`, which is also `RET_REGS[0]`. Writing the result bank
+        // forward would put such a reload *after* `rax` already carried
+        // eightbyte 0, silently replacing the returned value's first eightbyte
+        // with a later slot's bits.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let six_id = register_struct(
+            &pool,
+            &interner,
+            "Six",
+            &[
+                ("a", Type::I64),
+                ("b", Type::I64),
+                ("c", Type::I64),
+                ("d", Type::I64),
+                ("e", Type::I64),
+                ("f", Type::I64),
+            ],
+        );
+        let pool = pool.freeze();
+        let cfg = six_eightbyte_return_under_register_pressure(&pool, &interner, six_id);
+        let mir = CfgLower::new(&cfg, &pool, &interner)
+            .lower()
+            .expect("six-eightbyte return must lower");
+        let allocated = crate::x86_64::regalloc::RegAlloc::new(mir, 0)
+            .allocate()
+            .expect("six-eightbyte return must allocate");
+        let ret = allocated
+            .instructions()
+            .iter()
+            .position(|inst| matches!(inst, X86Inst::Ret))
+            .expect("the function must return");
+        let body = &allocated.instructions()[..ret];
+        assert!(
+            body.iter().any(|inst| matches!(
+                inst,
+                X86Inst::MovRM {
+                    dst: Operand::Physical(dst),
+                    ..
+                } if RET_REGS.contains(dst)
+            )),
+            "the fixture must spill a return slot, or it proves nothing"
+        );
+        for reg in RET_REGS {
+            let Some(delivered) = body.iter().rposition(|inst| {
+                matches!(
+                    inst,
+                    X86Inst::MovRR {
+                        dst: Operand::Physical(dst),
+                        ..
+                    } if *dst == reg
+                )
+            }) else {
+                continue;
+            };
+            assert!(
+                !body[delivered + 1..].iter().any(|inst| matches!(
+                    inst,
+                    X86Inst::MovRM {
+                        dst: Operand::Physical(dst),
+                        ..
+                    } if *dst == reg
+                )),
+                "{reg:?} carried its eightbyte and was then reloaded over"
+            );
+        }
     }
 
     #[test]
