@@ -516,3 +516,18 @@ files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
 args = ["--help"]
 compile_only = true
 compile_stdout_contains = ["--emit <stage>", "regalloc, asm, stackframe, abi, deps"]
+
+# RUE-1728: several backend stages in one run render from one code generation.
+# At O2 each rooted compile is a fresh general-inlining batch, so a per-stage
+# presentation used to inline and generate code once per stage; the driver now
+# presents the whole-program stages together. The output is unchanged: both the
+# MIR and the assembly sections are present and carry `add`, inlined into `main`
+# at O2 so no call to it survives.
+[[case]]
+name = "combined_mir_asm_share_one_codegen"
+description = "RUE-1728: --emit mir --emit asm at O2 renders both sections from a single code generation."
+files = [{ path = "main.rue", source = "fn add(x: i32) -> i32 { x + 1 }\nfn main() -> i32 { add(41) }\n" }]
+args = ["--emit", "mir", "--emit", "asm", "-O2", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== MIR (", "=== Assembly ("]
+compile_stderr_not_contains = ["internal compiler error"]

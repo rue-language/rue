@@ -1349,12 +1349,85 @@ pub fn inject_stale_query_for_oracle(
     session.inject_stale_query_for_oracle(fault)
 }
 
+/// Several unstable presentations of one program, answered together.
+///
+/// The backend stages — lowering, MIR, liveness, register allocation, and
+/// assembly — are projections of one code generation, and the CFG-side
+/// stages — AIR, CFG, stack frames, and the ABI report — of one rooted CFG
+/// collection. A request naming several stages of a family pays for that
+/// family's rooted compile once and renders every stage from it, where
+/// one [`PresentationRequest`] per stage paid for it per stage: at O2 and O3
+/// each rooted compile is a fresh general-inlining batch, deliberately
+/// non-durable, so `--emit mir --emit asm` used to inline and generate code
+/// twice (RUE-1728). Outputs come back in the order the stages were named.
+#[derive(Debug, Clone)]
+pub struct PresentationBatchRequest<'a> {
+    pub stages: &'a [PresentationStage],
+    pub options: &'a crate::CompileOptions,
+    pub file_order: &'a [crate::FileId],
+}
+
+impl PresentationStage {
+    /// The backend artifact this stage reads, when it is a backend stage.
+    fn backend_artifact(self) -> Option<rue_codegen::BackendArtifactRequest> {
+        Some(match self {
+            Self::Lowering => rue_codegen::BackendArtifactRequest {
+                lowering: true,
+                ..Default::default()
+            },
+            Self::Mir => rue_codegen::BackendArtifactRequest {
+                mir: true,
+                ..Default::default()
+            },
+            Self::Liveness => rue_codegen::BackendArtifactRequest {
+                liveness: true,
+                ..Default::default()
+            },
+            Self::RegAlloc => rue_codegen::BackendArtifactRequest {
+                regalloc: true,
+                ..Default::default()
+            },
+            Self::Asm => rue_codegen::BackendArtifactRequest {
+                asm: true,
+                ..Default::default()
+            },
+            Self::Tokens
+            | Self::Ast
+            | Self::Rir
+            | Self::Air
+            | Self::Cfg
+            | Self::StackFrame
+            | Self::Abi => return None,
+        })
+    }
+}
+
 impl crate::CompilerSession {
     /// Format one compiler stage from this session's canonical artifacts.
+    ///
+    /// One stage of [`Self::unstable_present_many`]; a caller with several
+    /// stages of one family to show asks for them together so the family's
+    /// rooted compile runs once.
     pub fn unstable_present(
         &mut self,
         request: PresentationRequest<'_>,
     ) -> Result<PresentationOutput, crate::CompileErrors> {
+        let mut outputs = self.unstable_present_many(PresentationBatchRequest {
+            stages: std::slice::from_ref(&request.stage),
+            options: request.options,
+            file_order: request.file_order,
+        })?;
+        Ok(outputs
+            .pop()
+            .expect("one requested stage yields one presentation"))
+    }
+
+    /// Format several compiler stages from this session's canonical
+    /// artifacts, each family of stages from one rooted compile.
+    pub fn unstable_present_many(
+        &mut self,
+        request: PresentationBatchRequest<'_>,
+    ) -> Result<Vec<PresentationOutput>, crate::CompileErrors> {
         let invalid_input = |message: String| {
             crate::CompileErrors::from(crate::CompileError::without_span(
                 crate::ErrorKind::InvalidCompilerInput(message),
@@ -1380,11 +1453,11 @@ impl crate::CompilerSession {
                 )));
             }
         }
-        if !matches!(
-            request.stage,
-            PresentationStage::Tokens | PresentationStage::Ast
-        ) && seen.len() != program.modules().len()
-        {
+        let whole_program_stage = request
+            .stages
+            .iter()
+            .any(|stage| !matches!(stage, PresentationStage::Tokens | PresentationStage::Ast));
+        if whole_program_stage && seen.len() != program.modules().len() {
             return Err(invalid_input(format!(
                 "presentation order must contain every published file exactly once (expected {}, got {})",
                 program.modules().len(),
@@ -1392,216 +1465,253 @@ impl crate::CompilerSession {
             )));
         }
 
-        let mut text = String::new();
-        let mut warnings = Vec::new();
-        match request.stage {
-            PresentationStage::Tokens => {
-                for file_id in request.file_order {
-                    let module = program
-                        .modules()
-                        .iter()
-                        .find(|module| module.file_id() == *file_id)
-                        .ok_or_else(|| {
-                            invalid_input(format!(
-                                "presentation order contains unknown file id {file_id:?}"
-                            ))
-                        })?;
-                    let source = crate::SourceView::new(
-                        module.physical_path(),
-                        module.source_text(),
-                        module.file_id(),
-                    );
-                    let (tokens, _resolver) = crate::syntax::token_presentation(source);
-                    for token in tokens.iter() {
-                        writeln!(&mut text, "{token}").expect("write to String");
+        // Every backend stage named is served by one code generation carrying
+        // the union of their artifacts; every CFG-side stage by one rooted
+        // CFG collection. Each is computed the first time a stage needs it.
+        let backend_request = request
+            .stages
+            .iter()
+            .filter_map(|stage| stage.backend_artifact())
+            .fold(
+                rue_codegen::BackendArtifactRequest::default(),
+                |union, artifact| rue_codegen::BackendArtifactRequest {
+                    lowering: union.lowering || artifact.lowering,
+                    mir: union.mir || artifact.mir,
+                    liveness: union.liveness || artifact.liveness,
+                    regalloc: union.regalloc || artifact.regalloc,
+                    asm: union.asm || artifact.asm,
+                },
+            );
+        let mut codegen = None;
+        let mut rooted_cfg = None;
+
+        let mut outputs = Vec::with_capacity(request.stages.len());
+        for &stage in request.stages {
+            let mut text = String::new();
+            let mut warnings = Vec::new();
+            match stage {
+                PresentationStage::Tokens => {
+                    for file_id in request.file_order {
+                        let module = program
+                            .modules()
+                            .iter()
+                            .find(|module| module.file_id() == *file_id)
+                            .ok_or_else(|| {
+                                invalid_input(format!(
+                                    "presentation order contains unknown file id {file_id:?}"
+                                ))
+                            })?;
+                        let source = crate::SourceView::new(
+                            module.physical_path(),
+                            module.source_text(),
+                            module.file_id(),
+                        );
+                        let (tokens, _resolver) = crate::syntax::token_presentation(source);
+                        for token in tokens.iter() {
+                            writeln!(&mut text, "{token}").expect("write to String");
+                        }
                     }
                 }
-            }
-            PresentationStage::Ast => {
-                for file_id in request.file_order {
-                    let module = program
-                        .modules()
-                        .iter()
-                        .find(|module| module.file_id() == *file_id)
-                        .ok_or_else(|| {
-                            invalid_input(format!(
-                                "presentation order contains unknown file id {file_id:?}"
-                            ))
-                        })?;
-                    write!(&mut text, "{}", module.ast()).expect("write to String");
+                PresentationStage::Ast => {
+                    for file_id in request.file_order {
+                        let module = program
+                            .modules()
+                            .iter()
+                            .find(|module| module.file_id() == *file_id)
+                            .ok_or_else(|| {
+                                invalid_input(format!(
+                                    "presentation order contains unknown file id {file_id:?}"
+                                ))
+                            })?;
+                        write!(&mut text, "{}", module.ast()).expect("write to String");
+                    }
                 }
-            }
-            PresentationStage::Rir => {
-                let rir = self.canonical_rir()?;
-                let order = rir.presentation_order(request.file_order.iter().copied());
-                write!(
-                    &mut text,
-                    "{}",
-                    rue_rir::RirPrinter::with_presentation_order(
-                        rir.rir(),
-                        rir.semantic_symbols().interner(),
-                        order.instructions,
-                        order.extra,
+                PresentationStage::Rir => {
+                    let rir = self.canonical_rir()?;
+                    let order = rir.presentation_order(request.file_order.iter().copied());
+                    write!(
+                        &mut text,
+                        "{}",
+                        rue_rir::RirPrinter::with_presentation_order(
+                            rir.rir(),
+                            rir.semantic_symbols().interner(),
+                            order.instructions,
+                            order.extra,
+                        )
                     )
-                )
-                .expect("write to String");
-            }
-            stage => {
-                let backend_request = match stage {
-                    PresentationStage::Lowering => Some(rue_codegen::BackendArtifactRequest {
-                        lowering: true,
-                        ..Default::default()
-                    }),
-                    PresentationStage::Mir => Some(rue_codegen::BackendArtifactRequest {
-                        mir: true,
-                        ..Default::default()
-                    }),
-                    PresentationStage::Liveness => Some(rue_codegen::BackendArtifactRequest {
-                        liveness: true,
-                        ..Default::default()
-                    }),
-                    PresentationStage::RegAlloc => Some(rue_codegen::BackendArtifactRequest {
-                        regalloc: true,
-                        ..Default::default()
-                    }),
-                    PresentationStage::Asm => Some(rue_codegen::BackendArtifactRequest {
-                        asm: true,
-                        ..Default::default()
-                    }),
-                    _ => None,
-                };
-                if let Some(backend_request) = backend_request {
-                    let rooted = self.rooted_codegen(request.options, backend_request)?;
-                    warnings = rooted.warnings;
-                    for collected in rooted.units {
-                        let unit = collected.unit;
-                        match stage {
-                            PresentationStage::Lowering => {
-                                write!(
-                                    &mut text,
-                                    "{}",
-                                    unit.artifacts
-                                        .lowering
-                                        .as_ref()
-                                        .expect("lowering projection was requested")
-                                )
-                                .expect("write to String");
-                            }
-                            PresentationStage::Mir => {
-                                writeln!(&mut text, "function {}:", unit.defined_symbol)
-                                    .expect("write to String");
-                                writeln!(
-                                    &mut text,
-                                    "{}",
-                                    unit.artifacts
-                                        .mir
-                                        .as_deref()
-                                        .expect("MIR projection was requested")
-                                )
-                                .expect("write to String");
-                            }
-                            PresentationStage::Liveness => {
-                                writeln!(&mut text, "function {}:", unit.defined_symbol)
-                                    .expect("write to String");
-                                writeln!(
-                                    &mut text,
-                                    "{}",
-                                    unit.artifacts
-                                        .liveness
-                                        .as_deref()
-                                        .expect("liveness projection was requested")
-                                )
-                                .expect("write to String");
-                            }
-                            PresentationStage::RegAlloc => {
-                                writeln!(&mut text, "function {}:", unit.defined_symbol)
-                                    .expect("write to String");
-                                write!(
-                                    &mut text,
-                                    "{}",
-                                    unit.artifacts
-                                        .regalloc
-                                        .as_deref()
-                                        .expect("regalloc projection was requested")
-                                )
-                                .expect("write to String");
-                            }
-                            PresentationStage::Asm => {
-                                writeln!(&mut text, ".globl {}", unit.defined_symbol)
-                                    .expect("write to String");
-                                writeln!(&mut text, "{}:", unit.defined_symbol)
-                                    .expect("write to String");
-                                write!(
-                                    &mut text,
-                                    "{}",
-                                    unit.artifacts
-                                        .asm
-                                        .as_deref()
-                                        .expect("assembly projection was requested")
-                                )
-                                .expect("write to String");
-                            }
-                            _ => unreachable!("backend request has a backend presentation stage"),
-                        }
+                    .expect("write to String");
+                }
+                PresentationStage::Lowering
+                | PresentationStage::Mir
+                | PresentationStage::Liveness
+                | PresentationStage::RegAlloc
+                | PresentationStage::Asm => {
+                    if codegen.is_none() {
+                        codegen = Some(self.rooted_codegen(request.options, backend_request)?);
                     }
-                } else if matches!(stage, PresentationStage::Abi) {
-                    let rooted = self.rooted_cfg(request.options)?;
-                    write_abi_presentation(&mut text, &rooted, request.options.target);
-                    warnings = rooted.warnings;
-                } else {
-                    let rooted = self.rooted_cfg(request.options)?;
-                    warnings = rooted.warnings;
-                    for function in rooted.cfgs {
-                        let record = &function.record;
-                        match stage {
-                            PresentationStage::Air => {
-                                writeln!(&mut text, "function {}:", record.source_name)
-                                    .expect("write to String");
-                                writeln!(
-                                    &mut text,
-                                    "{}",
-                                    record.air.display_with_interner(&record.interner)
-                                )
-                                .expect("write to String");
-                            }
-                            PresentationStage::Cfg => {
-                                writeln!(
-                                    &mut text,
-                                    "{}",
-                                    record.cfg.display_with_interner(&record.interner)
-                                )
-                                .expect("write to String");
-                            }
-                            PresentationStage::StackFrame => {
-                                writeln!(
-                                    &mut text,
-                                    "{}",
-                                    rue_codegen::generate_stack_frame_info(
-                                        &record.cfg,
-                                        &record.codegen.defined_symbol,
-                                        &record.type_pool,
-                                        &record.interner,
-                                        request.options.target,
-                                    )?
-                                )
-                                .expect("write to String");
-                            }
-                            PresentationStage::Tokens
-                            | PresentationStage::Ast
-                            | PresentationStage::Rir
-                            | PresentationStage::Lowering
-                            | PresentationStage::Mir
-                            | PresentationStage::Liveness
-                            | PresentationStage::RegAlloc
-                            | PresentationStage::Asm
-                            | PresentationStage::Abi => unreachable!(),
+                    let rooted = codegen.as_ref().expect("computed above");
+                    warnings = rooted.warnings.clone();
+                    for collected in &rooted.units {
+                        write_backend_presentation(&mut text, stage, &collected.unit);
+                    }
+                }
+                PresentationStage::Air
+                | PresentationStage::Cfg
+                | PresentationStage::StackFrame
+                | PresentationStage::Abi => {
+                    if rooted_cfg.is_none() {
+                        rooted_cfg = Some(self.rooted_cfg(request.options)?);
+                    }
+                    let rooted = rooted_cfg.as_ref().expect("computed above");
+                    warnings = rooted.warnings.clone();
+                    if matches!(stage, PresentationStage::Abi) {
+                        write_abi_presentation(&mut text, rooted, request.options.target);
+                    } else {
+                        for function in &rooted.cfgs {
+                            write_cfg_presentation(
+                                &mut text,
+                                stage,
+                                &function.record,
+                                request.options.target,
+                            )?;
                         }
                     }
                 }
             }
+            outputs.push(PresentationOutput { text, warnings });
         }
-        Ok(PresentationOutput { text, warnings })
+        Ok(outputs)
     }
+}
+
+/// Render one backend stage of one unit. The unit was generated with at
+/// least this stage's artifact requested.
+fn write_backend_presentation(
+    text: &mut String,
+    stage: PresentationStage,
+    unit: &crate::codegen_query::CodegenUnit,
+) {
+    match stage {
+        PresentationStage::Lowering => {
+            write!(
+                text,
+                "{}",
+                unit.artifacts
+                    .lowering
+                    .as_ref()
+                    .expect("lowering projection was requested")
+            )
+            .expect("write to String");
+        }
+        PresentationStage::Mir => {
+            writeln!(text, "function {}:", unit.defined_symbol).expect("write to String");
+            writeln!(
+                text,
+                "{}",
+                unit.artifacts
+                    .mir
+                    .as_deref()
+                    .expect("MIR projection was requested")
+            )
+            .expect("write to String");
+        }
+        PresentationStage::Liveness => {
+            writeln!(text, "function {}:", unit.defined_symbol).expect("write to String");
+            writeln!(
+                text,
+                "{}",
+                unit.artifacts
+                    .liveness
+                    .as_deref()
+                    .expect("liveness projection was requested")
+            )
+            .expect("write to String");
+        }
+        PresentationStage::RegAlloc => {
+            writeln!(text, "function {}:", unit.defined_symbol).expect("write to String");
+            write!(
+                text,
+                "{}",
+                unit.artifacts
+                    .regalloc
+                    .as_deref()
+                    .expect("regalloc projection was requested")
+            )
+            .expect("write to String");
+        }
+        PresentationStage::Asm => {
+            writeln!(text, ".globl {}", unit.defined_symbol).expect("write to String");
+            writeln!(text, "{}:", unit.defined_symbol).expect("write to String");
+            write!(
+                text,
+                "{}",
+                unit.artifacts
+                    .asm
+                    .as_deref()
+                    .expect("assembly projection was requested")
+            )
+            .expect("write to String");
+        }
+        PresentationStage::Tokens
+        | PresentationStage::Ast
+        | PresentationStage::Rir
+        | PresentationStage::Air
+        | PresentationStage::Cfg
+        | PresentationStage::StackFrame
+        | PresentationStage::Abi => unreachable!("not a backend presentation stage"),
+    }
+}
+
+/// Render one CFG-side stage of one function record.
+fn write_cfg_presentation(
+    text: &mut String,
+    stage: PresentationStage,
+    record: &crate::cfg_query::CfgRecord,
+    target: crate::Target,
+) -> Result<(), crate::CompileErrors> {
+    match stage {
+        PresentationStage::Air => {
+            writeln!(text, "function {}:", record.source_name).expect("write to String");
+            writeln!(
+                text,
+                "{}",
+                record.air.display_with_interner(&record.interner)
+            )
+            .expect("write to String");
+        }
+        PresentationStage::Cfg => {
+            writeln!(
+                text,
+                "{}",
+                record.cfg.display_with_interner(&record.interner)
+            )
+            .expect("write to String");
+        }
+        PresentationStage::StackFrame => {
+            writeln!(
+                text,
+                "{}",
+                rue_codegen::generate_stack_frame_info(
+                    &record.cfg,
+                    &record.codegen.defined_symbol,
+                    &record.type_pool,
+                    &record.interner,
+                    target,
+                )?
+            )
+            .expect("write to String");
+        }
+        PresentationStage::Tokens
+        | PresentationStage::Ast
+        | PresentationStage::Rir
+        | PresentationStage::Lowering
+        | PresentationStage::Mir
+        | PresentationStage::Liveness
+        | PresentationStage::RegAlloc
+        | PresentationStage::Asm
+        | PresentationStage::Abi => unreachable!("not a CFG-side presentation stage"),
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1636,6 +1746,105 @@ mod codegen_unit_tests {
 
     fn borrow_accessor_options() -> crate::CompileOptions {
         crate::CompileOptions::default()
+    }
+
+    /// RUE-1728: the backend stages are projections of one code generation, so
+    /// asking for several together renders each from a single rooted compile.
+    /// If a stage were served by a codegen that did not request its artifact,
+    /// the `expect` in `write_backend_presentation` would panic — so five
+    /// non-empty backend outputs from one call is proof the union artifact
+    /// request reached the one code generation, at O2 where each rooted compile
+    /// is a fresh general-inlining batch.
+    #[test]
+    fn present_many_renders_every_backend_stage_from_one_codegen() {
+        let snapshot = crate::SourceSnapshot::single(
+            "main.rue",
+            "fn add(x: i32) -> i32 { x + 1 } fn main() -> i32 { add(41) }",
+        )
+        .unwrap();
+        let options = crate::CompileOptions {
+            opt_level: rue_cfg::OptLevel::O2,
+            ..crate::CompileOptions::default()
+        };
+        let order = snapshot
+            .files()
+            .map(|file| file.file_id)
+            .collect::<Vec<_>>();
+        let stages = [
+            PresentationStage::Lowering,
+            PresentationStage::Mir,
+            PresentationStage::Liveness,
+            PresentationStage::RegAlloc,
+            PresentationStage::Asm,
+        ];
+
+        let mut batched_session = crate::CompilerSession::new();
+        crate::publish_test_snapshot(&mut batched_session, &snapshot).unwrap();
+        let batched = batched_session
+            .unstable_present_many(PresentationBatchRequest {
+                stages: &stages,
+                options: &options,
+                file_order: &order,
+            })
+            .unwrap();
+        assert_eq!(batched.len(), stages.len());
+        for output in &batched {
+            assert!(!output.as_str().is_empty());
+        }
+
+        // Each batched output equals the stage rendered on its own, so batching
+        // changed only how many times the backend ran, not what it produced.
+        for (stage, batched_output) in stages.iter().zip(&batched) {
+            let mut per_stage_session = crate::CompilerSession::new();
+            crate::publish_test_snapshot(&mut per_stage_session, &snapshot).unwrap();
+            let per_stage = per_stage_session
+                .unstable_present(PresentationRequest {
+                    stage: *stage,
+                    options: &options,
+                    file_order: &order,
+                })
+                .unwrap();
+            assert_eq!(batched_output.as_str(), per_stage.as_str());
+        }
+    }
+
+    /// Outputs come back in the order the stages were named, even when they
+    /// cross the backend and CFG-side families.
+    #[test]
+    fn present_many_preserves_the_requested_stage_order() {
+        let snapshot = crate::SourceSnapshot::single("main.rue", "fn main() -> i32 { 7 }").unwrap();
+        let options = crate::CompileOptions::default();
+        let order = snapshot
+            .files()
+            .map(|file| file.file_id)
+            .collect::<Vec<_>>();
+        let stages = [
+            PresentationStage::Asm,
+            PresentationStage::Cfg,
+            PresentationStage::Mir,
+        ];
+        let mut session = crate::CompilerSession::new();
+        crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
+        let outputs = session
+            .unstable_present_many(PresentationBatchRequest {
+                stages: &stages,
+                options: &options,
+                file_order: &order,
+            })
+            .unwrap();
+        assert_eq!(outputs.len(), 3);
+        for (stage, output) in stages.iter().zip(&outputs) {
+            let mut per_stage = crate::CompilerSession::new();
+            crate::publish_test_snapshot(&mut per_stage, &snapshot).unwrap();
+            let expected = per_stage
+                .unstable_present(PresentationRequest {
+                    stage: *stage,
+                    options: &options,
+                    file_order: &order,
+                })
+                .unwrap();
+            assert_eq!(output.as_str(), expected.as_str());
+        }
     }
 
     #[test]

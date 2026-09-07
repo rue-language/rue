@@ -6,7 +6,7 @@ use rue_compiler::unstable::update_for_presentation;
 use rue_compiler::unstable::{
     CanonicalRirPresentationMetrics, ParseMetrics, SemanticMetrics, rooted_cfg,
 };
-use rue_compiler::unstable::{PresentationRequest, PresentationStage};
+use rue_compiler::unstable::{PresentationBatchRequest, PresentationRequest, PresentationStage};
 #[cfg(test)]
 use rue_compiler::{CompileErrors, CompilerSession, RirView, SourceSnapshot};
 use rue_compiler::{
@@ -304,24 +304,52 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
         .map(|source| source.file_id)
         .collect::<Vec<_>>();
 
+    // The whole-program stages (RIR and every backend and CFG-side stage) are
+    // presented together, so a run naming several backend stages pays for one
+    // code generation rather than one per stage — the repeated general-inlining
+    // batch a per-stage call incurred at O2/O3 (RUE-1728). Their outputs come
+    // back in the order named. The per-file stages (tokens, AST) keep their own
+    // per-file rendering and are presented as they are reached.
+    let whole_program_stages: Vec<PresentationStage> = stages
+        .iter()
+        .filter_map(|stage| match stage {
+            EmitStage::Rir => Some(PresentationStage::Rir),
+            EmitStage::Air => Some(PresentationStage::Air),
+            EmitStage::Cfg => Some(PresentationStage::Cfg),
+            EmitStage::Lowering => Some(PresentationStage::Lowering),
+            EmitStage::Mir => Some(PresentationStage::Mir),
+            EmitStage::Liveness => Some(PresentationStage::Liveness),
+            EmitStage::RegAlloc => Some(PresentationStage::RegAlloc),
+            EmitStage::Asm => Some(PresentationStage::Asm),
+            EmitStage::StackFrame => Some(PresentationStage::StackFrame),
+            EmitStage::Abi => Some(PresentationStage::Abi),
+            EmitStage::Tokens | EmitStage::Ast | EmitStage::Deps => None,
+        })
+        .collect();
+    let mut whole_program_outputs = if whole_program_stages.is_empty() {
+        std::collections::VecDeque::new()
+    } else {
+        match host.present_many(PresentationBatchRequest {
+            stages: &whole_program_stages,
+            options: &compile_options,
+            file_order: &file_order,
+        }) {
+            Ok(outputs) => std::collections::VecDeque::from(outputs),
+            Err(errors) => {
+                diagnostics.print_errors(&errors);
+                return Err(());
+            }
+        }
+    };
+
     let mut warnings_printed = false;
     for stage in stages {
-        let unstable_stage = match stage {
-            EmitStage::Tokens => PresentationStage::Tokens,
-            EmitStage::Ast => PresentationStage::Ast,
-            EmitStage::Rir => PresentationStage::Rir,
-            EmitStage::Air => PresentationStage::Air,
-            EmitStage::Cfg => PresentationStage::Cfg,
-            EmitStage::Lowering => PresentationStage::Lowering,
-            EmitStage::Mir => PresentationStage::Mir,
-            EmitStage::Liveness => PresentationStage::Liveness,
-            EmitStage::RegAlloc => PresentationStage::RegAlloc,
-            EmitStage::Asm => PresentationStage::Asm,
-            EmitStage::StackFrame => PresentationStage::StackFrame,
-            EmitStage::Abi => PresentationStage::Abi,
-            EmitStage::Deps => continue,
-        };
         if matches!(stage, EmitStage::Tokens | EmitStage::Ast) {
+            let unstable_stage = match stage {
+                EmitStage::Tokens => PresentationStage::Tokens,
+                EmitStage::Ast => PresentationStage::Ast,
+                _ => unreachable!(),
+            };
             for source in source_snapshot.files() {
                 match stage {
                     EmitStage::Tokens => println!("=== Tokens ({}) ===", source.path),
@@ -344,17 +372,12 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
             }
             continue;
         }
-        let output = match host.present(PresentationRequest {
-            stage: unstable_stage,
-            options: &compile_options,
-            file_order: &file_order,
-        }) {
-            Ok(output) => output,
-            Err(errors) => {
-                diagnostics.print_errors(&errors);
-                return Err(());
-            }
-        };
+        if matches!(stage, EmitStage::Deps) {
+            continue;
+        }
+        let output = whole_program_outputs
+            .pop_front()
+            .expect("one whole-program output per whole-program stage");
         if !warnings_printed && emit_requires_semantic(&[*stage]) {
             diagnostics.print_warnings(output.warnings());
             warnings_printed = true;

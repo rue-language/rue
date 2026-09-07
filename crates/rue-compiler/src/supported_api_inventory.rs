@@ -84,5 +84,6 @@ stable|toolchain_module_demand|toolchain-module-demand|source-loaders+embedders|
 stable|toolchain_module_demand|toolchain-module-demand|source-loaders+embedders|TrustedToolchainModuleDemand|pub use toolchain_module_demand::TrustedToolchainModuleDemand
 unstable|CompilerSession|debug-tooling|in-tree-tooling|unstable_metrics|pub fn unstable_metrics(&self)->crate::unstable::MetricsSnapshot
 unstable|CompilerSession|debug-tooling|in-tree-tooling|unstable_present|pub fn unstable_present(&mut self,request:PresentationRequest<'_>,)->Result<PresentationOutput,crate::CompileErrors>
+unstable|CompilerSession|debug-tooling|in-tree-tooling|unstable_present_many|pub fn unstable_present_many(&mut self,request:PresentationBatchRequest<'_>,)->Result<Vec<PresentationOutput>,crate::CompileErrors>
 unstable|CompilerSessionUpdate|debug-tooling|in-tree-tooling|unstable_metrics|pub fn unstable_metrics(&self)->crate::unstable::ParseMetrics
 unstable|unstable|debug-module|in-tree-tooling|unstable|pub mod unstable"#;

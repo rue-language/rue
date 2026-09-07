@@ -3,8 +3,8 @@ use std::path::Path;
 use rue_compiler::unstable::TestCandidateInventory;
 use rue_compiler::unstable::{
     CancellableCompileOutcome, CancellableTestImageOutcome, CodegenReady, CompilationCancellation,
-    ObjectsReady, PresentationOutput, PresentationRequest, TestImage, TestListing,
-    UnimportedTestFile, cancellable_executable_in_compile_scope,
+    ObjectsReady, PresentationBatchRequest, PresentationOutput, PresentationRequest, TestImage,
+    TestListing, UnimportedTestFile, cancellable_executable_in_compile_scope,
     cancellable_test_image_in_compile_scope, codegen_ready, executable_in_compile_scope,
     objects_ready, runnable_ready, test_image_in_compile_scope, test_inventory,
     unimported_test_files,
@@ -164,6 +164,15 @@ impl FilesystemCompilerHost {
         request: PresentationRequest<'_>,
     ) -> MultiErrorResult<PresentationOutput> {
         self.state.session.unstable_present(request)
+    }
+
+    /// Produce several unstable presentations from one rooted compile per
+    /// stage family (RUE-1728), in the order the stages were named.
+    pub fn present_many(
+        &mut self,
+        request: PresentationBatchRequest<'_>,
+    ) -> MultiErrorResult<Vec<PresentationOutput>> {
+        self.state.session.unstable_present_many(request)
     }
 
     /// Discovery's own diagnostics when this revision's import graph did not
