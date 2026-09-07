@@ -109,7 +109,7 @@ pub use output::{
     DeclarationTypeDependencyTargetKind, ImplicitDropDependencySourceEvent,
     ImplicitNamedDestructorDependencyEvent, NamedConstDependencyEvent,
     NamedConstDependencyTargetEvent, ParamSlotModes, SourceParamAbi, body_parameter_types,
-    by_reference_parameter_pointee_types, occupying_body_parameter_types,
+    occupying_body_parameter_types, parameter_place_base_types,
 };
 pub use provider::{
     BodyFactProvider, DropCopyMetadata, ImportResolution, MemberCandidate, MemberKind,
