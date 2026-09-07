@@ -1067,11 +1067,7 @@ fn failure_message(
         FailureKind::Incomplete => {
             "the test exited 0 without the dispatcher's completion record".to_owned()
         }
-        FailureKind::OutputOverflow(overflow) => format!(
-            "{} exceeded its {}-byte retention budget; the process group was killed",
-            overflow.stream.name(),
-            overflow.budget
-        ),
+        FailureKind::OutputOverflow(overflow) => overflow.describe(),
         FailureKind::Assert
         | FailureKind::AssertEq
         | FailureKind::AssertNe

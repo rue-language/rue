@@ -166,7 +166,8 @@ pub(crate) struct FailureRecord {
     /// A comparison failure's two rendered operands and the diff between them
     /// (ADR-0083 Phase 2.5). **Absent** on every other failure.
     pub(crate) comparison: Option<Comparison>,
-    /// The runner's own explanation, when it could not trust what it read.
+    /// The runner's own explanation: it could not trust what it read, or it
+    /// killed the group for a flood that a failure frame outranked (RUE-2083).
     pub(crate) runner_note: Option<String>,
     /// The compiler diagnostics behind a `compile_error` verdict, as the same
     /// JSON objects `--error-format json` emits for them (ADR-0083 §3).
