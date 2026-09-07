@@ -25,6 +25,7 @@ use std::iter::Take;
 use std::ops::Deref;
 
 use ahash::{AHashMap, AHashSet};
+#[cfg(test)]
 use fixedbitset::FixedBitSet;
 
 use crate::index_map::IndexMap;
@@ -35,26 +36,28 @@ use crate::vreg::{LabelId, VReg};
 #[cfg(test)]
 thread_local! {
     static DATAFLOW_CALLS: Cell<usize> = const { Cell::new(0) };
-    /// Full-width bitset words the liveness dataflow touches.
+    /// Live-set element steps the liveness dataflow takes.
     ///
-    /// The solve and the range construction both work at block granularity, so
-    /// this total is proportional to blocks x register-set width plus the
-    /// instruction count — never to instructions x width. A scaling test reads
-    /// it at two problem sizes, which is what makes a reintroduced
-    /// per-instruction table fail rather than merely slow the compiler down
-    /// (RUE-1545).
-    static DATAFLOW_BITSET_WORDS: Cell<u64> = const { Cell::new(0) };
+    /// Every whole-set operation the solve, the range construction and the
+    /// debug projection perform — union, compare, publish, read back — reports
+    /// its element count here. The total is therefore proportional to the
+    /// values that are actually live at block boundaries, and never to the
+    /// block count times the width of the virtual-register space (RUE-2084) or
+    /// to the instruction count times that width (RUE-1545). Scaling tests read
+    /// it at two problem sizes, which is what makes a reintroduced dense table
+    /// fail rather than merely slow the compiler down.
+    static DATAFLOW_LIVE_SET_STEPS: Cell<u64> = const { Cell::new(0) };
 }
 
-/// Record `times` full-width passes over a `words`-word bitset.
+/// Record `steps` single-value operations on a live set.
 ///
 /// Compiles to nothing outside tests; the counter exists only so the scaling
-/// test can assert the shape of the work rather than its wall time.
+/// tests can assert the shape of the work rather than its wall time.
 #[inline]
-fn note_bitset_words(_words: usize, _times: usize) {
+fn note_live_set_steps(_steps: usize) {
     #[cfg(test)]
-    DATAFLOW_BITSET_WORDS.with(|counter| {
-        counter.set(counter.get() + (_words as u64) * (_times as u64));
+    DATAFLOW_LIVE_SET_STEPS.with(|counter| {
+        counter.set(counter.get() + _steps as u64);
     });
 }
 
@@ -582,14 +585,16 @@ where
     let inst_defs: Vec<VRegList> = instructions.iter().map(&get_defs).collect();
 
     // Step 4: Backward dataflow analysis, at block granularity. The solve keeps
-    // one live-in bitset per *basic block* rather than per instruction, which
-    // is what keeps the pass proportional to blocks x register-set width
-    // instead of instructions x width (RUE-1545). Without a back edge, reverse
-    // block order is already a topological order and one sweep computes the
-    // fixed point exactly; production range construction does not consume the
-    // sets at all in that case (RUE-302), so the loop-free path skips the solve
-    // entirely. Debug output still asks for the sets, because its projection is
-    // per instruction by definition.
+    // one live-in set per *basic block* rather than per instruction (RUE-1545),
+    // and each set names the values live there rather than reserving a bit per
+    // virtual register (RUE-2084). Together those keep the pass proportional to
+    // the instruction count plus the values actually live at block boundaries,
+    // with the width of the virtual-register space in neither term. Without a
+    // back edge, reverse block order is already a topological order and one
+    // sweep computes the fixed point exactly; production range construction
+    // does not consume the sets at all in that case (RUE-302), so the loop-free
+    // path skips the solve entirely. Debug output still asks for the sets,
+    // because its projection is per instruction by definition.
     let has_back_edge = has_back_edge(&successors);
     let block_liveness = (collect_debug || has_back_edge).then(|| {
         let blocks = partition_blocks(num_insts, &successors);
@@ -867,16 +872,116 @@ impl BlockPartition {
     }
 }
 
+/// A solved live set: the virtual registers live at one program point, named
+/// rather than bit-mapped.
+///
+/// Members are ascending and unique, so a solved set is canonical, two of them
+/// compare as slices, and a consumer that wants index order gets it without
+/// sorting.
+type LiveSet = Vec<u32>;
+
+/// A live set under construction.
+///
+/// Membership, insertion and removal are constant time, and every whole-set
+/// operation — clear, union, compare, publish — costs the number of values
+/// actually live rather than the width of the virtual-register space.
+///
+/// That distinction is the point. A block's live-in set names the values that
+/// survive the block's entry, which on a large body is a handful out of tens of
+/// thousands of virtual registers. Keeping one bit per virtual register per
+/// block instead made the table, and every union, compare and copy the solve
+/// performed on it, proportional to blocks x virtual registers — quadratic on a
+/// body whose block count and value count both grow with its length, which is
+/// exactly the body whose values are live around a back edge (RUE-2084).
+struct WorkingLiveSet {
+    /// The members, in the order they were inserted.
+    members: Vec<u32>,
+    /// `positions[v]` is `v`'s index in `members`, meaningful only while
+    /// `members[positions[v]] == v`. That pair validates itself, which is what
+    /// lets `clear` truncate the member list instead of sweeping a table as
+    /// wide as the virtual-register space.
+    positions: Vec<u32>,
+}
+
+impl WorkingLiveSet {
+    /// An empty set over `width` virtual registers.
+    ///
+    /// The position table is the one width-sized allocation, made once per
+    /// analysis rather than once per block.
+    fn with_width(width: usize) -> Self {
+        Self {
+            members: Vec::new(),
+            positions: vec![0; width],
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.members.len()
+    }
+
+    /// The members, in no particular order.
+    fn members(&self) -> &[u32] {
+        &self.members
+    }
+
+    fn contains(&self, vreg: u32) -> bool {
+        let position = self.positions[vreg as usize] as usize;
+        position < self.members.len() && self.members[position] == vreg
+    }
+
+    fn insert(&mut self, vreg: u32) {
+        if !self.contains(vreg) {
+            self.positions[vreg as usize] = self.members.len() as u32;
+            self.members.push(vreg);
+        }
+    }
+
+    fn remove(&mut self, vreg: u32) {
+        if self.contains(vreg) {
+            let position = self.positions[vreg as usize] as usize;
+            self.members.swap_remove(position);
+            if let Some(&moved) = self.members.get(position) {
+                self.positions[moved as usize] = position as u32;
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.members.clear();
+    }
+
+    fn union_from(&mut self, other: &[u32]) {
+        note_live_set_steps(other.len());
+        for &vreg in other {
+            self.insert(vreg);
+        }
+    }
+
+    /// Whether `solved` already holds exactly this set.
+    fn matches(&self, solved: &[u32]) -> bool {
+        note_live_set_steps(solved.len());
+        solved.len() == self.members.len() && solved.iter().all(|&vreg| self.contains(vreg))
+    }
+
+    /// Overwrite `solved` with this set in ascending order.
+    fn publish_into(&self, solved: &mut LiveSet) {
+        note_live_set_steps(self.members.len());
+        solved.clear();
+        solved.extend_from_slice(&self.members);
+        solved.sort_unstable();
+    }
+}
+
 /// The block-granular liveness solution the cyclic paths consume.
 struct BlockLiveness {
     blocks: BlockPartition,
     /// Virtual registers live before each block's first instruction.
-    live_in: Vec<FixedBitSet>,
+    live_in: Vec<LiveSet>,
 }
 
 impl BlockLiveness {
     /// This block's live-out set, written into `out`.
-    fn live_out_into(&self, block: usize, successors: &[SuccessorList], out: &mut FixedBitSet) {
+    fn live_out_into(&self, block: usize, successors: &[SuccessorList], out: &mut WorkingLiveSet) {
         collect_block_live_out(block, &self.blocks, successors, &self.live_in, out);
     }
 }
@@ -891,14 +996,13 @@ fn collect_block_live_out(
     block: usize,
     blocks: &BlockPartition,
     successors: &[SuccessorList],
-    live_in: &[FixedBitSet],
-    out: &mut FixedBitSet,
+    live_in: &[LiveSet],
+    out: &mut WorkingLiveSet,
 ) {
     let (_, end) = blocks.span(block);
     out.clear();
-    note_bitset_words(out.as_slice().len(), 1 + successors[end].len());
     for &successor in &successors[end] {
-        out.union_with(&live_in[blocks.of(successor)]);
+        out.union_from(&live_in[blocks.of(successor)]);
     }
 }
 
@@ -945,25 +1049,26 @@ fn partition_blocks(num_insts: usize, successors: &[SuccessorList]) -> BlockPart
 ///
 /// `scratch` receives the block's live-out set and then the block's
 /// instructions in reverse, each applied with point operations. A visit
-/// therefore costs the block's length plus one full-width union per successor,
-/// not the block's length times the register-set width.
+/// therefore costs the block's length plus the size of each successor's live-in
+/// set, not the block's length times the register-set width and not the
+/// register-set width per successor.
 fn transfer_block(
     block: usize,
     blocks: &BlockPartition,
     successors: &[SuccessorList],
     inst_uses: &[VRegList],
     inst_defs: &[VRegList],
-    live_in: &[FixedBitSet],
-    scratch: &mut FixedBitSet,
+    live_in: &[LiveSet],
+    scratch: &mut WorkingLiveSet,
 ) {
     let (start, end) = blocks.span(block);
     collect_block_live_out(block, blocks, successors, live_in, scratch);
     for idx in (start..=end).rev() {
         for vreg in &inst_defs[idx] {
-            scratch.set(vreg.index() as usize, false);
+            scratch.remove(vreg.index());
         }
         for vreg in &inst_uses[idx] {
-            scratch.insert(vreg.index() as usize);
+            scratch.insert(vreg.index());
         }
     }
 }
@@ -979,11 +1084,13 @@ type BlockVisitCount = ();
 /// - live_out[b] = union of live_in[s] over the successor blocks of b
 /// - live_in[b]  = the block's instructions applied backward to live_out[b]
 ///
-/// Storage is one bitset per block plus one scratch set, so the solve is
-/// proportional to blocks x width and never to instructions x width. The
-/// solution agrees with a per-instruction fixed point at every block start,
-/// because a block's interior rows are exactly the composition this transfer
-/// function performs, and both start from the empty set and only add.
+/// Storage is the members of each block's live-in set plus one scratch set, so
+/// a visit costs the block's length and the values live at its boundaries —
+/// never the width of the virtual-register space, which no longer appears in
+/// the solve's cost at all (RUE-2084). The solution agrees with a
+/// per-instruction fixed point at every block start, because a block's interior
+/// rows are exactly the composition this transfer function performs, and both
+/// start from the empty set and only add.
 fn solve_block_liveness(
     vreg_count: u32,
     successors: &[SuccessorList],
@@ -991,17 +1098,15 @@ fn solve_block_liveness(
     inst_defs: &[VRegList],
     blocks: &BlockPartition,
     has_back_edge: bool,
-) -> (Vec<FixedBitSet>, BlockVisitCount) {
+) -> (Vec<LiveSet>, BlockVisitCount) {
     let width = vreg_count as usize;
     let block_count = blocks.len();
 
     #[cfg(test)]
     DATAFLOW_CALLS.with(|calls| calls.set(calls.get() + 1));
 
-    let mut live_in: Vec<FixedBitSet> = vec![FixedBitSet::with_capacity(width); block_count];
-    let mut scratch = FixedBitSet::with_capacity(width);
-    let words = scratch.as_slice().len();
-    note_bitset_words(words, block_count + 1);
+    let mut live_in: Vec<LiveSet> = vec![LiveSet::new(); block_count];
+    let mut scratch = WorkingLiveSet::with_width(width);
     #[cfg(test)]
     let mut block_visits = 0;
 
@@ -1043,10 +1148,8 @@ fn solve_block_liveness(
                 &live_in,
                 &mut scratch,
             );
-            note_bitset_words(words, 1);
-            if scratch != live_in[block] {
-                note_bitset_words(words, 1);
-                live_in[block].clone_from(&scratch);
+            if !scratch.matches(&live_in[block]) {
+                scratch.publish_into(&mut live_in[block]);
                 for &predecessor in
                     &predecessors[predecessor_offsets[block]..predecessor_offsets[block + 1]]
                 {
@@ -1076,8 +1179,7 @@ fn solve_block_liveness(
                 &live_in,
                 &mut scratch,
             );
-            note_bitset_words(words, 2);
-            live_in[block].clone_from(&scratch);
+            scratch.publish_into(&mut live_in[block]);
         }
     }
 
@@ -1142,13 +1244,14 @@ fn instruction_liveness_rows(
     inst_defs: &[VRegList],
     block_liveness: &BlockLiveness,
 ) -> Vec<InstructionLiveness> {
-    let to_set = |set: &FixedBitSet| -> AHashSet<VReg> {
-        set.ones().map(|idx| VReg::new(idx as u32)).collect()
+    let to_set = |members: &[u32]| -> AHashSet<VReg> {
+        note_live_set_steps(members.len());
+        members.iter().map(|&idx| VReg::new(idx)).collect()
     };
 
     let mut rows = Vec::with_capacity(num_insts);
     let mut block_rows = Vec::new();
-    let mut scratch = FixedBitSet::with_capacity(vreg_count as usize);
+    let mut scratch = WorkingLiveSet::with_width(vreg_count as usize);
     for block in 0..block_liveness.blocks.len() {
         let (start, end) = block_liveness.blocks.span(block);
         block_liveness.live_out_into(block, successors, &mut scratch);
@@ -1156,17 +1259,16 @@ fn instruction_liveness_rows(
             // Sweeping backward, `scratch` holds live-out of the row about to
             // be transferred, and holds its live-in once the row's defs and
             // uses have been applied.
-            let live_out = to_set(&scratch);
+            let live_out = to_set(scratch.members());
             for vreg in &inst_defs[idx] {
-                scratch.set(vreg.index() as usize, false);
+                scratch.remove(vreg.index());
             }
             for vreg in &inst_uses[idx] {
-                scratch.insert(vreg.index() as usize);
+                scratch.insert(vreg.index());
             }
-            note_bitset_words(scratch.as_slice().len(), 2);
             block_rows.push(InstructionLiveness {
                 index: idx,
-                live_in: to_set(&scratch),
+                live_in: to_set(scratch.members()),
                 live_out,
                 defs: inst_defs[idx].to_vec(),
                 uses: inst_uses[idx].to_vec(),
@@ -1199,7 +1301,8 @@ fn instruction_liveness_rows(
 /// * **Back-edges extend it, at block boundaries only.** With loops a value is
 ///   live past its textual last use, so liveness has to be consulted — but only
 ///   at each block's two boundaries, which is all the block-granular solve
-///   keeps (RUE-1545).
+///   keeps (RUE-1545), and only for the values those boundaries actually name
+///   (RUE-2084).
 ///
 /// # Why the two boundary sets of each block are enough
 ///
@@ -1294,17 +1397,17 @@ fn build_live_ranges(
         return ranges;
     };
 
-    let mut live_out = FixedBitSet::with_capacity(vreg_count as usize);
-    note_bitset_words(live_out.as_slice().len(), 1);
+    let mut live_out = WorkingLiveSet::with_width(vreg_count as usize);
     for block in 0..block_liveness.blocks.len() {
         let (start, end) = block_liveness.blocks.span(block);
-        note_bitset_words(live_out.as_slice().len(), 2);
-        for vreg_idx in block_liveness.live_in[block].ones() {
-            extend(VReg::new(vreg_idx as u32), start);
+        note_live_set_steps(block_liveness.live_in[block].len());
+        for &vreg_idx in &block_liveness.live_in[block] {
+            extend(VReg::new(vreg_idx), start);
         }
         block_liveness.live_out_into(block, successors, &mut live_out);
-        for vreg_idx in live_out.ones() {
-            extend(VReg::new(vreg_idx as u32), end);
+        note_live_set_steps(live_out.len());
+        for &vreg_idx in live_out.members() {
+            extend(VReg::new(vreg_idx), end);
         }
     }
 
@@ -2449,9 +2552,9 @@ mod tests {
 
         let (_, live_in, live_out) = solved_liveness(4, 1, &successors, &uses, &defs);
         let ones = |set: &FixedBitSet| set.ones().collect::<Vec<_>>();
-        assert!(block_live_in[0].is_clear());
-        assert_eq!(ones(&block_live_in[1]), vec![0]);
-        assert!(block_live_in[2].is_clear());
+        assert!(block_live_in[0].is_empty());
+        assert_eq!(block_live_in[1], vec![0]);
+        assert!(block_live_in[2].is_empty());
         assert!(live_in[0].is_clear());
         assert_eq!(ones(&live_in[1]), vec![0]);
         assert_eq!(ones(&live_in[2]), vec![0]);
@@ -2530,22 +2633,48 @@ mod tests {
         );
     }
 
+    /// Solve a cyclic body and build its ranges, reporting the live-set element
+    /// steps the whole dataflow took.
+    ///
+    /// The counter is maintained by `note_live_set_steps`, which every
+    /// whole-set operation in the solve, the range construction and the debug
+    /// projection reports through. New dataflow storage has to report through
+    /// it too, or the scaling tests below are measuring something other than
+    /// the work that was added.
+    fn dataflow_steps(
+        num_insts: usize,
+        vreg_count: u32,
+        successors: &[SuccessorList],
+        uses: &[VRegList],
+        defs: &[VRegList],
+    ) -> u64 {
+        assert!(has_back_edge(successors));
+        DATAFLOW_LIVE_SET_STEPS.with(|counter| counter.set(0));
+        let blocks = partition_blocks(num_insts, successors);
+        let live_in = solve_block_liveness(vreg_count, successors, uses, defs, &blocks, true).0;
+        let block_liveness = BlockLiveness { blocks, live_in };
+        let ranges = build_live_ranges(
+            num_insts,
+            vreg_count,
+            uses,
+            defs,
+            successors,
+            Some(&block_liveness),
+        );
+        assert_eq!(ranges.len(), vreg_count as usize);
+        DATAFLOW_LIVE_SET_STEPS.with(Cell::get)
+    }
+
     #[test]
     fn cyclic_dataflow_work_stays_proportional_to_blocks_not_instructions() {
-        // A loop whose body is `size` instructions over `size` virtual
-        // registers: the synthetic instructions x vregs shape RUE-1545 is
-        // about. A per-instruction live-in table costs at least one full-width
-        // pass per instruction to build and another to read; the block-granular
-        // solve costs a handful of passes per *block*. So doubling the size
-        // roughly doubles the counted bitset work, and would roughly quadruple
-        // it if a dense table came back.
-        //
-        // The counter is maintained by `note_bitset_words`, which every
-        // full-width operation in the solve, the range construction, and the
-        // debug projection reports through. New dataflow storage has to report
-        // through it too, or this test is measuring something other than the
-        // work that was added.
-        fn dataflow_words(size: u32) -> (u64, usize) {
+        // A loop whose body is one block of `size` instructions over `size`
+        // virtual registers: the synthetic instructions x vregs shape RUE-1545
+        // is about. A per-instruction live-in table costs one set per
+        // instruction to build and another to read, so its work grows with
+        // instructions times live values and quadruples when the size doubles;
+        // the block-granular solve touches a handful of sets per *block*, so
+        // doubling the size roughly doubles its work.
+        fn steps(size: u32) -> u64 {
             let count = size as usize + 2;
             let mut successors = vec![SuccessorList::new(); count];
             let mut uses = vec![VRegList::new(); count];
@@ -2558,35 +2687,68 @@ mod tests {
             // The back-edge closes the loop; the exit row keeps the body from
             // being the whole function.
             successors[count - 2] = [count - 1, 0].into_iter().collect();
-
-            DATAFLOW_BITSET_WORDS.with(|counter| counter.set(0));
-            let blocks = partition_blocks(count, &successors);
-            let live_in = solve_block_liveness(size, &successors, &uses, &defs, &blocks, true).0;
-            let block_liveness = BlockLiveness { blocks, live_in };
-            let ranges = build_live_ranges(
-                count,
-                size,
-                &uses,
-                &defs,
-                &successors,
-                Some(&block_liveness),
-            );
-            assert_eq!(ranges.len(), size as usize);
-            (DATAFLOW_BITSET_WORDS.with(Cell::get), count)
+            dataflow_steps(count, size, &successors, &uses, &defs)
         }
 
-        let (small, small_insts) = dataflow_words(512);
-        let (large, large_insts) = dataflow_words(1024);
-        assert!(
-            small < small_insts as u64 && large < large_insts as u64,
-            "a per-instruction table costs at least one word per instruction: \
-             {small} words for {small_insts} instructions, \
-             {large} for {large_insts}"
-        );
+        let small = steps(512);
+        let large = steps(1024);
         assert!(
             large < small * 3,
-            "doubling the loop body must not multiply dataflow bitset work by four: \
-             {small} words at 512, {large} at 1024"
+            "doubling the loop body must not multiply dataflow work by four: \
+             {small} steps at 512, {large} at 1024"
+        );
+    }
+
+    #[test]
+    fn cyclic_dataflow_work_stays_proportional_to_the_values_actually_live() {
+        // The RUE-2084 shape: a loop whose *block* count and virtual-register
+        // count both grow with the body, while only a fixed handful of values
+        // is live at any block boundary. That is what a long loop body of
+        // checked arithmetic lowers to — every check is a branch, so every
+        // statement mints both a block and a temporary.
+        //
+        // A live-in bitset per block costs blocks x virtual registers however
+        // few values are live, so its work quadruples when the body doubles.
+        // Listing each boundary's members instead costs blocks x the few values
+        // live there, which merely doubles.
+        fn steps(size: u32) -> u64 {
+            // Three rows per unit: a temporary is defined from the accumulator,
+            // the accumulator is redefined from it, and a check branches either
+            // on to the next unit or out to the latch. The branch is what makes
+            // the next row a leader, so the block count grows with the body
+            // while only the accumulator (vreg 0) crosses any boundary — each
+            // unit's temporary lives and dies inside its own block.
+            let units = size as usize;
+            let count = units * 3 + 1;
+            let latch = count - 1;
+            let mut successors = vec![SuccessorList::new(); count];
+            let mut uses = vec![VRegList::new(); count];
+            let mut defs = vec![VRegList::new(); count];
+            for unit in 0..units {
+                let row = unit * 3;
+                let temporary = VReg::new(unit as u32 + 1);
+                defs[row].push(temporary);
+                uses[row].push(VReg::new(0));
+                successors[row] = [row + 1].into_iter().collect();
+
+                uses[row + 1].push(temporary);
+                defs[row + 1].push(VReg::new(0));
+                successors[row + 1] = [row + 2].into_iter().collect();
+
+                successors[row + 2] = [row + 3, latch].into_iter().collect();
+            }
+            // The latch closes the loop, which is what keeps the accumulator
+            // live around the back edge from every one of those blocks.
+            successors[latch] = [0].into_iter().collect();
+            dataflow_steps(count, size + 1, &successors, &uses, &defs)
+        }
+
+        let small = steps(512);
+        let large = steps(1024);
+        assert!(
+            large < small * 3,
+            "doubling a loop body whose blocks and values both grow must not \
+             multiply dataflow work by four: {small} steps at 512, {large} at 1024"
         );
     }
 
