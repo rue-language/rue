@@ -656,24 +656,24 @@ compile_fail = true
 error_contains = ["E0425", "inout argument must be"]
 [[case]]
 name = "invalid_comptime_type_argument_reports_diagnostic"
-description = "A rejected comptime type argument is a deterministic user error, not an incomplete body query."
+description = "A rejected comptime type argument is a deterministic user error, not an incomplete body query. The comptime engine names the rejected argument; an unresolved `-> T` no longer stands in as the literal `type`, whose downstream mismatch used to arrive first (RUE-1967)."
 files = [{ path = "main.rue", source = """
 fn id(comptime T: type, value: T) -> T { value }
 fn main() -> i32 { id(32, 42) }
 """ }]
 compile_fail = true
-error_contains = ["E0206", "type mismatch"]
+error_contains = ["E1200", "comptime type parameter must be a type literal"]
 compile_stderr_not_contains = ["internal compiler error", "did not publish a terminal"]
 
 [[case]]
 name = "unknown_comptime_type_argument_reports_diagnostic"
-description = "An unknown type passed to a comptime type parameter does not abort body-query publication."
+description = "An unknown type passed to a comptime type parameter does not abort body-query publication, and is reported at the argument rather than as a mismatch at the call's result (RUE-1967)."
 files = [{ path = "main.rue", source = """
 fn id(comptime T: type, value: T) -> T { value }
 fn main() -> i32 { id(i34, 42) }
 """ }]
 compile_fail = true
-error_contains = ["E0206", "type mismatch"]
+error_contains = ["E1201", "requires a compile-time known value"]
 compile_stderr_not_contains = ["internal compiler error", "did not publish a terminal"]
 
 [[case]]

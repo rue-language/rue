@@ -2058,6 +2058,7 @@ impl<'a> ConstraintGenerator<'a> {
                 let alias_target = self.const_function_alias((span.file_id, *name));
                 let function_key =
                     alias_target.or_else(|| self.function_by_file((span.file_id, *name)));
+                let arg_range = args;
                 let args = self.rir.call_args(args);
                 let mut arg_diverged = false;
                 // `print(s)` / `println(s)` builtin free functions (RUE-1):
@@ -2086,162 +2087,13 @@ impl<'a> ConstraintGenerator<'a> {
                     // type value), the constraint is skipped and the check happens in
                     // semantic analysis instead (RUE-73, RUE-99).
                     if func.is_generic {
-                        // Process all arguments once, collecting their inferred types
-                        let mut arg_infos = Vec::with_capacity(args.len());
-                        for arg in args.iter() {
-                            if self.was_canceled() {
-                                break;
-                            }
-                            let info =
-                                self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
-                            arg_diverged |= !info.continues;
-                            arg_infos.push(info);
-                            if self.was_canceled() {
-                                break;
-                            }
-                        }
-
-                        // Build the type substitution map from comptime type arguments
-                        let mut type_subst: AHashMap<lasso::Spur, Type> = AHashMap::new();
-                        // Comptime VALUE arguments (`comptime N: i32`) captured
-                        // as their integer constant, so a return/param type
-                        // sized by one — an array length `[i32; N]` — resolves
-                        // at this call (RUE-252).
-                        let mut value_subst: AHashMap<lasso::Spur, i128> = AHashMap::new();
-                        for (i, arg) in args.iter().enumerate() {
-                            if self.was_canceled() {
-                                break;
-                            }
-                            if i >= func.param_comptime.len()
-                                || !func.param_comptime[i]
-                                || i >= func.param_names.len()
-                            {
-                                continue;
-                            }
-                            if func.param_comptime_type.get(i) == Some(&true) {
-                                if let Some(ConstValue::Type(concrete_ty)) =
-                                    self.comptime_argument_value(arg.value)
-                                {
-                                    type_subst.insert(func.param_names[i], concrete_ty);
-                                } else if let Some(concrete_ty) =
-                                    self.extract_type_argument(arg.value, ctx)
-                                {
-                                    type_subst.insert(func.param_names[i], concrete_ty);
-                                }
-                            } else if let Some(ConstValue::Integer(v)) =
-                                self.comptime_argument_value(arg.value)
-                            {
-                                value_subst.insert(func.param_names[i], v);
-                            }
-                        }
-
-                        // Constrain each runtime argument to its parameter type, with
-                        // type parameters substituted. Comptime type parameters (the
-                        // `T: type` arguments themselves) are validated in sema.
-                        for (i, arg_info) in arg_infos.iter().enumerate() {
-                            if self.was_canceled() {
-                                break;
-                            }
-                            if i >= func.param_types.len() || i >= func.param_comptime.len() {
-                                break;
-                            }
-                            let declared = &func.param_types[i];
-                            if self.staged_comptime_selectors
-                                && self
-                                    .comptime_argument_values
-                                    .is_none_or(|values| values.is_empty())
-                                && *declared == InferType::Concrete(Type::COMPTIME_TYPE)
-                            {
-                                continue;
-                            }
-                            if func.param_comptime_type.get(i) == Some(&true) {
-                                // Comptime TYPE parameter - the argument is a type value
-                                continue;
-                            }
-                            let expected = if *declared == InferType::Concrete(Type::COMPTIME_TYPE)
-                            {
-                                // Generic parameter like `x: T`, or a composite
-                                // mentioning a type parameter like `a: [T; 3]`
-                                // (RUE-172) - substitute T
-                                match func.param_type_syntax.get(i).and_then(|syntax| {
-                                    syntax.as_ref().and_then(|syntax| {
-                                        self.infer_structured_type_hint(
-                                            syntax,
-                                            &type_subst,
-                                            &value_subst,
-                                            span.file_id,
-                                        )
-                                    })
-                                }) {
-                                    Some(ty) => ty,
-                                    // Unknown type parameter - checked in sema
-                                    None => continue,
-                                }
-                            } else {
-                                declared.clone()
-                            };
-                            // Slice parameters coerce from an array argument
-                            // (ADR-0043, RUE-322); see the non-generic path.
-                            if self.is_slice_struct_type(expected.clone()) {
-                                continue;
-                            }
-                            self.add_constraint(Constraint::equal(
-                                arg_info.ty.clone(),
-                                expected,
-                                arg_info.span,
-                            ));
-                        }
-
-                        // Compute the actual return type by substituting type
-                        // parameters - bare (`-> T`) or inside a composite
-                        // (`-> [T; 3]`, RUE-172).
-                        let return_type = if func.return_type
-                            == InferType::Concrete(Type::COMPTIME_TYPE)
-                        {
-                            match self.substituted_generic_return_type(
-                                &func,
-                                &type_subst,
-                                &value_subst,
-                                span.file_id,
-                            ) {
-                                Some(ty) => ty,
-                                None => {
-                                    // The declared return type is a
-                                    // type-function application to a type
-                                    // parameter (`-> Option(T)`; RUE-272).
-                                    // The constraint generator can't reduce
-                                    // a `-> type` constructor body, so it
-                                    // can't name the monomorphized
-                                    // struct/enum here — sema computes the
-                                    // true type in the analyze pass. Use a
-                                    // fresh inference variable (pinned by
-                                    // the call's use site) rather than the
-                                    // `COMPTIME_TYPE` placeholder, which
-                                    // would spuriously unify against the real
-                                    // result type and reject the program
-                                    // (E0206). A literal `-> type`
-                                    // constructor call is NOT a type-call in
-                                    // this sense and still yields
-                                    // `COMPTIME_TYPE`.
-                                    let is_type_call =
-                                        func.return_type_syntax.as_ref().is_some_and(|syntax| {
-                                            matches!(
-                                                syntax.arena.node(syntax.root),
-                                                Some(RirTypeSyntaxNode::TypeCall { .. })
-                                            )
-                                        });
-                                    if self.staged_comptime_selectors || is_type_call {
-                                        InferType::Var(self.fresh_var())
-                                    } else {
-                                        func.return_type.clone()
-                                    }
-                                }
-                            }
-                        } else {
-                            func.return_type.clone()
-                        };
-
-                        return_type
+                        self.generate_generic_call(
+                            &func,
+                            arg_range,
+                            span.file_id,
+                            &mut arg_diverged,
+                            ctx,
+                        )
                     } else if args.len() != func.param_types.len() {
                         // Check argument count matches parameter count.
                         // Semantic analysis will emit a proper error; we just need to avoid
@@ -3914,172 +3766,64 @@ impl<'a> ConstraintGenerator<'a> {
                                 .and_then(|file_id| self.function_by_file((file_id, *method)))
                         });
                         if let Some(func) = function_key.and_then(|key| self.func_sig(key)) {
-                            // Populated by the generic branch below and read by
-                            // the return-type substitution after it.
-                            let mut type_subst: AHashMap<lasso::Spur, Type> = AHashMap::new();
-                            let mut value_subst: AHashMap<lasso::Spur, i128> = AHashMap::new();
-                            if !func.is_generic && call_args.len() == func.param_types.len() {
-                                // Constrain each argument against its declared
-                                // parameter type (same as a direct Call).
-                                for (arg, param_ty) in call_args.iter().zip(func.param_types.iter())
-                                {
-                                    let arg_info = self.generate_sequenced_operand(
-                                        arg.value,
-                                        ctx,
-                                        !arg_diverged,
-                                    );
-                                    arg_diverged |= !arg_info.continues;
-                                    if self.was_canceled() {
-                                        break;
-                                    }
-                                    // Slice and `borrow str` parameters coerce
-                                    // from a `borrow` argument; skip strict
-                                    // equality and let sema materialize the
-                                    // fat-pointer view (ADR-0043, RUE-322,
-                                    // RUE-559) — same as the direct-Call path.
-                                    if self.is_slice_struct_type(param_ty.clone()) {
-                                        continue;
-                                    }
-                                    self.add_constraint(Constraint::contextual(
-                                        arg_info.ty,
-                                        param_ty.clone(),
-                                        arg_info.span,
-                                    ));
-                                }
-                            } else if func.is_generic {
-                                // Generic module-member callee (RUE-693): mirror
-                                // the direct-Call generic path. Build the type
-                                // substitution from the comptime type arguments,
-                                // then constrain each runtime argument to its
-                                // *substituted* parameter type. Without this, a
-                                // literal argument to `h.min(i64, 3, 7)` stayed
-                                // unconstrained across the module boundary and
-                                // defaulted to i32, clashing with the instantiated
-                                // i64 parameter (the non-generic path above already
-                                // constrains, and same-file generic Calls do too).
-                                let mut arg_infos = Vec::with_capacity(call_args.len());
-                                for arg in call_args.iter() {
-                                    let info = self.generate_sequenced_operand(
-                                        arg.value,
-                                        ctx,
-                                        !arg_diverged,
-                                    );
-                                    arg_diverged |= !info.continues;
-                                    arg_infos.push(info);
-                                    if self.was_canceled() {
-                                        break;
-                                    }
-                                }
-                                for (i, arg) in call_args.iter().enumerate() {
-                                    if self.was_canceled() {
-                                        break;
-                                    }
-                                    if i >= func.param_comptime.len()
-                                        || !func.param_comptime[i]
-                                        || i >= func.param_names.len()
-                                    {
-                                        continue;
-                                    }
-                                    if func.param_comptime_type.get(i) == Some(&true) {
-                                        if let Some(concrete_ty) =
-                                            self.extract_type_argument(arg.value, ctx)
-                                        {
-                                            type_subst.insert(func.param_names[i], concrete_ty);
-                                        }
-                                    } else if let Some(ConstValue::Integer(v)) =
-                                        self.comptime_argument_value(arg.value)
-                                    {
-                                        value_subst.insert(func.param_names[i], v);
-                                    }
-                                }
-                                for (i, arg_info) in arg_infos.iter().enumerate() {
-                                    if self.was_canceled() {
-                                        break;
-                                    }
-                                    if i >= func.param_types.len() || i >= func.param_comptime.len()
-                                    {
-                                        break;
-                                    }
-                                    if func.param_comptime_type.get(i) == Some(&true) {
-                                        continue;
-                                    }
-                                    let declared = &func.param_types[i];
-                                    if self.staged_comptime_selectors
-                                        && value_subst.is_empty()
-                                        && *declared == InferType::Concrete(Type::COMPTIME_TYPE)
-                                    {
-                                        continue;
-                                    }
-                                    let expected =
-                                        if *declared == InferType::Concrete(Type::COMPTIME_TYPE) {
-                                            match func.param_type_syntax.get(i).and_then(|syntax| {
-                                                syntax.as_ref().and_then(|syntax| {
-                                                    self.infer_structured_type_hint(
-                                                        syntax,
-                                                        &type_subst,
-                                                        &value_subst,
-                                                        span.file_id,
-                                                    )
-                                                })
-                                            }) {
-                                                Some(ty) => ty,
-                                                None => continue,
-                                            }
-                                        } else {
-                                            declared.clone()
-                                        };
-                                    if self.is_slice_struct_type(expected.clone()) {
-                                        continue;
-                                    }
-                                    self.add_constraint(Constraint::equal(
-                                        arg_info.ty.clone(),
-                                        expected,
-                                        arg_info.span,
-                                    ));
-                                }
-                            } else {
-                                // Arity mismatch: just process the arguments;
-                                // sema checks the rest.
-                                for arg in call_args.iter() {
-                                    let info = self.generate_sequenced_operand(
-                                        arg.value,
-                                        ctx,
-                                        !arg_diverged,
-                                    );
-                                    arg_diverged |= !info.continues;
-                                    if self.was_canceled() {
-                                        break;
-                                    }
-                                }
-                            }
-                            if func.return_type == InferType::Concrete(Type::COMPTIME_TYPE) {
-                                // `-> T` resolves from this call's type
-                                // arguments on the same canonical route as the
-                                // direct-Call path. A bare fresh variable let
-                                // the use site decide instead: in
-                                // `h.sq(f32, v) == 6.25` the literal defaulted
-                                // to `f64` and unified with the unconstrained
-                                // result, while sema specialized the call to
-                                // `f32` — a mismatch that only surfaced as an
-                                // AIR verification ICE. Float type names are
-                                // ordinary identifiers rather than lexer
-                                // keywords (ADR-0065), so `f32` arrives here as
-                                // a `VarRef` and is resolved by
-                                // `extract_type_argument`'s primitive lookup
-                                // above.
-                                //
-                                // A return type that still can't be reduced
-                                // here (a type-function application such as
-                                // `-> Option(T)`) keeps the fresh variable;
-                                // sema specialization determines it.
-                                self.substituted_generic_return_type(
+                            if func.is_generic {
+                                // Generic module-member callee (RUE-693): the
+                                // same owner the direct-`Call` path uses, so a
+                                // module boundary cannot change which comptime
+                                // arguments are captured or whether `-> T` is
+                                // substituted.
+                                self.generate_generic_call(
                                     &func,
-                                    &type_subst,
-                                    &value_subst,
+                                    args,
                                     span.file_id,
+                                    &mut arg_diverged,
+                                    ctx,
                                 )
-                                .unwrap_or_else(|| InferType::Var(self.fresh_var()))
                             } else {
+                                if call_args.len() == func.param_types.len() {
+                                    // Constrain each argument against its declared
+                                    // parameter type (same as a direct Call).
+                                    for (arg, param_ty) in
+                                        call_args.iter().zip(func.param_types.iter())
+                                    {
+                                        let arg_info = self.generate_sequenced_operand(
+                                            arg.value,
+                                            ctx,
+                                            !arg_diverged,
+                                        );
+                                        arg_diverged |= !arg_info.continues;
+                                        if self.was_canceled() {
+                                            break;
+                                        }
+                                        // Slice and `borrow str` parameters coerce
+                                        // from a `borrow` argument; skip strict
+                                        // equality and let sema materialize the
+                                        // fat-pointer view (ADR-0043, RUE-322,
+                                        // RUE-559) — same as the direct-Call path.
+                                        if self.is_slice_struct_type(param_ty.clone()) {
+                                            continue;
+                                        }
+                                        self.add_constraint(Constraint::contextual(
+                                            arg_info.ty,
+                                            param_ty.clone(),
+                                            arg_info.span,
+                                        ));
+                                    }
+                                } else {
+                                    // Arity mismatch: just process the arguments;
+                                    // sema checks the rest.
+                                    for arg in call_args.iter() {
+                                        let info = self.generate_sequenced_operand(
+                                            arg.value,
+                                            ctx,
+                                            !arg_diverged,
+                                        );
+                                        arg_diverged |= !info.continues;
+                                        if self.was_canceled() {
+                                            break;
+                                        }
+                                    }
+                                }
                                 func.return_type.clone()
                             }
                         } else {
@@ -4589,6 +4333,14 @@ impl<'a> ConstraintGenerator<'a> {
     /// Returns `None` — with the arguments NOT yet visited — when `function`
     /// is not a variant/associated function of `ty`; the caller processes the
     /// arguments and lets sema diagnose.
+    ///
+    /// A callee reached this way is never generic, so it has no comptime
+    /// argument for [`Self::generate_generic_call`] to capture: semantic
+    /// analysis specializes free-function calls only, and an associated
+    /// function declared with a `comptime` parameter is monomorphized nowhere
+    /// in the pipeline. `ty` itself is already the monomorphized type, so its
+    /// members' declared parameter and return types carry the substitution the
+    /// generic owner would otherwise apply.
     fn generate_call_on_reduced_type(
         &mut self,
         ty: Type,
@@ -4960,47 +4712,179 @@ impl<'a> ConstraintGenerator<'a> {
         }
     }
 
-    /// Resolve a call argument used as a comptime type value (e.g. the `i32` in
-    /// `identity(i32, 42)`) to a concrete type, if it can be determined during
-    /// constraint generation.
+    /// Generate constraints for a call whose callee has comptime parameters —
+    /// one owner for both call shapes that resolve a generic function
+    /// signature, the direct `f(..)` and the module member `m.f(..)`, so a
+    /// module boundary cannot change which comptime arguments are captured,
+    /// which parameter types they are substituted into, or whether a `-> T`
+    /// return is resolved.
     ///
-    /// Handles type literals (`i32`, `bool`, ...), named struct/enum types
-    /// (user-declared as well as built-in), and forwarded type parameters (a
-    /// reference to `T` inside a specialized generic body, resolved via
-    /// `self.type_subst`). Returns `None` for type values that are only known
-    /// to semantic analysis (e.g. a local variable bound to an anonymous struct
-    /// type) - those are type-checked in sema instead.
+    /// The captured facts come from semantic analysis: `argument_values` holds
+    /// each comptime argument as the canonical comptime engine evaluated it
+    /// (`collect_generic_argument_facts`), so an argument spelled as a computed
+    /// type (`Id(u64)`), a `const` alias, a `let`-bound alias, or a plain type
+    /// name all arrive here as the same `ConstValue`. Constraint generation
+    /// answers only the two forms that need no evaluation at all — see
+    /// [`Self::extract_type_argument`].
+    ///
+    /// `arg_diverged` is threaded so the caller keeps the call's own
+    /// reachability accounting.
+    fn generate_generic_call(
+        &mut self,
+        func: &FunctionSig,
+        args: &rue_rir::RirCallArgsRange,
+        file_id: FileId,
+        arg_diverged: &mut bool,
+        ctx: &mut ConstraintContext,
+    ) -> InferType {
+        let args = self.rir.call_args(args);
+        // Process all arguments once, collecting their inferred types.
+        let mut arg_infos = Vec::with_capacity(args.len());
+        for arg in args.iter() {
+            if self.was_canceled() {
+                break;
+            }
+            let info = self.generate_sequenced_operand(arg.value, ctx, !*arg_diverged);
+            *arg_diverged |= !info.continues;
+            arg_infos.push(info);
+            if self.was_canceled() {
+                break;
+            }
+        }
+
+        // Comptime TYPE arguments give the type substitution; comptime VALUE
+        // arguments (`comptime N: i32`) give the value substitution, so a
+        // parameter or return type sized by one — an array length `[i32; N]` —
+        // resolves at this call (RUE-252).
+        let mut type_subst: AHashMap<lasso::Spur, Type> = AHashMap::new();
+        let mut value_subst: AHashMap<lasso::Spur, i128> = AHashMap::new();
+        for (i, arg) in args.iter().enumerate() {
+            if self.was_canceled() {
+                break;
+            }
+            if i >= func.param_comptime.len()
+                || !func.param_comptime[i]
+                || i >= func.param_names.len()
+            {
+                continue;
+            }
+            if func.param_comptime_type.get(i) == Some(&true) {
+                if let Some(ConstValue::Type(concrete_ty)) = self.comptime_argument_value(arg.value)
+                {
+                    type_subst.insert(func.param_names[i], concrete_ty);
+                } else if let Some(concrete_ty) = self.extract_type_argument(arg.value, ctx) {
+                    type_subst.insert(func.param_names[i], concrete_ty);
+                }
+            } else if let Some(ConstValue::Integer(v)) = self.comptime_argument_value(arg.value) {
+                value_subst.insert(func.param_names[i], v);
+            }
+        }
+
+        // A staged probe pass runs before the canonical argument facts exist.
+        // Substituting from the necessarily incomplete map there would pin a
+        // parameter to the wrong type, so leave those parameters to the final
+        // pass, which has the facts.
+        let facts_pending = self.staged_comptime_selectors
+            && self
+                .comptime_argument_values
+                .is_none_or(|values| values.is_empty());
+
+        // Constrain each runtime argument to its parameter type, with type
+        // parameters substituted. Comptime type parameters (the `T: type`
+        // arguments themselves) are validated in sema.
+        for (i, arg_info) in arg_infos.iter().enumerate() {
+            if self.was_canceled() {
+                break;
+            }
+            if i >= func.param_types.len() || i >= func.param_comptime.len() {
+                break;
+            }
+            if func.param_comptime_type.get(i) == Some(&true) {
+                // Comptime TYPE parameter - the argument is a type value.
+                continue;
+            }
+            let declared = &func.param_types[i];
+            let expected = if *declared == InferType::Concrete(Type::COMPTIME_TYPE) {
+                if facts_pending {
+                    continue;
+                }
+                // Generic parameter like `x: T`, or a composite mentioning a
+                // type parameter like `a: [T; 3]` (RUE-172) - substitute T.
+                match func.param_type_syntax.get(i).and_then(|syntax| {
+                    syntax.as_ref().and_then(|syntax| {
+                        self.infer_structured_type_hint(syntax, &type_subst, &value_subst, file_id)
+                    })
+                }) {
+                    Some(ty) => ty,
+                    // Unknown type parameter - checked in sema.
+                    None => continue,
+                }
+            } else {
+                declared.clone()
+            };
+            // Slice parameters coerce from an array argument (ADR-0043,
+            // RUE-322); see the non-generic path.
+            if self.is_slice_struct_type(expected.clone()) {
+                continue;
+            }
+            self.add_constraint(Constraint::equal(
+                arg_info.ty.clone(),
+                expected,
+                arg_info.span,
+            ));
+        }
+
+        // Compute the actual return type by substituting type parameters —
+        // bare (`-> T`) or inside a composite (`-> [T; 3]`, RUE-172).
+        if func.return_type == InferType::Concrete(Type::COMPTIME_TYPE) {
+            // A return type that cannot be reduced here — an unresolved type
+            // parameter, or a type-function application such as `-> Option(T)`
+            // whose monomorphized struct/enum only sema can name — becomes a
+            // fresh variable pinned by the call's use site. The `COMPTIME_TYPE`
+            // placeholder would instead unify against the real result type and
+            // reject the program (E0206), and a bare fresh variable with no
+            // substitution attempt would let the use site decide a type sema
+            // never agreed to (`h.sq(f32, v) == 6.25` defaulted the literal to
+            // `f64` against an `f32` specialization, an AIR verification ICE).
+            self.substituted_generic_return_type(func, &type_subst, &value_subst, file_id)
+                .unwrap_or_else(|| InferType::Var(self.fresh_var()))
+        } else {
+            func.return_type.clone()
+        }
+    }
+
+    /// Name-resolve a comptime type argument that needs no evaluation: a
+    /// written type literal (the `i32` in `identity(i32, 42)`), and a name that
+    /// the canonical unqualified-nominal selector binds to a type — a type
+    /// parameter forwarded from the enclosing specialization, a `let`-bound
+    /// comptime alias sema pre-resolved for this walk, a file-level `const`
+    /// alias, a primitive, a declared or built-in struct/enum.
+    ///
+    /// This is a fallback, never a peer: [`Self::generate_generic_call`] asks
+    /// [`Self::comptime_argument_value`] first, so an argument the comptime
+    /// engine evaluated (a computed type such as `Id(u64)`, or any of the
+    /// spellings above) is taken from that one evaluation. `None` means the
+    /// argument is a form only semantic analysis can reduce, and the parameter
+    /// and return constraints that would depend on it are left to it.
     fn extract_type_argument(&self, arg: InstRef, ctx: &ConstraintContext) -> Option<Type> {
         let file_id = self.rir.get(arg).span.file_id;
         match &self.rir.get(arg).data {
             InstData::TypeConst { type_name } => {
-                match self.infer_rir_type_hint(*type_name, self.rir.get(arg).span.file_id) {
+                match self.infer_rir_type_hint(*type_name, file_id) {
                     Some(InferType::Concrete(ty)) => Some(ty),
                     _ => None,
                 }
             }
-            // A struct/enum name or forwarded type parameter used as a value
-            // parses as a variable reference, not a type literal.
+            // A struct/enum name, an alias, or a forwarded type parameter used
+            // as a value parses as a variable reference, not a type literal.
+            //
+            // A local or parameter shadows any same-named struct/enum. A local
+            // *not* bound to a comptime type value (a runtime value) has no
+            // concrete type here. Preserve that error through dependent
+            // substitutions so inference does not manufacture a downstream
+            // mismatch; sema reports the canonical comptime known-value
+            // diagnostic at the argument itself.
             InstData::VarRef { name, .. } => {
-                // A local bound to a type value (`let X = i32; identity(X, 42)`
-                // or `let P = Pair(i32); f(P, ..)`) resolves to that bound type
-                // via the in-scope comptime-alias view — the same map
-                // generic-enum construction/matching consults (`enum_type_for`).
-                // Without this the type argument was left unresolved, so the
-                // call's return type defaulted to the literal `type` and
-                // mismatched the substituted element type (spurious E0206,
-                // RUE-281). The literal form (`identity(i32, 42)`) already
-                // worked via the `TypeConst` arm; this makes an aliased type
-                // behave identically.
-                // A local or parameter shadows any same-named struct/enum. A
-                // local *not* bound to a comptime type value (a runtime value)
-                // has no concrete type here. Preserve that error through
-                // dependent substitutions so inference does not manufacture a
-                // downstream mismatch; sema reports the canonical comptime
-                // known-value diagnostic at the argument itself.
-                // Forwarded type parameters (`T` inside a specialized generic
-                // body) are not in scope as runtime params/locals and resolve
-                // via `self.type_subst` above.
                 let lexical_shadowed = ctx.locals.contains_key(name) || ctx.contains_param(*name);
                 self.unqualified_nominal_type_with_substitution(
                     *name,
@@ -5017,12 +4901,10 @@ impl<'a> ConstraintGenerator<'a> {
     /// callee's declared return-type syntax — a bare `-> T`, or a composite
     /// mentioning a type parameter such as `-> [T; 3]` (RUE-172).
     ///
-    /// This is the one route both call shapes take: the same-module
-    /// `InstData::Call` path and the module-qualified `module.f(...)` path,
-    /// which previously left `-> T` as a bare inference variable. `None` means
-    /// the declared return type cannot be reduced during constraint generation
-    /// (an unresolved type parameter, or a type-function application like
-    /// `-> Option(T)`); each caller keeps its own fallback for that case.
+    /// `None` means the declared return type cannot be reduced during
+    /// constraint generation (an unresolved type parameter, or a type-function
+    /// application like `-> Option(T)`); [`Self::generate_generic_call`], its
+    /// one caller, falls back to a fresh inference variable.
     fn substituted_generic_return_type(
         &self,
         func: &FunctionSig,

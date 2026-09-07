@@ -120,6 +120,31 @@ fn main() -> i32 {
 
 When a function has a `comptime T: type` parameter, occurrences of `T` in parameter types and return types are substituted with the concrete type at each call site.
 
+{{ rule(id="4.14:5a", cat="normative") }}
+
+The argument supplied for a `comptime T: type` parameter is any
+comptime-evaluable expression whose value is a type, and `T` is bound to the
+type that expression evaluates to. A type literal, a `let` or `const` binding of
+a type value (rule 4.14:22), a type parameter of the enclosing specialization,
+and a type-constructor call written at the argument position are all such
+expressions, and equal type values bind `T` equally however they are spelled.
+The form of the call does not change that binding either: an unqualified call
+and a module-qualified call (`m.f(…)`) substitute the same type into the
+parameter and return types of rules 4.14:5 and 4.14:16.
+
+```rue
+fn Id(comptime T: type) -> type { T }
+fn first(comptime T: type, a: T, b: T) -> T { a }
+
+const U = Id(u64);
+
+fn main() -> i32 {
+    let aliased = first(U, 3000000000, 4);        // T = u64 through a const alias
+    let applied = first(Id(u64), 3000000000, 4);  // ... and through the call itself
+    if aliased == applied { 0 } else { 1 }
+}
+```
+
 {{ rule(id="4.14:16", cat="normative") }}
 
 A type parameter may appear anywhere within a composite parameter or return type — as an array element type (`[T; N]`), a pointer pointee (`ptr const T`, `ptr mut T`), or a nesting of these (`[[T; 2]; 3]`) — and is substituted recursively at each call site, in both parameter and return position.
