@@ -16,7 +16,8 @@
 # an unmodeled gap before executing anything, so oracle-diff can neither
 # confirm nor refute the bug through them.
 #
-# The cases here are the ones that pin the forwarder's type guard by itself.
+# The first three cases here are the ones that pin the forwarder's type guard
+# by itself.
 # None of them is a pointer operation, so the `@ptr_write` guard is provably
 # inert for all three and only the forwarder fix makes them pass. None forms a
 # zero-sized address either, so the oracle models them and runs them for real:
@@ -99,5 +100,98 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "303\n"
+exit_code = 0
+differential_opt = true
+
+# --- The re-assignment direction (RUE-2095) ---------------------------------
+#
+# Slot indices only ever advance, so a zero-sized local's `Alloc` always comes
+# first and the cases above forward the *sized* value into the `()` load. The
+# reverse — a `()` reaching a sized consumer, where a store or an argument
+# disappears instead of appearing — needs the zero-sized local to be re-assigned
+# after the sized one is initialized.
+#
+# RUE-2086 could not ship that shape as a CLI case: `rue-oracle` keyed its own
+# local store by slot index too, so the re-assigned `()` clobbered the sized
+# neighbour there and the oracle reported the wrong answer for a correctly
+# compiled program. Every case below would have been a permanent red
+# disagreement in `oracle-diff-test`. RUE-2095 keyed that store by
+# `(slot, Type)`, so the shape is modeled now and these cases are live
+# differential coverage for the one direction the corpus could not reach.
+[[case]]
+name = "zero_sized_reassignment_does_not_clobber_its_slot_neighbour"
+description = "RUE-2095: re-assigning a `()` must leave the sized local sharing its slot index untouched."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut e: () = ();
+    let y: i64 = 5;
+    e = ();
+    @dbg(y);
+    0
+}
+""" }]
+stdout = "5\n"
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "reassigned_zero_sized_argument_does_not_swallow_a_later_argument"
+description = "RUE-2086/RUE-2095: the reverse direction — a re-assigned `()` must not be forwarded into the sized load, which would give the `()` argument a slot and drop the sized one."
+files = [{ path = "main.rue", source = """
+fn take(u: (), v: i64) -> i64 { v }
+fn main() -> i32 {
+    let mut e: () = ();
+    let y: i64 = 5;
+    e = ();
+    let r: i64 = take(e, 9);
+    @dbg(r);
+    @dbg(y);
+    0
+}
+""" }]
+stdout = "9\n5\n"
+exit_code = 0
+differential_opt = true
+
+# Two zero-sized locals and a sized one all root at the same index; only the
+# type separates the three storage locations.
+[[case]]
+name = "two_zero_sized_types_share_one_slot_with_a_sized_local"
+description = "RUE-2095: distinct zero-sized types sharing a slot index each keep their own storage, and neither disturbs the sized local."
+files = [{ path = "main.rue", source = """
+struct Empty { unit: () }
+fn main() -> i32 {
+    let mut a: () = ();
+    let mut b: Empty = Empty { unit: () };
+    let y: i64 = 7;
+    a = ();
+    b = Empty { unit: () };
+    @dbg(y);
+    0
+}
+""" }]
+stdout = "7\n"
+exit_code = 0
+differential_opt = true
+
+# A zero-sized local sharing its index with an aggregate: a slot-keyed store
+# replaces the aggregate root outright, so the next field projection has no
+# aggregate left to project.
+[[case]]
+name = "zero_sized_reassignment_leaves_an_aggregate_neighbour_projectable"
+description = "RUE-2095: re-assigning a `()` must not replace the aggregate that shares its slot index."
+files = [{ path = "main.rue", source = """
+struct Pair { a: i64, b: i64 }
+fn main() -> i32 {
+    let mut e: () = ();
+    let mut p: Pair = Pair { a: 3, b: 4 };
+    e = ();
+    p.b = p.a + p.b;
+    @dbg(p.a);
+    @dbg(p.b);
+    0
+}
+""" }]
+stdout = "3\n7\n"
 exit_code = 0
 differential_opt = true

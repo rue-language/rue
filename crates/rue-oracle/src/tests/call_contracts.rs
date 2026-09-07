@@ -755,7 +755,7 @@ fn user_call_layout_is_rejected_before_unmodeled_operands_run() {
         };
         let mut frame = Frame {
             params: Vec::new(),
-            locals: vec![None; cfg.num_locals() as usize],
+            locals: HashMap::new(),
             cache: HashMap::new(),
             promoted: HashMap::new(),
             param_places: HashMap::new(),
@@ -860,7 +860,7 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
         };
         let mut frame = Frame {
             params: Vec::new(),
-            locals: vec![None; cfg.num_locals() as usize],
+            locals: HashMap::new(),
             cache: HashMap::new(),
             promoted: HashMap::new(),
             param_places: HashMap::new(),
@@ -903,7 +903,7 @@ fn abort_intrinsics_require_exact_runtime_value_shapes() {
         };
         let mut frame = Frame {
             params: Vec::new(),
-            locals: vec![None; cfg.num_locals() as usize],
+            locals: HashMap::new(),
             cache: HashMap::new(),
             promoted: HashMap::new(),
             param_places: HashMap::new(),
@@ -935,7 +935,7 @@ fn abort_intrinsics_require_exact_runtime_value_shapes() {
     };
     let mut frame = Frame {
         params: Vec::new(),
-        locals: vec![None; cfg.num_locals() as usize],
+        locals: HashMap::new(),
         cache: HashMap::new(),
         promoted: HashMap::new(),
         param_places: HashMap::new(),
@@ -975,7 +975,7 @@ fn empty_slice_null_is_a_const_gap_and_user_int_to_ptr_stays_distinct() {
     assert!(interp.is_empty_slice_pointer(cfg, pointer));
     let mut frame = Frame {
         params: Vec::new(),
-        locals: vec![None; cfg.num_locals() as usize],
+        locals: HashMap::new(),
         cache: HashMap::new(),
         promoted: HashMap::new(),
         param_places: HashMap::new(),
