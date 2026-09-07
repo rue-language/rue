@@ -310,15 +310,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             name = local_name;
         }
 
-        // `print(s)` / `println(s)` are builtin free functions (RUE-1), not
+        // `print(s)` / `println(s)` / `eprint(s)` / `eprintln(s)` are builtin
+        // free functions, not
         // user-defined ones: intercept them here before the function lookup,
         // but only when the program hasn't shadowed the name with its own
-        // `fn print`/`fn println` (a user definition wins, keeping these names
-        // unreserved).
+        // `fn print`/`fn println`/`fn eprint`/`fn eprintln` (a user definition
+        // wins, keeping these names unreserved).
         if !resolved_alias
             && local_name.is_none()
             && (source_name == self.known_symbols().print
-                || source_name == self.known_symbols().println)
+                || source_name == self.known_symbols().println
+                || source_name == self.known_symbols().eprint
+                || source_name == self.known_symbols().eprintln)
         {
             return self.analyze_print_builtin(air, source_name, args_range, span, ctx);
         }

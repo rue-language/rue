@@ -2065,7 +2065,7 @@ impl<'a> ConstraintGenerator<'a> {
                 let arg_range = args;
                 let args = self.rir.call_args(args);
                 let mut arg_diverged = false;
-                // `print(s)` / `println(s)` builtin free functions (RUE-1):
+                // Text output builtin free functions (RUE-1/RUE-2024):
                 // generate the argument and yield unit. Semantic analysis
                 // validates the shared text family (`StrBuf`, `str`, `Str(N)`),
                 // while an unconstrained literal follows the normal edition /
@@ -2073,7 +2073,10 @@ impl<'a> ConstraintGenerator<'a> {
                 // Only when the program hasn't shadowed the name with its own
                 // `fn print`/`fn println` (a user definition wins).
                 let is_print_builtin = function_key.is_none()
-                    && matches!(self.interner.resolve(name), "print" | "println");
+                    && matches!(
+                        self.interner.resolve(name),
+                        "print" | "println" | "eprint" | "eprintln"
+                    );
                 let result = if is_print_builtin {
                     for arg in args.iter() {
                         let info = self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);

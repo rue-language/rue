@@ -638,10 +638,13 @@ fn cli_execution_timeouts(files: &[(&PathBuf, TestFile)]) -> Result<CliExecution
 fn model_gap_observation(case: &Case, outcome: &CaseOutcome) -> model_gaps::Observation {
     // Eligibility wrappers deliberately prevent inactive cases from making
     // claims on this host. For every active executable case, however, audit
-    // its declared trap contract independently of whether interpretation
-    // produced an Outcome or stopped first at a typed model gap. Otherwise an
-    // Unsupported result could hide unrelated harness observation debt.
-    if !matches!(outcome, CaseOutcome::Ineligible(_))
+    // For cases explicitly expecting exit 101, audit the declared trap
+    // contract independently of whether interpretation produced an Outcome or
+    // stopped first at a typed model gap. Ordinary stderr assertions on a
+    // successful case are not trap declarations.
+    let expected_exit = case.exit_code.unwrap_or(0);
+    if expected_exit == rue_test_runner::RUNTIME_ERROR_EXIT_CODE
+        && !matches!(outcome, CaseOutcome::Ineligible(_))
         && trap::cli_trap_expectation(case.runtime_error_contains.iter().map(String::as_str))
             == trap::TrapExpectation::Unmodeled
     {
@@ -1470,15 +1473,19 @@ fn check_case_with_native(
     if !case.env.is_empty() && !real_std {
         return CaseOutcome::Ineligible(IneligibleReason::CompilerEnvironment);
     }
+    // Match the CLI runner: omitted `exit_code` means a successful process
+    // exit, even when the case asserts on ordinary stderr text.
+    let expected_exit = case.exit_code.unwrap_or(0);
     // A stack-overflow trap (deep/unbounded recursion) is structurally
     // un-modelable: reproducing it means actually exhausting the machine stack,
     // which the in-process interpreter cannot do — its own recursion budget
     // aborts first with a ResourceLimit. So a case expecting this trap is an
     // oracle gap, not a case the harness can judge (RUE-645).
-    if case
-        .runtime_error_contains
-        .iter()
-        .any(|fragment| fragment == "stack overflow")
+    if expected_exit == rue_test_runner::RUNTIME_ERROR_EXIT_CODE
+        && case
+            .runtime_error_contains
+            .iter()
+            .any(|fragment| fragment == "stack overflow")
     {
         return CaseOutcome::Ineligible(IneligibleReason::KnownOracleGap);
     }
@@ -1501,17 +1508,15 @@ fn check_case_with_native(
         }
     };
     let source = &case.files[0].source;
-    let expected_trap =
-        trap::cli_trap_expectation(case.runtime_error_contains.iter().map(String::as_str));
-
-    // A program that expects a runtime panic exits 101 by convention.
-    let expected_exit = case
-        .exit_code
-        .unwrap_or(if case.runtime_error_contains.is_empty() {
-            0
-        } else {
-            101
-        });
+    // `runtime_error_contains` is an ordinary stderr substring assertion. It
+    // becomes a trap declaration only when the case explicitly expects the
+    // runtime trap exit code; omitted `exit_code` follows the CLI runner's
+    // normal-exit default of zero.
+    let expected_trap = if expected_exit == rue_test_runner::RUNTIME_ERROR_EXIT_CODE {
+        trap::cli_trap_expectation(case.runtime_error_contains.iter().map(String::as_str))
+    } else {
+        trap::TrapExpectation::Undeclared
+    };
 
     let oracle_result = if real_std {
         match run_source_with_real_std(source, &preview_features) {
@@ -2603,7 +2608,7 @@ files = [{ path = "probe.rue", source = "not Rue" }]
     #[test]
     fn cli_runtime_trap_expectations_distinguish_same_exit_code_causes() {
         let mut case = corpus_case("fn main() -> i32 { let z = 0; 10 / z }", false);
-        case.exit_code = None;
+        case.exit_code = Some(101);
         case.runtime_error_contains = vec!["division by zero".to_string()];
         assert!(matches!(
             check_case(Path::new("trap.toml"), &case),
@@ -2618,12 +2623,50 @@ files = [{ path = "probe.rue", source = "not Rue" }]
         assert!(message.contains("DivisionByZero"));
 
         case = corpus_case("fn main() -> i32 { 101 }", false);
-        case.exit_code = None;
+        case.exit_code = Some(101);
         case.runtime_error_contains = vec!["division by zero".to_string()];
         let CaseOutcome::Disagreement(message) = check_case(Path::new("trap.toml"), &case) else {
             panic!("normal return 101 was accepted as an expected trap");
         };
         assert!(message.contains("oracle got None"));
+    }
+
+    #[test]
+    fn cli_stderr_fragments_follow_normal_exit_semantics() {
+        let mut case = corpus_case(
+            r#"fn main() -> i32 { eprint("panic: ordinary stderr"); 0 }"#,
+            false,
+        );
+        case.exit_code = None;
+        case.runtime_error_contains = vec!["panic: ordinary stderr".to_string()];
+        let outcome = check_case(Path::new("stderr.toml"), &case);
+        assert_eq!(outcome, CaseOutcome::Agree);
+        assert_eq!(
+            model_gap_observation(&case, &outcome),
+            model_gaps::Observation::Agreement
+        );
+
+        case.runtime_error_contains = vec!["missing stderr".to_string()];
+        assert!(matches!(
+            check_case(Path::new("stderr.toml"), &case),
+            CaseOutcome::Disagreement(_)
+        ));
+
+        let mut unknown_trap = corpus_case(
+            r#"fn main() -> i32 { eprint("custom trap wording"); 101 }"#,
+            false,
+        );
+        unknown_trap.exit_code = Some(101);
+        unknown_trap.runtime_error_contains = vec!["custom trap wording".to_string()];
+        let outcome = check_case(Path::new("unknown-trap.toml"), &unknown_trap);
+        assert_eq!(
+            outcome,
+            CaseOutcome::Unmodeled(UnmodeledReason::TrapExpectation)
+        );
+        assert_eq!(
+            model_gap_observation(&unknown_trap, &outcome),
+            model_gaps::Observation::Unregistrable("runtime trap expectation")
+        );
     }
 
     #[test]
@@ -2716,6 +2759,29 @@ files = [{ path = "probe.rue", source = "not Rue" }]
 
         case.source = "fn main() -> i32 { 0 }".to_string();
         case.expected_stdout = None;
+        assert!(matches!(
+            check_spec_case("test:1", &case),
+            CaseOutcome::Disagreement(_)
+        ));
+    }
+
+    #[test]
+    fn spec_stderr_fragments_are_output_assertions_on_success() {
+        let mut case = rue_test_runner::Case {
+            name: "spec stderr probe".to_string(),
+            source: r#"fn main() -> i32 { eprint("panic: ordinary stderr"); 0 }"#.to_string(),
+            exit_code: Some(0),
+            stderr_contains: Some("panic: ordinary stderr".to_string()),
+            ..Default::default()
+        };
+        let outcome = check_spec_case("test:1", &case);
+        assert_eq!(outcome, CaseOutcome::Agree);
+        assert_eq!(
+            spec_model_gap_observation(&case, &outcome),
+            model_gaps::Observation::Agreement
+        );
+
+        case.stderr_contains = Some("missing stderr".to_string());
         assert!(matches!(
             check_spec_case("test:1", &case),
             CaseOutcome::Disagreement(_)
@@ -2935,7 +3001,7 @@ files = [{ path = "probe.rue", source = "not Rue" }]
     #[test]
     fn unknown_runtime_expectations_are_counted_as_unmodeled() {
         let mut case = corpus_case("fn main() -> i32 { let x: i32 = 2147483647; x + 1 }", false);
-        case.exit_code = None;
+        case.exit_code = Some(101);
         // This fragment pins the exact emitted stderr but is intentionally not
         // part of the typed trap vocabulary, so category coverage alone remains
         // explicit.
@@ -3158,6 +3224,7 @@ files = [{ path = "probe.rue", source = "not Rue" }]
             "fn probe() -> u32 { let value: u32 = @random_u32(); value } fn main() { probe(); }",
             false,
         );
+        case.exit_code = Some(101);
         case.runtime_error_contains = vec!["custom trap wording".to_string()];
         let outcome = check_case(Path::new("trap-plus-gap.toml"), &case);
         assert!(matches!(

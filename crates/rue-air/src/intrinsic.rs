@@ -592,6 +592,10 @@ impl IntrinsicOperation {
             | RuntimeCallKind::StrPrintProjected
             | RuntimeCallKind::StrPrintlnAggregate
             | RuntimeCallKind::StrPrintlnProjected
+            | RuntimeCallKind::StrEprintAggregate
+            | RuntimeCallKind::StrEprintProjected
+            | RuntimeCallKind::StrEprintlnAggregate
+            | RuntimeCallKind::StrEprintlnProjected
             // The ADR-0083 test channel has no intrinsic identity. The
             // dispatcher's own helpers are runner plumbing no source spelling
             // selects; the reporting helpers are reached by a test body's `?`
@@ -985,7 +989,7 @@ mod tests {
     // family, which sema selects from ordinary method calls, and the ADR-0083
     // test channel, which the synthesized dispatcher and the assertion sugar
     // emit as direct calls rather than through an `IntrinsicOperation`.
-    const ORDINARY_CALL_ONLY: [RuntimeCallKind; 19] = [
+    const ORDINARY_CALL_ONLY: [RuntimeCallKind; 23] = [
         RuntimeCallKind::StrByteAt,
         RuntimeCallKind::StrCharScalar,
         RuntimeCallKind::StrCharNext,
@@ -998,6 +1002,10 @@ mod tests {
         RuntimeCallKind::StrPrintProjected,
         RuntimeCallKind::StrPrintlnAggregate,
         RuntimeCallKind::StrPrintlnProjected,
+        RuntimeCallKind::StrEprintAggregate,
+        RuntimeCallKind::StrEprintProjected,
+        RuntimeCallKind::StrEprintlnAggregate,
+        RuntimeCallKind::StrEprintlnProjected,
         RuntimeCallKind::TestNormalizeProcess,
         RuntimeCallKind::TestComplete,
         RuntimeCallKind::TestFailureSite,
@@ -1119,7 +1127,7 @@ mod tests {
             EXACT_RUNTIME_MAPPINGS.map(|(_, runtime)| runtime),
             "the exact intrinsic-to-runtime map drifted"
         );
-        assert_eq!(RuntimeCallKind::ALL.len(), 49);
+        assert_eq!(RuntimeCallKind::ALL.len(), 53);
 
         for kind in RuntimeCallKind::ALL {
             assert_eq!(

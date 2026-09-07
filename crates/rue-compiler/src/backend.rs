@@ -908,6 +908,7 @@ const strbuf = @import("std/strbuf.rue");
 fn main() -> i32 {
     println("count: " + @to_string(3));
     println("sum: " + @to_string(13));
+    eprintln("stderr: " + @to_string(7));
     0
 }
 "#;
@@ -1037,21 +1038,22 @@ drop fn StrBuf(self) { }
             .iter()
             .filter(|(_, symbol)| concat_symbols.contains(symbol.as_str()))
             .collect();
-        assert_eq!(concats.len(), 2, "{target}: expected both concatenations");
+        assert_eq!(concats.len(), 3, "{target}: expected all concatenations");
 
         for (concat_index, _) in concats {
-            let println_index = calls
+            let output_index = calls
                 .iter()
                 .find(|(index, symbol)| {
-                    index > concat_index && symbol.as_str() == "__rue_str_println"
+                    index > concat_index
+                        && matches!(symbol.as_str(), "__rue_str_println" | "__rue_str_eprintln")
                 })
                 .map(|(index, _)| *index)
-                .expect("println after concatenation");
+                .expect("output helper after concatenation");
             let cleanups: Vec<_> = calls
                 .iter()
                 .filter(|(index, symbol)| {
                     index > concat_index
-                        && *index < println_index
+                        && *index < output_index
                         && cleanup_symbols.contains(symbol.as_str())
                 })
                 .map(|(index, _)| *index)
@@ -1065,7 +1067,7 @@ drop fn StrBuf(self) { }
                 .collect();
             let restored: AHashSet<_> = loads
                 .iter()
-                .filter(|(index, _)| *index > last_cleanup && *index < println_index)
+                .filter(|(index, _)| *index > last_cleanup && *index < output_index)
                 .map(|(_, offset)| *offset)
                 .collect();
             let preserved: AHashSet<_> = saved.intersection(&restored).copied().collect();
@@ -1144,6 +1146,7 @@ drop fn StrBuf(self) { }
             }
             assert!(undefined.contains("__rue_to_string"), "{target}");
             assert!(undefined.contains("__rue_str_println"), "{target}");
+            assert!(undefined.contains("__rue_str_eprintln"), "{target}");
             assert!(
                 undefined.iter().all(|name| !obsolete(name)),
                 "{target}: obsolete undefined symbols: {undefined:?}"

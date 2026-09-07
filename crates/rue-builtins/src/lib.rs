@@ -362,6 +362,16 @@ text_builtin_inventory! {
         surface: "println(StrBuf/str/Str(N))",
         disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::StrPrintln)
     },
+    EprintView => {
+        category: Io,
+        surface: "eprint(StrBuf/str/Str(N))",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::StrEprint)
+    },
+    EprintlnView => {
+        category: Io,
+        surface: "eprintln(StrBuf/str/Str(N))",
+        disposition: TextBuiltinDisposition::RuntimeHelper(RuntimeHelperId::StrEprintln)
+    },
     DebugText => {
         category: Io,
         surface: "@dbg(text)",
@@ -618,6 +628,8 @@ mod tests {
         for operation in [
             TextBuiltinOperation::PrintView,
             TextBuiltinOperation::PrintlnView,
+            TextBuiltinOperation::EprintView,
+            TextBuiltinOperation::EprintlnView,
         ] {
             let helper = operation.runtime_helper().unwrap();
             assert_eq!(helper.parameters.len(), 2);
@@ -633,6 +645,20 @@ mod tests {
                 .unwrap()
                 .id,
             RuntimeHelperId::StrPrintln
+        );
+        assert_eq!(
+            TextBuiltinOperation::EprintView
+                .runtime_helper()
+                .unwrap()
+                .id,
+            RuntimeHelperId::StrEprint
+        );
+        assert_eq!(
+            TextBuiltinOperation::EprintlnView
+                .runtime_helper()
+                .unwrap()
+                .id,
+            RuntimeHelperId::StrEprintln
         );
         assert!(!TEXT_BUILTIN_MAPPINGS.iter().any(|mapping| matches!(
             mapping.disposition,

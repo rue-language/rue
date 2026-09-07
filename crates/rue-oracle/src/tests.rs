@@ -135,12 +135,61 @@ fn print_and_println_share_an_ordered_byte_trace() {
 }
 
 #[test]
+fn eprint_and_eprintln_use_stderr_without_touching_stdout() {
+    let outcome = run(r#"fn main() -> i32 {
+            eprint("hé");
+            eprintln("!");
+            eprint("");
+            0
+        }"#);
+    assert!(outcome.stdout.is_empty());
+    assert_eq!(outcome.stderr.as_bytes(), "hé!\n".as_bytes());
+}
+
+#[test]
 fn print_output_respects_the_raw_stdout_bound() {
     let unsupported = run_with_stdout_cap("fn main() -> i32 { print(\"hello\"); 0 }", 3)
         .expect_err("output crossing the bound must fail closed");
     assert_eq!(
         unsupported.kind(),
         UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes)
+    );
+}
+
+#[test]
+fn stderr_output_respects_its_independent_bound() {
+    let unsupported = run_with_output_caps("fn main() -> i32 { eprint(\"hello\"); 0 }", 0, 3)
+        .expect_err("stderr crossing the bound must fail closed");
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::ResourceLimit(ResourceLimitKind::StderrBytes)
+    );
+}
+
+#[test]
+fn stdout_and_stderr_text_outputs_use_independent_caps() {
+    let outcome = run_with_output_caps(
+        "fn main() -> i32 { print(\"x\"); eprint(\"hello\"); 0 }",
+        1,
+        5,
+    )
+    .expect("each stream should be allowed to reach its own cap");
+    assert_eq!(outcome.stdout, "x");
+    assert_eq!(outcome.stderr, "hello");
+}
+
+#[test]
+fn stderr_text_prefix_counts_with_a_following_trap() {
+    let source = r#"fn main() -> i32 { eprint("prefix"); @panic("x"); 0 }"#;
+    let outcome = run_with_output_caps(source, MAX_STDOUT_BYTES, 15)
+        .expect("the text prefix and trap diagnostic should share the stderr cap");
+    assert_eq!(outcome.stderr, "prefixpanic: x\n");
+
+    let unsupported = run_with_output_caps(source, MAX_STDOUT_BYTES, 14)
+        .expect_err("the combined text prefix and trap diagnostic must exceed the cap");
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::ResourceLimit(ResourceLimitKind::StderrBytes)
     );
 }
 
@@ -422,6 +471,8 @@ fn recycled_extent_growth_is_chargeable_heap_metadata() {
         stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_trace: Vec::new(),
+        stderr_bytes: 0,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
@@ -1164,6 +1215,8 @@ fn malformed_float_arithmetic_shape_is_a_contract_violation() {
         stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_trace: Vec::new(),
+        stderr_bytes: 0,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
@@ -1215,6 +1268,8 @@ fn malformed_float_aggregate_ordering_is_a_contract_violation() {
         stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_trace: Vec::new(),
+        stderr_bytes: 0,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
@@ -1245,6 +1300,10 @@ fn every_known_missing_runtime_call_has_a_closed_kind() {
         (RuntimeCallKind::StrPrintProjected, RuntimeCall::Print),
         (RuntimeCallKind::StrPrintlnAggregate, RuntimeCall::Println),
         (RuntimeCallKind::StrPrintlnProjected, RuntimeCall::Println),
+        (RuntimeCallKind::StrEprintAggregate, RuntimeCall::Eprint),
+        (RuntimeCallKind::StrEprintProjected, RuntimeCall::Eprint),
+        (RuntimeCallKind::StrEprintlnAggregate, RuntimeCall::Eprintln),
+        (RuntimeCallKind::StrEprintlnProjected, RuntimeCall::Eprintln),
     ] {
         assert_eq!(
             unsupported_runtime_call_kind(kind),
@@ -2408,6 +2467,8 @@ fn representation_encode_decode_detects_planted_byte_mutation() {
         stdout_trace: Vec::new(),
         stdout_bytes: 0,
         stdout_cap: MAX_STDOUT_BYTES,
+        stderr_trace: Vec::new(),
+        stderr_bytes: 0,
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,

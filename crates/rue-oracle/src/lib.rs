@@ -362,6 +362,8 @@ pub enum UnsupportedIntrinsicKind {
 pub enum UnsupportedRuntimeCallKind {
     Print,
     Println,
+    Eprint,
+    Eprintln,
 }
 
 /// A deterministic semantic feature missing from the interpreter.
@@ -422,6 +424,14 @@ pub enum ResourceLimitKind {
     StderrBytes,
     RecursionDepth,
     InterpreterSteps,
+}
+
+fn output_stream_name(kind: ResourceLimitKind) -> &'static str {
+    match kind {
+        ResourceLimitKind::StderrBytes => "stderr",
+        ResourceLimitKind::StdoutBytes => "stdout",
+        ResourceLimitKind::RecursionDepth | ResourceLimitKind::InterpreterSteps => "output",
+    }
 }
 
 /// A compiler/oracle invariant that valid CFG is expected to satisfy.
@@ -735,6 +745,8 @@ fn run_state_with_output_limits(
                     stdout_trace: Vec::new(),
                     stdout_bytes: 0,
                     stdout_cap,
+                    stderr_trace: Vec::new(),
+                    stderr_bytes: 0,
                     stderr_cap,
                     budget,
                     depth: 0,
@@ -1021,7 +1033,7 @@ impl Value {
 /// A runtime panic, carrying its typed category and exact stderr observation.
 struct Panic {
     kind: TrapKind,
-    stderr: String,
+    raw_stderr: Vec<u8>,
     raw_stderr_bytes: usize,
 }
 
@@ -1045,14 +1057,14 @@ impl Panic {
             // runtime error channel.
             TrapKind::Unreachable => "",
         };
-        Self::with_stderr(kind, stderr.to_string(), stderr.len())
+        Self::with_raw_stderr(kind, stderr.as_bytes().to_vec())
     }
 
-    fn with_stderr(kind: TrapKind, stderr: String, raw_stderr_bytes: usize) -> Self {
+    fn with_raw_stderr(kind: TrapKind, raw_stderr: Vec<u8>) -> Self {
         Self {
             kind,
-            stderr,
-            raw_stderr_bytes,
+            raw_stderr_bytes: raw_stderr.len(),
+            raw_stderr,
         }
     }
 }
@@ -1237,6 +1249,12 @@ fn unsupported_runtime_call_kind(kind: RuntimeCallKind) -> Option<UnsupportedRun
         RuntimeCallKind::StrPrintlnAggregate | RuntimeCallKind::StrPrintlnProjected => {
             Some(UnsupportedRuntimeCallKind::Println)
         }
+        RuntimeCallKind::StrEprintAggregate | RuntimeCallKind::StrEprintProjected => {
+            Some(UnsupportedRuntimeCallKind::Eprint)
+        }
+        RuntimeCallKind::StrEprintlnAggregate | RuntimeCallKind::StrEprintlnProjected => {
+            Some(UnsupportedRuntimeCallKind::Eprintln)
+        }
         RuntimeCallKind::StrByteAt
         | RuntimeCallKind::StrCharScalar
         | RuntimeCallKind::StrCharNext
@@ -1300,8 +1318,12 @@ struct Interp<'a> {
     /// Raw emitted byte count, independent of decoded string length.
     stdout_bytes: usize,
     stdout_cap: usize,
-    /// Maximum raw bytes retained for the single terminating runtime stderr
-    /// observation.
+    /// Canonical ordered raw-byte observation trace for file descriptor 2.
+    stderr_trace: Vec<u8>,
+    /// Raw emitted stderr byte count, independent of decoded string length.
+    stderr_bytes: usize,
+    /// Maximum raw bytes retained from stderr, including ordinary output and
+    /// any later terminating runtime diagnostic.
     stderr_cap: usize,
     /// Remaining total step budget (see [`STEP_BUDGET`]). Shared across every
     /// activation and decremented per instruction, so it bounds total work
@@ -1492,14 +1514,29 @@ impl<'a> Interp<'a> {
     /// through the same `byte_at` path the runtime's byte helpers model, so a
     /// text read rides entirely on the modeled allocation store.
     fn text_bytes(&self, val: &Value) -> Step<Vec<u8>> {
-        self.text_bytes_bounded(val, None)
+        self.text_bytes_bounded(val, None, ResourceLimitKind::StdoutBytes)
+    }
+
+    fn output_cap(&self, kind: ResourceLimitKind) -> usize {
+        match kind {
+            ResourceLimitKind::StderrBytes => self.stderr_cap,
+            ResourceLimitKind::StdoutBytes => self.stdout_cap,
+            ResourceLimitKind::RecursionDepth | ResourceLimitKind::InterpreterSteps => {
+                self.stdout_cap
+            }
+        }
     }
 
     /// Read a text header while enforcing an output-specific payload bound
     /// before allocating or walking the claimed range. This keeps malformed
     /// length words from turning a bounded failure into an unbounded
     /// allocation or byte loop.
-    fn text_bytes_bounded(&self, val: &Value, max_len: Option<usize>) -> Step<Vec<u8>> {
+    fn text_bytes_bounded(
+        &self,
+        val: &Value,
+        max_len: Option<usize>,
+        limit_kind: ResourceLimitKind,
+    ) -> Step<Vec<u8>> {
         let gap = unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrRead);
         let Some((target, len)) = Self::text_ptr_len(val) else {
             return Err(unsupported(gap, "text value is not a materialized header"));
@@ -1511,10 +1548,11 @@ impl<'a> Interp<'a> {
             Ok(len) => len,
             Err(_) if max_len.is_some() => {
                 return Err(unsupported(
-                    UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes),
+                    UnsupportedKind::ResourceLimit(limit_kind),
                     format!(
-                        "stdout byte limit exceeded ({}-byte limit)",
-                        self.stdout_cap
+                        "{} byte limit exceeded ({}-byte limit)",
+                        output_stream_name(limit_kind),
+                        self.output_cap(limit_kind)
                     ),
                 ));
             }
@@ -1528,10 +1566,11 @@ impl<'a> Interp<'a> {
         if let Some(max_len) = max_len {
             if len > max_len {
                 return Err(unsupported(
-                    UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes),
+                    UnsupportedKind::ResourceLimit(limit_kind),
                     format!(
-                        "stdout byte limit exceeded ({}-byte limit)",
-                        self.stdout_cap
+                        "{} byte limit exceeded ({}-byte limit)",
+                        output_stream_name(limit_kind),
+                        self.output_cap(limit_kind)
                     ),
                 ));
             }
@@ -1708,7 +1747,10 @@ impl<'a> Interp<'a> {
         };
         let projected = matches!(
             kind,
-            RuntimeCallKind::StrPrintProjected | RuntimeCallKind::StrPrintlnProjected
+            RuntimeCallKind::StrPrintProjected
+                | RuntimeCallKind::StrPrintlnProjected
+                | RuntimeCallKind::StrEprintProjected
+                | RuntimeCallKind::StrEprintlnProjected
         );
         let expected_arity = if projected { 2 } else { 1 };
         let arity_matches = arg_types.len() == expected_arity && arg_modes.len() == expected_arity;
@@ -1720,7 +1762,10 @@ impl<'a> Interp<'a> {
         }
 
         let signature_matches = match runtime_call {
-            UnsupportedRuntimeCallKind::Print | UnsupportedRuntimeCallKind::Println => {
+            UnsupportedRuntimeCallKind::Print
+            | UnsupportedRuntimeCallKind::Println
+            | UnsupportedRuntimeCallKind::Eprint
+            | UnsupportedRuntimeCallKind::Eprintln => {
                 let text_matches = if projected {
                     self.pointer_pointee(arg_types[0])
                         .is_some_and(|(pointee, _)| pointee == Type::U8)
@@ -1761,10 +1806,16 @@ impl<'a> Interp<'a> {
 
         let is_int_value = |index: usize| matches!(args[index], Value::Int(_));
         let values_match = match runtime_call {
-            UnsupportedRuntimeCallKind::Print | UnsupportedRuntimeCallKind::Println => {
+            UnsupportedRuntimeCallKind::Print
+            | UnsupportedRuntimeCallKind::Println
+            | UnsupportedRuntimeCallKind::Eprint
+            | UnsupportedRuntimeCallKind::Eprintln => {
                 if matches!(
                     kind,
-                    RuntimeCallKind::StrPrintProjected | RuntimeCallKind::StrPrintlnProjected
+                    RuntimeCallKind::StrPrintProjected
+                        | RuntimeCallKind::StrPrintlnProjected
+                        | RuntimeCallKind::StrEprintProjected
+                        | RuntimeCallKind::StrEprintlnProjected
                 ) {
                     // The projected print path passes a raw text pointer + len.
                     matches!(args[0], Value::Ptr(_)) && is_int_value(1)
@@ -1781,8 +1832,8 @@ impl<'a> Interp<'a> {
         }
     }
 
-    /// Execute the compiler's string output helpers against the one canonical
-    /// fd-1 byte trace. Aggregate calls carry a materialized text header;
+    /// Execute the compiler's string output helpers against the canonical
+    /// stdout or stderr byte trace selected by the call. Aggregate calls carry a materialized text header;
     /// projected calls carry the same header's byte pointer and length after
     /// the native lowering has selected the projected ABI. Both routes read
     /// through the representation-byte heap, preserving provenance,
@@ -1793,14 +1844,31 @@ impl<'a> Interp<'a> {
         args: &[Value],
         arg_types: &[Type],
     ) -> Step<Value> {
+        let is_stderr = matches!(
+            kind,
+            RuntimeCallKind::StrEprintAggregate
+                | RuntimeCallKind::StrEprintProjected
+                | RuntimeCallKind::StrEprintlnAggregate
+                | RuntimeCallKind::StrEprintlnProjected
+        );
         let projected = matches!(
             kind,
-            RuntimeCallKind::StrPrintProjected | RuntimeCallKind::StrPrintlnProjected
+            RuntimeCallKind::StrPrintProjected
+                | RuntimeCallKind::StrPrintlnProjected
+                | RuntimeCallKind::StrEprintProjected
+                | RuntimeCallKind::StrEprintlnProjected
         );
-        let remaining = self.stdout_cap.saturating_sub(self.stdout_bytes);
+        let remaining = if is_stderr {
+            self.stderr_cap.saturating_sub(self.stderr_bytes)
+        } else {
+            self.stdout_cap.saturating_sub(self.stdout_bytes)
+        };
         let newline_bytes = if matches!(
             kind,
-            RuntimeCallKind::StrPrintlnAggregate | RuntimeCallKind::StrPrintlnProjected
+            RuntimeCallKind::StrPrintlnAggregate
+                | RuntimeCallKind::StrPrintlnProjected
+                | RuntimeCallKind::StrEprintlnAggregate
+                | RuntimeCallKind::StrEprintlnProjected
         ) {
             1
         } else {
@@ -1822,19 +1890,37 @@ impl<'a> Interp<'a> {
             }
             let length = usize::try_from(*length).map_err(|_| {
                 unsupported(
-                    UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes),
+                    UnsupportedKind::ResourceLimit(if is_stderr {
+                        ResourceLimitKind::StderrBytes
+                    } else {
+                        ResourceLimitKind::StdoutBytes
+                    }),
                     format!(
-                        "stdout byte limit exceeded ({}-byte limit)",
-                        self.stdout_cap
+                        "{} byte limit exceeded ({}-byte limit)",
+                        if is_stderr { "stderr" } else { "stdout" },
+                        if is_stderr {
+                            self.stderr_cap
+                        } else {
+                            self.stdout_cap
+                        }
                     ),
                 )
             })?;
             if length > max_payload {
                 return Err(unsupported(
-                    UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes),
+                    UnsupportedKind::ResourceLimit(if is_stderr {
+                        ResourceLimitKind::StderrBytes
+                    } else {
+                        ResourceLimitKind::StdoutBytes
+                    }),
                     format!(
-                        "stdout byte limit exceeded ({}-byte limit)",
-                        self.stdout_cap
+                        "{} byte limit exceeded ({}-byte limit)",
+                        if is_stderr { "stderr" } else { "stdout" },
+                        if is_stderr {
+                            self.stderr_cap
+                        } else {
+                            self.stdout_cap
+                        }
                     ),
                 ));
             }
@@ -1867,7 +1953,13 @@ impl<'a> Interp<'a> {
                     })
                     .collect::<Step<Vec<_>>>()?
             };
-            (bytes, matches!(kind, RuntimeCallKind::StrPrintlnProjected))
+            (
+                bytes,
+                matches!(
+                    kind,
+                    RuntimeCallKind::StrPrintlnProjected | RuntimeCallKind::StrEprintlnProjected
+                ),
+            )
         } else {
             let [value] = args else {
                 return Err(unsupported(
@@ -1875,13 +1967,35 @@ impl<'a> Interp<'a> {
                     "aggregate output runtime arity",
                 ));
             };
-            let bytes = self.text_bytes_bounded(value, Some(max_payload))?;
-            (bytes, matches!(kind, RuntimeCallKind::StrPrintlnAggregate))
+            let bytes = self.text_bytes_bounded(
+                value,
+                Some(max_payload),
+                if is_stderr {
+                    ResourceLimitKind::StderrBytes
+                } else {
+                    ResourceLimitKind::StdoutBytes
+                },
+            )?;
+            (
+                bytes,
+                matches!(
+                    kind,
+                    RuntimeCallKind::StrPrintlnAggregate | RuntimeCallKind::StrEprintlnAggregate
+                ),
+            )
         };
 
-        self.observe_stdout(&bytes)?;
+        if is_stderr {
+            self.observe_stderr(&bytes)?;
+        } else {
+            self.observe_stdout(&bytes)?;
+        }
         if newline {
-            self.observe_stdout(b"\n")?;
+            if is_stderr {
+                self.observe_stderr(b"\n")?;
+            } else {
+                self.observe_stdout(b"\n")?;
+            }
         }
         Ok(Value::Unit)
     }
@@ -2573,7 +2687,7 @@ impl<'a> Interp<'a> {
         Ok(Some(intrinsic))
     }
 
-    fn abort_with_stderr(&self, kind: TrapKind, parts: &[&[u8]]) -> Step<Value> {
+    fn abort_with_stderr(&mut self, kind: TrapKind, parts: &[&[u8]]) -> Step<Value> {
         let raw_stderr_bytes = parts
             .iter()
             .try_fold(0usize, |total, part| total.checked_add(part.len()));
@@ -2586,7 +2700,7 @@ impl<'a> Interp<'a> {
                 ),
             ));
         };
-        if raw_stderr_bytes > self.stderr_cap {
+        if raw_stderr_bytes > self.stderr_cap.saturating_sub(self.stderr_bytes) {
             return Err(unsupported(
                 UnsupportedKind::ResourceLimit(ResourceLimitKind::StderrBytes),
                 format!(
@@ -2599,15 +2713,11 @@ impl<'a> Interp<'a> {
         // Decode exactly as the native differential runner does. Capacity is
         // bounded by the raw-byte cap; invalid UTF-8 can expand to replacement
         // characters but by at most a small constant factor.
-        let mut stderr = String::with_capacity(raw_stderr_bytes);
+        let mut raw_stderr = Vec::with_capacity(raw_stderr_bytes);
         for part in parts {
-            stderr.push_str(&String::from_utf8_lossy(part));
+            raw_stderr.extend_from_slice(part);
         }
-        Err(Flow::Panic(Panic::with_stderr(
-            kind,
-            stderr,
-            raw_stderr_bytes,
-        )))
+        Err(Flow::Panic(Panic::with_raw_stderr(kind, raw_stderr)))
     }
 
     fn eval_abort_intrinsic(
@@ -2821,7 +2931,11 @@ impl<'a> Interp<'a> {
         // overflowing while computing `len + 1`, and rejecting an oversized
         // value before assembling output also bounds that temporary allocation.
         let output = if self.is_text_type(ty) {
-            let bytes = self.text_bytes_bounded(val, Some(remaining.saturating_sub(1)))?;
+            let bytes = self.text_bytes_bounded(
+                val,
+                Some(remaining.saturating_sub(1)),
+                ResourceLimitKind::StdoutBytes,
+            )?;
             // Text output is a byte observation, not a string formatting
             // operation. Preserve invalid UTF-8 and every original byte in
             // the canonical trace; the public `Outcome.stdout` display may
@@ -2874,17 +2988,34 @@ impl<'a> Interp<'a> {
         Ok(())
     }
 
+    fn observe_stderr(&mut self, bytes: &[u8]) -> Step<()> {
+        let remaining = self.stderr_cap.saturating_sub(self.stderr_bytes);
+        let observed = bytes.len().min(remaining);
+        self.stderr_trace.extend_from_slice(&bytes[..observed]);
+        self.stderr_bytes += observed;
+        if observed != bytes.len() {
+            return Err(unsupported(
+                UnsupportedKind::ResourceLimit(ResourceLimitKind::StderrBytes),
+                format!(
+                    "stderr byte limit exceeded ({}-byte limit)",
+                    self.stderr_cap
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     fn run(mut self) -> Result<Outcome, Unsupported> {
         match self.call("main", &[]) {
             Ok((v, _)) => Ok(Outcome {
                 exit_code: (v.as_int() & 0xFF) as i32,
                 stdout: String::from_utf8_lossy(&self.stdout_trace).into_owned(),
                 stdout_bytes: self.stdout_trace.clone(),
-                stderr: String::new(),
+                stderr: String::from_utf8_lossy(&self.stderr_trace).into_owned(),
                 panic: None,
             }),
             Err(Flow::Panic(panic)) => {
-                if panic.raw_stderr_bytes > self.stderr_cap {
+                if panic.raw_stderr_bytes > self.stderr_cap.saturating_sub(self.stderr_bytes) {
                     return Err(Unsupported::new(
                         UnsupportedKind::ResourceLimit(ResourceLimitKind::StderrBytes),
                         format!(
@@ -2897,7 +3028,11 @@ impl<'a> Interp<'a> {
                     exit_code: 101,
                     stdout: String::from_utf8_lossy(&self.stdout_trace).into_owned(),
                     stdout_bytes: self.stdout_trace.clone(),
-                    stderr: panic.stderr,
+                    stderr: {
+                        let mut raw_stderr = self.stderr_trace.clone();
+                        raw_stderr.extend_from_slice(&panic.raw_stderr);
+                        String::from_utf8_lossy(&raw_stderr).into_owned()
+                    },
                     panic: Some(panic.kind),
                 })
             }

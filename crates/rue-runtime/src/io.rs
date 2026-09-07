@@ -4,6 +4,7 @@
 //! - `__rue_read_line` - Read a line from standard input
 //! - `__rue_print` - Write a String's raw bytes to stdout (no newline)
 //! - `__rue_println` - Write a String's raw bytes to stdout, then a newline
+//! - `__rue_str_eprint` / `__rue_str_eprintln` - Write a `str` view to stderr
 
 use core::cell::UnsafeCell;
 #[cfg(test)]
@@ -19,10 +20,10 @@ pub use rue_runtime_abi::OptionStrBufResult;
 // String output (RUE-1: print / println)
 // =============================================================================
 //
-// `print(s)` and `println(s)` write the raw bytes of a `String` to stdout via
-// the same `write(1, ptr, len)` syscall path `@dbg` uses, but they emit the
-// string's actual bytes rather than a debug format. Unlike `@dbg`, `print`
-// adds nothing and `println` adds exactly one `\n`.
+// The print family writes raw text bytes through the platform write syscall.
+// The destination and newline are parameters of one implementation so the
+// stdout and stderr variants cannot drift in byte handling or empty-text
+// behavior.
 //
 // The String argument is passed by borrow, flattened into three ABI slots
 // (ptr, len, cap) exactly like the borrowed operands of `s1 + s2` and the
@@ -68,10 +69,8 @@ crate::define_runtime_implementation! {
 crate::define_runtime_implementation! {
     /// Write a shared two-word `str` view to stdout.
     pub unsafe extern "C" fn __rue_str_print(ptr: *const u8, len: u64) {
-        if len > 0 {
-            let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
-            platform::write_stdout(bytes);
-        }
+        // SAFETY: the caller provides a valid borrowed text view.
+        unsafe { write_text(ptr, len, false, false) };
     }
 }
 
@@ -112,11 +111,48 @@ crate::define_runtime_implementation! {
 crate::define_runtime_implementation! {
     /// Write a shared two-word `str` view followed by a newline.
     pub unsafe extern "C" fn __rue_str_println(ptr: *const u8, len: u64) {
-        if len > 0 {
-            let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+        // SAFETY: the caller provides a valid borrowed text view.
+        unsafe { write_text(ptr, len, false, true) };
+    }
+}
+
+crate::define_runtime_implementation! {
+    /// Write a shared two-word `str` view to stderr.
+    pub unsafe extern "C" fn __rue_str_eprint(ptr: *const u8, len: u64) {
+        // SAFETY: the caller provides a valid borrowed text view.
+        unsafe { write_text(ptr, len, true, false) };
+    }
+}
+
+crate::define_runtime_implementation! {
+    /// Write a shared two-word `str` view to stderr followed by a newline.
+    pub unsafe extern "C" fn __rue_str_eprintln(ptr: *const u8, len: u64) {
+        // SAFETY: the caller provides a valid borrowed text view.
+        unsafe { write_text(ptr, len, true, true) };
+    }
+}
+
+/// Write one borrowed text view, optionally followed by one newline.
+///
+/// This is shared by all four text output helpers. The pointer is permitted to
+/// be null only when `len` is zero, matching the text-view ABI contract.
+unsafe fn write_text(ptr: *const u8, len: u64, stderr: bool, newline: bool) {
+    if len > 0 {
+        // SAFETY: callers of the exported wrappers guarantee `len` readable
+        // bytes at `ptr` for the duration of this call.
+        let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+        if stderr {
+            platform::write_stderr(bytes);
+        } else {
             platform::write_stdout(bytes);
         }
-        platform::write_stdout(b"\n");
+    }
+    if newline {
+        if stderr {
+            platform::write_stderr(b"\n");
+        } else {
+            platform::write_stdout(b"\n");
+        }
     }
 }
 
