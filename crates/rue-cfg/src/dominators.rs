@@ -59,7 +59,7 @@
 //! turns the tree into the block order codegen must lower in (RUE-1758) and is
 //! this module's one consumer of `idom`.
 
-use crate::{BlockId, Cfg, Terminator};
+use crate::{BlockId, Cfg};
 
 /// The immediate-dominator tree of a [`Cfg`].
 ///
@@ -419,7 +419,9 @@ impl Adjacency {
         // Most terminators leave one or two edges.
         let mut targets = Vec::with_capacity(n * 2);
         for index in 0..n {
-            push_successors(cfg, BlockId::from_raw(index as u32), &mut targets);
+            cfg.visit_successors(BlockId::from_raw(index as u32), |target| {
+                targets.push(target)
+            });
             offsets.push(targets.len() as u32);
         }
         Self { offsets, targets }
@@ -453,26 +455,6 @@ impl Adjacency {
             }
         }
         Self { offsets, targets }
-    }
-}
-
-/// Append the successor blocks of `block`, in control-flow order.
-fn push_successors(cfg: &Cfg, block: BlockId, out: &mut Vec<BlockId>) {
-    match &cfg.get_block(block).terminator {
-        Terminator::Goto { target, .. } => out.push(*target),
-        Terminator::Branch {
-            then_block,
-            else_block,
-            ..
-        } => {
-            out.push(*then_block);
-            out.push(*else_block);
-        }
-        Terminator::Switch { cases, default, .. } => {
-            out.extend(cfg.switch_cases(cases).iter().map(|(_, target)| *target));
-            out.push(*default);
-        }
-        Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => {}
     }
 }
 
@@ -676,7 +658,7 @@ mod tests {
                 return true;
             }
             let mut successors = Vec::new();
-            push_successors(cfg, block, &mut successors);
+            cfg.visit_successors(block, |target| successors.push(target));
             for successor in successors {
                 if removed == Some(successor) {
                     continue;

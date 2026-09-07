@@ -2716,7 +2716,15 @@ pub(crate) fn apply_general_inlining(
             rue_cfg::BlockId,
         )>,
     > = ahash::AHashMap::new();
-    let mut has_calls: ahash::AHashMap<crate::FunctionInstanceKey, bool> = ahash::AHashMap::new();
+    // O2's leaf rule (ADR-0049 §6) counts the calls a callee can return
+    // past. A call in a block that cannot reach the callee's return sits
+    // where control can only leave by aborting — a `@panic` arm staging its
+    // failure site — and never executes on the inlined caller's returning
+    // path, so it is not the call boundary the rule keeps O2 away from
+    // (RUE-2088). Every call still contributes its edge to the call graph:
+    // recursion is about what can be reached, not what can return.
+    let mut has_returning_calls: ahash::AHashMap<crate::FunctionInstanceKey, bool> =
+        ahash::AHashMap::new();
     for (function, record) in &records {
         let mut calls = Vec::new();
         // Every edge found in this iteration belongs to `function`, so the
@@ -2725,15 +2733,17 @@ pub(crate) fn apply_general_inlining(
         // `BTreeMap` probe over a recursive identity plus a deep key clone,
         // for each of them.
         let mut function_edges: Vec<crate::FunctionInstanceKey> = Vec::new();
-        let mut any_call = false;
+        let mut any_returning_call = false;
+        let returning_blocks = record.cfg.returning_blocks();
         for block in record.cfg.blocks() {
+            let block_returns = returning_blocks[block.id.as_u32() as usize];
             for &value in &block.insts {
                 let rue_cfg::CfgInstData::Call { runtime, name, .. } =
                     record.cfg.get_inst(value).data
                 else {
                     continue;
                 };
-                any_call = true;
+                any_returning_call |= block_returns;
                 if runtime.is_some() {
                     continue;
                 }
@@ -2749,7 +2759,7 @@ pub(crate) fn apply_general_inlining(
         if !function_edges.is_empty() {
             edges.insert(function.clone(), function_edges);
         }
-        has_calls.insert(function.clone(), any_call);
+        has_returning_calls.insert(function.clone(), any_returning_call);
         callsites.insert(function.clone(), calls);
     }
 
@@ -2801,7 +2811,7 @@ pub(crate) fn apply_general_inlining(
         }
         let size_eligible = match batch_opt_level {
             rue_cfg::OptLevel::O2 => {
-                !has_calls.get(function).copied().unwrap_or(true)
+                !has_returning_calls.get(function).copied().unwrap_or(true)
                     && phase2_size_eligible(record.cfg.value_count())
             }
             rue_cfg::OptLevel::O3 => phase3_size_eligible(record.cfg.value_count()),

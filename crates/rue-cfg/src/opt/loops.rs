@@ -747,7 +747,7 @@ impl Successors {
     fn build(cfg: &Cfg, block_count: usize) -> Self {
         let mut edge_count = 0usize;
         for raw in 0..block_count {
-            visit_successors(cfg, BlockId::from_raw(raw as u32), |_| {
+            cfg.visit_successors(BlockId::from_raw(raw as u32), |_| {
                 edge_count = edge_count
                     .checked_add(1)
                     .expect("CFG successor count exceeds addressable memory");
@@ -758,7 +758,7 @@ impl Successors {
         let mut targets = Vec::with_capacity(edge_count);
         offsets.push(0);
         for raw in 0..block_count {
-            visit_successors(cfg, BlockId::from_raw(raw as u32), |target| {
+            cfg.visit_successors(BlockId::from_raw(raw as u32), |target| {
                 targets.push(target);
             });
             offsets.push(targets.len());
@@ -772,38 +772,12 @@ impl Successors {
     }
 }
 
-/// Visit successor blocks of `block` in control-flow order.
-///
-/// This is the single terminator decoder used by both passes of
-/// [`Successors::build`]: goto target; branch then and else; switch cases in
-/// arena order and then its default.
-fn visit_successors(cfg: &Cfg, block: BlockId, mut visit: impl FnMut(BlockId)) {
-    match &cfg.get_block(block).terminator {
-        Terminator::Goto { target, .. } => visit(*target),
-        Terminator::Branch {
-            then_block,
-            else_block,
-            ..
-        } => {
-            visit(*then_block);
-            visit(*else_block);
-        }
-        Terminator::Switch { cases, default, .. } => {
-            for &(_, target) in cfg.switch_cases(cases) {
-                visit(target);
-            }
-            visit(*default);
-        }
-        Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => {}
-    }
-}
-
 /// Test-only successor helper for preheader assertions, driven by the same
 /// decoder as the analysis adjacency.
 #[cfg(test)]
 fn successors_of(cfg: &Cfg, block: BlockId) -> Vec<BlockId> {
     let mut successors = Vec::new();
-    visit_successors(cfg, block, |target| successors.push(target));
+    cfg.visit_successors(block, |target| successors.push(target));
     successors
 }
 
