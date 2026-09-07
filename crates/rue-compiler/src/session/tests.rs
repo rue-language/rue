@@ -5770,6 +5770,49 @@ fn test_inventory_orders_every_module_by_stable_id() {
     assert_eq!((alpha.line, alpha.column), (3, 1));
 }
 
+/// Metadata-only source revisions must refresh the canonical inventory even
+/// when test identities and executable bodies stay the same.
+#[test]
+fn test_inventory_refreshes_known_bug_metadata_in_a_retained_session() {
+    let mut session = CompilerSession::new();
+    let options = test_declaration_options(crate::RootSelection::Tests);
+    for (directive, expected) in [
+        ("", None),
+        ("@known_bug(\"RUE-1\")", Some(("RUE-1", None))),
+        ("@known_bug(\"RUE-2\")", Some(("RUE-2", None))),
+        (
+            "@known_bug_on(\"aarch64-macos\", \"RUE-2\")",
+            Some(("RUE-2", Some("aarch64-macos"))),
+        ),
+        (
+            "@known_bug_on(\"x86-64-linux\", \"RUE-2\")",
+            Some(("RUE-2", Some("x86-64-linux"))),
+        ),
+        ("", None),
+    ] {
+        let source =
+            SourceSnapshot::single("main.rue", format!("{directive}\ntest \"stable\" {{ }}"))
+                .unwrap();
+        session.update(&source).into_result().unwrap();
+        let listing = crate::unstable::test_inventory(&mut session, &options).unwrap();
+        assert!(listing.failure_diagnostics.is_empty());
+        let entries = listing.inventory.entries;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "main.rue::stable");
+        assert_eq!(entries[0].ordinal, 0);
+        let actual = entries[0]
+            .expected_failures
+            .iter()
+            .map(|marker| (marker.issue.as_str(), marker.platform.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual,
+            expected.into_iter().collect::<Vec<_>>(),
+            "{directive}"
+        );
+    }
+}
+
 /// A listing analyzes the closure and stops (ADR-0083 §2): no codegen, no
 /// object projection.
 #[test]

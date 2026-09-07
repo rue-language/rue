@@ -41,7 +41,7 @@ use events::{
 };
 use exec::{DEFAULT_STREAM_BUDGET, Dispatch};
 use selection::Shard;
-use verdict::{FailureKind, Verdict};
+use verdict::{FailureKind, TestExpectation, Verdict};
 
 // What the watch loop drives a test cycle with. Test mode owns the run; the
 // loop owns the process's lifetime, the change monitor, and the signals
@@ -422,6 +422,8 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
             timeout: 0,
             crash: 0,
             compile_error: 0,
+            xfail: 0,
+            xpass: 0,
             wall_ms: elapsed_ms(started),
             unimported_test_files: unimported,
             test_candidates: candidate_source(candidates),
@@ -439,6 +441,7 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
     let outcome = execute_plan(ExecutionRequest {
         plan: &plan,
         compile_errors: &compile_errors,
+        target,
         image: &image_path,
         run_root: &run_root,
         seed,
@@ -487,6 +490,8 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
         timeout: outcome.timeout,
         crash: outcome.crash,
         compile_error: outcome.compile_error,
+        xfail: outcome.xfail,
+        xpass: outcome.xpass,
         wall_ms: elapsed_ms(started),
         unimported_test_files: unimported,
         test_candidates: candidate_source(candidates),
@@ -497,7 +502,9 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
     // the other tests' verdicts, never the 2 that says nothing ran
     // (ADR-0083 §3).
     CycleOutcome::Finished(
-        if outcome.failed + outcome.timeout + outcome.crash + outcome.compile_error > 0 {
+        if outcome.failed + outcome.timeout + outcome.crash + outcome.compile_error + outcome.xpass
+            > 0
+        {
             TestExitCode::Failures
         } else {
             TestExitCode::AllPassed
@@ -537,6 +544,8 @@ struct CompileErrorVerdicts {
 }
 
 struct CompileErrorVerdict {
+    /// Preserve typed infrastructure/ICE classification before rendering.
+    xfail_eligible: bool,
     /// The diagnostics rendered for a person, as the failure record's payload.
     payload: String,
     /// The first diagnostic's message, which is the record's `message`.
@@ -566,6 +575,7 @@ impl CompileErrorVerdicts {
                     (
                         failure.entry.ordinal,
                         CompileErrorVerdict {
+                            xfail_eligible: compile_errors_allow_xfail(&failure.errors),
                             payload: diagnostic_payload(&json),
                             message: first
                                 .and_then(|diagnostic| diagnostic.get("message"))
@@ -584,6 +594,26 @@ impl CompileErrorVerdicts {
     fn get(&self, ordinal: u32) -> Option<&CompileErrorVerdict> {
         self.by_ordinal.get(&ordinal)
     }
+}
+
+fn compile_errors_allow_xfail(errors: &rue_error::CompileErrors) -> bool {
+    use rue_error::ErrorKind;
+    !errors.is_empty()
+        && errors.iter().all(|error| {
+            !matches!(
+                error.kind,
+                ErrorKind::InternalError(_)
+                    | ErrorKind::InternalCodegenError(_)
+                    | ErrorKind::CompilerProducerInvariant(_)
+                    | ErrorKind::CompilerResourceExhaustion(_)
+                    | ErrorKind::OutputPublication(_)
+                    | ErrorKind::InvalidCompilerInput(_)
+                    | ErrorKind::UnsatisfiedTrustedToolchainInput(_)
+                    | ErrorKind::StdLibNotFound
+                    | ErrorKind::LinkError(_)
+                    | ErrorKind::UnsupportedTarget(_)
+            )
+        })
 }
 
 /// The failure record's `payload` for a `compile_error`: one line per
@@ -705,6 +735,21 @@ fn list(
             file: entry.file.clone(),
             line: entry.line,
             column: entry.column,
+            known_bug: entry
+                .expected_failures
+                .iter()
+                .find(|marker| marker.platform.is_none())
+                .map(|marker| marker.issue.clone()),
+            known_bug_on: entry
+                .expected_failures
+                .iter()
+                .filter_map(|marker| {
+                    marker
+                        .platform
+                        .as_ref()
+                        .map(|platform| (platform.clone(), marker.issue.clone()))
+                })
+                .collect(),
         });
     }
     TestExitCode::AllPassed
@@ -712,6 +757,7 @@ fn list(
 
 struct ExecutionRequest<'a> {
     plan: &'a [TestInventoryEntry],
+    target: Target,
     /// The verdicts the compiler already decided, by ordinal. A plan entry
     /// found here is reported without spawning anything: it has no body in the
     /// image (ADR-0083 §3).
@@ -738,6 +784,8 @@ struct ExecutionOutcome {
     timeout: usize,
     crash: usize,
     compile_error: usize,
+    xfail: usize,
+    xpass: usize,
     runner_error: Option<String>,
     /// An edit landed while the plan was running, so the run stopped short of
     /// it (RUE-2023).
@@ -748,7 +796,13 @@ impl ExecutionOutcome {
     /// Verdicts this run actually published, which is what a canceled cycle
     /// reports in place of counts by class.
     fn reported(&self) -> usize {
-        self.passed + self.failed + self.timeout + self.crash + self.compile_error
+        self.passed
+            + self.failed
+            + self.timeout
+            + self.crash
+            + self.compile_error
+            + self.xfail
+            + self.xpass
     }
 }
 
@@ -765,6 +819,8 @@ fn execute_plan(request: ExecutionRequest<'_>) -> ExecutionOutcome {
     let timed_out = AtomicUsize::new(0);
     let crashed = AtomicUsize::new(0);
     let uncompiled = AtomicUsize::new(0);
+    let xfailed = AtomicUsize::new(0);
+    let xpassed = AtomicUsize::new(0);
     let runner_error: Mutex<Option<String>> = Mutex::new(None);
 
     std::thread::scope(|scope| {
@@ -775,6 +831,8 @@ fn execute_plan(request: ExecutionRequest<'_>) -> ExecutionOutcome {
             let timed_out = &timed_out;
             let crashed = &crashed;
             let uncompiled = &uncompiled;
+            let xfailed = &xfailed;
+            let xpassed = &xpassed;
             let runner_error = &runner_error;
             let request = &request;
             scope.spawn(move || {
@@ -802,10 +860,24 @@ fn execute_plan(request: ExecutionRequest<'_>) -> ExecutionOutcome {
                     // pool, so a `compile_error` lands where the shuffle put it
                     // rather than in a block of its own before the run.
                     if let Some(verdict) = request.compile_errors.get(entry.ordinal) {
-                        uncompiled.fetch_add(1, Ordering::Relaxed);
+                        let expectation = classify_expected(
+                            entry,
+                            request.target,
+                            &verdict::Classification {
+                                verdict: Verdict::CompileError,
+                                runner_note: None,
+                            },
+                            !verdict.xfail_eligible,
+                        );
+                        if expectation == Some(TestExpectation::Xfail) {
+                            xfailed.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            uncompiled.fetch_add(1, Ordering::Relaxed);
+                        }
                         request.reporter.emit(&compile_error_event(
                             entry,
                             verdict,
+                            expectation,
                             &Repro {
                                 program: request.repro_program,
                                 root: request.repro_root,
@@ -860,20 +932,37 @@ fn execute_plan(request: ExecutionRequest<'_>) -> ExecutionOutcome {
                             return;
                         }
                     };
-                    match &execution.classification.verdict {
-                        Verdict::Pass => passed.fetch_add(1, Ordering::Relaxed),
-                        Verdict::Fail(_) => failed.fetch_add(1, Ordering::Relaxed),
-                        Verdict::Timeout => timed_out.fetch_add(1, Ordering::Relaxed),
-                        Verdict::Crash(_) => crashed.fetch_add(1, Ordering::Relaxed),
-                        // Decided by the compiler and reported above, so no
-                        // process can classify as one.
-                        Verdict::CompileError => unreachable!(
-                            "a compile_error verdict never reaches a dispatched process"
-                        ),
+                    let expected = classify_expected(
+                        entry,
+                        request.target,
+                        &execution.classification,
+                        execution.signal.is_some(),
+                    );
+                    match expected {
+                        Some(TestExpectation::Xfail) => {
+                            xfailed.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Some(TestExpectation::Xpass) => {
+                            xpassed.fetch_add(1, Ordering::Relaxed);
+                        }
+                        None => {
+                            match &execution.classification.verdict {
+                                Verdict::Pass => passed.fetch_add(1, Ordering::Relaxed),
+                                Verdict::Fail(_) => failed.fetch_add(1, Ordering::Relaxed),
+                                Verdict::Timeout => timed_out.fetch_add(1, Ordering::Relaxed),
+                                Verdict::Crash(_) => crashed.fetch_add(1, Ordering::Relaxed),
+                                // Decided by the compiler and reported above, so no
+                                // process can classify as one.
+                                Verdict::CompileError => unreachable!(
+                                    "a compile_error verdict never reaches a dispatched process"
+                                ),
+                            };
+                        }
                     };
                     let event = finish_event(
                         entry,
                         execution,
+                        expected,
                         &Repro {
                             program: request.repro_program,
                             root: request.repro_root,
@@ -895,6 +984,8 @@ fn execute_plan(request: ExecutionRequest<'_>) -> ExecutionOutcome {
         timeout: timed_out.into_inner(),
         crash: crashed.into_inner(),
         compile_error: uncompiled.into_inner(),
+        xfail: xfailed.into_inner(),
+        xpass: xpassed.into_inner(),
         runner_error: runner_error
             .into_inner()
             .unwrap_or_else(|error| error.into_inner()),
@@ -907,6 +998,54 @@ fn canceled(cancellation: Option<&exec::RunCancellation>) -> bool {
     cancellation.is_some_and(exec::RunCancellation::is_canceled)
 }
 
+fn classify_expected(
+    entry: &TestInventoryEntry,
+    target: Target,
+    classification: &verdict::Classification,
+    fatal_failure: bool,
+) -> Option<TestExpectation> {
+    if fatal_failure || !entry_has_expected_failure(entry, target) {
+        return None;
+    }
+    if is_xfail_failure(classification) {
+        Some(TestExpectation::Xfail)
+    } else if classification.verdict.is_pass() {
+        Some(TestExpectation::Xpass)
+    } else {
+        None
+    }
+}
+
+/// Whether this test has an expected-failure marker for the target executing
+/// the image. The inventory retains all platform-scoped markers so listings
+/// remain host-independent; execution is the boundary where one applies.
+fn entry_has_expected_failure(entry: &TestInventoryEntry, target: Target) -> bool {
+    entry.expected_failures.iter().any(|marker| {
+        marker
+            .platform
+            .as_deref()
+            .is_none_or(|platform| platform == target.name())
+    })
+}
+
+/// Only ordinary test failures are suppressible by an expected-failure marker.
+/// Runner notes, incomplete dispatches, output overflow, timeouts, and crashes
+/// remain infrastructure failures and must still fail the run visibly.
+fn is_xfail_failure(classification: &verdict::Classification) -> bool {
+    classification.runner_note.is_none()
+        && matches!(
+            classification.verdict,
+            Verdict::Fail(FailureKind::Assert)
+                | Verdict::Fail(FailureKind::AssertEq)
+                | Verdict::Fail(FailureKind::AssertNe)
+                | Verdict::Fail(FailureKind::Trap(_))
+                | Verdict::Fail(FailureKind::UnhandledError)
+                | Verdict::Fail(FailureKind::Reported(_))
+                | Verdict::Fail(FailureKind::Exit)
+                | Verdict::CompileError
+        )
+}
+
 /// Turn one finished process into its `test_finished` event.
 ///
 /// The scratch directory is deleted on a pass and retained on anything else,
@@ -916,19 +1055,22 @@ fn canceled(cancellation: Option<&exec::RunCancellation>) -> bool {
 fn finish_event(
     entry: &TestInventoryEntry,
     execution: exec::Execution,
+    expectation: Option<TestExpectation>,
     repro: &Repro<'_>,
     seed: u64,
     timeout: Duration,
 ) -> Event {
     let verdict = execution.classification.verdict.clone();
-    let passed = verdict.is_pass();
+    let passed = verdict.is_pass() && expectation.is_none();
     if passed {
         let _ = std::fs::remove_dir_all(&execution.scratch_dir);
     }
-    let failure = (!passed).then(|| failure_record(entry, &verdict, &execution, timeout));
+    let failure =
+        (!verdict.is_pass()).then(|| failure_record(entry, &verdict, &execution, timeout));
     Event::TestFinished(Box::new(TestFinished {
         id: entry.id.clone(),
         verdict,
+        expectation,
         duration_ms: u64::try_from(execution.duration.as_millis()).unwrap_or(u64::MAX),
         failure,
         stdout: Capture::new(execution.stdout, execution.stdout_total, passed),
@@ -1006,12 +1148,14 @@ fn failure_record(
 fn compile_error_event(
     entry: &TestInventoryEntry,
     verdict: &CompileErrorVerdict,
+    expectation: Option<TestExpectation>,
     repro: &Repro<'_>,
     seed: u64,
 ) -> Event {
     Event::TestFinished(Box::new(TestFinished {
         id: entry.id.clone(),
         verdict: Verdict::CompileError,
+        expectation,
         duration_ms: 0,
         failure: Some(FailureRecord {
             kind: FailureKind::CompileError.to_string(),
@@ -1443,5 +1587,102 @@ mod tests {
     fn the_opt_level_field_is_the_bare_digit() {
         assert_eq!(opt_level_digit(OptLevel::O0), "0");
         assert_eq!(opt_level_digit(OptLevel::O3), "3");
+    }
+
+    #[test]
+    fn expected_failure_markers_apply_only_to_their_target() {
+        let entry = TestInventoryEntry {
+            id: "app/t.rue::marked".to_owned(),
+            module: "app/t.rue".to_owned(),
+            name: "marked".to_owned(),
+            file: "app/t.rue".to_owned(),
+            line: 1,
+            column: 1,
+            ordinal: 0,
+            expected_failures: vec![rue_compiler::unstable::TestExpectedFailure {
+                issue: "RUE-123".to_owned(),
+                platform: Some("aarch64-macos".to_owned()),
+            }],
+        };
+        assert!(entry_has_expected_failure(&entry, Target::Aarch64Macos));
+        assert!(!entry_has_expected_failure(&entry, Target::X86_64Linux));
+        let observed = verdict::Classification {
+            verdict: Verdict::Fail(FailureKind::Assert),
+            runner_note: None,
+        };
+        assert_eq!(
+            classify_expected(&entry, Target::Aarch64Macos, &observed, false),
+            Some(TestExpectation::Xfail)
+        );
+        // A failure frame can outrank a signal in the observation classifier;
+        // it must not make that signal eligible for expected-failure handling.
+        assert_eq!(
+            classify_expected(&entry, Target::Aarch64Macos, &observed, true),
+            None
+        );
+    }
+
+    #[test]
+    fn compile_error_markers_cannot_hide_internal_or_environmental_errors() {
+        use rue_error::{CompileError, CompileErrors, ErrorKind};
+        let ordinary = CompileError::without_span(ErrorKind::ParseError("bad body".into()));
+        assert!(compile_errors_allow_xfail(&CompileErrors::from(
+            ordinary.clone()
+        )));
+        for kind in [
+            ErrorKind::InternalError("ICE".into()),
+            ErrorKind::InternalCodegenError("ICE".into()),
+            ErrorKind::CompilerProducerInvariant("ICE".into()),
+            ErrorKind::CompilerResourceExhaustion("allocation".into()),
+            ErrorKind::OutputPublication("write".into()),
+            ErrorKind::InvalidCompilerInput("input".into()),
+            ErrorKind::UnsatisfiedTrustedToolchainInput("std".into()),
+            ErrorKind::StdLibNotFound,
+            ErrorKind::LinkError("link".into()),
+            ErrorKind::UnsupportedTarget("target".into()),
+        ] {
+            let mut errors = CompileErrors::from(ordinary.clone());
+            errors.push(CompileError::without_span(kind));
+            assert!(!compile_errors_allow_xfail(&errors), "{errors:?}");
+        }
+    }
+
+    #[test]
+    fn expected_failures_do_not_hide_runner_failures() {
+        let ordinary = verdict::Classification {
+            verdict: Verdict::Fail(FailureKind::Assert),
+            runner_note: None,
+        };
+        assert!(is_xfail_failure(&ordinary));
+        assert!(!is_xfail_failure(&verdict::Classification {
+            verdict: Verdict::Fail(FailureKind::Incomplete),
+            runner_note: None,
+        }));
+        assert!(!is_xfail_failure(&verdict::Classification {
+            verdict: Verdict::Fail(FailureKind::Exit),
+            runner_note: Some("malformed channel".to_owned()),
+        }));
+    }
+
+    #[test]
+    fn expected_failures_do_not_hide_overflow_beside_a_complete_frame() {
+        let frames = verdict::ChannelFrames {
+            failure: Some(verdict::FailureFrame {
+                kind: "assert".to_owned(),
+                ..verdict::FailureFrame::default()
+            }),
+            ..verdict::ChannelFrames::default()
+        };
+        let classification = verdict::classify(verdict::Observation {
+            supervision: verdict::Supervision::OutputOverflow(verdict::Overflow {
+                stream: verdict::CaptureStream::Stderr,
+                budget: 1024,
+            }),
+            status: Ok(101),
+            stderr: b"assertion failed",
+            frames: &frames,
+        });
+        assert_eq!(classification.verdict, Verdict::Fail(FailureKind::Assert));
+        assert!(!is_xfail_failure(&classification));
     }
 }

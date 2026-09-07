@@ -6,3 +6,10 @@ test "the runner reaches an imported test module" {
 test "and runs every test it declares" {
     @assert_eq(2 + 2, 4);
 }
+
+// Deliberate failure: the build-rule fixture must accept an xfail while
+// preserving its independent check for unimported test files.
+@known_bug("RUE-2018")
+test "expected failures succeed through the build supervisor" {
+    @assert(false);
+}

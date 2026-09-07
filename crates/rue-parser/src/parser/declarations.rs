@@ -16,11 +16,21 @@ impl Parser {
             let mut args = Vec::new();
             if self.eat(TokenKind::LParen) {
                 args = self.comma_separated(TokenKind::RParen, |parser| {
-                    let ident = parser.ident()?;
+                    let (ident, quoted) = match parser.kind() {
+                        TokenKind::String(value) => {
+                            let span = parser.bump().span;
+                            (Ident { name: value, span }, true)
+                        }
+                        _ => (parser.ident()?, false),
+                    };
                     let value = kind.map_or(DirectiveArgValue::Unrecognized, |kind| {
-                        kind.classify_arg(parser.interner.resolve(&ident.name))
+                        kind.classify_arg(parser.interner.resolve(&ident.name), quoted)
                     });
-                    Ok(DirectiveArg { ident, value })
+                    Ok(DirectiveArg {
+                        ident,
+                        value,
+                        quoted,
+                    })
                 })?;
                 self.expect(TokenKind::RParen)?;
             }

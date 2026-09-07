@@ -41,7 +41,7 @@ import sys
 
 # Exit codes of `rue test` (docs/process/test-events.md, "Exit codes").
 _EXIT_REASONS = {
-    1: "a selected test failed, timed out, crashed, or did not compile",
+    1: "a selected test failed, timed out, crashed, did not compile, or unexpectedly passed",
     2: (
         "the run could not be performed (a compile failure outside every test "
         "closure, ICE, or runner error)"
@@ -158,7 +158,8 @@ def report(command, result, reasons, run_finished, events):
     failed = [
         event
         for event in events
-        if event.get("event") == "test_finished" and event.get("verdict") != "pass"
+        if event.get("event") == "test_finished"
+        and event.get("verdict") not in ("pass", "xfail")
     ]
     if failed:
         print("--- non-passing tests ---", file=sys.stderr)
@@ -181,12 +182,14 @@ def report(command, result, reasons, run_finished, events):
         # broken test closures as four zeroes: a failure for no stated reason.
         print(
             "summary: {} passed, {} failed, {} timed out, {} crashed, "
-            "{} did not compile in {} ms".format(
+            "{} did not compile, {} expected failures, {} unexpected passes in {} ms".format(
                 run_finished.get("passed", 0),
                 run_finished.get("failed", 0),
                 run_finished.get("timeout", 0),
                 run_finished.get("crash", 0),
                 run_finished.get("compile_error", 0),
+                run_finished.get("xfail", 0),
+                run_finished.get("xpass", 0),
                 run_finished.get("wall_ms", 0),
             ),
             file=sys.stderr,
@@ -274,8 +277,9 @@ def main(argv):
         for line in describe_unimported(unimported):
             print(line)
     print(
-        "rue_test: {} passed in {} ms".format(
+        "rue_test: {} passed, {} expected failures in {} ms".format(
             run_finished.get("passed", 0),
+            run_finished.get("xfail", 0),
             run_finished.get("wall_ms", 0),
         )
     )

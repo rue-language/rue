@@ -745,6 +745,18 @@ pub struct TestInventoryEntry {
     /// 1-based column of that header, on the same terms as `line`.
     pub column: u32,
     pub ordinal: u32,
+    /// Test-only expected-failure markers that apply on this host-independent
+    /// inventory. The runner filters platform-scoped entries at execution
+    /// time, keeping listing and cached inventory metadata complete.
+    pub expected_failures: Vec<TestExpectedFailure>,
+}
+
+/// One `@known_bug` or `@known_bug_on` marker attached to a test declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestExpectedFailure {
+    pub issue: String,
+    /// `None` for an unscoped `@known_bug`; otherwise the canonical host name.
+    pub platform: Option<String>,
 }
 
 /// Every test in a request's closure, in stable-ID order.

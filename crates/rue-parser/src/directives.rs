@@ -16,6 +16,8 @@
 
 use std::fmt;
 
+use rue_target::HostPlatform;
+
 /// Declares one closed vocabulary: the variants, their source spellings, the
 /// full list and the spelling lookup are generated from a single table, so no
 /// half of the mapping can drift from another.
@@ -75,6 +77,10 @@ vocabulary! {
         /// `@non_exhaustive` opts a public enum into the source compatibility
         /// contract for matches in importing modules.
         NonExhaustive = "non_exhaustive",
+        /// `@known_bug("RUE-NNN")` marks a test as an expected failure.
+        KnownBug = "known_bug",
+        /// `@known_bug_on("platform", "RUE-NNN")` scopes an expected failure.
+        KnownBugOn = "known_bug_on",
     }
 }
 
@@ -135,6 +141,8 @@ pub enum DirectiveArity {
     None,
     /// Exactly one argument drawn from the directive's argument vocabulary.
     ExactlyOne,
+    /// Exactly two arguments drawn from the directive's argument vocabulary.
+    ExactlyTwo,
     /// Any number of arguments, each drawn from the directive's vocabulary.
     Any,
 }
@@ -149,6 +157,8 @@ pub enum DirectiveArity {
 pub enum DirectiveArgValue {
     Warning(WarningName),
     Repr(ReprArg),
+    /// A quoted string accepted by a test expectation directive.
+    KnownBugText,
     Unrecognized,
 }
 
@@ -170,6 +180,7 @@ impl DirectiveName {
             // spec 2.5:34
             DirectiveName::Repr => &[DirectiveSite::Struct],
             DirectiveName::NonExhaustive => &[DirectiveSite::Enum],
+            DirectiveName::KnownBug | DirectiveName::KnownBugOn => &[DirectiveSite::Test],
         }
     }
 
@@ -183,6 +194,8 @@ impl DirectiveName {
             // spec 2.5:34: parameterized, exactly one representation argument.
             DirectiveName::Repr => DirectiveArity::ExactlyOne,
             DirectiveName::NonExhaustive => DirectiveArity::None,
+            DirectiveName::KnownBug => DirectiveArity::ExactlyOne,
+            DirectiveName::KnownBugOn => DirectiveArity::ExactlyTwo,
         }
     }
 
@@ -191,17 +204,38 @@ impl DirectiveName {
         self.allowed_sites().contains(&site)
     }
 
-    /// Classify one argument identifier against this directive's argument
-    /// vocabulary.
-    pub fn classify_arg(self, text: &str) -> DirectiveArgValue {
+    /// Classify one argument against this directive's argument vocabulary.
+    pub fn classify_arg(self, text: &str, quoted: bool) -> DirectiveArgValue {
         match self {
-            DirectiveName::Allow => WarningName::from_source(text)
+            DirectiveName::Allow if !quoted => WarningName::from_source(text)
                 .map_or(DirectiveArgValue::Unrecognized, DirectiveArgValue::Warning),
-            DirectiveName::Repr => ReprArg::from_source(text)
+            DirectiveName::Repr if !quoted => ReprArg::from_source(text)
                 .map_or(DirectiveArgValue::Unrecognized, DirectiveArgValue::Repr),
-            DirectiveName::Copy | DirectiveName::NonExhaustive => DirectiveArgValue::Unrecognized,
+            DirectiveName::Allow | DirectiveName::Repr => DirectiveArgValue::Unrecognized,
+            DirectiveName::KnownBug | DirectiveName::KnownBugOn if quoted => {
+                DirectiveArgValue::KnownBugText
+            }
+            DirectiveName::Copy
+            | DirectiveName::NonExhaustive
+            | DirectiveName::KnownBug
+            | DirectiveName::KnownBugOn => DirectiveArgValue::Unrecognized,
         }
     }
+}
+
+/// Whether a quoted marker names a canonical Linear issue.
+pub fn is_canonical_known_bug_marker(marker: &str) -> bool {
+    let Some(number) = marker.strip_prefix("RUE-") else {
+        return false;
+    };
+    !number.is_empty()
+        && number.as_bytes()[0] != b'0'
+        && number.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Whether a marker's platform is one of the harness's canonical host names.
+pub fn is_known_bug_platform(platform: &str) -> bool {
+    HostPlatform::from_name(platform).is_some()
 }
 
 impl WarningName {
@@ -320,7 +354,7 @@ mod tests {
     fn diagnostic_lists_read_as_prose() {
         assert_eq!(
             directive_name_list(),
-            "@allow, @copy, @repr, and @non_exhaustive"
+            "@allow, @copy, @repr, @non_exhaustive, @known_bug, and @known_bug_on"
         );
         assert_eq!(
             warning_name_list(),
@@ -358,19 +392,19 @@ mod tests {
     #[test]
     fn argument_vocabularies_follow_the_directive() {
         assert_eq!(
-            DirectiveName::Allow.classify_arg("unreachable_code"),
+            DirectiveName::Allow.classify_arg("unreachable_code", false),
             DirectiveArgValue::Warning(WarningName::UnreachableCode)
         );
         assert_eq!(
-            DirectiveName::Repr.classify_arg("c"),
+            DirectiveName::Repr.classify_arg("c", false),
             DirectiveArgValue::Repr(ReprArg::C)
         );
         assert_eq!(
-            DirectiveName::Repr.classify_arg("unreachable_code"),
+            DirectiveName::Repr.classify_arg("unreachable_code", false),
             DirectiveArgValue::Unrecognized
         );
         assert_eq!(
-            DirectiveName::Copy.classify_arg("c"),
+            DirectiveName::Copy.classify_arg("c", false),
             DirectiveArgValue::Unrecognized
         );
     }

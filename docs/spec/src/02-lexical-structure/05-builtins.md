@@ -58,9 +58,9 @@ A directive is a builtin that modifies the behavior of the immediately following
 {{ rule(id="2.5:9", cat="normative") }}
 
 ```ebnf
-directive = "@" IDENT "(" [ directive_args ] ")" ;
-directive_args = directive_arg { "," directive_arg } ;
-directive_arg = IDENT ;
+directive = "@" IDENT [ "(" [ directive_args ] ")" ] ;
+directive_args = directive_arg { "," directive_arg } [ "," ] ;
+directive_arg = IDENT | STRING ;
 ```
 
 {{ rule(id="2.5:10", cat="legality-rule") }}

@@ -48,7 +48,7 @@ kind = "edit"
 expected_exit = 1
 stdout_contains = [
     # Cycle 1: the head event carries its number, and both tests pass.
-    '"cycle":1,"event":"run_started","jobs":1,"opt_level":"0","plan":{"selected":2,"total":2},"root":"main.rue","schema":"1.0","seed":1',
+    '"cycle":1,"event":"run_started","jobs":1,"opt_level":"0","plan":{"selected":2,"total":2},"root":"main.rue","schema":"1.1","seed":1',
     '"compile_error":0,"crash":0,"event":"run_finished","failed":0,"passed":2',
     # Cycle 2: a second pair, numbered, over the same two tests.
     '"cycle":2,"event":"run_started"',
@@ -324,6 +324,60 @@ source = """
 test "doubles" {
     @assert(2 * 2 == 5);
 }
+"""
+
+[[case]]
+name = "known_bug_adding_a_marker_refreshes_the_retained_run"
+description = "A marker-only edit refreshes verdicts on the retained compiler."
+files = [{ path = "main.rue", source = """
+test "marked" { @assert(false); }
+""" }]
+
+[case.watch_test]
+kind = "edit"
+expected_exit = 0
+stdout_contains = [
+    '"cycle":1,"event":"run_started"',
+    '"cycle":2,"event":"run_started"',
+    '"verdict":"fail"',
+    '"verdict":"xfail"',
+    '"xfail":1,"xpass":0',
+    '"xfail":0,"xpass":0',
+]
+stdout_not_contains = ['"cycle":3', '"verdict":"xpass"']
+
+[[case.watch_test.edits]]
+path = "main.rue"
+source = """
+@known_bug("RUE-2018")
+test "marked" { @assert(false); }
+"""
+
+[[case]]
+name = "known_bug_removing_a_marker_refreshes_the_retained_run"
+description = "A marker-only edit refreshes verdicts on the retained compiler."
+files = [{ path = "main.rue", source = """
+@known_bug("RUE-2018")
+test "marked" { @assert(false); }
+""" }]
+
+[case.watch_test]
+kind = "edit"
+expected_exit = 1
+stdout_contains = [
+    '"cycle":1,"event":"run_started"',
+    '"cycle":2,"event":"run_started"',
+    '"verdict":"fail"',
+    '"verdict":"xfail"',
+    '"xfail":1,"xpass":0',
+    '"xfail":0,"xpass":0',
+]
+stdout_not_contains = ['"cycle":3', '"verdict":"xpass"']
+
+[[case.watch_test.edits]]
+path = "main.rue"
+source = """
+test "marked" { @assert(false); }
 """
 
 [[case]]

@@ -181,6 +181,7 @@ mod tests {
             line: 1,
             column: 1,
             ordinal: 0,
+            expected_failures: Vec::new(),
         }
     }
 

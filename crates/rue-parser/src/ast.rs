@@ -92,7 +92,9 @@ impl Directive {
         }
         self.args.iter().find_map(|arg| match arg.value {
             DirectiveArgValue::Repr(repr) => Some(repr),
-            DirectiveArgValue::Warning(_) | DirectiveArgValue::Unrecognized => None,
+            DirectiveArgValue::Warning(_)
+            | DirectiveArgValue::KnownBugText
+            | DirectiveArgValue::Unrecognized => None,
         })
     }
 }
@@ -101,11 +103,14 @@ impl Directive {
 /// against the owning directive's argument vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectiveArg {
-    /// The identifier as written (e.g., `unused_variable` in
-    /// `@allow(unused_variable)`)
+    /// The argument text as written. Quoted directive arguments use the same
+    /// interned text carrier so directive consumers have one lookup path.
     pub ident: Ident,
     /// What the identifier denotes for the owning directive.
     pub value: DirectiveArgValue,
+    /// Whether the source spelling was a string literal rather than an
+    /// identifier. Test expectation directives require quoted arguments.
+    pub quoted: bool,
 }
 
 /// The first directive in `directives` with the given name.

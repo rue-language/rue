@@ -24,7 +24,7 @@ source = """
 fn main() -> i32 { 42 }
 """
 compile_fail = true
-error_contains = ["unknown directive '@important'", "@allow, @copy, @repr, and @non_exhaustive"]
+error_contains = ["unknown directive '@important'", "@allow, @copy, @repr, @non_exhaustive, @known_bug, and @known_bug_on"]
 
 [[case]]
 name = "non_exhaustive_directive_private_enum_rejected"
@@ -298,7 +298,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["unknown directive '@handle'", "@allow, @copy, @repr, and @non_exhaustive"]
+error_contains = ["unknown directive '@handle'", "@allow, @copy, @repr, @non_exhaustive, @known_bug, and @known_bug_on"]
 
 [[case]]
 name = "ordinary_handle_method_still_works"

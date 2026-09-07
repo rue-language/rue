@@ -57,6 +57,33 @@ fn main() -> i32 { 0 }
 exit_code = 0
 
 [[case]]
+name = "test_declaration_accepts_known_bug_directives"
+spec = ["6.7:18", "2.5:9"]
+description = "Tests may carry canonical expected-failure metadata, including a platform-scoped marker."
+source = """
+@known_bug("RUE-2018")
+test "known bug" { }
+
+@known_bug_on("aarch64-macos", "RUE-2018")
+test "platform known bug" { }
+
+fn main() -> i32 { 0 }
+"""
+exit_code = 0
+
+[[case]]
+name = "known_bug_directives_reject_malformed_markers"
+spec = ["6.7:18", "2.5:9"]
+description = "Expected-failure metadata requires a canonical issue marker and supported platform."
+source = """
+@known_bug("RUE-0")
+test "bad issue" { }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0102", "canonical issue marker"]
+
+[[case]]
 name = "public_test_declaration_is_rejected"
 spec = ["6.7:5"]
 description = "`test` takes no visibility modifier: a test is not callable, so `pub` has no meaning for it."

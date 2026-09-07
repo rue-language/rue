@@ -10,6 +10,10 @@ companion of [diagnostics.md](diagnostics.md), which owns the *other* machine
 surface: `--error-format json` compiler diagnostics on stderr. The two are
 orthogonal and stay on their own streams.
 
+The event and listing streams use schema `1.1`. This minor version adds
+expected-failure classification and known-bug metadata while preserving the
+existing event structure and failure payloads.
+
 ```bash
 rue test app/main.rue
 rue test app/main.rue --format json
@@ -40,14 +44,15 @@ for an ordinary build of the same closure.
   one test's closure a different thing: that test gets the `compile_error`
   verdict and every other test still runs. A selection whose tests are all
   `compile_error` still links its dispatcher, so it still emits `run_started`,
-  its `test_finished` events, and `run_finished`, and exits `1`.
+  its `test_finished` events, and `run_finished`; it exits `1` unless every
+  compile error is an applicable expected failure.
 
 ## Exit codes
 
 | Code | Meaning |
 |------|---------|
-| `0` | Every selected test passed. |
-| `1` | At least one selected test failed, timed out, crashed, or is a `compile_error`. |
+| `0` | Every selected test passed or was an expected failure. |
+| `1` | At least one selected test failed, timed out, crashed, is an ordinary `compile_error`, or is an unexpected pass. |
 | `2` | The run could not be performed: a compile failure outside every test closure, a failing image link, an ICE, a bad flag combination, an unreadable root or candidate inventory, or a runner error. |
 | `3` | The selection was empty. |
 
@@ -252,7 +257,7 @@ The head event, and the only one carrying the schema version for a run.
 | Key | Type | Meaning |
 |-----|------|---------|
 | `event` | `"run_started"` | |
-| `schema` | string | Schema version, `"1.0"`. |
+| `schema` | string | Schema version, `"1.1"`. |
 | `root` | string | The root source exactly as the command line spelled it. |
 | `target` | string | The Rue target the image was built for. |
 | `opt_level` | string | The optimization level's digit: `"0"`–`"3"`. |
@@ -275,15 +280,26 @@ The head event, and the only one carrying the schema version for a run.
 |-----|------|---------|
 | `event` | `"test_finished"` | |
 | `id` | string | The stable test ID. |
-| `verdict` | string | `"pass"`, `"fail"`, `"timeout"`, `"crash"`, or `"compile_error"`. |
+| `verdict` | string | `"pass"`, `"fail"`, `"timeout"`, `"crash"`, `"compile_error"`, `"xfail"`, or `"xpass"`. |
 | `duration_ms` | integer | Wall time from spawn to reap. |
 | `capability_summary` | object | `{"status":"unavailable"}` — see below. |
-| `failure` | object | The failure record. **Absent** on a pass. |
+| `failure` | object | The failure record. **Absent** for `pass` and `xpass`. |
 | `stdout` | object | Capture record. |
 | `stderr` | object | Capture record. |
 | `scratch_dir` | string | The retained scratch directory. **Absent** on a pass, whose directory is deleted. |
 | `repro` | array of strings | The argv that reproduces this one test, naming the compiler and the root by absolute path. Always present. |
 | `repro_env` | object | The environment assignments that argv must be run under, as `name` → `value`. **Absent** when the run owed the environment nothing. |
+
+The `verdict` is `xfail` or `xpass` when an applicable `@known_bug` marker
+classifies an ordinary failure or pass. The `failure` record remains present for
+an xfail, and preserves the underlying failure kind; a compile error therefore
+has `verdict: "xfail"` and `failure.kind: "compile_error"`. An xpass retains
+its captured output and scratch directory for the full human report, but has no
+failure record because the process passed. Both classifications are counted in
+`run_finished.xfail` or `run_finished.xpass`; xpass makes the run exit `1` so
+a fixed bug prompts removal of its marker. Timeouts, crashes, output
+overflow, incomplete dispatches, malformed failure channels, and runner errors
+are never xfail-suppressed.
 
 `capability_summary` is present from v1.0 with an explicit `unavailable` status
 rather than omitted. The MVP verifies no hermeticity claim for any test and says
@@ -401,7 +417,7 @@ locates nothing.
 |-----|------|---------|
 | `encoding` | `"utf8"` \| `"base64"` | How `data` is encoded. |
 | `bytes_total` | integer | Every byte the process wrote to this stream — not the size of what was kept. |
-| `data` | string | The retained prefix. Present on a **non-pass**. |
+| `data` | string | The retained prefix. Present on a **non-pass**, including `xfail` and `xpass`. |
 | `digest` | string | `sha256:<hex>` over the retained bytes. Present on a **pass**. |
 
 Rue strings are arbitrary byte sequences written raw, so capture is lossless
@@ -446,7 +462,9 @@ second retention limit.
 | Key | Type | Meaning |
 |-----|------|---------|
 | `event` | `"run_finished"` | |
-| `passed` / `failed` / `timeout` / `crash` / `compile_error` | integer | Counts by verdict. |
+| `passed` / `failed` / `timeout` / `crash` / `compile_error` | integer | Counts ordinary observed verdicts; xfail and xpass are counted separately. |
+| `xfail` | integer | Applicable marked tests that produced an ordinary failure, including a per-test `compile_error`. |
+| `xpass` | integer | Applicable marked tests that passed unexpectedly. These make the run exit `1`. |
 | `wall_ms` | integer | Wall time for the whole run. |
 | `unimported_test_files` | array | Declared test files outside the closure. **Absent** without `--test-candidates`. |
 | `test_candidates` | `"declared"` \| `"none"` | Whether an inventory was supplied. |
@@ -504,12 +522,14 @@ carry it, each record names the schema version itself.
 | Key | Type | Meaning |
 |-----|------|---------|
 | `event` | `"test"` | |
-| `schema` | string | `"1.0"`. |
+| `schema` | string | `"1.1"`. |
 | `id` | string | The stable test ID. |
 | `module` | string | The module half of the ID. |
 | `name` | string | The test's name, verbatim. |
 | `file` | string | The declaring file as the compiler observed it. |
 | `line` / `column` | integer | 1-indexed position of the `test "name"` header, or `0` when the declaration could not be located in its module's syntax tree. |
+| `known_bug` | string | The issue marker from an unscoped `@known_bug("RUE-NNN")`. **Absent** when none is present. |
+| `known_bug_on` | array | Platform-scoped markers from `@known_bug_on("platform", "RUE-NNN")`, each `{"issue","platform"}`. **Absent** when none is present. |
 
 `--list --format human` prints one ID per line.
 
@@ -533,11 +553,15 @@ One classifier decides every verdict from one observation of a finished process:
 the runner's own supervision outcome, the exit status, the last non-empty line
 of stderr, and the frames read from the failure channel. One verdict is decided
 without a process at all — `compile_error`, below — because the compiler decided
-it before the run began.
+it before the run began. The applicable known-bug marker then classifies an
+eligible failure as `xfail` or a pass as `xpass`, preserving the original
+failure evidence.
 
 | Verdict | Failure kind | Produced when |
 |---------|--------------|---------------|
 | `pass` | — | Exit `0` **and** a `complete` frame was read. |
+| `xfail` | Underlying failure kind | An applicable known-bug marker accompanies an ordinary test failure or per-test compile error. |
+| `xpass` | — | An applicable known-bug marker accompanies a passing process. |
 | `fail` | `incomplete` | Exit `0` with no `complete` frame. |
 | `fail` | `assert` | A `failure` frame from a failed `@assert`, carrying the intrinsic's own site and its message. Falls back to the last stderr line being exactly `assertion failed` — which is what a comptime-decidable `@assert_eq` still reports as, and what an older image writes. |
 | `fail` | `assert_eq` | A `failure` frame from a failed `@assert_eq`, carrying `left` and `right`. |
@@ -598,7 +622,8 @@ declaration failures to their dependents is tracked as follow-up work.
 current behaviour so the residual is executable rather than prose.
 
 The event is the ordinary `test_finished` shape, so a consumer branches on
-`verdict` and nothing else: `duration_ms` is `0` and the capture records are
+`verdict` and its failure record: an expected compile error has `verdict:
+"xfail"`, while `failure.kind` remains `"compile_error"`; `duration_ms` is `0` and the capture records are
 empty, because no process existed; `scratch_dir` is absent for the same reason;
 `repro` is present as always. Its failure record carries `kind`
 `"compile_error"`, the first diagnostic's `message` and primary span as
@@ -883,7 +908,7 @@ verdict cache (ADR-0083 §6), which is opt-in and knows what it is claiming.
 
 ## Versioning
 
-This schema follows ADR-0061 §6. The version is `1.0`, published in the head
+This schema follows ADR-0061 §6. The version is `1.1`, published in the head
 event of a run and in each `--list --format json` record.
 
 - **Additive changes are minors.** A new event kind, a new optional field, a new
