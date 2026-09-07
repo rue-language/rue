@@ -32433,6 +32433,14 @@
       "platform": "x86_64-linux",
       "report": "c0e96181c48fc2770b4214ad419a2894b33c2a0ca837a11b198c46a5e29a3bf7",
       "suite_revision": 6
+    },
+    {
+      "commit": "f4cdeca4c5ec8dada0cf969c69a823dc15cbf86c",
+      "epoch": 6,
+      "finished_at": "2026-09-07T12:57:18Z",
+      "platform": "aarch64-macos",
+      "report": "632874137615de4146cd45c9f86c54e1cee4cccdfb07ccce32e3e00659212562",
+      "suite_revision": 6
     }
   ],
   "schema_version": 1
