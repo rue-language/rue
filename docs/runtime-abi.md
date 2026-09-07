@@ -14,8 +14,11 @@ target rules without duplicating that contract's helper table.
   result-storage aggregates;
 - safety requirements, return behavior, and target availability;
 - separately classified entry points, compiler-built memory routines,
-  platform shims, and the retained ABI-version marker; and
-- the current lockstep ABI version.
+  platform shims, and the retained ABI-version marker;
+- the current lockstep ABI version; and
+- the rendering bound and truncation marker (`RENDERING_BOUND`,
+  `RENDERING_TRUNCATION_MARKER`) the compiler's payload printer and the
+  runtime's record writer are both held to.
 
 Compiler phases carry `RuntimeHelperId` and typed runtime-call adaptations.
 AIR and CFG do not discover runtime behavior from symbol strings. Shared call
@@ -356,13 +359,16 @@ path directly rather than calling `__rue_panic` — a second `trap:panic` frame
 after their own would be noise on a channel whose first frame is the verdict.
 
 The record writer holds every helper above to two rules the caller does not have
-to know about. A `message` reaches the channel bounded to 4096 bytes, cut to
-that bound with ` …[truncated]` appended, because the channel's retention budget
-is the runner's and a record that exhausts it costs the test its class and its
-exit status; the same message still reaches stderr whole, within stderr's own
-retention budget. And a byte that is not part of a well-formed UTF-8 sequence is
-escaped as `\u00xx` rather than written raw, because a Rue string is an
-arbitrary byte sequence and a record has to stay JSON text (RUE-2064).
+to know about. A `message` reaches the channel bounded to `RENDERING_BOUND`
+(4096) bytes, cut to that bound with `RENDERING_TRUNCATION_MARKER`
+(` …[truncated]`) appended — the same manifest pair the compiler's payload
+printer renders to, so the record and the rendering it carries cannot drift
+apart — because the channel's retention budget is the runner's and a record
+that exhausts it costs the test its class and its exit status; the same message
+still reaches stderr whole, within stderr's own retention budget. And a byte
+that is not part of a well-formed UTF-8 sequence is escaped as `\u00xx` rather
+than written raw, because a Rue string is an arbitrary byte sequence and a
+record has to stay JSON text (RUE-2064).
 [test-events.md](process/test-events.md) states both as the consumer-facing
 contract.
 

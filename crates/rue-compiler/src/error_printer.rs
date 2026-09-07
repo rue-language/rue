@@ -63,10 +63,16 @@ type Place = SemanticBodyPlace<crate::StableDefinitionKey, crate::ModuleId>;
 type Projection = SemanticBodyProjection<crate::StableDefinitionKey, crate::ModuleId>;
 
 /// Rendered-payload budget in bytes (ADR-0083 §2 capture bounds).
-pub(crate) const PAYLOAD_BUDGET: u64 = 4096;
+///
+/// This is [`rue_runtime_abi::RENDERING_BOUND`]: the runtime's test channel
+/// bounds a failure record's `message` to the same constant, so a rendering
+/// and the record carrying it agree by construction rather than by two
+/// literals staying in step by hand.
+pub(crate) const PAYLOAD_BUDGET: u64 = rue_runtime_abi::RENDERING_BOUND;
 
-/// Appended when a rendering exceeded [`PAYLOAD_BUDGET`].
-pub(crate) const TRUNCATION_MARKER: &str = " …[truncated]";
+/// Appended when a rendering exceeded [`PAYLOAD_BUDGET`], in the spelling
+/// [`rue_runtime_abi::RENDERING_TRUNCATION_MARKER`] carries for both writers.
+pub(crate) const TRUNCATION_MARKER: &str = rue_runtime_abi::RENDERING_TRUNCATION_MARKER;
 
 /// How one value renders once the walk has stopped descending.
 ///

@@ -119,19 +119,23 @@ const USAGE_MESSAGE: [u8; 50] = *b"rue-test: expected one 16-hex-digit test sele
 
 /// How many bytes of a record's `message` reach the channel.
 ///
-/// The same 4 KiB rendering bound the `?` payload and the comparison operands
-/// are held to (spec 6.7:15), applied here for a different reason: those are
-/// bounded so a report stays readable, and this is bounded so a report stays a
-/// report. The channel's retention budget is a quarter of a stream's and JSON
-/// escaping can expand a control byte six-fold, so a message a few tens of
-/// kilobytes long would exhaust the budget, and the runner answers an exhausted
-/// channel by killing the process group and publishing `output_overflow` — the
-/// trap's class and its exit status lost to the length of its own text.
-const MESSAGE_BOUND: usize = 4096;
+/// This is [`rue_runtime_abi::RENDERING_BOUND`] — the same 4 KiB rendering
+/// bound the `?` payload and the comparison operands are held to (spec
+/// 6.7:15), read from the one crate the compiler's printer and this writer
+/// both depend on rather than spelled again here — applied for a different
+/// reason: those are bounded so a report stays readable, and this is bounded
+/// so a report stays a report. The channel's retention budget is a quarter of
+/// a stream's and JSON escaping can expand a control byte six-fold, so a
+/// message a few tens of kilobytes long would exhaust the budget, and the
+/// runner answers an exhausted channel by killing the process group and
+/// publishing `output_overflow` — the trap's class and its exit status lost to
+/// the length of its own text.
+const MESSAGE_BOUND: usize = rue_runtime_abi::RENDERING_BOUND as usize;
 
 /// Appended to a `message` the bound cut short, in the spelling spec 6.7:15
-/// already fixes for a truncated rendering.
-const TRUNCATION_MARKER: [u8; 15] = *b" \xe2\x80\xa6[truncated]";
+/// already fixes for a truncated rendering and
+/// [`rue_runtime_abi::RENDERING_TRUNCATION_MARKER`] carries for both writers.
+const TRUNCATION_MARKER: &[u8] = rue_runtime_abi::RENDERING_TRUNCATION_MARKER.as_bytes();
 
 /// Emitter for one channel frame.
 ///
@@ -344,7 +348,7 @@ fn failure_head(
     for run in message {
         if run.len() > remaining {
             writer.escaped(&run[..remaining]);
-            writer.raw(&TRUNCATION_MARKER);
+            writer.raw(TRUNCATION_MARKER);
             break;
         }
         writer.escaped(run);
