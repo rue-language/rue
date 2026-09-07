@@ -1285,6 +1285,49 @@ fn addressable_value_plan<A: ValueLowerAdapter>(
     }
 }
 
+/// The CFG reads lowering deliberately never materializes.
+///
+/// A read whose every use is a by-reference (`inout`/`borrow`) call argument
+/// supplies only the address of the place it names: [`addressable_value_plan`]
+/// classifies that place straight out of the CFG and
+/// [`crate::byref_args::lower_byref_arg_addr`] forms the address without ever
+/// consulting the read's own result. Lowering the read anyway leaves a load of
+/// the place whose loaded value nothing consumes (RUE-2087).
+///
+/// Two restrictions keep the elision from changing what a function does:
+///
+/// - Only the reads [`addressable_value_plan`] classifies are elided. Anything
+///   else reaching a by-reference argument violates a CFG invariant the call
+///   planner already rejects, and dropping it would drop its effects.
+/// - A `PlaceRead` is elided only over a base whose *provenance* is the
+///   compiler's. `Local` is the frame, and `Param` is either the frame or the
+///   pointer an `inout`/`borrow` parameter received — a pointer the caller's
+///   own lowering formed from a live place, so the dereference the elided read
+///   performs cannot fault and dropping it is free. `Indirect` is the
+///   user-computed pointer of the trusted-std `@place` bridge; the read
+///   dereferences it while the address path only copies it, so eliding that
+///   one would remove a fault the program can actually take. The bounds check
+///   an indexed place needs is not at stake either way: the address path
+///   (`lower_checked_place_addr_plan`) emits it too, so the trap edge survives
+///   the elision.
+pub(crate) fn address_only_reads(ctx: &CfgLowerContext<'_>) -> Vec<bool> {
+    let mut elided = ctx.cfg.address_only_values();
+    for (index, elide) in elided.iter_mut().enumerate() {
+        if !*elide {
+            continue;
+        }
+        let value = CfgValue::from_raw(index as u32);
+        *elide = match &ctx.cfg.get_inst(value).data {
+            CfgInstData::Param { .. } | CfgInstData::Load { .. } => true,
+            CfgInstData::PlaceRead { place } => {
+                matches!(place.base, PlaceBase::Local(_) | PlaceBase::Param(_))
+            }
+            _ => false,
+        };
+    }
+    elided
+}
+
 fn place_from_value<A: ValueLowerAdapter>(
     ctx: &CfgLowerContext<'_>,
     adapter: &mut A,

@@ -1693,6 +1693,20 @@ impl Cfg {
         self.values.len()
     }
 
+    /// The attached values whose every use is a by-reference call argument.
+    ///
+    /// Such a value names a place a callee reaches through a pointer: no
+    /// instruction and no terminator in this graph reads the value that place
+    /// held, so a consumer that only needs the address -- code generation --
+    /// has no reason to materialize it (RUE-2087). The answer is a dense map
+    /// over [`Self::value_count`].
+    ///
+    /// Only uses that a consumer would lower count. A detached instruction is
+    /// not lowered, so its operands are not reads.
+    pub fn address_only_values(&self) -> Vec<bool> {
+        crate::opt::address_only_values(self)
+    }
+
     pub(crate) fn push_intrinsic_args<I>(
         &mut self,
         values: I,

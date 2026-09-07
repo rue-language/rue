@@ -31,7 +31,7 @@
 //!   classification rather than a Rue-defined panic guarantee (RUE-57).
 
 use super::classify;
-use crate::{BlockId, Cfg, CfgInstData, CfgValue, Projection, Terminator};
+use crate::{BlockId, Cfg, CfgArgMode, CfgInstData, CfgValue, Projection, Terminator};
 
 /// Semantically relevant mutations performed by one DCE run.
 ///
@@ -238,15 +238,50 @@ pub(super) fn visit_terminator_uses(cfg: &Cfg, term: &Terminator, mut f: impl Fn
     }
 }
 
+/// How an instruction consumes one operand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CfgUseKind {
+    /// The operand's contents are read.
+    Value,
+    /// Only the place the operand reads is named, never its contents. A
+    /// by-reference (`inout`/`borrow`) call argument forwards the address of
+    /// the place its operand reads, so the value that place held at the call
+    /// is not a use of anything (RUE-2087).
+    Address,
+}
+
 /// Visit values used by an instruction.
 ///
 /// Calls the provided function for each value used by the instruction.
 /// This avoids allocating a Vec for each call. Exposed to sibling passes
 /// (LICM, RUE-927) so operand enumeration lives in exactly one exhaustive match
-/// over `CfgInstData` here — a new instruction variant cannot silently gain an
-/// operand that LICM's invariance check fails to see.
+/// over `CfgInstData` — a new instruction variant cannot silently gain an
+/// operand that LICM's invariance check fails to see. That match is
+/// [`visit_instruction_uses_kinded`]; this is its kind-dropping projection.
 #[inline]
 pub(super) fn visit_instruction_uses(cfg: &Cfg, value: CfgValue, mut f: impl FnMut(CfgValue)) {
+    visit_instruction_uses_kinded(cfg, value, |used, _| f(used));
+}
+
+/// Visit values used by an instruction, reporting how each is consumed.
+///
+/// This is the one exhaustive match over `CfgInstData` operands. Adding an
+/// operand to any variant — including a new by-reference one — is a
+/// compile-time obligation here and nowhere else, so no consumer can silently
+/// miss it.
+#[inline]
+pub(super) fn visit_instruction_uses_kinded(
+    cfg: &Cfg,
+    value: CfgValue,
+    mut f: impl FnMut(CfgValue, CfgUseKind),
+) {
+    /// An operand whose contents the instruction reads. Every arm below uses
+    /// this; the call arm is the one that also reports `Address`.
+    macro_rules! read {
+        ($operand:expr) => {
+            f($operand, CfgUseKind::Value)
+        };
+    }
     match &cfg.get_inst(value).data {
         // Constants and parameters have no uses
         CfgInstData::Const(_)
@@ -275,56 +310,62 @@ pub(super) fn visit_instruction_uses(cfg: &Cfg, value: CfgValue, mut f: impl FnM
         | CfgInstData::BitXor(lhs, rhs)
         | CfgInstData::Shl(lhs, rhs)
         | CfgInstData::Shr(lhs, rhs) => {
-            f(*lhs);
-            f(*rhs);
+            read!(*lhs);
+            read!(*rhs);
         }
 
         // Unary operations
-        CfgInstData::Neg(v) | CfgInstData::Not(v) | CfgInstData::BitNot(v) => f(*v),
+        CfgInstData::Neg(v) | CfgInstData::Not(v) | CfgInstData::BitNot(v) => read!(*v),
 
         // Variable operations
-        CfgInstData::Alloc { init, .. } => f(*init),
+        CfgInstData::Alloc { init, .. } => read!(*init),
         CfgInstData::Load { .. } => {}
-        CfgInstData::Store { value, .. } => f(*value),
-        CfgInstData::ParamStore { value, .. } => f(*value),
+        CfgInstData::Store { value, .. } => read!(*value),
+        CfgInstData::ParamStore { value, .. } => read!(*value),
 
         // Function calls
+        // The one arm that distinguishes the two kinds: a by-reference
+        // argument forwards the address of the place its operand reads.
         CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
             for arg in cfg.call_args(args) {
-                f(arg.value);
+                let kind = match arg.mode {
+                    CfgArgMode::Normal => CfgUseKind::Value,
+                    CfgArgMode::Inout | CfgArgMode::Borrow => CfgUseKind::Address,
+                };
+                f(arg.value, kind);
             }
         }
         CfgInstData::Intrinsic { args, .. } => {
             for &v in cfg.intrinsic_args(args) {
-                f(v);
+                read!(v);
             }
         }
 
         // Struct operations
         CfgInstData::StructInit { fields, .. } => {
             for &v in cfg.struct_fields(fields) {
-                f(v);
+                read!(v);
             }
         }
         // Array operations
         CfgInstData::ArrayInit { elements, .. } => {
             for &v in cfg.array_elements(elements) {
-                f(v);
+                read!(v);
             }
         }
         // Enum operations: a tuple variant reads its payload operands.
         CfgInstData::EnumVariant { payload, .. } => {
             for &v in cfg.enum_payload(payload) {
-                f(v);
+                read!(v);
             }
         }
-        CfgInstData::EnumPayloadGet { base, .. } => f(*base),
+        CfgInstData::EnumPayloadGet { base, .. } => read!(*base),
 
         // Type conversion
-        CfgInstData::IntCast { value, .. } => f(*value),
+        CfgInstData::IntCast { value, .. } => read!(*value),
 
         // Drop
-        CfgInstData::Drop { value } => f(*value),
+        CfgInstData::Drop { value } => read!(*value),
 
         // Storage liveness
         CfgInstData::StorageLive { .. } | CfgInstData::StorageDead { .. } => {}
@@ -334,30 +375,60 @@ pub(super) fn visit_instruction_uses(cfg: &Cfg, value: CfgValue, mut f: impl FnM
             if let crate::PlaceBase::Accessor(value) | crate::PlaceBase::Indirect(value) =
                 place.base
             {
-                f(value);
+                read!(value);
             }
             // Visit any index values used in projections
             for proj in cfg.get_place_projections(place) {
                 if let Projection::Index { index, .. } = proj {
-                    f(*index);
+                    read!(*index);
                 }
             }
         }
         CfgInstData::PlaceWrite { place, value } => {
-            f(*value);
+            read!(*value);
             if let crate::PlaceBase::Accessor(value) | crate::PlaceBase::Indirect(value) =
                 place.base
             {
-                f(value);
+                read!(value);
             }
             // Visit any index values used in projections
             for proj in cfg.get_place_projections(place) {
                 if let Projection::Index { index, .. } = proj {
-                    f(*index);
+                    read!(*index);
                 }
             }
         }
     }
+}
+
+/// The engine behind [`crate::Cfg::address_only_values`], which is the public
+/// face of this query; it lives here so the operand enumeration above stays
+/// private to this module.
+pub(crate) fn address_only_values(cfg: &Cfg) -> Vec<bool> {
+    let mut addressed = vec![false; cfg.value_count()];
+    let mut read = vec![false; cfg.value_count()];
+    // A verified CFG's operands are all in range, but this is a public query
+    // over any `Cfg`, so an out-of-range operand is ignored rather than made a
+    // panic. The dense answer it returns is safe to index directly.
+    fn mark(map: &mut [bool], used: CfgValue) {
+        if let Some(flag) = map.get_mut(used.as_u32() as usize) {
+            *flag = true;
+        }
+    }
+    for block in cfg.blocks() {
+        for &value in &block.insts {
+            visit_instruction_uses_kinded(cfg, value, |used, kind| match kind {
+                CfgUseKind::Value => mark(&mut read, used),
+                CfgUseKind::Address => mark(&mut addressed, used),
+            });
+        }
+        visit_terminator_uses(cfg, &block.terminator, |used| mark(&mut read, used));
+    }
+    addressed
+        .into_iter()
+        .zip(read)
+        .map(|(addressed, read)| addressed && !read)
+        .collect()
 }
 
 /// Remove dead instructions from basic blocks.

@@ -39,6 +39,8 @@ mod slot_facts;
 mod unroll;
 mod use_index;
 
+pub(crate) use dce::address_only_values;
+
 use crate::{CfgEditError, CfgVerificationError, ValidatedCfg};
 use rue_air::FrozenTypeInternPool;
 
