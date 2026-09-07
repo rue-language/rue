@@ -1016,8 +1016,8 @@ mod tests {
             Terminator::Return { value: Some(v) } if v == unit_load
         ));
     }
-    /// The other direction of the same aliasing, which no CLI case can cover:
-    /// the `()` is stored *last* and a sized load of the shared slot follows.
+    /// The other direction of the same aliasing: the `()` is stored *last* and
+    /// a sized load of the shared slot follows.
     ///
     /// Reaching this from source needs the zero-sized local to be re-assigned
     /// after the sized one is initialized (`let mut e: () = (); let y: i64 = 5;
@@ -1025,11 +1025,11 @@ mod tests {
     /// local's `Alloc` always comes first. That shape is miscompiled the other
     /// way round — the `()` reaches a sized consumer and makes its materialized
     /// slot count zero, so a store or an argument disappears rather than
-    /// appearing. It is pinned here rather than in `rue-cli-tests` because the
-    /// differential oracle mismodels the source shape itself: its own local
-    /// store is keyed by slot index too, so the re-assigned `()` overwrites the
-    /// sized neighbour and it reports the wrong answer for a correctly compiled
-    /// program.
+    /// appearing. The source form is covered by the `cli.zero_sized_slot_sharing`
+    /// re-assignment cases (it became oracle-gateable once RUE-2095 keyed the
+    /// reference interpreter's own local store by `(slot, Type)`); this test
+    /// drives the CFG shape directly, without depending on which consumer
+    /// happens to observe the ill-typed operand.
     #[test]
     fn test_block_local_declines_forwarding_a_zero_sized_store_to_a_sized_load() {
         let mut cfg = make_cfg(1);

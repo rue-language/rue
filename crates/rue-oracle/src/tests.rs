@@ -1826,6 +1826,97 @@ fn zst_param_forwarded_through_two_calls() {
     assert_eq!(exit(src), 42);
 }
 
+// ---- zero-sized locals sharing a frame slot (RUE-2095) ---------------------
+//
+// `reserve_frame_slots` advances the frame watermark by `abi_slot_count(ty)`,
+// so a zero-sized local reserves nothing and the next local receives the same
+// `$n`. Slot indices are therefore not unique storage names, and the oracle's
+// local store keys `(slot, Type)` so a `()` write cannot reach the sized
+// neighbour's value. RUE-2086 fixed the same hazard in the optimizer; the
+// oracle had it too, which made a *correct* compiler look like a miscompile and
+// left this whole shape class un-gateable by oracle-diff.
+
+#[test]
+fn zst_reassignment_does_not_clobber_the_local_sharing_its_slot() {
+    let src = "fn main() -> i32 {
+        let mut e: () = ();
+        let y: i64 = 5;
+        e = ();
+        @dbg(y);
+        0
+    }";
+    assert_eq!(run(src).stdout, "5\n");
+}
+
+#[test]
+fn two_zst_types_sharing_one_slot_keep_the_sized_value() {
+    // Each zero-sized local reserves nothing, so `()`, `Empty` and `i64` all
+    // root at the same index. Only the type separates the three.
+    let src = "struct Empty { unit: () }
+    fn main() -> i32 {
+        let mut a: () = ();
+        let mut b: Empty = Empty { unit: () };
+        let y: i64 = 7;
+        a = ();
+        b = Empty { unit: () };
+        @dbg(y);
+        0
+    }";
+    assert_eq!(run(src).stdout, "7\n");
+}
+
+#[test]
+fn zst_reassignment_in_a_loop_does_not_clobber_the_shared_slot() {
+    let src = "fn main() -> i32 {
+        let mut i: i64 = 0;
+        let mut e: () = ();
+        let mut acc: i64 = 0;
+        while i < 4 {
+            let y: i64 = i + 10;
+            e = ();
+            acc = acc + y;
+            i = i + 1;
+        }
+        @dbg(acc);
+        0
+    }";
+    assert_eq!(run(src).stdout, "46\n");
+}
+
+#[test]
+fn zst_sharing_a_slot_with_an_aggregate_keeps_the_aggregate_projectable() {
+    // A slot-keyed store replaced the aggregate with the unit value, so the
+    // next field projection reported NonAggregateProjectionRead rather than a
+    // wrong answer. Place bases are keyed by `place.base_type` for that reason.
+    let src = "struct Pair { a: i64, b: i64 }
+    fn main() -> i32 {
+        let mut e: () = ();
+        let mut p: Pair = Pair { a: 3, b: 4 };
+        e = ();
+        p.b = p.a + p.b;
+        @dbg(p.a);
+        @dbg(p.b);
+        0
+    }";
+    assert_eq!(run(src).stdout, "3\n7\n");
+}
+
+#[test]
+fn zst_sharing_a_slot_with_an_address_taken_local_writes_through_the_pointer() {
+    // The promotion table is keyed the same way: a `()` store to the shared
+    // index must not be redirected into the sized neighbour's heap allocation.
+    let src = "fn main() -> i32 {
+        let mut e: () = ();
+        let mut y: i64 = 5;
+        let p: ptr mut i64 = checked { @raw_mut(y) };
+        e = ();
+        checked { @ptr_write(p, 11) };
+        @dbg(y);
+        0
+    }";
+    assert_eq!(run(src).stdout, "11\n");
+}
+
 #[test]
 fn enum_parameter_width_comes_from_its_static_type() {
     let src = r#"enum Shape { Empty, One(i32), Pair(i32, i32) }

@@ -1332,14 +1332,25 @@ struct Frame {
     /// slot; extra by-value slots are `None` (they are only reached through the
     /// base via a projection, never directly).
     params: Vec<Option<Value>>,
-    locals: Vec<Option<Value>>,
+    /// Local storage keyed by `(slot, Type)`, never by the slot index alone.
+    ///
+    /// `reserve_frame_slots` advances the frame watermark by
+    /// `abi_slot_count(ty)`, so a zero-sized local reserves nothing and the
+    /// next local receives the same `$n` (RUE-2086). A slot index is therefore
+    /// not a unique name for a storage location, and a `()` write to the shared
+    /// index would otherwise clobber the sized neighbour's value. The type
+    /// discriminates them, which is the same key the CFG verifier's
+    /// `verify_raw_init_fact` and `verify_storage_fact` use for exactly this
+    /// convention (RUE-2095).
+    locals: HashMap<(u32, Type), Value>,
     cache: HashMap<u32, Value>,
     /// Slots whose address has been taken (`@raw`/`@raw_mut`/`@field_ptr`). The
     /// slot's storage is moved into the heap allocation named here; every
     /// subsequent `Load`/`Store`/`PlaceRead`/`PlaceWrite` of the slot aliases
     /// that allocation so a write through the pointer and a direct read agree.
-    /// Keyed by [`promotion_key`] over the slot's [`PlaceBase`].
-    promoted: HashMap<u64, usize>,
+    /// Keyed by [`promotion_key`], which carries the accessed type alongside
+    /// the [`PlaceBase`] for the same reason `locals` does.
+    promoted: HashMap<PromotionKey, usize>,
     /// Physical by-reference parameter slots bound to their caller locations.
     /// Ordinary calls retain copy-in/copy-out behavior and leave this empty;
     /// raw accessor execution uses it to preserve the yielded place identity.
@@ -3118,7 +3129,7 @@ impl<'a> Interp<'a> {
             .store(function, Ordering::Relaxed);
         let mut frame = Frame {
             params: param_slots,
-            locals: vec![None; cfg.num_locals() as usize],
+            locals: HashMap::new(),
             cache: HashMap::new(),
             promoted: HashMap::new(),
             param_places,
@@ -3200,11 +3211,10 @@ impl<'a> Interp<'a> {
                     // address, its canonical bytes (rather than the copy-in
                     // snapshot) are authoritative for that writeback.
                     for (&key, &alloc) in &frame.promoted {
-                        if key >> 32 == 1 {
-                            let slot = (key & u32::MAX as u64) as usize;
-                            if let Some(value) = final_params.get_mut(slot) {
-                                *value = Some(self.promoted_slot_value(alloc)?);
-                            }
+                        if let Some(slot) = key.param_slot()
+                            && let Some(value) = final_params.get_mut(slot)
+                        {
+                            *value = Some(self.promoted_slot_value(alloc)?);
                         }
                     }
                     return Ok((ret, final_params));
@@ -3770,8 +3780,9 @@ impl<'a> Interp<'a> {
                             ContractViolationKind::UnsplicedAccessor,
                         ),
                     )?
-                } else if let Some(&a) =
-                    frame.promoted.get(&promotion_key(PlaceBase::Param(*index)))
+                } else if let Some(&a) = frame
+                    .promoted
+                    .get(&promotion_key(PlaceBase::Param(*index), ty))
                 {
                     // The parameter's address was taken; read through its heap
                     // allocation so a `@ptr_write` is observed on re-read.
@@ -3880,14 +3891,18 @@ impl<'a> Interp<'a> {
             }
 
             CfgInstData::Alloc { slot, init } => {
+                // An `Alloc`'s own type is unit; the storage it names is keyed
+                // by the initializer's type, as in `verify_raw_init_fact`.
+                let init_ty = cfg.get_inst(*init).ty;
                 let val = self.eval(cfg, frame, *init)?;
-                self.store_local(frame, *slot, val)?;
+                self.store_local(frame, *slot, init_ty, val)?;
                 Value::Unit
             }
-            CfgInstData::Load { slot } => self.load_local(frame, *slot)?,
+            CfgInstData::Load { slot } => self.load_local(frame, *slot, ty)?,
             CfgInstData::Store { slot, value } => {
+                let stored_ty = cfg.get_inst(*value).ty;
                 let val = self.eval(cfg, frame, *value)?;
-                self.store_local(frame, *slot, val)?;
+                self.store_local(frame, *slot, stored_ty, val)?;
                 Value::Unit
             }
             CfgInstData::PlaceRead { place } => {
@@ -4669,25 +4684,20 @@ impl<'a> Interp<'a> {
         Ok(Value::Int(from_bits(r, bits, signed)))
     }
 
-    fn set_local(frame: &mut Frame, slot: u32, val: Value) {
-        let s = slot as usize;
-        if s >= frame.locals.len() {
-            frame.locals.resize(s + 1, None);
-        }
-        frame.locals[s] = Some(val);
+    fn set_local(frame: &mut Frame, slot: u32, ty: Type, val: Value) {
+        frame.locals.insert((slot, ty), val);
     }
 
-    fn get_local(frame: &Frame, slot: u32) -> Step<Value> {
-        frame
-            .locals
-            .get(slot as usize)
-            .and_then(|o| o.clone())
-            .ok_or_else(|| {
-                unsupported(
-                    UnsupportedKind::ContractViolation(ContractViolationKind::UninitializedLocal),
-                    format!("read of uninit local {slot}"),
-                )
-            })
+    fn get_local(frame: &Frame, slot: u32, ty: Type) -> Step<Value> {
+        frame.locals.get(&(slot, ty)).cloned().ok_or_else(|| {
+            unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::UninitializedLocal),
+                // The type is part of the storage name, so report it: a slot
+                // index alone cannot say which of the locals rooted there was
+                // read before it was written.
+                format!("read of uninit local {slot} ({ty:?})"),
+            )
+        })
     }
 
     // ---- aggregates & places ---------------------------------------------
@@ -4843,9 +4853,9 @@ impl<'a> Interp<'a> {
         self.promote_place(cfg, frame, place, cfg.get_inst(value).ty)
     }
 
-    fn base_value(frame: &Frame, base: PlaceBase) -> Step<Value> {
+    fn base_value(frame: &Frame, base: PlaceBase, base_type: Type) -> Step<Value> {
         match base {
-            PlaceBase::Local(slot) => Self::get_local(frame, slot),
+            PlaceBase::Local(slot) => Self::get_local(frame, slot, base_type),
             PlaceBase::Param(slot) => match frame.params.get(slot as usize) {
                 Some(Some(value)) => Ok(value.clone()),
                 Some(None) => Err(unsupported(
@@ -4898,7 +4908,7 @@ impl<'a> Interp<'a> {
                     unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrRead),
                 )?
             }
-            _ => self.base_value_of(frame, base)?,
+            _ => self.base_value_of(frame, base, place.base_type)?,
         };
         let mut current_ty = place.base_type;
         for (position, (idx, projection)) in path.iter().copied().enumerate() {
@@ -5046,7 +5056,7 @@ impl<'a> Interp<'a> {
         }
         // A promoted base writes through the canonical byte allocation. The
         // unpromoted path can still mutate the frame's logical value directly.
-        if let Some(&a) = frame.promoted.get(&promotion_key(base)) {
+        if let Some(&a) = frame.promoted.get(&promotion_key(base, place.base_type)) {
             let (byte_offset, pointee) = self
                 .projection_offset(place.base_type, &path)
                 .ok_or_else(|| {
@@ -5069,24 +5079,25 @@ impl<'a> Interp<'a> {
                 unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrWrite),
             );
         }
-        let root: &mut Value = {
-            let (store, slot) = match base {
-                PlaceBase::Local(slot) => (&mut frame.locals, slot as usize),
-                PlaceBase::Param(slot) => (&mut frame.params, slot as usize),
-                PlaceBase::Accessor(_) => {
-                    return Err(unsupported(
-                        UnsupportedKind::ContractViolation(
-                            ContractViolationKind::UnsplicedAccessor,
-                        ),
-                        "accessor place reached oracle write",
-                    ));
+        let root: &mut Value = match base {
+            PlaceBase::Local(slot) => frame
+                .locals
+                .entry((slot, place.base_type))
+                .or_insert(Value::Unit),
+            PlaceBase::Param(slot) => {
+                let slot = slot as usize;
+                if slot >= frame.params.len() {
+                    frame.params.resize(slot + 1, None);
                 }
-                PlaceBase::Indirect(_) => unreachable!("indirect places return above"),
-            };
-            if slot >= store.len() {
-                store.resize(slot + 1, None);
+                frame.params[slot].get_or_insert(Value::Unit)
             }
-            store[slot].get_or_insert(Value::Unit)
+            PlaceBase::Accessor(_) => {
+                return Err(unsupported(
+                    UnsupportedKind::ContractViolation(ContractViolationKind::UnsplicedAccessor),
+                    "accessor place reached oracle write",
+                ));
+            }
+            PlaceBase::Indirect(_) => unreachable!("indirect places return above"),
         };
         let mut cur = root;
         for (idx, _) in &path {
@@ -5233,11 +5244,11 @@ impl<'a> Interp<'a> {
     /// Current value of a place base, transparently reading through a promoted
     /// (address-taken) slot's heap allocation so a pointer write is observed by
     /// a later direct read of the same slot.
-    fn base_value_of(&self, frame: &Frame, base: PlaceBase) -> Step<Value> {
-        if let Some(&a) = frame.promoted.get(&promotion_key(base)) {
+    fn base_value_of(&self, frame: &Frame, base: PlaceBase, base_type: Type) -> Step<Value> {
+        if let Some(&a) = frame.promoted.get(&promotion_key(base, base_type)) {
             return self.promoted_slot_value(a);
         }
-        Self::base_value(frame, base)
+        Self::base_value(frame, base, base_type)
     }
 
     /// The logical value a promoted slot holds: the wrapped scalar unwrapped, or
@@ -5306,20 +5317,28 @@ impl<'a> Interp<'a> {
         Ok(())
     }
 
-    /// Read a local slot, honoring promotion.
-    fn load_local(&self, frame: &Frame, slot: u32) -> Step<Value> {
-        if let Some(&a) = frame.promoted.get(&promotion_key(PlaceBase::Local(slot))) {
+    /// Read a local slot, honoring promotion. `ty` is the accessed type, which
+    /// completes the storage key (see [`Frame::locals`]).
+    fn load_local(&self, frame: &Frame, slot: u32, ty: Type) -> Step<Value> {
+        if let Some(&a) = frame
+            .promoted
+            .get(&promotion_key(PlaceBase::Local(slot), ty))
+        {
             return self.promoted_slot_value(a);
         }
-        Self::get_local(frame, slot)
+        Self::get_local(frame, slot, ty)
     }
 
-    /// Write a local slot, honoring promotion.
-    fn store_local(&mut self, frame: &mut Frame, slot: u32, val: Value) -> Step<()> {
-        if let Some(&a) = frame.promoted.get(&promotion_key(PlaceBase::Local(slot))) {
+    /// Write a local slot, honoring promotion. `ty` is the stored value's type,
+    /// which completes the storage key (see [`Frame::locals`]).
+    fn store_local(&mut self, frame: &mut Frame, slot: u32, ty: Type, val: Value) -> Step<()> {
+        if let Some(&a) = frame
+            .promoted
+            .get(&promotion_key(PlaceBase::Local(slot), ty))
+        {
             self.set_promoted_slot(a, val)
         } else {
-            Self::set_local(frame, slot, val);
+            Self::set_local(frame, slot, ty, val);
             Ok(())
         }
     }
@@ -6421,14 +6440,14 @@ impl<'a> Interp<'a> {
         {
             return Ok(target);
         }
-        let key = promotion_key(base);
+        let key = promotion_key(base, place.base_type);
         // A pre-splice accessor can represent a borrowed receiver as the
         // canonical pointer value itself rather than in `param_places`. In
         // that form, a nested place such as `self.values` must stay rooted at
         // the pointer's allocation; promoting the base again would interpret
         // the pointer representation as the enclosing aggregate and lose the
         // receiver path.
-        if let Value::Ptr(Some(mut target)) = self.base_value_of(frame, base)? {
+        if let Value::Ptr(Some(mut target)) = self.base_value_of(frame, base, place.base_type)? {
             let (offset, view) =
                 self.projection_offset(place.base_type, &path)
                     .ok_or_else(|| {
@@ -6453,7 +6472,7 @@ impl<'a> Interp<'a> {
         let alloc = if let Some(&a) = frame.promoted.get(&key) {
             a
         } else {
-            let value = self.base_value_of(frame, base)?;
+            let value = self.base_value_of(frame, base, place.base_type)?;
             let a = self.heap_alloc_value(value, place.base_type, false)?;
             frame.promoted.insert(key, a);
             a
@@ -7449,8 +7468,26 @@ fn modeled_pointer_intrinsic(kind: UnsupportedIntrinsicKind) -> bool {
 }
 
 /// Stable map key for a promoted place base within a frame.
-fn promotion_key(base: PlaceBase) -> u64 {
-    match base {
+///
+/// `base` alone is not a unique storage name: a zero-sized local reserves no
+/// ABI slot, so its index is the index the next local receives (RUE-2086). The
+/// accessed type discriminates the two, matching how [`Frame::locals`] and the
+/// CFG verifier key the same convention (RUE-2095).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct PromotionKey {
+    base: u64,
+    ty: Type,
+}
+
+impl PromotionKey {
+    /// The parameter slot this key names, or `None` for any other base kind.
+    fn param_slot(self) -> Option<usize> {
+        (self.base >> 32 == 1).then_some((self.base & u32::MAX as u64) as usize)
+    }
+}
+
+fn promotion_key(base: PlaceBase, ty: Type) -> PromotionKey {
+    let base = match base {
         // Every payload is u32, so two high tag bits give the four base kinds
         // disjoint key spaces. In particular, an indirect value must never
         // alias an odd local's promoted allocation before the oracle reports
@@ -7459,7 +7496,8 @@ fn promotion_key(base: PlaceBase) -> u64 {
         PlaceBase::Param(slot) => (1u64 << 32) | slot as u64,
         PlaceBase::Accessor(value) => (2u64 << 32) | value.as_u32() as u64,
         PlaceBase::Indirect(value) => (3u64 << 32) | value.as_u32() as u64,
-    }
+    };
+    PromotionKey { base, ty }
 }
 
 /// Strictly decode the UTF-8 scalar starting at byte `offset`, returning

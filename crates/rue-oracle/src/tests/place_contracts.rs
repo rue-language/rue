@@ -30,20 +30,24 @@ fn flattened_parameter_padding_is_a_semantic_gap_but_oob_is_a_contract_failure()
             Some(Value::Aggregate(vec![Value::Int(1), Value::Int(2)])),
             None,
         ],
-        locals: Vec::new(),
+        locals: HashMap::new(),
         cache: HashMap::new(),
         promoted: HashMap::new(),
         param_places: HashMap::new(),
         place_return: false,
     };
 
-    let padding = expect_flow_unsupported(Interp::base_value(&frame, PlaceBase::Param(1)));
+    // The parameter's own type completes the storage key; for these two
+    // failure paths any type reaches the same parameter-slot diagnosis.
+    let padding =
+        expect_flow_unsupported(Interp::base_value(&frame, PlaceBase::Param(1), Type::I32));
     assert_eq!(
         padding.kind(),
         UnsupportedKind::SemanticGap(SemanticGapKind::FlattenedParameterSlot)
     );
 
-    let out_of_bounds = expect_flow_unsupported(Interp::base_value(&frame, PlaceBase::Param(2)));
+    let out_of_bounds =
+        expect_flow_unsupported(Interp::base_value(&frame, PlaceBase::Param(2), Type::I32));
     assert_eq!(
         out_of_bounds.kind(),
         UnsupportedKind::ContractViolation(ContractViolationKind::ParameterSlotOutOfBounds)
@@ -135,7 +139,7 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
         // metadata. A field projection of a non-aggregate must be a contract
         // violation, not a silently-read cell.
         params: vec![Some(Value::Ptr(None)), None],
-        locals: vec![None; cfg.num_locals() as usize],
+        locals: HashMap::new(),
         cache: HashMap::new(),
         promoted: HashMap::new(),
         param_places: HashMap::new(),
@@ -375,7 +379,7 @@ fn validated_cfg_rejects_invalid_owned_text_projection_metadata() {
     };
     let mut view_frame = Frame {
         params: Vec::new(),
-        locals: vec![None; view_cfg.num_locals() as usize],
+        locals: HashMap::new(),
         cache: HashMap::new(),
         promoted: HashMap::new(),
         param_places: HashMap::new(),
@@ -383,7 +387,9 @@ fn validated_cfg_rejects_invalid_owned_text_projection_metadata() {
     };
     // A non-aggregate value under str projection metadata: reading a field of
     // it must be a contract violation, not a silent success.
-    view_frame.locals[view_slot as usize] = Some(Value::Ptr(None));
+    view_frame
+        .locals
+        .insert((view_slot, view_place.base_type), Value::Ptr(None));
     let mut view_interp = Interp {
         state: &view_state,
         stdout_trace: Vec::new(),
