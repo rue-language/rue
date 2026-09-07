@@ -272,3 +272,60 @@ source = "pub fn answer() -> i32 { 2 }\n"
 [[case.watch.edits]]
 path = "helper.rue"
 source = "pub fn answer() -> i32 { let ; }\n"
+
+# RUE-2103. The suppression RUE-2091 added keys on the rendered diagnostic and
+# on an observation of the source. The observation half was built from the last
+# COMMITTED closure, and a failed re-observation commits nothing — so a module
+# that has never been read successfully was in no key at all, and saving it
+# produced no output whatsoever, however substantive the edit. That module is
+# not an unrelated file: wiring a pre-existing broken helper into the graph for
+# the first time is the ordinary way this failure arrives, which makes the
+# silent file exactly the one the diagnostic names and the user is editing.
+#
+# `extra.rue` is broken on disk from the start and imported by nobody. The
+# first edit wires it in; the second edits it; the third saves it without
+# changing a byte; the fourth repairs it. The two reports below carry the SAME
+# rendering at the SAME location, so only the source half of the key can have
+# produced the second one.
+[[case]]
+name = "an_edit_to_a_newly_imported_broken_module_is_acknowledged"
+files = [
+    { path = "main.rue", source = "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.answer() }\n" },
+    { path = "helper.rue", source = "pub fn answer() -> i32 { 1 }\n" },
+    { path = "extra.rue", source = "pub fn spare() -> i32 { 1 }\npub fn broken() -> i32 { 2\n" },
+]
+
+[case.watch]
+kind = "failure_outside_closure"
+expected_exit_codes = [1, 2]
+stderr_occurrences = [
+    # Twice, byte for byte, at the same line and column: the first report, and
+    # the acknowledgement of the edit to the file it names. A key that saw only
+    # the committed closure printed this once and then went silent.
+    { text = "error: [E0102]: expected semicolon after expression", count = 2 },
+    { text = "--> extra.rue:2:26", count = 2 },
+    # One status line per report, not one per retry and not one per save: the
+    # save that changed no bytes added none.
+    { text = "keeping the last successful executable", count = 2 },
+]
+
+# Wire the pre-existing broken module into the closure for the first time.
+[[case.watch.edits]]
+path = "helper.rue"
+source = "const extra = @import(\"extra.rue\");\npub fn answer() -> i32 { extra.broken() }\n"
+
+# Edit that module. Line 2 is untouched, so the diagnostic does not move.
+[[case.watch.edits]]
+path = "extra.rue"
+source = "pub fn spare() -> i32 { 41 }\npub fn broken() -> i32 { 2\n"
+
+# Save it without changing it. Content, not the modification time, is what
+# makes a revision.
+[[case.watch.edits]]
+path = "extra.rue"
+touch = true
+
+# Repair it. The published program now answers with the repaired module.
+[[case.watch.edits]]
+path = "extra.rue"
+source = "pub fn spare() -> i32 { 41 }\npub fn broken() -> i32 { 2 }\n"

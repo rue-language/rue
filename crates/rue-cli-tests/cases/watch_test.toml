@@ -463,3 +463,89 @@ path = "helper.rue"
 source = """
 pub fn double(x: i32) -> i32 { x * 2 }
 """
+
+[[case]]
+name = "an_edit_to_a_newly_imported_broken_module_is_acknowledged"
+description = """
+RUE-2103, on the test watcher. The two watchers share one re-observation arm,
+so they shared the gap: the suppression key's source half was an observation of
+the last COMMITTED closure, and a failed re-observation commits nothing, so a
+module that had never been read successfully was in no key at all. Saving it
+produced nothing — the exact "did the watcher even see me" silence the source
+trigger exists to prevent, on the file the diagnostic names.
+
+`extra.rue` is broken on disk from the start and imported by nobody. The first
+edit wires it into the test closure through `helper.rue`; the second edits it;
+the third saves it without changing a byte; the fourth repairs it. Both reports
+below carry the same message, so only the source half of the key can have
+produced the second.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 { 0 }
+""" },
+    { path = "helper.rue", source = """
+pub fn double(x: i32) -> i32 { x * 2 }
+""" },
+    { path = "tests.rue", source = """
+const helper = @import("helper.rue");
+
+test "doubles through the helper" {
+    @assert(helper.double(2) == 4);
+}
+""" },
+    { path = "extra.rue", source = """
+pub fn spare() -> i32 { 1 }
+pub fn broken() -> i32 { 2
+""" },
+]
+
+[case.watch_test]
+kind = "failure_outside_closure"
+expected_exit = 0
+stdout_contains = [
+    '"cycle":1,"event":"run_started"',
+    '"cycle":2,"event":"run_started"',
+    '"compile_error":0,"crash":0,"event":"run_finished","failed":0,"passed":1',
+]
+stdout_not_contains = [
+    # Neither failing revision published anything, and no cycle number was
+    # spent on one.
+    '"cycle":3',
+    '"event":"run_canceled"',
+]
+stderr_occurrences = [
+    # The same rendering twice: the first report, and the acknowledgement of
+    # the edit to the module it names.
+    { text = "error: [E0102]: expected semicolon after expression", count = 2 },
+    { text = "--> extra.rue:2:26", count = 2 },
+    { text = "no summary for this revision", count = 2 },
+]
+
+[[case.watch_test.edits]]
+path = "helper.rue"
+source = """
+const extra = @import("extra.rue");
+
+pub fn double(x: i32) -> i32 { x * 2 }
+"""
+
+[[case.watch_test.edits]]
+path = "extra.rue"
+source = """
+pub fn spare() -> i32 { 41 }
+pub fn broken() -> i32 { 2
+"""
+
+[[case.watch_test.edits]]
+path = "extra.rue"
+touch = true
+
+[[case.watch_test.edits]]
+path = "extra.rue"
+source = """
+pub fn spare() -> i32 { 41 }
+pub fn broken() -> i32 { 2 }
+"""

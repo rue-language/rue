@@ -199,6 +199,49 @@ pub fn watch_input_fingerprints(inputs: &[WatchInput]) -> Vec<Option<WatchFinger
         .collect()
 }
 
+/// One physical source read an observation attempt accepted: where it read,
+/// and what it read there.
+///
+/// The committed closure ([`ImportDiscoveryResult::watch_inputs`]) describes
+/// the last attempt that *succeeded*. A failed attempt commits nothing, so a
+/// module it read but never closed over is in no closure at all — and that
+/// module is frequently the one the failure's diagnostic names and the one
+/// being edited, because wiring a pre-existing broken file into the graph for
+/// the first time is exactly how the failure arrives (RUE-2103). This is the
+/// attempt's own record of what it touched, kept whether or not it committed.
+///
+/// The fingerprint is the accepted bytes' content hash, not file metadata, so
+/// re-reading identical content compares equal: a rewrite that changes nothing
+/// is not a new revision, and only a real edit is.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttemptedRead {
+    requested_path: Arc<str>,
+    canonical_path: Arc<str>,
+    content_fingerprint: u64,
+}
+
+/// Project an attempt's accepted-read manifest into its observation record.
+///
+/// Ordered by path rather than by the manifest's module identity so the record
+/// of two attempts over the same files compares equal regardless of the order
+/// discovery happened to reach them.
+fn attempted_reads_of(manifest: &AcceptedReadManifest) -> Vec<AttemptedRead> {
+    let mut reads: Vec<AttemptedRead> = manifest
+        .iter()
+        .map(|entry| AttemptedRead {
+            requested_path: Arc::from(entry.requested_path()),
+            canonical_path: Arc::from(entry.canonical_path()),
+            content_fingerprint: entry.content_fingerprint(),
+        })
+        .collect();
+    reads.sort_by(|left, right| {
+        left.requested_path
+            .cmp(&right.requested_path)
+            .then_with(|| left.canonical_path.cmp(&right.canonical_path))
+    });
+    reads
+}
+
 #[derive(Debug)]
 pub(crate) struct SourceManifest {
     path: PathBuf,
@@ -908,6 +951,16 @@ pub(crate) struct ImportDiscoveryResult {
     /// graph. These negative observations are load-bearing when a later
     /// candidate won resolution, because creating one changes that winner.
     observed_absent_paths: Vec<PathBuf>,
+    /// Every physical read the most recent observation attempt accepted,
+    /// whether or not that attempt went on to commit.
+    ///
+    /// This is deliberately not part of the committed closure: `watch_inputs`
+    /// stays the exact accepted-read closure a successful revision was built
+    /// from, which is what `--emit deps` and the cycle's change monitor mean.
+    /// This is the weaker, wider thing — what the loader looked at last — and
+    /// the watcher reads it to tell one failing revision from the next
+    /// (RUE-2103).
+    attempted_reads: Vec<AttemptedRead>,
     /// Canonical import topology and diagnostics published by the compiler.
     pub(crate) revision: Arc<ImportDiscoveryView>,
     #[cfg(test)]
@@ -979,6 +1032,11 @@ impl ImportDiscoveryResult {
                 },
             },
         }
+    }
+
+    /// What the most recent observation attempt read, successful or failed.
+    pub(crate) fn attempted_reads(&self) -> &[AttemptedRead] {
+        &self.attempted_reads
     }
 
     pub(crate) fn watch_inputs(&self) -> Vec<WatchInput> {
@@ -1859,10 +1917,12 @@ pub(crate) fn discover_and_load_imports(
         DiscoveryControl::default(),
     )?;
 
+    let read_manifest = assembler.accepted_read_manifest();
     Ok(ImportDiscoveryResult {
         source_snapshot: close.snapshot,
         resolution: SourceResolutionInputs { root_path, context },
-        read_manifest: assembler.accepted_read_manifest(),
+        attempted_reads: attempted_reads_of(&read_manifest),
+        read_manifest,
         observed_absent_paths: close.observed_absent_paths,
         revision: close.closed,
         #[cfg(test)]
@@ -1884,6 +1944,10 @@ pub(crate) fn reload_from_filesystem(
     supersession: Option<&dyn Fn() -> bool>,
 ) -> Result<(), SourceLoadError> {
     let control = DiscoveryControl::superseding(supersession);
+    // This attempt's observation record starts empty and is filled in once the
+    // assembler exists, so a failure before any read is described as having
+    // read nothing rather than inheriting the previous attempt's files.
+    result.attempted_reads.clear();
     control.checkpoint()?;
     let source_manifest = result
         .source_manifest
@@ -1978,10 +2042,22 @@ pub(crate) fn reload_from_filesystem(
             })?;
             return Err(SourceLoadError::Superseded);
         }
-        outcome => outcome?,
+        // A failed close commits nothing, so record what it managed to read
+        // before it failed. Without this the watcher has no observation of the
+        // module whose bytes made the attempt fail, and cannot tell the user's
+        // next edit to it from a bare retry (RUE-2103). A superseded attempt is
+        // excluded above: it was abandoned, not answered, and the restart
+        // observes the newer bytes itself.
+        Err(error) => {
+            result.attempted_reads = attempted_reads_of(&assembler.accepted_read_manifest());
+            return Err(error);
+        }
+        Ok(close) => close,
     };
+    let read_manifest = assembler.accepted_read_manifest();
+    result.attempted_reads = attempted_reads_of(&read_manifest);
     result.source_snapshot = close.snapshot;
-    result.read_manifest = assembler.accepted_read_manifest();
+    result.read_manifest = read_manifest;
     result.observed_absent_paths = close.observed_absent_paths;
     result.revision = close.closed;
     result.assembler = assembler;
@@ -2148,6 +2224,15 @@ pub(crate) fn acquire_reached_toolchain_modules_superseding(
                 ) {
                     Ok(reclosed) => reclosed,
                     Err(error) => {
+                        // Same as the re-observation failure above: the round
+                        // commits nothing, so its reads survive only here, and
+                        // the watcher needs them to tell a newly broken
+                        // toolchain module from the same one on the next retry
+                        // (RUE-2103).
+                        if !matches!(error, SourceLoadError::Superseded) {
+                            result.attempted_reads =
+                                attempted_reads_of(&round_assembler.accepted_read_manifest());
+                        }
                         let error = reclassify_reclose_failure(
                             error,
                             &result.resolution.context,
@@ -2165,6 +2250,7 @@ pub(crate) fn acquire_reached_toolchain_modules_superseding(
                 // Commit boundary: every assignment below is infallible, so the
                 // round is applied whole or not at all.
                 result.read_manifest = round_assembler.accepted_read_manifest();
+                result.attempted_reads = attempted_reads_of(&result.read_manifest);
                 result.assembler = round_assembler;
                 result.source_snapshot = reclosed.snapshot;
                 result.revision = reclosed.closed;
@@ -3504,6 +3590,96 @@ mod tests {
                 "every recorded read of the published revision verifies"
             );
         }
+    }
+
+    /// A re-observation that fails commits nothing, so the module whose bytes
+    /// made it fail joins no closure — and if that module was never in one, it
+    /// is in no watch input either. The attempt's own record of what it read
+    /// is the only account of it, and it is what lets a watcher tell the next
+    /// edit to that module from a bare retry (RUE-2103).
+    #[test]
+    fn a_failed_reobservation_records_the_module_it_could_not_close_over() {
+        let dir = TestDir::new("failed-attempt-reads");
+        let main = dir.write(
+            "main.rue",
+            r#"const helper = @import("helper.rue"); fn main() -> i32 { helper.value() }"#,
+        );
+        let helper = dir.write("helper.rue", "pub fn value() -> i32 { 1 }");
+        // Broken on disk from the start, and imported by nobody.
+        let extra = dir.write("extra.rue", "pub fn broken() -> i32 { 2");
+        let mut result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+        let names = |reads: &[AttemptedRead]| {
+            reads
+                .iter()
+                .map(|read| {
+                    Path::new(read.requested_path.as_ref())
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(result.attempted_reads()), ["helper.rue", "main.rue"]);
+
+        // Wire it in. Discovery reads it, fails to parse it, and commits none
+        // of the revision that read it.
+        fs::write(
+            &helper,
+            r#"const extra = @import("extra.rue"); pub fn value() -> i32 { extra.broken() }"#,
+        )
+        .unwrap();
+        assert!(reload_from_filesystem(&mut result, None).is_err());
+        assert!(
+            !result
+                .watch_inputs()
+                .iter()
+                .any(|input| input.requested_path().ends_with("extra.rue")),
+            "a failed attempt commits nothing, so the closure is still the last successful one"
+        );
+        let failed = result.attempted_reads().to_vec();
+        assert_eq!(names(&failed), ["extra.rue", "helper.rue", "main.rue"]);
+
+        // Retrying over the same bytes reads the same thing, which is what
+        // makes the repeat recognizable as one.
+        assert!(reload_from_filesystem(&mut result, None).is_err());
+        assert_eq!(result.attempted_reads(), failed);
+
+        // Editing the module records something else, even though the file set
+        // and every path in it is identical: the record is content-derived.
+        fs::write(&extra, "pub fn broken() -> i32 { 41").unwrap();
+        assert!(reload_from_filesystem(&mut result, None).is_err());
+        assert_eq!(names(result.attempted_reads()), names(&failed));
+        assert_ne!(result.attempted_reads(), failed);
+
+        // Content-derived and nothing else. That edit moved the length and the
+        // modification time along with the bytes, so it cannot tell a content
+        // key from a metadata one; restamping the file without writing a byte
+        // can, and must record exactly what the read before it did.
+        let edited = result.attempted_reads().to_vec();
+        let now = std::time::SystemTime::now();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&extra)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_accessed(now).set_modified(now))
+            .unwrap();
+        assert!(reload_from_filesystem(&mut result, None).is_err());
+        assert_eq!(result.attempted_reads(), edited);
+
+        // And a repair puts it in the committed closure, where it belongs.
+        fs::write(&extra, "pub fn broken() -> i32 { 41 }").unwrap();
+        reload_from_filesystem(&mut result, None).unwrap();
+        assert!(
+            result
+                .watch_inputs()
+                .iter()
+                .any(|input| input.requested_path().ends_with("extra.rue"))
+        );
+        assert_eq!(
+            names(result.attempted_reads()),
+            ["extra.rue", "helper.rue", "main.rue"]
+        );
     }
 
     #[test]

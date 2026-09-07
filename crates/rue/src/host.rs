@@ -15,7 +15,7 @@ use rue_compiler::{
 };
 
 use crate::source_loader::{
-    ImportDiscoveryResult, SourceLoadError, SourceLoadRequest, WatchInput,
+    AttemptedRead, ImportDiscoveryResult, SourceLoadError, SourceLoadRequest, WatchInput,
     acquire_reached_toolchain_modules, acquire_reached_toolchain_modules_superseding, load,
     reload_from_filesystem,
 };
@@ -103,6 +103,17 @@ impl FilesystemCompilerHost {
     /// change which reads are allowed on the next observation.
     pub fn watch_inputs(&self) -> Vec<WatchInput> {
         self.state.watch_inputs()
+    }
+
+    /// What the most recent observation attempt read, whether or not it
+    /// committed.
+    ///
+    /// [`Self::watch_inputs`] answers "what is the accepted closure"; this
+    /// answers the weaker "what did the loader last look at", which is the only
+    /// account of a failed attempt's files, since a failure commits none of
+    /// them (RUE-2103).
+    pub fn attempted_reads(&self) -> &[AttemptedRead] {
+        self.state.attempted_reads()
     }
 
     pub fn root_path(&self) -> &Path {
