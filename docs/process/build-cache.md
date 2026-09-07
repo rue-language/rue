@@ -315,6 +315,55 @@ they're recorded here so a future config change doesn't silently regress:
    discards the debug sections of inputs under the Zig cache directories and
    nothing else. macOS is unchanged: the prelude's path clang tools plus
    `-ld_classic`.
+
+   **Primed Zig runtime cache** (RUE-1939): compiling that runtime is a
+   per-action cost, not a per-toolchain one, because each link action gets its
+   own empty Zig cache under `BUCK_SCRATCH_PATH`. One cold link spent about
+   15 s of wall time and 19 s of CPU on it, and every binary, test, and build
+   script paid it. `toolchains//zig:runtime-cache` now performs that work once:
+   `zig_runtime_cache` links a throwaway translation unit
+   (`toolchains/zig/runtime_cache_probe.c`) for the target triple in each shape
+   a Linux Rust build produces — plain, PIE, and `-lgcc_s` for libunwind — and
+   keeps the resulting global cache as a single `.tar` artifact. The linker
+   wrapper unpacks that archive into the action's scratch directory and points
+   `ZIG_GLOBAL_CACHE_DIR` at it: Zig needs a writable cache and an action must
+   not write to its inputs. It unpacks under the `zig-global-cache` name, which
+   is what leaves `runtime-debug-discard.ld`'s input patterns matching the
+   seeded objects. The same cold link is then 0.13 s, unpacking included, and
+   the seed action is an ordinary cacheable action, so the 15 s is paid once
+   per toolchain pin rather than once per link.
+
+   The artifact is an archive rather than the cache tree because it is an input
+   to every link action in the build, and the tree is 926 small files — the one
+   artifact shape this repository has had to keep out of the remote CAS
+   (`toolchains/distribution.bzl`, RUE-2003). Unpacking one blob costs a link
+   what copying the tree would have.
+
+   Three properties make that safe. The seeded objects are the ones Zig would
+   have compiled in the action anyway, so a link's output bytes do not change:
+   the compiler binary has the same sha256 with the seed as without it. The
+   seed's own bytes *are* checkout-dependent — those objects carry DWARF whose
+   `DW_AT_comp_dir` is the seed action's working directory — but the linker
+   script discards exactly those sections, so a seed built in one checkout and
+   a seed built in another produce byte-identical links, which is what keeps
+   `scripts/check-reproducible-compiler.sh` green. And a seed that does not
+   match degrades rather than breaks: Zig keys the libunwind entries on the
+   paths it sees relative to the action's working directory, so a cache
+   produced under a different `buck-out` layout still supplies the glibc start
+   files and compiler_rt and costs a link about 0.7 s to rebuild libunwind,
+   not the original 15 s.
+
+   Bumping the pin needs no separate step: `ZIG_VERSION` and `ZIG_LINUX_TARGET`
+   in `toolchains/zig/defs.bzl` are inputs to the seed action, so changing the
+   Zig release or the glibc floor re-keys it and the next link seeds from the
+   rebuilt cache. `ZIG_LINUX_TARGET` is shared with `toolchains//:zig-cxx-tools`
+   so the triple the cache is primed for cannot drift from the triple the links
+   name. A new kind of link — a static executable, say — is the one case that
+   needs an edit: add its flags to `_RUNTIME_CACHE_LINK_SHAPES`, or that link
+   shape compiles its own runtime. The three shapes there are each load-bearing
+   and between them exhaustive as of Zig 0.16.0 — dropping one leaves entries
+   no other shape builds, and a shared-object link, as a proc-macro crate or a
+   cdylib performs, needs nothing they do not already provide.
 7. **Rust action memory** (RUE-320): a cache-disabled cold graph exceeded
    BuildBuddy's default per-action memory estimate and the executor OOM-killed
    rustc. The remote platform requests 4 GB per action; this is an execution

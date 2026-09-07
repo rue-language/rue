@@ -1,4 +1,4 @@
-"""Hermetic Zig toolchain and focused C archive rule.
+"""Hermetic Zig toolchain, primed runtime cache, and focused C archive rule.
 
 Zig is distributed as one relocatable tree.  The RunInfo keeps that complete
 tree as a hidden input so the compiler executable, bundled libc descriptions,
@@ -8,6 +8,18 @@ and archive implementation all participate in action keys and remote inputs.
 load("@toolchains//:distribution.bzl", "toolchain_distribution")
 
 ZIG_VERSION = "0.16.0"
+
+# The Linux triple every `zig cc` invocation names, chosen on the execution
+# platform's CPU. The glibc floor is `2.17`, the oldest glibc Rust's
+# `*-unknown-linux-gnu` targets support; `third-party/reindeer_rules.bzl` pins
+# the same floor for the mimalloc archive these links consume. The C tools
+# (toolchains//:zig-cxx-tools) and the primed runtime cache
+# (toolchains//zig:runtime-cache) must name the same triple or the cache would
+# hold objects no link asks for, so both read it from here.
+ZIG_LINUX_TARGET = select({
+    "prelude//cpu:arm64": "aarch64-linux-gnu.2.17",
+    "prelude//cpu:x86_64": "x86_64-linux-gnu.2.17",
+})
 
 ZIG_RELEASES = {
     "x86_64-linux": struct(
@@ -29,8 +41,13 @@ ZIG_RELEASES = {
 }
 
 ZigToolchainInfo = provider(fields = [
-    # RunInfo for the relocatable Zig distribution.
+    # RunInfo for the relocatable Zig distribution, run with an empty cache.
     "zig",
+    # The three pieces `zig` is assembled from, so a consumer can build the
+    # same command with a primed global cache. See zig_with_primed_cache.
+    "cache_wrapper",
+    "binary",
+    "distribution",
     # Execution-host identity, retained for structural assertions and consumers
     # which must choose an explicit cross-compilation target.
     "host_platform",
@@ -53,6 +70,19 @@ def zig_host_archive(name: str, platform: str):
         visibility = [],
     )
 
+# The cache wrapper's first argument when an action wants an empty global
+# cache; anything else is an archive to prime the cache from.
+_EMPTY_CACHE = "-"
+
+def _zig_command(cache_wrapper: Artifact, binary: Artifact, distribution: Artifact, cache) -> cmd_args:
+    """The one shape of a Zig command line: wrapper, cache seed, then Zig.
+
+    `cache` is a zig_runtime_cache archive to prime the action's global cache
+    from, or `_EMPTY_CACHE`. The whole distribution is hidden behind the
+    executable so it reaches the action as an input.
+    """
+    return cmd_args("/bin/sh", cache_wrapper, cache, binary, hidden = [distribution])
+
 def _hermetic_zig_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
     distribution = ctx.attrs.distribution[DefaultInfo].default_outputs[0]
     zig_binary = distribution.project("zig")
@@ -64,18 +94,33 @@ def _hermetic_zig_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
             "cache_root=\"${BUCK_SCRATCH_PATH:-${TMPDIR:-/tmp}/rue-zig-${PPID}}\"",
             "export ZIG_LOCAL_CACHE_DIR=\"${cache_root}/zig-local-cache\"",
             "export ZIG_GLOBAL_CACHE_DIR=\"${cache_root}/zig-global-cache\"",
-            "zig=$1",
-            "shift",
+            # $1 is a primed global cache (a zig_runtime_cache archive) or
+            # _EMPTY_CACHE; $2 is the Zig executable.
+            "seed=$1",
+            "zig=$2",
+            "shift 2",
+            # The primed cache is unpacked into the action's scratch rather
+            # than read where it lies: Zig needs a writable cache and an action
+            # must not write to its inputs. It unpacks under the
+            # `zig-global-cache` name, so the objects in it still match the
+            # input patterns in toolchains/zig/runtime-debug-discard.ld.
+            "if [ \"${seed}\" != \"" + _EMPTY_CACHE + "\" ] && [ ! -d \"${ZIG_GLOBAL_CACHE_DIR}\" ]; then",
+            "    mkdir -p \"${ZIG_GLOBAL_CACHE_DIR}\"",
+            "    tar -xf \"${seed}\" -C \"${ZIG_GLOBAL_CACHE_DIR}\"",
+            "fi",
             "exec \"${zig}\" \"$@\"",
         ],
         is_executable = True,
     )
-    zig = RunInfo(args = cmd_args("/bin/sh", cache_wrapper, zig_binary, hidden = [distribution]))
+    zig = RunInfo(args = _zig_command(cache_wrapper, zig_binary, distribution, _EMPTY_CACHE))
     return [
         DefaultInfo(default_output = zig_binary),
         RunInfo(args = zig),
         ZigToolchainInfo(
             zig = zig,
+            cache_wrapper = cache_wrapper,
+            binary = zig_binary,
+            distribution = distribution,
             host_platform = ctx.attrs.host_platform,
         ),
     ]
@@ -87,6 +132,116 @@ hermetic_zig_toolchain = rule(
         "host_platform": attrs.string(),
     },
     is_toolchain_rule = True,
+)
+
+def zig_with_primed_cache(toolchain: ZigToolchainInfo, cache: Artifact) -> cmd_args:
+    """The Zig command with the action's global cache primed from `cache`.
+
+    `cache` is a zig_runtime_cache archive. Same wrapper, same
+    scratch-directory caches, and same hidden distribution as
+    `ZigToolchainInfo.zig`; the wrapper unpacks the primed cache before handing
+    over to Zig.
+    """
+    return _zig_command(
+        toolchain.cache_wrapper,
+        toolchain.binary,
+        toolchain.distribution,
+        cache,
+    )
+
+# The link shapes a Linux Rust build produces, and with them every piece of Zig
+# runtime such a build can ask for. Zig compiles that runtime from source the
+# first time a global cache needs it, which costs a link about 15 s of wall
+# time against 0.13 s when it starts from a primed cache. Priming performs each
+# shape once, in an action that is itself cached, and every link action then
+# starts from the result. Each shape earns its place — dropping one leaves
+# entries no other shape builds — and there is no fourth to add: a shared
+# object, as a proc-macro crate or a cdylib links, needs nothing these three
+# already provide.
+_RUNTIME_CACHE_LINK_SHAPES = [
+    # A plain executable: the glibc start files, the non-shared stubs, and
+    # compiler_rt.
+    [],
+    # A position-independent executable, which starts at Scrt1.o rather than
+    # crt1.o and brings its own init and ABI-note objects.
+    ["-pie", "-fPIE"],
+    # Every Rust link passes `-lgcc_s`, which `zig cc` resolves to the bundled
+    # libunwind — compiled from source like the rest, and keyed differently
+    # from anything the other two shapes build.
+    ["-lgcc_s"],
+]
+
+def _zig_runtime_cache_impl(ctx: AnalysisContext) -> list[Provider]:
+    toolchain = ctx.attrs._zig_toolchain[ZigToolchainInfo]
+
+    # One archive rather than the cache tree itself. The tree is 926 files, and
+    # it would be an input to every link action in the build; a tree of small
+    # files is the one artifact shape Rue has had to keep out of the remote CAS
+    # (see toolchains/distribution.bzl and RUE-2003). Unpacking costs the same
+    # as copying the tree would.
+    cache = ctx.actions.declare_output("zig-runtime-cache.tar")
+
+    prime = [
+        "#!/bin/sh",
+        "set -eu",
+        "archive=$1",
+        "zig=$2",
+        "target=$3",
+        "source=$4",
+        "scratch=\"${BUCK_SCRATCH_PATH:-${TMPDIR:-/tmp}}\"",
+        # Building this global cache is the action's whole purpose, but it is
+        # still scratch: only its archived form is the output. The local cache
+        # holds nothing worth keeping.
+        "export ZIG_GLOBAL_CACHE_DIR=\"${scratch}/zig-global-cache\"",
+        "export ZIG_LOCAL_CACHE_DIR=\"${scratch}/zig-local-cache\"",
+        "mkdir -p \"${ZIG_GLOBAL_CACHE_DIR}\" \"${scratch}/links\"",
+    ]
+    for index, flags in enumerate(_RUNTIME_CACHE_LINK_SHAPES):
+        link = (
+            "\"${zig}\" cc -target \"${target}\" \"${source}\"" +
+            " -o \"${{scratch}}/links/{}\"".format(index)
+        )
+        prime.append(" ".join([link] + flags))
+
+    # Sorted names and zeroed metadata so the archive depends on the cache
+    # contents alone.
+    prime.append(
+        "tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner" +
+        " -cf \"${archive}\" -C \"${ZIG_GLOBAL_CACHE_DIR}\" .",
+    )
+    prime_script = ctx.actions.write(
+        "prime-zig-runtime-cache.sh",
+        prime,
+        is_executable = True,
+    )
+
+    ctx.actions.run(
+        cmd_args(
+            "/bin/sh",
+            prime_script,
+            cache.as_output(),
+            toolchain.binary,
+            ctx.attrs.target,
+            ctx.attrs.src,
+            hidden = [toolchain.distribution],
+        ),
+        category = "zig_runtime_cache",
+        identifier = ctx.label.name,
+    )
+
+    return [DefaultInfo(default_output = cache)]
+
+zig_runtime_cache = rule(
+    impl = _zig_runtime_cache_impl,
+    attrs = {
+        "src": attrs.source(
+            doc = "Throwaway translation unit to link; only its Zig cache is kept.",
+        ),
+        "target": attrs.string(
+            doc = "Zig target triple to build the runtime for, glibc pin included.",
+        ),
+        "_zig_toolchain": attrs.toolchain_dep(default = "toolchains//:zig"),
+    },
 )
 
 def _zig_c_static_archive_impl(ctx: AnalysisContext) -> list[Provider]:
