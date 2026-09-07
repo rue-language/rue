@@ -160,8 +160,15 @@ pub const fn checked_byte_size(count: u64, element_bytes: u64) -> Option<u64> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoundsCondition {
     /// The index is valid exactly when it is below the array length as an
-    /// unsigned 64-bit value. This also rejects negative signed indices after
-    /// their canonical extension to the index width.
+    /// unsigned 64-bit value. This also rejects a negative signed index, and it
+    /// does so without extending a narrow index first: both register images a
+    /// 32-bit value may arrive in read as at least 2^31 unsigned when the value
+    /// is negative, which is past the largest array a program can declare
+    /// (E0906 caps an object at 268_435_455 slots, one per array element), so
+    /// both trap. This is the one consumer that reads a 32-bit value's bits
+    /// 32-63 without applying the width extension; see the 32-bit
+    /// register-image invariant on
+    /// [`crate::value_plan::width_extension`].
     UnsignedIndexLessThanLength,
 }
 

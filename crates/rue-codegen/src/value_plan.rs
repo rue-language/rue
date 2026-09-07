@@ -404,8 +404,10 @@ pub fn post_op_policy(operation: ArithmeticOperation, wrap: bool) -> PostOpPolic
 ///
 /// Only 8- and 16-bit results differ from the machine form both backends
 /// compute sub-64-bit arithmetic at, so this is [`width_extension`] with the
-/// 32-bit case dropped: a 32-bit ALU result is already canonical, while a
-/// 32-bit signed VALUE reaching a 64-bit leaf still needs the extension.
+/// 32-bit case dropped: a 32-bit ALU result is already in an admissible
+/// register image, while a 32-bit signed VALUE reaching a 64-bit leaf still
+/// needs the extension. See the 32-bit register-image invariant on
+/// [`width_extension`].
 pub fn narrowing_extension(width: IntegerWidth) -> IntegerExtension {
     match width.bits {
         8 | 16 => width_extension(width),
@@ -501,6 +503,14 @@ pub enum DebugValuePlan {
     Other,
 }
 
+/// The renormalization a same-width `@bitCast` performs on the bits ABOVE the
+/// cast's shared width, which belong to the register image rather than to the
+/// value (RUE-952).
+///
+/// [`Self::Zero32`] is what puts a 32-bit `@bitCast` result in the zero-high
+/// image; that both 32-bit types accept it, and what a 64-bit consumer must
+/// then do, is the 32-bit register-image invariant documented on
+/// [`width_extension`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BitCastForm {
     Move,
@@ -910,6 +920,9 @@ impl From<IntegerType> for IntegerWidth {
 /// Normalized extension required when an integer value feeds a 64-bit pointer
 /// arithmetic leaf. The shared planner selects the language-level fact; each
 /// adapter supplies its target instruction for that fact.
+///
+/// Which extension a width needs, and why a 32-bit value needs one at all, is
+/// the 32-bit register-image invariant documented on [`width_extension`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegerExtension {
     None,
@@ -2678,6 +2691,61 @@ pub fn integer_extension(ty: Type) -> IntegerExtension {
 /// reach it. Every extension either backend emits is named here, so a width is
 /// described once whether it is reached through a [`Type`] or an
 /// [`IntegerWidth`] (RUE-1982).
+///
+/// # The 32-bit register-image invariant
+///
+/// This is the one statement of that invariant; everything else that depends on
+/// it points here (RUE-1338).
+///
+/// A 32-bit value has TWO admissible register images, and both occur in
+/// ordinary code. Bits 0-31 always carry the value; bits 32-63 are either its
+/// sign extension or zero, decided solely by which producer made it:
+///
+/// - **Sign-extended.** An integer constant is materialized from the canonical
+///   64-bit image the CFG carries ([`IntegerType::canonicalize_u64`]), so a
+///   NEGATIVE `i32` constant becomes a full 64-bit pattern: `MovRI64` on
+///   x86-64, `MovImm` (a `MOVN`-based sequence) on AArch64. A four-byte load
+///   of a signed narrow scalar sign-extends ([`crate::types::NarrowScalar`]),
+///   AArch64 re-narrows a wrapping 32-bit multiply with `SXTW`, and a foreign
+///   `int` return is normalized with [`IntegerExtension::Sign32`].
+/// - **Zero-high** (bits 32-63 clear). Every 32-bit ALU result: x86-64's 32-bit
+///   instruction forms zero the destination's upper half, and AArch64's
+///   W-register forms zero the upper half of the X register. A constant that
+///   fits 32 bits unsigned (`MovRI32`), a four-byte load of an unsigned narrow
+///   scalar, a same-width `@bitCast` ([`BitCastForm::Zero32`]), and a foreign
+///   `unsigned int` return ([`IntegerExtension::Zero32`]) land here too.
+///
+/// Nothing in between normalizes them: register moves, block-parameter edge
+/// moves, spills and reloads (whole eight-byte slots) all preserve whichever
+/// image they were handed, and a Rue call passes and returns the image its
+/// producer chose. A consumer therefore may not assume either one.
+///
+/// **The rule.** A consumer that reads bits 32-63 of a 32-bit value must apply
+/// this function's extension first. Consumers that read only bits 0-31 need
+/// nothing, which is why most need nothing: a scalar compare runs at
+/// [`comparison_integer_width`], a `switch` case compare at
+/// [`Type::switch_compare_width`], arithmetic at the operand width, an
+/// aggregate-equality leaf at its semantic leaf type, and a four-byte store
+/// truncates. The consumers that do widen name the extension explicitly: the
+/// widening `i32 -> i64` cast carries [`IntegerExtension::Sign32`] in its
+/// `widen` field, and a pointer offset, `@debug`, and the runtime-helper
+/// arguments go through [`integer_extension`].
+///
+/// One consumer reads bits 32-63 without extending, and does so deliberately:
+/// the array bounds check compares the index against the length as an unsigned
+/// 64-bit value ([`crate::allocation::BoundsCondition`]). A non-negative 32-bit
+/// index has those bits clear in both images, and a negative one reads as at
+/// least 2^31 either way — past the largest array a program can declare, since
+/// E0906 caps an object at 268_435_455 slots and an array spends one per
+/// element. Both images therefore trap, which is the required answer.
+///
+/// An unsigned 32-bit value is the degenerate case where the two images
+/// coincide, which is why this function answers [`IntegerExtension::None`] for
+/// it rather than a zero-extension: every producer above already leaves bits
+/// 32-63 clear for a `u32`. That is also why [`narrowing_extension`] has
+/// nothing to do at 32 bits — a 32-bit ALU result is already in an admissible
+/// image — while a 32-bit signed VALUE reaching a 64-bit leaf still needs
+/// `Sign32`.
 pub fn width_extension(width: IntegerWidth) -> IntegerExtension {
     match width.bits {
         8 if width.signed => IntegerExtension::Sign8,
@@ -3055,6 +3123,44 @@ mod integer_policy_tests {
             assert_eq!(integer_extension(ty), width_extension(width));
             assert_eq!(integer_width(ty), Some(width));
         }
+    }
+
+    /// The policy half of the 32-bit register-image invariant documented on
+    /// [`width_extension`] (RUE-1338). The instruction-shape half is pinned in
+    /// each backend's `cfg_lower` tests.
+    #[test]
+    fn the_two_admissible_32_bit_register_images_are_named_by_one_policy() {
+        let signed = IntegerWidth {
+            bits: 32,
+            signed: true,
+        };
+        let unsigned = IntegerWidth {
+            bits: 32,
+            signed: false,
+        };
+
+        // A signed 32-bit value may arrive sign-extended or zero-high, so a
+        // 64-bit consumer must re-extend it before reading bits 32-63.
+        assert_eq!(width_extension(signed), IntegerExtension::Sign32);
+        // An unsigned one has a single image — every producer already leaves
+        // bits 32-63 clear — so it is canonical with no instruction.
+        assert_eq!(width_extension(unsigned), IntegerExtension::None);
+
+        // A 32-bit ALU result is already in an admissible image: nothing
+        // follows the operation to re-narrow it.
+        assert_eq!(narrowing_extension(signed), IntegerExtension::None);
+        assert_eq!(narrowing_extension(unsigned), IntegerExtension::None);
+
+        // A same-width `@bitCast` into either 32-bit type produces the
+        // zero-high image.
+        assert_eq!(bit_cast_form(Type::I32), BitCastForm::Zero32);
+        assert_eq!(bit_cast_form(Type::U32), BitCastForm::Zero32);
+
+        // Consumers that read only bits 0-31 need no extension, which is why
+        // a scalar compare and a `switch` case compare run at 32 bits.
+        assert_eq!(comparison_integer_width(Type::I32), signed);
+        assert_eq!(comparison_integer_width(Type::U32), unsigned);
+        assert_eq!(switch_compare_width(Type::I32).bits, 32);
     }
 }
 

@@ -1284,6 +1284,11 @@ impl<'a> CfgLower<'a> {
                     });
                 }
                 let dst = self.mir.alloc_vreg();
+                // `value` is the canonical 64-bit image and `MovImm` defines the
+                // whole X register from it, so a negative 32-bit constant lands
+                // sign-extended while a 32-bit ALU result is zero-high. That is
+                // the 32-bit register-image invariant documented on
+                // `value_plan::width_extension`.
                 self.mir.push(Aarch64Inst::MovImm {
                     dst: Operand::Virtual(dst),
                     imm: value as i64,
@@ -6783,6 +6788,103 @@ mod tests {
         fixture.ret(Some(sum));
         let mir = fixture.lower_host();
         assert!(!mir.instructions().is_empty());
+    }
+
+    /// The AArch64 half of the 32-bit register-image invariant, whose single
+    /// statement lives on `value_plan::width_extension` (RUE-1338).
+    ///
+    /// `fn main() -> i32 { -1 + 2 }`: `MovImm` defines the whole X register
+    /// from the constant's canonical 64-bit image, so the negative constant
+    /// lands sign-extended, while the W-register add leaves bits 32-63 clear —
+    /// one function holding both admissible images of one type.
+    #[test]
+    fn a_negative_i32_constant_is_sign_extended_and_a_32_bit_add_is_zero_high() {
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            0,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        let minus_one = fixture.konst(-1_i64 as u64, Type::I32);
+        let two = fixture.konst(2, Type::I32);
+        let sum = fixture.value(CfgInstData::Add(minus_one, two), Type::I32);
+        fixture.ret(Some(sum));
+        let mir = fixture.lower_host();
+        let instructions = mir.instructions();
+
+        assert!(
+            instructions
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::MovImm { imm: -1, .. })),
+            "a negative i32 constant must carry its full 64-bit sign-extended \
+             image: {instructions:?}"
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::MovImm { imm: 2, .. })),
+            "a non-negative constant is materialized zero-high: {instructions:?}"
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::AddsRR { .. })),
+            "32-bit arithmetic must use the W-register form, which zeroes bits \
+             32-63: {instructions:?}"
+        );
+        assert!(
+            !instructions
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::AddsRR64 { .. })),
+            "a 32-bit add must not run at 64-bit width: {instructions:?}"
+        );
+    }
+
+    /// `fn main() -> i64 { (-1 + 2) as i64 }`: a 64-bit consumer of a 32-bit
+    /// value applies the width extension before reading bits 32-63, which is
+    /// what makes both register images safe (RUE-1338).
+    #[test]
+    fn a_64_bit_consumer_of_an_i32_value_applies_the_width_extension_first() {
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::I64,
+            0,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        let minus_one = fixture.konst(-1_i64 as u64, Type::I32);
+        let two = fixture.konst(2, Type::I32);
+        let sum = fixture.value(CfgInstData::Add(minus_one, two), Type::I32);
+        let widened = fixture.cast(sum, Type::I32, Type::I64);
+        fixture.ret(Some(widened));
+        let mir = fixture.lower_host();
+        let instructions = mir.instructions();
+
+        let add = instructions
+            .iter()
+            .position(|inst| matches!(inst, Aarch64Inst::AddsRR { .. }))
+            .expect("the 32-bit add must be emitted");
+        let extend = instructions
+            .iter()
+            .position(|inst| matches!(inst, Aarch64Inst::Sxtw { .. }))
+            .expect(
+                "a widening i32 -> i64 cast must re-extend the zero-high 32-bit \
+                 result before it is read as 64 bits",
+            );
+        assert!(
+            add < extend,
+            "the width extension must follow the 32-bit result it repairs: \
+             {instructions:?}"
+        );
     }
 
     #[test]

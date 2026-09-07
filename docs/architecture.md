@@ -93,6 +93,13 @@ peephole optimization, scheduling, stack-frame construction, verification, and
 byte emission. Common code owns architecture-neutral concerns such as aggregate
 slots, by-reference arguments, and virtual-register bookkeeping.
 
+Value-materialization policy that both backends must agree on lives in
+`rue-codegen`'s `value_plan`, including the 32-bit register-image invariant:
+a 32-bit value reaches a consumer either sign-extended (a negative constant is
+materialized from its canonical 64-bit image) or with bits 32-63 clear (every
+32-bit ALU result), and a consumer that reads those bits must apply the width
+extension first. The invariant is stated once, on `value_plan::width_extension`.
+
 Which convention governs a call boundary is one value type,
 `rue_target::CallingConvention`, and every psABI rule the compiler needs from a
 C row is data on `CConventionSpec` beside it — roster sizes, where the hidden

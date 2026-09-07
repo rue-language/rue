@@ -1536,6 +1536,12 @@ impl<'a> CfgLower<'a> {
                     });
                 }
                 let dst = self.mir.alloc_vreg();
+                // `value` is the canonical 64-bit image, so a negative 32-bit
+                // constant needs the full pattern while everything that fits 32
+                // bits unsigned rides `mov r32, imm32`, which zero-extends.
+                // That is what gives a 32-bit value its two admissible register
+                // images: see the 32-bit register-image invariant on
+                // `value_plan::width_extension`.
                 if value <= u32::MAX as u64 {
                     self.mir.push(X86Inst::MovRI32 {
                         dst: Operand::Virtual(dst),
@@ -6974,6 +6980,104 @@ mod tests {
         fixture.ret(Some(sum));
         let mir = fixture.lower().expect("test lowering should succeed");
         assert!(!mir.instructions().is_empty());
+    }
+
+    /// The x86-64 half of the 32-bit register-image invariant, whose single
+    /// statement lives on `value_plan::width_extension` (RUE-1338).
+    ///
+    /// `fn main() -> i32 { -1 + 2 }`: the negative constant is materialized as
+    /// a full 64-bit sign-extended pattern, the non-negative one through
+    /// `mov r32, imm32` (zero-high), and the add runs at 32 bits — so one
+    /// function holds both admissible images of one type.
+    #[test]
+    fn a_negative_i32_constant_is_sign_extended_and_a_32_bit_add_is_zero_high() {
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            0,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        let minus_one = fixture.konst(-1_i64 as u64, Type::I32);
+        let two = fixture.konst(2, Type::I32);
+        let sum = fixture.value(CfgInstData::Add(minus_one, two), Type::I32);
+        fixture.ret(Some(sum));
+        let mir = fixture.lower().expect("test lowering should succeed");
+        let instructions = mir.instructions();
+
+        assert!(
+            instructions
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::MovRI64 { imm: -1, .. })),
+            "a negative i32 constant must carry its full 64-bit sign-extended \
+             image: {instructions:?}"
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::MovRI32 { imm: 2, .. })),
+            "a constant that fits 32 bits unsigned rides the zero-extending \
+             32-bit move: {instructions:?}"
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::AddRR { .. })),
+            "32-bit arithmetic must use the 32-bit ALU form, which leaves bits \
+             32-63 clear: {instructions:?}"
+        );
+        assert!(
+            !instructions
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::AddRR64 { .. })),
+            "a 32-bit add must not run at 64-bit width: {instructions:?}"
+        );
+    }
+
+    /// `fn main() -> i64 { (-1 + 2) as i64 }`: a 64-bit consumer of a 32-bit
+    /// value applies the width extension before reading bits 32-63, which is
+    /// what makes both register images safe (RUE-1338).
+    #[test]
+    fn a_64_bit_consumer_of_an_i32_value_applies_the_width_extension_first() {
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::I64,
+            0,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        let minus_one = fixture.konst(-1_i64 as u64, Type::I32);
+        let two = fixture.konst(2, Type::I32);
+        let sum = fixture.value(CfgInstData::Add(minus_one, two), Type::I32);
+        let widened = fixture.cast(sum, Type::I32, Type::I64);
+        fixture.ret(Some(widened));
+        let mir = fixture.lower().expect("test lowering should succeed");
+        let instructions = mir.instructions();
+
+        let add = instructions
+            .iter()
+            .position(|inst| matches!(inst, X86Inst::AddRR { .. }))
+            .expect("the 32-bit add must be emitted");
+        let extend = instructions
+            .iter()
+            .position(|inst| matches!(inst, X86Inst::Movsx32To64 { .. }))
+            .expect(
+                "a widening i32 -> i64 cast must re-extend the zero-high 32-bit \
+                 result before it is read as 64 bits",
+            );
+        assert!(
+            add < extend,
+            "the width extension must follow the 32-bit result it repairs: \
+             {instructions:?}"
+        );
     }
 
     #[test]
