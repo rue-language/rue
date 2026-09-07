@@ -1,0 +1,180 @@
+# The parameter half of the shared-slot hazard `cli.zero_sized_slot_sharing`
+# covers for locals.
+#
+# A by-value zero-sized argument occupies zero ABI slots, so the parameter
+# after it receives the index the zero-sized one is still named by. The
+# compiler is right about this at every optimization level; `rue-oracle` was
+# not. Its `CfgInstData::Param` read had always answered a zero-sized
+# parameter from its type, but the place-rooted paths and the `inout`
+# writeback still went to the slot, which holds the neighbour's value.
+#
+# Each case below was a red `oracle-diff` result before RUE-2101, for a
+# correctly compiled program, and so could not have been authored as a
+# `differential_opt` case at all — the same "the gate cannot see this class"
+# blind spot RUE-2095 closed for locals. The symptoms differ by what sits in
+# the shared slot:
+#
+#   - a scalar neighbour  -> ContractViolation(NonAggregateProjectionRead)
+#   - no neighbour at all -> ContractViolation(ParameterSlotOutOfBounds)
+#   - an address-taken zero-sized parameter -> the whole case was reclassified
+#     as an unmodeled `PointerWrite` gap, so oracle-diff silently stopped
+#     checking the program instead of failing on it
+#
+# `differential_opt` compiles and runs each at `-O0`/`-O1`/`-O2`/`-O3` and
+# requires one answer across all four.
+
+[section]
+id = "cli.zero_sized_parameter_slot_sharing"
+name = "Zero-sized parameters sharing an ABI slot"
+description = "A zero-sized parameter occupies no ABI slot, so its index names the next parameter's slot; nothing may read or write that slot on its behalf (RUE-2101)."
+
+[[case]]
+name = "zero_sized_parameter_field_read_does_not_read_its_neighbour"
+description = "RUE-2101: a field read on a zero-sized struct parameter must answer from the type, not from the sized parameter sharing its slot index."
+files = [{ path = "main.rue", source = """
+struct Empty { unit: () }
+fn f(z: Empty, v: i64) -> i64 {
+    let _u: () = z.unit;
+    v
+}
+fn main() -> i32 {
+    @dbg(f(Empty { unit: () }, 5));
+    0
+}
+""" }]
+stdout = "5\n"
+exit_code = 0
+differential_opt = true
+
+# Slot indices only advance, so the collision is always with the parameter that
+# FOLLOWS the zero-sized one.
+[[case]]
+name = "zero_sized_parameter_between_two_sized_parameters"
+description = "RUE-2101: a zero-sized parameter between two sized ones shares the second one's slot, and both sized parameters must survive."
+files = [{ path = "main.rue", source = """
+struct Empty { unit: () }
+fn f(a: i64, z: Empty, b: i64) -> i64 {
+    let _u: () = z.unit;
+    a * 10 + b
+}
+fn main() -> i32 {
+    @dbg(f(3, Empty { unit: () }, 4));
+    0
+}
+""" }]
+stdout = "34\n"
+exit_code = 0
+differential_opt = true
+
+# With nothing after it, the shared index is past the end of the parameter list
+# rather than another parameter's.
+[[case]]
+name = "trailing_zero_sized_parameter_owns_no_slot"
+description = "RUE-2101: a trailing zero-sized parameter names a slot that does not exist; reading it reported a parameter-slot bounds violation."
+files = [{ path = "main.rue", source = """
+struct Empty { unit: () }
+fn f(v: i64, z: Empty) -> i64 {
+    let _u: () = z.unit;
+    v
+}
+fn main() -> i32 {
+    @dbg(f(7, Empty { unit: () }));
+    0
+}
+""" }]
+stdout = "7\n"
+exit_code = 0
+differential_opt = true
+
+# Two distinct zero-sized parameter types, one of them nested two projections
+# deep, all rooted at the sized parameter's index.
+[[case]]
+name = "two_zero_sized_parameters_share_one_slot_with_a_sized_one"
+description = "RUE-2101: distinct zero-sized parameter types sharing an index each answer from their own type, and neither disturbs the sized parameter."
+files = [{ path = "main.rue", source = """
+struct Empty { unit: () }
+struct Nest { e: Empty }
+fn f(a: Empty, b: Nest, v: i64) -> i64 {
+    let _x: () = a.unit;
+    let _y: () = b.e.unit;
+    v
+}
+fn main() -> i32 {
+    @dbg(f(Empty { unit: () }, Nest { e: Empty { unit: () } }, 9));
+    0
+}
+""" }]
+stdout = "9\n"
+exit_code = 0
+differential_opt = true
+
+# The parameter table and the local table are separate storage; a function with
+# both a zero-sized parameter and a re-assigned zero-sized local needs both
+# RUE-2095's fix and this one.
+[[case]]
+name = "zero_sized_parameter_and_zero_sized_local_in_one_function"
+description = "RUE-2101/RUE-2095: a zero-sized parameter and a zero-sized local both share indices with sized storage in the same frame."
+files = [{ path = "main.rue", source = """
+struct Empty { unit: () }
+fn f(z: Empty, v: i64) -> i64 {
+    let _u: () = z.unit;
+    let mut e: () = ();
+    let y: i64 = v + 1;
+    e = ();
+    let _w: () = e;
+    y
+}
+fn main() -> i32 {
+    @dbg(f(Empty { unit: () }, 5));
+    0
+}
+""" }]
+stdout = "6\n"
+exit_code = 0
+differential_opt = true
+
+# Address formation seeds a promoted allocation from the place's current value,
+# which for a zero-sized parameter meant reading the neighbour's slot.
+[[case]]
+name = "address_of_a_zero_sized_parameter_field_reads_no_slot"
+description = "RUE-2101: forming a zero-sized parameter's address must not read the sized parameter sharing its index."
+files = [{ path = "main.rue", source = """
+struct Empty { unit: () }
+fn f(z: Empty, v: i64) -> i64 {
+    let _pointer: ptr const () = checked { @raw(z.unit) };
+    v
+}
+fn main() -> i32 {
+    @dbg(f(Empty { unit: () }, 5));
+    0
+}
+""" }]
+stdout = "5\n"
+exit_code = 0
+differential_opt = true
+
+# The `inout` copy-out at return walks the promoted table by parameter slot. A
+# promoted zero-sized parameter's entry names its `inout` neighbour's slot, so
+# the neighbour's final value was replaced by the zero-sized one.
+[[case]]
+name = "promoted_zero_sized_parameter_leaves_the_inout_neighbour_intact"
+description = "RUE-2101: an address-taken zero-sized parameter must not displace the copy-out value of the `inout` parameter sharing its slot index."
+files = [{ path = "main.rue", source = """
+struct Empty { unit: () }
+struct Pair { a: i64, b: i64 }
+fn f(z: Empty, inout p: Pair) {
+    let _pointer: ptr const () = checked { @raw(z.unit) };
+    p.a = p.a + 10;
+    p.b = p.b + 20;
+}
+fn main() -> i32 {
+    let mut p: Pair = Pair { a: 1, b: 2 };
+    f(Empty { unit: () }, inout p);
+    @dbg(p.a);
+    @dbg(p.b);
+    0
+}
+""" }]
+stdout = "11\n22\n"
+exit_code = 0
+differential_opt = true

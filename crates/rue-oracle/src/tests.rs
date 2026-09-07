@@ -1976,6 +1976,146 @@ fn zst_sharing_a_slot_with_an_address_taken_local_writes_through_the_pointer() {
     assert_eq!(run(src).stdout, "11\n");
 }
 
+// ---- zero-sized parameters sharing an ABI slot (RUE-2101) -----------------
+//
+// The parameter half of the same hazard. `call_arg_slot_width` gives a
+// by-value zero-sized argument a width of zero, so it is never laid into
+// `Frame::params` and its `Param { index }` / `PlaceBase::Param(slot)` names
+// the slot the NEXT parameter received. The `CfgInstData::Param` read has
+// always answered such a read from the type; the place-rooted paths
+// (`base_value_of`, `place_write`, `param_places`) and the `Return` inout
+// writeback did not, so a field read on a zero-sized parameter reached its
+// neighbour's storage.
+
+#[test]
+fn zst_parameter_field_read_does_not_read_the_slot_neighbour() {
+    // The issue's repro. `frame.params[0]` holds `v`'s `Int(5)`, so projecting
+    // a field of `z` there reported NonAggregateProjectionRead — an ORACLE
+    // FAILURE on a program the compiler gets right at every level.
+    let src = "struct Empty { unit: () }
+    fn f(z: Empty, v: i64) -> i64 {
+        let _u: () = z.unit;
+        v
+    }
+    fn main() -> i32 {
+        @dbg(f(Empty { unit: () }, 5));
+        0
+    }";
+    assert_eq!(run(src).stdout, "5\n");
+}
+
+#[test]
+fn zst_parameter_between_two_sized_parameters_collides_with_the_second() {
+    // Slot indices only advance, so the zero-sized parameter shares its index
+    // with the parameter that FOLLOWS it, not the one before.
+    let src = "struct Empty { unit: () }
+    fn f(a: i64, z: Empty, b: i64) -> i64 {
+        let _u: () = z.unit;
+        a * 10 + b
+    }
+    fn main() -> i32 {
+        @dbg(f(3, Empty { unit: () }, 4));
+        0
+    }";
+    assert_eq!(run(src).stdout, "34\n");
+}
+
+#[test]
+fn trailing_zst_parameter_owns_no_slot() {
+    // With no parameter after it, the shared index is past the end of the
+    // parameter list: reading the slot reported ParameterSlotOutOfBounds.
+    let src = "struct Empty { unit: () }
+    fn f(v: i64, z: Empty) -> i64 {
+        let _u: () = z.unit;
+        v
+    }
+    fn main() -> i32 {
+        @dbg(f(7, Empty { unit: () }));
+        0
+    }";
+    assert_eq!(run(src).stdout, "7\n");
+}
+
+#[test]
+fn two_zst_parameters_share_one_slot_with_the_sized_parameter() {
+    // Two distinct zero-sized parameter types, one of them nested, all naming
+    // the sized parameter's index.
+    let src = "struct Empty { unit: () }
+    struct Nest { e: Empty }
+    fn f(a: Empty, b: Nest, v: i64) -> i64 {
+        let _x: () = a.unit;
+        let _y: () = b.e.unit;
+        v
+    }
+    fn main() -> i32 {
+        @dbg(f(Empty { unit: () }, Nest { e: Empty { unit: () } }, 9));
+        0
+    }";
+    assert_eq!(run(src).stdout, "9\n");
+}
+
+#[test]
+fn zst_parameter_and_zst_local_keep_separate_storage() {
+    // The parameter table and the local table are separate fixes; a function
+    // with both a zero-sized parameter and a re-assigned zero-sized local
+    // needs each of them.
+    let src = "struct Empty { unit: () }
+    fn f(z: Empty, v: i64) -> i64 {
+        let _u: () = z.unit;
+        let mut e: () = ();
+        let y: i64 = v + 1;
+        e = ();
+        let _w: () = e;
+        y
+    }
+    fn main() -> i32 {
+        @dbg(f(Empty { unit: () }, 5));
+        0
+    }";
+    assert_eq!(run(src).stdout, "6\n");
+}
+
+#[test]
+fn address_taken_zst_parameter_does_not_promote_its_neighbours_slot() {
+    // Forming the zero-sized parameter's address read the neighbour's slot to
+    // seed the promoted allocation, so the read failed before any pointer
+    // existed.
+    let src = "struct Empty { unit: () }
+    fn f(z: Empty, v: i64) -> i64 {
+        let _pointer: ptr const () = checked { @raw(z.unit) };
+        v
+    }
+    fn main() -> i32 {
+        @dbg(f(Empty { unit: () }, 5));
+        0
+    }";
+    assert_eq!(run(src).stdout, "5\n");
+}
+
+#[test]
+fn promoted_zst_parameter_leaves_the_inout_neighbour_writeback_intact() {
+    // `Return`'s inout copy-out walks `Frame::promoted` and writes every
+    // parameter-keyed entry into its slot. A promoted zero-sized parameter's
+    // key names the slot its `inout` neighbour owns, so without the guard the
+    // neighbour's final value was replaced by the zero-sized one and the
+    // caller's copy-out wrote that back.
+    let src = "struct Empty { unit: () }
+    struct Pair { a: i64, b: i64 }
+    fn f(z: Empty, inout p: Pair) {
+        let _pointer: ptr const () = checked { @raw(z.unit) };
+        p.a = p.a + 10;
+        p.b = p.b + 20;
+    }
+    fn main() -> i32 {
+        let mut p: Pair = Pair { a: 1, b: 2 };
+        f(Empty { unit: () }, inout p);
+        @dbg(p.a);
+        @dbg(p.b);
+        0
+    }";
+    assert_eq!(run(src).stdout, "11\n22\n");
+}
+
 #[test]
 fn enum_parameter_width_comes_from_its_static_type() {
     let src = r#"enum Shape { Empty, One(i32), Pair(i32, i32) }
