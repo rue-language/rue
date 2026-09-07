@@ -3185,6 +3185,71 @@ impl Cfg {
         preds
     }
 
+    /// Visit the successor blocks of `block` in control-flow order: a goto's
+    /// target; a branch's then and else; a switch's cases in arena order and
+    /// then its default. A return, an unreachable, and an unset terminator
+    /// have none.
+    ///
+    /// This is the one decoder of a terminator's out-edges. The successor
+    /// adjacencies dominance and loop analysis build are read off it rather
+    /// than matching the terminator again in each.
+    pub fn visit_successors(&self, block: BlockId, mut visit: impl FnMut(BlockId)) {
+        match &self.get_block(block).terminator {
+            Terminator::Goto { target, .. } => visit(*target),
+            Terminator::Branch {
+                then_block,
+                else_block,
+                ..
+            } => {
+                visit(*then_block);
+                visit(*else_block);
+            }
+            Terminator::Switch { cases, default, .. } => {
+                for &(_, target) in self.switch_cases(cases) {
+                    visit(target);
+                }
+                visit(*default);
+            }
+            Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => {}
+        }
+    }
+
+    /// Whether each block, indexed by id, can reach a `Return` terminator.
+    ///
+    /// A block that cannot is one control can only leave by aborting: it ends
+    /// in `Unreachable` behind a never-returning call or intrinsic, or every
+    /// successor does. That is the CFG-level shape of the diverging region
+    /// register allocation reasons about (RUE-2065), and the inliner's leaf
+    /// rule reads it so a call staged inside a `@panic` arm does not count
+    /// against the callee (RUE-2088).
+    ///
+    /// Computed on demand from the current terminators, like the predecessor
+    /// table it closes over, so it is always in sync with the CFG.
+    pub fn returning_blocks(&self) -> Vec<bool> {
+        let mut returning = vec![false; self.blocks.len()];
+        let predecessors = self.compute_predecessors();
+        let mut worklist: Vec<BlockId> = self
+            .blocks
+            .iter()
+            .filter(|block| matches!(block.terminator, Terminator::Return { .. }))
+            .map(|block| block.id)
+            .collect();
+        for block in &worklist {
+            returning[block.0 as usize] = true;
+        }
+        // Backward closure over the predecessor table: each block enters the
+        // worklist at most once, when it is first proven to reach a return.
+        while let Some(block) = worklist.pop() {
+            for &predecessor in &predecessors[block.0 as usize] {
+                if !returning[predecessor.0 as usize] {
+                    returning[predecessor.0 as usize] = true;
+                    worklist.push(predecessor);
+                }
+            }
+        }
+        returning
+    }
+
     /// Compute predecessor lists for all blocks, indexed by block id.
     ///
     /// Predecessors are computed on demand from the current terminators
@@ -3730,6 +3795,71 @@ mod tests {
             checked_owner_index(MAX_CFG_ENTITIES_PER_FUNCTION as usize),
             None
         );
+    }
+
+    /// A block reaches a return through any path that ends in one; a block
+    /// whose every path ends in `Unreachable` is one control leaves only by
+    /// aborting, and so is a block that merely feeds such blocks.
+    #[test]
+    fn returning_blocks_close_backward_over_the_returns() {
+        let mut cfg = Cfg::new(Type::I32, 0, 0, "f".into(), Vec::<bool>::new());
+        let entry = cfg.new_block();
+        let arm = cfg.new_block();
+        let pass = cfg.new_block();
+        let exit = cfg.new_block();
+        let dead_end = cfg.new_block();
+        let cond = cfg.add_block_param(entry, Type::BOOL);
+        cfg.set_terminator(
+            entry,
+            Terminator::Branch {
+                cond,
+                then_block: arm,
+                then_args: crate::payload::CfgThenArgs::EMPTY,
+                else_block: pass,
+                else_args: crate::payload::CfgElseArgs::EMPTY,
+            },
+        );
+        cfg.set_terminator(arm, Terminator::Unreachable);
+        cfg.set_terminator(
+            pass,
+            Terminator::Goto {
+                target: exit,
+                args: crate::payload::CfgGotoArgs::EMPTY,
+            },
+        );
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+        // Feeds only the aborting arm, so it cannot return either.
+        cfg.set_terminator(
+            dead_end,
+            Terminator::Goto {
+                target: arm,
+                args: crate::payload::CfgGotoArgs::EMPTY,
+            },
+        );
+
+        let returning = cfg.returning_blocks();
+        assert_eq!(returning.len(), 5);
+        assert!(
+            returning[entry.0 as usize],
+            "a branch with one returning arm returns"
+        );
+        assert!(
+            !returning[arm.0 as usize],
+            "an unreachable-terminated block does not"
+        );
+        assert!(returning[pass.0 as usize]);
+        assert!(returning[exit.0 as usize]);
+        assert!(
+            !returning[dead_end.0 as usize],
+            "a block feeding only the arm does not"
+        );
+
+        let mut successors = Vec::new();
+        cfg.visit_successors(entry, |target| successors.push(target));
+        assert_eq!(successors, vec![arm, pass]);
+        successors.clear();
+        cfg.visit_successors(exit, |target| successors.push(target));
+        assert!(successors.is_empty());
     }
 
     #[test]

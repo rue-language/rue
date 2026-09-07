@@ -431,8 +431,9 @@ answer different questions:
   `CfgInstData::Call` instructions naming a symbol across all caller CFGs. Body
   references are duplicate-free and cannot answer this, so ten calls to `f` and
   one call to `f` produce the same callable reference.
-- **Leafness** ("does this callee contain any call?"): scan the callee's
-  `values` for `CfgInstData::Call`. Body references also include type and
+- **Leafness** ("can this callee return past a call?"): scan the callee's
+  blocks for `CfgInstData::Call`, counting only the blocks that can reach a
+  `Return` (`Cfg::returning_blocks`). Body references also include type and
   drop-glue demands, so they cannot cleanly report "contains a call."
 - **Candidate lookup** ("what is the callee body for this call?"): the `Call`'s
   `name: Spur` is the symbol key into the `{symbol → Cfg}` map. This is
@@ -475,10 +476,15 @@ The current criteria are deliberately conservative:
   standalone body while retaining the large workload's short-function majority;
   128 would admit an additional long-tail band without a measurement-backed
   need.
-- **Leaf-ness** from a CFG scan (§5): a callee containing no `CfgInstData::Call`
-  is a leaf and the safest first target. O2 remains leaf-only under its small
-  cap; O3 admits non-leaf callees under the larger cap, while refusing every
-  recursive SCC. The batch expands only the deterministic original call-site
+- **Leaf-ness** from a CFG scan (§5): a callee with no `CfgInstData::Call` in
+  any block that can reach its return is a leaf and the safest first target.
+  A call in a block control can only leave by aborting — the failure-site
+  staging call inside a `@panic` arm — does not count (RUE-2088): it never
+  executes on the inlined caller's returning path, so it imposes none of the
+  call-boundary cost the rule exists to avoid, and register allocation already
+  keeps such a region's registers out of the caller's prologue (RUE-2065). O2
+  remains leaf-only under its small cap; O3 admits non-leaf callees under the
+  larger cap, while refusing every recursive SCC. The batch expands only the deterministic original call-site
   set once, so copied non-leaf calls cannot recursively trigger more inlining.
 - **Single-call-site** callees (call multiplicity 1, from the §5 call-site graph)
   are the highest-value case: inlining them removes a call with no code-size cost

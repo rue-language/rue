@@ -3963,6 +3963,78 @@ mod tests {
         assert_eq!(has_unit(&o3, "middle"), has_unit(&o3_again, "middle"));
     }
 
+    /// RUE-2088: the staging call in a `@panic` arm sits in a block that
+    /// cannot reach the callee's return, so it is not the call boundary O2's
+    /// leaf rule refuses. The caller carries a string constant of its own so
+    /// the arm's constants can be imported into its type pool; with that,
+    /// the guarded accessor is consumed at O2 and its body dropped.
+    #[test]
+    fn phase2_admits_a_callee_whose_only_call_diverges() {
+        let snapshot = SourceSnapshot::single(
+            "<phase2-diverging-call-inline>",
+            r#"fn open(port: u16) -> u16 { if port == 0 { @panic("no port"); } port }
+               fn main() -> i32 { @dbg("guarded"); if open(7) == 7 { 0 } else { 1 } }"#,
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+
+        let user_calls_in_main = |output: &RootedCfgOutput| {
+            output
+                .cfgs
+                .iter()
+                .find(|unit| unit.record.codegen.defined_symbol.ends_with("main"))
+                .map(|unit| {
+                    unit.record
+                        .cfg
+                        .blocks()
+                        .iter()
+                        .flat_map(|block| block.insts.iter())
+                        .filter(|value| {
+                            matches!(
+                                unit.record.cfg.get_inst(**value).data,
+                                rue_cfg::CfgInstData::Call { runtime: None, .. }
+                            )
+                        })
+                        .count()
+                })
+                .unwrap_or_default()
+        };
+        let has_unit = |output: &RootedCfgOutput, name: &str| {
+            output.cfgs.iter().any(|unit| {
+                matches!(
+                    &unit.function,
+                    FunctionInstanceKey::Definition(definition) if definition.name() == name
+                )
+            })
+        };
+
+        let o1 = session
+            .rooted_cfg(&CompileOptions {
+                opt_level: rue_cfg::OptLevel::O1,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert_eq!(user_calls_in_main(&o1), 1);
+        assert!(has_unit(&o1, "open"));
+
+        let o2 = session
+            .rooted_cfg(&CompileOptions {
+                opt_level: rue_cfg::OptLevel::O2,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert_eq!(
+            user_calls_in_main(&o2),
+            0,
+            "the guard's arm no longer blocks O2 inlining"
+        );
+        assert!(!has_unit(&o2, "open"));
+    }
+
     #[cfg(unix)]
     #[test]
     #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]

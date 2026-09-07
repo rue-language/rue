@@ -195,3 +195,77 @@ args = ["main.rue", "-O2", "-o", "prog"]
 stdout = "41\n77\n42\n"
 runtime_error_contains = ["panic: guard"]
 exit_code = 101
+
+# RUE-2088: the arm's staging call is not a call boundary. `open` contains one
+# `Call` — `__rue_test_failure_site`, inside the `@panic` arm — and O2's leaf
+# rule used to refuse every callee containing any call, so a small guarded
+# accessor stayed out of line for a call that can only run on its way to an
+# abort. The rule now counts only calls in blocks that can reach the callee's
+# return. The caller below carries a string of its own so the arm's constants
+# import into its type pool; without one, importability still keeps the guard
+# out of line, which is its own issue.
+[[case]]
+name = "a_panic_guard_is_inlined_at_o2"
+description = "The failure-site call inside a `@panic` arm no longer makes the guard a non-leaf: at -O2 no call to `open` survives in `main`, and the folded guard leaves no panic call behind at a constant site."
+files = [{ path = "main.rue", source = """
+fn open(port: u16) -> u16 {
+    if port == 0 {
+        @panic("no port");
+    }
+    port
+}
+
+fn main() -> i32 {
+    @dbg("guarded");
+    if open(7) == 7 { 0 } else { 1 }
+}
+""" }]
+args = ["--emit", "asm", "--target", "x86-64-linux", "-O2", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Assembly (x86-64-linux) ===", "main:", "call __rue_dbg_str"]
+compile_stdout_not_contains = ["call __rue_sem", "call __rue_panic"]
+
+[[case]]
+name = "a_panic_guard_stays_out_of_line_below_o2"
+description = "The same program at -O1 keeps the source call boundary: general inlining begins at -O2."
+files = [{ path = "main.rue", source = """
+fn open(port: u16) -> u16 {
+    if port == 0 {
+        @panic("no port");
+    }
+    port
+}
+
+fn main() -> i32 {
+    @dbg("guarded");
+    if open(7) == 7 { 0 } else { 1 }
+}
+""" }]
+args = ["--emit", "asm", "--target", "x86-64-linux", "-O1", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["call __rue_sem", "call __rue_panic"]
+
+[[case]]
+name = "an_inlined_panic_guard_still_aborts_at_its_site"
+description = "Inlining the guard changes nothing the program can observe: the passing call returns its value and the failing call aborts with the pinned message and exit 101."
+files = [{ path = "main.rue", source = """
+fn open(port: u16) -> u16 {
+    if port == 0 {
+        @panic("no port");
+    }
+    port
+}
+
+fn main() -> i32 {
+    @dbg("guarded");
+    let good: i32 = @intCast(open(7));
+    @dbg(good);
+    let bad: i32 = @intCast(open(0));
+    @dbg(bad);
+    0
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+stdout = "guarded\n7\n"
+runtime_error_contains = ["panic: no port"]
+exit_code = 101
