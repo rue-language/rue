@@ -7817,15 +7817,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(self.type_mismatch_error(slice_ty, arr_ty, span));
         }
 
-        // A non-slot-width element's compact memory image is not byte-identical
-        // to the full-slot representation used by frame arrays. For narrow
-        // scalars this makes the slice's compact element stride differ from the
-        // frame stride; aggregate elements can also differ in tags, fields, or
-        // padding. Keep the deliberate refusal, but report it at the source-level
-        // coercion boundary rather than letting the synthesized pointer reach the
-        // backend's raw-pointer safety gate (RUE-1595). Empty arrays remain valid:
-        // their null pointer is never dereferenced.
-        if arr_len != 0 && !crate::is_slot_identical_layout(self.body_type_pool(), arr_elem) {
+        // The view strides by the element's compact size while a frame array
+        // keeps one eight-byte slot per leaf, so the coercion is exact exactly
+        // when those two strides — and, inside an aggregate element, the field
+        // and element offsets — agree. `compact_stride_matches_slot_stride` is
+        // the one authority on that; code generation's raw-pointer gate consults
+        // the same predicate, so the two cannot drift (RUE-1595, RUE-2097). A
+        // narrow element (`i32`, `u8`, `bool`, `i16`, `f32`) and any aggregate
+        // holding one still disagree and are still refused here, at the
+        // source-level coercion boundary rather than at the backend's gate.
+        // Empty arrays remain valid: their null pointer is never dereferenced.
+        if arr_len != 0
+            && !crate::compact_stride_matches_slot_stride(self.body_type_pool(), arr_elem)
+        {
             return Err(CompileError::new(
                 ErrorKind::SliceFrameArrayNotSupported {
                     element_type: self.format_type_name(arr_elem),

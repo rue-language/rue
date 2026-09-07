@@ -301,6 +301,26 @@ pub(crate) fn is_slot_identical_layout(type_pool: &FrozenTypeInternPool, ty: Typ
     rue_air::is_slot_identical_layout(type_pool, ty)
 }
 
+/// Whether `ty`'s compact stride and interior byte offsets equal its slot-model
+/// stride and offsets, so a compact-strided walk over frame-resident storage of
+/// `ty` visits exactly the bytes the slot model put there.
+///
+/// Delegates to the canonical layout authority
+/// `rue_air::compact_stride_matches_slot_stride` — the same predicate semantic
+/// analysis refuses the fixed-array-to-slice coercion with (E0908) — so the
+/// source-level refusal and the raw-pointer gate below cannot disagree about
+/// which element shapes a compact-strided view may address.
+///
+/// It admits everything [`is_slot_identical_layout`] admits plus `f64` leaves,
+/// whose eight-byte footprint fills a slot even though a float is accessed by a
+/// floating-point instruction rather than moved as an opaque slot.
+pub(crate) fn compact_stride_matches_slot_stride(
+    type_pool: &FrozenTypeInternPool,
+    ty: Type,
+) -> bool {
+    rue_air::compact_stride_matches_slot_stride(type_pool, ty)
+}
+
 /// Physical width (1/2/4 bytes) and extension of a narrow scalar accessed
 /// through a pointer under the compact layout (ADR-0052, RUE-989).
 ///
@@ -1129,9 +1149,8 @@ pub(crate) fn compact_physical_access_unsupported(
     None
 }
 
-/// An `@raw`/`@raw_mut`/`@field_ptr` pointer into a
-/// **frame** aggregate that would then be accessed as a whole non-slot-identical
-/// aggregate, or strided across a non-slot-identical array, is unsupported and
+/// An `@raw`/`@raw_mut`/`@field_ptr` pointer into a **frame** aggregate whose
+/// compact byte positions disagree with its slot positions is unsupported and
 /// must be refused loudly (RUE-1035 M2).
 ///
 /// `@raw`-family intrinsics take the address of a place, whose base is always a
@@ -1139,33 +1158,39 @@ pub(crate) fn compact_physical_access_unsupported(
 /// `Local`/`Param`). Frames stay slot-shaped (RUE-975): a struct/array/enum sits
 /// one eight-byte slot per leaf. But `@ptr_read`/`@ptr_write` address a whole
 /// aggregate by its packed *compact image*, and `@ptr_offset` strides by the
-/// compact element size. For a non-slot-identical aggregate the two disagree, so
-/// the raw pointer silently mixes representations. Exactly two shapes break:
+/// compact element size. Where the two models put bytes at different offsets the
+/// raw pointer silently mixes representations. Exactly two shapes break:
 ///
-/// - the pointer's **pointee is a non-slot-identical aggregate** (`@raw_mut(v)`
-///   of a whole struct/array): a whole-value round trip through it scrambles
-///   fields (M2a); and
-/// - the addressed place **indexes into a non-slot-identical array**
-///   (`@raw(arr[i])` of a frame array element): the resulting element pointer
-///   strides by the compact size while the frame array strides by the slot size
-///   (M2b).
+/// - the pointer's **pointee is an aggregate whose compact image sits at
+///   different offsets than its slot image** (`@raw_mut(v)` of a whole
+///   struct/array): a whole-value round trip through it scrambles fields (M2a);
+///   and
+/// - the addressed place **indexes into an array whose element's compact stride
+///   differs from its slot stride** (`@raw(arr[i])` of a frame array element):
+///   the resulting element pointer strides by the compact size while the frame
+///   array strides by the slot size (M2b). This is the gate the
+///   fixed-array-to-slice coercion passes through, and it consults the very
+///   predicate that coercion's E0908 refusal does
+///   ([`compact_stride_matches_slot_stride`]), so the two cannot drift.
 ///
 /// Everything else stays allowed and correct: a **narrow scalar field** pointer
 /// (`@field_ptr(p.b)` → `ptr i32`) addresses the field's slot and hits its low
 /// bytes (RUE-989); a **bare scalar local** (`@raw_mut(n)` on `i32`) is not an
-/// aggregate; a **slot-identical** array/struct strides and round-trips
-/// identically to the slot model. Heap provenance is untouched: `@alloc` never
-/// flows through `@raw`, so every heap `@ptr_read`/`@ptr_write` round trip keeps
-/// working. Returns the offending frame aggregate type, or `None`.
+/// aggregate; an aggregate built only from slot-filling leaves — `i64`/`u64`,
+/// pointers, and `f64`, whose eight bytes fill their slot however the load
+/// spells itself — strides and round-trips identically to the slot model. Heap
+/// provenance is untouched: `@alloc` never flows through `@raw`, so every heap
+/// `@ptr_read`/`@ptr_write` round trip keeps working. Returns the offending
+/// frame aggregate type, or `None`.
 fn frame_raw_aggregate_pointer_unsupported(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
 ) -> Option<Type> {
-    let non_slot_identical_aggregate = |ty: Type| -> bool {
+    let misplaced_aggregate = |ty: Type| -> bool {
         matches!(
             ty.kind(),
             TypeKind::Struct(_) | TypeKind::Array(_) | TypeKind::Enum(_)
-        ) && !is_slot_identical_layout(type_pool, ty)
+        ) && !compact_stride_matches_slot_stride(type_pool, ty)
     };
 
     for raw in 0..cfg.value_count() {
@@ -1178,26 +1203,28 @@ fn frame_raw_aggregate_pointer_unsupported(
             continue;
         }
 
-        // (a) The pointer addresses a whole non-slot-identical aggregate: reading
-        // or writing it through the pointer marshals the compact image against
-        // slot-shaped frame storage (M2a). A narrow scalar field pointer has a
-        // scalar pointee and is not caught here (RUE-989 handles it).
+        // (a) The pointer addresses a whole aggregate whose compact image sits at
+        // different offsets than its slot image: reading or writing it through
+        // the pointer marshals one against the other (M2a). A narrow scalar field
+        // pointer has a scalar pointee and is not caught here (RUE-989 handles
+        // it).
         let pointee = pointee_or_self(type_pool, inst.ty);
-        if non_slot_identical_aggregate(pointee) {
+        if misplaced_aggregate(pointee) {
             return Some(pointee);
         }
 
-        // (b) The addressed place indexes into a non-slot-identical frame array:
-        // the element pointer would stride by the compact element size while the
-        // frame array strides by the slot size (M2b). A field projection into a
-        // struct is not an array stride and stays allowed.
+        // (b) The addressed place indexes into a frame array whose element's
+        // compact stride differs from its slot stride: the element pointer would
+        // stride by the compact element size while the frame array strides by the
+        // slot size (M2b). A field projection into a struct is not an array
+        // stride and stays allowed.
         let Some(&operand) = cfg.get_intrinsic_args(&inst.data).first() else {
             continue;
         };
         if let CfgInstData::PlaceRead { place } = &cfg.get_inst(operand).data {
             for projection in cfg.get_place_projections(place) {
                 if let rue_cfg::Projection::Index { array_type, .. } = projection
-                    && non_slot_identical_aggregate(*array_type)
+                    && misplaced_aggregate(*array_type)
                 {
                     return Some(*array_type);
                 }

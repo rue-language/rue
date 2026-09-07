@@ -5486,6 +5486,20 @@ impl<'a> Interp<'a> {
                     raw >>= 8;
                 }
             }
+            // A float value is carried as its IEEE-754 bit pattern in an `Int`
+            // (the same encoding `Const` produces and `eval_float_operation`
+            // consumes), so its representation is that pattern little-endian at
+            // the type's own width — four bytes for `f32`, eight for `f64`.
+            // Without this arm a float never reaches memory at all, which is
+            // what made a `[f64]` view's `@raw(arr[0])` unmodelable.
+            (TypeKind::F32 | TypeKind::F64, Value::Int(pattern)) => {
+                initialized.fill(true);
+                let mut raw = *pattern as u128;
+                for byte in &mut bytes {
+                    *byte = raw as u8;
+                    raw >>= 8;
+                }
+            }
             (TypeKind::PtrConst(_) | TypeKind::PtrMut(_), Value::Ptr(ptr)) => {
                 let address = ptr.as_ref().map_or(0, |target| self.ptr_address(target));
                 initialized.fill(true);
@@ -5842,6 +5856,25 @@ impl<'a> Interp<'a> {
                     raw |= (*byte as u128) << (index * 8);
                 }
                 Ok(Value::Int(from_bits(raw, bits, kind_signed(kind))))
+            }
+            // The mirror of the float arm in `encode_value`: the stored bit
+            // pattern comes back as the unsigned integer the interpreter carries
+            // a float in. Every bit pattern of the type's width is a value
+            // (NaNs included), so there is no validity check to make here.
+            TypeKind::F32 | TypeKind::F64 => {
+                if initialized[..size].iter().any(|ready| !ready) {
+                    return Err(unsupported(
+                        unsupported_intrinsic_kind_for_operation(
+                            rue_air::IntrinsicOperation::PtrRead,
+                        ),
+                        "read of uninitialized float representation",
+                    ));
+                }
+                let mut raw = 0u128;
+                for (index, byte) in bytes[..size].iter().enumerate() {
+                    raw |= (*byte as u128) << (index * 8);
+                }
+                Ok(Value::Int(raw as i128))
             }
             TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => {
                 if initialized[..size].iter().any(|ready| !ready) {
