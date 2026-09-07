@@ -22,7 +22,7 @@
 use std::sync::Arc;
 
 use crate::parsed_modules::ParsedModule;
-use crate::unstable::TestInventoryEntry;
+use crate::unstable::{TestExpectedFailure, TestInventoryEntry};
 
 /// One inventoried test: what a consumer is shown, and what the image calls.
 ///
@@ -83,6 +83,9 @@ pub(crate) fn collect_test_inventory(
             }
             None => (String::new(), 0, 0),
         };
+        let expected_failures = module
+            .and_then(|module| test_expected_failures(module, &name))
+            .unwrap_or_default();
         entries.push(RootedTest {
             entry: TestInventoryEntry {
                 id: format!("{module_path}::{name}"),
@@ -92,6 +95,7 @@ pub(crate) fn collect_test_inventory(
                 line,
                 column,
                 ordinal: 0,
+                expected_failures,
             },
             identity: root.clone(),
         });
@@ -101,6 +105,55 @@ pub(crate) fn collect_test_inventory(
         test.entry.ordinal = u32::try_from(ordinal).unwrap_or(u32::MAX);
     }
     entries
+}
+
+/// Read validated test expectation directives from the declaration that owns
+/// this inventory entry. This stays inside the existing inventory computation,
+/// so marker metadata follows the parsed module revision and cache boundary
+/// already used for stable identity and source location.
+fn test_expected_failures(module: &ParsedModule, name: &str) -> Option<Vec<TestExpectedFailure>> {
+    let test = module.ast().items.iter().find_map(|item| match item {
+        rue_parser::ast::Item::Test(test)
+            if module.try_resolve_raw_symbol(test.name.value) == Some(name) =>
+        {
+            Some(test)
+        }
+        _ => None,
+    })?;
+    let mut markers = Vec::new();
+    for directive in &test.directives {
+        match directive.kind {
+            Some(rue_parser::DirectiveName::KnownBug) => {
+                if let Some(arg) = directive.args.first() {
+                    markers.push(TestExpectedFailure {
+                        issue: module
+                            .try_resolve_raw_symbol(arg.ident.name)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        platform: None,
+                    });
+                }
+            }
+            Some(rue_parser::DirectiveName::KnownBugOn) => {
+                if directive.args.len() >= 2 {
+                    markers.push(TestExpectedFailure {
+                        platform: Some(
+                            module
+                                .try_resolve_raw_symbol(directive.args[0].ident.name)
+                                .unwrap_or_default()
+                                .to_owned(),
+                        ),
+                        issue: module
+                            .try_resolve_raw_symbol(directive.args[1].ident.name)
+                            .unwrap_or_default()
+                            .to_owned(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(markers)
 }
 
 /// The module identity a consumer is shown.

@@ -175,6 +175,23 @@ impl Verdict {
     }
 }
 
+/// An applicable known-bug marker changes the published outcome while the
+/// original verdict and failure evidence remain available to the runner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TestExpectation {
+    Xfail,
+    Xpass,
+}
+
+impl TestExpectation {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Xfail => "xfail",
+            Self::Xpass => "xpass",
+        }
+    }
+}
+
 /// One frame read from the failure channel.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct FailureFrame {

@@ -48,7 +48,8 @@ item           = function | extern_block | extern_export | struct_def | enum_def
 (* Directives and intrinsics *)
 directives     = { directive } ;
 directive      = "@" IDENT [ "(" [ directive_args ] ")" ] ;
-directive_args = IDENT { "," IDENT } [ "," ] ;
+directive_args = directive_arg { "," directive_arg } [ "," ] ;
+directive_arg  = IDENT | STRING ;
 intrinsic      = "@" IDENT "(" [ intrinsic_args ] ")" ;
 intrinsic_args = intrinsic_arg { "," intrinsic_arg } [ "," ] ;
 intrinsic_arg  = type | expression ;

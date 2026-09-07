@@ -755,7 +755,30 @@ test "alpha" {
 args = ["test", "main.rue", "--list", "--format", "json"]
 driver_exit_code = 0
 compile_stdout_contains = [
-    '{"column":1,"event":"test","file":"tests.rue","id":"tests.rue::alpha","line":1,"module":"tests.rue","name":"alpha","schema":"1.0"}',
+    '{"column":1,"event":"test","file":"tests.rue","id":"tests.rue::alpha","line":1,"module":"tests.rue","name":"alpha","schema":"1.1"}',
+]
+compile_stdout_not_contains = ["run_started", "run_finished", "test_finished"]
+
+[[case]]
+name = "list_json_exposes_known_bug_metadata"
+description = "The canonical test inventory carries expected-failure metadata into JSON listings."
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+fn main() -> i32 { 0 }
+""" },
+    { path = "tests.rue", source = """
+@known_bug("RUE-2018")
+test "unscoped" { }
+@known_bug_on("aarch64-macos", "RUE-2018")
+test "scoped" { }
+""" },
+]
+args = ["test", "main.rue", "--list", "--format", "json"]
+driver_exit_code = 0
+compile_stdout_contains = [
+    '"known_bug":"RUE-2018"',
+    '"known_bug_on":[{"issue":"RUE-2018","platform":"aarch64-macos"}]',
 ]
 compile_stdout_not_contains = ["run_started", "run_finished", "test_finished"]
 
@@ -945,7 +968,7 @@ args = ["test", "main.rue", "--seed", "424242", "-j1", "--format", "json"]
 driver_exit_code = 0
 compile_stdout_contains = [
     '{"event":"run_started","jobs":1,"opt_level":"0",',
-    '"plan":{"selected":1,"total":1},"root":"main.rue","schema":"1.0","seed":424242,',
+    '"plan":{"selected":1,"total":1},"root":"main.rue","schema":"1.1","seed":424242,',
     '{"event":"test_started","id":"tests.rue::alpha"}',
     '{"capability_summary":{"status":"unavailable"},',
     '"stderr":{"bytes_total":0,"digest":"sha256:',
@@ -1896,6 +1919,74 @@ compile_stdout_not_contains = ['"scratch_dir"']
 compile_stderr_contains = ["type mismatch: expected i32, found bool"]
 
 [[case]]
+name = "a_marked_compile_error_is_an_expected_failure"
+description = "A marked test whose body does not analyze is an xfail and does not make the run fail."
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+fn main() -> i32 { 0 }
+""" },
+    { path = "tests.rue", source = """
+@known_bug("RUE-2018")
+test "known compile error" {
+    let wrong: i32 = true;
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 0
+compile_stdout_contains = [
+    '"verdict":"xfail"',
+    '"kind":"compile_error"',
+    '"compile_error":0,"crash":0,"event":"run_finished","failed":0,"passed":0',
+    '"xfail":1,"xpass":0',
+]
+compile_stderr_contains = ["type mismatch: expected i32, found bool"]
+
+[[case]]
+name = "marked_compile_error_and_ordinary_test_have_separate_counts"
+description = "A marked compile error and an ordinary passing sibling both contribute exactly once to the run."
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+fn main() -> i32 { 0 }
+""" },
+    { path = "tests.rue", source = """
+@known_bug("RUE-2018")
+test "known compile error" { let wrong: i32 = true; }
+test "still runs" { @assert(2 + 2 == 4); }
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 0
+compile_stdout_contains = [
+    '"compile_error":0,"crash":0,"event":"run_finished","failed":0,"passed":1',
+    '"xfail":1,"xpass":0',
+]
+compile_stderr_contains = ["type mismatch: expected i32, found bool"]
+
+[[case]]
+name = "a_known_bug_pass_is_an_unexpected_pass"
+description = "A passing test with a matching marker is an xpass and makes the run fail."
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+fn main() -> i32 { 0 }
+""" },
+    { path = "tests.rue", source = """
+@known_bug("RUE-2018")
+test "fixed bug" { }
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"verdict":"xpass"',
+    '"compile_error":0,"crash":0,"event":"run_finished","failed":0,"passed":0',
+    '"xfail":0,"xpass":1',
+]
+
+[[case]]
 name = "a_broken_helper_is_one_verdict_per_dependent_test"
 description = """
 Maintainer ruling (2026-09-04): a helper several tests share that fails to
@@ -2256,3 +2347,79 @@ args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
 driver_exit_code = 2
 compile_stdout_not_contains = ['"event":"run_started"', '"event":"run_finished"', '"verdict"']
 compile_stderr_contains = ["unknown type 'Nope'"]
+
+[[case]]
+name = "known_bug_runtime_failure_preserves_evidence"
+description = "A marked assertion failure publishes xfail with its original evidence beside an ordinary passing test."
+files = [{ path = "main.rue", source = """
+@known_bug("RUE-2018")
+test "expected" { @assert(false); }
+test "ordinary" { }
+""" }]
+args = ["test", "main.rue", "-j1", "--format", "json"]
+driver_exit_code = 0
+compile_stdout_contains = ['"verdict":"xfail"', '"kind":"assert"', '"passed":1', '"xfail":1,"xpass":0', '"scratch_dir"', '"repro"']
+
+[[case]]
+name = "known_bug_xpass_has_a_full_human_report"
+description = "An unexpected pass fails the run and retains output and reproduction information."
+files = [{ path = "main.rue", source = """
+@known_bug("RUE-2018")
+test "fixed" { println("evidence from the passing test"); }
+""" }]
+args = ["test", "main.rue", "-j1"]
+driver_exit_code = 1
+compile_stdout_contains = ["XPASS main.rue::fixed", "remove the known-bug marker", "evidence from the passing test", "scratch:", "repro:", "0 passed, 1 unexpected pass"]
+
+[[case]]
+name = "known_bug_does_not_suppress_timeout"
+description = "A known-bug marker cannot absorb a hung process."
+files = [{ path = "main.rue", source = """
+@known_bug("RUE-2018")
+test "hangs" { while true { } }
+""" }]
+args = ["test", "main.rue", "--timeout-ms", "500", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = ['"verdict":"timeout"', '"timeout":1', '"xfail":0,"xpass":0']
+
+[[case]]
+name = "known_bug_platform_aarch64_macos"
+description = "Matching platform markers accept failures; nonmatching markers leave passing tests ordinary."
+only_on = ["aarch64-macos"]
+files = [{ path = "main.rue", source = """
+@known_bug_on("aarch64-macos", "RUE-2018")
+test "matching" { @assert(false); }
+@known_bug_on("x86-64-linux", "RUE-2018")
+test "nonmatching" { }
+""" }]
+args = ["test", "main.rue", "-j1", "--format", "json"]
+driver_exit_code = 0
+compile_stdout_contains = ['"verdict":"xfail"', '"verdict":"pass"', '"passed":1', '"xfail":1,"xpass":0']
+
+[[case]]
+name = "known_bug_platform_x86_64_linux"
+description = "Matching platform markers accept failures; nonmatching markers leave passing tests ordinary."
+only_on = ["x86-64-linux"]
+files = [{ path = "main.rue", source = """
+@known_bug_on("x86-64-linux", "RUE-2018")
+test "matching" { @assert(false); }
+@known_bug_on("aarch64-macos", "RUE-2018")
+test "nonmatching" { }
+""" }]
+args = ["test", "main.rue", "-j1", "--format", "json"]
+driver_exit_code = 0
+compile_stdout_contains = ['"verdict":"xfail"', '"verdict":"pass"', '"passed":1', '"xfail":1,"xpass":0']
+
+[[case]]
+name = "known_bug_platform_aarch64_linux"
+description = "Matching platform markers accept failures; nonmatching markers leave passing tests ordinary."
+only_on = ["aarch64-linux"]
+files = [{ path = "main.rue", source = """
+@known_bug_on("aarch64-linux", "RUE-2018")
+test "matching" { @assert(false); }
+@known_bug_on("aarch64-macos", "RUE-2018")
+test "nonmatching" { }
+""" }]
+args = ["test", "main.rue", "-j1", "--format", "json"]
+driver_exit_code = 0
+compile_stdout_contains = ['"verdict":"xfail"', '"verdict":"pass"', '"passed":1', '"xfail":1,"xpass":0']

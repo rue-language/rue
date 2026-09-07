@@ -112,6 +112,19 @@ it parses test declarations for the reference scan of 6.7:10. (The feature was
 introduced behind the `test_declarations` preview gate and stabilized by
 RUE-1955.)
 
+{{ rule(id="6.7:18", cat="legality-rule") }}
+
+A test declaration **MAY** carry `@known_bug("RUE-NNN")` or
+`@known_bug_on("platform", "RUE-NNN")` metadata. These directives are valid
+only on tests. The issue marker **MUST** use the canonical positive Rue issue
+spelling, and a platform name **MUST** name a supported host platform;
+malformed markers are rejected. A matching marker records an ordinary test
+failure as an expected failure. A matching marker on a passing test is an
+unexpected pass and **MUST** fail the test run. Timeouts, crashes, and runner
+failures remain failures even when a test has a matching marker. A test
+**MAY** have one unscoped marker or one marker for each distinct platform; an
+unscoped marker **MUST NOT** be combined with platform-scoped markers.
+
 {{ rule(id="6.7:12", cat="informative") }}
 
 This section specifies the declaration, and the one construct whose meaning a

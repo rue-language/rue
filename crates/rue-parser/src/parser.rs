@@ -751,6 +751,61 @@ mod tests {
     }
 
     #[test]
+    fn test_expectation_directives_keep_quoted_arguments() {
+        let (ast, interner) = parse_source("@known_bug(\"RUE-123\") test \"marked\" { }").unwrap();
+        let Item::Test(test) = &ast.items[0] else {
+            panic!("expected a test declaration");
+        };
+        assert_eq!(test.directives.len(), 1);
+        assert!(test.directives[0].args[0].quoted);
+        assert_eq!(
+            interner.resolve(&test.directives[0].args[0].ident.name),
+            "RUE-123"
+        );
+        let (ast, _) =
+            parse_source("@known_bug_on(\"aarch64-macos\", \"RUE-124\") test \"scoped\" { }")
+                .unwrap();
+        let Item::Test(test) = &ast.items[0] else {
+            panic!("expected a test declaration");
+        };
+        assert!(test.directives[0].args.iter().all(|arg| arg.quoted));
+    }
+
+    #[test]
+    fn ordinary_directives_reject_quoted_arguments() {
+        for source in [
+            r#"@allow("unused_variable") fn f() {}"#,
+            r#"@repr("c") struct S {}"#,
+        ] {
+            assert!(
+                parse_source(source).is_err(),
+                "accepted invalid directive: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_expectation_directives_reject_invalid_or_conflicting_metadata() {
+        for source in [
+            r#"@known_bug test "bad" {}"#,
+            r#"@known_bug("RUE-01") test "bad" {}"#,
+            r#"@known_bug("RUE-0") test "bad" {}"#,
+            r#"@known_bug("rue-1") test "bad" {}"#,
+            r#"@known_bug("RUE-1") fn bad() {}"#,
+            r#"@known_bug_on("aarch64-macos") test "bad" {}"#,
+            r#"@known_bug_on("unknown", "RUE-1") test "bad" {}"#,
+            r#"@known_bug("RUE-1") @known_bug("RUE-2") test "bad" {}"#,
+            r#"@known_bug("RUE-1") @known_bug_on("aarch64-macos", "RUE-2") test "bad" {}"#,
+            r#"@known_bug_on("aarch64-macos", "RUE-1") @known_bug_on("aarch64-macos", "RUE-2") test "bad" {}"#,
+        ] {
+            assert!(parse_source(source).is_err(), "accepted {source}");
+        }
+        assert!(parse_source(
+            r#"@known_bug_on("aarch64-macos", "RUE-1") @known_bug_on("x86-64-linux", "RUE-2") test "distinct" {}"#,
+        ).is_ok());
+    }
+
+    #[test]
     fn contextual_test_keyword_stays_an_ordinary_identifier() {
         // `test` is a keyword only at item position followed by a string
         // (ADR-0083 §1). `fn test`, a local `let test`, and a `const test` all

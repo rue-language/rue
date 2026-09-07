@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 
 use super::diff::{DiffOp, Hunk};
 use super::events::{CandidateSource, Capture, Comparison, Event, TestFinished};
-use super::verdict::Verdict;
+use super::verdict::{TestExpectation, Verdict};
 
 /// What the human renderer is told out of band.
 ///
@@ -42,15 +42,20 @@ pub(crate) fn render(event: &Event) -> Option<String> {
     match event {
         Event::RunStarted { .. } | Event::TestStarted { .. } => None,
         Event::Test { id, .. } => Some(id.clone()),
-        Event::TestFinished(finished) => {
-            (!finished.verdict.is_pass()).then(|| render_failure(finished))
-        }
+        Event::TestFinished(finished) => match finished.expectation {
+            Some(TestExpectation::Xfail) => Some(render_failure(finished)),
+            Some(TestExpectation::Xpass) => Some(render_failure(finished)),
+            None if !finished.verdict.is_pass() => Some(render_failure(finished)),
+            None => None,
+        },
         Event::RunFinished {
             passed,
             failed,
             timeout,
             crash,
             compile_error,
+            xfail,
+            xpass,
             wall_ms,
             // The unimported-test-file warnings are the runner's own, and
             // stderr carries them once in every format (test-events.md,
@@ -66,6 +71,8 @@ pub(crate) fn render(event: &Event) -> Option<String> {
             timeout: *timeout,
             crash: *crash,
             compile_error: *compile_error,
+            xfail: *xfail,
+            xpass: *xpass,
             wall_ms: *wall_ms,
         })),
         Event::RunCanceled {
@@ -121,6 +128,8 @@ struct Counts {
     timeout: usize,
     crash: usize,
     compile_error: usize,
+    xfail: usize,
+    xpass: usize,
     wall_ms: u64,
 }
 
@@ -147,6 +156,20 @@ fn summary(counts: Counts) -> String {
             if counts.compile_error == 1 { "" } else { "s" }
         ));
     }
+    if counts.xfail > 0 {
+        parts.push(format!(
+            "{} expected failure{}",
+            counts.xfail,
+            if counts.xfail == 1 { "" } else { "s" }
+        ));
+    }
+    if counts.xpass > 0 {
+        parts.push(format!(
+            "{} unexpected pass{}",
+            counts.xpass,
+            if counts.xpass == 1 { "" } else { "es" }
+        ));
+    }
     format!("{} ({})", parts.join(", "), seconds(counts.wall_ms))
 }
 
@@ -160,6 +183,7 @@ fn render_failure(finished: &TestFinished) -> String {
     let TestFinished {
         id,
         verdict,
+        expectation,
         failure,
         stdout,
         stderr,
@@ -168,12 +192,16 @@ fn render_failure(finished: &TestFinished) -> String {
         repro_env,
         ..
     } = finished;
-    let banner = match verdict {
-        Verdict::Pass => "PASS",
-        Verdict::Fail(_) => "FAIL",
-        Verdict::Timeout => "TIMEOUT",
-        Verdict::Crash(_) => "CRASH",
-        Verdict::CompileError => "COMPILE ERROR",
+    let banner = match expectation {
+        Some(TestExpectation::Xfail) => "XFAIL",
+        Some(TestExpectation::Xpass) => "XPASS",
+        _ => match verdict {
+            Verdict::Pass => "PASS",
+            Verdict::Fail(_) => "FAIL",
+            Verdict::Timeout => "TIMEOUT",
+            Verdict::Crash(_) => "CRASH",
+            Verdict::CompileError => "COMPILE ERROR",
+        },
     };
     // A test that never ran has no captured output, no scratch directory, and
     // nothing the runner observed: its whole report is the first diagnostic and
@@ -211,6 +239,9 @@ fn render_failure(finished: &TestFinished) -> String {
         return out;
     }
     let mut out = format!("{banner} {id}");
+    if matches!(expectation, Some(TestExpectation::Xpass)) {
+        out.push_str("\n  test passed unexpectedly; remove the known-bug marker");
+    }
     if let Some(failure) = failure {
         out.push_str("\n  ");
         out.push_str(&failure.kind);
@@ -448,6 +479,7 @@ mod tests {
         Event::TestFinished(Box::new(TestFinished {
             id: "app/t.rue::parses a port".to_owned(),
             verdict,
+            expectation: None,
             duration_ms: 3,
             failure,
             stdout: Capture::new(b"checking\n".to_vec(), 9, false),
@@ -470,6 +502,7 @@ mod tests {
         Event::TestFinished(Box::new(TestFinished {
             id: "app/t.rue::parses a port".to_owned(),
             verdict: Verdict::CompileError,
+            expectation: None,
             duration_ms: 0,
             failure: Some(FailureRecord {
                 kind: "compile_error".to_owned(),
@@ -535,6 +568,8 @@ mod tests {
                 timeout: 0,
                 crash: 0,
                 compile_error,
+                xfail: 0,
+                xpass: 0,
                 wall_ms: 900,
                 unimported_test_files: None,
                 test_candidates: CandidateSource::Declared,
@@ -546,6 +581,27 @@ mod tests {
         assert_eq!(summarized(4), "2 passed, 1 failed, 4 compile errors (0.9s)");
     }
 
+    #[test]
+    fn the_summary_names_expected_failures_and_unexpected_passes() {
+        let rendered = super::render(&Event::RunFinished {
+            passed: 2,
+            failed: 0,
+            timeout: 0,
+            crash: 0,
+            compile_error: 0,
+            xfail: 1,
+            xpass: 1,
+            wall_ms: 900,
+            unimported_test_files: None,
+            test_candidates: CandidateSource::Declared,
+        })
+        .expect("a summary renders");
+        assert_eq!(
+            rendered,
+            "2 passed, 1 expected failure, 1 unexpected pass (0.9s)"
+        );
+    }
+
     fn run_finished(passed: usize, failed: usize, timeout: usize, crash: usize) -> Event {
         Event::RunFinished {
             passed,
@@ -553,6 +609,8 @@ mod tests {
             timeout,
             crash,
             compile_error: 0,
+            xfail: 0,
+            xpass: 0,
             wall_ms: 900,
             unimported_test_files: Some(Vec::new()),
             test_candidates: CandidateSource::Declared,
@@ -563,6 +621,36 @@ mod tests {
     #[test]
     fn a_pass_prints_nothing() {
         assert!(super::render(&finished(Verdict::Pass, None)).is_none());
+    }
+
+    #[test]
+    fn expected_failure_classifications_are_visible_to_humans() {
+        let Event::TestFinished(mut xfail) = finished(
+            Verdict::Fail(FailureKind::Assert),
+            Some(FailureRecord {
+                kind: "assert".to_owned(),
+                message: "assertion failed".to_owned(),
+                ..FailureRecord::default()
+            }),
+        ) else {
+            unreachable!();
+        };
+        xfail.expectation = Some(TestExpectation::Xfail);
+        assert!(
+            super::render(&Event::TestFinished(xfail))
+                .expect("xfail renders")
+                .starts_with("XFAIL ")
+        );
+
+        let Event::TestFinished(mut xpass) = finished(Verdict::Pass, None) else {
+            unreachable!();
+        };
+        xpass.expectation = Some(TestExpectation::Xpass);
+        let rendered = super::render(&Event::TestFinished(xpass)).expect("xpass renders");
+        assert!(rendered.starts_with("XPASS app/t.rue::parses a port\n"));
+        assert!(rendered.contains("remove the known-bug marker"));
+        assert!(rendered.contains("repro:"));
+        assert!(rendered.contains("checking"));
     }
 
     /// The head events are machine bookkeeping; a person is shown failures and
@@ -786,6 +874,8 @@ mod tests {
             timeout: 0,
             crash: 0,
             compile_error: 0,
+            xfail: 0,
+            xpass: 0,
             wall_ms: 100,
             unimported_test_files: None,
             test_candidates: CandidateSource::None,
@@ -844,6 +934,8 @@ mod tests {
             timeout: 0,
             crash: 0,
             compile_error: 0,
+            xfail: 0,
+            xpass: 0,
             wall_ms: 0,
             unimported_test_files: Some(vec![
                 UnimportedFile {
@@ -877,6 +969,8 @@ mod tests {
                 file: "app/t.rue".to_owned(),
                 line: 1,
                 column: 1,
+                known_bug: None,
+                known_bug_on: Vec::new(),
             }),
             Some("app/t.rue::ok".to_owned())
         );

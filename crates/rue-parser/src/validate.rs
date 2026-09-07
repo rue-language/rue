@@ -20,11 +20,13 @@
 use crate::ast::{Ast, Directive, Expr, IntrinsicArg, Item, Method, Statement, TypeExpr};
 use crate::directives::{
     DirectiveArgValue, DirectiveArity, DirectiveName, DirectiveSite, ReprArg, directive_name_list,
-    repr_arg_list, site_list, warning_name_list,
+    is_canonical_known_bug_marker, is_known_bug_platform, repr_arg_list, site_list,
+    warning_name_list,
 };
 use crate::parser_policy::diagnostics::ParserDiagnostics;
 use lasso::ThreadedRodeo;
 use rue_error::{CompileError, ErrorKind};
+use std::collections::HashSet;
 
 /// Walk the AST and report directive-validation diagnostics through the same
 /// bounded per-file policy as grammar recovery.
@@ -46,6 +48,7 @@ struct Validator<'a> {
 
 impl Validator<'_> {
     fn check_directives(&mut self, directives: &[Directive], site: DirectiveSite) {
+        self.check_known_bug_combinations(directives, site);
         for directive in directives {
             let Some(kind) = directive.kind else {
                 self.errors.push(CompileError::new(
@@ -81,6 +84,44 @@ impl Validator<'_> {
         }
     }
 
+    fn check_known_bug_combinations(&mut self, directives: &[Directive], site: DirectiveSite) {
+        if site != DirectiveSite::Test {
+            return;
+        }
+        let mut has_unscoped = false;
+        let mut scoped_platforms = HashSet::new();
+        for directive in directives {
+            match directive.kind {
+                Some(DirectiveName::KnownBug) => {
+                    if has_unscoped || !scoped_platforms.is_empty() {
+                        self.errors.push(CompileError::new(
+                            ErrorKind::ParseError(
+                                "a test may have only one unscoped known-bug marker, and it cannot be combined with platform-scoped markers".to_owned(),
+                            ),
+                            directive.span,
+                        ));
+                    }
+                    has_unscoped = true;
+                }
+                Some(DirectiveName::KnownBugOn) => {
+                    let Some(platform) = directive.args.first() else {
+                        continue;
+                    };
+                    let platform = self.interner.resolve(&platform.ident.name);
+                    if has_unscoped || !scoped_platforms.insert(platform.to_owned()) {
+                        self.errors.push(CompileError::new(
+                            ErrorKind::ParseError(
+                                "a test may have at most one known-bug marker per platform, and scoped markers cannot be combined with an unscoped marker".to_owned(),
+                            ),
+                            directive.span,
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Report a wrong argument count, and answer whether the count is right.
     /// A wrong count already names what the directive accepts, so the
     /// arguments themselves are not reported a second time.
@@ -104,7 +145,17 @@ impl Validator<'_> {
                 ));
                 false
             }
-            DirectiveArity::None | DirectiveArity::ExactlyOne | DirectiveArity::Any => true,
+            DirectiveArity::ExactlyTwo if directive.args.len() != 2 => {
+                self.errors.push(CompileError::new(
+                    ErrorKind::ParseError(format!("@{kind} takes exactly two quoted arguments")),
+                    directive.span,
+                ));
+                false
+            }
+            DirectiveArity::None
+            | DirectiveArity::ExactlyOne
+            | DirectiveArity::ExactlyTwo
+            | DirectiveArity::Any => true,
         }
     }
 
@@ -130,7 +181,9 @@ impl Validator<'_> {
                                 arg.ident.span,
                             ));
                         }
-                        DirectiveArgValue::Repr(_) | DirectiveArgValue::Unrecognized => {
+                        DirectiveArgValue::Repr(_)
+                        | DirectiveArgValue::KnownBugText
+                        | DirectiveArgValue::Unrecognized => {
                             self.errors.push(CompileError::new(
                                 ErrorKind::ParseError(format!(
                                     "unrecognized warning name '{}' in @allow; \
@@ -152,7 +205,9 @@ impl Validator<'_> {
                 for arg in &directive.args {
                     match arg.value {
                         DirectiveArgValue::Repr(ReprArg::C) => {}
-                        DirectiveArgValue::Warning(_) | DirectiveArgValue::Unrecognized => {
+                        DirectiveArgValue::Warning(_)
+                        | DirectiveArgValue::KnownBugText
+                        | DirectiveArgValue::Unrecognized => {
                             self.errors.push(CompileError::new(
                                 ErrorKind::ParseError(format!(
                                     "unknown @repr argument '{}'; accepted arguments are {}",
@@ -163,6 +218,38 @@ impl Validator<'_> {
                             ));
                         }
                     }
+                }
+            }
+            DirectiveName::KnownBug => {
+                let arg = &directive.args[0];
+                let marker = self.interner.resolve(&arg.ident.name);
+                if !arg.quoted || !is_canonical_known_bug_marker(marker) {
+                    self.errors.push(CompileError::new(
+                        ErrorKind::ParseError(format!(
+                            "@known_bug requires a quoted canonical issue marker like \"RUE-123\", found {marker:?}"
+                        )),
+                        arg.ident.span,
+                    ));
+                }
+            }
+            DirectiveName::KnownBugOn => {
+                let platform = self.interner.resolve(&directive.args[0].ident.name);
+                let marker = self.interner.resolve(&directive.args[1].ident.name);
+                if !directive.args[0].quoted || !is_known_bug_platform(platform) {
+                    self.errors.push(CompileError::new(
+                        ErrorKind::ParseError(format!(
+                            "@known_bug_on requires a known quoted host platform, found {platform:?}"
+                        )),
+                        directive.args[0].ident.span,
+                    ));
+                }
+                if !directive.args[1].quoted || !is_canonical_known_bug_marker(marker) {
+                    self.errors.push(CompileError::new(
+                        ErrorKind::ParseError(format!(
+                            "@known_bug_on requires a quoted canonical issue marker like \"RUE-123\", found {marker:?}"
+                        )),
+                        directive.args[1].ident.span,
+                    ));
                 }
             }
             // Arity already rejected any argument these carry.

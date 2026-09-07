@@ -1,4 +1,4 @@
-//! The `rue test` event stream (ADR-0083 §2), schema `1.0`.
+//! The `rue test` event stream (ADR-0083 §2), schema `1.1`.
 //!
 //! Events are produced as ordinary Rust values first and serialized second.
 //! That ordering is the point: the human renderer consumes the same values in
@@ -16,10 +16,10 @@
 use serde_json::{Map, Value};
 
 use super::diff;
-use super::verdict::Verdict;
+use super::verdict::{TestExpectation, Verdict};
 
 /// The event schema version, published in the stream's head event.
-pub(crate) const SCHEMA_VERSION: &str = "1.0";
+pub(crate) const SCHEMA_VERSION: &str = "1.1";
 
 /// The `capability_summary` every `test_finished` carries.
 ///
@@ -305,6 +305,10 @@ pub(crate) enum Event {
         crash: usize,
         /// Selected tests whose closures failed to analyze (ADR-0083 §3).
         compile_error: usize,
+        /// Tests marked with an applicable `@known_bug` that failed normally.
+        xfail: usize,
+        /// Tests marked with an applicable `@known_bug` that passed.
+        xpass: usize,
         wall_ms: u64,
         unimported_test_files: Option<Vec<UnimportedFile>>,
         test_candidates: CandidateSource,
@@ -336,6 +340,10 @@ pub(crate) enum Event {
         file: String,
         line: u32,
         column: u32,
+        /// The unscoped marker, when this test carries one.
+        known_bug: Option<String>,
+        /// Platform-scoped markers, retained for machine-readable listing.
+        known_bug_on: Vec<(String, String)>,
     },
 }
 
@@ -345,6 +353,9 @@ pub(crate) enum Event {
 pub(crate) struct TestFinished {
     pub(crate) id: String,
     pub(crate) verdict: Verdict,
+    /// The applicable known-bug classification, when one changed the
+    /// ordinary observed verdict into an xfail or xpass.
+    pub(crate) expectation: Option<TestExpectation>,
     pub(crate) duration_ms: u64,
     pub(crate) failure: Option<FailureRecord>,
     pub(crate) stdout: Capture,
@@ -408,6 +419,7 @@ impl Event {
                 let TestFinished {
                     id,
                     verdict,
+                    expectation,
                     duration_ms,
                     failure,
                     stdout,
@@ -423,7 +435,11 @@ impl Event {
                 object.insert("id".to_owned(), Value::String(id.clone()));
                 object.insert(
                     "verdict".to_owned(),
-                    Value::String(verdict.as_str().to_owned()),
+                    Value::String(
+                        expectation
+                            .map_or_else(|| verdict.as_str(), TestExpectation::as_str)
+                            .to_owned(),
+                    ),
                 );
                 object.insert("duration_ms".to_owned(), Value::from(*duration_ms));
                 let mut capability = Map::new();
@@ -464,6 +480,8 @@ impl Event {
                 timeout,
                 crash,
                 compile_error,
+                xfail,
+                xpass,
                 wall_ms,
                 unimported_test_files,
                 test_candidates,
@@ -474,6 +492,8 @@ impl Event {
                 object.insert("timeout".to_owned(), Value::from(*timeout));
                 object.insert("crash".to_owned(), Value::from(*crash));
                 object.insert("compile_error".to_owned(), Value::from(*compile_error));
+                object.insert("xfail".to_owned(), Value::from(*xfail));
+                object.insert("xpass".to_owned(), Value::from(*xpass));
                 object.insert("wall_ms".to_owned(), Value::from(*wall_ms));
                 if let Some(files) = unimported_test_files {
                     object.insert(
@@ -522,6 +542,8 @@ impl Event {
                 file,
                 line,
                 column,
+                known_bug,
+                known_bug_on,
             } => {
                 object.insert("event".to_owned(), Value::String("test".to_owned()));
                 object.insert(
@@ -534,6 +556,28 @@ impl Event {
                 object.insert("file".to_owned(), Value::String(file.clone()));
                 object.insert("line".to_owned(), Value::from(*line));
                 object.insert("column".to_owned(), Value::from(*column));
+                if let Some(issue) = known_bug {
+                    object.insert("known_bug".to_owned(), Value::String(issue.clone()));
+                }
+                if !known_bug_on.is_empty() {
+                    object.insert(
+                        "known_bug_on".to_owned(),
+                        Value::Array(
+                            known_bug_on
+                                .iter()
+                                .map(|(platform, issue)| {
+                                    let mut marker = Map::new();
+                                    marker.insert("issue".to_owned(), Value::String(issue.clone()));
+                                    marker.insert(
+                                        "platform".to_owned(),
+                                        Value::String(platform.clone()),
+                                    );
+                                    Value::Object(marker)
+                                })
+                                .collect(),
+                        ),
+                    );
+                }
             }
         }
         Value::Object(object)
@@ -565,7 +609,7 @@ mod tests {
             line,
             "{\"event\":\"run_started\",\"jobs\":4,\"opt_level\":\"0\",\
              \"plan\":{\"selected\":3,\"total\":8},\"root\":\"app/main.rue\",\
-             \"schema\":\"1.0\",\"seed\":417,\"shard\":\"1/2\",\"target\":\"aarch64-macos\"}"
+             \"schema\":\"1.1\",\"seed\":417,\"shard\":\"1/2\",\"target\":\"aarch64-macos\"}"
         );
     }
 
@@ -632,6 +676,7 @@ mod tests {
         let line = Event::TestFinished(Box::new(TestFinished {
             id: "app/t.rue::ok".to_owned(),
             verdict: Verdict::Pass,
+            expectation: None,
             duration_ms: 2,
             failure: None,
             stdout: Capture::new(b"hi\n".to_vec(), 3, true),
@@ -656,6 +701,7 @@ mod tests {
         let line = Event::TestFinished(Box::new(TestFinished {
             id: "app/t.rue::bad".to_owned(),
             verdict: Verdict::Fail(FailureKind::Assert),
+            expectation: None,
             duration_ms: 5,
             failure: Some(FailureRecord {
                 kind: "assert".to_owned(),
@@ -708,6 +754,7 @@ mod tests {
         let line = Event::TestFinished(Box::new(TestFinished {
             id: "app/t.rue::bad".to_owned(),
             verdict: Verdict::Fail(FailureKind::Assert),
+            expectation: None,
             duration_ms: 1,
             failure: None,
             stdout: Capture::new(Vec::new(), 0, false),
@@ -728,6 +775,7 @@ mod tests {
         let line = Event::TestFinished(Box::new(TestFinished {
             id: "app/t.rue::bad".to_owned(),
             verdict: Verdict::Fail(FailureKind::AssertEq),
+            expectation: None,
             duration_ms: 5,
             failure: Some(FailureRecord {
                 kind: "assert_eq".to_owned(),
@@ -763,6 +811,7 @@ mod tests {
         let line = Event::TestFinished(Box::new(TestFinished {
             id: "app/t.rue::bad".to_owned(),
             verdict: Verdict::Fail(FailureKind::Assert),
+            expectation: None,
             duration_ms: 1,
             failure: Some(FailureRecord {
                 kind: "assert".to_owned(),
@@ -810,13 +859,15 @@ mod tests {
             file: "/w/app/t.rue".to_owned(),
             line: 1,
             column: 1,
+            known_bug: None,
+            known_bug_on: Vec::new(),
         }
         .to_ndjson();
         assert_eq!(
             line,
             "{\"column\":1,\"event\":\"test\",\"file\":\"/w/app/t.rue\",\
              \"id\":\"app/t.rue::ok\",\"line\":1,\"module\":\"app/t.rue\",\
-             \"name\":\"ok\",\"schema\":\"1.0\"}"
+             \"name\":\"ok\",\"schema\":\"1.1\"}"
         );
     }
 
@@ -829,6 +880,7 @@ mod tests {
         let line = Event::TestFinished(Box::new(TestFinished {
             id: "app/t.rue::broken".to_owned(),
             verdict: Verdict::CompileError,
+            expectation: None,
             duration_ms: 0,
             failure: Some(FailureRecord {
                 kind: "compile_error".to_owned(),
@@ -875,6 +927,8 @@ mod tests {
             timeout: 0,
             crash: 0,
             compile_error: 2,
+            xfail: 0,
+            xpass: 0,
             wall_ms: 5,
             unimported_test_files: None,
             test_candidates: CandidateSource::None,
@@ -894,6 +948,8 @@ mod tests {
             timeout: 0,
             crash: 0,
             compile_error: 0,
+            xfail: 0,
+            xpass: 0,
             wall_ms: 12,
             unimported_test_files: Some(vec![UnimportedFile {
                 path: "app/orphan.rue".to_owned(),
@@ -920,6 +976,8 @@ mod tests {
             timeout: 0,
             crash: 0,
             compile_error: 0,
+            xfail: 0,
+            xpass: 0,
             wall_ms: 0,
             unimported_test_files: None,
             test_candidates: CandidateSource::None,
