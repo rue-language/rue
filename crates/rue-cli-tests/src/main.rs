@@ -196,9 +196,9 @@ use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_target::{Arch, Target};
 use rue_test_runner::cli_corpus::{
     AutomaticExampleContract, Case, CliCaseTier, ExecutionClass, ExecutionContractDeclaration,
-    HangTimeoutProfile, Section, TestFile, TimeoutProfile, WatchEdit, WatchScenario,
-    WatchScenarioKind, WatchTestScenario, WatchTestScenarioKind, unknown_known_bug_on_platforms,
-    unknown_only_on_platforms,
+    HangTimeoutProfile, Section, StderrOccurrence, TestFile, TimeoutProfile, WatchEdit,
+    WatchScenario, WatchScenarioKind, WatchTestScenario, WatchTestScenarioKind,
+    unknown_known_bug_on_platforms, unknown_only_on_platforms,
 };
 use rue_test_runner::{
     ExpectedFailureOutcome, KNOWN_TARGETS, PlatformCaseSelection, ShardSelector, TestFailure,
@@ -2411,6 +2411,70 @@ fn watch_event_count(path: &Path, event: &str) -> usize {
         .count()
 }
 
+/// Check the exact-count stderr expectations a scenario declared.
+///
+/// Occurrences are counted as non-overlapping substring matches, which is what
+/// "the watcher said this N times" means for a diagnostic: each report is a
+/// whole rendering, and they cannot overlap.
+fn assert_stderr_occurrences(
+    stderr: &str,
+    expectations: &[StderrOccurrence],
+) -> Result<(), String> {
+    for expected in expectations {
+        let actual = stderr.matches(expected.text.as_str()).count();
+        if actual != expected.count {
+            return Err(format!(
+                "watch stderr held {actual} occurrence(s) of {:?}, expected {}",
+                expected.text, expected.count
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// How many suppressed retries a repeated-failure case waits out before it
+/// decides the watcher is holding its tongue.
+///
+/// The retry timer is 250ms, so three ticks is a little under a second of a
+/// failure state the watcher used to reprint at 4 Hz. The case waits for the
+/// milestones rather than for the clock: what it needs is evidence that
+/// attempts happened, not that time passed.
+const SUPPRESSED_RETRIES: usize = 3;
+
+/// Sit inside an unchanged re-observation failure for several retries and
+/// require that the watcher reported it exactly `reports` times in total.
+///
+/// A broken import cannot be waited on — it may name a file that does not
+/// exist yet, and so lies outside the closure there is anything to watch — so
+/// the loop retries on a timer instead. Every attempt publishes a milestone;
+/// only an attempt that actually told the user something publishes
+/// `reobserve-error`. That split is what makes the assertion event-driven
+/// instead of a sleep long enough to "probably" cover a few ticks (RUE-2091).
+fn assert_failure_reported_once(
+    child: &mut std::process::Child,
+    protocol: &Path,
+    reports: usize,
+    deadline: Instant,
+) -> Result<(), String> {
+    let suppressed = watch_event_count(protocol, "reobserve-error-repeat");
+    wait_for_watch_event(child, protocol, "reobserve-error", reports, deadline)?;
+    wait_for_watch_event(
+        child,
+        protocol,
+        "reobserve-error-repeat",
+        suppressed + SUPPRESSED_RETRIES,
+        deadline,
+    )?;
+    let actual = watch_event_count(protocol, "reobserve-error");
+    if actual != reports {
+        return Err(format!(
+            "watch reported an unchanged re-observation failure {actual} times, expected {reports}: {:?}",
+            watch_events(protocol)
+        ));
+    }
+    Ok(())
+}
+
 fn assert_fresh_cycle_after_supersession(
     events: &[String],
     superseded: usize,
@@ -2619,6 +2683,11 @@ fn run_watch_case(
             "supersede-acquire watch scenario needs two edits and an acquisition delay",
         ));
     }
+    if scenario.kind == WatchScenarioKind::RepeatedFailure && scenario.edits.len() != 3 {
+        return Err(TestFailure::assertion(
+            "repeated-failure watch scenario requires two failing edits and a repair",
+        ));
+    }
     if scenario.kind == WatchScenarioKind::SymlinkRetarget && scenario.edits.len() != 1 {
         return Err(TestFailure::assertion(
             "symlink-retarget watch scenario requires exactly one edit",
@@ -2808,6 +2877,20 @@ fn run_watch_case(
             WatchScenarioKind::SymlinkRetarget => {
                 wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
             }
+            WatchScenarioKind::RepeatedFailure => {
+                // A syntax error inside the closure fails import discovery, so
+                // the loop retries on its timer rather than parking on a
+                // change. The report belongs to the failure, not to the tick.
+                assert_failure_reported_once(&mut child, &protocol, 1, deadline)?;
+                // A different failure is different news, even though the loop
+                // never stopped failing in between.
+                write_watch_edit(dir, &scenario.edits[1])?;
+                assert_failure_reported_once(&mut child, &protocol, 2, deadline)?;
+                // And the repair still publishes promptly: suppression is
+                // about the repeats, not about the loop's responsiveness.
+                write_watch_edit(dir, &scenario.edits[2])?;
+                wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
+            }
             WatchScenarioKind::SupersedeAcquire => {
                 // The first edit wakes the settled loop. Re-observation
                 // completes, and the widened acquisition window then lets the
@@ -2907,6 +2990,7 @@ fn run_watch_case(
                 return Err(format!("watch stderr did not contain {expected:?}"));
             }
         }
+        assert_stderr_occurrences(&stderr, &scenario.stderr_occurrences)?;
         if scenario.error_format.as_deref() == Some("json") {
             let diagnostics = validate_json_diagnostic_stream(&stderr)
                 .map_err(|error| format!("watch JSON stderr validation failed: {error}"))?;
@@ -2942,6 +3026,7 @@ fn run_watch_test_case(
     let required_edits = match scenario.kind {
         WatchTestScenarioKind::Edit | WatchTestScenarioKind::Cancel => 1,
         WatchTestScenarioKind::CompileError => 2,
+        WatchTestScenarioKind::RepeatedFailure => 3,
     };
     if scenario.edits.len() != required_edits {
         return Err(TestFailure::assertion(format!(
@@ -3051,6 +3136,15 @@ fn run_watch_test_case(
                 write_watch_edit(dir, &scenario.edits[1])?;
                 wait_for_watch_event(&mut child, &protocol, "run-finished", 2, deadline)?;
             }
+            WatchTestScenarioKind::RepeatedFailure => {
+                wait_for_watch_event(&mut child, &protocol, "run-finished", 1, deadline)?;
+                write_watch_edit(dir, &scenario.edits[0])?;
+                assert_failure_reported_once(&mut child, &protocol, 1, deadline)?;
+                write_watch_edit(dir, &scenario.edits[1])?;
+                assert_failure_reported_once(&mut child, &protocol, 2, deadline)?;
+                write_watch_edit(dir, &scenario.edits[2])?;
+                wait_for_watch_event(&mut child, &protocol, "run-finished", 2, deadline)?;
+            }
             WatchTestScenarioKind::Cancel => {
                 // Wait for a test process to actually exist before editing:
                 // the point of the case is the kill landing on a live group.
@@ -3098,6 +3192,7 @@ fn run_watch_test_case(
                 return Err(format!("watch-test stderr did not contain {expected:?}"));
             }
         }
+        assert_stderr_occurrences(&err, &scenario.stderr_occurrences)?;
         Ok(())
     });
     result.map_err(|error| {

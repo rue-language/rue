@@ -154,6 +154,19 @@ pub struct HardLinkFixture {
     pub target: String,
 }
 
+/// An exact-count expectation over a watch process's stderr.
+///
+/// `stderr_contains` answers "was this said at all", which cannot distinguish
+/// one report from thirty. A watcher that repeats a diagnostic while nothing
+/// changed is the bug RUE-2091 fixed, so the assertion that pins it has to
+/// count.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StderrOccurrence {
+    pub text: String,
+    pub count: usize,
+}
+
 /// Imperative end-to-end watch scenario. These cases use the watch protocol
 /// seam in `rue` to synchronize edits and then terminate the watch process;
 /// ordinary CLI cases remain declarative and use the normal compile/run path.
@@ -191,6 +204,10 @@ pub struct WatchScenario {
     /// told the user when it got there.
     #[serde(default)]
     pub stderr_contains: Vec<String>,
+    /// Substrings whose number of occurrences in stderr is itself the
+    /// assertion.
+    #[serde(default)]
+    pub stderr_occurrences: Vec<StderrOccurrence>,
     /// The exit status the published program has at each publication the
     /// scenario waits for. An `initial_failure` scenario publishes only once,
     /// so it declares one; every other kind declares two.
@@ -210,6 +227,11 @@ pub enum WatchScenarioKind {
     /// edit repairs the program. Every other kind opens with a publication,
     /// which is exactly what a first-cycle failure cannot produce.
     InitialFailure,
+    /// A parse error in a closure module, which fails re-observation rather
+    /// than compilation and so puts the loop on its retry timer. The case sits
+    /// inside the failure for several retries, replaces it with a different
+    /// one, and finally repairs it (RUE-2091).
+    RepeatedFailure,
 }
 
 /// A synchronized end-to-end `rue test --watch` scenario (RUE-2023).
@@ -242,6 +264,10 @@ pub struct WatchTestScenario {
     pub stdout_not_contains: Vec<String>,
     #[serde(default)]
     pub stderr_contains: Vec<String>,
+    /// Substrings whose number of occurrences in stderr is itself the
+    /// assertion.
+    #[serde(default)]
+    pub stderr_occurrences: Vec<StderrOccurrence>,
     /// The status the watcher exits with when the case interrupts it: the last
     /// COMPLETED cycle's, which is the only exit status a watcher produces.
     pub expected_exit: i32,
@@ -259,6 +285,10 @@ pub enum WatchTestScenarioKind {
     /// Edit while a test is running: the cycle is abandoned with
     /// `run_canceled` and the next one completes.
     Cancel,
+    /// The `--watch` half of [`WatchScenarioKind::RepeatedFailure`]: the two
+    /// watchers share one loop, so the suppression they share is pinned on
+    /// both surfaces (RUE-2091).
+    RepeatedFailure,
 }
 
 #[derive(Debug, Clone, Deserialize)]

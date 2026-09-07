@@ -108,12 +108,56 @@ impl ObservationPhase {
         }
     }
 
+    /// The milestone for a failure this cycle actually reported to the user.
     fn error_event(self) -> &'static str {
         match self {
             ObservationPhase::Reobserve => "reobserve-error",
             ObservationPhase::Acquire => "acquire-error",
         }
     }
+
+    /// The milestone for a retry that hit the failure already on screen and
+    /// said nothing. The retry itself is not silent to the protocol — a
+    /// harness can still count attempts — but the user's terminal is
+    /// (RUE-2091).
+    fn repeated_error_event(self) -> &'static str {
+        match self {
+            ObservationPhase::Reobserve => "reobserve-error-repeat",
+            ObservationPhase::Acquire => "acquire-error-repeat",
+        }
+    }
+}
+
+/// The re-observation failure whose diagnostic is already on the user's
+/// terminal.
+///
+/// A failed re-observation cannot simply wait for an edit: the failure may be
+/// an import naming a file that does not exist yet, which is outside the
+/// retained closure and so outside anything there is to watch. The loop
+/// therefore retries on a timer, and before RUE-2091 each tick reprinted the
+/// whole diagnostic — roughly four identical reports per second for as long as
+/// a person sat inside a syntax error.
+///
+/// Two things make a failure worth reporting again, and a bare timer is
+/// neither of them:
+///
+/// - **The message changed.** Identity is the rendered diagnostic byte for
+///   byte, which is what the user reads. A different code, a different file, or
+///   the same error a line further down is a different report, because the
+///   thing it tells someone to look at moved. Anything less than the whole
+///   rendering risks swallowing a message the previous one did not contain.
+/// - **The source changed.** A revision that still fails identically is worth
+///   one line back, because silence after a save is ambiguous: it looks the
+///   same as a watcher that never noticed the file. `observation` is the
+///   physical state of the retained closure this attempt read, so an edit
+///   anywhere in it re-reports even when the compiler's answer is unchanged.
+///
+/// A clock carries neither signal, so there is no time-based reprint: a
+/// stuck-and-unedited watcher stays quiet indefinitely, which is the whole
+/// point.
+struct ReportedFailure {
+    diagnostic: String,
+    observation: Vec<WatchObservation>,
 }
 
 pub(crate) struct WatchRequest {
@@ -299,6 +343,7 @@ pub(crate) fn run(request: WatchRequest) -> ! {
     } = request;
     let mut needs_reobserve = false;
     let mut cycle: u64 = 0;
+    let mut reported_failure: Option<ReportedFailure> = None;
 
     if let WatchMode::Test(_) = &mode {
         // Once for the process, before anything can spawn: descriptor 3 is
@@ -366,22 +411,44 @@ pub(crate) fn run(request: WatchRequest) -> ! {
                 continue;
             }
             match observed {
-                Ok(()) => test_event("acquire-ok"),
+                Ok(()) => {
+                    test_event("acquire-ok");
+                    // A revision that loads again ends the failure state. The
+                    // next failure is news even if it renders exactly like the
+                    // last one did — reverting to previously broken bytes must
+                    // report, and the fingerprints alone cannot tell that
+                    // revert from a retry, because they are content hashes.
+                    reported_failure = None;
+                }
                 Err(SourceLoadError::Superseded) => {
                     unreachable!("supersession was handled before source errors")
                 }
                 Err(error) => {
-                    test_event(phase.error_event());
-                    print_source_load_error(error, error_format);
-                    print_cycle_status(
-                        &mode,
-                        error_format,
-                        format!(
-                            "Watch cycle failed after {} ms; {}",
-                            cycle_started.elapsed().as_millis(),
-                            failure_consequence(&mode)
-                        ),
-                    );
+                    let diagnostic = render_source_load_error(error, error_format);
+                    let repeat = reported_failure.as_ref().is_some_and(|reported| {
+                        reported.diagnostic == diagnostic
+                            && reported.observation == observation_baseline
+                    });
+                    if repeat {
+                        test_event(phase.repeated_error_event());
+                    } else {
+                        test_event(phase.error_event());
+                        // Diagnostics are stderr's in both formats.
+                        eprintln!("{diagnostic}");
+                        print_cycle_status(
+                            &mode,
+                            error_format,
+                            format!(
+                                "Watch cycle failed after {} ms; {}",
+                                cycle_started.elapsed().as_millis(),
+                                failure_consequence(&mode)
+                            ),
+                        );
+                        reported_failure = Some(ReportedFailure {
+                            diagnostic,
+                            observation: observation_baseline,
+                        });
+                    }
                     thread::sleep(FAILED_REOBSERVE_RETRY);
                     continue;
                 }
@@ -662,10 +729,6 @@ fn test_watch_cycle(request: TestWatchCycle<'_, '_>) -> test_mode::CycleOutcome 
         cancellation: Some(cancellation),
         observation,
     })
-}
-
-fn print_source_load_error(error: SourceLoadError, error_format: ErrorFormat) {
-    eprintln!("{}", render_source_load_error(error, error_format));
 }
 
 /// Watch-cycle status is not a diagnostic. In JSON mode it must not share

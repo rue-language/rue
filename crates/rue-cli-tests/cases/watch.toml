@@ -197,3 +197,47 @@ expected_exit_codes = [7]
 [[case.watch.edits]]
 path = "main.rue"
 source = "const util = @import(\"util.rue\");\nfn main() -> i32 { util.value() }\n"
+
+# RUE-2091. A syntax error inside the closure fails import discovery, not
+# compilation, and a failed discovery cannot park on a change: the broken
+# `@import` may name a file that does not exist yet, which is outside the
+# retained closure and so outside anything there is to watch. The loop
+# therefore retries every 250ms — and it used to reprint the whole diagnostic
+# and its status line on every tick, roughly four identical reports a second
+# for as long as someone sat inside the error.
+#
+# The report now belongs to the failure rather than to the tick. The case
+# stays inside one error for several retries, replaces it with a different one,
+# and finally repairs it, so all three of the behaviors that matter are pinned
+# together: the repeat is silent, a changed failure is not, and the repair
+# still publishes promptly.
+[[case]]
+name = "an_unchanged_reobserve_failure_is_reported_once_not_per_retry"
+files = [
+    { path = "main.rue", source = "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.answer() }\n" },
+    { path = "helper.rue", source = "pub fn answer() -> i32 { 1 }\n" },
+]
+
+[case.watch]
+kind = "repeated_failure"
+expected_exit_codes = [1, 2]
+stderr_occurrences = [
+    # The first failure, held for several retries, reported once.
+    { text = "expected semicolon after expression", count = 1 },
+    # The second is a different message, so it is news and gets its own report.
+    { text = "expected 'mut' or identifier or '_', found ';'", count = 1 },
+    # One status line per report, not one per attempt.
+    { text = "keeping the last successful executable", count = 2 },
+]
+
+[[case.watch.edits]]
+path = "helper.rue"
+source = "pub fn answer() -> i32 { 1 \n"
+
+[[case.watch.edits]]
+path = "helper.rue"
+source = "pub fn answer() -> i32 { let ; }\n"
+
+[[case.watch.edits]]
+path = "helper.rue"
+source = "pub fn answer() -> i32 { 2 }\n"

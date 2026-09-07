@@ -859,6 +859,13 @@ has no one revision — and keeps compile mode's own exclusions (`--emit`,
   for this revision`), and the previous cycle's verdicts are not reprinted. Every status line
   the loop writes goes to stderr in both formats — stdout belongs to the event
   stream — which is where the runner's other notices already go.
+- **A failure is reported once, not once per retry.** A failure the loop cannot
+  park on — a broken `@import` may name a file that does not exist yet — is
+  retried on a timer, and a retry that finds the same failure over the same
+  bytes says nothing. The report returns when the rendered diagnostic changes or
+  when a source in the closure does, so a save that leaves the error standing
+  still gets one line back rather than silence, and a watcher left inside an
+  untouched syntax error stays quiet indefinitely.
 - **The exit status is produced only on SIGINT or SIGTERM**, and is the last
   cycle that COMPLETED reporting itself on the ordinary
   [exit-code table](#exit-codes): `0` if it passed, `1` if it failed, `3` if it

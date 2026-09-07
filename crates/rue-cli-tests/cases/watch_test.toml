@@ -325,3 +325,81 @@ test "doubles" {
     @assert(2 * 2 == 5);
 }
 """
+
+[[case]]
+name = "an_unchanged_reobserve_failure_is_reported_once_not_per_retry"
+description = """
+RUE-2091. A syntax error in a helper fails import discovery rather than
+compilation, and a failed discovery cannot park on a change — the broken
+`@import` may name a file that does not exist yet, outside the retained closure
+and so outside anything there is to watch. The loop retries every 250ms
+instead, and it used to reprint the whole diagnostic and its status line on
+every tick.
+
+`rue test --watch` shares the executable watcher's loop, so it shared the spam;
+it is also the surface where a person or an agent sits inside a syntax error
+most often, mid-edit on a test body or its helpers. The report now belongs to
+the failure: an unchanged one is reported once however many times it is
+retried, a different one is reported on its own, and the repair still runs the
+next cycle promptly.
+
+A discovery failure consumes no cycle number, unlike the image failure
+`a_broken_closure_fails_the_cycle_and_the_loop_keeps_watching` pins: it never
+reaches the cycle body that numbers a run. The repaired cycle is therefore 2,
+with no gap.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 { 0 }
+""" },
+    { path = "helper.rue", source = """
+pub fn double(x: i32) -> i32 { x * 2 }
+""" },
+    { path = "tests.rue", source = """
+const helper = @import("helper.rue");
+
+test "doubles through the helper" {
+    @assert(helper.double(2) == 4);
+}
+""" },
+]
+
+[case.watch_test]
+kind = "repeated_failure"
+expected_exit = 0
+stdout_contains = [
+    '"cycle":1,"event":"run_started"',
+    '"cycle":2,"event":"run_started"',
+    '"compile_error":0,"crash":0,"event":"run_finished","failed":0,"passed":1',
+]
+stdout_not_contains = [
+    # Neither failing revision published anything, and no cycle number was
+    # spent on one.
+    '"cycle":3',
+    '"event":"run_canceled"',
+]
+stderr_occurrences = [
+    { text = "expected semicolon after expression", count = 1 },
+    { text = "expected 'mut' or identifier or '_', found ';'", count = 1 },
+    { text = "no summary for this revision", count = 2 },
+]
+
+[[case.watch_test.edits]]
+path = "helper.rue"
+source = """
+pub fn double(x: i32) -> i32 { x * 2
+"""
+
+[[case.watch_test.edits]]
+path = "helper.rue"
+source = """
+pub fn double(x: i32) -> i32 { let ; }
+"""
+
+[[case.watch_test.edits]]
+path = "helper.rue"
+source = """
+pub fn double(x: i32) -> i32 { x * 2 }
+"""
