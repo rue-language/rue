@@ -7,7 +7,7 @@ mod logos_lexer;
 
 use lasso::Key;
 pub use lasso::Spur;
-pub use logos_lexer::LogosLexer as Lexer;
+pub use logos_lexer::{LexedFragment, LexedFragments, LexedSource, LogosLexer as Lexer};
 pub use rue_span::FileId;
 use rue_span::Span;
 

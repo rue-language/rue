@@ -849,6 +849,157 @@ pub struct LogosLexer<'a> {
     file_id: FileId,
 }
 
+/// The source text covered by a successful [`LogosLexer::tokenize_lossless`]
+/// call, together with its canonical tokens.
+///
+/// This view borrows the source passed to the lexer and owns the same token
+/// vector returned by [`LogosLexer::tokenize`].  It is an opt-in presentation
+/// of a successful lex; it does not retain a partial result for error
+/// recovery.  Fragment text borrows that original source, so it must not
+/// outlive the source itself.
+#[derive(Debug)]
+pub struct LexedSource<'a> {
+    source: &'a str,
+    tokens: Vec<crate::Token>,
+    file_id: FileId,
+}
+
+impl<'a> LexedSource<'a> {
+    fn from_parts(source: &'a str, file_id: FileId, tokens: Vec<crate::Token>) -> Self {
+        Self {
+            source,
+            tokens,
+            file_id,
+        }
+    }
+
+    /// Return the original source text borrowed by this view.
+    pub fn source(&self) -> &'a str {
+        self.source
+    }
+
+    /// Return the canonical tokens, including the zero-width EOF token.
+    pub fn tokens(&self) -> &[crate::Token] {
+        &self.tokens
+    }
+
+    /// Lazily partition the source into token spellings and intervening gaps.
+    ///
+    /// Gaps include all text the scanner skipped, including whitespace,
+    /// comments, a leading BOM, and text not attached to a token.  The EOF
+    /// token is retained by [`Self::tokens`] but does not produce a fragment.
+    pub fn fragments(&self) -> LexedFragments<'a, '_> {
+        LexedFragments {
+            source: self.source,
+            tokens: &self.tokens,
+            file_id: self.file_id,
+            next_token: 0,
+            cursor: 0,
+        }
+    }
+
+    /// Consume the view and return its canonical token vector.
+    pub fn into_tokens(self) -> Vec<crate::Token> {
+        self.tokens
+    }
+}
+
+/// One item in a [`LexedSource`] fragment stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LexedFragment<'a> {
+    /// A non-EOF token and its exact original source spelling.
+    Token {
+        kind: crate::TokenKind,
+        span: Span,
+        text: &'a str,
+    },
+    /// Source between tokens, including leading and trailing source text.
+    Gap { span: Span, text: &'a str },
+}
+
+impl<'a> LexedFragment<'a> {
+    /// The source span covered by this fragment.
+    pub fn span(self) -> Span {
+        match self {
+            Self::Token { span, .. } | Self::Gap { span, .. } => span,
+        }
+    }
+
+    /// The exact source bytes covered by this fragment.
+    pub fn text(self) -> &'a str {
+        match self {
+            Self::Token { text, .. } | Self::Gap { text, .. } => text,
+        }
+    }
+
+    /// Whether this fragment is a token rather than an intervening gap.
+    pub fn is_token(self) -> bool {
+        matches!(self, Self::Token { .. })
+    }
+}
+
+/// Lazy iterator over the token spellings and source gaps in a lexed source.
+#[derive(Debug)]
+pub struct LexedFragments<'source, 'tokens> {
+    source: &'source str,
+    tokens: &'tokens [crate::Token],
+    file_id: FileId,
+    next_token: usize,
+    cursor: usize,
+}
+
+impl<'source, 'tokens> Iterator for LexedFragments<'source, 'tokens> {
+    type Item = LexedFragment<'source>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(token) = self.tokens.get(self.next_token) {
+                if token.kind == crate::TokenKind::Eof {
+                    self.next_token = self.tokens.len();
+                    continue;
+                }
+
+                let start = token.span.start as usize;
+                if self.cursor < start {
+                    let gap_start = self.cursor;
+                    self.cursor = start;
+                    return Some(LexedFragment::Gap {
+                        span: Span::with_file(
+                            self.file_id,
+                            span_offset(gap_start),
+                            span_offset(start),
+                        ),
+                        text: &self.source[gap_start..start],
+                    });
+                }
+
+                let end = token.span.end as usize;
+                self.next_token += 1;
+                self.cursor = end;
+                return Some(LexedFragment::Token {
+                    kind: token.kind,
+                    span: token.span,
+                    text: &self.source[start..end],
+                });
+            }
+
+            if self.cursor < self.source.len() {
+                let start = self.cursor;
+                self.cursor = self.source.len();
+                return Some(LexedFragment::Gap {
+                    span: Span::with_file(
+                        self.file_id,
+                        span_offset(start),
+                        span_offset(self.source.len()),
+                    ),
+                    text: &self.source[start..],
+                });
+            }
+            return None;
+        }
+    }
+}
+
 impl<'a> LogosLexer<'a> {
     /// Create a new lexer for the given source text with a fresh interner.
     ///
@@ -887,6 +1038,18 @@ impl<'a> LogosLexer<'a> {
     pub fn tokenize(self) -> CompileResult<(Vec<Token>, ThreadedRodeo)> {
         self.tokenize_preserving_interner()
             .map_err(|(errors, _interner)| CompileError::from(errors))
+    }
+
+    /// Tokenize the entire source and retain a lazy, lossless source view.
+    ///
+    /// The view is returned only for a successful lex. Lexing errors retain
+    /// the ordinary [`CompileError`] behavior and never expose partial
+    /// fragments for recovery.
+    pub fn tokenize_lossless(self) -> CompileResult<(LexedSource<'a>, ThreadedRodeo)> {
+        let source = self.source;
+        let file_id = self.file_id;
+        let (tokens, interner) = self.tokenize()?;
+        Ok((LexedSource::from_parts(source, file_id, tokens), interner))
     }
 
     /// Tokenize the entire source, preserving the interner even on error.
@@ -1098,6 +1261,117 @@ impl<'a> LogosLexer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lossless_view_reconstructs_source_and_keeps_canonical_kinds() {
+        let source = "\u{feff}  fn main()\r{\n let x=0x2A; let s = \"π // literal\\n\"; // комментарий\r\n b'\\n' } \n";
+        let file_id = FileId::new(17);
+        let (view, interner) = LogosLexer::with_file_id(source, file_id)
+            .tokenize_lossless()
+            .unwrap();
+
+        let fragments: Vec<_> = view.fragments().collect();
+        assert!(!fragments.is_empty());
+        let reconstructed: String = fragments.iter().map(|fragment| fragment.text()).collect();
+        assert_eq!(reconstructed, source);
+        assert_eq!(view.source(), source);
+        assert_eq!(view.tokens().last().unwrap().kind, TokenKind::Eof);
+
+        let fragment_tokens: Vec<_> = fragments
+            .iter()
+            .filter_map(|fragment| match fragment {
+                LexedFragment::Token { kind, .. } => Some(*kind),
+                LexedFragment::Gap { .. } => None,
+            })
+            .collect();
+        let canonical_tokens: Vec<_> = view
+            .tokens()
+            .iter()
+            .filter_map(|token| (token.kind != TokenKind::Eof).then_some(token.kind))
+            .collect();
+        assert_eq!(fragment_tokens, canonical_tokens);
+
+        let mut end = 0;
+        for fragment in &fragments {
+            assert!(!fragment.text().is_empty());
+            assert_eq!(fragment.span().file_id, file_id);
+            assert_eq!(fragment.span().start, end);
+            assert_eq!(
+                fragment.span().end - fragment.span().start,
+                fragment.text().len() as u32
+            );
+            end = fragment.span().end;
+        }
+        assert_eq!(end, source.len() as u32);
+
+        let mut exhausted = view.fragments();
+        while exhausted.next().is_some() {}
+        assert!(exhausted.next().is_none());
+        assert!(exhausted.next().is_none());
+
+        let (canonical, canonical_interner) = LogosLexer::with_file_id(source, file_id)
+            .tokenize()
+            .unwrap();
+        assert_eq!(view.tokens().len(), canonical.len());
+        for (view_token, token) in view.tokens().iter().zip(canonical) {
+            assert_eq!(view_token.kind, token.kind);
+            assert_eq!(view_token.span, token.span);
+            match token.kind {
+                TokenKind::Ident(symbol) | TokenKind::String(symbol) => {
+                    assert_eq!(
+                        interner.resolve(&symbol),
+                        canonical_interner.resolve(&symbol)
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn lossless_view_handles_empty_and_trivia_only_sources() {
+        for source in [
+            "",
+            "\u{feff} \t// comment\r",
+            "\u{feff} \t// comment\n",
+            "\u{feff} \t// comment",
+        ] {
+            let (view, _) = LogosLexer::new(source).tokenize_lossless().unwrap();
+            assert_eq!(view.tokens().len(), 1);
+            assert_eq!(view.tokens()[0].kind, TokenKind::Eof);
+            let fragments: Vec<_> = view.fragments().collect();
+            assert_eq!(
+                fragments
+                    .iter()
+                    .map(|fragment| fragment.text())
+                    .collect::<String>(),
+                source
+            );
+            assert!(
+                fragments
+                    .iter()
+                    .all(|fragment| matches!(fragment, LexedFragment::Gap { .. }))
+            );
+        }
+    }
+
+    #[test]
+    fn lossless_view_preserves_ordinary_errors_and_budget_cap() {
+        let source = "$ ".repeat(LEXER_DIAGNOSTIC_BUDGET + 1);
+        let lossless_error = LogosLexer::new(&source).tokenize_lossless().unwrap_err();
+        let ordinary_error = LogosLexer::new(&source).tokenize().unwrap_err();
+        assert_eq!(lossless_error, ordinary_error);
+
+        let (errors, _) = LogosLexer::new(&source)
+            .tokenize_preserving_interner()
+            .unwrap_err();
+        assert_eq!(errors.len(), LEXER_DIAGNOSTIC_BUDGET + 1);
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(error.kind, ErrorKind::LexerDiagnosticsOmitted { .. }))
+        );
+    }
 
     #[test]
     fn source_span_limit_accepts_largest_representable_length() {
