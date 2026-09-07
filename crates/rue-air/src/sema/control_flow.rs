@@ -5,7 +5,7 @@
 //! control-flow lowering does not introduce a peer analysis context.
 
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use rue_builtins::IntrinsicName;
 use std::sync::Arc;
 
@@ -36,155 +36,210 @@ const TEST_FAILURE_KIND: &str = "unhandled_error";
 /// The failure message a test body's `?` reports.
 const TEST_FAILURE_MESSAGE: &str = "unhandled error";
 
-/// Where one variant's arms decompose a nested payload pattern (RUE-2053).
-///
-/// The plan is derived from pattern *syntax* alone, before any arm is
-/// analyzed, because a later arm can be the one that introduces the nesting:
-/// `R.Err(e)` followed by `R.Err(E.A(b))` must place both arms in the same
-/// inner match. A match's scrutinee type is fixed, so a variant name
-/// identifies the variant at every level and can key the plan.
-struct NestedPlanNode {
-    /// The single payload position this variant's arms decompose.
-    field: u32,
-    /// Plans for the patterns nested at `field`, keyed by their variant name.
-    children: AHashMap<Spur, NestedPlanNode>,
+/// One payload position of a variant group's pattern matrix: what one arm
+/// requires of one occurrence (RUE-2080).
+#[derive(Clone)]
+enum MatrixPattern {
+    /// A binder, a `_`, or a position of the bare-path form `E.A`: the arm
+    /// accepts every value here and binds it.
+    Wildcard,
+    /// A nested variant pattern, with one entry per payload position of the
+    /// variant it names.
+    Constructor {
+        enum_id: crate::types::EnumId,
+        variant_index: u32,
+        fields: Vec<MatrixPattern>,
+    },
 }
 
-/// One node of a match's nested-pattern dispatch tree.
-///
-/// The root of that tree is the match's own arm list; every other node is an
-/// ordinary match on a payload field extracted from the variant its parent
-/// matched, so a nested pattern needs no new AIR or CFG construct.
-struct NestedMatchNode {
-    /// The extracted payload value this node dispatches on.
-    scrutinee: AirRef,
-    /// Its type — the payload field type of the parent's variant.
-    scrutinee_type: Type,
-    /// Enum whose variants this node's patterns name.
-    enum_id: crate::types::EnumId,
-    /// Source spelling of the path that reaches this node (`R.Err`), used to
-    /// name missing patterns in the non-exhaustive diagnostic.
-    path: String,
-    /// Span of the arm that introduced this node.
-    span: Span,
-    /// Variants covered here, each with the span of its first arm.
-    covered_variants: AHashMap<u32, Span>,
-    /// Span of the first arm that matches every remaining value here — a
-    /// binder or `_` at the parent's decomposed payload position.
-    wildcard_span: Option<Span>,
-    /// This node's arms, in source order.
-    arms: Vec<NestedMatchArm>,
-    /// Variant index to child node, for variants decomposed further still.
-    children: AHashMap<u32, usize>,
-}
-
-/// One arm of a nested-dispatch node: either a body, or a child match that
-/// discriminates the variant's payload further.
-enum NestedMatchArm {
-    Direct(AirPattern, AirRef),
-    Child { pattern: AirPattern, node: usize },
-}
-
-/// The payload position of a variant pattern that a child match handles.
+/// One projection step from the match's scrutinee to a payload occurrence.
 #[derive(Clone, Copy)]
-enum DecomposedPosition {
-    /// A nested pattern occupies the position; the child match consumes the
-    /// field, so this arm binds nothing there.
-    Consumed(u32),
-    /// The arm has a binder (or `_`) at the position, so it is the child
-    /// match's catch-all arm and binds the value the child dispatched on.
-    Bound(u32, AirRef),
+struct PayloadStep {
+    enum_id: crate::types::EnumId,
+    variant_index: u32,
+    field: u32,
+    field_type: Type,
+}
+
+/// One arm of a variant group: the matrix row it contributes and the body the
+/// group's decision tree runs when that row wins.
+struct GroupRow {
+    /// One entry per payload position of the group's variant.
+    fields: Vec<MatrixPattern>,
+    span: Span,
+    /// An earlier `_` arm already covered this one and the match's own arm
+    /// walk reported it, so the group must not report it a second time.
+    already_unreachable: bool,
+    /// The arm's analyzed body.
+    body: Option<AirRef>,
+}
+
+/// The arms that match one variant of the scrutinee, at least one of which
+/// decomposes one of that variant's payload positions.
+///
+/// The group compiles to a decision tree over its rows and that variant's
+/// payload occurrences (RUE-2080): the tree tests one occurrence at a time and
+/// yields the index of the arm that wins, and one flat dispatch on that index
+/// runs the arm. Naming the arm instead of inlining it is what lets several
+/// paths through the tree reach one arm — the join a multi-column matrix needs
+/// — while every arm keeps exactly one analyzed body.
+///
+/// Every occurrence the tree tests and every occurrence an arm binds is
+/// projected out of the scrutinee where it is used, and each projection has
+/// exactly that one use. AIR lowering emits an instruction where its first use
+/// demands it and reuses that value afterwards, so a projection shared between
+/// two branches of the tree — or between the tree and an arm the flat dispatch
+/// runs after it — would be emitted in a block that does not dominate its
+/// other use. One projection per use is what keeps the shape correct without
+/// materializing anything the arm that runs does not need.
+struct VariantGroup {
+    enum_id: crate::types::EnumId,
+    variant_index: u32,
+    /// `R.Err` as the group's first arm spelled it, for the missing-pattern
+    /// and unreachable-pattern diagnostics.
+    head: String,
+    /// Span of the group's first arm.
+    span: Span,
+    /// The group's arms, in source order.
+    rows: Vec<GroupRow>,
+}
+
+/// One node of a variant group's decision tree.
+enum DispatchNode {
+    /// The arm at this index of the group's rows matches.
+    Row(usize),
+    /// Test one occurrence's discriminant.
+    Test {
+        /// Projection from the match's scrutinee to the tested value.
+        path: Vec<PayloadStep>,
+        /// The enum that occurrence holds.
+        enum_id: crate::types::EnumId,
+        cases: Vec<(u32, DispatchNode)>,
+        /// The branch every variant no case names takes.
+        default: Option<Box<DispatchNode>>,
+    },
+}
+
+/// One arm of the match's own arm list.
+enum RootArm {
+    Direct(AirPattern, AirRef),
+    /// The dispatch of the variant group at this index.
+    Group(usize),
 }
 
 /// One level of a placed arm: a variant test and the payload it binds.
 struct ArmLevel<'p> {
     pattern: &'p RirPattern,
+    /// The value this level's pattern is matched against: the match's
+    /// scrutinee at the outermost level, and the payload field the parent
+    /// level decomposes below that.
     scrutinee: AirRef,
     enum_id: crate::types::EnumId,
     variant_index: u32,
-    decomposed: Option<DecomposedPosition>,
+    /// The payload positions a nested pattern occupies. A level of its own
+    /// follows for each, so this level binds nothing there.
+    nested: Vec<u32>,
 }
 
-/// Where one arm lands in the dispatch tree, and what it must bind to get
+/// Where one arm lands in the match's dispatch, and what it must bind to get
 /// there.
 struct ArmPlacement<'p> {
-    /// Outermost variant first; the last level is the arm's own pattern.
+    /// The arm's own pattern and everything nested inside it, outermost
+    /// first: pre-order, so scope exit drops the innermost bindings first.
     levels: Vec<ArmLevel<'p>>,
-    /// Node owning the arm (`None` is the match's own arm list).
-    node: Option<usize>,
-    /// The value that node dispatches on.
-    scrutinee: AirRef,
-    /// Its type.
-    scrutinee_type: Type,
-    /// The pattern the arm contributes to that node.
-    air_pattern: AirPattern,
-    /// The variant it names, or `None` when the arm is a catch-all in a child
-    /// match because it binds the decomposed position instead of nesting.
-    variant_index: Option<u32>,
+    /// The variant group the arm joins, or `None` when no arm decomposes this
+    /// variant's payload and the arm is an ordinary arm of the match.
+    group: Option<usize>,
+    /// The matrix row the arm contributes to that group.
+    fields: Vec<MatrixPattern>,
 }
 
-/// Plan the nested payload dispatch for one level's patterns, keyed by variant
-/// name. Returns an empty map when no pattern at this level nests.
-fn plan_nested_dispatch(
-    patterns: &[&RirPattern],
-    interner: &lasso::ThreadedRodeo,
-) -> CompileResult<AHashMap<Spur, NestedPlanNode>> {
-    let mut groups: AHashMap<Spur, Vec<&RirPattern>> = AHashMap::new();
-    for pattern in patterns.iter().copied() {
-        if let RirPattern::Path { variant, .. } = pattern {
-            groups.entry(*variant).or_default().push(pattern);
-        }
+/// The bookkeeping one group's decision tree keeps while it is built.
+struct GroupDispatch<'g> {
+    group: &'g VariantGroup,
+    /// Rows the tree reaches; a row it cannot reach is unreachable (4.7:20).
+    reached: Vec<bool>,
+    /// For an unreachable row, the earlier row that covers it.
+    shadowed_by: Vec<Option<Span>>,
+}
+
+/// A missing-pattern witness under construction: the group's payload
+/// positions, where a `Hole` is a column the matrix still carries.
+#[derive(Clone)]
+enum Witness {
+    Hole,
+    Wildcard,
+    Constructor {
+        enum_id: crate::types::EnumId,
+        variant_index: u32,
+        fields: Vec<Witness>,
+    },
+}
+
+/// Which variants of the scrutinee some arm decomposes, by variant name.
+///
+/// This reads pattern *syntax* alone, before any arm is analyzed, because a
+/// later arm can be the one that introduces the nesting: `R.Err(e)` followed
+/// by `R.Err(E.A(b))` must join the same group. A match's scrutinee type is
+/// fixed, so a variant name identifies the variant.
+fn decomposed_variants(patterns: &[&RirPattern]) -> AHashSet<Spur> {
+    patterns
+        .iter()
+        .filter_map(|pattern| match pattern {
+            RirPattern::Path {
+                variant, elements, ..
+            } => elements
+                .iter()
+                .any(|element| matches!(element, rue_rir::RirPatternElement::Nested(_)))
+                .then_some(*variant),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The witness shape of one matrix entry, for spelling an arm's own pattern.
+fn matrix_witness(pattern: &MatrixPattern) -> Witness {
+    match pattern {
+        MatrixPattern::Wildcard => Witness::Wildcard,
+        MatrixPattern::Constructor {
+            enum_id,
+            variant_index,
+            fields,
+        } => Witness::Constructor {
+            enum_id: *enum_id,
+            variant_index: *variant_index,
+            fields: fields.iter().map(matrix_witness).collect(),
+        },
     }
-    let mut plan = AHashMap::new();
-    for (variant, group) in groups {
-        let mut field: Option<u32> = None;
-        for pattern in &group {
-            let RirPattern::Path { elements, span, .. } = pattern else {
-                continue;
-            };
-            let mut nested = elements.iter().enumerate().filter_map(|(index, element)| {
-                matches!(element, rue_rir::RirPatternElement::Nested(_)).then_some(index as u32)
-            });
-            let Some(position) = nested.next() else {
-                continue;
-            };
-            // One payload position per pattern level, and the same position
-            // across the arms that share a variant: the child match dispatches
-            // on exactly one extracted field.
-            let conflict =
-                nested.next().is_some() || field.is_some_and(|existing| existing != position);
-            if conflict {
-                return Err(CompileError::new(
-                    ErrorKind::NestedPatternPositionConflict {
-                        variant: interner.resolve(&variant).to_string(),
-                    },
-                    *span,
-                )
-                .with_help(
-                    "a variant pattern may nest another variant pattern in at most one payload \
-                     position, and every arm matching the same variant must nest in that same \
-                     position; bind the other positions and match them in a nested `match`",
-                ));
+}
+
+/// Fill the `index`-th open hole of a witness. Holes are numbered in the order
+/// the matrix numbers its columns: left to right, a decomposed position's own
+/// positions in place of it.
+fn fill_witness_hole(slots: &[Witness], index: usize, filling: Witness) -> Vec<Witness> {
+    fn fill(slots: &mut [Witness], seen: &mut usize, index: usize, filling: &Witness) -> bool {
+        for slot in slots.iter_mut() {
+            match slot {
+                Witness::Hole => {
+                    if *seen == index {
+                        *slot = filling.clone();
+                        return true;
+                    }
+                    *seen += 1;
+                }
+                Witness::Constructor { fields, .. } => {
+                    if fill(fields, seen, index, filling) {
+                        return true;
+                    }
+                }
+                Witness::Wildcard => {}
             }
-            field = Some(position);
         }
-        let Some(field) = field else {
-            continue;
-        };
-        let nested: Vec<&RirPattern> = group
-            .iter()
-            .filter_map(|pattern| match pattern {
-                RirPattern::Path { elements, .. } => match elements.get(field as usize) {
-                    Some(rue_rir::RirPatternElement::Nested(nested)) => Some(nested),
-                    _ => None,
-                },
-                _ => None,
-            })
-            .collect();
-        let children = plan_nested_dispatch(&nested, interner)?;
-        plan.insert(variant, NestedPlanNode { field, children });
+        false
     }
-    Ok(plan)
+    let mut filled = slots.to_vec();
+    fill(&mut filled, &mut 0, index, &filling);
+    filled
 }
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
@@ -1345,14 +1400,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Ok(AnalysisResult::diverged(air_ref, Type::NEVER));
         }
 
-        // Nested payload patterns (RUE-2053) dispatch through child matches on
-        // the payload field they decompose. The plan is derived from pattern
-        // syntax before any arm is analyzed, because the arm that introduces
-        // the nesting may come after an arm that merely binds that payload.
+        // An arm may decompose a payload position with a nested variant
+        // pattern (RUE-2053), in any number of positions (RUE-2080). The arms
+        // that match such a variant form a group compiled to a decision tree
+        // over that variant's payload occurrences. Which variants have a group
+        // is read from pattern syntax before any arm is analyzed, because the
+        // arm that introduces the nesting may come after an arm that merely
+        // binds that payload.
         let arm_patterns: Vec<&RirPattern> = arms.iter().map(|(pattern, _)| pattern).collect();
-        let nested_plan = plan_nested_dispatch(&arm_patterns, self.body_interner())?;
-        let mut nested_nodes: Vec<NestedMatchNode> = Vec::new();
-        let mut nested_root_children: AHashMap<u32, usize> = AHashMap::new();
+        let decomposed = decomposed_variants(&arm_patterns);
+        let mut groups: Vec<VariantGroup> = Vec::new();
 
         // Track patterns for exhaustiveness checking and duplicate detection
         let mut wildcard_span: Option<Span> = None;
@@ -1367,7 +1424,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut pattern_enum_id: Option<crate::types::EnumId> = None;
 
         // Analyze each arm (each arm gets its own scope)
-        let mut air_arms: Vec<NestedMatchArm> = Vec::new();
+        let mut air_arms: Vec<RootArm> = Vec::new();
         let mut result_type: Option<Type> = None;
         let mut result_continues: Option<bool> = None;
         let mut arm_divergence_kinds: Vec<DivergenceKinds> = Vec::with_capacity(arms.len());
@@ -1534,11 +1591,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 RirPattern::Path { .. } => {}
             }
 
-            // A variant pattern is placed in the match's dispatch tree: at the
-            // match's own arm list, or — when this or another arm nests a
-            // pattern in one of the variant's payload positions (RUE-2053) —
-            // in the child match on that extracted payload. The walk validates
-            // every level it passes through.
+            // A variant pattern is placed in the match's dispatch: at the
+            // match's own arm list, or — when this or another arm decomposes
+            // one of the variant's payload positions (RUE-2080) — in that
+            // variant's group. The walk validates every level it passes
+            // through.
             let placement = match &pattern {
                 RirPattern::Path { .. } => {
                     let placement = self.place_match_arm(
@@ -1546,9 +1603,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         pattern,
                         scrutinee_result.air_ref,
                         scrutinee_type,
-                        &nested_plan,
-                        &mut nested_nodes,
-                        &mut nested_root_children,
+                        &decomposed,
+                        &mut groups,
                         &mut air_arms,
                         ctx,
                     )?;
@@ -1558,10 +1614,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     // A second arm naming a variant that no arm discriminates
                     // further is unreachable, exactly as a repeated integer or
                     // boolean pattern is; when the variant *is* discriminated,
-                    // reachability is decided at the child match instead.
+                    // reachability is decided over the group's matrix instead.
                     let root_variant = placement.levels[0].variant_index;
                     if let Some(first_span) = covered_variants.get(&root_variant)
-                        && placement.node.is_none()
+                        && placement.group.is_none()
                         && wildcard_span.is_none()
                     {
                         let pat_str = match &pattern {
@@ -1586,14 +1642,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         );
                     }
                     covered_variants.entry(root_variant).or_insert(pattern_span);
-                    Self::record_placed_pattern(
-                        &mut nested_nodes,
-                        &placement,
-                        pattern_span,
-                        wildcard_span,
-                        self.body_interner(),
-                        &mut ctx.warnings,
-                    );
                     Some(placement)
                 }
                 _ => None,
@@ -1608,49 +1656,48 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // locals before the body, so the body's references resolve to them.
             // The enclosing match dispatched on the discriminant, so in this
             // arm the payload is read (move mode) via `EnumPayloadGet`. A
-            // nested arm binds every level it passed through, outermost first,
-            // so scope-exit drops them innermost first.
+            // nested arm binds every level of its pattern, outermost first, so
+            // scope-exit drops them innermost first.
             let mut binding_stmts = Vec::new();
-            let mut innermost_bindings = 0usize;
+            // The values no binding accounts for: a level that binds nothing
+            // and decomposes nothing still consumed the value it matched.
+            let mut undrained: Vec<AirRef> = Vec::new();
             if let Some(placement) = &placement {
                 for level in &placement.levels {
                     let level_stmts = self.materialize_match_bindings(air, level, ctx)?;
-                    innermost_bindings = level_stmts.len();
+                    if level_stmts.is_empty() && level.nested.is_empty() {
+                        undrained.push(level.scrutinee);
+                    }
                     binding_stmts.extend(level_stmts);
                 }
+            } else if scrutinee_type.is_enum() {
+                undrained.push(scrutinee_result.air_ref);
             }
-            // The value the arm's own pattern dispatched on: the match's
-            // scrutinee, or the payload a child match discriminates.
-            let (arm_scrutinee, arm_scrutinee_type) = match &placement {
-                Some(placement) => (placement.scrutinee, placement.scrutinee_type),
-                None => (scrutinee_result.air_ref, scrutinee_type),
-            };
 
             // RUE-238: an arm that extracts NO payload — a wildcard `_` arm,
             // or an arm matching a discriminant-only variant — still
             // *consumes* the scrutinee (the match marked it moved; see the
             // `mark_moved` in the emitted AIR), so its active-variant payload
-            // would leak. Emit a drop of the whole scrutinee value; for an
+            // would leak. Emit a drop of the whole matched value; for an
             // enum this lowers to the variant-dispatched drop glue
             // (`__rue_drop_E`), which drops exactly the active variant's
             // payload (a no-op when that variant carries nothing droppable).
             //
             // An arm on a payload-carrying variant must NOT also drop the
-            // scrutinee, or its moved-out fields would be dropped twice.
-            // `innermost_bindings == 0` is precisely that guard: since
+            // value it matched, or its moved-out fields would be dropped
+            // twice. An empty binding list is precisely that guard: since
             // RUE-1592 `materialize_match_bindings` moves out EVERY payload
             // position of such a variant — named, `_`-discarded, or covered by
-            // the bare-path form `E.A` — so those arms are never empty and
+            // the bare-path form `E.A` — so those levels are never empty and
             // account for the whole payload themselves, each field dropped at
-            // the arm's end in reverse declaration order. In a nested arm the
-            // guard applies at the innermost level only: an outer level always
-            // accounts for its own payload, whose decomposed position the
-            // child match consumes (RUE-2053).
-            if innermost_bindings == 0 && arm_scrutinee_type.is_enum() {
+            // the arm's end in reverse declaration order. A level that binds
+            // nothing because a nested pattern decomposes every position is
+            // accounted for by the levels of those positions instead
+            // (RUE-2080), so the guard applies to the levels that decompose
+            // nothing.
+            for value in undrained {
                 let drop_ref = air.add_inst(AirInst {
-                    data: AirInstData::Drop {
-                        value: arm_scrutinee,
-                    },
+                    data: AirInstData::Drop { value },
                     ty: Type::UNIT,
                     span: pattern_span,
                 });
@@ -1726,29 +1773,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             });
             result_continues = Some(result_continues.unwrap_or(false) || body_result.continues);
 
-            // Convert pattern to AIR pattern. A variant pattern already
-            // resolved its enum and variant while it was placed, so nothing is
-            // resolved a second time here.
-            let air_pattern = match &pattern {
-                RirPattern::Wildcard(_) => AirPattern::Wildcard,
-                RirPattern::Int {
-                    value, negative, ..
-                } => {
-                    // Already range-checked above.
-                    AirPattern::Int(pattern_int_denoted(*value, *negative) as i64)
-                }
-                RirPattern::Bool(b, _) => AirPattern::Bool(*b),
-                RirPattern::Path { .. } => placement
-                    .as_ref()
-                    .map(|placement| placement.air_pattern.clone())
-                    .ok_or_else(|| {
-                        CompileError::new(
-                            ErrorKind::InternalError("variant pattern was not placed".to_string()),
-                            pattern_span,
-                        )
-                    })?,
-            };
-
             // If the pattern bound payload data, wrap the body so the binding
             // Alloc statements run before it (RUE-221).
             let arm_body_ref = if binding_stmts.is_empty() {
@@ -1762,10 +1786,50 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 air.add_block(&statements, body_result.air_ref, body_type, pattern_span)?
             };
 
-            let arm = NestedMatchArm::Direct(air_pattern, arm_body_ref);
-            match placement.as_ref().and_then(|placement| placement.node) {
-                Some(node) => nested_nodes[node].arms.push(arm),
-                None => air_arms.push(arm),
+            // The arm joins its variant's group, whose decision tree names it
+            // by index, or takes an arm slot of the match itself. A variant
+            // pattern already resolved its enum and variant while it was
+            // placed, so nothing is resolved a second time here.
+            match placement.as_ref().and_then(|placement| placement.group) {
+                Some(group) => {
+                    let placement = placement.expect("a grouped arm was placed");
+                    groups[group].rows.push(GroupRow {
+                        fields: placement.fields,
+                        span: pattern_span,
+                        already_unreachable: wildcard_span.is_some(),
+                        body: Some(arm_body_ref),
+                    });
+                }
+                None => {
+                    let air_pattern = match &pattern {
+                        RirPattern::Wildcard(_) => AirPattern::Wildcard,
+                        RirPattern::Int {
+                            value, negative, ..
+                        } => {
+                            // Already range-checked above.
+                            AirPattern::Int(pattern_int_denoted(*value, *negative) as i64)
+                        }
+                        RirPattern::Bool(b, _) => AirPattern::Bool(*b),
+                        RirPattern::Path { .. } => {
+                            let level = placement
+                                .as_ref()
+                                .and_then(|placement| placement.levels.first())
+                                .ok_or_else(|| {
+                                    CompileError::new(
+                                        ErrorKind::InternalError(
+                                            "variant pattern was not placed".to_string(),
+                                        ),
+                                        pattern_span,
+                                    )
+                                })?;
+                            AirPattern::EnumVariant {
+                                enum_id: level.enum_id,
+                                variant_index: level.variant_index,
+                            }
+                        }
+                    };
+                    air_arms.push(RootArm::Direct(air_pattern, arm_body_ref));
+                }
             }
         }
 
@@ -1825,40 +1889,88 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
-        // A nested pattern's child match must be exhaustive over the payload
-        // it discriminates, exactly as the match itself is over its scrutinee
-        // (RUE-2053). Missing patterns are named with the path that reaches
-        // them, so `R.Err(E.A(b))` alone reports `R.Err(E.B)`.
-        for node in &nested_nodes {
-            if node.wildcard_span.is_some() {
-                continue;
-            }
-            let enum_def = self.body_type_pool().enum_def(node.enum_id);
-            let external_non_exhaustive =
-                enum_def.is_non_exhaustive && enum_def.file_id != ctx.current_file_id;
-            if !external_non_exhaustive && node.covered_variants.len() == enum_def.variant_count() {
-                continue;
-            }
-            let enum_name = self.format_type_name(Type::new_enum(node.enum_id));
-            let missing: Vec<String> = enum_def
-                .variants
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| !node.covered_variants.contains_key(&(*index as u32)))
-                .map(|(_, variant)| format!("{}{enum_name}.{})", node.path, variant.as_ref()))
-                .collect();
-            let error = CompileError::new(ErrorKind::NonExhaustiveMatch, span)
-                .with_label("this payload pattern is not exhaustive", node.span);
-            return Err(if missing.is_empty() {
-                error
-            } else {
-                error.with_help(format!("missing patterns: {}", missing.join(", ")))
-            });
-        }
-
         let final_type = result_type.unwrap_or(Type::UNIT);
 
-        let air_arms = Self::build_nested_arms(air, &nested_nodes, &air_arms, final_type)?;
+        // Each variant group's decision tree is built now that every arm has
+        // been placed: it decides exhaustiveness over the group's whole matrix
+        // (4.7:39) and which of its arms it can reach (4.7:20).
+        let mut group_dispatch: Vec<AirRef> = Vec::with_capacity(groups.len());
+        for group in &groups {
+            let payload = self
+                .body_type_pool()
+                .enum_def(group.enum_id)
+                .variant_payload(group.variant_index as usize)
+                .to_vec();
+            // The matrix starts one column per payload position of the group's
+            // variant, each an occurrence one projection away from the
+            // scrutinee, and one witness hole per column.
+            let columns: Vec<Vec<PayloadStep>> = payload
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(field, field_type)| {
+                    vec![PayloadStep {
+                        enum_id: group.enum_id,
+                        variant_index: group.variant_index,
+                        field: field as u32,
+                        field_type,
+                    }]
+                })
+                .collect();
+            let witness = vec![Witness::Hole; payload.len()];
+            let rows: Vec<(usize, Vec<MatrixPattern>)> = group
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| (index, row.fields.clone()))
+                .collect();
+            let mut state = GroupDispatch {
+                group,
+                reached: vec![false; group.rows.len()],
+                shadowed_by: vec![None; group.rows.len()],
+            };
+            let tree =
+                self.compile_group_matrix(&mut state, &rows, &columns, &witness, ctx, span)?;
+            for (index, row) in group.rows.iter().enumerate() {
+                if state.reached[index] || row.already_unreachable {
+                    continue;
+                }
+                let spelled = self.spell_witness(
+                    &group.head,
+                    &row.fields.iter().map(matrix_witness).collect::<Vec<_>>(),
+                );
+                let mut warning =
+                    CompileWarning::new(WarningKind::UnreachablePattern(spelled), row.span);
+                if let Some(first_span) = state.shadowed_by[index] {
+                    warning = warning.with_label("first occurrence of this pattern", first_span);
+                }
+                ctx.warnings.push(warning.with_note(
+                    "this pattern will never be matched because an earlier arm already \
+                     matches the same value",
+                ));
+            }
+            group_dispatch.push(Self::emit_group_dispatch(
+                air,
+                group,
+                &tree,
+                scrutinee_result.air_ref,
+                final_type,
+            )?);
+        }
+
+        let air_arms: Vec<(AirPattern, AirRef)> = air_arms
+            .iter()
+            .map(|arm| match arm {
+                RootArm::Direct(pattern, body) => (pattern.clone(), *body),
+                RootArm::Group(index) => (
+                    AirPattern::EnumVariant {
+                        enum_id: groups[*index].enum_id,
+                        variant_index: groups[*index].variant_index,
+                    },
+                    group_dispatch[*index],
+                ),
+            })
+            .collect();
         let air_ref = air.add_match(scrutinee_result.air_ref, &air_arms, final_type, span)?;
         let match_divergence = if scrutinee_result.continues {
             arm_divergence_kinds
@@ -2606,301 +2718,461 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok((enum_id, variant_index as u32))
     }
 
-    /// Walk one arm's variant pattern down the match's nested-dispatch tree,
-    /// creating the child matches its nested payload patterns need (RUE-2053).
+    /// Place one arm's variant pattern in the match's dispatch: at the match's
+    /// own arm list, or — when this or another arm decomposes one of the
+    /// variant's payload positions (RUE-2080) — in that variant's group.
     ///
-    /// Every level is validated as it is reached, so an arm's placement and
-    /// its legality come from a single pass. The returned levels are the
-    /// variants the arm tests, outermost first; the arm binds each level's
-    /// payload except the position a child match consumes.
+    /// Every level of the pattern is resolved and validated as it is walked,
+    /// so an arm's placement and its legality come from a single pass.
     #[allow(clippy::too_many_arguments)]
     fn place_match_arm<'p>(
         &mut self,
         air: &mut Air,
         pattern: &'p RirPattern,
-        root_scrutinee: AirRef,
-        root_scrutinee_type: Type,
-        plan: &AHashMap<Spur, NestedPlanNode>,
-        nodes: &mut Vec<NestedMatchNode>,
-        root_children: &mut AHashMap<u32, usize>,
-        root_arms: &mut Vec<NestedMatchArm>,
+        scrutinee: AirRef,
+        scrutinee_type: Type,
+        decomposed: &AHashSet<Spur>,
+        groups: &mut Vec<VariantGroup>,
+        root_arms: &mut Vec<RootArm>,
         ctx: &AnalysisContext,
     ) -> CompileResult<ArmPlacement<'p>> {
         let mut levels = Vec::new();
-        let mut node: Option<usize> = None;
-        let mut scrutinee = root_scrutinee;
-        let mut scrutinee_type = root_scrutinee_type;
-        let mut plan = plan;
-        let mut current = pattern;
-        let mut path = String::new();
-        loop {
-            let (enum_id, variant_index) =
-                self.resolve_variant_pattern(current, scrutinee_type, ctx)?;
-            let RirPattern::Path {
-                type_name,
-                variant,
-                elements,
-                span,
-                ..
-            } = current
-            else {
-                unreachable!("resolve_variant_pattern accepts only path patterns")
-            };
-            let spelled = format!(
-                "{}.{}",
-                self.body_interner().resolve(type_name),
-                self.body_interner().resolve(variant)
-            );
-            let Some(plan_node) = plan.get(variant) else {
-                // No arm of this match decomposes this variant's payload, so
-                // the arm lands here.
-                levels.push(ArmLevel {
-                    pattern: current,
-                    scrutinee,
-                    enum_id,
-                    variant_index,
-                    decomposed: None,
-                });
-                return Ok(ArmPlacement {
-                    levels,
-                    node,
-                    scrutinee,
-                    scrutinee_type,
-                    air_pattern: AirPattern::EnumVariant {
+        let row =
+            self.resolve_pattern_level(air, pattern, scrutinee, scrutinee_type, ctx, &mut levels)?;
+        let MatrixPattern::Constructor {
+            enum_id,
+            variant_index,
+            fields,
+        } = row
+        else {
+            unreachable!("a path pattern resolves to a constructor")
+        };
+        let RirPattern::Path {
+            type_name,
+            variant,
+            span,
+            ..
+        } = pattern
+        else {
+            unreachable!("resolve_pattern_level accepts only path patterns")
+        };
+        let group = decomposed.contains(variant).then(|| {
+            match groups
+                .iter()
+                .position(|group| group.variant_index == variant_index)
+            {
+                Some(index) => index,
+                None => {
+                    let index = groups.len();
+                    groups.push(VariantGroup {
                         enum_id,
                         variant_index,
-                    },
-                    variant_index: Some(variant_index),
-                });
-            };
-            let field = plan_node.field;
-            // Find or create the child match for this variant, extracting the
-            // decomposed payload field once for every arm that reaches it.
-            let children = match node {
-                None => &mut *root_children,
-                Some(index) => &mut nodes[index].children,
-            };
-            let child = match children.get(&variant_index).copied() {
-                Some(child) => child,
-                None => {
-                    let payload_type =
-                        self.variant_payload_field(enum_id, variant_index, field, *span, &spelled)?;
-                    let payload = air.add_inst(AirInst {
-                        data: AirInstData::EnumPayloadGet {
-                            base: scrutinee,
-                            enum_id,
-                            variant_index,
-                            field_index: field,
-                        },
-                        ty: payload_type,
+                        head: format!(
+                            "{}.{}",
+                            self.body_interner().resolve(type_name),
+                            self.body_interner().resolve(variant)
+                        ),
                         span: *span,
+                        rows: Vec::new(),
                     });
-                    let child_enum = payload_type.as_enum().ok_or_else(|| {
-                        CompileError::new(
-                            ErrorKind::InvalidMatchType(self.format_type_name(payload_type)),
-                            *span,
-                        )
-                    })?;
-                    let index = nodes.len();
-                    nodes.push(NestedMatchNode {
-                        scrutinee: payload,
-                        scrutinee_type: payload_type,
-                        enum_id: child_enum,
-                        path: format!("{path}{spelled}("),
-                        span: *span,
-                        covered_variants: AHashMap::new(),
-                        wildcard_span: None,
-                        arms: Vec::new(),
-                        children: AHashMap::new(),
-                    });
-                    // The child match takes the arm slot of the variant it
-                    // discriminates, where the first arm reaching it stood, so
-                    // the dispatch keeps source order.
-                    let arm = NestedMatchArm::Child {
-                        pattern: AirPattern::EnumVariant {
-                            enum_id,
-                            variant_index,
-                        },
-                        node: index,
-                    };
-                    match node {
-                        None => {
-                            root_children.insert(variant_index, index);
-                            root_arms.push(arm);
-                        }
-                        Some(parent) => {
-                            nodes[parent].children.insert(variant_index, index);
-                            nodes[parent].arms.push(arm);
-                        }
-                    }
+                    // The group takes the arm slot where its first arm stood,
+                    // so the match's dispatch keeps source order.
+                    root_arms.push(RootArm::Group(index));
                     index
                 }
-            };
-            // Reaching the child covers this variant here, however the arm
-            // discriminates the payload further; the match's own arm list keeps
-            // that bookkeeping in `analyze_match`.
-            if let Some(index) = node {
-                nodes[index]
-                    .covered_variants
-                    .entry(variant_index)
-                    .or_insert(*span);
             }
-            let child_scrutinee = nodes[child].scrutinee;
-            let child_type = nodes[child].scrutinee_type;
-            match elements.get(field as usize) {
-                Some(rue_rir::RirPatternElement::Nested(nested)) => {
-                    levels.push(ArmLevel {
-                        pattern: current,
-                        scrutinee,
-                        enum_id,
-                        variant_index,
-                        decomposed: Some(DecomposedPosition::Consumed(field)),
-                    });
-                    path = nodes[child].path.clone();
-                    node = Some(child);
-                    scrutinee = child_scrutinee;
-                    scrutinee_type = child_type;
-                    plan = &plan_node.children;
-                    current = nested;
-                }
-                // A binder (or the bare all-wildcard form) at the decomposed
-                // position: the arm binds the whole payload, so it is the
-                // child match's catch-all arm.
-                _ => {
-                    levels.push(ArmLevel {
-                        pattern: current,
-                        scrutinee,
-                        enum_id,
-                        variant_index,
-                        decomposed: Some(DecomposedPosition::Bound(field, child_scrutinee)),
-                    });
-                    return Ok(ArmPlacement {
-                        levels,
-                        node: Some(child),
-                        scrutinee: child_scrutinee,
-                        scrutinee_type: child_type,
-                        air_pattern: AirPattern::Wildcard,
-                        variant_index: None,
-                    });
-                }
-            }
-        }
+        });
+        Ok(ArmPlacement {
+            levels,
+            group,
+            fields,
+        })
     }
 
-    /// The type of one payload field of a variant, rejecting a decomposed
-    /// position the variant does not have.
-    fn variant_payload_field(
+    /// Resolve one variant pattern and everything nested inside it, recording
+    /// one level per pattern (pre-order, outermost first) and returning the
+    /// matrix entry the pattern contributes.
+    ///
+    /// A nested position's own value is projected out here, once, and becomes
+    /// the scrutinee of the level that matches it; the arm binds from that
+    /// projection whatever the group's decision tree tested to reach the arm.
+    fn resolve_pattern_level<'p>(
         &mut self,
-        enum_id: crate::types::EnumId,
-        variant_index: u32,
-        field: u32,
-        span: Span,
-        spelled: &str,
-    ) -> CompileResult<Type> {
-        let def = self.body_type_pool().enum_def(enum_id);
-        let payload = def.variant_payload(variant_index as usize);
-        payload
-            .get(field as usize)
-            .copied()
-            .ok_or_compile_error(
-                ErrorKind::WrongArgumentCount {
-                    expected: payload.len(),
-                    found: field as usize + 1,
-                },
-                span,
-            )
-            .map_err(|error| error.with_note(format!("in a payload pattern for `{spelled}`")))
-    }
-
-    /// Record a placed arm in its dispatch node's coverage bookkeeping, and
-    /// warn when an earlier arm of that node already matches everything it
-    /// could (spec 4.7:20). The match's own arm list keeps its bookkeeping in
-    /// `analyze_match`; this covers the child matches nested patterns create.
-    fn record_placed_pattern(
-        nodes: &mut [NestedMatchNode],
-        placement: &ArmPlacement<'_>,
-        pattern_span: Span,
-        outer_wildcard: Option<Span>,
-        interner: &lasso::ThreadedRodeo,
-        warnings: &mut Vec<CompileWarning>,
-    ) {
-        let Some(index) = placement.node else {
-            return;
-        };
-        let path = nodes[index].path.clone();
-        let spell = |node: &NestedMatchNode, text: &str| format!("{}{text})", node.path);
-        let node = &mut nodes[index];
-        // An arm reached through a child match is unreachable when an earlier
-        // arm of that child already covered the same variant, or covered
-        // everything with a binder at the decomposed position.
-        let earlier = match placement.variant_index {
-            Some(variant) => node
-                .covered_variants
-                .get(&variant)
-                .copied()
-                .or(node.wildcard_span),
-            None => node.wildcard_span,
-        };
-        let unreachable_after = earlier.or(outer_wildcard);
-        if let Some(first_span) = unreachable_after {
-            let spelled = match placement.variant_index {
-                Some(_) => match placement.levels.last().map(|level| level.pattern) {
-                    Some(RirPattern::Path {
-                        type_name, variant, ..
-                    }) => spell(
-                        node,
-                        &format!(
-                            "{}.{}",
-                            interner.resolve(type_name),
-                            interner.resolve(variant)
-                        ),
-                    ),
-                    _ => format!("{path}_)"),
-                },
-                None => format!("{path}_)"),
-            };
-            warnings.push(
-                CompileWarning::new(WarningKind::UnreachablePattern(spelled), pattern_span)
-                    .with_label("first occurrence of this pattern", first_span)
-                    .with_note(
-                        "this pattern will never be matched because an earlier arm already \
-                         matches the same value",
-                    ),
-            );
-        }
-        match placement.variant_index {
-            Some(variant) => {
-                node.covered_variants.entry(variant).or_insert(pattern_span);
-            }
-            None => {
-                if node.wildcard_span.is_none() {
-                    node.wildcard_span = Some(pattern_span);
-                }
-            }
-        }
-    }
-
-    /// Assemble the AIR arms of one dispatch node, building each child match
-    /// on the payload its parent extracted.
-    fn build_nested_arms(
         air: &mut Air,
-        nodes: &[NestedMatchNode],
-        arms: &[NestedMatchArm],
-        result_type: Type,
-    ) -> CompileResult<Vec<(AirPattern, AirRef)>> {
-        let mut out = Vec::with_capacity(arms.len());
-        for arm in arms {
-            match arm {
-                NestedMatchArm::Direct(pattern, body) => out.push((pattern.clone(), *body)),
-                NestedMatchArm::Child { pattern, node } => {
-                    let child = &nodes[*node];
-                    let inner = Self::build_nested_arms(air, nodes, &child.arms, result_type)?;
-                    let body = air.add_match(child.scrutinee, &inner, result_type, child.span)?;
-                    out.push((pattern.clone(), body));
+        pattern: &'p RirPattern,
+        scrutinee: AirRef,
+        scrutinee_type: Type,
+        ctx: &AnalysisContext,
+        levels: &mut Vec<ArmLevel<'p>>,
+    ) -> CompileResult<MatrixPattern> {
+        let (enum_id, variant_index) =
+            self.resolve_variant_pattern(pattern, scrutinee_type, ctx)?;
+        let RirPattern::Path { elements, span, .. } = pattern else {
+            unreachable!("resolve_variant_pattern accepts only path patterns")
+        };
+        let payload = self
+            .body_type_pool()
+            .enum_def(enum_id)
+            .variant_payload(variant_index as usize)
+            .to_vec();
+        let nested: Vec<u32> = elements
+            .iter()
+            .enumerate()
+            .filter_map(|(index, element)| {
+                matches!(element, rue_rir::RirPatternElement::Nested(_)).then_some(index as u32)
+            })
+            .collect();
+        levels.push(ArmLevel {
+            pattern,
+            scrutinee,
+            enum_id,
+            variant_index,
+            nested,
+        });
+        // A pattern whose position count disagrees with the variant's arity is
+        // rejected where its bindings are materialized (E0207), which runs
+        // before any row reaches the matrix; the row built here covers exactly
+        // the variant's own positions.
+        let mut fields = Vec::with_capacity(payload.len());
+        for (index, field_type) in payload.iter().copied().enumerate() {
+            let Some(rue_rir::RirPatternElement::Nested(inner)) = elements.get(index) else {
+                fields.push(MatrixPattern::Wildcard);
+                continue;
+            };
+            if field_type.as_enum().is_none() {
+                return Err(CompileError::new(
+                    ErrorKind::InvalidMatchType(self.format_type_name(field_type)),
+                    *span,
+                ));
+            }
+            let value = air.add_inst(AirInst {
+                data: AirInstData::EnumPayloadGet {
+                    base: scrutinee,
+                    enum_id,
+                    variant_index,
+                    field_index: index as u32,
+                },
+                ty: field_type,
+                span: *span,
+            });
+            fields.push(self.resolve_pattern_level(air, inner, value, field_type, ctx, levels)?);
+        }
+        Ok(MatrixPattern::Constructor {
+            enum_id,
+            variant_index,
+            fields,
+        })
+    }
+
+    /// Compile one variant group's pattern matrix into a decision tree
+    /// (RUE-2080, Maranget): test the leftmost occurrence the first row
+    /// constrains, and recurse on the matrix specialized by each constructor
+    /// that occurrence is given.
+    ///
+    /// `rows` is never empty. A constructor's case keeps at least the row that
+    /// named the constructor, and the default branch is built only when some
+    /// row is a wildcard at the tested occurrence.
+    fn compile_group_matrix(
+        &self,
+        state: &mut GroupDispatch<'_>,
+        rows: &[(usize, Vec<MatrixPattern>)],
+        columns: &[Vec<PayloadStep>],
+        witness: &[Witness],
+        ctx: &AnalysisContext,
+        match_span: Span,
+    ) -> CompileResult<DispatchNode> {
+        let (first, first_patterns) = &rows[0];
+        let Some(column) = first_patterns
+            .iter()
+            .position(|pattern| matches!(pattern, MatrixPattern::Constructor { .. }))
+        else {
+            // Nothing this row requires is left to test, so it matches every
+            // value that reaches here and covers the rows below it.
+            state.reached[*first] = true;
+            let covering = state.group.rows[*first].span;
+            for (row, _) in &rows[1..] {
+                state.shadowed_by[*row].get_or_insert(covering);
+            }
+            return Ok(DispatchNode::Row(*first));
+        };
+        let MatrixPattern::Constructor { enum_id, .. } = first_patterns[column] else {
+            unreachable!("the chosen column holds a constructor")
+        };
+        let def = self.body_type_pool().enum_def(enum_id);
+        let external_non_exhaustive = def.is_non_exhaustive && def.file_id != ctx.current_file_id;
+
+        // The constructors some row names at this occurrence, in the order the
+        // arms name them, so the dispatch keeps source order.
+        let mut tested: Vec<u32> = Vec::new();
+        let mut has_wildcard_row = false;
+        for (_, patterns) in rows {
+            match &patterns[column] {
+                MatrixPattern::Constructor { variant_index, .. } => {
+                    if !tested.contains(variant_index) {
+                        tested.push(*variant_index);
+                    }
+                }
+                MatrixPattern::Wildcard => has_wildcard_row = true,
+            }
+        }
+        let complete = !external_non_exhaustive && tested.len() == def.variant_count();
+        if !complete && !has_wildcard_row {
+            // No row covers the variants left over at this occurrence, so the
+            // match is not exhaustive (4.7:39). Each missing pattern is spelled
+            // in full: the arms' shared head, this occurrence holding one
+            // uncovered variant, and `_` everywhere the matrix left open.
+            let missing: Vec<String> = (0..def.variant_count() as u32)
+                .filter(|variant| !tested.contains(variant))
+                .map(|variant| {
+                    let arity = def.variant_payload(variant as usize).len();
+                    let filled = fill_witness_hole(
+                        witness,
+                        column,
+                        Witness::Constructor {
+                            enum_id,
+                            variant_index: variant,
+                            fields: vec![Witness::Wildcard; arity],
+                        },
+                    );
+                    self.spell_witness(&state.group.head, &filled)
+                })
+                .collect();
+            let error = CompileError::new(ErrorKind::NonExhaustiveMatch, match_span)
+                .with_label("this payload pattern is not exhaustive", state.group.span);
+            return Err(if missing.is_empty() {
+                error
+            } else {
+                error.with_help(format!("missing patterns: {}", missing.join(", ")))
+            });
+        }
+
+        let mut cases = Vec::with_capacity(tested.len());
+        for variant in tested.iter().copied() {
+            let payload = def.variant_payload(variant as usize).to_vec();
+            // Testing this occurrence replaces its column with one column per
+            // payload position of the constructor it now holds.
+            let mut case_columns = Vec::with_capacity(columns.len() + payload.len());
+            case_columns.extend_from_slice(&columns[..column]);
+            for (field, field_type) in payload.iter().copied().enumerate() {
+                let mut path = columns[column].clone();
+                path.push(PayloadStep {
+                    enum_id,
+                    variant_index: variant,
+                    field: field as u32,
+                    field_type,
+                });
+                case_columns.push(path);
+            }
+            case_columns.extend_from_slice(&columns[column + 1..]);
+            let case_witness = fill_witness_hole(
+                witness,
+                column,
+                Witness::Constructor {
+                    enum_id,
+                    variant_index: variant,
+                    fields: vec![Witness::Hole; payload.len()],
+                },
+            );
+            let mut case_rows = Vec::with_capacity(rows.len());
+            for (row, patterns) in rows {
+                let expanded = match &patterns[column] {
+                    MatrixPattern::Constructor {
+                        variant_index,
+                        fields,
+                        ..
+                    } => {
+                        if *variant_index != variant {
+                            continue;
+                        }
+                        fields.clone()
+                    }
+                    // A row that binds this occurrence accepts every
+                    // constructor it can hold, and requires nothing of the
+                    // positions the test opened up.
+                    MatrixPattern::Wildcard => vec![MatrixPattern::Wildcard; payload.len()],
+                };
+                let mut case_patterns = Vec::with_capacity(patterns.len() + payload.len());
+                case_patterns.extend_from_slice(&patterns[..column]);
+                case_patterns.extend(expanded);
+                case_patterns.extend_from_slice(&patterns[column + 1..]);
+                case_rows.push((*row, case_patterns));
+            }
+            cases.push((
+                variant,
+                self.compile_group_matrix(
+                    state,
+                    &case_rows,
+                    &case_columns,
+                    &case_witness,
+                    ctx,
+                    match_span,
+                )?,
+            ));
+        }
+
+        let default = if complete {
+            None
+        } else {
+            // Every variant no case names is left to the rows that bind this
+            // occurrence rather than testing it.
+            let default_columns: Vec<Vec<PayloadStep>> = columns[..column]
+                .iter()
+                .chain(&columns[column + 1..])
+                .cloned()
+                .collect();
+            let default_witness = fill_witness_hole(witness, column, Witness::Wildcard);
+            let default_rows: Vec<(usize, Vec<MatrixPattern>)> = rows
+                .iter()
+                .filter(|(_, patterns)| matches!(patterns[column], MatrixPattern::Wildcard))
+                .map(|(row, patterns)| {
+                    (
+                        *row,
+                        patterns[..column]
+                            .iter()
+                            .chain(&patterns[column + 1..])
+                            .cloned()
+                            .collect(),
+                    )
+                })
+                .collect();
+            Some(Box::new(self.compile_group_matrix(
+                state,
+                &default_rows,
+                &default_columns,
+                &default_witness,
+                ctx,
+                match_span,
+            )?))
+        };
+
+        Ok(DispatchNode::Test {
+            path: columns[column].clone(),
+            enum_id,
+            cases,
+            default,
+        })
+    }
+
+    /// Spell one witness as source: the group's shared head and its payload
+    /// positions, with `_` for every position the witness leaves open.
+    fn spell_witness(&self, head: &str, slots: &[Witness]) -> String {
+        let positions: Vec<String> = slots
+            .iter()
+            .map(|slot| self.spell_witness_slot(slot))
+            .collect();
+        format!("{head}({})", positions.join(", "))
+    }
+
+    /// Spell one payload position of a witness.
+    fn spell_witness_slot(&self, slot: &Witness) -> String {
+        match slot {
+            Witness::Hole | Witness::Wildcard => "_".to_string(),
+            Witness::Constructor {
+                enum_id,
+                variant_index,
+                fields,
+            } => {
+                let def = self.body_type_pool().enum_def(*enum_id);
+                let name = format!(
+                    "{}.{}",
+                    self.format_type_name(Type::new_enum(*enum_id)),
+                    def.variants[*variant_index as usize].as_ref()
+                );
+                if fields.is_empty() {
+                    name
+                } else {
+                    let positions: Vec<String> = fields
+                        .iter()
+                        .map(|field| self.spell_witness_slot(field))
+                        .collect();
+                    format!("{name}({})", positions.join(", "))
                 }
             }
         }
-        Ok(out)
+    }
+
+    /// Assemble one variant group's dispatch: the decision tree, which yields
+    /// the index of the arm that matched, and the flat dispatch that runs it.
+    fn emit_group_dispatch(
+        air: &mut Air,
+        group: &VariantGroup,
+        tree: &DispatchNode,
+        scrutinee: AirRef,
+        result_type: Type,
+    ) -> CompileResult<AirRef> {
+        let selector = Self::emit_dispatch_node(air, group, tree, scrutinee)?;
+        let arms = group
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let body = row.body.ok_or_else(|| {
+                    CompileError::new(
+                        ErrorKind::InternalError("match arm was not analyzed".to_string()),
+                        group.span,
+                    )
+                })?;
+                Ok((AirPattern::Int(index as i64), body))
+            })
+            .collect::<CompileResult<Vec<_>>>()?;
+        Ok(air.add_match(selector, &arms, result_type, group.span)?)
+    }
+
+    /// Emit one node of a group's decision tree, as a match on the occurrence
+    /// it tests whose arms are the sub-trees, or the index of the arm a leaf
+    /// selects.
+    fn emit_dispatch_node(
+        air: &mut Air,
+        group: &VariantGroup,
+        node: &DispatchNode,
+        scrutinee: AirRef,
+    ) -> CompileResult<AirRef> {
+        match node {
+            DispatchNode::Row(index) => Ok(air.add_inst(AirInst {
+                data: AirInstData::Const(*index as u64),
+                ty: Type::I32,
+                span: group.rows[*index].span,
+            })),
+            DispatchNode::Test {
+                path,
+                enum_id,
+                cases,
+                default,
+            } => {
+                // The tested occurrence is projected out of the scrutinee at
+                // the node that tests it, and only there: every path reaching
+                // this node established the variants the projection walks
+                // through, and the projection dominates its one use.
+                let occurrence = path.iter().fold(scrutinee, |base, step| {
+                    air.add_inst(AirInst {
+                        data: AirInstData::EnumPayloadGet {
+                            base,
+                            enum_id: step.enum_id,
+                            variant_index: step.variant_index,
+                            field_index: step.field,
+                        },
+                        ty: step.field_type,
+                        span: group.span,
+                    })
+                });
+                let mut arms = Vec::with_capacity(cases.len() + 1);
+                for (variant_index, case) in cases {
+                    let body = Self::emit_dispatch_node(air, group, case, scrutinee)?;
+                    arms.push((
+                        AirPattern::EnumVariant {
+                            enum_id: *enum_id,
+                            variant_index: *variant_index,
+                        },
+                        body,
+                    ));
+                }
+                if let Some(default) = default {
+                    let body = Self::emit_dispatch_node(air, group, default, scrutinee)?;
+                    arms.push((AirPattern::Wildcard, body));
+                }
+                Ok(air.add_match(occurrence, &arms, Type::I32, group.span)?)
+            }
+        }
     }
 
     /// Materialize the payload bindings of a tuple-variant match pattern
@@ -2926,10 +3198,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ///
     /// The level carries the enum and variant `place_match_arm` already
     /// resolved for it, so nothing is resolved twice, along with the payload
-    /// position a child match handles for a nested pattern (RUE-2053): a
-    /// position the nested pattern consumes binds nothing here, and a position
-    /// the arm binds takes the value that child match dispatched on rather
-    /// than projecting the field again.
+    /// positions a nested pattern decomposes (RUE-2053, RUE-2080): those bind
+    /// nothing here, because the level that matches each of them binds its own
+    /// positions instead.
     fn materialize_match_bindings(
         &mut self,
         air: &mut Air,
@@ -3023,13 +3294,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // which is the RUE-1592 ruling below.
         let mut stmts: Vec<u32> = Vec::with_capacity(payload.len() * 2);
         for (i, field_ty) in payload.iter().copied().enumerate() {
-            // A position a nested pattern occupies is consumed by the child
-            // match this arm was dispatched through (RUE-2053): that match's
-            // arms account for the field, so nothing is bound or dropped here.
-            if matches!(
-                level.decomposed,
-                Some(DecomposedPosition::Consumed(field)) if field as usize == i
-            ) {
+            // A position a nested pattern occupies is accounted for by the
+            // level that matches it (RUE-2053): that level binds the field's
+            // own positions, so nothing is bound or dropped here.
+            if level.nested.contains(&(i as u32)) {
                 continue;
             }
             // The source name at this position, or `None` when the position
@@ -3072,24 +3340,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return Err(self.attach_infectious_linear_note(err, field_ty));
             }
 
-            // Read the payload field out of the scrutinee. A position a child
-            // match already extracted takes that same value rather than
-            // projecting it a second time (RUE-2053).
-            let get_ref = match level.decomposed {
-                Some(DecomposedPosition::Bound(field, extracted)) if field as usize == i => {
-                    extracted
-                }
-                _ => air.add_inst(AirInst {
-                    data: AirInstData::EnumPayloadGet {
-                        base: scrutinee_ref,
-                        enum_id,
-                        variant_index,
-                        field_index: i as u32,
-                    },
-                    ty: field_ty,
-                    span: pattern_span,
-                }),
-            };
+            // Read the payload field out of the value this level matched.
+            let get_ref = air.add_inst(AirInst {
+                data: AirInstData::EnumPayloadGet {
+                    base: scrutinee_ref,
+                    enum_id,
+                    variant_index,
+                    field_index: i as u32,
+                },
+                ty: field_ty,
+                span: pattern_span,
+            });
 
             // Allocate the binding through the canonical local-storage owner,
             // then register the match arm's source-level name in this scope.

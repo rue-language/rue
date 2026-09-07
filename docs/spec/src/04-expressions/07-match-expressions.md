@@ -384,24 +384,29 @@ compile-time error at any depth.
 {{ rule(id="4.7:39", cat="normative") }}
 
 Exhaustiveness (4.7:19) applies at every level. The arms that match one variant
-and discriminate the same payload position together form a match on that
-payload, and that match **MUST** be exhaustive over the payload's type; an arm
-whose position holds a binding or `_` covers every remaining value there, as a
-wildcard arm does at the top level. `R.Ok(_)`, `R.Err(E.A(b))` and `R.Err(E.B)`
-are together exhaustive over `Result(i64, E)`; dropping the `R.Err(E.B)` arm
-leaves the match non-exhaustive, and the diagnostic names the missing pattern as
-`R.Err(E.B)`. An arm the earlier arms already cover at its own level — a
-repeated nested variant, or any arm after a binding at that position — is
-unreachable (4.7:20).
+and discriminate its payload together **MUST** cover every combination of values
+those payload positions can hold; an arm whose position holds a binding or `_`
+covers every remaining value there, as a wildcard arm does at the top level.
+`R.Ok(_)`, `R.Err(E.A(b))` and `R.Err(E.B)` are together exhaustive over
+`Result(i64, E)`; dropping the `R.Err(E.B)` arm leaves the match non-exhaustive,
+and the diagnostic names the missing pattern as `R.Err(E.B)`. An arm the earlier
+arms already cover — a repeated nested variant, or any arm after a binding at
+the positions it discriminates — is unreachable (4.7:20).
 
-{{ rule(id="4.7:40", cat="legality-rule") }}
+{{ rule(id="4.7:40", cat="normative") }}
 
-One pattern **MUST NOT** nest variant patterns in more than one of its payload
-positions, and the arms that match the same variant **MUST** nest in the same
-position: the arms sharing a variant discriminate exactly one extracted payload
-field. `Outer.Pair(Inner.A(v), Inner.B)` is rejected, as is
-`Outer.Pair(Inner.A(v), b)` alongside `Outer.Pair(a, Inner.B)`. Bind the other
-positions and match them in a nested `match` expression.
+One pattern may nest variant patterns in any number of its payload positions,
+and the arms that match the same variant may nest in different positions:
+`Outer.Pair(Inner.A(v), Inner.B)` is a legal pattern, and
+`Outer.Pair(Inner.A(v), b)` and `Outer.Pair(a, Inner.B)` may appear in the same
+match. The arms sharing a variant are checked against the whole pattern matrix
+those positions form — one column per position of the variant and of every
+nested variant, one row per arm — so the exhaustiveness of 4.7:39 and the
+unreachability of 4.7:20 are properties of the arms **together** rather than of
+one position at a time. `Outer.Pair(Inner.A(v), Inner.B)` and
+`Outer.Pair(_, _)` are together exhaustive; `Outer.Pair(Inner.A(v), Inner.B)`
+and `Outer.Pair(Inner.B, _)` are not, and the diagnostic names the uncovered
+combination `Outer.Pair(Inner.A(_), Inner.A(_))`.
 
 {{ rule(id="4.7:41", cat="example") }}
 
