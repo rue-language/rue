@@ -1850,14 +1850,57 @@ max_T` for a signed `T` (`Neg`).
 signedness (the value `n_T` already carries the sign). Only `==`/`!=` may reach an
 aggregate (ordering on aggregates is a §5 type error); there they compare
 **structurally** — a struct field-by-field, an array element-by-element, an enum
-same-tag-and-equal-payload, recursing into nested aggregates (RUE-285) — and a
-each canonical text rung (`str`, `Str(N)`, or `StrBuf`) by its byte content (`4.3:2`):
+same-tag-and-equal-payload, recursing into nested aggregates (RUE-285) — and
+compare a value of each canonical text rung (`str`, `Str(N)`, or `StrBuf`) by its
+byte content (`4.3:2`):
 
 ```
   v1 ≈ v2  ⟺  v1 and v2 are structurally equal      (scalars by value; aggregates componentwise; strings by content)
   ─────────────────────────────────────────────────────────────────────────────────── (D-Eq)
   v1 == v2 → (v1 ≈ v2)                v1 != v2 → ¬(v1 ≈ v2)
 ```
+
+**`≈` is a total equivalence on the core's types, and only on those (RUE-2007).**
+Every `T` of §2 bottoms out in an `int(w, s)`, `bool`, or `unit` leaf, each
+comparing by value, and the canonical text rungs added by §6.13.4 compare by
+byte content — every one of those leaf relations is itself reflexive, so `≈` as
+stated above is reflexive, symmetric, and transitive. Prose `4.3:3b`, which
+cites this rule, must not be read as claiming more than that. The surface
+language's **floating-point types** `f32`/`f64` (`3.12:1`) are deliberately
+**not** among §2's `T` and are not modeled here; a float leaf compares by the
+IEEE 754 predicate (`3.12:27`), under which a `NaN` is not equal to itself. So
+`≈` extended over float leaves stays symmetric and transitive but loses
+reflexivity at exactly one place: `¬(v ≈ v)` for any `v` reaching a `NaN`, at
+any depth (`3.12:29`). Extended `≈` is a *partial* equivalence — a partial
+equivalence *relation* in the usual sense, symmetric and transitive without being
+reflexive, not a partially **defined** one. It remains a **total predicate**:
+every pair of well-typed values is either related or not, so `(D-Eq)` still fires
+on every pair and progress is untouched. What `≈` loses is reflexivity, not
+definedness. The prose says the same (`4.3:3g`).
+
+The extension is **conservative for §7**. `≈` occurs in exactly two rule
+statements in this document — `(D-Eq)` here and the container equations of
+§6.13.4 — and neither appeals to reflexivity: `(D-Eq)` only forwards `≈`'s truth
+value into a `bool`, and `≟` neither moves nor drops its operands (§4.1, §6.3),
+so no ownership, drop, or progress obligation is stated in terms of `v ≈ v`. The
+two `a == a` remarks in §5.4 and §5.8 are claims about **loan consistency**, not
+about the value produced, and the meta-level `=` of `(D-Use-Shared-Read)` and of
+§7's preservation statement is identity on model values, which stays reflexive
+whatever IEEE says. Adding a float leaf whose equality is irreflexive therefore
+invalidates no §7 theorem; it changes which `bool` a compare produces and nothing
+else.
+
+Equality also reaches values through the container **searches** §6.13.3 leaves as
+compositions rather than writing out (`index_of`, `contains`): those evaluate `≟`
+and so inherit this answer without naming `≈`. A buffer holding a `NaN` does not
+report that it `contains` one, for the same reason the aggregate around a `NaN`
+is not equal to itself. That is a consequence of the rule, not an exception to
+it, and it is why prose `4.3:3g`'s pointer at `@total_cmp` is advice about
+comparison rather than about the current search methods. Giving `f32`/`f64`
+their own `T`, values, and arithmetic dynamics (including the trap-free division
+of `3.12:22`, which does *not* fit §6.4's `(D-Div-Zero)`) is a separate
+amendment; this note records the equality consequence rather than leaving the
+prose citation overclaiming.
 
 **Bitwise `& | ^ ~` and shifts `<< >>`** operate on the `w`-bit two's-complement
 representation and never trap (`bitop`/`shift`). Write `β_w(n)` for
@@ -2846,7 +2889,7 @@ witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
 | §5.7 divergence + never-coercion; (Loop-Div)/(Loop-Break) loop typing, reachable back-edge invariance, and the break-edge join | 3.4:1/2/3/4/6/6a/8, 3.4:9, 4.8:21, 3.8:50/51/79/80 |
 | §6.2 evaluation order (contexts, left-to-right) | 4.0:3–9 |
 | §6.3 dynamic use: declared-linear destructure, copy vs. ordinary move; equality borrows | 3.8:5/7/22/33/60/68/74, 3.9:1/2/13/15/28/34, 4.3:3f |
-| §6.4 operator dynamics: arith/div/mod, compare, bitwise/shift | 4.2:1, 4.3:1/2, 4.3a:10, 3.1:6/13 |
+| §6.4 operator dynamics: arith/div/mod, compare, bitwise/shift; the `≈` totality note and its float-leaf exception | 4.2:1, 4.3:1/2, 4.3:3b, 4.3:3g, 4.3a:10, 3.1:6/13, 3.12:27, 3.12:29 |
 | §6.5 aggregate intro + projection (declared-linear selection and bounds) | 3.5:2, 3.6:16, 3.8:33/60/68, 3.9:34, 4.11:14, 4.12:9, 8.2 |
 | §6.6 enum intro + match dynamics | 6.3:17, 4.7:16 |
 | §6.7/§6.8 let/seq/scope-drop (σ registration + `endscope`), assignment overwrite-drop; α-renamed shadowing | 4.5:3, 3.8:12/13, 3.8:55/64, 3.9 |

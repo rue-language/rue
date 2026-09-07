@@ -817,16 +817,26 @@ params = [
   { variant = "inequality", a = "Value(1.5)", b = "Missing", op = "!=", exit_code = 1 },
 ]
 
-# RUE-2007 baseline. Structural equality is documented as a total equivalence
-# (4.3:3g), which `NaN` breaks: a float leaf compares under IEEE equality, so an
-# aggregate holding a `NaN` is not equal to itself even though both operands are
-# the same value with the same bits. This case records what the implementation
-# does today, at each depth the recursion reaches; deciding what the language
-# should say about it is RUE-2007's, not this case's.
+# =============================================================================
+# NaN and the reflexivity of structural equality (RUE-2007, decided)
+#
+# 4.3:3b compares every leaf by that leaf type's own equality, so a float leaf
+# uses the IEEE predicate of 3.12:27 and an aggregate reaching a `NaN` is not
+# equal to itself — even though both operands are the same value with the same
+# bits. That is the single place structural equality is not reflexive: 4.3:3g
+# states the resulting *partial* equivalence, and the `≈` note in
+# `docs/formal/01-core-calculus.md` §6.4 records that the exception enters
+# through a leaf type the core calculus does not model. The rejected
+# alternative was a bitwise/`@total_cmp` leaf rule that would have kept
+# equality total while making a field's equality disagree with that field's own
+# `==`. These cases pin the decision at each depth the recursion reaches, and
+# pin that nothing else lost reflexivity.
+# =============================================================================
+
 [[case]]
 name = "aggregate_holding_nan_is_not_equal_to_itself"
-spec = ["4.3:2", "4.3:3b", "4.3:3c", "4.3:3d"]
-description = "Observed NaN behaviour inside an aggregate, the measured baseline for RUE-2007's partial-equality decision."
+spec = ["4.3:2", "4.3:3b", "4.3:3c", "4.3:3d", "4.3:3g", "4.3:4c", "3.12:29"]
+description = "A struct field, an array element, and an enum payload each carry NaN's irreflexivity into the aggregate holding it."
 source = """
 struct Sample { wide: f64 }
 enum Reading { Value(f64), Missing }
@@ -846,3 +856,155 @@ fn main() -> i32 {
 }
 """
 exit_code = 15
+
+# Two separately built aggregates whose float leaves are both NaN are unequal
+# for the same reason a value is unequal to itself: no NaN comparison is equal.
+[[case]]
+name = "two_aggregates_holding_nan_are_unequal_to_each_other"
+spec = ["4.3:2", "4.3:3b", "4.3:3g", "4.3:4c", "3.12:29"]
+description = "`Sample { value: nan } == Sample { value: nan }` is false; `!=` is true."
+source = """
+struct Sample { value: f64 }
+
+fn id(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let zero: f64 = id(0.0);
+    let nan = zero / zero;
+    let a = Sample { value: nan };
+    let b = Sample { value: nan };
+    if a == b { 0 } else if a != b { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# A NaN-carrying aggregate against one that differs in an ordinary way is
+# unequal by the ordinary rule, not by anything NaN-specific: the answer is the
+# same `false` an all-integer aggregate would give, and `!=` is `true`.
+[[case]]
+name = "nan_aggregate_against_a_differing_aggregate_is_ordinary_inequality"
+spec = ["4.3:2", "4.3:3b", "4.3:3g", "4.3:4c", "3.12:29"]
+description = "Comparing a NaN-holding struct with a different non-NaN struct is plain inequality: `==` false, `!=` true."
+source = """
+struct Sample { tag: i32, value: f64 }
+
+fn id(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let zero: f64 = id(0.0);
+    let nan = zero / zero;
+    let holds_nan = Sample { tag: 1, value: nan };
+    let differs = Sample { tag: 2, value: 1.5 };
+    if !(holds_nan == differs) && holds_nan != differs { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# The recursion reaches the NaN through two aggregate levels and an array, so
+# the irreflexivity is not a property of a one-field wrapper's register shape.
+[[case]]
+name = "nested_aggregate_reaching_a_nan_at_depth_is_not_equal_to_itself"
+spec = ["4.3:2", "4.3:3b", "4.3:3c", "4.3:3d", "4.3:3g", "3.12:29"]
+description = "A NaN two aggregate levels down, and one inside an enum payload's struct, each defeat reflexivity."
+source = """
+struct Leaf { value: f64 }
+struct Middle { leaf: Leaf, count: i32 }
+struct Outer { middle: Middle, samples: [f64; 2] }
+enum Reading { Value(Leaf), Missing }
+
+fn id(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let zero: f64 = id(0.0);
+    let nan = zero / zero;
+
+    let deep = Outer { middle: Middle { leaf: Leaf { value: nan }, count: 7 }, samples: [1.0, 2.0] };
+    let in_array = Outer { middle: Middle { leaf: Leaf { value: 1.0 }, count: 7 }, samples: [1.0, nan] };
+    let in_payload = Reading.Value(Leaf { value: nan });
+
+    let mut r: i32 = 0;
+    if deep != deep { r = r + 1; }
+    if in_array != in_array { r = r + 2; }
+    if in_payload != in_payload { r = r + 4; }
+    r
+}
+"""
+exit_code = 7
+
+# The carve-out is exactly the NaN. A float-carrying aggregate with no NaN in it
+# is still equal to itself at every depth, and so is every aggregate with no
+# float leaf at all — structural equality lost reflexivity nowhere else.
+[[case]]
+name = "aggregate_equality_stays_reflexive_without_a_nan"
+spec = ["4.3:2", "4.3:3b", "4.3:3c", "4.3:3d", "4.3:3g", "4.3:4c"]
+description = "Float-carrying aggregates with no NaN, and float-free aggregates, remain equal to themselves."
+source = """
+struct Leaf { value: f64 }
+struct Middle { leaf: Leaf, count: i32 }
+struct Outer { middle: Middle, samples: [f32; 2] }
+struct Plain { a: i32, b: bool }
+enum Reading { Value(Leaf), Missing }
+
+fn id(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let zero: f64 = id(0.0);
+    let infinity = 1.0 / zero;
+
+    let finite = Outer { middle: Middle { leaf: Leaf { value: 1.5 }, count: 7 }, samples: [2.5, 3.5] };
+    let infinite = Outer { middle: Middle { leaf: Leaf { value: infinity }, count: 7 }, samples: [2.5, 3.5] };
+    let plain = Plain { a: 1, b: true };
+    let payload = Reading.Value(Leaf { value: -0.0 });
+    let missing = Reading.Missing;
+
+    let mut r: i32 = 0;
+    if finite == finite { r = r + 1; }
+    if infinite == infinite { r = r + 2; }
+    if plain == plain { r = r + 4; }
+    if payload == payload { r = r + 8; }
+    if missing == missing { r = r + 16; }
+    r
+}
+"""
+exit_code = 31
+
+# The same pin with the optimizer on. Constant folding compares constants as raw
+# stored bits, under which a NaN *is* equal to itself and `-0.0` is not equal to
+# `+0.0` — exactly backwards from 3.12:27 — so the aggregate walk has to keep
+# reaching a real float compare rather than a folded answer. `constfold.rs`
+# declines to fold a comparison with a float operand and has its own unit test
+# for that, but nothing pinned the *aggregate* path above -O0 until this case;
+# the scalar counterpart is `types.floats::nan_and_zero_comparisons_survive_
+# constant_folding`, which runs at -O1 for the same reason.
+[[case]]
+name = "aggregate_nan_equality_survives_constant_folding"
+spec = ["4.3:2", "4.3:3b", "4.3:3c", "4.3:3d", "4.3:3g", "3.12:29"]
+opt_level = 1
+description = "With the optimizer on and every leaf compile-time constant, a NaN-holding aggregate is still unequal to itself and a -0.0/+0.0 pair is still equal."
+source = """
+const NAN: f64 = 0.0 / 0.0;
+const NEG_ZERO: f64 = -0.0;
+const POS_ZERO: f64 = 0.0;
+
+struct Leaf { value: f64 }
+struct Outer { leaf: Leaf, samples: [f64; 2] }
+enum Reading { Value(f64), Missing }
+
+fn main() -> i32 {
+    let holds_nan = Outer { leaf: Leaf { value: NAN }, samples: [1.0, 2.0] };
+    let nan_in_array = Outer { leaf: Leaf { value: 1.0 }, samples: [1.0, NAN] };
+    let payload = Reading.Value(NAN);
+    let negative = Leaf { value: NEG_ZERO };
+    let positive = Leaf { value: POS_ZERO };
+    let finite = Outer { leaf: Leaf { value: 1.5 }, samples: [1.0, 2.0] };
+
+    let mut r: i32 = 0;
+    if holds_nan != holds_nan { r = r + 1; }
+    if nan_in_array != nan_in_array { r = r + 2; }
+    if payload != payload { r = r + 4; }
+    if negative == positive { r = r + 8; }
+    if finite == finite { r = r + 16; }
+    r
+}
+"""
+exit_code = 31

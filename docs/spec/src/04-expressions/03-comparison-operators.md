@@ -50,6 +50,20 @@ recursively by this rule down to scalar leaves — are equal (core calculus
 rule `(D-Eq)`). Specifically, two struct values are equal if and only if they
 have the same struct type and all corresponding fields are equal.
 
+Every leaf the recursion reaches is compared by its own type's equality — never
+by a byte-wise comparison of the aggregate's storage. An integer, `bool`, or unit
+leaf compares by value; a string leaf by content (4.3:3); a raw-pointer leaf by
+address (4.3:3e); and a floating-point leaf by the IEEE comparison of 3.12:27, so
+`-0.0` and `+0.0` leaves are equal although their bits differ, and a NaN leaf is
+not equal to itself. For every leaf type 4.3:2 also admits as a whole operand,
+that leaf relation is the one a top-level comparison of the type would use, so a
+component's equality never disagrees with that component's own `==`. The raw
+pointer is the one leaf kind with no top-level comparison of its own — it is not
+among 4.3:2's operand types — which is why 4.3:3e defines it only in field
+position. A floating-point leaf is the only leaf whose equality is not reflexive:
+an aggregate that reaches a NaN at any depth is therefore not equal to itself
+(3.12:29, 4.3:3g).
+
 {{ rule(id="4.3:3c", cat="normative") }}
 
 Two array values are equal if and only if they have the same element type and
@@ -83,11 +97,25 @@ usable afterward.
 Equality is structural **by default**. Trait-based refinement of equality —
 opting a type out of comparison, or giving it a user-defined equality (a
 `PartialEq`-style mechanism) — is deferred until traits exist (RUE-246).
-Structural equality is a *partial* equivalence, not a total one: the
-floating-point types have a value unequal to itself, `NaN` (3.12:27), and an
-aggregate reaching one at any leaf inherits that (3.12:29). This is the concrete
-motivation for the eventual `PartialEq`/`Eq` split; until it lands,
-`@total_cmp` (3.12:32) is the total order available for sorting and hashing.
+
+Structural equality is symmetric and transitive everywhere, and reflexive
+everywhere *except* through a NaN: a NaN is the one value unequal to itself
+(3.12:27), and a value that reaches one at any leaf inherits that (3.12:29). It
+is therefore a *partial* equivalence rather than a total one — but the exception
+is exactly the NaN leaf. Equality is total on every type with no floating-point
+leaf, which is every type Rue had before `f32` and `f64`, and on every value of
+a float-carrying type that holds no NaN.
+
+That exception is deliberate. The alternative — comparing an aggregate's float
+leaves by their bits, or by `@total_cmp` (3.12:32), so that structural equality
+stayed a total equivalence — was rejected because it would make a field's
+equality disagree with that field's own `==`: `Sample { value: nan }` would be
+equal to itself while the `nan == nan` inside it stayed `false`. Applying IEEE
+at the leaf (4.3:3b) keeps the two the same operator, and matches what a
+derived structural equality does over IEEE floats in other languages. The
+partiality is the concrete motivation for the eventual `PartialEq`/`Eq` split;
+until that lands, `@total_cmp` is the total order available for sorting and
+hashing, and it is the tool to reach for when a container needs reflexivity.
 
 {{ rule(id="4.3:4") }}
 
@@ -126,6 +154,33 @@ fn main() -> i32 {
     let b = [1, 2, 3];
     let equal = a == b;      // borrows a and b
     if equal && a[0] == b[0] { 1 } else { 0 }
+}
+```
+
+{{ rule(id="4.3:4c", cat="example") }}
+
+A float leaf carries IEEE equality into the aggregate around it (4.3:3b). An
+aggregate holding a NaN is not equal to itself; every other aggregate is, so the
+only reflexivity failure is the one the NaN introduces.
+
+```rue
+struct Sample { value: f64 }
+
+fn id(v: f64) -> f64 { v }
+
+fn main() -> i32 {
+    let zero: f64 = id(0.0);
+    let nan = zero / zero;
+    let a = Sample { value: nan };
+    let b = Sample { value: nan };
+    let c = Sample { value: 1.5 };
+
+    @dbg(a == a);   // false: the NaN leaf is not equal to itself
+    @dbg(a == b);   // false: two NaN leaves are unordered, not equal
+    @dbg(a == c);   // false: ordinary inequality, no NaN rule needed
+    @dbg(a != c);   // true
+    @dbg(c == c);   // true: no NaN, so equality is reflexive here
+    0
 }
 ```
 
