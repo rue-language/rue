@@ -156,6 +156,10 @@ pub mod random;
 pub mod string;
 pub mod test_channel;
 
+// Crate-internal: Unicode's well-formed-UTF-8 table, shared by the string
+// decoders and the test channel's JSON escaper. Not part of the runtime ABI.
+mod utf8;
+
 macro_rules! call_runtime_helper_implementation {
     (__rue_exit($($argument:expr),*)) => { crate::entry::__rue_exit($($argument),*) };
     (__rue_alloc($($argument:expr),*)) => { crate::string::__rue_alloc($($argument),*) };
