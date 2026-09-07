@@ -228,9 +228,11 @@ pub enum WatchScenarioKind {
     /// which is exactly what a first-cycle failure cannot produce.
     InitialFailure,
     /// A parse error in a closure module, which fails re-observation rather
-    /// than compilation and so puts the loop on its retry timer. The case sits
-    /// inside the failure for several retries, replaces it with a different
-    /// one, and finally repairs it (RUE-2091).
+    /// than compilation and so puts the loop on its retry timer. The case
+    /// walks every trigger the report obeys: it sits inside one failure for
+    /// several retries, replaces it with a different one, edits an unrelated
+    /// closure file while the broken one holds still, repairs it, and finally
+    /// restores the broken bytes verbatim (RUE-2091).
     RepeatedFailure,
 }
 

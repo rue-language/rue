@@ -156,6 +156,14 @@ source-load or environmental message and exit with status `1`. In `--watch`, a
 failed cycle keeps the last successful executable and the watcher continues;
 the cycle status is progress text, not an additional diagnostic.
 
+A `--watch` failure the loop cannot park on — a re-observation or acquisition
+error, which may name a file that does not exist yet — is retried on a timer,
+and the stream carries one array per distinct failure rather than one per retry
+(RUE-2091). The array returns when the rendered diagnostic changes or when a
+source in the watched closure does; an unchanged failure over unchanged bytes
+publishes nothing further. Nothing about the array's shape, code, or framing
+changes with it, so this is an emission cadence rather than a schema change.
+
 Driver failures can occur before the initial compilation snapshot exists, or
 after a snapshot exists while a watch cycle reobserves inputs or acquires a
 reached trusted-toolchain module.
