@@ -35,7 +35,7 @@ macro_rules! register_body_body_toolchain_demands {
                             .plan
                             .fallible_intrinsics()
                             .iter()
-                            .map(crate::well_known_option::FalliblePayload::from_rir)
+                            .map(crate::well_known_option::payload_of)
                             .collect::<Vec<_>>(),
                         DeclarationBodyPlanArtifactsValue::Failure(_) => Vec::new(),
                     };

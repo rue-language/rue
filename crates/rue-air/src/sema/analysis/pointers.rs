@@ -5,6 +5,7 @@
 
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
+use rue_builtins::IntrinsicName;
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     fn analyze_sequenced_pointer_operand(
@@ -475,7 +476,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         {
             return Err(self.type_mismatch_error(expected, result_ty, span));
         }
-        let zeroed = name == self.known_symbols().alloc_zeroed;
+        let zeroed = name == self.known_symbols().intrinsic(IntrinsicName::AllocZeroed);
         let air_ref = air.add_intrinsic(
             if zeroed {
                 crate::IntrinsicOperation::AllocZeroed
@@ -732,7 +733,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ctx,
         )?;
         self.require_intrinsic_type(&intrinsic, size.ty, Type::U64, span)?;
-        let overlapping = name == self.known_symbols().byte_move;
+        let overlapping = name == self.known_symbols().intrinsic(IntrinsicName::ByteMove);
         let air_ref = air.add_intrinsic(
             if overlapping {
                 crate::IntrinsicOperation::ByteMove
@@ -947,7 +948,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // @raw/@raw_mut/@field_ptr in the AIR; codegen lowers all three the
         // same way (address of the operand place).
         let name = result_name;
-        let operation = if result_name == self.known_symbols().field_ptr {
+        let operation = if result_name == self.known_symbols().intrinsic(IntrinsicName::FieldPtr) {
             crate::IntrinsicOperation::FieldPtr
         } else if is_mut {
             crate::IntrinsicOperation::RawMut
@@ -1004,7 +1005,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // @field_ptr yields a mutable raw pointer (like `&raw mut`), so it
         // supports both @ptr_read and @ptr_write round-trips through the field.
-        let field_ptr = self.known_symbols().field_ptr;
+        let field_ptr = self.known_symbols().intrinsic(IntrinsicName::FieldPtr);
         self.analyze_addr_of_intrinsic(air, args, span, ctx, true, field_ptr, "field_ptr")
     }
 

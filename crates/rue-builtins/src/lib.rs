@@ -3,6 +3,12 @@
 //! Source-defined standard-library types use trusted language-item identity;
 //! this crate does not inject or describe nominal struct types.
 
+pub mod intrinsics;
+
+pub use intrinsics::{
+    FallibleIntrinsic, IntrinsicArgumentGrammar, IntrinsicFalliblePayload, IntrinsicName,
+};
+
 use rue_runtime_abi::{RuntimeHelper, RuntimeHelperId};
 
 // ============================================================================

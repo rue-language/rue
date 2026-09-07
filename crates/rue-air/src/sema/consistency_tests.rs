@@ -2247,7 +2247,7 @@ mod tests {
         assert!(CALLS_SOURCE.contains("fn check_module_member_access("));
         assert!(!ANALYSIS_ROOT_SOURCE.contains("fn check_module_member_call("));
         assert!(!ANALYSIS_ROOT_SOURCE.contains("fn emit_module_member_call("));
-        assert!(INTRINSICS_SOURCE.contains("let known = &self.known_symbols();"));
+        assert!(INTRINSICS_SOURCE.contains("let known = *self.known_symbols();"));
         assert!(!ANALYZE_OPS_SOURCE.contains("KnownSymbols"));
     }
 }

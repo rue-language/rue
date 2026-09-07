@@ -19,6 +19,8 @@
 //! - [`constraint`] - Constraint representation (`Constraint`, `Substitution`)
 //! - [`unify`] - Unification engine (`Unifier`, `UnifyResult`, `UnificationError`)
 //! - [`generate`] - Constraint generation (`ConstraintContext`, `ConstraintGenerator`)
+//! - [`intrinsic_signature`] - The one HM constraint shape per intrinsic, which
+//!   drives the intrinsic arm of constraint generation by exhaustive match
 //!
 //! # Type Variables
 //!
@@ -45,6 +47,7 @@
 
 mod constraint;
 mod generate;
+mod intrinsic_signature;
 mod types;
 mod unify;
 

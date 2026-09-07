@@ -1,6 +1,13 @@
 //! Classification and decoding of the finite intrinsic families.
+//!
+//! Spellings are never compared here. Each family classifies a row of the one
+//! intrinsic table in `rue-builtins`, so a renamed or added intrinsic reaches
+//! declaration-time comptime evaluation through the same table every other
+//! phase reads.
 
 use super::*;
+
+use rue_builtins::IntrinsicName;
 
 /// The finite set of type intrinsics which can participate in declaration-time
 /// comptime evaluation. Classification is owned by AIR so compiler hosts do
@@ -19,28 +26,40 @@ pub enum ComptimeIntegerBound {
 }
 
 impl ComptimeIntegerBound {
-    pub fn as_str(self) -> &'static str {
+    /// The intrinsic row this bound is written with.
+    pub const fn intrinsic_name(self) -> IntrinsicName {
         match self {
-            Self::Min => "int_min",
-            Self::Max => "int_max",
+            Self::Min => IntrinsicName::IntMin,
+            Self::Max => IntrinsicName::IntMax,
         }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        self.intrinsic_name().spelling()
     }
 }
 
 impl ComptimeTypeIntrinsic {
+    /// Classify a spelling through the one intrinsic table; only the rows this
+    /// family owns select a comptime type intrinsic.
     pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "require_droppable" => Some(Self::RequireDroppable),
-            "require_trivially_droppable" => Some(Self::RequireTriviallyDroppable),
-            "int_min" => Some(Self::IntegerBound(ComptimeIntegerBound::Min)),
-            "int_max" => Some(Self::IntegerBound(ComptimeIntegerBound::Max)),
-            _ => None,
-        }
+        Self::from_intrinsic(IntrinsicName::from_spelling(name)?)
+    }
+
+    /// The comptime type intrinsic a table row selects, if it is one.
+    pub const fn from_intrinsic(name: IntrinsicName) -> Option<Self> {
+        Some(match name {
+            IntrinsicName::RequireDroppable => Self::RequireDroppable,
+            IntrinsicName::RequireTriviallyDroppable => Self::RequireTriviallyDroppable,
+            IntrinsicName::IntMin => Self::IntegerBound(ComptimeIntegerBound::Min),
+            IntrinsicName::IntMax => Self::IntegerBound(ComptimeIntegerBound::Max),
+            _ => return None,
+        })
     }
 }
 
 /// The finite set of expression intrinsics whose semantic identity is known
-/// to AIR.  Keeping this spelling table here means compiler hosts receive a
+/// to AIR.  Keeping this classification here means compiler hosts receive a
 /// typed operation and do not need to rediscover the intrinsic from a name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComptimeTargetIntrinsic {
@@ -50,12 +69,17 @@ pub enum ComptimeTargetIntrinsic {
 }
 
 impl ComptimeTargetIntrinsic {
-    pub fn as_str(self) -> &'static str {
+    /// The intrinsic row this target query is written with.
+    pub const fn intrinsic_name(self) -> IntrinsicName {
         match self {
-            Self::Arch => "target_arch",
-            Self::Os => "target_os",
-            Self::DataModel => "target_data_model",
+            Self::Arch => IntrinsicName::TargetArch,
+            Self::Os => IntrinsicName::TargetOs,
+            Self::DataModel => IntrinsicName::TargetDataModel,
         }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        self.intrinsic_name().spelling()
     }
 }
 
@@ -66,14 +90,21 @@ pub enum ComptimeExpressionIntrinsic {
 }
 
 impl ComptimeExpressionIntrinsic {
+    /// Classify a spelling through the one intrinsic table; only the rows this
+    /// family owns select a comptime expression intrinsic.
     pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "import" => Some(Self::Import),
-            "target_arch" => Some(Self::Target(ComptimeTargetIntrinsic::Arch)),
-            "target_os" => Some(Self::Target(ComptimeTargetIntrinsic::Os)),
-            "target_data_model" => Some(Self::Target(ComptimeTargetIntrinsic::DataModel)),
-            _ => None,
-        }
+        Self::from_intrinsic(IntrinsicName::from_spelling(name)?)
+    }
+
+    /// The comptime expression intrinsic a table row selects, if it is one.
+    pub const fn from_intrinsic(name: IntrinsicName) -> Option<Self> {
+        Some(match name {
+            IntrinsicName::Import => Self::Import,
+            IntrinsicName::TargetArch => Self::Target(ComptimeTargetIntrinsic::Arch),
+            IntrinsicName::TargetOs => Self::Target(ComptimeTargetIntrinsic::Os),
+            IntrinsicName::TargetDataModel => Self::Target(ComptimeTargetIntrinsic::DataModel),
+            _ => return None,
+        })
     }
 }
 
