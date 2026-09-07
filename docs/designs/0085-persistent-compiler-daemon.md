@@ -1,11 +1,11 @@
 ---
 id: 0085
 title: "Persistent compiler daemon"
-status: proposal
+status: accepted
 tags: [architecture, compiler, incremental, tooling, performance]
 feature-flag: null
 created: 2026-09-07
-accepted:
+accepted: 2026-09-07
 implemented:
 spec-sections: []
 superseded-by:
@@ -16,13 +16,15 @@ relates: ["ADR-0061", "ADR-0063", "ADR-0067", "ADR-0068", "ADR-0070", "ADR-0071"
 
 ## Status
 
-Proposal. This record recommends a direction for discussion; it does not
-authorize implementation or change the default compiler invocation. The
-resource-policy ruling identified below remains open. This is a tooling and
-process-lifetime change, so its rollout uses a driver option rather than a
-language `PreviewFeature`.
+Accepted on 2026-09-07 by Steve, incorporating Dorian's requirement that
+`rue test` participate from the initial service release. The supported workflow
+is a repeated check/test/build loop over one retained host, with request-specific
+root sets. Implementation is authorized in reviewable phases; changing the
+default to automatic daemon use remains gated by measurement and qualification.
+This is a tooling and process-lifetime change, so rollout uses a driver option
+rather than a language `PreviewFeature`.
 
-Proposal drafting and review are tracked by RUE-2123.
+ADR acceptance is tracked by RUE-2123; implementation is tracked by RUE-2126.
 
 ## Summary
 
@@ -35,11 +37,13 @@ The CLI continues to own terminal interaction, output publication, and program
 execution. An explicit direct mode uses the same compiler and remains available
 for hermetic build actions, fresh-process measurements, and troubleshooting.
 
-Start with an opt-in daemon for ordinary compilation using the internal linker,
-then make it automatic for that supported surface after correctness, latency,
-and resource behavior are demonstrated. Retain in-memory query results through
-object production, perform a fresh link, and publish the requested executable
-on every successful invocation. Disk-persistent query caches, incremental
+Start with an opt-in daemon for ordinary compilation, `rue test` (including
+listing), and analysis-only requests through the existing semantic `--emit air`
+surface. Internal linking is used when an executable or test image is needed.
+Make it automatic for that supported surface after correctness, latency, and
+resource behavior are demonstrated. Retain in-memory query results through
+object production, perform a fresh link for image requests, and let the client
+publish or execute the result. Disk-persistent query caches, incremental
 linking, and editor protocols are independent extensions.
 
 ## Context
@@ -106,11 +110,11 @@ Several relevant issues are present in current source:
   by itself prove that all query memory was reclaimed.
 
 RUE-1549's August 27 maintainer comment explicitly keeps the query architecture
-as a product investment in incrementality. This proposal follows that direction
+as a product investment in incrementality. This decision follows that direction
 and does not decide its remaining cold-overhead measurement work. RUE-1811 and
 RUE-1817 were Backlog when researched; RUE-1807's warm fuzzing work was Done and
 is visible in source. Their implementation scope remains separate from this
-proposal's drafting and review issue.
+ADR's drafting and review issue.
 
 ### Lessons from Buck2
 
@@ -144,18 +148,20 @@ flowchart LR
     M -->|daemon| S[Local service: select retained host]
     D --> Q[Canonical CompilerSession queries]
     S --> Q
-    Q --> L[Fresh internal link]
-    L --> P[CLI: render, sign, publish, exit]
+    Q --> A{Requested artifact}
+    A -->|analysis or listing| R[CLI: render result]
+    A -->|executable or test image| L[Fresh internal link]
+    L --> P[CLI: sign, publish, optionally run tests]
 ```
 
 The graph shows one computation path with different owners. Direct mode must
 not evolve into a separate batch frontend, and the daemon must not reconstruct
 semantics from presentation output. Rust APIs remain governed by ADR-0061;
-this proposal does not stabilize internal compiler structs as a wire format.
+this decision does not stabilize internal compiler structs as a wire format.
 
 ### 2. Invocation policy and scope
 
-Proposed driver options are `--daemon=off|auto|required`:
+Driver options are `--daemon=off|auto|required`:
 
 | Mode | Behavior |
 | --- | --- |
@@ -164,14 +170,22 @@ Proposed driver options are `--daemon=off|auto|required`:
 | `required` | Require daemon execution; incompatibility, unavailability, or an unsupported mode is an error. Useful for tests and reproducible performance experiments. |
 
 The initial default remains `off`. The intended final default is `auto` for
-ordinary internal-linker compilation. `--help`, `--version`, and `explain`
-remain local. Initially `--watch`, `--emit`, `rue test`, explicit system linking,
+ordinary internal-linker compilation, `rue test` and `rue test --list`, and
+analysis-only `--emit air` requests. `--help`, `--version`, and `explain`
+remain local. Initially `--watch`, other or combined `--emit` requests, explicit system linking,
 `--time-passes`, the existing `--benchmark-json` contract, and compiler tracing
 enabled by `--log-level` or `RUST_LOG` use direct mode under `auto`; `required`
 rejects them before starting work. Tracing format retains its existing meaning
 in direct mode. This support table must be documented and tested, so partial
 rollout never silently changes their
 existing stream or lifecycle contracts.
+
+The analysis-only entry point uses the existing artifact query and its current
+rooting semantics. This ADR does not add a new `rue check` command. The daemon
+protocol must distinguish analysis, executable, test inventory, and test image
+requests from its first usable release; analysis and listing do not link.
+`rue test` cannot be deferred to an additional-consumer phase or silently sent
+to a fresh compiler in an otherwise supported daemon invocation.
 
 Expose explicit start, status, and stop controls under `rue daemon`, with a
 source-root selector so the controls resolve the same daemon as compilation.
@@ -237,6 +251,20 @@ Worker-policy changes must be honored explicitly, even if they require a new
 host and lose warmth. Output destination and diagnostic rendering preferences
 do not, by themselves, require another semantic cache.
 
+For the same source root, read context, and compiler resource policy, build,
+analysis, and test requests select the same retained host. `RootSelection` is
+request input, not a service or host namespace. Execute each root set through
+the existing canonical queries so shared parsing, declarations, bodies, and
+backend artifacts can be reused when their dependencies permit it. Never
+union the roots of successive requests, retain a previous request's diagnostics
+as the next result, or reuse an executable entry point as a test dispatcher.
+
+Test filters, test-process concurrency, and runner environment belong to the
+client runner and do not partition the compiler session. Preserve `rue test
+--jobs` as a limit on concurrent test processes; its compiler workers retain
+the existing automatic policy. Every test invocation executes the selected
+tests even when compilation reused everything. No test verdict cache is added.
+
 ### 4. Re-observe before reuse
 
 For each admitted request, re-observe the selected host's inputs, complete
@@ -288,6 +316,12 @@ production when the client disconnects; do not retain every response forever.
 Initial byte transfer is intentionally simple; measure its cost before adding
 shared files, descriptor passing, or another artifact store.
 
+Test-image responses also carry the canonical inventory and per-test
+compile-failure attribution currently owned by `TestImageCompanion`. Preserve
+the corresponding failure diagnostics and test-listing information so partial
+compilation failures retain their existing `compile_error` verdicts. Linked
+bytes and a rendered diagnostic stream alone are not a complete test result.
+
 The client uses the existing [`output`](../../crates/rue/src/output.rs) and
 [`platform_signing`](../../crates/rue/src/platform_signing.rs) path: preflight
 source/output identity, write a temporary file beside the destination, sign
@@ -301,8 +335,11 @@ Key that lock by normalized destination-entry identity across path aliases and
 daemon scopes. Watch holds it for one compilation/publication cycle, not for
 the lifetime of the watch process.
 
-A successful server response means compilation completed; CLI success means
-the requested output was actually published. Deleted outputs are recreated.
+A successful server response means compilation or analysis completed. A build
+reports success after publication; analysis and listing complete after rendering
+their requested result. A test invocation continues through the client runner
+and uses its existing verdict and exit semantics: successful compilation does
+not make failing tests pass. Deleted executable outputs are recreated.
 Cancellation, errors, or disconnection before the final rename preserve the
 last successfully published file. Rename is the commit point: interruption
 after it may leave a committed new output without observed CLI success. Do not
@@ -315,7 +352,7 @@ Preserve the CLI's existing exit semantics and
 [JSON diagnostic framing](../process/diagnostics.md). Lifecycle chatter and
 daemon logs must not enter diagnostic stderr or artifact stdout. Infrastructure
 errors need an explicit driver diagnostic classification; cancellation is not
-a source error. Later `rue test` support must leave program execution, process
+a source error. Initial `rue test` support leaves program execution, process
 groups, stdin/stdout, and the [test event stream](../process/test-events.md)
 with its existing client-side runner. User programs do not run inside the
 compiler daemon.
@@ -350,8 +387,12 @@ formatting out of the current process-global panic-format switch.
 ### 7. Bound retained resources
 
 Make immutable per-session resource configuration, including validation, a
-prerequisite. Reuse the scope of RUE-1811 and obtain its open default-policy
-ruling; do not work around it by toggling the global before every request.
+prerequisite. RUE-1811 migrates ownership while preserving established session
+defaults: automatic host worker selection, validated explicit worker counts up
+to the CLI's existing maximum of 256, an 8 GiB soft retained-charge budget, and
+four million dependency/input observations. Expose validated per-session
+overrides. Do not tune daemon-wide defaults by changing ordinary compilation
+defaults, or work around the ownership boundary by toggling a global.
 
 Add service-level limits for retained host count, aggregate charged bytes and
 observations, queued work, response buffers, and idle lifetime. Evict idle
@@ -395,15 +436,20 @@ command, so it is not itself this cross-invocation service.
 Keep `fresh_source_to_native_v1` unchanged: no daemon handoff or retained query
 input is admitted. Add a distinct, validated daemon measurement regime under
 ADR-0067/0068/0071 before emitting daemon performance observations. Its external
-clock starts before client spawn and ends after successful publication and
+clock starts before client spawn and ends after the requested operation and
 client exit, including connection, startup when applicable, queueing, input
-observation, response transfer, signing, and publication.
+observation, response transfer, and rendering or signing/publication as needed.
+For tests, report compiler preparation through test-image publication separately
+from the full invocation through runner completion; test execution time cannot
+be reported as compiler latency or disappear from end-to-end workflow timing.
 
 Report at least these separately:
 
 - direct fresh-process compile;
 - first client invocation that starts an empty daemon;
 - unchanged rebuild in a prepared daemon;
+- analysis/test/build loops in both directions, with shared query work and
+  distinct root sets, outputs, diagnostics, and test runs;
 - body-only edit, API/import edit, and error/fix/revert sequences;
 - cache eviction/restart and contended requests.
 
@@ -417,26 +463,28 @@ count of query hits.
 
 ## Implementation Phases
 
-These are proposed design slices, not an approved implementation backlog.
-Create and relate Linear tracking work after the scope and policy are ruled;
-reuse RUE-1811 rather than duplicate its configuration migration. RUE-1817 is
-related performance work, not permission to weaken input validation.
+Implementation is tracked under RUE-2126. RUE-1811 owns the configuration
+migration; RUE-1817 remains related performance work, not permission to weaken
+input validation. Each slice lands through its own reviewed PR and merge queue.
 
-1. **Explicit request and session configuration.** Adapt the existing shared
+1. **Explicit request and session configuration — RUE-1811, RUE-2127.** First
+   make session worker and retention configuration immutable. Adapt the shared
    cycle to return an owned compiler result for client publication; make cwd,
    request diagnostics, and resource policy explicit through the canonical
    path-resolution and host APIs. Migrate affected cycle consumers atomically.
    Preserve existing output contracts.
-2. **Opt-in service.** Add identity, startup/status/stop, the local protocol,
+2. **Opt-in service — RUE-2128.** Add identity, startup/status/stop, the local protocol,
    bounded admission, one retained-host execution path, and client publication.
-   Include cancellation and crash recovery before treating it as usable.
-3. **Correctness and resource qualification.** Add bounded multi-host retention,
+   Include build, test inventory/test-image, and analysis requests sharing the
+   same host across root sets, plus cancellation and crash recovery, before
+   treating it as usable.
+3. **Correctness and resource qualification — RUE-2129.** Add bounded multi-host retention,
    idle retirement, process-boundary parity, and edit-sequence stress coverage.
    Verify both supported architectures on their native CI hosts.
-4. **Performance regime and automatic-mode decision.** Add separate daemon
+4. **Performance regime and automatic-mode decision — RUE-2130.** Add separate daemon
    measurements, pin hermetic/fresh callers to `off`, calibrate policy, then
-   decide whether supported ordinary compilation defaults to `auto`.
-5. **Additional consumers.** Move watch, presentation, and test compilation
+   decide whether the supported check/test/build workflow defaults to `auto`.
+5. **Additional consumers — RUE-2131.** Move watch and remaining presentation modes
    onto the service when each has cancellation and stream-parity coverage.
    Replace their lifetime adapters while retaining the same executor.
 
@@ -448,7 +496,12 @@ codegen, transfer and either side of the publication commit; two roots
 targeting one output; deleted outputs; eviction; and a daemon crash with
 queued clients. Compare each
 completed request with direct compilation, including diagnostic ordering and
-source locations. Use deterministic synchronization in lifecycle tests.
+source locations. Include repeated analysis/test/build sequences on one root,
+unreachable test-only errors not poisoning executable requests, executable-only
+roots not leaking into test inventories, independent test filters, and test
+execution on every repeated invocation. Assert eligible shared query reuse
+across mode changes as well as warm/fresh result parity. Use deterministic
+synchronization in lifecycle tests.
 
 ## Consequences
 
@@ -497,12 +550,12 @@ and correctness obligations. Process lifetime does not justify another frontend.
 
 ## Open Questions
 
-- What immutable worker/retention defaults should resolve RUE-1811, and what
-  daemon-wide host/charge/RSS/idle thresholds are appropriate on developer
-  machines? The proposal requires bounds but does not claim calibrated values.
-- Is default scope by root-source directory sufficient, or should initial
-  usability require an explicit workspace marker? Either choice must remain
-  independent of language import-root semantics.
+- What daemon-wide host/charge/RSS/idle thresholds are appropriate on developer
+  machines? The session migration preserves the defaults recorded above;
+  daemon bounds require separate calibration before automatic startup.
+- Is default scope by root-source directory sufficient for later workspace
+  tooling? Initial scope follows the decision above; any later workspace
+  marker must remain independent of language import-root semantics.
 - What measured latency and memory thresholds should permit the `auto` default,
   and should very small or one-off compilations stay direct?
 - Should system linking later consume retained objects in the client, or run
